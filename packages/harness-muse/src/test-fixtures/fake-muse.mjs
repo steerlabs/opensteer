@@ -297,6 +297,7 @@ function serve() {
           });
           return;
         }
+        if (scenario === "streaming") streamItems();
         finishTurn();
       });
       return;
@@ -374,6 +375,73 @@ function serve() {
   lines.on("line", (line) => {
     pending = pending.then(() => handle(line));
   });
+
+  function delta(itemId, text, field) {
+    notification("item/delta", {
+      delta: text,
+      ...(field === undefined ? {} : { field }),
+      itemId,
+      sessionId,
+      viewCursor: "v3",
+    });
+  }
+
+  function streamItems() {
+    const reasoning = { itemId: "reasoning-1", kind: "reasoning", turnId };
+    notification("item/started", {
+      item: { ...reasoning, revision: 1, status: "inProgress" },
+      sessionId,
+      viewCursor: "v3",
+    });
+    delta("reasoning-1", "Reading ", "summary.0");
+    delta("reasoning-1", "the file", "summary.0");
+    delta("reasoning-1", "Planning", "summary.1");
+    notification("item/completed", {
+      item: {
+        ...reasoning,
+        revision: 2,
+        status: "completed",
+        summary: ["Reading the file", "Planning"],
+      },
+      sessionId,
+      sourceRange: { first: "2", last: "2" },
+      viewCursor: "v3",
+    });
+    const tool = {
+      args: '{"command":"ls"}',
+      callId: "call-1",
+      itemId: "tool-item-1",
+      kind: "toolCall",
+      tool: "shell",
+      turnId,
+    };
+    notification("item/started", {
+      item: { ...tool, revision: 1, status: "inProgress" },
+      sessionId,
+      sourceRange: { first: "3", last: "3" },
+      viewCursor: "v3",
+    });
+    delta("tool-item-1", "README.md\n", "output");
+    notification("item/completed", {
+      item: { ...tool, revision: 2, status: "completed", visibleOutput: "README.md\n" },
+      sessionId,
+      sourceRange: { first: "4", last: "4" },
+      viewCursor: "v3",
+    });
+    notification("item/started", {
+      item: {
+        itemId: "message-1",
+        kind: "agentMessage",
+        revision: 1,
+        status: "inProgress",
+        turnId,
+      },
+      sessionId,
+      viewCursor: "v3",
+    });
+    delta("message-1", "Hello ");
+    delta("message-1", "from Muse", "text");
+  }
 
   function finishTurn() {
     notification("session/tokenUsage", {

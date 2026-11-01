@@ -480,6 +480,8 @@ interface ActiveTurn {
   readonly completion: Deferred<void>;
   readonly joinedTurns: Set<string>;
   readonly nodes: SubagentNodes;
+  /** Items opened but not yet completed, so `item/delta` can be routed by kind. */
+  readonly openItems: Map<string, OpenItem>;
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
   readonly workflows: Set<string>;
@@ -489,6 +491,12 @@ interface ActiveTurn {
   terminal: boolean;
   turnId?: string;
   usage?: RunUsage;
+}
+
+interface OpenItem {
+  readonly callId: string;
+  readonly kind: string;
+  summaryPart?: number;
 }
 
 type MusePending =
@@ -565,6 +573,7 @@ class MuseHarnessSession implements HarnessSession {
       interruptRequested: run.signal.aborted,
       joinedTurns: new Set(),
       nodes: new SubagentNodes((event) => this.#publish(event)),
+      openItems: new Map(),
       requestedBy: run.requestedBy,
       rootCompleted: false,
       runId: run.runId,
@@ -942,15 +951,7 @@ class MuseHarnessSession implements HarnessSession {
     }
     if (method === "item/delta") {
       const parsed = MuseItemDeltaSchema.safeParse(params);
-      if (parsed.success) {
-        if (parsed.data.field === "text")
-          this.#publish({ data: { text: parsed.data.delta }, type: "assistant.delta" });
-        else
-          this.#publish({
-            data: { callId: parsed.data.itemId, text: parsed.data.delta },
-            type: "tool.delta",
-          });
-      }
+      if (parsed.success) this.#delta(active, parsed.data);
       return;
     }
     if (method === "item/started" || method === "item/updated" || method === "item/completed") {
@@ -982,8 +983,52 @@ class MuseHarnessSession implements HarnessSession {
     if (method === "session/compactionCompleted") this.#compacting = false;
   }
 
+  /**
+   * Routes one streamed append by the open item's kind and field path: the
+   * contract streams `agentMessage.text` (an absent field means `text`),
+   * `reasoning.summary[n]` as `summary.n`, and `toolCall`/`userShell` output
+   * as `output`. Anything else is left to the item's `item/completed`.
+   */
+  #delta(
+    active: ActiveTurn,
+    params: {
+      readonly delta: string;
+      readonly field?: string | undefined;
+      readonly itemId: string;
+    },
+  ): void {
+    const item = active.openItems.get(params.itemId);
+    if (!item || !params.delta) return;
+    const field = params.field ?? "text";
+    if (item.kind === "agentMessage" && field === "text") {
+      this.#publish({ data: { text: params.delta }, type: "assistant.delta" });
+      return;
+    }
+    if (item.kind === "reasoning") {
+      const part = /^summary\.(\d+)$/.exec(field)?.[1];
+      if (part === undefined) return;
+      const index = Number(part);
+      const previous = item.summaryPart;
+      item.summaryPart = previous === undefined ? index : Math.max(previous, index);
+      // Matches the `\n\n` join `reasoning.completed` uses for the parts.
+      const text =
+        previous !== undefined && index > previous ? `\n\n${params.delta}` : params.delta;
+      this.#publish({ data: { blockId: params.itemId, text }, type: "reasoning.delta" });
+      return;
+    }
+    if ((item.kind === "toolCall" || item.kind === "userShell") && field === "output") {
+      this.#publish({
+        data: { callId: item.callId, text: normalizeToolOutput(params.delta).text },
+        type: "tool.delta",
+      });
+    }
+  }
+
   #item(active: ActiveTurn, item: Item, method: string): void {
     const complete = method === "item/completed";
+    if (complete) active.openItems.delete(item.itemId);
+    else if (!active.openItems.has(item.itemId))
+      active.openItems.set(item.itemId, { callId: item.callId ?? item.itemId, kind: item.kind });
     if (item.kind === "compaction") {
       this.#compacting = !complete;
       return;
@@ -998,11 +1043,11 @@ class MuseHarnessSession implements HarnessSession {
       return;
     }
     if (item.kind === "reasoning") {
-      if (complete && item.text)
-        this.#publish({
-          data: { blockId: item.itemId, text: item.text },
-          type: "reasoning.completed",
-        });
+      // The summary is what streamed; raw `text` never streams, so it stands
+      // in only when the item has no summary.
+      const text = item.summary?.filter(Boolean).join("\n\n") || item.text;
+      if (complete && text)
+        this.#publish({ data: { blockId: item.itemId, text }, type: "reasoning.completed" });
       return;
     }
     if (item.kind === "subagent") {

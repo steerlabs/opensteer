@@ -174,6 +174,59 @@ describe("Muse Code sessions", () => {
     await adapter.close();
   });
 
+  it("streams reply, reasoning summary and tool output each to its own stream", async () => {
+    const fixture = await setup("streaming");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    await session.execute(fixture.turn("hello"));
+    await session.stop();
+    await observer.done;
+    const streamed = observer.events.filter((event) =>
+      ["assistant.delta", "reasoning.delta", "tool.delta"].includes(event.type),
+    );
+    expect(streamed).toEqual([
+      { data: { blockId: "reasoning-1", text: "Reading " }, type: "reasoning.delta" },
+      { data: { blockId: "reasoning-1", text: "the file" }, type: "reasoning.delta" },
+      { data: { blockId: "reasoning-1", text: "\n\nPlanning" }, type: "reasoning.delta" },
+      { data: { callId: "call-1", text: "README.md\n" }, type: "tool.delta" },
+      { data: { text: "Hello " }, type: "assistant.delta" },
+      { data: { text: "from Muse" }, type: "assistant.delta" },
+    ]);
+    const durable = observer.events.filter((event) =>
+      ["assistant.message", "reasoning.completed", "tool.started", "tool.completed"].includes(
+        event.type,
+      ),
+    );
+    expect(durable).toEqual([
+      {
+        data: { blockId: "reasoning-1", text: "Reading the file\n\nPlanning" },
+        type: "reasoning.completed",
+      },
+      expect.objectContaining({ data: expect.objectContaining({ callId: "call-1" }) }),
+      {
+        data: {
+          callId: "call-1",
+          isError: false,
+          output: expect.objectContaining({ text: "README.md\n" }),
+        },
+        type: "tool.completed",
+      },
+      {
+        data: {
+          content: [{ text: "Hello from Muse", type: "text" }],
+          messageId: expect.any(String),
+        },
+        type: "assistant.message",
+      },
+    ]);
+    await adapter.close();
+  });
+
   it("uses exact-turn native steering", async () => {
     const fixture = await setup("steer");
     const adapter = await fixture.driver.create({
