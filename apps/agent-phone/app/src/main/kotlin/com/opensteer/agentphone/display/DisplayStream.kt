@@ -30,7 +30,7 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
         @Volatile var sources = request.sources
         @Volatile var inputSources = request.inputSources.orEmpty()
         @Volatile var personSource: DisplaySource? = null
-        var powerSequence = -1L
+        @Volatile var powerSequence = -1L
         var revision = request.revision
         var acquiring = false
         @Volatile var capture: ProjectionCapture? = null
@@ -450,7 +450,8 @@ class DisplayStream(private val context: android.accessibilityservice.Accessibil
                         val released = java.util.concurrent.CompletableFuture<Unit>()
                         gestures.scheduler.cancel { released.complete(Unit) }
                         released.get(7, TimeUnit.SECONDS)
-                        if (admitted(active, message.source, false, power = true))
+                        // Wake skips the barrier, so a newer power request may already have run.
+                        if (active.powerSequence == message.sequence && admitted(active, message.source, false, power = true))
                             dispatched = context.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)
                     } else {
                         val budget = Budget(SystemClock::elapsedRealtime, SystemClock.elapsedRealtime() + 7000, Cancellation())
