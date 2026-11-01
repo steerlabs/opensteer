@@ -116,7 +116,7 @@ function fixture() {
     onEvent: () => () => {},
     release: vi.fn(),
     follow: vi.fn(async () => undefined),
-    geometry: () => null,
+    geometry: (): ReturnType<PresentedSurface["geometry"]> => null,
   };
   const source = {
     hasSession: (id: string) => id === sessionId,
@@ -231,6 +231,52 @@ describe("native presentation authority (retired A01–A07)", () => {
     show();
     expect(menus).toHaveBeenCalledOnce();
   });
+});
+
+it("publishes committed native bounds after an origin-only stage move without a ledger event", async () => {
+  const f = fixture();
+  const initial = { ...rect, x: 44 };
+  let committed = initial;
+  const paint = Promise.withResolvers<void>();
+  f.native.waitForPaint = () => paint.promise;
+  f.native.mount.mockImplementation((_window, _stage, placed) =>
+    placed({ bounds: committed, crop: { right: false, bottom: false }, emulation: null }),
+  );
+  f.surface.geometry = () => ({
+    geometry: { person: { width: rect.width, height: rect.height }, agent: null },
+    geometryRevision: 7,
+  });
+  const placements = () =>
+    f.contents.send.mock.calls.map(([, event]) => event).filter((event) => event.type === "placed");
+  f.socket("admitted");
+  const target = await f.manager.present(f.sender, { ...f.request, rect: initial });
+  expect(placements()).toEqual([]);
+  paint.resolve();
+  await paint.promise;
+  expect(placements()).toHaveLength(1);
+  f.contents.send.mockClear();
+
+  const moved = { ...initial, x: 45 };
+  await f.manager.update(f.sender, { ...target, rect: moved });
+  const beforeCompletion = placements();
+  expect(f.native.setStage).toHaveBeenLastCalledWith(moved, true);
+  expect(f.surface.follow).toHaveBeenCalled();
+  committed = moved;
+  const placed = f.native.mount.mock.calls[0]![2];
+  placed({ bounds: committed, crop: { right: false, bottom: false }, emulation: null });
+
+  expect(placements().at(-1)).toMatchObject({
+    type: "placed",
+    ...target,
+    geometryRevision: 7,
+    bounds: committed,
+    stage: moved,
+  });
+  expect(beforeCompletion).toEqual([expect.objectContaining({ bounds: initial, stage: moved })]);
+  f.manager.release(f.sender, target);
+  const published = placements();
+  placed({ bounds: initial, crop: { right: false, bottom: false }, emulation: null });
+  expect(placements()).toEqual(published);
 });
 
 it.each(["socket", "did-start-navigation", "render-process-gone", "destroyed"])(
