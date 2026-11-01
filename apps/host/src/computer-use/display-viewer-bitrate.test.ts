@@ -5,13 +5,27 @@ describe("viewer-driven phone bitrate", () => {
   it("does not cap a brief credit stall followed by healthy ACKs", () => {
     const rate = new DisplayViewerBitrate();
     for (let now = 0; now <= 2_000; now += 100) rate.ack(now, 12_500, 110, 100);
-    rate.stall(2_385);
+    rate.stall(2_385, 282);
     rate.ack(2_387, 12_500, 385, 100);
     rate.ack(2_407, 12_500, 331, 100);
     rate.ack(2_565, 12_500, 149, 100);
     for (let now = 2_700; now <= 12_000; now += 100) rate.ack(now, 12_500, 110, 100);
     expect(rate.cap).toBeNull();
   });
+  it.each(["stall", "ack"] as const)(
+    "counts existing queue age from %s without another confirmation interval",
+    (signal) => {
+      const rate = new DisplayViewerBitrate();
+      for (let now = 0; now <= 2_000; now += 100) rate.ack(now, 12_500, 110, 100);
+      const observe = (now: number, age: number) =>
+        signal === "stall" ? rate.stall(now, age) : rate.ack(now, 12_500, 100 + age, 100);
+      observe(2_350, 350);
+      observe(2_499, 499);
+      expect(rate.cap).toBeNull();
+      observe(2_500, 500);
+      expect(rate.cap).not.toBeNull();
+    },
+  );
   it("keeps a high RTT alone uncapped, reduces queued flow and never raises through silence", () => {
     const rate = new DisplayViewerBitrate();
     for (let now = 0; now <= 4_000; now += 100) rate.ack(now, 12_500, 400, 400);

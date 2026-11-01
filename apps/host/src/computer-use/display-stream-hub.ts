@@ -673,8 +673,7 @@ export class DisplayStreamHub {
             if (viewer.waiting && !header.key) continue;
             if (!this.#hasCredit(viewer, envelope.byteLength)) {
               if (viewer.displayWindow) {
-                viewer.bitrate.stall(this.#now());
-                this.#bitrate(stream);
+                this.#stall(stream, viewer);
               }
               if (!viewer.waiting) {
                 const oldest = viewer.outstanding.values().next().value;
@@ -1329,6 +1328,15 @@ export class DisplayStreamHub {
       !oldest || now - oldest.sentAt <= Math.min(1_500, (viewer.ackDelays[0]?.delay ?? 400) + 250)
     );
   }
+  #stall(stream: Stream, viewer: Viewer): void {
+    const now = this.#now();
+    const oldest = viewer.outstanding.values().next().value;
+    const queued = oldest
+      ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
+      : 0;
+    viewer.bitrate.stall(now, queued);
+    this.#bitrate(stream);
+  }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {
     viewer.outstanding.set(frame.sequence, {
       bytes: frame.bytes.byteLength,
@@ -1526,8 +1534,7 @@ export class DisplayStreamHub {
       }
       for (const viewer of stream.viewers) {
         if (viewer.displayWindow && viewer.waiting && !this.#withinCreditAge(viewer)) {
-          viewer.bitrate.stall(this.#now());
-          this.#bitrate(stream);
+          this.#stall(stream, viewer);
         }
         if (
           viewer.slowSince !== null &&

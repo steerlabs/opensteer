@@ -6,19 +6,22 @@ export class DisplayViewerBitrate {
   cap: number | null = null;
   #sampleAt: number | null = null;
   #bytes = 0;
+  #delivered = maximumBitrate;
   #lastFlow: number | null = null;
   #healthySince: number | null = null;
   #queuedSince: number | null = null;
   #reducedAt = -Infinity;
 
-  stall(now: number): void {
+  stall(now: number, observedQueueMs = 0): void {
     this.#healthySince = null;
     // A join burst or one delayed decode is not sustained congestion.
-    this.#queuedSince ??= now;
+    // The delivery has already spent its excess age waiting in the queue.
+    this.#queuedSince = Math.min(this.#queuedSince ?? now, now - observedQueueMs);
     if (now - this.#queuedSince < 500) return;
     if (now - this.#reducedAt < 2_000) return;
     const elapsed = now - (this.#sampleAt ?? now);
-    const delivered = elapsed >= 500 ? (this.#bytes * 8_000) / elapsed : maximumBitrate;
+    // A sample boundary must not discard the preceding measured flow rate.
+    const delivered = elapsed >= 500 ? (this.#bytes * 8_000) / elapsed : this.#delivered;
     this.cap = Math.max(
       minimumBitrate,
       Math.floor(Math.min((this.cap ?? maximumBitrate) * 0.75, delivered * 0.8)),
@@ -31,21 +34,21 @@ export class DisplayViewerBitrate {
     if (this.#lastFlow === null || now - this.#lastFlow > 500) {
       this.#sampleAt = now;
       this.#bytes = 0;
+      this.#delivered = maximumBitrate;
       this.#healthySince = now;
       this.#queuedSince = null;
     }
     this.#lastFlow = now;
     this.#bytes += bytes;
     if (delay - minimumDelay >= 150) {
-      this.#healthySince = null;
-      this.#queuedSince ??= now;
-      if (now - this.#queuedSince >= 500) this.stall(now);
+      this.stall(now, delay - minimumDelay);
     } else {
       this.#queuedSince = null;
       this.#healthySince ??= now;
     }
     const elapsed = now - (this.#sampleAt ?? now);
     if (elapsed < 2_000) return;
+    this.#delivered = (this.#bytes * 8_000) / elapsed;
     if (this.cap !== null && now - (this.#healthySince ?? now) >= 8_000) {
       this.cap = this.cap * 1.2 >= maximumBitrate ? null : Math.round(this.cap * 1.2);
       this.#healthySince = now;

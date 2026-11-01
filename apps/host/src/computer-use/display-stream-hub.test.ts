@@ -3061,6 +3061,30 @@ it("does not create a phone producer when owner input authorization finishes aft
 });
 
 describe("viewer-driven phone bitrate", () => {
+  it("counts the oldest delivery's existing queue age toward sustained credit pressure", async () => {
+    const f = await fixture(true, { displayProfile: true });
+    const viewer = await f.viewer(false, false, true);
+    const phone = await f.phone();
+    await f.state();
+    for (let sequence = 1; sequence <= 6; sequence++) {
+      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+      await viewer.received(() => viewer.media().length === sequence);
+      if (sequence === 6) break;
+      f.advance(100);
+      viewer.send({ type: "display.ack", sequence });
+      await viewer.roundTrip();
+    }
+    f.advance(599);
+    phone.socket.send(f.frame(7));
+    await phone.received(() => phone.json().length === 7);
+    const demands = () => f.sent.filter((m) => m.type === "host.integrations.display.demand");
+    expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
+    f.advance(1);
+    f.hub.sweep();
+    expect(demands().at(-1)?.maxBitrate).not.toBeNull();
+    expect(demands().at(-1)?.maxBitrate).toBeLessThanOrEqual(1_000_000);
+  });
+
   it("recovers a brief live credit stall without reducing the phone bitrate", async () => {
     const f = await fixture(true, { displayProfile: true });
     const viewer = await f.viewer(false, false, true);
