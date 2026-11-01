@@ -86,6 +86,8 @@ import { useDesktopPlaces } from "../desktop/places-context.js";
 import { PlaceMenuPlaces } from "./places/place-menu.js";
 import { PlaceAccountFooter, SignOutDialog } from "./places/place-account.js";
 
+const doneOpenKey = "opensteer.sidebar-done-open";
+
 export interface SidebarProps {
   collapsed: boolean;
   deploymentAccess: DeploymentAccessSnapshot | null;
@@ -214,6 +216,22 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list, homeThreadId } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
+  const doneShelf = useRef<HTMLLIElement | null>(null);
+  const [doneOpen, setDoneOpen] = useState(() => localStorage.getItem(doneOpenKey) === "true");
+  const toggleDone = () => {
+    const next = !doneOpen;
+    setDoneOpen(next);
+    try {
+      localStorage.setItem(doneOpenKey, String(next));
+    } catch {
+      // A preference that did not save costs one press next time.
+    }
+  };
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const doneActive = !doneOpen && list.done.some((row) => row.threadId === openRowThreadId);
+  useEffect(() => {
+    if (doneActive && doneShelf.current) revealInList(doneShelf.current);
+  }, [doneActive, openRowThreadId]);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -344,6 +362,13 @@ export function Sidebar({
     nav.openConversation("/new");
   };
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
+  const loadEarlier = () => {
+    if (loadingEarlier) return;
+    setLoadingEarlier(true);
+    void onLoadEarlierTasks()
+      .catch(() => undefined)
+      .finally(() => setLoadingEarlier(false));
+  };
 
   // Put away, the sidebar is gone entirely; the restore control in the
   // conversation's or the place's head (with the count) and ⌘\ bring it back.
@@ -360,7 +385,26 @@ export function Sidebar({
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
   const rows = [...list.working, ...list.ready];
-  const hasTasksSection = rows.length > 0 || list.done.length > 0 || list.hasMore;
+  const shownDone = doneOpen ? list.done : [];
+  const rowKeys = [
+    ...rows.map((row) => row.threadId),
+    ...(list.done.length ? ["done-shelf"] : []),
+    ...shownDone.map((row) => row.threadId),
+    ...(list.hasMore ? ["show-more"] : []),
+  ];
+  const hasTasksSection = rowKeys.length > 0;
+  const taskRow = (row: TaskRow) => (
+    <TaskRowItem
+      hostClient={hostClient}
+      ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
+      key={row.threadId}
+      onNavigate={onCloseMobile}
+      onSetDone={onSetTaskDone}
+      open={row.threadId === openRowThreadId}
+      row={row}
+      workspace={workspace}
+    />
+  );
   const startPageOpen = workspace.selection.kind === "launcher";
   // The order the tab list shows; a change slides its rows to their new places.
   const motionSignature = [
@@ -485,7 +529,7 @@ export function Sidebar({
           <section
             aria-labelledby="sidebar-tasks"
             className="side-section side-section--tasks"
-            style={sectionFloor(rows.length)}
+            style={sectionFloor(rowKeys.length)}
           >
             <div className="side-head">
               <h2 className="side-head__title" id="sidebar-tasks">
@@ -514,40 +558,54 @@ export function Sidebar({
               >
                 <Icon name="plus" />
               </button>
-              <Link
-                aria-current={pathname === "/tasks" ? "page" : undefined}
-                aria-label="All tasks"
-                className="icon-btn icon-btn--small side-head__action"
-                onClick={onCloseMobile}
-                title="All tasks"
-                to={nav.conversationHref("/tasks")}
-              >
-                <Icon name="chevron-right" />
-              </Link>
             </div>
-            {rows.length > 0 ? (
-              <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
-                <RowMotion
-                  snap={false}
-                  list={tasksList}
-                  signature={rows.map((row) => row.threadId).join(",")}
-                  lifted={false}
-                >
-                  {rows.map((row) => (
-                    <TaskRowItem
-                      hostClient={hostClient}
-                      ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
-                      key={row.threadId}
-                      onNavigate={onCloseMobile}
-                      onSetDone={onSetTaskDone}
-                      open={row.threadId === openRowThreadId}
-                      row={row}
-                      workspace={workspace}
-                    />
-                  ))}
-                </RowMotion>
-              </SideList>
-            ) : null}
+            <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
+              <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
+                {/* One keyed run, so a row moving between Ready and Done keeps its
+                    element and focus, and slides to its new place. */}
+                {[
+                  ...rows.map(taskRow),
+                  ...(list.done.length > 0
+                    ? [
+                        <li
+                          className={`side-task side-done${doneActive ? " is-filled" : ""}`}
+                          data-motion-key="done-shelf"
+                          key="done-shelf"
+                          ref={doneShelf}
+                        >
+                          <button
+                            aria-current={doneActive ? "true" : undefined}
+                            aria-expanded={doneOpen}
+                            aria-label={`Done, ${list.done.length} ${list.done.length === 1 ? "task" : "tasks"}`}
+                            className="side-task__main side-done__main"
+                            onClick={toggleDone}
+                            type="button"
+                          >
+                            <Icon name={doneOpen ? "chevron-down" : "chevron-right"} />
+                            <span>Done</span>
+                            <span className="side-done__count">{list.done.length}</span>
+                          </button>
+                        </li>,
+                      ]
+                    : []),
+                  ...shownDone.map(taskRow),
+                  ...(list.hasMore
+                    ? [
+                        <li data-motion-key="show-more" key="show-more">
+                          <button
+                            className="sidebar__more"
+                            disabled={loadingEarlier}
+                            onClick={loadEarlier}
+                            type="button"
+                          >
+                            {loadingEarlier ? "Loading…" : "Show more"}
+                          </button>
+                        </li>,
+                      ]
+                    : []),
+                ]}
+              </RowMotion>
+            </SideList>
           </section>
         )}
         {hasTasksSection ? <SideSplit onCommit={commitTasksShare} share={tasksShare} /> : null}

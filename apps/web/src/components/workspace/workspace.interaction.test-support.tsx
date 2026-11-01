@@ -2,6 +2,7 @@ import { act, Fragment, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   MemoryRouter,
+  Navigate,
   Route,
   Routes,
   useLocation,
@@ -23,8 +24,6 @@ import { SpecialistsPage } from "../specialists-page.js";
 import { ThreadRoute } from "../thread-view.js";
 import { ToastProvider } from "../toast.js";
 import { LiveRedirect } from "./live-redirect.js";
-
-import { TasksPage } from "./tasks-page.js";
 
 /**
  * The workspace contract over the moving mock world: each selection action
@@ -145,8 +144,8 @@ async function mount(
                 }
               >
                 <Route index element={<HomeRoute />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
                 <Route path="new" element={<NewTaskRoute />} />
-                <Route path="tasks" element={<TasksPage />} />
                 <Route path="threads/:threadId" element={<ThreadRoute />} />
                 <Route path="live" element={<LiveRedirect />} />
                 <Route path="specialists" element={<SpecialistsPage />} />

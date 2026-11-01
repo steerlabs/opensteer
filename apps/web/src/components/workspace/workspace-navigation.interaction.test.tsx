@@ -3,7 +3,7 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { placeList, taskAttention, type HostSnapshot } from "@opensteer/client/host";
+import { placeList, taskAttention, taskList, type HostSnapshot } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createBrowserSessionId, type WorkspaceTabLineage } from "@opensteer/protocol";
 
@@ -419,7 +419,7 @@ describe("the conversation survives layout changes", () => {
   });
 
   it("a docked page without a conversation still expands from its name", async () => {
-    await mount((source) => `/tasks${tabSearch(pageTab(source))}`);
+    await mount((source) => `/new${tabSearch(pageTab(source))}`);
     expect(document.querySelector(".conv-header--area .conv-header__actions")).toBeNull();
     await click(element(".conv-header--area .conv-header__menu"));
     const expand = [
@@ -428,7 +428,7 @@ describe("the conversation survives layout changes", () => {
     expect(expand).toBeDefined();
     await click(expand!);
     expect(document.querySelector(".place")).toBeNull();
-    expect(element(".conv-header--area .conv-header__name").textContent).toBe("Tasks");
+    expect(element(".conv-header--area .conv-header__name").textContent).toBe("New task");
     // The menu's button went with the dock; focus carries on in the page.
     await settle();
     expect(element(".workspace__conversation").contains(document.activeElement)).toBe(true);
@@ -553,5 +553,201 @@ describe("native places", () => {
     await settle(50);
     expect(element(".place .computer-watch__app").textContent).toBe(phone.title);
     expect(element(".place .computer-watch__stop").textContent).toBe("Stop");
+  });
+});
+
+describe("sidebar Done shelf", () => {
+  async function mountWithDone() {
+    await mount("/");
+    const task = taskList(client.getSnapshot()).ready.find((item) => item.canBeDone)!;
+    expect(task).toBeDefined();
+    const read = client.getSnapshot().threadReadStates[task.threadId];
+    if (read?.unreadSequence)
+      await act(async () => client.markThreadRead(task.threadId, read.unreadSequence!));
+    await act(async () => client.setTaskDone(task.threadId, true));
+    return task.threadId;
+  }
+  const shelf = () => element<HTMLButtonElement>(".side-done button");
+  const row = (id: string) => document.querySelector(`.side-task[data-thread-id="${id}"]`);
+
+  it("defaults closed, shows Done rows on toggle and remembers the choice across remount", async () => {
+    await mountWithDone();
+    const done = taskList(client.getSnapshot()).done;
+    expect(done.length).toBeGreaterThan(0);
+    expect(shelf().getAttribute("aria-expanded")).toBe("false");
+    expect(shelf().getAttribute("aria-label")).toBe(
+      `Done, ${done.length} ${done.length === 1 ? "task" : "tasks"}`,
+    );
+    expect(row(done[0]!.threadId)).toBeNull();
+    await click(shelf());
+    expect(shelf().getAttribute("aria-expanded")).toBe("true");
+    expect(row(done[0]!.threadId)).not.toBeNull();
+    expect(localStorage.getItem("opensteer.sidebar-done-open")).toBe("true");
+    await act(async () => root!.unmount());
+    client.dispose();
+    await mountWithDone();
+    expect(shelf().getAttribute("aria-expanded")).toBe("true");
+    expect(row(done[0]!.threadId)).not.toBeNull();
+    await click(shelf());
+    expect(row(done[0]!.threadId)).toBeNull();
+    expect(localStorage.getItem("opensteer.sidebar-done-open")).toBe("false");
+  });
+
+  it("opens even when the preference cannot be saved", async () => {
+    await mountWithDone();
+    const done = taskList(client.getSnapshot()).done[0]!;
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+    await click(shelf());
+    expect(shelf().getAttribute("aria-expanded")).toBe("true");
+    expect(row(done.threadId)).not.toBeNull();
+  });
+
+  it("hides the shelf when no Done tasks exist", async () => {
+    await mountWithDone();
+    for (const done of taskList(client.getSnapshot()).done)
+      await act(async () => client.setTaskDone(done.threadId, false));
+    expect(document.querySelector(".side-done")).toBeNull();
+    expect(element("#sidebar-tasks").textContent).toBe("Tasks");
+  });
+
+  it.each([false, true])(
+    "renders the Tasks section only when its Done-only list has rows: %s",
+    async (hasDone) => {
+      await mount((source) => {
+        const snapshot = source.getSnapshot();
+        const task = taskList(snapshot).ready[0]!;
+        const entry = snapshot.tasks!.entries.find(({ thread }) => thread.id === task.threadId)!;
+        vi.spyOn(source, "getSnapshot").mockReturnValue({
+          ...snapshot,
+          activeTasks: [],
+          tasks: {
+            ...snapshot.tasks!,
+            entries: hasDone
+              ? [
+                  {
+                    ...entry,
+                    thread: { ...entry.thread, doneAt: new Date().toISOString(), status: "idle" },
+                  },
+                ]
+              : [],
+          },
+          threadReadStates: {},
+        });
+        return "/";
+      });
+      expect(document.querySelector("#sidebar-tasks") !== null).toBe(hasDone);
+      expect(document.querySelector(".side-done") !== null).toBe(hasDone);
+      if (hasDone) expect(shelf().getAttribute("aria-label")).toBe("Done, 1 task");
+      expect(document.querySelector(".side-section--tasks [data-thread-id]")).toBeNull();
+    },
+  );
+
+  it("moves a Ready row through Mark Done and Reopen using its context menu", async () => {
+    await mountWithDone();
+    await click(shelf());
+    const task = taskList(client.getSnapshot()).ready.find((item) => item.canBeDone)!;
+    expect(task).toBeDefined();
+    if (task.unread) {
+      const read = client.getSnapshot().threadReadStates[task.threadId]!;
+      await act(async () => client.markThreadRead(task.threadId, read.unreadSequence!));
+    }
+    const choose = async (name: string) => {
+      await act(async () =>
+        row(task.threadId)!.dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        ),
+      );
+      const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+        (node) => node.textContent?.trim() === name,
+      )!;
+      expect(action).toBeDefined();
+      await click(action);
+    };
+    const before = row(task.threadId);
+    await choose("Mark Done");
+    // The row keeps its element across the move, so focus and its slide survive.
+    expect(row(task.threadId)).toBe(before);
+    expect(
+      element(".side-done").compareDocumentPosition(row(task.threadId)!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      taskList(client.getSnapshot()).done.some((item) => item.threadId === task.threadId),
+    ).toBe(true);
+    await choose("Reopen");
+    expect(row(task.threadId)).toBe(before);
+    expect(
+      taskList(client.getSnapshot()).ready.some((item) => item.threadId === task.threadId),
+    ).toBe(true);
+    expect(
+      row(task.threadId)!.compareDocumentPosition(element(".side-done")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("indicates an open Done conversation while closed without changing the preference", async () => {
+    const id = await mountWithDone();
+    await act(async () => goTo!(`/threads/${id}`));
+    expect(shelf().getAttribute("aria-current")).toBe("true");
+    expect(element(".side-done").classList.contains("is-filled")).toBe(true);
+    expect(row(id)).toBeNull();
+    expect(shelf().getAttribute("aria-expanded")).toBe("false");
+    expect(localStorage.getItem("opensteer.sidebar-done-open")).toBeNull();
+    await click(shelf());
+    expect(shelf().hasAttribute("aria-current")).toBe(false);
+    expect(element(`[data-thread-id="${id}"] a`).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("loads earlier tasks with busy state and allows another attempt after failure", async () => {
+    let reject!: (error: Error) => void;
+    let load!: ReturnType<typeof vi.spyOn>;
+    await mount((source) => {
+      const read = source.getSnapshot.bind(source);
+      let previous: HostSnapshot | undefined;
+      let next: HostSnapshot;
+      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+        const snapshot = read();
+        if (previous !== snapshot) {
+          previous = snapshot;
+          next = {
+            ...snapshot,
+            tasks: snapshot.tasks
+              ? { ...snapshot.tasks, window: { ...snapshot.tasks.window, hasMore: true } }
+              : null,
+          };
+        }
+        return next;
+      });
+      load = vi
+        .spyOn(source, "loadEarlierTasks")
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((_resolve, fail) => {
+              reject = fail;
+            }),
+        )
+        .mockResolvedValue(undefined);
+      return "/";
+    });
+    await click(element(".side-section--tasks .sidebar__more"));
+    expect(load).toHaveBeenCalledTimes(1);
+    const more = element<HTMLButtonElement>(".side-section--tasks .sidebar__more");
+    expect(more.disabled).toBe(true);
+    expect(more.textContent).toBe("Loading…");
+    await act(async () => reject(new Error("Earlier tasks unavailable")));
+    expect(more.disabled).toBe(false);
+    expect(more.textContent).toBe("Show more");
+    await click(more);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(more.disabled).toBe(false);
+  });
+
+  it("redirects a stale Tasks address to Chat", async () => {
+    await mount("/tasks");
+    expect(history.at(-1)?.path).toBe("/");
+    expect(element(".side-home__main").getAttribute("aria-current")).toBe("page");
+    expect(document.querySelector('[aria-label="All tasks"]')).toBeNull();
   });
 });

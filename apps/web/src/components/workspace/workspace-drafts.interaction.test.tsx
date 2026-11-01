@@ -1124,7 +1124,7 @@ describe("a link arriving at the start page", () => {
     expect(element(".place").textContent).toContain(address);
     expect(element(".place").textContent).toContain("Choose a computer");
     expect(client.getSnapshot().pendingBrowserTabs?.[0]?.state).toBe("failed");
-    await act(async () => goTo!("/tasks"));
+    await act(async () => goTo!("/new"));
     await act(async () => goTo!(-1));
     await settle(50);
     expect(element(".place").textContent).toContain(address);
