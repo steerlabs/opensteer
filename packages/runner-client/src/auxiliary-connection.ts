@@ -162,6 +162,9 @@ export class RunnerAuxiliaryFenceLedger {
     this.#leaseTimer = setTimeout(
       () => {
         this.#leaseTimer = undefined;
+        // A timer can fire a millisecond before the clock reaches the lease's
+        // end; the lease has not run out until `expired` says so.
+        if (!this.expired) return this.#scheduleLeaseExpiry();
         listener(new Error("The auxiliary stream lease has expired"));
       },
       Math.max(0, this.#leaseExpiresAt - this.#now()),
