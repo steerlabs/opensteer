@@ -2740,6 +2740,7 @@ function threadFromRow(
     ...row,
     continuationIdentity: null,
     providerSessionId,
+    askedAt: row.askedAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
     pendingRequests: row.pendingRequestCount,
     updatedAt: row.updatedAt.toISOString(),

@@ -1646,7 +1646,8 @@ export const hostApi = defineRpc({
   ),
   /**
    * The signed-in person's tasks across every Workspace they belong to, or in
-   * the one named, most recently updated first, with their read state. The
+   * the one named, ordered by when a person last asked each task, newest first,
+   * with their read state. The
    * active filter keeps only running or waiting work. It is reread whenever
    * `host.tasks-changed` arrives.
    */

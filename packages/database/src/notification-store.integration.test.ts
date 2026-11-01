@@ -2302,14 +2302,14 @@ integration("notification decision boundary", () => {
       return id;
     }
 
-    async function setUpdatedAt(
+    async function setAskedAt(
       storeFixture: StoreFixture,
       threadId: ThreadId,
-      updatedAt: string,
+      askedAt: string,
     ): Promise<void> {
       const { database } = storeFixture;
       await sql`
-        update public.threads set updated_at = ${updatedAt}::timestamptz where id = ${threadId}
+        update public.threads set asked_at = ${askedAt}::timestamptz where id = ${threadId}
       `.execute(database);
     }
 
@@ -2447,7 +2447,7 @@ integration("notification decision boundary", () => {
         await emptyThread(storeFixture, owner, { suffix: "tasks-order-5", workspaceId: elsewhere }),
         await emptyThread(storeFixture, owner, { suffix: "tasks-order-6" }),
       ];
-      // Two exact ties in different Workspaces, two updates a few microseconds
+      // Two exact ties in different Workspaces, two asks a few microseconds
       // apart within one millisecond, and distinct times around them.
       const times = [
         "2026-01-01T00:00:06.000Z",
@@ -2459,14 +2459,14 @@ integration("notification decision boundary", () => {
         "2026-01-01T00:00:02.000Z",
       ];
       for (const [index, threadId] of threads.entries()) {
-        await setUpdatedAt(storeFixture, threadId, times[index]!);
+        await setAskedAt(storeFixture, threadId, times[index]!);
       }
 
       const whole = await tasksOf(storeFixture, owner.ownerId);
       const order = whole.tasks.map(({ thread }) => thread.id);
       expect(new Set(order)).toEqual(new Set(threads));
       expect(order[0]).toBe(owner.threadId);
-      const stamps = whole.tasks.map(({ thread }) => Date.parse(thread.updatedAt));
+      const stamps = whole.tasks.map(({ thread }) => Date.parse(thread.askedAt!));
       expect(stamps).toEqual([...stamps].sort((left, right) => right - left));
 
       for (const maxItems of [1, 2, 3]) {
@@ -2500,6 +2500,18 @@ integration("notification decision boundary", () => {
         maxItems: 1,
       });
       expect(next.tasks.map(({ thread }) => thread.id)).toEqual([order[1]]);
+
+      await expect(
+        store.taskPageForUser({
+          before: encodeWindowCursor(
+            "task",
+            owner.ownerId,
+            whole.tasks[0]!.thread.updatedAt,
+            order[0]!,
+          ),
+          userId: owner.ownerId,
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
 
       // A cursor is the reader's own, and only for this list.
       const stranger = await store.createUser("Stranger");

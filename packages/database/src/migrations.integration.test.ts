@@ -5612,6 +5612,10 @@ integration.sequential("browser sign-ins migration", () => {
         values ('env_99999999-9999-4999-8999-999999999999', 'Migration', 'managed');
         insert into public.users(id, display_name, email)
         values ('usr_00000000-0000-4000-8000-000000000001', 'Owner', 'owner@example.com');
+        insert into public.principals(id, kind, user_id, display_name)
+        values ('pri_fixture', 'user', 'usr_00000000-0000-4000-8000-000000000001', 'Owner');
+        insert into public.harness_instances(id, environment_id, driver_kind, name, config, state_kind, source_id)
+        values ('hai_fixture', 'env_99999999-9999-4999-8999-999999999999', 'codex', 'Codex', '{}', 'isolated', 'openai');
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
@@ -6972,6 +6976,17 @@ integration.sequential("notifications migration", () => {
       await sql`
         insert into public.users(id, display_name, email)
         values (${owner}, 'Owner', 'owner@example.test')
+      `.execute(database);
+      await sql`
+        insert into public.principals(id, kind, user_id, display_name)
+        values ('pri_fixture', 'user', ${owner}, 'Owner')
+      `.execute(database);
+      await sql`
+        insert into public.execution_environments(id, name, kind) values (${environment}, 'Main', 'main')
+      `.execute(database);
+      await sql`
+        insert into public.harness_instances(id, environment_id, driver_kind, name, config, state_kind, source_id)
+        values ('hai_fixture', ${environment}, 'codex', 'Codex', '{}', 'isolated', 'openai')
       `.execute(database);
       await sql`
         insert into public.workspaces(
