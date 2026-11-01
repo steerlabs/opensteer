@@ -17,6 +17,7 @@ export async function generateContainedAcpTitle(input: {
   readonly initializeDeadlineMs: number;
   readonly launch: HarnessProcessLaunch;
   readonly modeId: string;
+  readonly onSessionId?: (sessionId: string) => void;
   readonly prompt: string;
   readonly protocolVersion: AcpProtocolVersion;
   readonly signal: AbortSignal;
@@ -88,6 +89,7 @@ export async function generateContainedAcpTitle(input: {
       lifetime.signal,
     );
     sessionId = session.sessionId;
+    input.onSessionId?.(session.sessionId);
     if (session.modes?.availableModes.some((mode) => mode.id === input.modeId)) {
       await client.setMode(session.sessionId, input.modeId, lifetime.signal);
     }
