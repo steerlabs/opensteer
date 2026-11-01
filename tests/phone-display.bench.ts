@@ -9,6 +9,7 @@ import WebSocket from "ws";
 import { it, vi } from "vitest";
 import { ComputerAppHub } from "../apps/host/src/computer-apps/computer-app-hub.js";
 import { DisplayViewerBitrate } from "../apps/host/src/computer-use/display-viewer-bitrate.js";
+import { ComputerViewRetainers } from "../packages/client/src/host/computer-view-retention.js";
 import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
 import { decodeDisplayMediaFrame } from "../packages/protocol/src/display-stream.js";
 import {
@@ -248,6 +249,31 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         viewId: opened.view.viewId,
         generation: opened.view.generation,
       };
+      let heldView = opened.view;
+      let viewRenewals = 0;
+      const viewRetainers = new ComputerViewRetainers(
+        async (viewId, generation) => {
+          const renewed = await withTimeout(
+            testRpcData(
+              host.origin,
+              "commands.dispatch",
+              { type: "computer.view.renew", viewId, generation, idempotencyKey: randomUUID() },
+              { headers: host.ownerHeaders },
+            ),
+            15_000,
+            { timeoutError: () => new Error("Phone benchmark view renewal did not finish") },
+          );
+          if (renewed.type !== "computer.view.renew") throw new Error("Unexpected renew result");
+          viewRenewals += 1;
+          heldView = renewed.view;
+          return heldView;
+        },
+        (viewId, generation) =>
+          heldView.viewId === viewId &&
+          heldView.generation === generation &&
+          heldView.state === "ready",
+      );
+      viewRetainers.retain(source.viewId, source.generation);
       try {
         const viewer = async () => {
           const page = await browser.newPage();
@@ -449,6 +475,7 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
           idleBytesPerSecond,
           idlePayloadBytesPerSecond,
           idleDurationMs: idleEnd - idleStart,
+          viewRenewals,
           idleFrameCount: idleFrames.length,
           idleKeyframeCount: idleKeyframes.length,
           idleLastKeyframeOffsetMs: (idleKeyframes.at(-1)?.at ?? idleStart) - idleStart,
@@ -487,6 +514,7 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         process.stdout.write(`${JSON.stringify(record)}\n`);
         await writeFile(join(directory, "results.json"), JSON.stringify(results, null, 2));
       } finally {
+        viewRetainers.clear();
         for (const pool of pools) pool.dispose();
         await Promise.all(pages.map((page) => page.close()));
         await proxy.close();
