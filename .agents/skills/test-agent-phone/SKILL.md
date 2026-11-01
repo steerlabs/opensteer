@@ -89,8 +89,10 @@ install Playwright's pinned Chromium first. It reuses the mobile network proxy's
 `OPENSTEER_PHONE_BENCH_OUT` to an external evidence directory. It cleans up its Host,
 database clones, browser and proxies; the caller still owns the selected emulator.
 Canvas output and relay-to-canvas age do not measure a physical viewer's screen latency.
-For API 36 idle traffic, set `OPENSTEER_PHONE_BENCH_IDLE_MS=60000` to include periodic
-encoder IDRs while the projection keeps feeding frames. Compare payload and wire rates separately.
+For API 36 idle traffic, set `OPENSTEER_PHONE_BENCH_IDLE_MS=240000`. Require multiple
+idle keyframes, one in the second half, and received frames throughout the window.
+Encoders can [convert the I-frame interval to a frame count](https://developer.android.com/reference/android/media/MediaFormat#KEY_I_FRAME_INTERVAL),
+so low static-frame cadence stretches the configured period. Compare payload and wire rates separately.
 The ADB swipe-to-next-frame metric is workload timing, not remote input effect latency.
 
 For manual acceptance/release evidence, set `OPENSTEER_AGENT_PHONE_E2E_ARTIFACT_DIR` outside

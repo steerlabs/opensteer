@@ -61,8 +61,8 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
   const failures: unknown[] = [];
   try {
     const idleDurationMs = Number(process.env.OPENSTEER_PHONE_BENCH_IDLE_MS ?? 3_000);
-    if (!Number.isSafeInteger(idleDurationMs) || idleDurationMs < 1_000 || idleDurationMs > 60_000)
-      throw new Error("Idle observation must be between 1000 and 60000 milliseconds");
+    if (!Number.isSafeInteger(idleDurationMs) || idleDurationMs < 1_000 || idleDurationMs > 300_000)
+      throw new Error("Idle observation must be between 1000 and 300000 milliseconds");
     const bitrateSamples: unknown[] = [];
     const keyframeSamples: unknown[] = [];
     const controllers = new Map<DisplayViewerBitrate, number>();
@@ -391,10 +391,12 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         const idleBytesPerSecond =
           (proxy.connections.reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0) - bytesAtIdle) /
           idleSeconds;
+        const idleFrames = cold.received.filter(
+          (frame) => frame.at >= idleStart && frame.at < idleEnd,
+        );
+        const idleKeyframes = idleFrames.filter((frame) => frame.frame.header.key);
         const idlePayloadBytesPerSecond =
-          cold.received
-            .filter((frame) => frame.at >= idleStart && frame.at < idleEnd)
-            .reduce((sum, frame) => sum + frame.frame.payload.byteLength, 0) / idleSeconds;
+          idleFrames.reduce((sum, frame) => sum + frame.frame.payload.byteLength, 0) / idleSeconds;
         const joined = await viewer();
         await joined.page.screenshot({
           fullPage: true,
@@ -447,6 +449,16 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
           idleBytesPerSecond,
           idlePayloadBytesPerSecond,
           idleDurationMs: idleEnd - idleStart,
+          idleFrameCount: idleFrames.length,
+          idleKeyframeCount: idleKeyframes.length,
+          idleLastKeyframeOffsetMs: (idleKeyframes.at(-1)?.at ?? idleStart) - idleStart,
+          // Include both observation edges so a paused capture cannot look cheap.
+          idleMaxFrameGapMs: Math.max(
+            idleEnd - (idleFrames.at(-1)?.at ?? idleStart),
+            ...idleFrames.map(
+              (frame, index) => frame.at - (idleFrames[index - 1]?.at ?? idleStart),
+            ),
+          ),
           adbSwipeToNextPaintP50Ms: percentile(
             inputTimes.flatMap((time) => {
               const p = cold.paints.find((p) => p.at >= time);
