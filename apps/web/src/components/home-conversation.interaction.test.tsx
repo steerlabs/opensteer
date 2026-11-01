@@ -624,7 +624,9 @@ describe("Home conversation", () => {
           slider,
           String(step),
         );
+        // A browser fires both as the range settles on a step.
         slider.dispatchEvent(new Event("input", { bubbles: true }));
+        slider.dispatchEvent(new Event("change", { bubbles: true }));
       });
     await changeReasoning(2);
     expect(current().modelSelection.options.effort).toBe("high");

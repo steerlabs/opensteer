@@ -494,6 +494,26 @@ describe("Expo engine/account/model journeys", () => {
     expect(navigation.goBack).not.toHaveBeenCalled();
   });
 
+  it("keeps a released reasoning step shown until its change settles", async () => {
+    await mount();
+    let settle: (thread: typeof original) => void = () => undefined;
+    execution.mockImplementationOnce(
+      () => new Promise<typeof original>((resolve) => (settle = resolve)),
+    );
+    const ladder = () => document.querySelector<HTMLElement>('[role="adjustable"]')!;
+    expect(ladder().parentElement!.textContent).toContain("High");
+    await act(async () =>
+      ladder().dispatchEvent(
+        new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      ),
+    );
+    // A slow link must not snap the slider back while the change is on its way.
+    expect(ladder().parentElement!.textContent).toContain("Medium");
+    // Once it settles the Host's word stands: here it never took the change.
+    await act(async () => settle(original));
+    expect(ladder().parentElement!.textContent).toContain("High");
+  });
+
   it("returns reasoning to the automatic choice", async () => {
     await mount();
     await act(async () =>

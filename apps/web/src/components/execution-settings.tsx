@@ -20,7 +20,8 @@ export interface ExecutionSettings {
   readonly current: string | null;
   readonly options: {
     readonly model: HarnessModelDescriptor;
-    readonly onChange: (options: ModelSelection["options"]) => void;
+    /** Settles once the change is applied or has failed. */
+    readonly onChange: (options: ModelSelection["options"]) => Promise<void> | void;
     readonly values: ModelSelection["options"];
   } | null;
 }
