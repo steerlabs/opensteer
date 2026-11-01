@@ -983,21 +983,23 @@ it.each([
         view.sent.findLast((entry) => entry.message.type === "display.keyframe")?.sentMs ??
         -Infinity;
       await delay(Math.max(0, 510 - (performance.now() - requested)));
-      const after = view.trace.frames.length;
       const cursor = view.trace.events.length;
       view.send({ type: "display.keyframe" });
       return view.wait("current replay picture", () => {
-        const reset = view.trace.events
-          .slice(cursor)
-          .findLast(
-            (event) =>
-              event.kind === "message" &&
-              event.message.type === "display.state" &&
-              event.message.replayThrough !== undefined,
-          );
+        const events = view.trace.events.slice(cursor);
+        const index = events.findLastIndex(
+          (event) =>
+            event.kind === "message" &&
+            event.message.type === "display.state" &&
+            event.message.replayThrough !== undefined,
+        );
+        const reset = events[index];
         if (reset?.kind !== "message" || reset.message.type !== "display.state") return undefined;
         const sequence = reset.message.replayThrough;
-        const pictures = view.trace.frames.slice(after);
+        // Live frames can arrive just before the replay state; the replay starts after it.
+        const pictures = events
+          .slice(index + 1)
+          .flatMap((event) => (event.kind === "frame" ? [event.frame] : []));
         const through = pictures.findIndex((picture) => picture.header.sequence === sequence);
         return through < 0 ? undefined : pictures.slice(0, through + 1);
       });
