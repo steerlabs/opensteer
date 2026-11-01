@@ -15,8 +15,12 @@
  *   stopped or is still working hides the steps that explain it;
  * - a folded turn cannot be opened again from its "Worked for" line;
  * - a task's own turn repeats the task's mark the header already shows;
- * - the docked chat's header spends its width on a state word and three
- *   buttons, leaving the title a few letters, or loses Find.
+ * - the docked chat's header spends its width on a state word and buttons,
+ *   leaving the title a few letters, or loses Expand and Find from its menu;
+ * - a task's way back or its tasks spill the head past its own box, so the
+ *   name runs under the transcript or through the head's rule, at any dock
+ *   width, in a browser or under the desktop titlebar;
+ * - the conversation cannot be put away and brought back from the computer's bar.
  *
  * Evidence: screenshots and result.json under
  * OPENSTEER_TRANSCRIPT_PRESENTATION_EVIDENCE_DIR.
@@ -189,11 +193,11 @@ const entries = [
   run(4, 11, "running"),
 ];
 
-async function installFixture(context: BrowserContext, working: boolean) {
+async function installFixture(context: BrowserContext, working: boolean, family: boolean) {
   // tsx names nested functions with a helper that the browser does not ship.
   await context.addInitScript("globalThis.__name = (value) => value;");
   await context.addInitScript(
-    ({ entries, threadId, title, workspaceId, working }) => {
+    ({ entries, family, threadId, title, workspaceId, working }) => {
       let client: MockHostClient | undefined;
       let base: HostSnapshot | undefined;
       let projected: HostSnapshot | undefined;
@@ -244,6 +248,8 @@ async function installFixture(context: BrowserContext, working: boolean) {
                       status: working ? "running" : "idle",
                       pendingRequests: 0,
                       inputQueuePaused: false,
+                      // Handed out by Chat: the head grows a way back above its bar.
+                      ...(family ? { parentThreadId: next.homeThreadId } : {}),
                     }
                   : thread;
               const patchList = <
@@ -267,6 +273,20 @@ async function installFixture(context: BrowserContext, working: boolean) {
                   Object.entries(next.workspaceTasks).map(([key, list]) => [key, patchList(list)]),
                 ) as HostSnapshot["workspaceTasks"],
                 requests: { ...next.requests, [threadId]: [] },
+                threadAutomations: family
+                  ? {
+                      ...next.threadAutomations,
+                      [threadId]: ["Morning check", "Evening check", "Price watch"].map(
+                        (name, index) => ({
+                          id: `family-automation-${index}`,
+                          kind: "schedule" as const,
+                          name,
+                          nextFireAt: new Date(Date.now() + (index + 1) * 3_600_000).toISOString(),
+                          paused: false,
+                        }),
+                      ),
+                    }
+                  : next.threadAutomations,
                 waitingRequests: next.waitingRequests.filter(
                   ({ request }) => request.originatingThreadId !== threadId,
                 ),
@@ -281,13 +301,17 @@ async function installFixture(context: BrowserContext, working: boolean) {
         },
       });
     },
-    { entries, threadId, title, workspaceId, working },
+    { entries, family, threadId, title, workspaceId, working },
   );
 }
 
-async function openTask(viewport: { width: number; height: number }, working = false) {
+async function openTask(
+  viewport: { width: number; height: number },
+  working = false,
+  family = false,
+) {
   const context = await web.browser.newContext({ viewport, deviceScaleFactor: 2 });
-  await installFixture(context, working);
+  await installFixture(context, working, family);
   const page = await context.newPage();
   page.setDefaultTimeout(5_000);
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -656,24 +680,139 @@ try {
       expectThat(observed, !/working/iu.test(observed.text), "the docked header says Working");
       expectThat(
         observed,
-        observed.buttons.join(",") === "Expand chat,Close conversation",
-        "the docked header's buttons are not Expand and Close",
+        observed.buttons.length === 0,
+        "the docked header keeps buttons of its own",
       );
       expectThat(observed, observed.mark === "working", "the task's mark does not show it working");
       await shot(page, "docked-header", header);
       return observed;
     });
 
-    await check("Find is in the docked title menu and ⌘F still opens it", async () => {
+    await check("Expand and Find are in the docked title menu", async () => {
       const header = page.locator(".workspace--work .conv-header");
-      await header.locator(".conv-header__switcher").click();
-      const find = page.locator(".switcher").getByRole("button", { name: /Find in conversation/u });
-      await find.waitFor({ timeout: 3_000 });
+      const menu = page.locator(".popover--conversation-menu");
+      await header.locator(".conv-header__menu").click();
+      await menu.waitFor({ timeout: 3_000 });
       await shot(page, "docked-title-menu");
-      await find.click();
+      const rows = await menu.locator(".picker__label").allTextContents();
+      expectThat(
+        { rows },
+        rows[0] === "Expand chat" && rows[1] === "Find in conversation",
+        "the menu does not lead with Expand and Find",
+      );
+      await menu.getByRole("button", { name: /Find in conversation/u }).click();
       const opened = await page.locator(".thread-find input").count();
       expectThat({ opened }, opened === 1, "the menu's Find does not open Find");
-      return { opened };
+      await page.keyboard.press("Escape");
+      await header.locator(".conv-header__menu").click();
+      await menu.getByRole("button", { name: /Expand chat/u }).click();
+      await page.locator(".workspace--talk").waitFor({ timeout: 3_000 });
+      return { rows, opened };
+    });
+    await context.close();
+  }
+
+  {
+    const { context, page } = await openTask({ width: 1440, height: 900 }, false, true);
+    await page.locator(".side-tab__main").first().click();
+    await page.locator(".workspace--work").waitFor();
+    const handle = page.getByRole("separator", { name: "Resize conversation" });
+    for (const desktop of [false, true]) {
+      await page.evaluate((on) => {
+        document.documentElement.classList.toggle("electron-shell", on);
+      }, desktop);
+      for (const [width, key] of [
+        ["narrowest", "Home"],
+        ["widest", "End"],
+      ] as const) {
+        const surface = desktop ? "desktop" : "web";
+        await check(`${surface}, ${width} dock: the head holds its rows`, async () => {
+          await handle.focus();
+          await page.keyboard.press(key);
+          const header = page.locator(".workspace--work .conv-header");
+          const observed = await header.evaluate((node) => {
+            const box = (selector: string) => {
+              const rect = node.querySelector(selector)?.getBoundingClientRect();
+              return rect
+                ? { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right }
+                : null;
+            };
+            const rect = node.getBoundingClientRect();
+            const next = node.nextElementSibling?.getBoundingClientRect() ?? null;
+            const name = node.querySelector<HTMLElement>(".conv-header__name");
+            return {
+              head: { top: rect.top, bottom: rect.bottom, width: rect.width },
+              overflows: node.scrollWidth > node.clientWidth + 0.5,
+              trail: box(".conv-header__trail"),
+              bar: box(".conv-header__bar"),
+              name: box(".conv-header__name"),
+              nameShown: name ? name.getBoundingClientRect().width : 0,
+              family: box(".task-family-button"),
+              familyText: node.querySelector(".task-family-button")?.textContent ?? null,
+              belowTop: next?.top ?? null,
+            };
+          });
+          const { head, trail, bar, name, family } = observed;
+          expectThat(
+            observed,
+            trail !== null && bar !== null,
+            "the way back or the bar is missing",
+          );
+          expectThat(observed, family !== null, "the tasks' glance is missing");
+          expectThat(observed, !observed.overflows, "the head is wider than its box");
+          expectThat(
+            observed,
+            trail!.top >= head.top - 0.5 && trail!.bottom <= bar!.top + 0.5,
+            "the way back is not its own row above the bar",
+          );
+          expectThat(observed, bar!.bottom <= head.bottom + 0.5, "the bar spills past the head");
+          expectThat(
+            observed,
+            observed.belowTop === null || observed.belowTop >= head.bottom - 0.5,
+            "what follows the head starts under it",
+          );
+          expectThat(
+            observed,
+            name!.right <= family!.left + 0.5 && family!.right <= bar!.right + 0.5,
+            "the name and the tasks' glance overlap",
+          );
+          expectThat(
+            observed,
+            name!.top >= bar!.top - 0.5 && name!.bottom <= bar!.bottom + 0.5,
+            "the name leaves its bar",
+          );
+          expectThat(
+            observed,
+            observed.nameShown >= Math.min(140, head.width * 0.4),
+            "the name gets a few letters",
+          );
+          await shot(page, `${surface}-${width}-dock-head`, header);
+          return observed;
+        });
+      }
+    }
+
+    await check("the computer's bar puts the conversation away and brings it back", async () => {
+      const toggle = page.locator(".place .chat-toggle");
+      await toggle.click();
+      const chat = page.locator(".place .chat-btn");
+      await chat.waitFor({ timeout: 3_000 });
+      const focused = await chat.evaluate((node) => node === document.activeElement);
+      // The computer takes the room the conversation gave up.
+      await page.waitForFunction(
+        () => {
+          const place = document.querySelector(".place")?.getBoundingClientRect();
+          return place !== undefined && window.innerWidth - place.right < 24;
+        },
+        undefined,
+        { timeout: 3_000 },
+      );
+      await shot(page, "conversation-put-away");
+      await chat.click();
+      await page.locator(".workspace__conversation:not([inert]) .conv-header").waitFor();
+      await toggle.waitFor({ timeout: 3_000 });
+      expectThat({ focused }, focused, "focus does not land on the way back");
+      return { focused };
     });
     await context.close();
   }

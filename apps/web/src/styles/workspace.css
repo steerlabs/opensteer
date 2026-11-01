@@ -1297,15 +1297,27 @@ button.side-needs:hover {
 
 /* ---- Conversation header ---- */
 
+/* The head is a bar of one fixed height on every surface, set once through
+   --conv-header-height; the desktop titlebar only changes that value. A way
+   back adds its own row above the bar, so the head grows instead of the bar
+   being squeezed. Nothing else sets the head's height. */
 .conv-header {
+  --conv-header-height: 50px;
   display: flex;
   flex: none;
-  align-items: center;
-  gap: var(--space-8);
-  height: 50px;
-  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-16);
+  flex-direction: column;
+  padding-inline: var(--space-16) var(--space-8);
   border-bottom: 1px solid transparent;
   background: var(--ground);
+}
+
+.conv-header__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  /* The head's own rule is the bar's last pixel. */
+  height: calc(var(--conv-header-height) - 1px);
+  min-width: 0;
 }
 
 .workspace--work .conv-header {
@@ -1417,6 +1429,15 @@ button.side-needs:hover {
   line-height: 1.35;
 }
 
+/* What the bar says about the conversation and its controls hold the end. */
+.conv-header__end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  margin-left: auto;
+}
+
 .conv-header__actions {
   display: flex;
   flex: none;
@@ -1424,20 +1445,13 @@ button.side-needs:hover {
   gap: var(--space-2);
 }
 
-/* Work handed out by another conversation leads back to it, one quiet line
-   above the name. */
-.conv-header--trail {
-  flex-wrap: wrap;
-  row-gap: 0;
-  height: auto;
-  min-height: 50px;
-  padding-top: var(--space-6);
-}
-
+/* Work handed out by another conversation leads back to it, one quiet row
+   above the bar. */
 .conv-header__trail {
   display: flex;
-  flex-basis: 100%;
+  align-items: center;
   min-width: 0;
+  padding-top: var(--space-6);
 }
 
 .conv-header__back {
@@ -3280,13 +3294,6 @@ html[data-tab-sorting] * {
 .conv-header:not(.conv-header--area) .conv-header__text {
   flex: 0 1 max-content;
 }
-.conv-header__state,
-.conv-header__actions {
-  margin-left: auto;
-}
-.conv-header__state + .conv-header__actions {
-  margin-left: 0;
-}
 .conv-header__specialist {
   flex: 0 1 auto;
   min-width: 0;
@@ -3305,31 +3312,31 @@ html[data-tab-sorting] * {
   white-space: nowrap;
 }
 
-/* The family shares the lineage line; the parent's name yields first. */
-.conv-header__trail {
-  align-items: center;
-  gap: var(--space-8);
-}
-
 .conv-header__back > :not(.conv-header__back-title) {
   flex-shrink: 0;
 }
 
+/* A glance at the conversation's tasks, at the end of its bar. */
 .task-family-button {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: var(--space-6);
-  margin-left: auto;
-  padding: var(--space-4) var(--space-6);
-  border-radius: var(--radius-xs);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .task-family-button:hover,
 .task-family-button[aria-expanded="true"] {
+  color: var(--text);
   background-color: var(--fill-quiet);
 }
 
@@ -3373,15 +3380,8 @@ html[data-tab-sorting] * {
 }
 
 .popover.popover--task-family {
-  min-width: 0;
-  max-width: calc(100vw - 20px);
-  transform: translateX(6px);
-}
-
-/* However much came before, the list scrolls inside the window. */
-.task-family {
-  max-height: min(520px, calc(100vh - 120px));
-  overflow-y: auto;
+  width: min(380px, calc(100vw - 20px));
+  max-width: none;
   overscroll-behavior: contain;
 }
 

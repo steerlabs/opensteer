@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   formatRelativeTime,
   sameTaskFamily,
@@ -9,7 +9,6 @@ import {
   type TaskFamilyGlance,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { observeResize } from "@opensteer/shared/resizeObserver";
 import { automationPath, useMinuteClock } from "../../ui-utils.js";
 import { formatCountdown, formatMoment } from "../automations/automation-presentation.js";
 import { Icon } from "../icon.js";
@@ -110,14 +109,6 @@ function FamilyPanel({
   const family = useHostSelector(hostClient, select, sameTaskFamily);
   const { nav } = useWorkspace();
   const now = useMinuteClock();
-  const header = button.closest("header") ?? button;
-  // The panel has 14px of padding/border and leaves 6px on either side.
-  const [width, setWidth] = useState(() => header.getBoundingClientRect().width - 26);
-  useLayoutEffect(() => {
-    const measure = () => setWidth(header.getBoundingClientRect().width - 26);
-    measure();
-    return observeResize([header], measure);
-  }, [header]);
   const onlyEarlier = family.running.length === 0 && family.automations.length === 0;
   const [earlierOpen, setEarlierOpen] = useState(false);
   const [all, setAll] = useState(false);
@@ -158,15 +149,15 @@ function FamilyPanel({
   );
   return (
     <Popover
-      anchor={header}
-      returnFocusTo={button}
+      align="end"
+      anchor={button}
       below
       label="Task family"
       role="dialog"
       className="popover--task-family"
       onClose={onClose}
     >
-      <div className="task-family" style={{ width: Math.max(0, width) }}>
+      <div className="task-family">
         {family.running.length > 0 ? (
           <section aria-label="Running">
             <h2 className="task-family__heading">Running · {family.running.length}</h2>

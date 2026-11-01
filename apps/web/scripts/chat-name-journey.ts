@@ -282,7 +282,7 @@ try {
 
   await check("with a tab in the middle, the closed conversation is shown as Chat", async () => {
     await page.locator(".side-tab__main").first().click();
-    await page.getByRole("button", { name: "Close conversation" }).click();
+    await page.getByRole("button", { name: "Hide the conversation" }).click();
     const button = page.locator(".chat-btn");
     await button.waitFor();
     const observed = {
