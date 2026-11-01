@@ -4,9 +4,7 @@ import {
   messageAuthorName,
   conversationActivityTurn,
   conversationActivities,
-  conversationSurfaces,
   conversationRows,
-  conversationThreadIds,
   conversationTurnRevealing,
   groupTranscriptEntries,
   incomingTranscriptMessages,
@@ -37,7 +35,7 @@ import {
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
-import { useHostSnapshot, useThreadInputQueue, useThreadPlace } from "@opensteer/client/react";
+import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import {
   StackActions,
@@ -53,7 +51,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   View,
   type ListRenderItemInfo,
@@ -64,12 +61,6 @@ import Animated from "react-native-reanimated";
 import { canRespondToRequests, describeHostConnection } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
-import {
-  actingFor,
-  agentSurface,
-  surfaceGlyph,
-  type SurfaceGlyph,
-} from "../browser/agent-surface.js";
 import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
@@ -77,7 +68,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { enter, exit } from "../ui/motion.js";
-import { AppText, Notice, TypingDots } from "../ui/primitives.js";
+import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
@@ -93,7 +84,6 @@ import {
 } from "./task-status.js";
 import { WaitingQuestions } from "./waiting-questions.js";
 import { waitingQuestion } from "./docked-requests.js";
-import { latestReplyLine } from "./latest-reply-line.js";
 import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-chips.js";
 import { AttachmentReader } from "./attachment-views.js";
 import { Composer } from "./composer.js";
@@ -148,18 +138,10 @@ type TranscriptItem =
  * bar at all.
  */
 export interface ThreadHeaderState {
-  /**
-   * What the conversation's agent is using — a page, a Mac app or a phone,
-   * including in work it handed out — or null when it uses none.
-   */
-  readonly surface: SurfaceGlyph | null;
-  /** An agent is acting in one of them now. */
-  readonly surfacesActing: boolean;
   readonly connectionLabel: string | null;
   readonly canRetry: boolean;
   readonly title: string;
   readonly workspaceName: string | null;
-  readonly workspaceId: string | null;
   readonly workspaceColor: WorkspaceSummary["color"];
   readonly workspaceIcon: WorkspaceSummary["icon"];
   readonly icon: ThreadSummary["icon"];
@@ -175,13 +157,10 @@ export function sameThreadHeader(
 ): boolean {
   return (
     left !== null &&
-    left.surface === right.surface &&
-    left.surfacesActing === right.surfacesActing &&
     left.connectionLabel === right.connectionLabel &&
     left.canRetry === right.canRetry &&
     left.title === right.title &&
     left.workspaceName === right.workspaceName &&
-    left.workspaceId === right.workspaceId &&
     left.workspaceColor === right.workspaceColor &&
     left.workspaceIcon === right.workspaceIcon &&
     left.icon === right.icon &&
@@ -232,25 +211,22 @@ interface ThreadPaneProps {
   readonly quote?: ThreadDraftQuote | null;
   readonly requestId: string | null;
   /**
-   * Shown with a focused page or Mac app rather than on its own screen. The
-   * page is what the composer includes with the next message.
+   * Drawn in a column beside a page, Mac app or phone rather than as its own
+   * screen. The page is what the composer includes with the next message.
    */
   readonly withPage?: PageCompanion | undefined;
+  /**
+   * A page Ask handed to this conversation's own screen, for the composer to
+   * include with the next message unless the person removes it.
+   */
+  readonly askedPage?: BrowserPageContentPart | null;
   readonly threadId: string;
 }
 
-/**
- * How a conversation sits with the page in front of it: `beside`, all of it in
- * a column of its own; `docked`, under the page, only its latest reply, what
- * needs the reader and the composer, with the reply opening the conversation.
- */
-export type PageCompanion =
-  | { readonly kind: "beside"; readonly page: BrowserPageContentPart | null }
-  | {
-      readonly kind: "docked";
-      readonly onShowConversation: () => void;
-      readonly page: BrowserPageContentPart | null;
-    };
+/** The page in front of a conversation drawn beside it, or null for one with no web address. */
+export interface PageCompanion {
+  readonly page: BrowserPageContentPart | null;
+}
 
 /** The pane's complete read set; maps and run entries are scoped to this Thread. */
 function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
@@ -702,16 +678,6 @@ function ThreadPaneForUser(
   const workspaceIcon = workspace?.icon ?? null;
   const icon = thread?.icon ?? null;
   const markColor = thread?.color ?? null;
-  const workspaceId = thread?.workspaceId ?? null;
-  const conversationPages = useMemo(
-    () => conversationSurfaces(snapshot, threadId),
-    [snapshot, threadId],
-  );
-  const latestPlace = useThreadPlace(hostClient, threadId);
-  const ownThreads = useMemo(() => conversationThreadIds(snapshot, threadId), [snapshot, threadId]);
-  const usedSurface = agentSurface(conversationPages, ownThreads, latestPlace);
-  const surface = usedSurface === null ? null : surfaceGlyph(usedSurface);
-  const surfacesActing = conversationPages.some((item) => actingFor(item, ownThreads));
   // The split heading's own width, which the title's menu is sized to.
   // Held while it reads the same, so the bar rebuilds only when the task moves.
   const heldTask = useRef<TaskHeading | null>(null);
@@ -733,14 +699,11 @@ function ThreadPaneForUser(
   );
   useEffect(() => {
     onHeader?.({
-      surface,
-      surfacesActing,
       connectionLabel,
       canRetry,
       task,
       title: headerTitle ?? "Thread",
       workspaceName,
-      workspaceId,
       workspaceColor,
       workspaceIcon,
       icon,
@@ -748,14 +711,11 @@ function ThreadPaneForUser(
       isHome,
     });
   }, [
-    surface,
-    surfacesActing,
     connectionLabel,
     canRetry,
     headerTitle,
     onHeader,
     task,
-    workspaceId,
     workspaceName,
     workspaceColor,
     workspaceIcon,
@@ -1105,15 +1065,11 @@ function ThreadPaneForUser(
     });
     return () => subscription.remove();
   }, []);
-  // Docked under a page, the latest reply is one line of it, which is not the
-  // conversation read.
-  const transcriptShown = props.withPage?.kind !== "docked";
   useEffect(() => {
     // Nothing is marked before the arriving read position is known: marking
     // first would move the boundary this visit's divider is drawn from, and
     // history the reader has not seen would lose it.
-    if (!boundaryKnown || !focused || !atTail || !appActive || historical || !transcriptShown)
-      return;
+    if (!boundaryKnown || !focused || !atTail || !appActive || historical) return;
     if (observed === null) return;
     if (markedSequence !== null && BigInt(markedSequence) >= BigInt(observed)) return;
     void hostClient.markThreadRead(threadId, observed).catch(() => {
@@ -1130,7 +1086,6 @@ function ThreadPaneForUser(
     markedSequence,
     observed,
     threadId,
-    transcriptShown,
   ]);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
@@ -1210,33 +1165,6 @@ function ThreadPaneForUser(
   // over it.
   const companion = props.withPage ?? null;
   const underHeader = companion === null;
-  const docked = companion?.kind === "docked" ? companion : null;
-  const latest = docked === null ? null : latestReplyLine(groups, indicator);
-  // Under a page the latest reply stands for the conversation: it says what the
-  // agent is doing to the page, and a tap opens the rest of what was said.
-  // Before anything has been said there is nothing to stand for, and the page
-  // keeps the line's height.
-  const latestLine =
-    docked === null || latest === null ? null : (
-      <Pressable
-        accessibilityHint="Shows the conversation"
-        accessibilityRole="button"
-        onPress={docked.onShowConversation}
-        style={({ pressed }) => [styles.latest, pressed && styles.latestPressed]}
-        testID="latest-reply"
-      >
-        {latest.kind === "typing" ? (
-          <View accessibilityLabel="Opensteer is replying" accessible style={styles.latestText}>
-            <TypingDots />
-          </View>
-        ) : (
-          <AppText numberOfLines={2} role="secondary" style={styles.latestText} tone="soft">
-            {latest.text}
-          </AppText>
-        )}
-        <Symbol name="chevron.right" size={12} tint={color.muted} />
-      </Pressable>
-    );
   const transcript = (
     <View style={styles.body}>
       <FlatList
@@ -1356,7 +1284,7 @@ function ThreadPaneForUser(
   );
   const content = (
     <>
-      {docked === null ? transcript : null}
+      {transcript}
 
       <View
         style={[
@@ -1373,7 +1301,6 @@ function ThreadPaneForUser(
         ]}
         testID="composer-dock"
       >
-        {latestLine}
         {failure !== null ? (
           <Notice
             action={{ label: "Dismiss", onPress: () => setFailure(null) }}
@@ -1446,7 +1373,7 @@ function ThreadPaneForUser(
                 }
                 modelOptions={thread.modelSelection.options}
                 mutationGate={mutationGate}
-                page={companion?.page ?? null}
+                page={companion === null ? (props.askedPage ?? null) : companion.page}
                 onChangeModel={(conversation) =>
                   navigation.navigate("ThreadSettings", {
                     ...(conversation ? { conversation: true } : {}),
@@ -1501,22 +1428,10 @@ function ThreadPaneForUser(
       </View>
     </>
   );
-  // Beside or under a page, the screen already keeps the keyboard clear; a
-  // second avoiding view would lift the composer twice. Docked, the pane is as
-  // tall as what it holds, and the page has the rest.
+  // Beside a page, the screen already keeps the keyboard clear; a second
+  // avoiding view would lift the composer twice.
   const pane =
-    docked !== null ? (
-      // As tall as what it holds, until the page leaves less: then it scrolls,
-      // so a long request or large text never pushes the composer off screen.
-      <ScrollView
-        alwaysBounceVertical={false}
-        keyboardShouldPersistTaps="handled"
-        style={styles.docked}
-        testID="docked-conversation"
-      >
-        {content}
-      </ScrollView>
-    ) : companion !== null ? (
+    companion !== null ? (
       <View style={styles.pane}>{content}</View>
     ) : (
       <KeyboardAvoidingView
@@ -1780,18 +1695,5 @@ const styles = StyleSheet.create({
   // touches the thing it sits on reads as part of it.
   jumpHome: { alignItems: "center", bottom: space[12], left: 0, position: "absolute", right: 0 },
   jumpPressed: { ...material.floatPressed },
-  // The latest reply under a page, set in from the composer's edge so it reads
-  // as the agent speaking above it rather than as a second field.
-  latest: {
-    alignItems: "center",
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[8],
-    minHeight: touchTarget,
-    paddingHorizontal: space[10],
-  },
-  latestPressed: { ...material.quiet },
-  latestText: { flex: 1 },
   pane: { flex: 1 },
-  docked: { flexGrow: 0, flexShrink: 1 },
 });

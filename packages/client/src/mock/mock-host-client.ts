@@ -6412,6 +6412,7 @@ class MockHostState {
           (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
       )
       .sort((left, right) => right.trigger.updatedAt.localeCompare(left.trigger.updatedAt))
+      .slice(0, 100)
       .map((record) => mockTriggerSummary(record, this.anchorThreadTitle(record)));
   }
 

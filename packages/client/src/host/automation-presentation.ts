@@ -1,3 +1,5 @@
+import type { TriggerOccurrence } from "@opensteer/triggers";
+import type { TriggerDetail } from "./client.js";
 import cronstrue from "cronstrue";
 import type { TriggerSchedule, TriggerSource, TriggerSummary } from "@opensteer/triggers";
 
@@ -131,6 +133,7 @@ const fullDate = new Intl.DateTimeFormat(undefined, {
   month: "long",
   weekday: "long",
   year: "numeric",
+  timeZoneName: "short",
 });
 
 /**
@@ -259,4 +262,48 @@ export function latestRun(
         ? { text: "Starting", tone: "accent" }
         : { text: "Waiting for its computer", tone: "warn" };
   }
+}
+
+export function runOutcome(
+  occurrence: TriggerOccurrence,
+  replyIn: string | null,
+  replyStatus: TriggerDetail["downstreamRuns"][number]["run"]["status"] | null,
+  now: number,
+): string {
+  switch (occurrence.status) {
+    case "pending":
+      return now - Date.parse(occurrence.createdAt) < 60_000
+        ? "Starting"
+        : "Waiting for its computer";
+    case "running":
+      return "Running now";
+    case "canceled":
+      return "Canceled";
+    case "failed":
+      return "Failed";
+    case "succeeded":
+      if (replyIn === null) return "Finished without a message";
+      switch (replyStatus) {
+        case "completed":
+          return `Opensteer replied in ${replyIn}`;
+        case "failed":
+        case "interrupted":
+          return `Opensteer couldn’t finish in ${replyIn}`;
+        default:
+          return `Opensteer is working in ${replyIn}`;
+      }
+  }
+}
+
+export function scheduleStatusWord(
+  status: TriggerSummary["status"],
+  pauseReason: string | null,
+): string {
+  return status === "paused"
+    ? pauseReason
+      ? "Paused by Opensteer"
+      : "Paused"
+    : status === "archived"
+      ? "Deleted"
+      : "Active";
 }

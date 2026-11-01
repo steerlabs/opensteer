@@ -40,6 +40,7 @@ export * from "./workspace-icon-art.js";
 export * from "./workspace-storage.js";
 export * from "./thread-read-state.js";
 export * from "./places.js";
+export * from "./place-agents.js";
 export * from "./task-marks.js";
 export * from "./place-activity.js";
 export * from "./browser-watch.js";
@@ -60,3 +61,5 @@ export * from "./browser-passkeys.js";
 
 export * from "./browser-address.js";
 export * from "./browser-presentation-wait.js";
+export * from "./automation-presentation.js";
+export * from "./schedules.js";

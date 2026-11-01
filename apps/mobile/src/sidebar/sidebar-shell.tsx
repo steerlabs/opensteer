@@ -75,15 +75,16 @@ import {
  * unfolding keep every screen, draft, scroll position and stream exactly
  * where it was.
  *
- * The drawer can be dragged open only from Chat, Specialists and Tabs — the
- * screens that carry the Menu and have no Back of their own — so it never
- * competes with a task's edge-swipe back or a sheet's gestures.
+ * The drawer can be dragged open only from Chat, Specialists, Tabs and
+ * Schedules — the screens that carry the Menu and have no Back of their own —
+ * so it never competes with a task's edge-swipe back or a sheet's gestures.
  */
 /** The narrowest drawer worth opening: past a fold nearer than this it may cross it. */
 const sidebarMinimumWidth = 260;
 
 const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
   "Home",
+  "Schedules",
   "Specialists",
   "Tabs",
 ]);
@@ -384,6 +385,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         leave();
         navigation.dispatch(StackActions.push("Settings"));
       },
+      onSchedules: () => show("Schedules"),
       onSpecialists: () => show("Specialists"),
       onTabs: () => show("Tabs"),
     };

@@ -17,7 +17,7 @@ import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
 import { actionErrorMessage, automationPath } from "../../ui-utils.js";
-import { describeRepeating } from "./automation-presentation.js";
+import { describeRepeating } from "@opensteer/client/host";
 import type { CreatedWebhook } from "./automation-detail.js";
 import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 

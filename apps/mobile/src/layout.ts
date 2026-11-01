@@ -390,12 +390,10 @@ export interface PairInput {
 }
 
 /**
- * A page and its conversation in the pair's own surface: stacked, the
- * conversation sheet under the page; side by side, the page leading; or
- * tabletop, the page above a horizontal fold and the conversation below it,
- * and the region of the surface the arrangement is drawn in, off every fold it
- * is not split at. Tabletop needs a fold the system reports and both halves
- * useful; it is never inferred from the shape of the window.
+ * A page beside its occupant's own Thread, or above it across a horizontal
+ * fold; compact shows the page alone. The pair stays off every fold it is not
+ * split at. Tabletop needs a fold the system reports and both halves useful;
+ * it is never inferred from the shape of the window.
  */
 export function derivePagePair(input: PairInput): {
   readonly pair: PagePair;

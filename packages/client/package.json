@@ -34,6 +34,7 @@
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "@opensteer/triggers": "workspace:*",
+    "cronstrue": "3.27.0",
     "tldts": "6.1.86",
     "unicode-segmenter": "0.17.3",
     "zod": "catalog:"

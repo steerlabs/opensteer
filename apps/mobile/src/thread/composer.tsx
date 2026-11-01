@@ -48,6 +48,7 @@ import {
   View,
 } from "react-native";
 import Animated from "react-native-reanimated";
+import { pageIdentity } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import type {
   PendingCommand,
@@ -1042,11 +1043,6 @@ function PendingMessage(props: {
       </View>
     </View>
   );
-}
-
-/** One page, whatever its title becomes: its browser, its tab and its address. */
-function pageIdentity(page: BrowserPageContentPart): string {
-  return `${page.sessionId}\u0000${page.tabId}\u0000${page.url}`;
 }
 
 /**

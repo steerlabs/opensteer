@@ -1,5 +1,5 @@
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { provisionalThreadTitle } from "@opensteer/core";
+import { provisionalThreadTitle, type BrowserPageContentPart } from "@opensteer/core";
 import {
   canRespondToRequests,
   accessModeConflict,
@@ -54,6 +54,7 @@ import {
   newTaskDraftKey,
 } from "../thread/first-message.js";
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
+import { pageIdentity } from "../browser/surface-route.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { Notice } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -62,6 +63,8 @@ import { useThreadHeader } from "./thread-header.js";
 
 export type NewTaskScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
+  /** A page Ask handed over, included with the first message unless removed. */
+  readonly page?: BrowserPageContentPart | undefined;
   /** Main for a task from Tasks; a specialist's own Workspace from its page. */
   readonly workspaceId: string;
 }>;
@@ -90,7 +93,7 @@ const examples = [
 export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
-  const { deploymentId, workspaceId } = props.route.params;
+  const { deploymentId, page, workspaceId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   useThreadHeader({
     deploymentId,
@@ -125,6 +128,7 @@ export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
         hostClient={hostClient}
         key={`${deploymentId}:${workspaceId}`}
         onStarted={onStarted}
+        page={page ?? null}
         underHeader
         workspaceId={workspaceId}
       />
@@ -149,6 +153,8 @@ export function NewTaskPane(props: {
    * it, whose composer then sends the first message.
    */
   readonly onStarted: (threadId: string) => boolean;
+  /** The page Ask started this from, included with the first message unless removed. */
+  readonly page?: BrowserPageContentPart | null;
   /** Set where a transparent navigation bar lies over the top of the pane. */
   readonly underHeader: boolean;
   readonly workspaceId: string;
@@ -169,6 +175,7 @@ function NewTask(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly onStarted: (threadId: string) => boolean;
+  readonly page?: BrowserPageContentPart | null;
   readonly underHeader: boolean;
   readonly userId: string;
   readonly workspaceId: string;
@@ -203,6 +210,12 @@ function NewTask(props: {
     [],
   );
   const staged = useDraftAttachments({ client: hostClient, draftKey, drafts, files, workspaceId });
+  // Taken off this message, the page stays off for as long as it is the page
+  // offered; another page is offered afresh.
+  const offered = props.page ?? null;
+  const offeredKey = offered === null ? null : pageIdentity(offered);
+  const [removedPage, setRemovedPage] = useState<string | null>(null);
+  const includedPage = offered !== null && offeredKey !== removedPage ? offered : null;
 
   const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
   const execution = useMemo(
@@ -261,6 +274,7 @@ function NewTask(props: {
           if (accessReason !== null) throw new Error(accessReason);
           const words = text.trim();
           claimed = await claimFirstMessage({
+            browserPage: includedPage,
             deploymentId,
             draftKey,
             drafts,
@@ -364,6 +378,7 @@ function NewTask(props: {
       drafts,
       files,
       hostClient,
+      includedPage,
       notifications,
       onStarted,
       staged,
@@ -393,6 +408,11 @@ function NewTask(props: {
       }
       onRemoveQuote={noop}
       onSend={(selection) => void send(null, selection)}
+      page={
+        includedPage === null
+          ? null
+          : { onRemove: () => setRemovedPage(offeredKey), part: includedPage }
+      }
       placeholder="Describe the task…"
       usageScope={{ deploymentId, userId }}
       quote={null}

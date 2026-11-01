@@ -10,7 +10,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { automationPath, useMinuteClock } from "../../ui-utils.js";
-import { formatCountdown, formatMoment } from "../automations/automation-presentation.js";
+import { formatCountdown, formatMoment } from "@opensteer/client/host";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { TaskLineState } from "../task-line.js";

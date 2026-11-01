@@ -15,7 +15,7 @@ import {
   type ThreadPlacementOption,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
-import type { ThreadAccessMode } from "@opensteer/core";
+import type { BrowserPageContentPart, ThreadAccessMode } from "@opensteer/core";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -274,6 +274,8 @@ export function firstMessageBlocker(input: {
  * files it carries leave the strip: they are the message's now.
  */
 export async function claimFirstMessage(input: {
+  /** The page the message includes, when Ask handed one over and it was kept. */
+  readonly browserPage?: BrowserPageContentPart | null;
   readonly deploymentId: string;
   readonly draftKey: string;
   readonly drafts: ThreadDraftStore;
@@ -296,6 +298,7 @@ export async function claimFirstMessage(input: {
     ...(attachments.length > 0
       ? { attachments, localUris: carried.map((item) => item.localUri) }
       : {}),
+    ...(input.browserPage == null ? {} : { browserPage: input.browserPage }),
     idempotencyKey: input.idempotencyKey,
     // Only the source id travels: the Host resolves the quoted update under
     // this reader's authority, never from an excerpt.
@@ -344,6 +347,7 @@ export async function handOverFirstMessage(input: {
     ...(claimed.attachments === undefined
       ? {}
       : { attachments: claimed.attachments, localUris: threadUris }),
+    ...(claimed.browserPage === undefined ? {} : { browserPage: claimed.browserPage }),
     idempotencyKey: claimed.idempotencyKey,
     ...(claimed.quotedMessageId === undefined ? {} : { quotedMessageId: claimed.quotedMessageId }),
     text: claimed.text,
@@ -405,6 +409,8 @@ export function FirstMessageComposer(props: {
   readonly onChangeText: (text: string) => void;
   readonly onChooseAI: (pickerAttemptId?: string, conversation?: boolean) => void;
   readonly onSend: (selection: ExecutionSelection | null) => void;
+  /** The page this message includes, which the person can take off it. */
+  readonly page?: { readonly onRemove: () => void; readonly part: BrowserPageContentPart } | null;
   readonly placeholder: string;
   readonly quote: ThreadDraftQuote | null;
   readonly onRemoveQuote: () => void;
@@ -455,7 +461,13 @@ export function FirstMessageComposer(props: {
   const [pendingSelection, setPendingSelection] = useState<ExecutionSelection | null>(null);
   const stagedKeys = JSON.stringify(staged.items.map(attachmentKey));
   const savedKeys = JSON.stringify(props.savedAttachmentKeys);
-  const content = JSON.stringify([props.text, props.quote?.messageId ?? null, stagedKeys]);
+  const page = props.page ?? null;
+  const content = JSON.stringify([
+    props.text,
+    props.quote?.messageId ?? null,
+    stagedKeys,
+    page === null ? null : [page.part.sessionId, page.part.tabId, page.part.url],
+  ]);
   useEffect(() => {
     if (attemptedContent.current === null) return;
     const savedChanged =
@@ -601,6 +613,29 @@ export function FirstMessageComposer(props: {
           },
         ]}
       >
+        {page === null ? null : (
+          <View
+            accessibilityLabel={`${page.part.title || "This page"}. This page is included with your message`}
+            style={styles.quote}
+          >
+            <Symbol name="globe" size={14} tint={color.muted} />
+            <AppText numberOfLines={1} role="secondaryMedium" style={styles.grow}>
+              {page.part.title || "This page"}
+            </AppText>
+            <Pressable
+              accessibilityLabel="Remove page"
+              accessibilityRole="button"
+              disabled={held}
+              hitSlop={space[8]}
+              onPress={page.onRemove}
+              style={styles.quoteRemove}
+            >
+              <AppText role="secondaryMedium" tone="muted">
+                Remove
+              </AppText>
+            </Pressable>
+          </View>
+        )}
         {props.quote === null ? null : (
           <View accessibilityLabel="Quoted update" style={styles.quote}>
             <View style={styles.grow}>
@@ -693,7 +728,7 @@ export function FirstMessageComposer(props: {
                 maxFontSizeMultiplier={controlFontScaleLimit}
                 multiline
                 onChangeText={changeText}
-                placeholder={props.placeholder}
+                placeholder={page === null ? props.placeholder : "Ask about this page…"}
                 placeholderTextColor={color.muted}
                 ref={props.inputRef}
                 selectionColor={color.ember}

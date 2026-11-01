@@ -12,11 +12,12 @@ import type { BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 
 /**
- * Which conversation a tabs route belongs to. A conversation's own tabs — its
- * grid, or one of them over its sheet — are the task scope. A tab opened from
- * Tabs or the sidebar is the workspace scope and belongs to none: it is shown
- * alone, whatever was in front when it was chosen. (A previous release's
- * workspace route carried a conversation; it is ignored.)
+ * Where a tab route was opened from: a conversation's own tab or app carries
+ * that conversation (the task scope), one from Tabs or the sidebar is the
+ * workspace scope. The screen is the same either way — who is in the page
+ * comes from its occupants — so the origin decides only where Back goes, which
+ * the stack already knows. A task-scope app or phone names that task's own
+ * session of it.
  */
 type SurfacesScope =
   | { readonly scope?: undefined; readonly threadId: string }
@@ -50,10 +51,10 @@ type SurfacesTarget =
     };
 
 /**
- * The tabs screen's route: a conversation's grid of tabs and apps, or exactly
- * one of them. The route is the only place the selection lives, so Back from a
- * tab returns to the grid it was opened from and a link names exactly what it
- * opens.
+ * The page screen's route: exactly one tab, app or phone. The route is the
+ * only place the selection lives, so a link names exactly what it opens. A
+ * previous release's route for a conversation's grid names no place, and
+ * still parses.
  */
 export type SurfacesRoute = {
   readonly deploymentId: string;
@@ -61,7 +62,7 @@ export type SurfacesRoute = {
 } & SurfacesScope &
   SurfacesTarget;
 
-/** One of a conversation's own tabs or apps, over that conversation's sheet. */
+/** One of a conversation's own tabs or apps, opened from that conversation. */
 export function surfaceRoute(
   deploymentId: string,
   threadId: string,
@@ -105,7 +106,7 @@ interface TargetFields {
   readonly viewId?: string | undefined;
 }
 
-/** What a route names, or null for the grid. */
+/** What a route names, or null for one that names nothing (a previous release's grid). */
 export function routeDestination(route: TargetFields): WorkspaceSurfaceDestination | null {
   if (route.sessionId !== undefined && route.tabId !== undefined) {
     return { kind: "browser", sessionId: route.sessionId, tabId: route.tabId };
@@ -203,4 +204,9 @@ export function viewedPage(
     // A browser the Host never named as one cannot be included.
     return null;
   }
+}
+
+/** One page, whatever its title becomes: its browser, its tab and its address. */
+export function pageIdentity(page: BrowserPageContentPart): string {
+  return `${page.sessionId}\u0000${page.tabId}\u0000${page.url}`;
 }

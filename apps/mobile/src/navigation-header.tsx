@@ -6,8 +6,6 @@ import type {
 } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
-import { agentWorkingLabel } from "./browser/acting-dot.js";
-import type { SurfaceGlyph } from "./browser/agent-surface.js";
 import { useSidebarControl, useSidebarDocked } from "./sidebar/sidebar-context.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme.js";
 import { useHostValue } from "./ui/mobile-client-context.js";
@@ -28,9 +26,7 @@ export type HeaderActionSpec = {
   readonly badge?: string;
   readonly disabled?: boolean;
   readonly icon?:
-    | "checklist"
     | "gearshape"
-    | SurfaceGlyph
     | "line.3.horizontal"
     | "plus"
     | "rectangle.on.rectangle"
@@ -121,75 +117,6 @@ function nativeHeaderItem(action: HeaderActionSpec): NativeStackHeaderItem {
   };
 }
 
-/**
- * What a conversation's agent is using, as a control in its bar: a globe for
- * a page, a laptop for a Mac app, a phone for a phone. It is there only while
- * the agent uses one, green while it acts, and opens exactly that page or app.
- *
- * On iOS it is a native bar item, so UIKit can move it into a vertical bar,
- * keep it in its overflow and give it its own pointer and keyboard focus; a
- * custom view would be left behind. Its name says what the colour does.
- */
-export function browserHeaderActions(
-  surface: {
-    readonly acting: boolean;
-    readonly glyph: SurfaceGlyph;
-    readonly onPress: () => void;
-  } | null,
-  family?: { readonly action: HeaderActionSpec; readonly content: ReactNode },
-): NativeStackNavigationOptions {
-  const watch: HeaderActionSpec | null =
-    surface === null
-      ? null
-      : {
-          accessibilityHint: `Shows the ${surfaceNoun[surface.glyph]} the agent is using`,
-          accessibilityLabel: surface.acting
-            ? `${surfaceName[surface.glyph]}, ${agentWorkingLabel.toLowerCase()}`
-            : surfaceName[surface.glyph],
-          icon: surface.glyph,
-          label: surfaceName[surface.glyph],
-          onPress: surface.onPress,
-          ...(surface.acting ? { tintColor: color.green } : {}),
-        };
-  return {
-    headerRight: () => (
-      <View style={styles.trailing}>
-        {family?.content}
-        {watch === null || surface === null ? null : (
-          <Pressable
-            accessibilityHint={watch.accessibilityHint}
-            accessibilityLabel={watch.accessibilityLabel}
-            accessibilityRole="button"
-            onPress={watch.onPress}
-            style={({ pressed }) => [styles.icon, pressed && styles.pressed]}
-          >
-            <Symbol
-              name={surface.glyph}
-              size={22}
-              tint={surface.acting ? color.green : color.text}
-            />
-          </Pressable>
-        )}
-      </View>
-    ),
-    unstable_headerRightItems: () => [
-      ...(family ? [nativeHeaderItem(family.action)] : []),
-      ...(watch === null ? [] : [nativeHeaderItem(watch)]),
-    ],
-  };
-}
-
-const surfaceName: Readonly<Record<SurfaceGlyph, string>> = {
-  globe: "Page",
-  laptopcomputer: "Mac app",
-  smartphone: "Phone",
-};
-const surfaceNoun: Readonly<Record<SurfaceGlyph, string>> = {
-  globe: "page",
-  laptopcomputer: "Mac app",
-  smartphone: "phone",
-};
-
 const selectAttention = (snapshot: HostSnapshot): number =>
   attentionCount(snapshot.waitingRequests);
 
@@ -223,7 +150,7 @@ export function useSidebarMenu(hostClient: HostClient | null): void {
       return;
     }
     const menu: HeaderActionSpec = {
-      accessibilityHint: "Shows Chat, your tasks, Specialists, Tabs and Settings",
+      accessibilityHint: "Shows Chat, your tasks, Tabs, Schedules, Specialists and Settings",
       accessibilityLabel: attention === 0 ? "Menu" : `Menu, ${attentionPhrase(attention)}`,
       ...(attention === 0 ? {} : { badge: attentionBadge(attention) }),
       icon: "line.3.horizontal",
@@ -301,10 +228,6 @@ function HeaderAction(props: HeaderActionSpec): ReactNode {
 
 const styles = StyleSheet.create({
   headerAction: { justifyContent: "center", minHeight: touchTarget },
-  // Material's own icon button: a 48-point target around a 24-point glyph.
-  icon: { alignItems: "center", height: 48, justifyContent: "center", width: 48 },
-  pressed: { opacity: 0.6 },
-  trailing: { alignItems: "center", flexDirection: "row", gap: space[8] },
   // Material's own icon button: a 48-point target around a 24-point glyph.
   menu: {
     alignItems: "center",

@@ -23,7 +23,6 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
-  WaitingRequestSchema,
   type Request,
   type ThreadInputQueue,
 } from "@opensteer/core";
@@ -1027,6 +1026,7 @@ async function mount(
     /** Draws the screen's native bar over the pane, as the Thread screen does. */
     readonly header?: boolean;
     readonly withPage?: import("./thread-pane.js").PageCompanion;
+    readonly askedPage?: import("@opensteer/core").BrowserPageContentPart;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1050,6 +1050,7 @@ async function mount(
       onHeader={onHeader}
       onOpenThread={() => undefined}
       withPage={options.withPage}
+      askedPage={options.askedPage ?? null}
       requestId={options.requestId ?? null}
       threadId={threadId}
     />
@@ -1130,101 +1131,31 @@ function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly strin
 
 const queueControls = ["Queued", "Paused", "Resume", "Steer", "Up next", "Edit", "Remove"] as const;
 
-it("opens the newest surface from the glyph as tabs change", async () => {
-  const source = snapshotFor({ entries: [], run: null, threadId: workId, machines: [] });
-  const template = base.browserSessions.find(
-    (session) => session.state === "ready" && session.tabs.length > 0,
-  )!;
-  const first = template.tabs[0]!;
-  const second = { ...first, id: (first.id + "-second") as typeof first.id, active: false };
-  const session = {
-    ...template,
-    attachedRunIds: [],
-    threadIds: [workId],
-    uses: [],
-    tabCatalog: undefined,
-    tabs: [first, second],
-  };
-  const { tabCatalog: _catalog, ...withoutCatalog } = session;
-  const host = fakeHost({ ...source, browserSessions: [withoutCatalog] });
-  const { container, headers } = await mount(host, workId, { header: true });
-  expect(headers.at(-1)).toMatchObject({ surface: "globe", surfacesActing: false });
-  await press(container, "Page");
-  expect(harness.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: workId, sessionId: session.id, tabId: second.id },
-    }),
-  );
-  const latestPlace = vi.spyOn(host.client, "latestPlaceOfThread").mockReturnValue({
-    destination: { kind: "browser", sessionId: session.id, tabId: first.id },
-    placeKey: "first",
-    runId: null,
-    title: first.title,
-    site: null,
-  });
-  await press(container, "Page");
-  expect(harness.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: workId, sessionId: session.id, tabId: first.id },
-    }),
-  );
-  latestPlace.mockReturnValue(null);
-  host.move({ ...source, browserSessions: [{ ...withoutCatalog, tabs: [second] }] });
-  await settle();
-  expect(headers.at(-1)?.surface).toBe("globe");
-  // A remaining tab is still opened directly.
-  await press(container, "Page");
-  expect(harness.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      name: "WorkspaceBrowser",
-      params: { deploymentId, threadId: workId, sessionId: session.id, tabId: second.id },
-    }),
-  );
-});
-
-describe("the conversation docked under a page", () => {
-  it("shows the latest reply, full approval and included page without transcript rows", async () => {
-    const runId = createId("run");
-    const onShowConversation = vi.fn();
-    const page = BrowserPageContentPartSchema.parse({
+describe("a conversation with a page", () => {
+  const page = () =>
+    BrowserPageContentPartSchema.parse({
       type: "browser-page",
       sessionId: base.browserSessions[0]!.id,
       tabId: base.browserSessions[0]!.tabs[0]!.id,
       title: "Research page",
       url: "https://example.com",
     });
+
+  it("shows all of itself beside the page, with its approval, and includes the page", async () => {
+    const runId = createId("run");
+    const included = page();
     const request = { ...approval(runId, "Review this approval"), originatingThreadId: workId };
     const source = snapshotFor({
       entries: [said("An earlier message", null), wrote("Latest answer", runId, workId)],
-      run: null,
+      requests: [request],
+      run: { id: runId, status: "waiting" },
       threadId: workId,
     });
     const host = fakeHost(source);
-    const { container } = await mount(host, workId, {
-      withPage: { kind: "docked", page, onShowConversation },
-    });
-    expect(rows(container)).toEqual([]);
-    expect(text(container)).not.toContain("An earlier message");
-    expect(container.querySelector('[data-testid="latest-reply"]')?.textContent).toContain(
-      "Latest answer",
-    );
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>('[data-testid="latest-reply"]')!.click(),
-    );
-    expect(onShowConversation).toHaveBeenCalledOnce();
-    host.move(
-      snapshotFor({
-        entries: source.transcripts[workId]!,
-        requests: [request],
-        run: { id: runId, status: "waiting" },
-        threadId: workId,
-      }),
-    );
-    await settle();
-    expect(text(container)).toContain("Review this approval");
-    // The standard RequestCard is mounted, rather than the removed folded summary.
+    const { container } = await mount(host, workId, { withPage: { page: included } });
+    // Beside a page it is the real conversation, not a summary of it.
+    expect(text(container)).toContain("An earlier message");
+    expect(text(container)).toContain("Latest answer");
     expect(container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
       "Review this approval",
     );
@@ -1234,18 +1165,26 @@ describe("the conversation docked under a page", () => {
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "thread.sendMessage",
-        content: expect.arrayContaining([page]),
+        content: expect.arrayContaining([included]),
       }),
     );
   });
 
-  it("gives the page the latest reply's line before anything has been said", async () => {
+  it("includes a page Ask handed to its own screen until the person removes it", async () => {
+    const included = page();
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
-    const { container } = await mount(host, workId, {
-      withPage: { kind: "docked", page: null, onShowConversation: vi.fn() },
-    });
-    expect(container.querySelector('[data-testid="latest-reply"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Message"]')).not.toBeNull();
+    const { container } = await mount(host, workId, { askedPage: included });
+    expect(text(container)).toContain("Research page");
+    await press(container, "Remove page");
+    expect(text(container)).not.toContain("Research page");
+    await type(container, "Message", "Nothing attached");
+    await press(container, "Send message");
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.not.arrayContaining([included]),
+      }),
+    );
   });
 });
 
@@ -2850,143 +2789,6 @@ describe("a finished task's title", () => {
   );
 });
 
-describe("a conversation's task family", () => {
-  it("has no item when the conversation has no family", async () => {
-    const host = fakeHost({
-      ...snapshotFor({ entries: [], run: null, threadId: workId }),
-      assignments: {},
-      threadAutomations: {},
-    });
-    const { container } = await mount(host, workId, { header: true });
-    expect(container.querySelector('button[aria-label*="tasks running"]')).toBeNull();
-    expect(container.querySelector('button[aria-label*="task running"]')).toBeNull();
-  });
-
-  it("opens its family separately from its own actions and navigates to a child", async () => {
-    const work = base.threads.find(({ id }) => id === workId)!;
-    const task = (title: string, status: "completed" | "open") =>
-      AssignmentSummarySchema.parse({
-        createdAt: "2026-10-30T15:00:00Z",
-        updatedAt: "2026-10-30T15:05:00Z",
-        currentRunId: createId("run"),
-        currentRunStatus: status === "open" ? "running" : "completed",
-        finishedAt: status === "open" ? null : "2026-10-30T15:05:00Z",
-        id: createId("delegation"),
-        initialRunId: createId("run"),
-        modelLabel: null,
-        objectivePreview: title,
-        origin: "run",
-        parentThreadId: workId,
-        resultPreview: null,
-        returnStatus: status === "open" ? "pending" : "delivered",
-        revision: 1,
-        status,
-        workerThread: {
-          id: createId("thread"),
-          environmentId: work.environmentId,
-          workspaceId: work.workspaceId,
-          status: status === "open" ? "running" : "idle",
-          pendingRequests: 0,
-          title,
-          icon: null,
-        },
-      });
-    const going = task("Check OpenTable", "open");
-    const finished = task("Check Resy", "completed");
-    const host = fakeHost({
-      ...snapshotFor({ entries: [], run: null, threadId: workId }),
-      assignments: { [going.id]: going, [finished.id]: finished },
-      threadAutomations: {
-        [workId]: [
-          {
-            id: "schedule",
-            name: "Morning brief",
-            kind: "schedule",
-            paused: false,
-            nextFireAt: "2026-11-01T09:00:00Z",
-          },
-          { id: "watch", name: "Repository", kind: "watch", paused: false, nextFireAt: null },
-          { id: "hook", name: "Deploy", kind: "webhook", paused: false, nextFireAt: null },
-          { id: "paused", name: "Later", kind: "schedule", paused: true, nextFireAt: null },
-        ],
-      },
-    });
-    const { container } = await mount(host, workId, { header: true });
-    expect(hasButton(container, "Started here")).toBe(false);
-    expect(container.querySelector("[data-modal-visible]")).toBeNull();
-    const writes = harness.headerWrites;
-    await act(async () =>
-      host.move({
-        ...host.client.getSnapshot(),
-        assignments: {
-          [going.id]: { ...going, objectivePreview: "A streaming child's changing subject" },
-          [finished.id]: finished,
-        },
-      }),
-    );
-    expect(harness.headerWrites).toBe(writes);
-    await act(async () =>
-      host.move({
-        ...host.client.getSnapshot(),
-        waitingRequests: [
-          WaitingRequestSchema.parse({
-            request: approval(going.currentRunId!, "Allow check"),
-            subagent: null,
-            assignments: [
-              {
-                id: going.id,
-                parentThreadId: workId,
-                workerThread: { id: going.workerThread.id, title: going.workerThread.title },
-              },
-            ],
-          }),
-        ],
-      }),
-    );
-    await press(container, "1 task running, one needs you, 4 automations");
-    expect(text(container)).toContain("Running · 1");
-    expect(text(container)).toContain("Automations · 4");
-    expect(text(container)).toContain("Watching");
-    expect(text(container)).toContain("On webhook");
-    expect(text(container)).toContain("Paused");
-    const automation = container.querySelector('[aria-label="Repository, Watching"]');
-    expect(automation).not.toBeNull();
-    expect(automation?.closest("button")).toBeNull();
-    expect(text(container)).not.toContain("Check Resy");
-    await press(container, "Earlier · 1");
-    expect(text(container)).toContain("Check Resy");
-    const child = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Check OpenTable, Needs you"]',
-    )!;
-    expect(child).not.toBeNull();
-    await act(async () => child.click());
-    expect(container.querySelector("[data-modal-visible]")).toBeNull();
-    expect(harness.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        name: "Thread",
-        params: { deploymentId, threadId: going.workerThread.id },
-        type: "PUSH",
-      }),
-    );
-    const settled = Array.from({ length: 5 }, (_, index) =>
-      task(`Earlier task ${index}`, "completed"),
-    );
-    await act(async () =>
-      host.move({
-        ...host.client.getSnapshot(),
-        waitingRequests: [],
-        assignments: Object.fromEntries(settled.map((task) => [task.id, task])),
-        threadAutomations: {},
-      }),
-    );
-    await press(container, "5 earlier");
-    expect(text(container)).toContain("Earlier · 5");
-    expect(container.querySelectorAll('button[aria-label^="Earlier task"]')).toHaveLength(4);
-    await press(container, "Show all");
-    expect(container.querySelectorAll('button[aria-label^="Earlier task"]')).toHaveLength(5);
-  });
-});
-
 describe("renaming a task on a phone", () => {
   it("renames an unassigned task through the cross-platform dialog and cancels empty, unchanged or dismissed edits", async () => {
     const client = new MockHostClient({ latencyMs: 0, automations: "absent" });
@@ -3669,8 +3471,15 @@ it("offers voice on Chat's first message but not on a new task composer", async 
   expect(container.querySelector('[aria-label="Voice: Listening"]')).not.toBeNull();
 });
 
-it("hands a new task to its transcript without showing the empty starter again", async () => {
+it("hands a new task to its transcript, with the page Ask started it from, without showing the empty starter again", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
+  const page = BrowserPageContentPartSchema.parse({
+    type: "browser-page",
+    sessionId: base.browserSessions[0]!.id,
+    tabId: base.browserSessions[0]!.tabs[0]!.id,
+    title: "Research page",
+    url: "https://example.com",
+  });
   const { newTaskDraftKey } = await import("./first-message.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
@@ -3709,11 +3518,13 @@ it("hands a new task to its transcript without showing the empty starter again",
         deploymentId={deploymentId}
         hostClient={host.client}
         onStarted={onStarted}
+        page={page}
         underHeader={false}
         workspaceId={workspaceId}
       />,
     ),
   );
+  expect(text(container)).toContain("Research page");
   const flashes: string[] = [];
   const observer = new MutationObserver((records) => {
     for (const record of records) {
@@ -3734,6 +3545,13 @@ it("hands a new task to its transcript without showing the empty starter again",
     expect(createThread).toHaveBeenCalledOnce();
     expect(onStarted).toHaveBeenCalledExactlyOnceWith(workId);
     expect(flashes).toEqual([]);
+    await settle();
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.arrayContaining([page]),
+      }),
+    );
   } finally {
     observer.disconnect();
   }

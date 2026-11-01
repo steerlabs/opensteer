@@ -114,7 +114,7 @@ export function sameTaskFamilyGlance(
     left.automations === right.automations &&
     left.earlier === right.earlier &&
     left.marks.length === right.marks.length &&
-    left.marks.every((mark, index) => sameMark(mark, right.marks[index]))
+    left.marks.every((mark, index) => sameTaskMark(mark, right.marks[index]))
   );
 }
 
@@ -203,7 +203,7 @@ function sameFamilyTask(left: FamilyTask, right: FamilyTask): boolean {
     left.threadId === right.threadId &&
     left.assignmentId === right.assignmentId &&
     left.title === right.title &&
-    sameMark(left.mark, right.mark) &&
+    sameTaskMark(left.mark, right.mark) &&
     left.word === right.word &&
     left.tone === right.tone &&
     left.moving === right.moving &&
@@ -223,8 +223,13 @@ function sameAutomation(left: ThreadAutomation, right: ThreadAutomation): boolea
   );
 }
 
-function sameMark(left: TaskMark, right: TaskMark | undefined): boolean {
-  return right !== undefined && left.icon === right.icon && left.color === right.color;
+/** Two marks draw the same tile; a missing mark matches only another missing one. */
+export function sameTaskMark(
+  left: TaskMark | null | undefined,
+  right: TaskMark | null | undefined,
+): boolean {
+  if (left == null || right == null) return left == right;
+  return left.icon === right.icon && left.color === right.color;
 }
 
 function sameList<T>(

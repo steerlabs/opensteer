@@ -40,7 +40,7 @@ import {
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { sameDestination } from "../browser/surface-route.js";
-import { tabSiteLabel } from "../browser/tab-tiles.js";
+import { tabSiteLabel } from "../browser/site-label.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -74,7 +74,7 @@ import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 
 /** The root destinations the sidebar switches between. */
-export type SidebarDestination = "Home" | "Specialists" | "Tabs";
+export type SidebarDestination = "Home" | "Schedules" | "Specialists" | "Tabs";
 
 export interface SidebarActions {
   /** Closes the sidebar and hands focus back to whatever opened it. */
@@ -84,6 +84,7 @@ export interface SidebarActions {
   /** Shows exactly this tab, app or phone, alone. */
   readonly onOpenPlace: (destination: WorkspaceSurfaceDestination) => void;
   readonly onOpenTask: (deploymentId: string, threadId: string) => void;
+  readonly onSchedules: () => void;
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
   readonly onSpecialists: () => void;
@@ -212,9 +213,9 @@ function useDoneShelf(): readonly [boolean, () => void] {
 }
 
 /**
- * The sidebar is the one place to move between everything: Chat, New task and
- * Specialists; tasks grouped by what each asks of the reader — Working, with
- * anything waiting on them first; Ready; Done — then the Deployment's tabs,
+ * The sidebar is the one place to move between everything: Chat, New task,
+ * Specialists and Schedules; tasks grouped by what each asks of the reader —
+ * Working, with anything waiting on them first; Ready; Done — then the Deployment's tabs,
  * apps and phones, and All tabs; and below them Settings and which
  * Deployment this is. Each row comes from the shared task and place lists, so
  * a task or tab reads the same here as on the web.
@@ -403,6 +404,12 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             icon="person.2"
             label="Specialists"
             onPress={actions.onSpecialists}
+          />
+          <DestinationRow
+            current={destination === "Schedules"}
+            icon="clock"
+            label="Schedules"
+            onPress={actions.onSchedules}
           />
         </View>
 

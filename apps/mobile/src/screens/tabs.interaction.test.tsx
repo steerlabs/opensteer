@@ -6,15 +6,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  conversationSurfaces,
-  conversationThreadIds,
   placeHasAgents,
-  surfaceDestination,
   placeList,
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockBrowserSignInRequest } from "@opensteer/client/mock";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import {
   act,
@@ -26,9 +23,7 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { agentSurface, surfaceGlyph } from "../browser/agent-surface.js";
 import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
-import { surfaceRoute } from "../browser/surface-route.js";
 import type { MobileClient } from "../client/mobile-client.js";
 import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-drafts.js";
 
@@ -51,9 +46,16 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *   - the list misses the person's own desktop tab, a task's tab, a delegated
  *     worker's, a saved tab, a task-held app, or the person's own Mac view;
  *   - it shows another person's tabs after the account changes;
- *   - a tile repeats task or origin captions, a saved tile retains a live
- *     Watch, an idle tile is ringed, or thumbnails resize with each frame;
- *   - two columns are squeezed onto a narrow pane or under large text.
+ *   - places are not grouped by their computer, an app passes for a tab, or
+ *     a group loses the person's own order;
+ *   - the list asks for any picture, so opening Tabs on cellular streams
+ *     every tab;
+ *   - a row's marks are not the page pill's: an idle agent is ringed, an
+ *     acting one is not, or a row names its agent in words on screen;
+ *   - a sign-in waiting on the reader marks the wrong tab, or none;
+ *   - a streamed token redraws the list;
+ *   - being offline, a failed refresh or an empty Deployment says nothing,
+ *     or Try again does nothing.
  * J2 A tab from Tabs is that tab
  *   - the page is shown under the conversation that happened to be in front
  *     (Chat, or task A), or the tab's occupying task, so on a narrow cover
@@ -68,20 +70,21 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *   - a closed tab is replaced by a sibling;
  *   - restoring remounts the conversation, or leaves the page on the old
  *     session.
- * J4 The conversation's surface glyph
- *   - it misses delegated acting work, starts pictures in Chat, or an agent
- *     moving changes a page the person opened.
+ * (A conversation's way to its places is Around, which
+ * `thread/around.interaction.test.tsx` drives.)
  * J6 Native authority
- *   - a global tile for the person's own Mac view opens a task's session, or a
- *     task tile opens the person's view; a closed view falls back to a task;
+ *   - a row for the person's own Mac view opens a task's session, or a task's
+ *     row opens the person's view; a closed view falls back to a task;
  *   - the owner view is not kept alive while it is on screen;
  *   - Mac window video starts on iOS.
  * J7 Layout
+ *   - a task's page opened from Tabs shows a thread beside it on a phone, or
+ *     another thread than its occupant's where two panes fit;
  *   - stacked, side-by-side, tabletop or the keyboard remount the page or the
- *     conversation of a task's page.
+ *     occupant's conversation beside it.
  * J8 One sidebar for tasks and tabs
- *   - the docked sidebar lists no tabs, so a tab is reached only through the
- *     grid, or it goes away while a page is in front;
+ *   - the docked sidebar lists no tabs, so a tab is reached only through
+ *     Tabs, or it goes away while a page is in front;
  *   - choosing a tab there shows another conversation instead, or piles
  *     screens behind Back, or rebuilds Chat;
  *   - the open tab or task is not the one marked selected;
@@ -97,6 +100,8 @@ const harness = vi.hoisted(() => ({
   keyboard: false,
   paneMounts: [] as string[],
   pageMounts: [] as string[],
+  /** How often each line of text has been drawn, to tell a redraw from none. */
+  draws: new Map<string, number>(),
   drawer: {
     onState: null as null | ((state: string, willShow: boolean) => void),
   },
@@ -169,6 +174,36 @@ vi.mock("react-native", async () => {
         </div>
       );
     },
+    SectionList: (props: {
+      readonly keyExtractor: (item: unknown) => string;
+      readonly ListEmptyComponent?: ReactNode;
+      readonly ListHeaderComponent?: ReactNode;
+      readonly renderItem: (info: {
+        readonly index: number;
+        readonly item: unknown;
+        readonly section: { readonly data: readonly unknown[] };
+      }) => ReactNode;
+      readonly renderSectionHeader: (info: {
+        readonly section: { readonly key: string; readonly data: readonly unknown[] };
+      }) => ReactNode;
+      readonly sections: readonly { readonly key: string; readonly data: readonly unknown[] }[];
+    }) => (
+      <div data-list>
+        {props.ListHeaderComponent}
+        {props.sections.length === 0
+          ? props.ListEmptyComponent
+          : props.sections.map((section) => (
+              <div data-section={section.key} key={section.key}>
+                {props.renderSectionHeader({ section })}
+                {section.data.map((item, index) => (
+                  <div key={props.keyExtractor(item)}>
+                    {props.renderItem({ index, item, section })}
+                  </div>
+                ))}
+              </div>
+            ))}
+      </div>
+    ),
     findNodeHandle: () => null,
     I18nManager: { isRTL: false },
     Image: (props: { readonly accessibilityLabel?: string }) => (
@@ -449,9 +484,11 @@ vi.mock("../ui/screen.js", () => ({
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/primitives.js", () => ({
-  AppText: (props: Children & { readonly accessibilityLabel?: string }) => (
-    <span aria-label={props.accessibilityLabel}>{props.children}</span>
-  ),
+  AppText: (props: Children & { readonly accessibilityLabel?: string }) => {
+    if (typeof props.children === "string")
+      harness.draws.set(props.children, (harness.draws.get(props.children) ?? 0) + 1);
+    return <span aria-label={props.accessibilityLabel}>{props.children}</span>;
+  },
   Field: (props: {
     readonly label: string;
     readonly input: { readonly value?: string; readonly onChangeText?: (value: string) => void };
@@ -1027,31 +1064,77 @@ function control(scope: HTMLElement, name: string): HTMLButtonElement {
     );
   return found;
 }
-/** The person's own view of a window: its tile names no agent at work there. */
-function ownerTile(scope: HTMLElement, title: string): HTMLButtonElement {
-  const found = buttons(scope).find((button) => {
-    const label = button.getAttribute("aria-label");
-    return label?.startsWith(`${title}, `) === true && !label.includes("agent working");
-  });
-  if (found === undefined) throw new Error(`No owner tile for ${title}`);
+/** The person's own view of a window: its row names nobody in it. */
+function ownerRow(scope: HTMLElement, title: string): HTMLButtonElement {
+  const found = placeRows(scope).find(
+    (button) => button.getAttribute("aria-label") === `${title}, Mac app`,
+  );
+  if (found === undefined) throw new Error(`No owner row for ${title}`);
   return found;
 }
-/** A tile or preview, found by the title its label starts with. */
-function tile(scope: HTMLElement, title: string): HTMLButtonElement {
+/** A row, in Tabs or the sidebar, found by the title its label starts with. */
+function row(scope: HTMLElement, title: string): HTMLButtonElement {
   const found = buttons(scope).find((button) =>
     button.getAttribute("aria-label")?.startsWith(`${title}, `),
   );
   if (found === undefined)
     throw new Error(
-      `No tile for ${title} in: ${buttons(scope)
+      `No row for ${title} in: ${buttons(scope)
         .map((button) => button.getAttribute("aria-label"))
         .filter(Boolean)
         .join(" | ")}`,
     );
   return found;
 }
-function tiles(scope: HTMLElement): HTMLButtonElement[] {
-  return [...scope.querySelectorAll<HTMLButtonElement>('button[data-testid^="tile:"]')];
+/** Tabs' own rows, in the order drawn. */
+function placeRows(scope: HTMLElement): HTMLButtonElement[] {
+  return [...scope.querySelectorAll<HTMLButtonElement>('button[data-testid^="place:"]')];
+}
+/** Tabs' group headers, in the order drawn. */
+function groupHeads(scope: HTMLElement): string[] {
+  return [...scope.querySelectorAll<HTMLElement>("[data-section] > div[aria-label]")].map((head) =>
+    head.getAttribute("aria-label")!,
+  );
+}
+
+/**
+ * Lets a journey change what the Host says — a streamed token, a Request, the
+ * connection — and tells everyone listening, as the client would. Set up
+ * before anything subscribes; each answer is kept until either side changes.
+ */
+function steerable(host: MockHostClient) {
+  const read = host.getSnapshot;
+  const subscribe = host.subscribe;
+  const listeners = new Set<() => void>();
+  let edit = (snapshot: HostSnapshot) => snapshot;
+  let held: { readonly source: HostSnapshot; readonly shown: HostSnapshot } | null = null;
+  Object.defineProperty(host, "getSnapshot", {
+    configurable: true,
+    value: () => {
+      const source = read();
+      if (held?.source !== source) held = { shown: edit(source), source };
+      return held.shown;
+    },
+  });
+  Object.defineProperty(host, "subscribe", {
+    configurable: true,
+    value: (listener: () => void) => {
+      listeners.add(listener);
+      const stop = subscribe(listener);
+      return () => {
+        listeners.delete(listener);
+        stop();
+      };
+    },
+  });
+  return {
+    async change(next: (snapshot: HostSnapshot) => HostSnapshot) {
+      edit = next;
+      held = null;
+      await act(async () => listeners.forEach((listener) => listener()));
+      await settle();
+    },
+  };
 }
 async function press(target: HTMLButtonElement): Promise<void> {
   await act(async () => target.click());
@@ -1107,6 +1190,7 @@ afterEach(() => {
   harness.keyboard = false;
   harness.paneMounts = [];
   harness.pageMounts = [];
+  harness.draws.clear();
 });
 afterAll(() => {
   const directory =
@@ -1221,7 +1305,9 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     w.record("J1 from task A");
   });
 
-  it("lists the person's own tab, tasks' and delegated tabs, saved tabs, apps and the person's Mac view, with no task captions", async () => {
+  it("lists every tab, app and phone grouped by computer, with the page pill's marks and no pictures", async () => {
+    harness.platform = "android";
+    let worker = "";
     const w = await world({
       prepare: async (host) => {
         const snapshot = host.getSnapshot();
@@ -1232,7 +1318,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
           kind: "app",
         });
         // The delegated worker acts in the automation's page.
-        const worker = Object.values(snapshot.assignments)[0]!.workerThread.id;
+        worker = Object.values(snapshot.assignments)[0]!.workerThread.id;
         host.actInPlace(
           worker,
           placeList(host.getSnapshot()).find(({ title }) => title === "Flight award alerts")!.key,
@@ -1242,11 +1328,37 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     });
     await openSidebarTabs(w);
     const screen = front(w);
-    const places = placeList(w.host.getSnapshot());
-    // Every tile in the person's order, one per place; none hidden.
+    const snapshot = w.host.getSnapshot();
+    const places = placeList(snapshot);
+    // One row per place, none hidden, in the person's order within its computer:
+    // the person's own Notes view, opened last, sits with the Mac mini's apps.
     expect(
-      tiles(screen).map((button) => button.getAttribute("aria-label")!.split(", ")[0]),
-    ).toEqual(places.map(({ title }) => title));
+      placeRows(screen).map((button) => button.getAttribute("aria-label")!.split(", ")[0]),
+    ).toEqual([
+      "Your reading list",
+      "Confirm your reservation",
+      "Le Petit Jardin",
+      "Friday dinner",
+      "PortableFS documentation",
+      "Launch brief",
+      "Coffee shortlist",
+      "Weekend ideas",
+      "Flight award alerts",
+      "Q4 roadmap – Linear",
+      "Slack — #launch",
+      "Notes — Shopping list",
+      "Notes — Shopping list",
+      "Pixel 7",
+      "Keynote",
+    ]);
+    expect(placeRows(screen)).toHaveLength(places.length);
+    // Grouped by computer, a Mac's apps apart from its tabs.
+    expect(groupHeads(screen)).toEqual([
+      "Mac mini · Browser",
+      "Mac mini · Apps",
+      "Agent Phone · Pixel 7",
+      "Studio Mac · Apps",
+    ]);
     for (const title of [
       "Q4 roadmap – Linear", // opened by hand on the desktop
       "Friday dinner", // a task's
@@ -1254,32 +1366,43 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       "Your reading list", // saved, waiting to be restored
       "Slack — #launch", // a task's Mac app, titled by the window it works in
     ])
-      expect(tile(screen, title)).toBeDefined();
-    // The person's own Mac view is its own tile, apart from the task working in Notes.
-    expect(ownerTile(screen, "Notes — Shopping list")).toBeDefined();
-    // Titled Tabs; each tile says its title and site, never who opened it or which task holds it.
+      expect(row(screen, title)).toBeDefined();
+    // The person's own Mac view is its own row, apart from the task working in Notes.
+    expect(ownerRow(screen, "Notes — Shopping list")).toBeDefined();
+    // Who is in a place, said as the page's pill says it; green only where acting.
+    const workerTitle = snapshot.threads.find(({ id }) => id === worker)!.title;
+    expect(row(screen, "Flight award alerts").getAttribute("aria-label")).toBe(
+      `Flight award alerts, www.united.com, Guest, ${workerTitle}, working here`,
+    );
+    expect(row(screen, "Flight award alerts").dataset["testid"]).toBe("place:acting");
+    expect(row(screen, "Friday dinner").getAttribute("aria-label")).toBe(
+      "Friday dinner, resy.com, Work, Review PortableFS integration, idle",
+    );
+    expect(row(screen, "Friday dinner").dataset["testid"]).toBe("place:idle");
+    expect(row(screen, "Q4 roadmap – Linear").getAttribute("aria-label")).toBe(
+      "Q4 roadmap – Linear, linear.app, Work",
+    );
+    expect(row(screen, "Pixel 7").getAttribute("aria-label")).toBe(
+      "Pixel 7, Agent Phone, Check the delivery ETA, working here",
+    );
+    // Chat in a tab wears Chat's orb.
+    expect(row(screen, "Weekend ideas").querySelector("[data-chat-orb]")).not.toBeNull();
+    // Marks, never names, on screen: the words are titles and sites.
     expect(screen.querySelector("[data-header-title]")?.textContent).toBe("Tabs");
     const words = screen.querySelector("[data-list]")!.textContent;
     expect(words).toContain("Q4 roadmap – Linear");
-    for (const thread of w.host.getSnapshot().threads.filter(({ listed }) => listed))
+    for (const thread of snapshot.threads.filter(({ listed }) => listed))
       expect(words).not.toContain(thread.title);
-    expect(words).not.toMatch(/Opened by|Agent|This task|All tabs/u);
-    // The saved tab has no live Watch; the live ones on screen do.
-    const saved = places.find(({ title }) => title === "Your reading list")!;
-    expect(saved.destination.kind).toBe("browser");
-    const savedSession =
-      saved.destination.kind === "browser" ? saved.destination.sessionId : "unreachable";
-    expect(w.calls.watches.some((key) => key.startsWith(`${savedSession}:`))).toBe(false);
-    expect(tile(screen, "Your reading list").dataset["testid"]).toBe("tile:saved:idle");
-    expect(w.calls.watches).toContain(
-      `${(places.find(({ title }) => title === "Q4 roadmap – Linear")!.destination as { sessionId: string }).sessionId}:mock-tab-8-0`,
-    );
-    // Only a tab an agent acts in is ringed.
-    expect(tile(screen, "Q4 roadmap – Linear").dataset["testid"]).toBe("tile:live:idle");
-    expect(tile(screen, "Flight award alerts").dataset["testid"]).toBe("tile:live:acting");
-    // Two columns on an ordinary phone.
-    expect(screen.querySelector("[data-list]")?.getAttribute("data-columns")).toBe("2");
-    w.record("J1 global list", { tiles: tiles(screen).map((b) => b.dataset["testid"]) });
+    expect(words).not.toMatch(/Opened by|Agent working|This task/u);
+    // Every row is a full target.
+    for (const button of placeRows(screen))
+      expect(JSON.parse(button.dataset["style"]!).minHeight).toBeGreaterThanOrEqual(44);
+    // Opening the list asks for no picture of any tab, app or phone.
+    expect(w.calls.watches).toEqual([]);
+    expect(w.calls.viewers).toEqual([]);
+    expect(w.calls.displays).toEqual([]);
+    expect(w.calls.ownerRetains).toEqual([]);
+    w.record("J1 global list", { groups: groupHeads(screen) });
   });
 
   it("narrows to the tabs agents are in from the bar's filter, titled so, and back to every tab", async () => {
@@ -1291,7 +1414,8 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(busy.length).toBeLessThan(places.length);
     const title = () => front(w).querySelector("[data-header-title]")?.textContent;
     const filter = () => front(w).querySelector<HTMLElement>("[data-header-right] [data-menu]")!;
-    const shown = () => tiles(front(w)).map((b) => b.getAttribute("aria-label")!.split(", ")[0]);
+    const shown = () =>
+      placeRows(front(w)).map((b) => b.getAttribute("aria-label")!.split(", ")[0]);
     expect(filter().getAttribute("aria-label")).toBe("Filter");
     await press(control(filter(), "Tabs with agents"));
     expect(title()).toBe("Tabs with agents");
@@ -1302,24 +1426,102 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(shown()).toEqual(places.map(({ title }) => title));
   });
 
-  it("uses one column on a narrow pane or with large text, and stable picture shapes", async () => {
-    harness.frame = { height: 640, width: 320 };
-    const w = await world();
-    await openSidebarTabs(w);
-    expect(front(w).querySelector("[data-list]")?.getAttribute("data-columns")).toBe("1");
-    harness.frame = { height: 844, width: 390 };
-    harness.fontScale = 1.35;
-    await w.render();
-    expect(front(w).querySelector("[data-list]")?.getAttribute("data-columns")).toBe("1");
-    harness.fontScale = 1;
-    await w.render();
-    const shapes = new Set(
-      [...front(w).querySelectorAll<HTMLElement>('[data-testid="tile-picture"]')].map(
-        (picture) => JSON.parse(picture.dataset["style"] ?? "{}").aspectRatio,
-      ),
+  it("is not redrawn by a streamed token, and a sign-in waiting on the reader marks only its tab", async () => {
+    let host!: ReturnType<typeof steerable>;
+    const w = await world({
+      prepare: (mock) => void (host = steerable(mock)),
+      routes: [{ name: "Tabs", params: { deploymentId } }],
+    });
+    const drawn = () => [
+      harness.draws.get("Keynote") ?? 0,
+      harness.draws.get("Studio Mac · Apps") ?? 0,
+      harness.draws.get("Q4 roadmap – Linear") ?? 0,
+    ];
+    const before = drawn();
+    expect(before.every((count) => count > 0)).toBe(true);
+    const home = w.host.getSnapshot().homeThreadId!;
+    for (const text of ["Hel", "Hello", "Hello there"])
+      await host.change((snapshot) => {
+        const entries = snapshot.transcripts[home] ?? [];
+        return {
+          ...snapshot,
+          transcripts: {
+            ...snapshot.transcripts,
+            [home]: [...entries, { ...entries.at(-1), id: `streamed-${text}`, text } as never],
+          },
+        };
+      });
+    expect(drawn()).toEqual(before);
+
+    const roadmap = placeList(w.host.getSnapshot()).find(
+      ({ title }) => title === "Q4 roadmap – Linear",
+    )!;
+    if (roadmap.destination.kind !== "browser") throw new Error("Not a browser tab.");
+    const { sessionId, tabId } = roadmap.destination;
+    const asked = mockBrowserSignInRequest("https://linear.app", 1);
+    await host.change((snapshot) => ({
+      ...snapshot,
+      waitingRequests: [
+        ...snapshot.waitingRequests,
+        {
+          assignments: [],
+          request: { ...asked, payload: { ...asked.payload, sessionId, tabId } },
+          subagent: null,
+        } as never,
+      ],
+    }));
+    expect(row(front(w), "Q4 roadmap – Linear").getAttribute("aria-label")).toBe(
+      "Q4 roadmap – Linear, linear.app, Work, needs you",
     );
-    expect(shapes.size).toBe(1);
-    w.record("J1 columns and shapes", { shapes: [...shapes] });
+    expect(row(front(w), "Q4 roadmap – Linear").textContent).toContain("Needs you");
+    expect(
+      placeRows(front(w)).filter((button) => button.textContent?.includes("Needs you")),
+    ).toHaveLength(1);
+    // Only that row is drawn again.
+    const [keynote, , roadmapDraws] = drawn();
+    expect(keynote).toBe(before[0]);
+    expect(roadmapDraws).toBeGreaterThan(before[2]!);
+    w.record("J1 streamed token and sign-in");
+  });
+
+  it("says when it cannot refresh, with Try again, when it is offline, and when there is nothing", async () => {
+    let host!: ReturnType<typeof steerable>;
+    let refresh!: ReturnType<typeof vi.spyOn>;
+    const w = await world({
+      prepare: (mock) => {
+        host = steerable(mock);
+        refresh = vi
+          .spyOn(mock, "refresh")
+          .mockRejectedValueOnce(new Error("The Host did not answer."));
+      },
+    });
+    await openSidebarTabs(w);
+    const notices = () =>
+      [...front(w).querySelectorAll('[role="alert"]')].map((notice) => notice.textContent);
+    expect(notices()).toEqual(["Tabs could not be refreshedThe Host did not answer.Try again"]);
+    // What was known is still listed under the notice.
+    expect(placeRows(front(w)).length).toBeGreaterThan(0);
+    const asked = refresh.mock.calls.length;
+    await press(control(front(w), "Try again"));
+    expect(refresh.mock.calls.length).toBe(asked + 1);
+    expect(notices()).toEqual([]);
+
+    await host.change((snapshot) => ({ ...snapshot, connection: "offline" }));
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0]).toContain("Tabs reconnect when the deployment is available.");
+    expect(placeRows(front(w)).length).toBeGreaterThan(0);
+
+    await host.change((snapshot) => ({
+      ...snapshot,
+      browserSessions: [],
+      machines: [],
+      workspaceTabs: [],
+    }));
+    expect(placeRows(front(w))).toEqual([]);
+    expect(front(w).querySelector("[data-list]")!.textContent).toContain(
+      "No tabs yetTabs you and your agents open appear here.",
+    );
+    w.record("J1 notices and empty");
   });
 
   it("shows nothing from the previous person once another signs in", async () => {
@@ -1327,13 +1529,13 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       prepare: (host) => void host.scriptDormantBrowser({ profileName: "Work" }),
     });
     await openSidebarTabs(w);
-    const shown = tiles(front(w))[0]!;
+    const shown = placeRows(front(w))[0]!;
     expect(shown.isConnected).toBe(true);
     await act(async () => w.host.setDormantBrowserState({ accountChanged: true }));
     await settle();
     // The list is drawn afresh for the new reader: no tile the last one saw survives.
     expect(shown.isConnected).toBe(false);
-    expect(tiles(front(w)).length).toBeGreaterThan(0);
+    expect(placeRows(front(w)).length).toBeGreaterThan(0);
     expect(w.stack.trace.filter(({ from }) => from !== "sidebar")).toEqual([]);
     w.record("J1 account change");
   });
@@ -1357,7 +1559,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     await openSidebarTabs(w);
     // Friday dinner is held by a task; neither that task nor Chat comes with it.
     const place = placeList(w.host.getSnapshot()).find(({ title }) => title === "Friday dinner")!;
-    await press(tile(front(w), "Friday dinner"));
+    await press(row(front(w), "Friday dinner"));
     const opened = w.stack.top;
     expect(opened.name).toBe("WorkspaceBrowser");
     expect(opened.params).toEqual(aloneRoute(place));
@@ -1366,7 +1568,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     await act(async () => w.stack.navigation(opened.key).goBack());
     await settle();
     expect(w.stack.top.name).toBe("Tabs");
-    await press(tile(front(w), "Q4 roadmap – Linear"));
+    await press(row(front(w), "Q4 roadmap – Linear"));
     expectAlone(front(w));
     // Back to Chat: its own draft, untouched.
     await act(async () => w.stack.navigation(w.stack.top.key).goBack());
@@ -1389,12 +1591,12 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     });
     await typeDraft(front(w), "Compare this with the last one");
     await openSidebarTabs(w);
-    await press(tile(front(w), "Friday dinner"));
+    await press(row(front(w), "Friday dinner"));
     expect(w.stack.top.params?.["threadId"]).toBeUndefined();
     expectAlone(front(w));
     await act(async () => harness.drawer.onState?.("idle", true));
     await settle();
-    await press(tile(sidebar(w), "Switch Slack to Opensteer"));
+    await press(row(sidebar(w), "Switch Slack to Opensteer"));
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Thread"]);
     expect(w.stack.top.params).toMatchObject({ threadId: taskA });
     expect(draftShown(front(w))).toBe("Compare this with the last one");
@@ -1408,7 +1610,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     expect(first.host.getSnapshot().homeThreadId).toBeNull();
     await openSidebarTabs(first);
     expect(first.stack.top).toMatchObject({ name: "Tabs", params: { deploymentId } });
-    expect(tiles(front(first))).toHaveLength(placeList(first.host.getSnapshot()).length);
+    expect(placeRows(front(first))).toHaveLength(placeList(first.host.getSnapshot()).length);
     expect(first.calls.creates).toEqual([]);
     first.record("J2 before Chat: Tabs");
 
@@ -1418,7 +1620,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
         { name: "Tabs", params: { deploymentId } },
       ],
     });
-    await press(tile(front(w), "Q4 roadmap – Linear"));
+    await press(row(front(w), "Q4 roadmap – Linear"));
     expect(w.stack.top.params).toMatchObject({ scope: "workspace" });
     expectAlone(front(w));
     expect(w.calls.creates).toEqual([]);
@@ -1437,7 +1639,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
       },
     });
     await openSidebarTabs(w);
-    await press(tile(front(w), saved!.title));
+    await press(row(front(w), saved!.title));
     return { saved: saved!, w };
   }
 
@@ -1567,82 +1769,6 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
   });
 });
 
-describe("J4: a conversation's surface glyph", () => {
-  it("opens the acting surface and keeps the opened page fixed when the agent moves", async () => {
-    const source = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-    const threadId = threadTitled(source, "Switch Slack to Opensteer");
-    const w = await world({
-      routes: [
-        { name: "Home", params: { deploymentId } },
-        { name: "Thread", params: { deploymentId, threadId } },
-      ],
-    });
-    const chosen = agentSurface(
-      conversationSurfaces(w.host.getSnapshot(), threadId),
-      conversationThreadIds(w.host.getSnapshot(), threadId),
-      w.host.latestPlaceOfThread(threadId),
-    )!;
-    const label = surfaceGlyph(chosen) === "laptopcomputer" ? "Mac app" : "Page";
-    await press(control(front(w).querySelector("header")!, `${label}, agent working`));
-    expect(w.stack.top.params).toMatchObject(
-      surfaceRoute(deploymentId, threadId, surfaceDestination(chosen)),
-    );
-    const opened = JSON.stringify(w.stack.top.params);
-    await act(async () =>
-      w.host.actInPlace(
-        threadId,
-        placeList(w.host.getSnapshot()).find(({ title }) => title === "Your reading list")!.key,
-      ),
-    );
-    await settle();
-    expect(JSON.stringify(w.stack.top.params)).toBe(opened);
-  });
-
-  it("opens a delegated worker's acting page from Chat without streaming in Chat", async () => {
-    const w = await world({
-      prepare: (host) => {
-        const source = host.getSnapshot();
-        const worker = Object.values(source.assignments)[0]!.workerThread.id;
-        host.actInPlace(
-          worker,
-          placeList(source).find(({ title }) => title === "Weekend ideas")!.key,
-        );
-        const current = host.getSnapshot();
-        const idleApps = {
-          ...current,
-          machines: current.machines.map((machine) => ({
-            ...machine,
-            computerUse: machine.computerUse
-              ? {
-                  ...machine.computerUse,
-                  sessions: machine.computerUse.sessions.map((session) => ({
-                    ...session,
-                    actingAppKeys: [],
-                    actingDisplay: false,
-                  })),
-                }
-              : machine.computerUse,
-          })),
-        };
-        vi.spyOn(host, "getSnapshot").mockReturnValue(idleApps);
-      },
-    });
-    expect(w.calls.viewers).toEqual([]);
-    expect(w.calls.watches).toEqual([]);
-    const home = w.host.getSnapshot().homeThreadId!;
-    const chosen = agentSurface(
-      conversationSurfaces(w.host.getSnapshot(), home),
-      conversationThreadIds(w.host.getSnapshot(), home),
-      w.host.latestPlaceOfThread(home),
-    )!;
-    expect(chosen).toMatchObject({ kind: "browser", title: "Weekend ideas", acting: true });
-    await press(control(front(w).querySelector("header")!, "Page, agent working"));
-    expect(w.stack.top.params).toMatchObject(
-      surfaceRoute(deploymentId, w.host.getSnapshot().homeThreadId!, surfaceDestination(chosen)),
-    );
-  });
-});
-
 /** The task session that holds Notes on the Mac mini, beside the person's own view. */
 function notesTaskSession(w: World): string {
   const session = w.host
@@ -1669,9 +1795,9 @@ describe("J6: native views keep their own authority", () => {
       },
     });
     await openSidebarTabs(w);
-    // A live owner thumbnail needs an owner lease before the full viewer opens.
-    expect(w.calls.ownerRetains).toContain(`${viewId}:${generation}`);
-    await press(ownerTile(front(w), "Notes — Shopping list"));
+    // The list holds no lease on the view; the page opened from it does.
+    expect(w.calls.ownerRetains).toEqual([]);
+    await press(ownerRow(front(w), "Notes — Shopping list"));
     return { generation, viewId, w };
   }
 
@@ -1718,55 +1844,53 @@ describe("J6: native views keep their own authority", () => {
     w.record("J6 owner view Android");
   });
 
-  it("opens a task's app in its task's collection through that task's own session", async () => {
+  it("opens a task's app from Tabs through that task's own session", async () => {
     harness.platform = "android";
-    const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-    const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
-    const w = await world({
-      routes: [
-        { name: "Home", params: { deploymentId } },
-        { name: "WorkspaceBrowser", params: { deploymentId, threadId: taskA } },
-      ],
-    });
-    const slack = conversationSurfaces(w.host.getSnapshot(), taskA).find(
-      (item) => item.kind === "app",
-    )!;
-    await press(tile(front(w), "Slack"));
-    expect(w.stack.top.params).toMatchObject({
+    const w = await world();
+    await openSidebarTabs(w);
+    const slack = placeList(w.host.getSnapshot()).find(({ title }) => title === "Slack — #launch")!;
+    if (slack.destination.kind !== "app") throw new Error("Slack is not an app here.");
+    const session = slack.destination.computerSessionId;
+    await press(row(front(w), "Slack — #launch"));
+    expect(w.stack.top.params).toEqual({
       appKey: "com.tinyspeck.slackmacgap",
-      computerSessionId: slack.kind === "app" ? slack.computerSessionId : "",
-      threadId: taskA,
+      computerSessionId: session,
+      deploymentId,
+      machineId: slack.destination.machineId,
+      scope: "workspace",
     });
-    expect(w.stack.top.params?.["viewId"]).toBeUndefined();
     expect(w.calls.displays.map((source) => JSON.parse(source))).toContainEqual({
       appKey: "com.tinyspeck.slackmacgap",
       kind: "task-session",
-      sessionId: slack.kind === "app" ? slack.computerSessionId : "",
+      sessionId: session,
     });
     w.record("J6 task app");
   });
 });
 
-describe("J7: a task's page keeps its page and conversation through layouts", () => {
-  it("stays mounted through side by side, tabletop and the keyboard", async () => {
-    const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-    const owner = snapshot.threads.find((thread) =>
-      conversationSurfaces(snapshot, thread.id).some((item) => item.kind === "browser"),
-    )!;
-    const page = conversationSurfaces(snapshot, owner.id).find((item) => item.kind === "browser")!;
+describe("J7: a task's page from Tabs, beside its occupant's thread only where two fit", () => {
+  it("keeps the page and the occupant's thread mounted through side by side, tabletop and the keyboard", async () => {
     const w = await world({
       routes: [
         { name: "Home", params: { deploymentId } },
-        { name: "Thread", params: { deploymentId, threadId: owner.id } },
-        { name: "WorkspaceBrowser", params: { deploymentId, threadId: owner.id } },
+        { name: "Tabs", params: { deploymentId } },
       ],
     });
-    await press(tile(front(w), page.title));
+    const snapshot = w.host.getSnapshot();
+    const occupant = threadTitled(snapshot, "Switch Slack to Opensteer");
+    const place = placeList(snapshot).find(({ title }) => title === "Le Petit Jardin")!;
+    await press(row(front(w), "Le Petit Jardin"));
+    expect(w.stack.top.params).toEqual(aloneRoute(place));
     const screen = front(w);
+    const beside = () => harness.paneMounts.filter((mount) => mount.endsWith(":companion"));
+    // A phone: the page alone.
     expect(screen.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
+    expect(beside()).toEqual([]);
+    // Room for two: the occupant's own thread beside the page.
     harness.pair = { height: 1000, width: 744 };
     await w.render();
     expect(screen.querySelector('[data-testid="pair-side"]')).not.toBeNull();
+    expect(beside()).toEqual([`${occupant}:companion`]);
     harness.pair = { height: 900, width: 900 };
     harness.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
@@ -1777,12 +1901,10 @@ describe("J7: a task's page keeps its page and conversation through layouts", ()
     await w.render();
     harness.keyboard = false;
     harness.regions = [];
-    harness.pair = { height: 760, width: 390 };
+    harness.pair = { height: 1000, width: 744 };
     await w.render();
-    expect(screen.querySelector('[data-testid="pair-stacked"]')).not.toBeNull();
-    expect(harness.paneMounts.filter((mount) => mount.endsWith(":companion"))).toEqual([
-      `${owner.id}:companion`,
-    ]);
+    // The same thread, never mounted again, and the same page throughout.
+    expect(beside()).toEqual([`${occupant}:companion`]);
     expect(harness.pageMounts).toHaveLength(1);
     w.record("J7 layouts");
   });
@@ -1810,27 +1932,27 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
     const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
 
     // The tab, exactly, beside the sidebar; nothing else comes with it.
-    await press(tile(dockedSidebar(w), roadmap.title));
+    await press(row(dockedSidebar(w), roadmap.title));
     expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
       ["Home", { deploymentId }],
       ["WorkspaceBrowser", aloneRoute(roadmap)],
     ]);
     expect(front(w).querySelector("[data-page]")).not.toBeNull();
     expect(front(w).querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    expect(tile(dockedSidebar(w), roadmap.title).getAttribute("aria-selected")).toBe("true");
-    expect(tile(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("false");
+    expect(row(dockedSidebar(w), roadmap.title).getAttribute("aria-selected")).toBe("true");
+    expect(row(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("false");
 
     // Straight to a task, and straight to another tab: each in place of the last.
-    await press(tile(dockedSidebar(w), "Switch Slack to Opensteer"));
+    await press(row(dockedSidebar(w), "Switch Slack to Opensteer"));
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Thread"]);
     expect(w.stack.top.params).toMatchObject({ threadId: taskA });
-    await press(tile(dockedSidebar(w), dinner.title));
+    await press(row(dockedSidebar(w), dinner.title));
     expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
       ["Home", { deploymentId }],
       ["WorkspaceBrowser", aloneRoute(dinner)],
     ]);
     expect(w.stack.routes[0]!.key).toBe(home.key);
-    expect(tile(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("true");
+    expect(row(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("true");
 
     // Folded to the cover screen: the same page, in front, with the sidebar a drawer.
     const pages = [...harness.pageMounts];
@@ -1856,8 +1978,8 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
         button.getAttribute("aria-label")?.startsWith(`${title}, `),
       );
     expect(listed(later.title)).toBe(false);
-    await press(tile(front(w), later.title));
-    expect(tile(dockedSidebar(w), later.title).getAttribute("aria-selected")).toBe("true");
+    await press(row(front(w), later.title));
+    expect(row(dockedSidebar(w), later.title).getAttribute("aria-selected")).toBe("true");
     expect(w.calls.creates).toEqual([]);
     w.record("J8 docked switching");
   });
