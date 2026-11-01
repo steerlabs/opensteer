@@ -1337,7 +1337,9 @@ export async function createHostServer(
       const page = await dependencies.store.threadEventPageForOwner({
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         ...(input.before ? { before: input.before } : {}),
-        maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems),
+        ...(input.turns === undefined
+          ? { maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems) }
+          : { maxTurns: input.turns }),
         ownerId: requireRpcSession(context).user.id,
         threadId: input.threadId,
       });
@@ -3157,6 +3159,7 @@ export function advertisedCapabilities(
     "task-marks-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",
+    "history-turns-v1",
     "shared-task-done-v1",
     "iphone-apps-v1",
     "ownerViewWindows",

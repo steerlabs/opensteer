@@ -2534,6 +2534,163 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toBeNull();
   });
 
+  it("pages Thread history by whole turns", async ({ storeFixture }) => {
+    const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
+    const { environmentId, runnerId, thread, userId, workspace } =
+      await createRunFixture("turn_history");
+    const runTurn = async (index: number, outputs: readonly string[], toolArguments = {}) => {
+      const turn = await enqueueHumanTrigger({
+        content: [{ type: "text", text: `Turn ${index}` }],
+        idempotencyKey: `turn-history-${index}`,
+        requestedBy: userId,
+        threadId: thread.id,
+      });
+      await store.claimCommand(turn.command.id, `host-worker-turn-history-${index}`);
+      const binding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: thread.harnessInstanceId,
+        leaseTokenHash: `lease-turn-history-${index}`,
+        membershipGeneration: 1,
+        runnerBootId: "boot-turn-history",
+        runnerId,
+        runId: turn.run.id,
+        threadId: thread.id,
+      });
+      await store.bindProviderSession({
+        bindingGeneration: binding.bindingGeneration,
+        harnessInstanceId: thread.harnessInstanceId,
+        providerSessionId: binding.providerSessionId,
+        providerSessionReference: "native-session-turn-history",
+        runId: turn.run.id,
+        runnerBootId: "boot-turn-history",
+        runnerId,
+        threadId: thread.id,
+      });
+      const base = {
+        bindingGeneration: binding.bindingGeneration,
+        environmentId,
+        runId: turn.run.id,
+        threadId: thread.id,
+        workspaceId: workspace.id,
+      } as const;
+      let ordinal = 0;
+      const commit = (event: PendingAgentEvent) =>
+        store.commitRunnerEvent({
+          environmentId,
+          event,
+          runnerBootId: "boot-turn-history",
+          runnerId,
+        });
+      await commit(
+        pendingEvent({
+          ...base,
+          data: { status: "running" },
+          ordinal: ordinal++,
+          type: "run.started",
+        }),
+      );
+      for (const [call, text] of outputs.entries()) {
+        const callId = `call-${index}-${call}`;
+        await commit(
+          pendingEvent({
+            ...base,
+            data: {
+              arguments: toolArguments,
+              callId,
+              tool: { name: "read_file", namespace: "test" },
+            },
+            ordinal: ordinal++,
+            type: "tool.started",
+          }),
+        );
+        await commit(
+          pendingEvent({
+            ...base,
+            data: { callId, isError: false, output: { text } },
+            ordinal: ordinal++,
+            type: "tool.completed",
+          }),
+        );
+      }
+      await commit(
+        pendingEvent({
+          ...base,
+          data: { status: "completed" },
+          ordinal: ordinal++,
+          type: "run.completed",
+        }),
+      );
+    };
+    const large = "x".repeat(40_000);
+    await runTurn(1, ["a", "b"]);
+    await runTurn(2, ["c", large, "d"]);
+    // Stored JSON spells this a third longer than the wire does.
+    await runTurn(3, ["e"], { values: Array.from({ length: 20_000 }, () => 1) });
+    const page = (input: {
+      before?: string;
+      maxBytes?: number;
+      maxItems?: number;
+      maxTurns?: number;
+    }) => store.threadEventPageForOwner({ ...input, ownerId: userId, threadId: thread.id });
+
+    const all = (await page({ maxTurns: 20 }))!;
+    expect(all.window).toMatchObject({ hasMore: false, nextBefore: null });
+    expect(all.window.totalItems).toBe(all.events.length);
+    // A queued input is a turn where a Run placed it, not where it was sent.
+    const starts = all.events.flatMap(({ type }, index) =>
+      type === "message.placed" ? [index] : [],
+    );
+    expect(starts).toHaveLength(3);
+    const [, second, third] = starts as [number, number, number];
+
+    const newest = (await page({ maxTurns: 2 }))!;
+    expect(newest.events).toEqual(all.events.slice(second));
+    expect(newest.window).toMatchObject({
+      hasMore: true,
+      nextBefore: all.events[second]!.sequence,
+      totalItems: all.events.length,
+    });
+    expect(newest.window.byteCount).toBe(Buffer.byteLength(JSON.stringify(newest.events), "utf8"));
+    const oldest = (await page({ before: newest.window.nextBefore!, maxTurns: 2 }))!;
+    expect(oldest.events).toEqual(all.events.slice(0, second));
+    expect(oldest.window).toMatchObject({ hasMore: false, nextBefore: null });
+
+    // A turn that fits what is sent is never cut for how it is stored.
+    const newestTurn = all.events.slice(third);
+    const fitted = (await page({
+      maxBytes: Buffer.byteLength(JSON.stringify(newestTurn), "utf8"),
+      maxTurns: 1,
+    }))!;
+    expect(fitted.events).toEqual(newestTurn);
+
+    // An event-count page ends at a turn rather than splitting the next one.
+    const counted = (await page({ maxItems: all.events.length - second + 2 }))!;
+    expect(counted.events).toEqual(all.events.slice(second));
+
+    // Only a newest turn that alone crosses a bound is cut inside, and paging
+    // then continues through it.
+    const cut = (await page({ maxItems: 3, maxTurns: 1 }))!;
+    expect(cut.events).toEqual(all.events.slice(-3));
+    const rest = (await page({ before: cut.window.nextBefore!, maxTurns: 1 }))!;
+    expect(rest.events).toEqual(all.events.slice(third, -3));
+
+    // An event larger than the byte bound is still a page of one, never the end.
+    const largeIndex = all.events.findIndex(
+      (event) => event.type === "tool.completed" && JSON.stringify(event).includes(large),
+    );
+    const alone = (await page({
+      before: all.events[largeIndex + 1]!.sequence,
+      maxBytes: 10_000,
+      maxTurns: 2,
+    }))!;
+    expect(alone.events).toEqual([all.events[largeIndex]]);
+    expect(alone.window).toMatchObject({
+      hasMore: true,
+      nextBefore: all.events[largeIndex]!.sequence,
+    });
+  });
+
   it("persists tool output whose source text carried NUL bytes", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
     const { environmentId, runnerId, thread, userId, workspace } =

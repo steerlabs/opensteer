@@ -153,6 +153,7 @@ import { withThreadNames, applyOptimisticCommandPatch } from "./optimistic-comma
 
 const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 const defaultRefreshIntervalMs = 15_000;
+const historyPageTurns = 10;
 const defaultReconnectBaseDelayMs = 300;
 /** How long a missed live frame waits before its Thread's streams are reread. */
 const liveRefreshDelayMs = 250;
@@ -2678,7 +2679,12 @@ export class HttpHostClient {
   }
 
   async #readThreadHistory(threadId: string) {
-    const page = unwrapRpcResult(await this.rpc["thread.events.list"]({ threadId }));
+    const page = unwrapRpcResult(
+      await this.rpc["thread.events.list"]({
+        threadId,
+        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
+      }),
+    );
     if (page.threadId !== threadId || page.thread.id !== threadId)
       throw new Error("Thread event page mismatch.");
     return page;
@@ -5446,6 +5452,7 @@ export class HttpHostClient {
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
         ...(currentWindow?.nextBefore ? { before: currentWindow.nextBefore } : {}),
+        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
         threadId,
       }),
     );

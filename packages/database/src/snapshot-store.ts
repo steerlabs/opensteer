@@ -30,6 +30,8 @@ import {
   type TaskPage,
   eventPageMaxItems,
   taskLineMaxLength,
+  turnPageMaxItems,
+  turnPageMaxTurns,
 } from "@opensteer/protocol";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { serializedArrayBytes, boundedSerializedPrefix } from "./message-window.js";
@@ -579,6 +581,46 @@ export async function threadMessagePageForOwner(
   return readThreadHistory(database, input);
 }
 
+/**
+ * Where a history page may begin: where an input lands in the conversation.
+ * A queued input lands where a Run placed it, every other one where it was
+ * sent, so a queued input's creation is not a turn of its own.
+ */
+const turnStartSelection = sql<boolean>`(
+  type = 'message.placed'
+  or (
+    type = 'message.created'
+    and data #>> '{message,kind}' = 'input'
+    and (data #>> '{input,policy}') is distinct from 'queue'
+  )
+)`;
+
+/**
+ * How many of `rows`, newest first, a history page keeps: whole turns until
+ * `maxTurns`, or until the next whole turn would cross a bound. Only a newest
+ * turn that alone crosses one is cut inside, and never below one event, so
+ * paging always advances.
+ */
+function historyPageLength(
+  rows: readonly { readonly bytes: number; readonly turnStart: boolean }[],
+  bounds: { readonly maxBytes: number; readonly maxItems: number; readonly maxTurns: number },
+): number {
+  let bytes = 2;
+  let turns = 0;
+  let wholeTurns = 0;
+  for (const [index, row] of rows.entries()) {
+    bytes += row.bytes + (index === 0 ? 0 : 1);
+    if (index >= bounds.maxItems || bytes > bounds.maxBytes) {
+      return wholeTurns > 0 ? wholeTurns : Math.max(index, 1);
+    }
+    if (!row.turnStart) continue;
+    wholeTurns = index + 1;
+    turns += 1;
+    if (turns >= bounds.maxTurns) return wholeTurns;
+  }
+  return rows.length;
+}
+
 export async function threadEventPageForOwner(
   database: Kysely<DatabaseSchema>,
   notificationState: NotificationStateStore,
@@ -587,19 +629,28 @@ export async function threadEventPageForOwner(
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
+    /** Whole turns rather than a count of events; such a page may hold up to `turnPageMaxItems`. */
+    readonly maxTurns?: number;
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   },
 ): Promise<ThreadEventPage | null> {
-  const maxItems = boundedWindowLimit(input.maxItems, eventPageMaxItems);
+  const maxItems = boundedWindowLimit(
+    input.maxItems,
+    input.maxTurns === undefined ? eventPageMaxItems : turnPageMaxItems,
+  );
   const maxBytes = boundedWindowBytes(input.maxBytes, 640 * 1_024);
+  const maxTurns =
+    input.maxTurns === undefined
+      ? Number.POSITIVE_INFINITY
+      : boundedWindowLimit(input.maxTurns, turnPageMaxTurns);
   let anchor: Sequence | null = null;
   if (input.before !== undefined) {
     const parsed = SequenceSchema.safeParse(input.before);
     if (!parsed.success) throw invalidWindowCursor();
     anchor = parsed.data;
   }
-  if (input.aroundMessageId && anchor !== null) {
+  if (input.aroundMessageId && (anchor !== null || input.maxTurns !== undefined)) {
     throw new OpensteerError({
       code: "bad_request",
       message: "Choose an event cursor or a message anchor",
@@ -626,76 +677,13 @@ export async function threadEventPageForOwner(
         .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread) return null;
-      let aroundSequence: Sequence | null = null;
-      if (input.aroundMessageId) {
-        const visibleMessage = await transaction
-          .selectFrom("messages")
-          .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
-          .select("messages.id")
-          .where("messages.id", "=", input.aroundMessageId)
-          .where("messages.threadId", "=", input.threadId)
-          .where(publishedMessagePredicate("threadInputs"))
-          .executeTakeFirst();
-        if (!visibleMessage) {
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Message is unavailable in this conversation",
-          });
-        }
-        const target = await transaction
-          .selectFrom("workspaceEvents")
-          .select("sequence")
-          .where("threadId", "=", input.threadId)
-          .where("type", "in", ["message.created", "message.placed", "assistant.message"])
-          .where(
-            sql<boolean>`(data #>> '{message,id}' = ${input.aroundMessageId} or data ->> 'messageId' = ${input.aroundMessageId})`,
-          )
-          .orderBy("sequence", "desc")
-          .executeTakeFirst();
-        if (!target) {
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Message has no retained event",
-          });
-        }
-        aroundSequence = target.sequence as Sequence;
-      }
-      let query = transaction
-        .selectFrom("workspaceEvents")
-        .selectAll()
-        .where("threadId", "=", input.threadId)
-        .where("type", "not in", legacyLiveEventTypes);
-      if (anchor !== null) {
-        query = query.where("sequence", "<", anchor);
-      }
-      const [rows, countRow] = await Promise.all([
-        aroundSequence === null
-          ? query
-              .orderBy("sequence", "desc")
-              .limit(maxItems + 1)
-              .execute()
-          : Promise.all([
-              query
-                .where("sequence", ">", aroundSequence)
-                .orderBy("sequence", "asc")
-                .limit(Math.floor((maxItems - 1) / 2))
-                .execute(),
-              query.where("sequence", "=", aroundSequence).executeTakeFirstOrThrow(),
-              query
-                .where("sequence", "<", aroundSequence)
-                .orderBy("sequence", "desc")
-                .limit(Math.ceil((maxItems - 1) / 2))
-                .execute(),
-            ]).then(([later, target, earlier]) => {
-              const prioritized = [target];
-              for (let index = 0; index < maxItems - 1; index += 1) {
-                const older = earlier[index];
-                const newer = later[index];
-                if (older) prioritized.push(older);
-                if (newer) prioritized.push(newer);
-              }
-              return prioritized;
-            }),
+      const [{ events, hasMore }, countRow] = await Promise.all([
+        input.aroundMessageId
+          ? eventsAroundMessage(transaction, input.threadId, input.aroundMessageId, {
+              maxBytes,
+              maxItems,
+            })
+          : newestTurns(transaction, input.threadId, anchor, { maxBytes, maxItems, maxTurns }),
         transaction
           .selectFrom("workspaceEvents")
           .select(({ fn }) => fn.countAll<string>().as("count"))
@@ -703,47 +691,7 @@ export async function threadEventPageForOwner(
           .where("type", "not in", legacyLiveEventTypes)
           .executeTakeFirstOrThrow(),
       ]);
-      const candidates = rows.map(eventFromRow);
-      const selected: AgentEvent[] = [];
-      let byteCount = 2;
-      for (const candidate of candidates) {
-        if (selected.length >= maxItems) break;
-        const nextBytes =
-          byteCount +
-          Buffer.byteLength(JSON.stringify(candidate), "utf8") +
-          (selected.length === 0 ? 0 : 1);
-        if (nextBytes > maxBytes) {
-          if (selected.length === 0 && aroundSequence !== null) {
-            throw new OpensteerError({
-              code: "internal",
-              message: "The anchored event exceeds the history byte ceiling",
-            });
-          }
-          if (aroundSequence === null) break;
-          continue;
-        }
-        selected.push(candidate);
-        byteCount = nextBytes;
-      }
-      const events = selected.sort((left, right) =>
-        BigInt(left.sequence) < BigInt(right.sequence)
-          ? -1
-          : BigInt(left.sequence) > BigInt(right.sequence)
-            ? 1
-            : 0,
-      );
       const oldest = events.at(0);
-      const hasMore = oldest
-        ? Boolean(
-            await transaction
-              .selectFrom("workspaceEvents")
-              .select("eventId")
-              .where("threadId", "=", input.threadId)
-              .where("type", "not in", legacyLiveEventTypes)
-              .where("sequence", "<", oldest.sequence)
-              .executeTakeFirst(),
-          )
-        : false;
       return {
         readState: await notificationState.getReadState({
           database: transaction,
@@ -754,7 +702,7 @@ export async function threadEventPageForOwner(
         thread: threadFromRow(thread),
         threadId: input.threadId,
         window: {
-          byteCount,
+          byteCount: serializedArrayBytes(events),
           hasMore,
           itemCount: events.length,
           nextBefore: hasMore && oldest ? oldest.sequence : null,
@@ -765,6 +713,161 @@ export async function threadEventPageForOwner(
     },
     "repeatable read",
   );
+}
+
+/**
+ * The newest whole turns before `before`. Sizes are read first, so a page of
+ * large tool calls fetches only the events it returns.
+ */
+async function newestTurns(
+  transaction: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  before: Sequence | null,
+  bounds: { readonly maxBytes: number; readonly maxItems: number; readonly maxTurns: number },
+): Promise<{ readonly events: AgentEvent[]; readonly hasMore: boolean }> {
+  let metadataQuery = transaction
+    .selectFrom("workspaceEvents")
+    .select([
+      "sequence",
+      // Stored JSON is written with `, ` and `: `, the wire's without spaces.
+      // Dropping them keeps the estimate under what is sent, so the exact pass
+      // below only ever trims and never loses a turn that fits.
+      sql<number>`octet_length(replace(replace(data::text, ', ', ','), ': ', ':'))`.as("dataBytes"),
+      turnStartSelection.as("turnStart"),
+    ])
+    .where("threadId", "=", threadId)
+    .where("type", "not in", legacyLiveEventTypes);
+  if (before !== null) metadataQuery = metadataQuery.where("sequence", "<", before);
+  const metadata = await metadataQuery
+    .orderBy("sequence", "desc")
+    .limit(bounds.maxItems + 1)
+    .execute();
+  const estimated = historyPageLength(
+    metadata.map((row) => ({ bytes: Number(row.dataBytes), turnStart: row.turnStart })),
+    bounds,
+  );
+  const oldest = metadata[estimated - 1];
+  if (!oldest) return { events: [], hasMore: false };
+  let rowsQuery = transaction
+    .selectFrom("workspaceEvents")
+    .selectAll()
+    .where("threadId", "=", threadId)
+    .where("type", "not in", legacyLiveEventTypes)
+    .where("sequence", ">=", oldest.sequence);
+  if (before !== null) rowsQuery = rowsQuery.where("sequence", "<", before);
+  const candidates = (await rowsQuery.orderBy("sequence", "desc").execute()).map(eventFromRow);
+  // The page is bounded by what it sends, never by the estimate.
+  const kept = historyPageLength(
+    candidates.map((event, index) => ({
+      bytes: Buffer.byteLength(JSON.stringify(event), "utf8"),
+      turnStart: metadata[index]?.turnStart ?? false,
+    })),
+    bounds,
+  );
+  return {
+    events: candidates.slice(0, kept).reverse(),
+    hasMore: kept < metadata.length,
+  };
+}
+
+/** The events nearest a message, which leads, then alternately older and newer. */
+async function eventsAroundMessage(
+  transaction: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  messageId: MessageId,
+  bounds: { readonly maxBytes: number; readonly maxItems: number },
+): Promise<{ readonly events: AgentEvent[]; readonly hasMore: boolean }> {
+  const { maxBytes, maxItems } = bounds;
+  const visibleMessage = await transaction
+    .selectFrom("messages")
+    .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
+    .select("messages.id")
+    .where("messages.id", "=", messageId)
+    .where("messages.threadId", "=", threadId)
+    .where(publishedMessagePredicate("threadInputs"))
+    .executeTakeFirst();
+  if (!visibleMessage) {
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Message is unavailable in this conversation",
+    });
+  }
+  const target = await transaction
+    .selectFrom("workspaceEvents")
+    .select("sequence")
+    .where("threadId", "=", threadId)
+    .where("type", "in", ["message.created", "message.placed", "assistant.message"])
+    .where(
+      sql<boolean>`(data #>> '{message,id}' = ${messageId} or data ->> 'messageId' = ${messageId})`,
+    )
+    .orderBy("sequence", "desc")
+    .executeTakeFirst();
+  if (!target) {
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Message has no retained event",
+    });
+  }
+  const aroundSequence = target.sequence as Sequence;
+  const query = transaction
+    .selectFrom("workspaceEvents")
+    .selectAll()
+    .where("threadId", "=", threadId)
+    .where("type", "not in", legacyLiveEventTypes);
+  const [later, centre, earlier] = await Promise.all([
+    query
+      .where("sequence", ">", aroundSequence)
+      .orderBy("sequence", "asc")
+      .limit(Math.floor((maxItems - 1) / 2))
+      .execute(),
+    query.where("sequence", "=", aroundSequence).executeTakeFirstOrThrow(),
+    query
+      .where("sequence", "<", aroundSequence)
+      .orderBy("sequence", "desc")
+      .limit(Math.ceil((maxItems - 1) / 2))
+      .execute(),
+  ]);
+  const prioritized = [centre];
+  for (let index = 0; index < maxItems - 1; index += 1) {
+    const older = earlier[index];
+    const newer = later[index];
+    if (older) prioritized.push(older);
+    if (newer) prioritized.push(newer);
+  }
+  const selected: AgentEvent[] = [];
+  let byteCount = 2;
+  for (const candidate of prioritized.map(eventFromRow)) {
+    if (selected.length >= maxItems) break;
+    const nextBytes =
+      byteCount +
+      Buffer.byteLength(JSON.stringify(candidate), "utf8") +
+      (selected.length === 0 ? 0 : 1);
+    if (nextBytes > maxBytes) {
+      if (selected.length === 0) {
+        throw new OpensteerError({
+          code: "internal",
+          message: "The anchored event exceeds the history byte ceiling",
+        });
+      }
+      continue;
+    }
+    selected.push(candidate);
+    byteCount = nextBytes;
+  }
+  const events = selected.sort((left, right) =>
+    BigInt(left.sequence) < BigInt(right.sequence)
+      ? -1
+      : BigInt(left.sequence) > BigInt(right.sequence)
+        ? 1
+        : 0,
+  );
+  const oldest = events.at(0);
+  const hasMore = oldest
+    ? Boolean(
+        await query.select("eventId").where("sequence", "<", oldest.sequence).executeTakeFirst(),
+      )
+    : false;
+  return { events, hasMore };
 }
 
 export async function eventsAfter(

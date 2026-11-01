@@ -4669,6 +4669,7 @@ export function migrationProvider() {
         "0119_person_notifications": personNotificationsMigration,
         "0120_notification_preview_keys": notificationPreviewKeysMigration,
         "0121_native_browser_profiles": nativeBrowserProfilesMigration,
+        "0122_thread_event_history": threadEventHistoryMigration,
       };
     },
   };
@@ -6456,6 +6457,16 @@ export const nativeBrowserProfilesMigration: Migration = {
         constraint browser_profile_deletions_completion_check check ((state = 'deleted') = (deleted_at is not null))
       );
       create index browser_profile_deletions_pending on browser_profile_deletions (runner_id, storage_instance_id) where state <> 'deleted';
+    `.execute(database);
+  },
+};
+
+/** A Thread's history is read newest first from its own events, never the Workspace's. */
+export const threadEventHistoryMigration: Migration = {
+  async up(database) {
+    await sql`
+      create index workspace_events_thread_history
+        on public.workspace_events (thread_id, sequence) include (type)
     `.execute(database);
   },
 };

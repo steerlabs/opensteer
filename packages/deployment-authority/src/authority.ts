@@ -274,6 +274,8 @@ export const HostCapabilitySchema = z.enum([
   "task-family-v1",
   /** A subscription may omit snapshot message history and its windows. */
   "snapshot-messages-omit-v1",
+  /** `thread.events.list` takes `turns`: a page of whole turns rather than a count of events. */
+  "history-turns-v1",
   "shared-task-done-v1",
   /** A person can rename and delete their browser profiles. */
   "browser-profile-manage-v1",
