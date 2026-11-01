@@ -135,6 +135,7 @@ type TurnScenario =
   | "rate-limit"
   | "redaction"
   | "success-order"
+  | "thought-error-delayed-close"
   | "thought-first"
   | "unauthorized";
 
@@ -229,6 +230,19 @@ describe("Antigravity in-turn provider failures", () => {
     expectAssistantDeltas(observed.events).toBe("READY");
   });
 
+  it("fails a thought-first turn when its correlated diagnostic block closes after the prompt", async () => {
+    const events = await executeTurn(await setupTurn("thought-error-delayed-close"));
+
+    expect(events.find((event) => event.type === "run.failed")).toMatchObject({
+      data: {
+        code: harnessUsageLimitFailureCode,
+        message: expect.stringContaining("prepayment credits are depleted"),
+      },
+    });
+    expectAssistantDeltas(events).toBe("Your prepayment credits are depleted.");
+    expect(events.some((event) => event.type === "run.completed")).toBe(false);
+  });
+
   it("flushes an assistant-only reply in order after it exceeds 2048 characters", async () => {
     const events = await executeTurn(await setupTurn("long-reply"));
 
@@ -244,15 +258,15 @@ describe("Antigravity in-turn provider failures", () => {
     expectAssistantMessages(events).toEqual(["FOREIGN SAFE"]);
   });
 
-  it("does not attach pending diagnostics to the block for a different session", () => {
+  it("keeps waiting when diagnostics have not closed a block for this session", () => {
     expect(
       settleAntigravityHeldAssistant({
         assistantText: "wrong session",
         providerSessionReference: "11111111-1111-4111-8111-111111111111",
         stderrTail: [
-          "received model response error: Error 500, Message: wrong session, Status: INTERNAL, Details: []",
-          "System step error (HTTP 402): Agent execution terminated due to error.",
+          "received model response error: Error 500, Message: foreign failure, Status: INTERNAL, Details: []",
           "Antigravity SDK error processing prompt for session 22222222-2222-4222-8222-222222222222",
+          "received model response error: Error 500, Message: current failure, Status: INTERNAL, Details: []",
         ].join("\n"),
       }),
     ).toEqual({ status: "pending" });
@@ -277,6 +291,7 @@ describe("Antigravity in-turn provider failures", () => {
         stderrTail: [...foreign, ...current].join("\n"),
       }),
     ).toMatchObject({
+      discardAssistant: true,
       error: { code: "harness_error", message: "current echo" },
       status: "failed",
     });
@@ -297,21 +312,20 @@ describe("Antigravity in-turn provider failures", () => {
     ).toMatchObject({ code: "harness_error", message: "Antigravity could not continue" });
   });
 
-  it("does not let a late block without a current echo fail the next turn", async () => {
+  it("does not let a block closed before the prompt fail the turn", async () => {
     const fixture = await setupTurn("late-block");
     const session = await fixture.adapter.startSession(fixture.context);
     const observed = observe(session.events);
-    await session.execute(fixture.turn("First turn"));
-    await session.execute(fixture.turn("Second turn"));
+    await session.execute(fixture.turn("Turn after old diagnostics"));
     await vi.waitFor(() => {
-      expect(observed.events.filter((event) => event.type === "run.completed")).toHaveLength(2);
+      expect(observed.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
     });
     await session.stop();
     await observed.done;
     await fixture.adapter.close();
 
     expect(observed.events.some((event) => event.type === "run.failed")).toBe(false);
-    expectAssistantDeltas(observed.events).toBe("FIRSTSECOND");
+    expectAssistantDeltas(observed.events).toBe("SECOND");
   });
 });
 

@@ -105,6 +105,19 @@ describe("ACP lifecycle", () => {
     await fixture.adapter.close();
   });
 
+  it("publishes a held partial reply and usage before a rejected prompt fails", async () => {
+    const fixture = await setup("held-prompt-error");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("fail after partial reply"));
+    await expectTerminal(observed.events, "run.failed");
+    expectAssistantBeforeTerminal(observed.events, "partial reply", "run.failed");
+    expectUsageBeforeTerminal(observed.events, "run.failed");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
   it("publishes observed usage once before a held assistant reply is interpreted as failed", async () => {
     const fixture = await setup("usage-held-assistant-error");
     const session = await fixture.adapter.startSession(fixture.context);
@@ -162,6 +175,23 @@ describe("ACP lifecycle", () => {
     controller.abort(new Error("person stopped the Run"));
     await execution;
     await expectTerminal(observed.events, "run.interrupted");
+    expectUsageBeforeTerminal(observed.events, "run.interrupted");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
+  it("publishes a held partial reply and usage before cancel-and-kill interruption", async () => {
+    const fixture = await setup("held-interruption");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    const controller = new AbortController();
+    const execution = session.execute(fixture.turn("stop after partial reply", controller.signal));
+    await fixture.heldAssistantReached;
+    controller.abort(new Error("person stopped the Run"));
+    await execution;
+    await expectTerminal(observed.events, "run.interrupted");
+    expectAssistantBeforeTerminal(observed.events, "partial reply", "run.interrupted");
     expectUsageBeforeTerminal(observed.events, "run.interrupted");
     await session.stop();
     await observed.done;
@@ -276,6 +306,8 @@ describe("ACP boundaries", () => {
 
 type Scenario =
   | "background"
+  | "held-interruption"
+  | "held-prompt-error"
   | "held-assistant-deadline"
   | "permission"
   | "prompt-error"
@@ -322,6 +354,7 @@ async function setup(scenario: Scenario) {
               deadlineMs: 500,
               maxCharacters: 2_048,
               settle: () => ({
+                discardAssistant: true,
                 error: new OpensteerError({
                   code: "harness_error",
                   message: "native end_turn failed",
@@ -341,7 +374,15 @@ async function setup(scenario: Scenario) {
                 },
               },
             }
-          : {}),
+          : scenario === "held-interruption" || scenario === "held-prompt-error"
+            ? {
+                holdAssistant: {
+                  deadlineMs: 0,
+                  maxCharacters: 2_048,
+                  settle: () => ({ status: "succeeded" as const }),
+                },
+              }
+            : {}),
       permissionChoices: (request: AcpPermissionRequest) =>
         request.options.map((option) => ({
           hint: option.id === "allow" ? "allow-once" : "reject-once",
@@ -393,6 +434,7 @@ async function setup(scenario: Scenario) {
       input.handlers,
       (choice) => selectedPermissions.push(choice),
       input.process,
+      notifyHeldAssistantReached,
     );
   };
   const adapter = new AcpHarnessAdapter(instanceId, options, {
@@ -477,6 +519,7 @@ function fakeClient(
   handlers: AcpProtocolHandlers,
   selected: (choice: string) => void,
   process: SupervisedProcess,
+  notifyHeldAssistantReached: () => void,
 ): AcpProtocolClient {
   return {
     authenticate: async () => undefined,
@@ -492,6 +535,20 @@ function fakeClient(
     }),
     newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
     prompt: async () => {
+      if (scenario === "held-interruption" || scenario === "held-prompt-error") {
+        handlers.update("new-session", {
+          sessionUpdate: "usage_update",
+          usage: { inputTokens: 11, outputTokens: 7, thoughtTokens: 3 },
+        });
+        handlers.update("new-session", {
+          content: { text: "partial reply", type: "text" },
+          sessionUpdate: "agent_message_chunk",
+        });
+        notifyHeldAssistantReached();
+        if (scenario === "held-prompt-error") throw new Error("prompt RPC failed");
+        await process.exited;
+        throw new Error("ACP process exited");
+      }
       if (scenario === "held-assistant-deadline") {
         handlers.update("new-session", {
           content: { text: "The error", type: "text" },
@@ -596,6 +653,18 @@ function expectUsageBeforeTerminal(
     type: "run.usage",
   });
   expect(usage[0]?.index).toBeLessThan(events.findIndex((event) => event.type === terminal));
+}
+
+function expectAssistantBeforeTerminal(
+  events: readonly HarnessEvent[],
+  text: string,
+  terminal: "run.failed" | "run.interrupted",
+): void {
+  const assistant = events.findIndex(
+    (event) => event.type === "assistant.delta" && event.data.text === text,
+  );
+  expect(assistant).toBeGreaterThan(-1);
+  expect(assistant).toBeLessThan(events.findIndex((event) => event.type === terminal));
 }
 
 async function expectTerminal(

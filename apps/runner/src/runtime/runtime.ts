@@ -204,8 +204,10 @@ interface HarnessAuthenticationEntry {
   readonly expiresAt: number;
   readonly methodId?: string;
   readonly state: HarnessAuthenticationState;
-  /** Resolves once cancellation or natural completion proves the process gone. */
+  /** Holds the stop reservation while cancellation is active or awaiting an explicit retry. */
   readonly stopping?: Promise<void>;
+  /** The reserved stop attempt ended without proving the process gone and may be retried. */
+  readonly stoppingFailed?: boolean;
   readonly cancel?: () => Promise<void>;
   readonly submit?: (value: string) => Promise<void>;
 }
@@ -1195,10 +1197,13 @@ export class RunnerRuntime {
       }
       return;
     }
-    if (existing.stopping) {
+    if (existing.stopping && !existing.stoppingFailed) {
       if (!awaitStartup) {
-        await existing.stopping;
-        return;
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Opensteer is still stopping the sign-in; try again",
+          retryable: true,
+        });
       }
       await withTimeout(existing.stopping, runtimeTaskStopWaitMs, {
         timeoutError: () =>
@@ -1217,10 +1222,7 @@ export class RunnerRuntime {
       this.#harnessAuthentications.delete(harnessInstanceId);
       return;
     }
-    const cancellationProof = cancellation?.then(
-      () => undefined,
-      () => new Promise<void>(() => undefined),
-    );
+    const cancellationProof = cancellation;
     const stopping = startup
       ? Promise.all(
           [startup, existing.completion, cancellationProof].filter(
@@ -1234,13 +1236,34 @@ export class RunnerRuntime {
             ),
           )
         : (cancellationProof ?? Promise.resolve());
-    const stoppingEntry: HarnessAuthenticationEntry = { ...existing, stopping };
+    const stoppingEntry: HarnessAuthenticationEntry = {
+      ...existing,
+      stopping,
+      stoppingFailed: false,
+    };
     this.#harnessAuthentications.set(harnessInstanceId, stoppingEntry);
-    void stopping.then(() => {
-      if (this.#harnessAuthentications.get(harnessInstanceId) === stoppingEntry) {
-        this.#harnessAuthentications.delete(harnessInstanceId);
-      }
-    });
+    void stopping.then(
+      () => {
+        if (this.#harnessAuthentications.get(harnessInstanceId) === stoppingEntry) {
+          this.#harnessAuthentications.delete(harnessInstanceId);
+        }
+      },
+      () => {
+        if (this.#harnessAuthentications.get(harnessInstanceId) === stoppingEntry) {
+          const failedEntry: HarnessAuthenticationEntry = {
+            ...existing,
+            stopping: Promise.resolve(),
+            stoppingFailed: true,
+          };
+          this.#harnessAuthentications.set(harnessInstanceId, failedEntry);
+          void existing.completion?.then(() => {
+            if (this.#harnessAuthentications.get(harnessInstanceId) === failedEntry) {
+              this.#harnessAuthentications.delete(harnessInstanceId);
+            }
+          });
+        }
+      },
+    );
 
     if (!awaitStartup) {
       await cancellation;
@@ -1345,7 +1368,7 @@ export class RunnerRuntime {
           !this.#harnesses.installationAffects(driverKind, definition.stateKind)
         )
           continue;
-        if (authentication.stopping)
+        if (authentication.stopping && !authentication.stoppingFailed)
           return reject(
             "conflict",
             "Opensteer couldn't stop the sign-in in progress; try again",

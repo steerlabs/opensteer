@@ -289,11 +289,12 @@ class AcpHarnessSession implements HarnessSession {
         this.#lifetime.signal,
       );
       if (result.usage) active.usage = result.usage;
-      const heldFailure = await this.#settleHeldAssistant(active);
+      const heldDecision = await this.#settleHeldAssistant(active);
       if (active.terminal) return;
-      if (heldFailure) {
-        active.heldAssistant.length = 0;
-        this.#fail(active, heldFailure);
+      if (heldDecision.status === "failed") {
+        if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+        else this.#flushHeldAssistant(active);
+        this.#fail(active, heldDecision.error);
         await active.completion.promise;
         return;
       }
@@ -304,16 +305,24 @@ class AcpHarnessSession implements HarnessSession {
       await active.completion.promise;
     } catch (error) {
       if (!active.terminal) {
-        if (active.interruptRequested || run.signal.aborted || this.#closed) {
-          this.#finish(active, "interrupted");
+        const heldDecision = await this.#settleHeldAssistant(active);
+        if (active.terminal) return;
+        if (heldDecision.status === "failed") {
+          if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+          else this.#flushHeldAssistant(active);
+          this.#fail(active, heldDecision.error);
         } else {
-          const interpretation = this.#options.hooks.classifyError(error, {
-            operation: "prompt",
-            providerSessionReference: this.providerSessionReference,
-            stderrTail: this.#stderrSince(active.stderrStart),
-          });
-          active.heldAssistant.length = 0;
-          this.#fail(active, interpretation);
+          this.#flushHeldAssistant(active);
+          if (active.interruptRequested || run.signal.aborted || this.#closed) {
+            this.#finish(active, "interrupted");
+          } else {
+            const interpretation = this.#options.hooks.classifyError(error, {
+              operation: "prompt",
+              providerSessionReference: this.providerSessionReference,
+              stderrTail: this.#stderrSince(active.stderrStart),
+            });
+            this.#fail(active, interpretation);
+          }
         }
       }
     } finally {
@@ -630,18 +639,23 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
-  async #settleHeldAssistant(active: ActiveTurn): Promise<OpensteerError | undefined> {
+  async #settleHeldAssistant(active: ActiveTurn): Promise<AcpHeldAssistantDecision> {
     const hold = this.#options.hooks.holdAssistant;
-    if (!hold || !active.assistantHoldActive || active.heldAssistant.length === 0) return undefined;
+    if (!hold) return { status: "succeeded" };
     const deadline = Date.now() + hold.deadlineMs;
     let decision = this.#heldAssistantDecision(active);
-    while (decision.status === "pending" && !this.#processEnded && !active.terminal) {
+    while (
+      decision.status !== "failed" &&
+      (active.heldAssistant.length > 0 || decision.status === "pending") &&
+      !this.#processEnded &&
+      !active.terminal
+    ) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       await this.#waitForStderrOrProcessExit(remaining);
       decision = this.#heldAssistantDecision(active);
     }
-    return decision.status === "failed" ? decision.error : undefined;
+    return decision;
   }
 
   #heldAssistantDecision(active: ActiveTurn): AcpHeldAssistantDecision {
@@ -689,7 +703,16 @@ class AcpHarnessSession implements HarnessSession {
     if (this.#options.policy.cancel.behavior === "cancel-and-kill") {
       this.#expectedProcessExit = true;
       await this.#process.terminate(0);
-      this.#finish(active, "interrupted");
+      const heldDecision = await this.#settleHeldAssistant(active);
+      if (active.terminal) return;
+      if (heldDecision.status === "failed") {
+        if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+        else this.#flushHeldAssistant(active);
+        this.#fail(active, heldDecision.error);
+      } else {
+        this.#flushHeldAssistant(active);
+        this.#finish(active, "interrupted");
+      }
     }
   }
 
@@ -891,7 +914,15 @@ class AcpHarnessSession implements HarnessSession {
       await this.#client
         .cancel(this.providerSessionReference, this.#options.policy.cancel.metadata)
         .catch(() => undefined);
-      this.#finish(active, "interrupted");
+      const heldDecision = await this.#settleHeldAssistant(active);
+      if (heldDecision.status === "failed") {
+        if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+        else this.#flushHeldAssistant(active);
+        this.#fail(active, heldDecision.error);
+      } else {
+        this.#flushHeldAssistant(active);
+        this.#finish(active, "interrupted");
+      }
     }
     this.#cancelPending("source-closed");
     this.#lifetime.abort(new Error("ACP session stopped"));

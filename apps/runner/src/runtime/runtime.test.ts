@@ -1774,6 +1774,7 @@ describe("RunnerRuntime", () => {
         error: { code: "conflict", retryable: true },
         status: "rejected",
       });
+      expect(cancel).toHaveBeenCalledTimes(2);
       expect(inspectInstallation).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -2503,6 +2504,91 @@ describe("RunnerRuntime", () => {
       await rm(temporaryRoot, { force: true, recursive: true });
     }
   });
+
+  it("returns immediately while sign-in cancellation is in progress and retries after it fails", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-retry-"));
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("authentication-cancel-retry-test");
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    let rejectFirstCancel!: () => void;
+    const firstCancelMayFail = new Promise<void>((_, reject) => {
+      rejectFirstCancel = () => reject(new Error("provider cancellation failed"));
+    });
+    const cancel = vi.fn(async () => {
+      if (cancel.mock.calls.length === 1) return await firstCancelMayFail;
+      const child = authenticationProcess;
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill();
+      await once(child, "exit");
+    });
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code",
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: once(child, "exit").then(
+            () => ({ detail: "Sign-in stopped", status: "failed" }) as const,
+          ),
+          status: "pending",
+        };
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      privateStateDirectory: join(temporaryRoot, "private"),
+      registry,
+    });
+    const harness = harnessDefinition(driverKind, "Cancellation retry", 1);
+    const cancellation = {
+      action: "cancel" as const,
+      driverKind,
+      harnessInstanceId: harness.id,
+    };
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await vi.waitFor(() => expect(authenticationProcess?.pid).toBeTypeOf("number"));
+
+      const first = runtime.handleHarnessAuthentication(cancellation);
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+      await expect(runtime.handleHarnessAuthentication(cancellation)).rejects.toMatchObject({
+        code: "conflict",
+        message: "Opensteer is still stopping the sign-in; try again",
+        retryable: true,
+      });
+
+      rejectFirstCancel();
+      await expect(first).rejects.toThrow("provider cancellation failed");
+      await expect(runtime.handleHarnessAuthentication(cancellation)).resolves.toMatchObject({
+        state: { status: "not-started" },
+      });
+      expect(cancel).toHaveBeenCalledTimes(2);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).not.toBeNull();
+    } finally {
+      rejectFirstCancel();
+      const child = authenticationProcess;
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, "exit");
+      }
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  }, 2_000);
 
   it("cancels provider initialization before a sign-in challenge exists", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-startup-"));

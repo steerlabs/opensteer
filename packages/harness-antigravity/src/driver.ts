@@ -380,7 +380,10 @@ function antigravityTurnFailure(
   };
 }
 
-function antigravityErrorBlocks(stderr: string): readonly AntigravityTurnFailure[] {
+function antigravityErrorDiagnostics(stderr: string): {
+  readonly blocks: readonly AntigravityTurnFailure[];
+  readonly pending: boolean;
+} {
   const blocks: AntigravityTurnFailure[] = [];
   let pending: string[] = [];
   for (const line of stderr.split(/\r?\n/gu)) {
@@ -396,20 +399,29 @@ function antigravityErrorBlocks(stderr: string): readonly AntigravityTurnFailure
     if (pending.length > 0) blocks.push(antigravityTurnFailure(marker[1]!, pending));
     pending = [];
   }
-  return blocks;
+  return { blocks, pending: pending.length > 0 };
+}
+
+function antigravityErrorBlocks(stderr: string): readonly AntigravityTurnFailure[] {
+  return antigravityErrorDiagnostics(stderr).blocks;
 }
 
 export function settleAntigravityHeldAssistant(
   context: AcpHeldAssistantContext,
 ): AcpHeldAssistantDecision {
-  const blocks = antigravityErrorBlocks(context.stderrTail).filter(
+  const diagnostics = antigravityErrorDiagnostics(context.stderrTail);
+  const blocks = diagnostics.blocks.filter(
     (block) => block.sessionId === context.providerSessionReference,
   );
-  if (blocks.length === 0) return { status: "pending" };
-  const matching = blocks.find((block) => block.message?.trim() === context.assistantText.trim());
-  return matching
-    ? { error: classifyAntigravityTurnFailure(matching), status: "failed" }
-    : { status: "succeeded" };
+  const failure = blocks.at(-1);
+  if (!failure) return diagnostics.pending ? { status: "pending" } : { status: "succeeded" };
+  return {
+    discardAssistant:
+      context.assistantText.trim().length > 0 &&
+      failure.message?.trim() === context.assistantText.trim(),
+    error: classifyAntigravityTurnFailure(failure),
+    status: "failed",
+  };
 }
 
 function classifyAntigravityTurnFailure(failure: AntigravityTurnFailure): OpensteerError {

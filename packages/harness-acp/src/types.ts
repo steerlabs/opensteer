@@ -137,7 +137,11 @@ export interface AcpHeldAssistantContext {
 }
 
 export type AcpHeldAssistantDecision =
-  | { readonly status: "failed"; readonly error: OpensteerError }
+  | {
+      readonly status: "failed";
+      readonly error: OpensteerError;
+      readonly discardAssistant: boolean;
+    }
   | { readonly status: "pending" }
   | { readonly status: "succeeded" };
 

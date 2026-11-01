@@ -4,6 +4,7 @@ const scenario = process.argv[2] ?? "unrelated";
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const foreignSessionId = "22222222-2222-4222-8222-222222222222";
 let promptCount = 0;
+let delayedDiagnostic;
 
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -52,6 +53,25 @@ function prompt(id) {
     emitResult();
     return;
   }
+  if (scenario === "thought-error-delayed-close") {
+    const message = "Your prepayment credits are depleted.";
+    update({
+      content: { text: "Considering the answer", type: "text" },
+      sessionUpdate: "agent_thought_chunk",
+    });
+    emitChunk(message);
+    const lines = failureTranscript(402, message, "RESOURCE_EXHAUSTED").split("\n");
+    process.stderr.write(`${lines.slice(0, -1).join("\n")}\n`);
+    const barrierId = `diagnostic-barrier-${id}`;
+    delayedDiagnostic = { barrierId, close: lines.at(-1), promptId: id };
+    send({
+      id: barrierId,
+      jsonrpc: "2.0",
+      method: "fs/read_text_file",
+      params: { path: "/diagnostic-barrier", sessionId },
+    });
+    return;
+  }
   if (scenario === "long-reply") {
     emitChunk("a".repeat(1_024));
     emitChunk("b".repeat(1_025));
@@ -67,16 +87,7 @@ function prompt(id) {
     return;
   }
   if (scenario === "late-block") {
-    if (promptCount === 1) {
-      update({
-        content: { text: "Earlier reasoning", type: "text" },
-        sessionUpdate: "agent_thought_chunk",
-      });
-      emitChunk("FIRST");
-    } else {
-      process.stderr.write(`${failureTranscript(500, "old failure", "INTERNAL")}\n`);
-      emitChunk("SECOND");
-    }
+    emitChunk("SECOND");
     emitResult();
     return;
   }
@@ -125,6 +136,15 @@ function prompt(id) {
 createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
   if (request.id === undefined) return;
+  if (request.method === undefined) {
+    if (delayedDiagnostic?.barrierId === request.id) {
+      const { close, promptId } = delayedDiagnostic;
+      delayedDiagnostic = undefined;
+      send({ id: promptId, jsonrpc: "2.0", result: { stopReason: "end_turn" } });
+      setImmediate(() => process.stderr.write(`${close}\n`));
+    }
+    return;
+  }
   switch (request.method) {
     case "initialize":
       send({
@@ -134,6 +154,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     case "session/new":
+      if (scenario === "late-block") {
+        process.stderr.write(`${failureTranscript(500, "old failure", "INTERNAL")}\n`);
+      }
       send({ id: request.id, jsonrpc: "2.0", result: { sessionId } });
       return;
     case "session/set_model":
