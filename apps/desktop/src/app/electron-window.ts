@@ -197,10 +197,16 @@ export interface ElectronAppWindow extends BaseWindow {
 const appWindows = new WeakMap<WebContents, BaseWindow>();
 
 export function createElectronAppWindow(
-  options: BaseWindowConstructorOptions,
+  options: BaseWindowConstructorOptions & { readonly backgroundColor: string },
   webPreferences: WebPreferences,
 ): ElectronAppWindow {
   const window = new BaseWindow(options);
+  // On macOS the window colour is a layer outside Chromium, whose compositor
+  // treats this opaque window's frame as opaque and redraws damaged regions
+  // without clearing them. Painting the ground in the compositor makes that
+  // true; otherwise translucent app pixels over transparent ones stack a coat
+  // per redraw whenever Core Animation delegation is off.
+  window.contentView.setBackgroundColor(options.backgroundColor);
   const appView = new WebContentsView({ webPreferences });
   const shell = Object.assign(window, { appView, webContents: appView.webContents });
   appWindows.set(shell.webContents, window);
