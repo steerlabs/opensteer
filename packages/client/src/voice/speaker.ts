@@ -28,12 +28,15 @@ function durableReply(entry: TranscriptEntry): entry is MessageEntry {
 }
 
 /**
- * Whether the Host stamped this entry's time. A live stream's reply, reasoning
- * or tool call keeps the moment this device first drew it, even once settled.
+ * When the Host says this entry happened, or null when only this device does.
+ * A live stream's reply, reasoning or tool call keeps the moment this device
+ * first drew it even once settled; a settled step's completion is the Host's.
  */
-function hostStamped(entry: TranscriptEntry): boolean {
-  if (entry.kind === "reasoning" || entry.kind === "tool") return false;
-  return entry.kind !== "message" || (entry.streaming !== true && !entry.id.startsWith("stream:"));
+function hostTime(entry: TranscriptEntry): string | null {
+  if (entry.kind === "reasoning" || entry.kind === "tool") return entry.completedAt ?? null;
+  if (entry.kind === "message" && (entry.streaming === true || entry.id.startsWith("stream:")))
+    return null;
+  return entry.createdAt;
 }
 
 type Speech =
@@ -159,7 +162,7 @@ export class VoiceSpeaker {
     let since: number | null = null;
     for (const entry of snapshot.transcripts[threadId] ?? []) {
       if (durableReply(entry)) this.#messages.add(entry.id);
-      const at = hostStamped(entry) ? Date.parse(entry.createdAt) : Number.NaN;
+      const at = Date.parse(hostTime(entry) ?? "");
       if (Number.isFinite(at)) since = Math.max(since ?? at, at);
     }
     this.#since = since;

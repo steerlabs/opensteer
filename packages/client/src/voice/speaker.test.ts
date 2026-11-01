@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { voiceSayMaxLength } from "@opensteer/protocol/voice";
-import type { RunEntry } from "../host/client.js";
+import type { RunEntry, ToolEntry } from "../host/client.js";
 import type { WaitingRequest } from "@opensteer/core";
 import { VoiceSpeaker, voiceSpeakableText } from "./speaker.js";
 import { voiceHost, voiceReply, voiceTestNow } from "./voice.test-support.js";
@@ -153,6 +153,37 @@ describe("VoiceSpeaker", () => {
       transcripts: {
         [f.id]: [older, ...history, voiceReply("new", "New reply", voiceTestNow + 1)],
       },
+    });
+    expect(f.say.mock.calls).toEqual([["New reply"]]);
+    speaker.dispose();
+    f.host.dispose();
+  });
+
+  it("keeps older replies silent behind a history page of only settled tool activity", () => {
+    const f = setup();
+    // Drawn live on a device an hour ahead, settled by the Host's completion.
+    const tool: ToolEntry = {
+      arguments: {},
+      callId: "call",
+      completedAt: new Date(voiceTestNow).toISOString(),
+      createdAt: new Date(voiceTestNow + 3_600_000).toISOString(),
+      id: "tool:history:call",
+      integration: null,
+      isError: false,
+      kind: "tool",
+      output: undefined,
+      runId: "history",
+      state: "done",
+      streamText: "",
+      tool: null,
+    };
+    f.publish({ transcripts: { [f.id]: [tool] } });
+    const speaker = f.make();
+    const older = voiceReply("older", "Old private reply", voiceTestNow - 1);
+    f.publish({ transcripts: { [f.id]: [older, tool] } });
+    expect(f.say).not.toHaveBeenCalled();
+    f.publish({
+      transcripts: { [f.id]: [older, tool, voiceReply("new", "New reply", voiceTestNow + 1)] },
     });
     expect(f.say.mock.calls).toEqual([["New reply"]]);
     speaker.dispose();
