@@ -853,7 +853,9 @@ export class BrowserController {
       [...this.lanes].map(async ([surfaceId, lane]) => {
         if (message.surfaceId && message.surfaceId !== surfaceId) return;
         const concerned =
-          lane.contains((entry) => inputProducer(entry) === producer) ||
+          lane.contains(
+            (entry) => inputProducer(entry) === producer && entry.type !== "viewport.follow",
+          ) ||
           this.liveGesture(surfaceId)?.owner === producer ||
           this.keyOwners.get(surfaceId) === producer;
         lane.cancel((entry) => inputProducer(entry) === producer);
@@ -1865,8 +1867,11 @@ export class BrowserController {
     const producer = inputProducer(message);
     for (const [surfaceId, lane] of this.lanes) {
       if (surfaceId === except) continue;
+      // Dropping a replaceable view hint cannot leave a physical press held.
       const concerned =
-        lane.contains((entry) => inputProducer(entry) === producer) ||
+        lane.contains(
+          (entry) => inputProducer(entry) === producer && entry.type !== "viewport.follow",
+        ) ||
         this.liveGesture(surfaceId)?.owner === producer ||
         this.keyOwners.get(surfaceId) === producer;
       lane.cancel((entry) => inputProducer(entry) === producer);

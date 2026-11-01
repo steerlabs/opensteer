@@ -1586,6 +1586,71 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  it.each(["selection", "cancel"] as const)(
+    "drops a canceled viewport hint without queuing press cleanup (%s)",
+    async (departure) => {
+      const controller = createController();
+      await controller.start();
+      const agentSurface = activeSurfaceId();
+      const personSurface = await ledger.openSurface();
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const held = gate({ label: "dialog-held agent metrics", deadlineMs: 2_000 });
+      page.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () => held.enter());
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+      const writing = controller.handle({
+        type: "cdp.command",
+        requestId: globalThis.crypto.randomUUID(),
+        command: {
+          method: "Emulation.setDeviceMetricsOverride",
+          parameters: { width: 500, height: 400, deviceScaleFactor: 1, mobile: false },
+          sessionId,
+        },
+      });
+      const pending: Promise<void>[] = [writing];
+      try {
+        await held.entered;
+        pending.push(
+          controller.handle({
+            type: "viewport.follow",
+            surfaceId: agentSurface,
+            width: 800,
+            height: 600,
+          }),
+        );
+        pending.push(
+          controller.handle(
+            departure === "selection"
+              ? { type: "surface.activate", surfaceId: personSurface.id }
+              : { type: "input.cancel" },
+          ),
+        );
+        if (departure === "selection") await pending.at(-1);
+        else await flushMicrotasks();
+        clock.mockReturnValue(300);
+        pending.push(
+          controller.handle({
+            type: "viewport.follow",
+            surfaceId: agentSurface,
+            width: 900,
+            height: 700,
+          }),
+        );
+        await flushMicrotasks();
+        expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+      } finally {
+        clock.mockRestore();
+        held.release();
+        await Promise.all(pending);
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
   it("keeps agent target creation and activation independent from the viewed surface", async () => {
     const controller = createController();
     await controller.start();
