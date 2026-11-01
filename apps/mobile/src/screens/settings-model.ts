@@ -17,7 +17,7 @@ import {
 } from "@opensteer/client/host";
 import { computerUseMachineLine, isAndroidPhone } from "@opensteer/client/integrations";
 import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { HarnessInstallation, MachineSummary } from "@opensteer/protocol";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentStatusLabel, type DeploymentRow } from "../client/deployment-rows.js";
 import type {
@@ -65,6 +65,47 @@ export interface AccountSettingsModel {
   readonly initial: string | null;
   readonly subtitle: string | null;
   readonly title: string;
+}
+
+export function engineInstallationUpdateModel(
+  installation: HarnessInstallation,
+  locallyPending: boolean,
+): { readonly detail: string; readonly updateEnabled: boolean; readonly updating: boolean } {
+  if (locallyPending) {
+    return { detail: "Updating…", updateEnabled: false, updating: true };
+  }
+  switch (installation.update) {
+    case "available":
+      return {
+        detail: `Update available${installation.latestVersion ? ` · ${installation.latestVersion}` : ""}`,
+        updateEnabled: true,
+        updating: false,
+      };
+    case "current":
+      return { detail: "Up to date", updateEnabled: false, updating: false };
+    case "manual":
+      return {
+        detail: installation.detail ?? "Update on its computer.",
+        updateEnabled: false,
+        updating: false,
+      };
+    case "unknown":
+      return {
+        detail: installation.detail ?? "Update status unavailable.",
+        updateEnabled: true,
+        updating: false,
+      };
+    case "updating":
+      return { detail: "Updating…", updateEnabled: false, updating: true };
+    case "succeeded":
+      return { detail: "Updated", updateEnabled: false, updating: false };
+    case "failed":
+      return {
+        detail: installation.detail ?? "Update failed.",
+        updateEnabled: true,
+        updating: false,
+      };
+  }
 }
 
 export interface NotificationSettingsModel {

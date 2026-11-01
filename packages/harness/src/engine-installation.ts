@@ -61,13 +61,15 @@ interface CommandResult {
 
 export interface EngineInstallationResolverOptions {
   readonly environment?: NodeJS.ProcessEnv;
+  readonly inspectionTimeoutMs?: number;
   readonly now?: () => number;
   readonly run?: (
     executable: string,
     args: readonly string[],
     environment: Readonly<Record<string, string>>,
+    signal: AbortSignal,
   ) => Promise<CommandResult>;
-  readonly fetchJson?: (url: string) => Promise<unknown>;
+  readonly fetchJson?: (url: string, signal: AbortSignal) => Promise<unknown>;
 }
 
 interface CachedResolution {
@@ -87,23 +89,26 @@ interface ResolvedOwnership {
 
 const hourMs = 60 * 60 * 1_000;
 const maxInspectionBytes = 128 * 1_024;
+const defaultInspectionTimeoutMs = 5_000;
 
 /** Resolves only ownership the filesystem or package manager can prove. */
 export class EngineInstallationResolver {
   readonly #cache = new Map<string, CachedResolution>();
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #inspectionTimeoutMs: number;
   readonly #now: () => number;
   readonly #run: NonNullable<EngineInstallationResolverOptions["run"]>;
   readonly #fetchJson: NonNullable<EngineInstallationResolverOptions["fetchJson"]>;
 
   constructor(options: EngineInstallationResolverOptions = {}) {
     this.#environment = options.environment ?? process.env;
+    this.#inspectionTimeoutMs = options.inspectionTimeoutMs ?? defaultInspectionTimeoutMs;
     this.#now = options.now ?? Date.now;
     this.#run = options.run ?? runSupervised;
     this.#fetchJson =
       options.fetchJson ??
-      (async (url) => {
-        const response = await fetch(url, { headers: { accept: "application/json" } });
+      (async (url, signal) => {
+        const response = await fetch(url, { headers: { accept: "application/json" }, signal });
         if (!response.ok) throw new Error(`Latest-version request failed (${response.status})`);
         return response.json();
       });
@@ -111,11 +116,7 @@ export class EngineInstallationResolver {
 
   invalidate(executable?: string): void {
     if (!executable) this.#cache.clear();
-    else {
-      for (const key of this.#cache.keys()) {
-        if (key.startsWith(`${executable}\0`)) this.#cache.delete(key);
-      }
-    }
+    else this.#cache.delete(executable);
   }
 
   async resolve(
@@ -123,11 +124,10 @@ export class EngineInstallationResolver {
     facts: InstalledEngineUpdateFacts,
     scope: HarnessInstallation["scope"],
   ): Promise<ResolvedEngineInstallation> {
+    const cached = this.#cache.get(visibleExecutable);
+    if (cached && cached.expiresAt > this.#now()) return cached.value;
     const executable = await realpath(visibleExecutable).catch(() => visibleExecutable);
     const version = await this.#readVersion(executable, facts);
-    const key = `${visibleExecutable}\0${version}`;
-    const cached = this.#cache.get(key);
-    if (cached && cached.expiresAt > this.#now()) return cached.value;
     const ownership = await this.#ownership(visibleExecutable, executable, facts);
     const latestVersion = await this.#latest(ownership, facts);
     const belowMinimum = !meetsMinimumVersion(version, facts.minimumVersion);
@@ -163,12 +163,12 @@ export class EngineInstallationResolver {
       },
       ...(plan ? { plan } : {}),
     };
-    this.#cache.set(key, { expiresAt: this.#now() + hourMs, value });
+    this.#cache.set(visibleExecutable, { expiresAt: this.#now() + hourMs, value });
     return value;
   }
 
   async #readVersion(executable: string, facts: InstalledEngineUpdateFacts): Promise<string> {
-    const result = await this.#run(
+    const result = await this.#runInspection(
       executable,
       facts.version.args,
       processEnvironment(this.#environment),
@@ -261,7 +261,7 @@ export class EngineInstallationResolver {
     }
     const npm = findExecutableOnPath("npm", path);
     if (npm) {
-      const prefixResult = await this.#run(
+      const prefixResult = await this.#runInspection(
         npm,
         ["prefix", "--global"],
         processEnvironment(this.#environment),
@@ -303,7 +303,11 @@ export class EngineInstallationResolver {
       ? candidate
       : findExecutableOnPath("brew", this.#environment.PATH);
     if (!manager) return undefined;
-    const prefix = await this.#run(manager, ["--prefix"], processEnvironment(this.#environment));
+    const prefix = await this.#runInspection(
+      manager,
+      ["--prefix"],
+      processEnvironment(this.#environment),
+    );
     const vouchedPrefix = await realpath(prefix.stdout.trim()).catch(() =>
       normalize(prefix.stdout.trim()),
     );
@@ -333,7 +337,7 @@ export class EngineInstallationResolver {
       ownership.brewName &&
       ownership.brewType
     ) {
-      const result = await this.#run(
+      const result = await this.#runInspection(
         ownership.manager,
         ["info", "--json=v2", ownership.brewName],
         processEnvironment(this.#environment),
@@ -348,7 +352,9 @@ export class EngineInstallationResolver {
         facts.latest.channels[facts.latest.defaultChannel];
       if (!channel) return null;
       try {
-        const manifest = await this.#fetchJson(facts.latest.url.replace("{channel}", channel));
+        const manifest = await this.#fetchInspection(
+          facts.latest.url.replace("{channel}", channel),
+        );
         return readStringField(manifest, facts.latest.versionField);
       } catch {
         return null;
@@ -357,12 +363,26 @@ export class EngineInstallationResolver {
     if (!facts.packageName) return null;
     const npm = findExecutableOnPath("npm", this.#environment.PATH);
     if (!npm) return null;
-    const result = await this.#run(
+    const result = await this.#runInspection(
       npm,
       ["view", "--json", `${facts.packageName}@latest`, "version"],
       processEnvironment(this.#environment),
     );
     return result.code === 0 ? parseNpmLatestVersion(result.stdout) : null;
+  }
+
+  #runInspection(
+    executable: string,
+    args: readonly string[],
+    environment: Readonly<Record<string, string>>,
+  ): Promise<CommandResult> {
+    const signal = AbortSignal.timeout(this.#inspectionTimeoutMs);
+    return abortable(this.#run(executable, args, environment, signal), signal);
+  }
+
+  #fetchInspection(url: string): Promise<unknown> {
+    const signal = AbortSignal.timeout(this.#inspectionTimeoutMs);
+    return abortable(this.#fetchJson(url, signal), signal);
   }
 }
 
@@ -406,8 +426,61 @@ function updateEnvironment(
 }
 
 function processEnvironment(source: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
+  const exact = new Set([
+    "APPDATA",
+    "BUN_INSTALL",
+    "ComSpec",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "HOMEBREW_BREW_FILE",
+    "HOMEBREW_CACHE",
+    "HOMEBREW_CELLAR",
+    "HOMEBREW_LIBRARY",
+    "HOMEBREW_PREFIX",
+    "HOMEBREW_REPOSITORY",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "LANGUAGE",
+    "LOCALAPPDATA",
+    "LOGNAME",
+    "MISE_CACHE_DIR",
+    "MISE_CONFIG_DIR",
+    "MISE_DATA_DIR",
+    "MISE_INSTALL_PATH",
+    "MISE_STATE_DIR",
+    "MUSE_CHANNEL",
+    "NODE_EXTRA_CA_CERTS",
+    "NO_PROXY",
+    "NPM_CONFIG_PREFIX",
+    "PATH",
+    "PATHEXT",
+    "PNPM_HOME",
+    "PWD",
+    "Path",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SystemRoot",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "USERNAME",
+    "VOLTA_HOME",
+    "WINDIR",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "npm_config_prefix",
+  ]);
   return Object.fromEntries(
-    Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(source).filter(
+      (entry): entry is [string, string] =>
+        entry[1] !== undefined && (exact.has(entry[0]) || entry[0].startsWith("LC_")),
+    ),
   );
 }
 
@@ -415,6 +488,7 @@ async function runSupervised(
   executable: string,
   args: readonly string[],
   environment: Readonly<Record<string, string>>,
+  signal: AbortSignal,
 ): Promise<CommandResult> {
   const process = spawnSupervised({
     args,
@@ -423,10 +497,27 @@ async function runSupervised(
     executable,
     maxOutputBytes: maxInspectionBytes,
   });
+  const abort = () => void process.terminate(0).catch(() => undefined);
+  signal.addEventListener("abort", abort, { once: true });
   const stdout = collect(process.stdout);
   const stderr = collect(process.stderr);
-  const exit = await process.exited;
-  return { code: exit.code, stderr: await stderr, stdout: await stdout };
+  try {
+    const exit = await process.exited;
+    return { code: exit.code, stderr: await stderr, stdout: await stdout };
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolvePromise, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void operation
+      .then(resolvePromise, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 async function collect(chunks: AsyncIterable<Buffer>): Promise<string> {

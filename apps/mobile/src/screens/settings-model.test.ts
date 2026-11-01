@@ -5,6 +5,7 @@ import {
   computersSettingsFooter,
   computersSettingsFooterFor,
   computersSettingsRows,
+  engineInstallationUpdateModel,
   notificationSettingsModel,
   passwordsSettingsModel,
   signOutAccountInOrder,
@@ -13,6 +14,40 @@ import {
 const preferences = { approvalsEnabled: true, runOutcomesEnabled: false };
 
 describe("settings presentation", () => {
+  it.each([
+    ["available", "Update available · 2.0.0", true, false],
+    ["current", "Up to date", false, false],
+    ["manual", "Update on its computer.", false, false],
+    ["unknown", "Update status unavailable.", true, false],
+    ["updating", "Updating…", false, true],
+    ["succeeded", "Updated", false, false],
+    ["failed", "Update failed.", true, false],
+  ] as const)(
+    "renders the %s engine installation state",
+    (update, detail, updateEnabled, updating) => {
+      expect(
+        engineInstallationUpdateModel(
+          { latestVersion: "2.0.0", scope: "all", update, version: "1.0.0" },
+          false,
+        ),
+      ).toEqual({ detail, updateEnabled, updating });
+    },
+  );
+
+  it("keeps a locally initiated update pending until shared state catches up", () => {
+    expect(
+      engineInstallationUpdateModel(
+        {
+          latestVersion: "2.0.0",
+          scope: "all",
+          update: "available",
+          version: "1.0.0",
+        },
+        true,
+      ),
+    ).toEqual({ detail: "Updating…", updateEnabled: false, updating: true });
+  });
+
   it.each([
     ["no-account-service", null],
     ["signed-out", null],
