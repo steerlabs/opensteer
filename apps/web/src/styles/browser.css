@@ -268,12 +268,17 @@
   color: var(--text-soft);
   background: var(--sheen) var(--fill-plate);
   gap: var(--space-8);
-  transition: border-color var(--duration-fast) linear;
+  transition:
+    border-color var(--duration-fast) linear,
+    background-color var(--duration-fast) linear;
   box-shadow: var(--edge-plate);
 }
 
+/* Editing, it becomes a field: a field's rim and one step of light. The
+   ember belongs to actions, as in the composer. */
 .browser-address:focus-within {
-  border-color: var(--ember);
+  border-color: var(--rim-control);
+  background-color: var(--fill-plate-hover);
 }
 
 .browser-address {
