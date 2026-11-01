@@ -2617,11 +2617,19 @@ describe("HttpHostClient durable realtime", () => {
         exhausted?: boolean;
         stuck?: boolean;
         holdSecond?: boolean;
+        holdFirst?: boolean;
+        empty?: boolean;
+        folded?: boolean;
+        longScan?: boolean;
+        shown?: "active" | "observed";
       } = {},
     ) {
       const workspace = makeWorkspace();
       const thread = { ...makeThread(workspace.id), role: options.role ?? "conversation" };
-      const recent = { ...makeMessage(thread.id, "input", "Recent"), runId: null };
+      const recent = {
+        ...makeMessage(thread.id, options.folded ? "assistant" : "input", "Recent"),
+        runId: options.folded ? createId("run") : null,
+      };
       const earlier = makeMessage(thread.id, "input", "Earlier question");
       const reply = {
         ...makeMessage(thread.id, "assistant", "Earlier reply"),
@@ -2653,10 +2661,14 @@ describe("HttpHostClient durable realtime", () => {
           replyMessageId: reply.id,
         }),
       ];
+      const firstAsked = Promise.withResolvers<void>();
+      const firstAnswer = Promise.withResolvers<void>();
       const secondAsked = Promise.withResolvers<void>();
       const secondAnswer = Promise.withResolvers<void>();
       const requests: Record<string, unknown>[] = [];
       let viewerId = ownerId;
+      let warming =
+        options.empty === true || options.folded === true || options.shown !== undefined;
       const socket = new FakeSocket();
       const client = createHttpHostClient({
         capabilities: options.turnPages === false ? [] : ["history-turns-v1"],
@@ -2666,24 +2678,87 @@ describe("HttpHostClient durable realtime", () => {
             const boot = bootstrap([workspace]);
             return json({ ...boot, user: { ...boot.user, id: viewerId } });
           }
-          requests.push(rpcPayload(url, init));
+          const request = rpcPayload(url, init);
+          if (request.threadId !== thread.id)
+            return json({
+              thread: { ...thread, id: ThreadIdSchema.parse(request.threadId) },
+              threadId: request.threadId,
+              events: [],
+              window: {
+                byteCount: 0,
+                itemCount: 0,
+                totalItems: 0,
+                hasMore: false,
+                nextBefore: null,
+                threadId: request.threadId,
+              },
+            });
+          if (warming) {
+            warming = false;
+            const events = options.empty
+              ? []
+              : [
+                  ...(options.folded
+                    ? [
+                        agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                          status: "completed",
+                          replyMessageId: recent.id,
+                        }),
+                      ]
+                    : []),
+                  agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                    input: null,
+                    message: recent,
+                  }),
+                ];
+            return json({
+              thread,
+              threadId: thread.id,
+              events,
+              window: {
+                byteCount: 0,
+                itemCount: 0,
+                totalItems: 6,
+                threadId: thread.id,
+                hasMore: true,
+                nextBefore: "recent",
+              },
+            });
+          }
+          requests.push(request);
           const first = requests.length === 1;
-          if (!first && options.holdSecond) {
+          if (first && options.holdFirst) {
+            firstAsked.resolve();
+            await firstAnswer.promise;
+          }
+          if (requests.length === 2 && options.holdSecond) {
             secondAsked.resolve();
             await secondAnswer.promise;
           }
-          const events = first
-            ? options.steps
-              ? [
-                  agentEvent(workspace.id, thread.id, silentRun, "4", "reasoning.completed", {
-                    blockId: "older-step",
-                    text: "Older work without a reply",
-                  }),
-                ]
-              : silent
-            : options.exhausted
+          const navigating = !request.before;
+          const events = navigating
+            ? visible
+            : options.longScan && !first
               ? []
-              : visible;
+              : first
+                ? options.steps || options.folded
+                  ? [
+                      agentEvent(
+                        workspace.id,
+                        thread.id,
+                        options.folded ? recent.runId : silentRun,
+                        "4",
+                        "reasoning.completed",
+                        {
+                          blockId: "older-step",
+                          text: "Older work without a reply",
+                        },
+                      ),
+                    ]
+                  : silent
+                : options.exhausted
+                  ? []
+                  : visible;
           return json({
             thread,
             threadId: thread.id,
@@ -2693,14 +2768,18 @@ describe("HttpHostClient durable realtime", () => {
               itemCount: events.length,
               totalItems: 6,
               threadId: thread.id,
-              hasMore: first || options.holdSecond === true,
-              nextBefore: first
-                ? options.stuck
-                  ? "recent"
-                  : "silent"
-                : options.holdSecond
-                  ? "oldest"
-                  : null,
+              hasMore:
+                !navigating &&
+                (first || (options.longScan ? requests.length < 5 : options.holdSecond === true)),
+              nextBefore: navigating
+                ? null
+                : first
+                  ? options.stuck
+                    ? "recent"
+                    : "silent"
+                  : options.holdSecond
+                    ? `oldest-${requests.length}`
+                    : null,
             },
           });
         },
@@ -2714,7 +2793,7 @@ describe("HttpHostClient durable realtime", () => {
         snapshot: {
           ...workspaceSnapshot(workspace, "6"),
           threads: [thread],
-          messages: [recent],
+          messages: options.empty ? [] : [recent],
           messageWindows: [
             {
               byteCount: 256,
@@ -2727,12 +2806,32 @@ describe("HttpHostClient durable realtime", () => {
           ],
         },
       });
+      let release: (() => void) | undefined;
+      if (warming) {
+        await client.loadLatestTranscript(thread.id);
+        if (options.shown === "observed") release = client.observeThread(thread.id);
+        else client.activateThread(thread.id);
+      }
       return {
+        leave: () =>
+          options.shown === "observed" ? release?.() : client.activateThread(createId("thread")),
         client,
         requests,
         thread,
+        firstAsked,
+        firstAnswer,
         secondAsked,
         secondAnswer,
+        receiveHuman: () =>
+          socket.receive({
+            type: "host.events",
+            events: [
+              agentEvent(workspace.id, thread.id, null, "7", "message.created", {
+                input: makeThreadInput(recent),
+                message: { ...recent, sequence: sequence("7") },
+              }),
+            ],
+          }),
         changeViewer: async () => {
           viewerId = createId("user");
           await client.refresh();
@@ -2796,6 +2895,94 @@ describe("HttpHostClient durable realtime", () => {
       },
     );
 
+    it("does not count a live human message as older-page progress", async () => {
+      const f = await setupHistory({ empty: true, holdFirst: true });
+      try {
+        const loading = f.client.loadEarlierTranscript(f.thread.id);
+        await withTimeout(f.firstAsked.promise, 1000, {
+          timeoutError: () => new Error("The first page was never requested."),
+        });
+        f.receiveHuman();
+        await vi.waitFor(
+          () =>
+            expect(
+              f.client
+                .getSnapshot()
+                .transcripts[f.thread.id]?.some(
+                  (entry) => entry.kind === "message" && entry.body === "Recent",
+                ),
+            ).toBe(true),
+          { timeout: 1000 },
+        );
+        f.firstAnswer.resolve();
+        await loading;
+        expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+      } finally {
+        f.firstAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it.each([true, false])(
+      "reads past a byte-cut page folded into the first drawn work turn (turn pages %s)",
+      async (turnPages) => {
+        const f = await setupHistory({ role: "work", folded: true, turnPages });
+        try {
+          await f.client.loadEarlierTranscript(f.thread.id);
+          expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+        } finally {
+          f.client.dispose();
+        }
+      },
+    );
+
+    it.each(["around", "latest"] as const)(
+      "retires a long scan to load %s after its in-flight page",
+      async (destination) => {
+        const f = await setupHistory({ holdSecond: true, longScan: true });
+        try {
+          const loading = f.client.loadEarlierTranscript(f.thread.id);
+          await withTimeout(f.secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The second page was never requested."),
+          });
+          const navigation =
+            destination === "around"
+              ? f.client.loadTranscriptAround(f.thread.id, createId("message"))
+              : f.client.loadLatestTranscript(f.thread.id);
+          f.secondAnswer.resolve();
+          await withTimeout(Promise.all([loading, navigation]), 1000, {
+            timeoutError: () => new Error("Navigation waited beyond the in-flight page."),
+          });
+          expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent", undefined]);
+        } finally {
+          f.secondAnswer.resolve();
+          f.client.dispose();
+        }
+      },
+    );
+
+    it.each(["active", "observed"] as const)(
+      "stops when the reader leaves the %s Thread",
+      async (shown) => {
+        const f = await setupHistory({ shown, holdSecond: true, longScan: true });
+        try {
+          const loading = f.client.loadEarlierTranscript(f.thread.id);
+          await withTimeout(f.secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The second page was never requested."),
+          });
+          f.leave();
+          const before = f.client.getSnapshot().transcripts[f.thread.id];
+          f.secondAnswer.resolve();
+          await loading;
+          expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+          expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(before);
+        } finally {
+          f.secondAnswer.resolve();
+          f.client.dispose();
+        }
+      },
+    );
+
     it("exhausts an entirely invisible remainder", async () => {
       const { client, requests, thread } = await setupHistory({ exhausted: true });
       try {
@@ -2828,23 +3015,27 @@ describe("HttpHostClient durable realtime", () => {
       }
     });
 
-    it("uses the current cursor if a snapshot replaces the window during a read", async () => {
-      const { client, requests, thread, secondAsked, secondAnswer, replaceWindow } =
-        await setupHistory({ holdSecond: true });
-      try {
-        const loading = client.loadEarlierTranscript(thread.id);
-        await withTimeout(secondAsked.promise, 1000, {
-          timeoutError: () => new Error("The continuation was never requested."),
-        });
-        replaceWindow("replacement");
-        secondAnswer.resolve();
-        await loading;
-        expect(requests.map(({ before }) => before)).toEqual(["recent", "silent", "replacement"]);
-      } finally {
-        secondAnswer.resolve();
-        client.dispose();
-      }
-    });
+    it.each(["replacement", "silent"])(
+      "stops if a snapshot replaces the window during a read (cursor %s)",
+      async (cursor) => {
+        const { client, requests, thread, secondAsked, secondAnswer, replaceWindow } =
+          await setupHistory({ holdSecond: true });
+        try {
+          const loading = client.loadEarlierTranscript(thread.id);
+          await withTimeout(secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The continuation was never requested."),
+          });
+          replaceWindow(cursor);
+          secondAnswer.resolve();
+          await loading;
+          expect(requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+          expect(client.getSnapshot().transcriptWindows[thread.id]?.nextBefore).toBe(cursor);
+        } finally {
+          secondAnswer.resolve();
+          client.dispose();
+        }
+      },
+    );
 
     it.each(["dispose", "viewer", "thread"] as const)(
       "stops a pending page after %s changes",

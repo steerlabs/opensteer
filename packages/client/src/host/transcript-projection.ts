@@ -4,8 +4,8 @@ import { conversationRows, groupTranscriptEntries } from "./agent-activity-model
 import { withoutOwnAssignment } from "./assignment-presentation.js";
 import { visibleTranscript } from "./transcript.js";
 
-/** The first thing the reader can see, rather than the first transport entry. */
-export function earliestShownTranscriptEntry(
+/** The stable keys of the rows both transcript surfaces draw. */
+export function drawnTranscriptRowKeys(
   entries: readonly TranscriptEntry[],
   {
     thread,
@@ -18,7 +18,7 @@ export function earliestShownTranscriptEntry(
     readonly assignments?: Readonly<Record<string, AssignmentSummary>>;
     readonly waitingRequests?: readonly WaitingRequest[];
   },
-): string | null {
+): readonly string[] {
   const conversation = thread.role === "conversation";
   const groups = groupTranscriptEntries(
     withoutOwnAssignment(visibleTranscript(entries, inputQueue, { conversation }), thread.id),
@@ -26,14 +26,9 @@ export function earliestShownTranscriptEntry(
   );
   // Earlier history is settled; composing, at-computer and picture-only rows
   // cannot reveal older content, so both surfaces' live-only options are off.
-  const first = conversation
-    ? conversationRows(groups, { atComputer: () => false, live: false, waitingRequests })[0]?.group
-    : groups[0];
-  if (!first) return null;
-  if (first.kind !== "turn") return first.entry.id;
-  return (
-    (conversation ? first.turn.reply?.id : first.turn.work[0]?.id) ??
-    first.turn.assignments[0]?.id ??
-    first.key
-  );
+  return conversation
+    ? conversationRows(groups, { atComputer: () => false, live: false, waitingRequests }).map(
+        (row) => row.key,
+      )
+    : groups.map((group) => group.key);
 }

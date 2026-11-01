@@ -1,5 +1,5 @@
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
-import { earliestShownTranscriptEntry } from "./transcript-projection.js";
+import { drawnTranscriptRowKeys } from "./transcript-projection.js";
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
@@ -590,7 +590,7 @@ export class HttpHostClient {
   readonly #channels = new Map<string, WorkspaceChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
-  readonly #messagePageLoads = new Map<string, Promise<void>>();
+  readonly #messagePageLoads = new Map<string, { promise: Promise<void>; retired: boolean }>();
   /**
    * Threads whose assignments were asked for, answered or not. A failed read
    * is not retried per event batch; an explicit refresh or a resync asks again.
@@ -1808,6 +1808,9 @@ export class HttpHostClient {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
     const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
+    for (const [id, scan] of this.#messagePageLoads) {
+      if (id !== threadId) scan.retired = true;
+    }
     this.#ensureInputQueue(threadId);
     this.#ensureAssignments(threadId);
     this.#ensureAutomations(threadId, opened);
@@ -1860,6 +1863,8 @@ export class HttpHostClient {
       const count = this.#observedThreads.get(threadId) ?? 0;
       if (count <= 1) this.#observedThreads.delete(threadId);
       else this.#observedThreads.set(threadId, count - 1);
+      const scan = this.#messagePageLoads.get(threadId);
+      if (scan && !this.#showsThread(threadId)) scan.retired = true;
     };
   }
 
@@ -2421,14 +2426,15 @@ export class HttpHostClient {
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
     const existing = this.#messagePageLoads.get(threadId);
-    if (existing) return existing;
-    const operation = this.#loadEarlierTranscript(threadId).finally(() => {
-      if (this.#messagePageLoads.get(threadId) === operation) {
+    if (existing) return existing.promise;
+    const scan = { promise: Promise.resolve(), retired: false };
+    this.#messagePageLoads.set(threadId, scan);
+    scan.promise = this.#loadEarlierTranscript(threadId, scan).finally(() => {
+      if (this.#messagePageLoads.get(threadId) === scan) {
         this.#messagePageLoads.delete(threadId);
       }
     });
-    this.#messagePageLoads.set(threadId, operation);
-    return operation;
+    return scan.promise;
   }
 
   async searchThreadMessages(input: { threadId: string; query: string; before?: string }) {
@@ -2438,9 +2444,11 @@ export class HttpHostClient {
   async loadTranscriptAround(threadId: string, messageId: string): Promise<void> {
     const generation = this.#viewerGeneration,
       userId = this.#snapshot.user?.id;
+    const scan = this.#messagePageLoads.get(threadId);
+    if (scan) scan.retired = true;
     await this.#threadHydrations.get(threadId);
     await this.#latestTranscriptLoads.get(threadId);
-    await this.#messagePageLoads.get(threadId);
+    await scan?.promise;
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({ threadId, aroundMessageId: messageId }),
     );
@@ -2473,10 +2481,11 @@ export class HttpHostClient {
 
   async #loadLatestTranscript(threadId: string): Promise<void> {
     const generation = this.#viewerGeneration;
+    const scan = this.#messagePageLoads.get(threadId);
+    if (scan) scan.retired = true;
     const hydration = this.#threadHydrations.get(threadId);
     if (hydration) await hydration;
-    const pageLoad = this.#messagePageLoads.get(threadId);
-    if (pageLoad) await pageLoad;
+    if (scan) await scan.promise;
     if (generation !== this.#viewerGeneration) return;
     await this.#hydrateThread(threadId, true);
   }
@@ -5467,22 +5476,24 @@ export class HttpHostClient {
     );
   }
 
-  async #loadEarlierTranscript(threadId: string): Promise<void> {
+  async #loadEarlierTranscript(
+    threadId: string,
+    scan: { readonly retired: boolean },
+  ): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
-    const earliest = () => {
-      const thread = this.#snapshot.threads.find((item) => item.id === threadId);
+    const rowKeys = (snapshot: HostSnapshot) => {
+      const thread = snapshot.threads.find((item) => item.id === threadId);
       return thread
-        ? earliestShownTranscriptEntry(this.#snapshot.transcripts[threadId] ?? [], {
+        ? drawnTranscriptRowKeys(snapshot.transcripts[threadId] ?? [], {
             thread,
-            inputQueue: this.#snapshot.inputQueues[threadId] ?? null,
-            assignments: this.#snapshot.assignments,
-            waitingRequests: this.#snapshot.waitingRequests,
+            inputQueue: snapshot.inputQueues[threadId] ?? null,
+            assignments: snapshot.assignments,
+            waitingRequests: snapshot.waitingRequests,
           })
-        : null;
+        : [];
     };
-    const initial = earliest();
-    while (this.#viewerStillCurrent(generation, userId)) {
+    while (!scan.retired && this.#viewerStillCurrent(generation, userId)) {
       const thread = this.#snapshot.threads.find((item) => item.id === threadId);
       const currentWindow = this.#snapshot.transcriptWindows[threadId];
       if (!thread || currentWindow?.hasMore === false) return;
@@ -5494,12 +5505,12 @@ export class HttpHostClient {
           threadId,
         }),
       );
-      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (scan.retired || !this.#viewerStillCurrent(generation, userId)) return;
       if (!this.#snapshot.threads.some((item) => item.id === threadId)) return;
       if (page.threadId !== threadId || page.thread.id !== threadId)
         throw new Error("Thread event page mismatch.");
       // A reconnect hydration may have replaced the window during this read.
-      if (this.#snapshot.transcriptWindows[threadId]?.nextBefore !== before) continue;
+      if (this.#snapshot.transcriptWindows[threadId] !== currentWindow) return;
       for (const event of page.events) this.#threadState.record(event);
       const current = this.#snapshot.threads.find(({ id }) => id === threadId);
       const summary = this.#threadState.reconcile(
@@ -5509,7 +5520,8 @@ export class HttpHostClient {
       );
       const olderEntries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
       const currentEntries = this.#snapshot.transcripts[threadId] ?? [];
-      this.#update({
+      const beforeRows = new Set(rowKeys(this.#snapshot));
+      const merged = {
         ...this.#snapshot,
         threads: this.#snapshot.threads.map((thread) =>
           thread.id === threadId
@@ -5532,10 +5544,12 @@ export class HttpHostClient {
           ...this.#snapshot.transcriptWindows,
           [threadId]: page.window,
         },
-      });
+      };
+      const first = rowKeys(merged)[0];
+      this.#update(merged);
       if (page.window.hasMore && (!page.window.nextBefore || page.window.nextBefore === before))
         throw new Error("Thread event page is missing its continuation cursor.");
-      if (!page.window.hasMore || earliest() !== initial) return;
+      if (!page.window.hasMore || (first !== undefined && !beforeRows.has(first))) return;
     }
   }
 

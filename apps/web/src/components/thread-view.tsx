@@ -149,8 +149,6 @@ interface ThreadViewProps {
   workspace: WorkspaceSummary;
 }
 
-const transcriptReadingRows = "[data-message-id], .work, .trace-step, .trace-thought, .task-line";
-
 /** Where each conversation was left, by deployment, user and Thread. */
 const readingPositions = new Map<
   string,
@@ -201,12 +199,11 @@ function ThreadView({
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const earlierAnchor = useRef<{
     readonly scroller: HTMLElement;
-    readonly element: HTMLElement | null;
+    readonly key: string | null;
     readonly top: number;
-    readonly rows: ReadonlySet<HTMLElement>;
-    readonly button: HTMLElement | null;
-    readonly focused: boolean;
+    readonly rows: ReadonlySet<string>;
   } | null>(null);
+  const earlierFocus = useRef<{ button: HTMLElement; scroller: HTMLElement } | null>(null);
   const earlierMotion = useRef<Animation | null>(null);
   useEffect(() => () => earlierMotion.current?.cancel(), []);
   // True while the reader is held in a window loaded around an older update.
@@ -475,7 +472,13 @@ function ThreadView({
     );
   }, [incomingMessages, observed]);
 
+  const abandonEarlier = () => {
+    earlierAnchor.current = null;
+    earlierMotion.current?.cancel();
+  };
+
   const goToTail = () => {
+    abandonEarlier();
     const scroller = currentScroller();
     if (!scroller) return;
     followsTailRef.current = true;
@@ -490,28 +493,22 @@ function ThreadView({
     const held = earlierAnchor.current;
     if (!held) return;
     const { scroller, top } = held;
-    const element = held.element?.isConnected
-      ? held.element
-      : held.element?.dataset.messageId
-        ? scroller.querySelector<HTMLElement>(
-            `[data-message-id="${CSS.escape(held.element.dataset.messageId)}"]`,
-          )
-        : null;
+    const element =
+      held.key === null
+        ? null
+        : scroller.querySelector<HTMLElement>(
+            `[data-transcript-row="${CSS.escape(held.key)}"]:not(:empty)`,
+          );
     if (element?.isConnected) scroller.scrollTop += element.getBoundingClientRect().top - top;
     if (loadingEarlier) return;
     earlierAnchor.current = null;
-    const rows = [...scroller.querySelectorAll<HTMLElement>(transcriptReadingRows)];
+    const rows = [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")];
     const newestEarlier = rows.findLast(
       (row) =>
-        !held.rows.has(row) &&
+        !held.rows.has(row.dataset.transcriptRow!) &&
         (element === null ||
           Boolean(row.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)),
     );
-    if (held.focused && !held.button?.isConnected && document.activeElement === document.body) {
-      const target = newestEarlier ?? element ?? scroller;
-      target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-    }
     if (!newestEarlier) return;
     const from = scroller.scrollTop;
     scroller.scrollTop = Math.max(
@@ -535,12 +532,22 @@ function ThreadView({
       ) ?? null;
   }, [conversation, loadingEarlier]);
 
+  useLayoutEffect(() => {
+    if (loadingEarlier) return;
+    const held = earlierFocus.current;
+    earlierFocus.current = null;
+    if (held && !held.button.isConnected && document.activeElement === document.body) {
+      held.scroller.tabIndex = -1;
+      held.scroller.focus({ preventScroll: true });
+    }
+  }, [loadingEarlier]);
+
   const loadEarlier = async () => {
-    if (earlierAnchor.current) return;
+    if (loadingEarlier) return;
     const scroller = currentScroller();
     const top = scroller?.getBoundingClientRect().top ?? 0;
     const anchor = scroller
-      ? [...scroller.querySelectorAll<HTMLElement>(transcriptReadingRows)].find(
+      ? [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")].find(
           (element) => element.getBoundingClientRect().bottom > top,
         )
       : undefined;
@@ -549,12 +556,16 @@ function ThreadView({
     if (scroller)
       earlierAnchor.current = {
         scroller,
-        element: anchor ?? null,
+        key: anchor?.dataset.transcriptRow ?? null,
         top: anchor?.getBoundingClientRect().top ?? top,
-        rows: new Set(scroller.querySelectorAll<HTMLElement>(transcriptReadingRows)),
-        button,
-        focused: button !== null && document.activeElement === button,
+        rows: new Set(
+          [...scroller.querySelectorAll<HTMLElement>("[data-transcript-row]:not(:empty)")].map(
+            (row) => row.dataset.transcriptRow!,
+          ),
+        ),
       };
+    if (scroller && button && document.activeElement === button)
+      earlierFocus.current = { button, scroller };
     followsTailRef.current = false;
     setAtTail(false);
     setLoadingEarlier(true);
@@ -698,6 +709,7 @@ function ThreadView({
 
   /** Puts the live conversation back and returns the reader to its foot. */
   const returnToLatest = async () => {
+    abandonEarlier();
     await hostClient.loadLatestTranscript(thread.id);
     // The anchor is spent. Releasing it from the address as well is what lets
     // the same update be opened again later as a fresh jump.
@@ -945,9 +957,22 @@ function ThreadView({
         />
       ) : null}
 
-      <div className="thread__body" onScroll={handleScroll} ref={bodyRef}>
+      <div
+        className="thread__body"
+        onScroll={handleScroll}
+        onWheel={abandonEarlier}
+        onTouchStart={abandonEarlier}
+        onPointerDown={abandonEarlier}
+        onKeyDown={(event) => {
+          if (
+            ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)
+          )
+            abandonEarlier();
+        }}
+        ref={bodyRef}
+      >
         <div className="thread__conversation">
-          <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef} tabIndex={-1}>
+          <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef}>
             <div
               aria-live="polite"
               className={conversational ? "transcript transcript--conversation" : "transcript"}

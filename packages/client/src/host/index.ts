@@ -30,7 +30,6 @@ export * from "./waiting-requests.js";
 export * from "./thread-placement.js";
 export * from "./queued-messages.js";
 export * from "./transcript.js";
-export * from "./transcript-projection.js";
 export * from "./usage-notice.js";
 export * from "./browser-presentation.js";
 export * from "./surfaces.js";

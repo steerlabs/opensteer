@@ -1100,7 +1100,7 @@ button.computer-now__where:focus-visible .work__chevron {
   margin: 0 calc(-1 * var(--space-8));
 }
 
-.transcript > .task-lines {
+.transcript__row > .task-lines {
   margin-block: var(--space-6);
 }
 

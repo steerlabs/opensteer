@@ -62,6 +62,16 @@
   gap: var(--space-4);
 }
 
+.transcript__row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.transcript__row:empty {
+  display: none;
+}
+
 .transcript__load-earlier {
   display: inline-flex;
   align-items: center;
