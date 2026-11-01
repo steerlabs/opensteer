@@ -1,4 +1,5 @@
-import type { ScreenPresentationService } from "./screen/screen-presentation-service.js";
+import { CompleteProfileInitializationSchema } from "@opensteer/protocol";
+import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { createVoiceHandlers } from "./voice/voice-handlers.js";
 import { browserProfileCheckpointHeader } from "@opensteer/protocol";
 import { runnerAuxiliaryWelcome } from "./server/runner-auxiliary-welcome.js";
@@ -349,7 +350,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
-  readonly screenPresentation?: ScreenPresentationService;
+  readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
@@ -468,7 +469,6 @@ export async function createHostServer(
     runners: dependencies.runners,
   });
   app.addHook("onClose", async () => harnessCatalogReconciliations.close());
-  app.addHook("onClose", async () => dependencies.screenPresentation?.close());
   const harnessAuthenticationCoordinator = dependencies.harnessAuthenticationCoordinator;
   await app.register(websocket, {
     options: {
@@ -489,7 +489,7 @@ export async function createHostServer(
     release:
       dependencies.phoneUpdateRelease ??
       (() => dependencies.staticDistribution?.service.agentPhoneRelease ?? null),
-    changed: () => notifyMachinesChanged(dependencies.realtime),
+    changed: () => notifyMachinesChanged(dependencies.realtime, "machine.access"),
   });
   app.addHook("onClose", async () => phoneUpdates.close());
   const auxiliaryChallenges = new RunnerChallengeAdmission(maxChallengedChannelRuntimeConnections);
@@ -862,6 +862,26 @@ export async function createHostServer(
     },
   );
 
+  app.get<{ Params: { profileId: string } }>(
+    "/v1/browser-profile-initialization/:profileId",
+    async (request, reply) => {
+      void reply.header("cache-control", "private, no-store");
+      return dependencies.browser.loadProfileInitialization(
+        BrowserProfileIdSchema.parse(request.params.profileId),
+        requireBearerToken(request),
+      );
+    },
+  );
+  app.post<{ Params: { profileId: string } }>(
+    "/v1/browser-profile-initialization/:profileId",
+    async (request) =>
+      dependencies.browser.completeProfileInitialization(
+        BrowserProfileIdSchema.parse(request.params.profileId),
+        requireBearerToken(request),
+        CompleteProfileInitializationSchema.parse(request.body),
+      ),
+  );
+
   app.get<{ Params: { profileId: string; sessionId: string } }>(
     "/v1/browser-profile-state/:profileId/:sessionId",
     async (request) =>
@@ -1134,6 +1154,11 @@ export async function createHostServer(
     "bootstrap.get": async (_input, context) => {
       const session = requireRpcSession(context);
       const ownerId = session.user.id;
+      const diagnosticHeader = context.headers[bootstrapDiagnosticHeader];
+      if (diagnosticHeader !== undefined) {
+        const diagnostic = dependencies.realtime.bootstrapDiagnostics.report(diagnosticHeader);
+        if (diagnostic) app.log.warn(diagnostic, "host.bootstrap.loop");
+      }
       const homeWorkspace = await dependencies.workspaces
         .ensureMainWorkspace(ownerId)
         .catch((error: unknown) => {
@@ -1312,7 +1337,9 @@ export async function createHostServer(
       const page = await dependencies.store.threadEventPageForOwner({
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         ...(input.before ? { before: input.before } : {}),
-        maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems),
+        ...(input.turns === undefined
+          ? { maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems) }
+          : { maxTurns: input.turns }),
         ownerId: requireRpcSession(context).user.id,
         threadId: input.threadId,
       });
@@ -1357,6 +1384,14 @@ export async function createHostServer(
           requireRpcSession(context).user.id,
           input.sessionId,
         ),
+      ),
+    "browser.history.get": async (input, context) =>
+      rpcSuccess(
+        await dependencies.browser.readHistory(requireRpcSession(context).user.id, input.profileId),
+      ),
+    "browser.history.icons.get": async (input, context) =>
+      rpcSuccess(
+        await dependencies.browser.readHistoryIcons(requireRpcSession(context).user.id, input),
       ),
     "browser.tabIcon.get": async (input, context) =>
       rpcSuccess(await dependencies.browser.readTabIcon(requireRpcSession(context).user.id, input)),
@@ -1552,6 +1587,8 @@ export async function createHostServer(
     | "browser.tabs.get"
     | "workspace.tabs.get"
     | "browser.tabIcon.get"
+    | "browser.history.get"
+    | "browser.history.icons.get"
     | "thread.browserUsage.get"
     | "attachment.get"
     | "attachment.upload"
@@ -1562,6 +1599,9 @@ export async function createHostServer(
     | "harness.modelServers.discover"
     | "voice.start"
     | "voice.renew"
+    | "voice.next"
+    | "voice.answer"
+    | "voice.context"
     | "voice.say"
     | "voice.stop"
     | "machine.access.history"
@@ -1629,6 +1669,22 @@ export async function createHostServer(
         });
         dependencies.realtime.publishNotificationPreference(userId, preference);
         return { type: command.type, ...preference };
+      }
+      case "notification.preview.register": {
+        const previews = dependencies.notificationPreviews;
+        if (!previews)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "Notification previews are unavailable",
+          });
+        const identity = { userId, authSessionId: session.id };
+        await previews.register({ ...command, ...identity });
+        return {
+          type: command.type,
+          installationId: command.installationId,
+          keyId: command.keyId,
+          registered: true,
+        };
       }
       case "viewer.timeZone.update":
         return {
@@ -1933,21 +1989,7 @@ export async function createHostServer(
                 workspaceId: thread.workspaceId,
               });
             }
-            const onCommitted =
-              command.screenPresentation &&
-              !(await dependencies.store.hasAcceptedThreadInput(userId, command.idempotencyKey))
-                ? await dependencies.screenPresentation?.prepareInput(
-                    session,
-                    command.threadId,
-                    command.screenPresentation,
-                  )
-                : undefined;
-            if (command.screenPresentation && !dependencies.screenPresentation)
-              throw new OpensteerError({
-                code: "bad_request",
-                message: "Screen presentation is unsupported.",
-              });
-            const enqueueInput = {
+            const result = await dependencies.commands.enqueueThreadInput({
               ...(command.quotedMessageId ? { quotedMessageId: command.quotedMessageId } : {}),
               content: command.content,
               idempotencyKey: command.idempotencyKey,
@@ -1962,10 +2004,7 @@ export async function createHostServer(
                 });
                 if (failure) throw new OpensteerError({ code: "conflict", message: failure });
               },
-            } satisfies Parameters<CommandService["enqueueThreadInput"]>[0];
-            const result = onCommitted
-              ? await dependencies.commands.enqueueThreadInput(enqueueInput, { onCommitted })
-              : await dependencies.commands.enqueueThreadInput(enqueueInput);
+            });
             // The message's transaction credited its pages to the conversation.
             if (result.browserUsage) dependencies.browser.announceUsage(result.browserUsage);
             return {
@@ -2511,7 +2550,7 @@ export async function createHostServer(
         if (revoked.cancelledRequestIds.length > 0) {
           dependencies.integrations.continuations.notify();
         }
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { type: command.type };
       }
       case "machine.rename": {
@@ -2522,7 +2561,7 @@ export async function createHostServer(
           command.name,
           { allowDeployment },
         );
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { type: command.type };
       }
       case "machine.access.update": {
@@ -2557,7 +2596,7 @@ export async function createHostServer(
         // A replay wrote nothing, but the row it is replaying is what this
         // caller is about to read back, and the revision it reports is already
         // live for everybody else.
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
       }
       case "machine.access.session.stop": {
@@ -2591,7 +2630,7 @@ export async function createHostServer(
           runnerKind: "managed",
         });
         // A pending computer is a row on the list, so minting one changes it.
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2608,7 +2647,7 @@ export async function createHostServer(
           name: command.name,
           runnerKind: "local",
         });
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2628,7 +2667,7 @@ export async function createHostServer(
           name: command.name,
           ...(command.profile ? { profile: command.profile } : {}),
         });
-        notifyMachinesChanged(dependencies.realtime);
+        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           enrollmentId: enrollment.enrollmentId,
           expiresAt: enrollment.expiresAt,
@@ -2645,7 +2684,7 @@ export async function createHostServer(
           ownerId: userId,
         });
         // A retired enrollment leaves the pending computers.
-        if (state === "retired") notifyMachinesChanged(dependencies.realtime);
+        if (state === "retired") notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { state, type: command.type };
       }
       case "browser.session.start": {
@@ -2673,6 +2712,7 @@ export async function createHostServer(
           "profileId" in command.input
             ? { ...start, profileId: command.input.profileId }
             : { ...start, fresh: true },
+          { typed: false },
         );
         return { ...result, type: command.type };
       }
@@ -2714,9 +2754,13 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "browser.profile.delete":
-        await dependencies.browser.deleteProfile({ ownerId: userId, profileId: command.profileId });
-        return { type: command.type };
+      case "browser.profile.delete": {
+        const deletion = await dependencies.browser.deleteProfile({
+          ownerId: userId,
+          profileId: command.profileId,
+        });
+        return { type: command.type, ...(deletion ? { deletion } : {}) };
+      }
       case "browser.profileGrant.revoke": {
         const revoked = await dependencies.store.revokeBrowserProfileGrant(command.grantId, userId);
         await dependencies.browser.detachAgentSessionsForRevokedProfileGrant({
@@ -2770,6 +2814,13 @@ export async function createHostServer(
         return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
       case "workspace.tab.close":
         return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
+      case "browser.profile.prepare":
+        await dependencies.browser.prepareProfile(userId, command.identity);
+        return { type: command.type };
+      case "browser.history.remove":
+      case "browser.history.clear":
+        await dependencies.browser.forgetHistory(userId, command);
+        return { type: command.type };
       case "browser.tab.open":
         return dependencies.browser.openTab(userId, command);
       case "browser.tab.close":
@@ -2916,7 +2967,7 @@ export async function createHostServer(
       async (identity) => {
         if (dependencies.runners.isRunnerConnected(identity.runnerId)) return;
         if (await dependencies.store.recordRunnerUpdateRequired(identity)) {
-          notifyMachinesChanged(dependencies.realtime);
+          notifyMachinesChanged(dependencies.realtime, "machine.command");
         }
       },
       dependencies.phoneUpdateRelease ??
@@ -3000,7 +3051,6 @@ export async function createHostServer(
         dependencies.workspaces,
         session,
         request.log,
-        dependencies.screenPresentation,
       );
     },
   );
@@ -3097,21 +3147,26 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "screenPresentation"
+    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "notificationPreviews"
   >,
 ): readonly HostCapability[] {
   return [
     "chat-attachments",
+    ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-v1",
-    ...(dependencies.screenPresentation ? ["screen-show-v1" as const] : []),
+    "voice-agent-v1",
     "thread-titles-v1",
     "task-marks-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",
+    "history-turns-v1",
     "shared-task-done-v1",
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
+    "browser-local-profiles-v1",
+    "browser-profile-prepare-v1",
+    "browser-initial-navigation-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
     "browser-frame-window-v1",
     "browser-raster-demand-v1",
@@ -3939,19 +3994,12 @@ function attachRealtimeSocket(
   workspaces: WorkspaceService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
-  screenPresentation?: ScreenPresentationService,
 ): void {
-  let screenEndpoint: { readonly close: () => void } | undefined;
-  let closed = false;
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
   const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
   const sink: RealtimeSink = {
     ...peer,
-    close: (code, reason) => {
-      screenEndpoint?.close();
-      peer.close(code, reason);
-    },
     send: async (message: HostToClientMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
         message.type === "host.snapshot"
@@ -4049,13 +4097,10 @@ function attachRealtimeSocket(
       inbox.push({ bytes: buffer.byteLength, value: { frame: buffer, isBinary } });
     } catch (error) {
       inbox.close(error);
-      close();
       if (socket.readyState === socket.OPEN) socket.close(1009, "client input queue exceeded");
     }
   });
   const close = () => {
-    closed = true;
-    screenEndpoint?.close();
     cancelExpiration();
     inbox.close();
     unregister();
@@ -4094,10 +4139,6 @@ function attachRealtimeSocket(
         continue;
       }
       if (message.type === "client.ack") continue;
-      if (message.type === "client.screen.done") {
-        screenPresentation?.registry.acknowledge(sink, message);
-        continue;
-      }
       if (unsubscribe) throw badMessage("Client is already subscribed");
       // Nothing is streamed to a client on another epoch: the events it would
       // receive are exactly what the epoch governs, so the refusal comes
@@ -4124,25 +4165,7 @@ function attachRealtimeSocket(
           userId: session.user.id,
           workspaceId: message.workspaceId,
         });
-        if (closed || socket.readyState !== socket.OPEN) {
-          unsubscribe();
-          return;
-        }
         workspaceId = message.workspaceId;
-        if (
-          message.screenShow &&
-          screenPresentation &&
-          (await screenPresentation.subscriptionAllowed(session.user.id, message.workspaceId))
-        ) {
-          if (closed || socket.readyState !== socket.OPEN) return;
-          const endpoint = screenPresentation.registry.open({
-            ownerId: session.user.id,
-            sessionId: session.id,
-            sink,
-          });
-          screenEndpoint = endpoint;
-          await sink.send(endpoint.ready);
-        }
       } catch (error) {
         if (error instanceof OpensteerError && error.code === "forbidden") {
           await sink.send({
@@ -4162,7 +4185,6 @@ function attachRealtimeSocket(
     }
   })().catch((error) => {
     inbox.close(error);
-    close();
     closeProtocolSocket(socket, error);
   });
 }

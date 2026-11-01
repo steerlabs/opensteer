@@ -5,6 +5,7 @@ import {
   nativeViewerSource,
   type BrowserSessionSummary,
   type BrowserTabSummary,
+  type TaskSurfaceDestination,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import type { BrowserPageContentPart } from "@opensteer/core";
@@ -54,16 +55,17 @@ type SurfacesTarget =
  * tab returns to the grid it was opened from and a link names exactly what it
  * opens.
  */
-export type SurfacesRoute = { readonly deploymentId: string } & SurfacesScope & SurfacesTarget;
+export type SurfacesRoute = {
+  readonly deploymentId: string;
+  readonly pendingBrowserTab?: string;
+} & SurfacesScope &
+  SurfacesTarget;
 
-/**
- * A tab, app or phone over a conversation's sheet: one of its own, or one an
- * agent showed together with that conversation.
- */
+/** One of a conversation's own tabs or apps, over that conversation's sheet. */
 export function surfaceRoute(
   deploymentId: string,
   threadId: string,
-  destination: WorkspaceSurfaceDestination,
+  destination: TaskSurfaceDestination,
 ): SurfacesRoute {
   return { deploymentId, threadId, ...targetParams(destination) };
 }

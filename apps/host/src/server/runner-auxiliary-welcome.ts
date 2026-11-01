@@ -20,6 +20,17 @@ export function runnerAuxiliaryWelcome(
     ...(module === "browser" && stream.identity.modules.browser?.passkeys === 1 && passkeys
       ? { passkeys: 1 }
       : {}),
+    ...(module === "browser" &&
+    stream.identity.modules.browser?.localProfiles === 1 &&
+    stream.identity.modules.browser.localProfileStorage
+      ? {
+          localProfiles: 1,
+          ...(stream.identity.modules.browser?.profilePrepare === 1 ? { profilePrepare: 1 } : {}),
+        }
+      : {}),
+    ...(module === "browser" && stream.identity.modules.browser?.initialNavigationVersion === 1
+      ? { initialNavigationVersion: 1 }
+      : {}),
     heartbeatIntervalMs: 15_000,
     serverTime: new Date().toISOString(),
     streamLeaseExpiresAt: stream.streamLeaseExpiresAt,

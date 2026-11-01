@@ -1,4 +1,5 @@
 import { iphoneIntegrationsProtocolVersion, iphoneOutdatedReason } from "./iphone-apps.js";
+import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
 import {
@@ -17,7 +18,6 @@ import {
   MessageQuoteSchema,
   MessageContentSchema,
   MessageIdSchema,
-  ScreenPresentationContextSchema,
   MessageKindSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
@@ -65,6 +65,10 @@ import {
   VoiceSdpSchema,
   VoiceSayTextSchema,
   VoiceRefusalReasonSchema,
+  VoiceToolCallSchema,
+  voiceAnswerMaxLength,
+  voiceContextMaxLength,
+  voiceToolCallIdSchema,
 } from "./voice.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
 import {
@@ -292,8 +296,6 @@ export const HarnessInputSchema = z
     createdAt: IsoDateTimeSchema,
     kind: MessageKindSchema.exclude(["assistant"]),
     messageId: MessageIdSchema,
-    /** Emitted only to Runners advertising screen-show-v1; never contains a client endpoint. */
-    presentationContext: ScreenPresentationContextSchema.optional(),
     quote: MessageQuoteSchema.optional(),
   })
   .superRefine((input, context) => {
@@ -1241,6 +1243,14 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    localProfiles: z.literal(1).optional().catch(undefined),
+    profilePrepare: z.literal(1).optional().catch(undefined),
+    profilePrepareInstanceId: z.uuid().optional().catch(undefined),
+    localProfileStorage: z
+      .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
+      .optional()
+      .catch(undefined),
+    initialNavigationVersion: z.literal(1).optional().catch(undefined),
     /** Page-provider contract, available only after the engine Security probe. */
     passkeys: z
       .number()
@@ -1249,6 +1259,12 @@ export const RunnerBrowserModuleSchema = z
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
     navigationVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
+    navigationAttributionVersion: z
       .number()
       .int()
       .positive()
@@ -1346,14 +1362,33 @@ export const RunnerBrowserModuleSchema = z
     /** Required for editing v2; true means the engine isolates clipboard operations. */
     clipboard: z.boolean().optional(),
   })
-  .transform(({ editing, clipboard, ...module }) => {
-    const version = editing === 2 && clipboard === undefined ? undefined : editing;
-    return {
-      ...module,
-      ...(version ? { editing: version } : {}),
-      ...(version === 2 ? { clipboard } : {}),
-    };
-  });
+  .transform(
+    ({
+      editing,
+      clipboard,
+      localProfiles,
+      localProfileStorage,
+      profilePrepare,
+      profilePrepareInstanceId,
+      ...module
+    }) => {
+      const version = editing === 2 && clipboard === undefined ? undefined : editing;
+      return {
+        ...module,
+        ...(localProfiles === 1 && localProfileStorage
+          ? {
+              localProfiles,
+              localProfileStorage,
+              ...(profilePrepare === 1 && profilePrepareInstanceId
+                ? { profilePrepare, profilePrepareInstanceId }
+                : {}),
+            }
+          : {}),
+        ...(version ? { editing: version } : {}),
+        ...(version === 2 ? { clipboard } : {}),
+      };
+    },
+  );
 export type RunnerBrowserModule = z.infer<typeof RunnerBrowserModuleSchema>;
 
 export const RunnerMessagingModuleSchema = z.object({
@@ -1669,6 +1704,8 @@ export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
     sessionId: VoiceSessionIdSchema,
     harnessInstanceId: HarnessInstanceIdSchema,
     offer: VoiceSdpSchema,
+    /** Sent only to a Runner advertising `voice-agent-v1`. */
+    agent: z.literal(true).optional(),
   }),
   z.strictObject({
     action: z.literal("renew"),
@@ -1686,10 +1723,36 @@ export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
     sessionId: VoiceSessionIdSchema,
     harnessInstanceId: HarnessInstanceIdSchema,
   }),
+  // The agent actions below reach only a Runner advertising `voice-agent-v1`.
+  z.strictObject({
+    action: z.literal("next"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+  }),
+  z.strictObject({
+    action: z.literal("answer"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    callId: voiceToolCallIdSchema,
+    ok: z.boolean(),
+    text: z.string().trim().min(1).max(voiceAnswerMaxLength),
+  }),
+  z.strictObject({
+    action: z.literal("context"),
+    sessionId: VoiceSessionIdSchema,
+    harnessInstanceId: HarnessInstanceIdSchema,
+    text: z.string().trim().min(1).max(voiceContextMaxLength),
+  }),
 ]);
 export type RunnerVoiceCommand = z.infer<typeof RunnerVoiceCommandSchema>;
+/** `agent` and `call` appear only in answers to the agent requests above, so an older Host never sees them. */
 export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({ ok: z.literal(true), answer: VoiceSdpSchema.optional() }),
+  z.strictObject({
+    ok: z.literal(true),
+    answer: VoiceSdpSchema.optional(),
+    agent: z.boolean().optional(),
+    call: VoiceToolCallSchema.nullable().optional(),
+  }),
   z.strictObject({
     ok: z.literal(false),
     reason: VoiceRefusalReasonSchema,

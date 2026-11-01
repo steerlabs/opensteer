@@ -5,7 +5,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createMobileBrowserEditing } from "../../../src/browser/browser-editing.js";
 import type { BrowserCommand } from "@opensteer/client/host";
-import { remoteEditing } from "../../../src/voice/interaction.js";
 const harness = vi.hoisted(() => ({
   proxy: null as null | {
     onEvent: (event: import("@opensteer/client/editing").EditingProxyEvent) => void;
@@ -158,11 +157,9 @@ it("refuses a baseline replacement without an explicit Backspace intent", async 
 });
 it("the page forwards native edits once and configures its sensitive field", async () => {
   const send = vi.fn(() => true);
-  expect(remoteEditing()).toBe(false);
   await act(async () =>
     root.render(<PageTyping context={context} onDone={() => undefined} sendOperation={send} />),
   );
-  expect(remoteEditing()).toBe(true);
   expect(harness.proxy?.context).toEqual(context);
   await act(async () =>
     harness.proxy?.onEvent({
@@ -176,8 +173,6 @@ it("the page forwards native edits once and configures its sensitive field", asy
     kind: "edit",
     edit: { contextId: context.contextId, text: "👩‍💻", before: "", after: "" },
   });
-  await act(async () => root.render(null));
-  expect(remoteEditing()).toBe(false);
 });
 it("keeps the native proxy open when the remote operation is refused", async () => {
   const done = vi.fn();

@@ -305,7 +305,12 @@ export class ScreencastController {
       this.abort();
       return;
     }
-    if (event.type === "dialog-event" || event.type === "geometry") return;
+    if (
+      event.type === "dialog-event" ||
+      event.type === "geometry" ||
+      event.type === "navigation.committed"
+    )
+      return;
     const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
     if (this.active && this.active.surfaceId !== binding?.surface.id)
       this.active.castAbort?.abort();

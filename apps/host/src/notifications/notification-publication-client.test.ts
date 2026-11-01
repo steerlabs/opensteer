@@ -1,3 +1,6 @@
+import { createDecipheriv, randomBytes } from "node:crypto";
+import { HostNotificationPublicationSchema } from "@opensteer/control-plane-protocol";
+import { notificationPreviewAad } from "./notification-preview.js";
 import { createId } from "@opensteer/core";
 import type { NotificationPublication } from "@opensteer/database";
 import { describe, expect, it } from "vitest";
@@ -16,6 +19,8 @@ const target: NotificationPublicationTarget = {
 
 function entry(overrides: Partial<NotificationPublication> = {}): NotificationPublication {
   return {
+    title: "Private title",
+    body: "Private body",
     eventId: createId("event"),
     expiresAt: new Date("2026-09-14T12:15:00.000Z"),
     id: createId("notification"),
@@ -49,6 +54,94 @@ function clientAnswering(response: () => Response): NotificationPublicationClien
 }
 
 describe("NotificationPublicationClient", () => {
+  it("seals each recipient installation's decided text with the publication routing bytes", async () => {
+    const published = entry();
+    const key = randomBytes(32).toString("base64url");
+    const keys = ["preview-installation-a", "preview-installation-b"].map((installationId) => ({
+      accountId,
+      installationId,
+      keyId: randomBytes(16).toString("base64url"),
+      key,
+    }));
+    let body = "";
+    const client = new NotificationPublicationClient({
+      deploymentId,
+      hostInstanceId,
+      target: async () => target,
+      previews: {
+        keys: async (userId, accountIds) => {
+          expect(userId).toBe(published.userId);
+          expect(accountIds).toEqual([accountId]);
+          return keys;
+        },
+      },
+      fetch: async (_url, init) => {
+        body = String(init?.body);
+        return acknowledgement(published.id);
+      },
+    });
+    await client.publish({
+      entry: published,
+      recipientAccountIds: [accountId],
+      signal: new AbortController().signal,
+    });
+    expect(body).not.toContain(published.title);
+    expect(body).not.toContain(published.body);
+    expect(body).not.toContain(key);
+    const publication = HostNotificationPublicationSchema.parse(JSON.parse(body));
+    expect(publication.previews).toHaveLength(2);
+    expect(publication.previews![0]!.preview.nonce).not.toBe(
+      publication.previews![1]!.preview.nonce,
+    );
+    for (const { installationId, preview } of publication.previews!) {
+      const ciphertext = Buffer.from(preview.ciphertext, "base64url");
+      const decipher = createDecipheriv(
+        "aes-256-gcm",
+        Buffer.from(key, "base64url"),
+        Buffer.from(preview.nonce, "base64url"),
+      );
+      decipher.setAAD(
+        notificationPreviewAad({
+          deploymentId,
+          notificationId: published.id,
+          installationId,
+          keyId: preview.keyId,
+          kind: published.kind,
+          expiresAt: publication.expiresAt,
+          deepLink: `com.opensteer.mobile:/deployments/${deploymentId}/threads/${published.threadId}?requestId=${published.requestId}`,
+        }),
+      );
+      decipher.setAuthTag(ciphertext.subarray(-16));
+      expect(
+        JSON.parse(
+          Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]).toString(
+            "utf8",
+          ),
+        ),
+      ).toEqual({ version: 1, title: published.title, body: published.body });
+    }
+    expect(
+      HostNotificationPublicationSchema.safeParse({ ...publication, expiresAt: "invalid" }).success,
+    ).toBe(false);
+    const first = publication.previews![0]!;
+    expect(
+      HostNotificationPublicationSchema.safeParse({ ...publication, previews: [first, first] })
+        .success,
+    ).toBe(false);
+    expect(
+      HostNotificationPublicationSchema.safeParse({
+        ...publication,
+        recipientAccountIds: [`acct_${crypto.randomUUID()}`],
+      }).success,
+    ).toBe(false);
+    expect(
+      HostNotificationPublicationSchema.safeParse({
+        ...publication,
+        expiresAt: publication.expiresAt.replace(".000Z", "Z"),
+      }).success,
+    ).toBe(false);
+  });
+
   it("posts identifiers and the audience to the Account, and nothing else", async () => {
     const published = entry({
       kind: "reply-published",

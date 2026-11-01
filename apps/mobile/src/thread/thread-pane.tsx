@@ -6,6 +6,7 @@ import {
   conversationActivities,
   conversationSurfaces,
   conversationRows,
+  conversationThreadIds,
   conversationTurnRevealing,
   groupTranscriptEntries,
   incomingTranscriptMessages,
@@ -36,7 +37,7 @@ import {
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
-import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
+import { useHostSnapshot, useThreadInputQueue, useThreadPlace } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import {
   StackActions,
@@ -52,6 +53,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   View,
   type ListRenderItemInfo,
@@ -62,6 +64,12 @@ import Animated from "react-native-reanimated";
 import { canRespondToRequests, describeHostConnection } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
+import {
+  actingFor,
+  agentSurface,
+  surfaceGlyph,
+  type SurfaceGlyph,
+} from "../browser/agent-surface.js";
 import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
@@ -85,12 +93,10 @@ import {
 } from "./task-status.js";
 import { WaitingQuestions } from "./waiting-questions.js";
 import { waitingQuestion } from "./docked-requests.js";
-import { FoldedRequest } from "./folded-request.js";
 import { latestReplyLine } from "./latest-reply-line.js";
 import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-chips.js";
 import { AttachmentReader } from "./attachment-views.js";
 import { Composer } from "./composer.js";
-import { TabPreview } from "./tab-preview.js";
 import { QueuedMessages } from "./queued-messages.js";
 import {
   TranscriptComputersContext,
@@ -142,8 +148,11 @@ type TranscriptItem =
  * bar at all.
  */
 export interface ThreadHeaderState {
-  /** The pages and Mac apps the conversation is using, including work it handed out. */
-  readonly surfaceCount: number;
+  /**
+   * What the conversation's agent is using — a page, a Mac app or a phone,
+   * including in work it handed out — or null when it uses none.
+   */
+  readonly surface: SurfaceGlyph | null;
   /** An agent is acting in one of them now. */
   readonly surfacesActing: boolean;
   readonly connectionLabel: string | null;
@@ -166,7 +175,7 @@ export function sameThreadHeader(
 ): boolean {
   return (
     left !== null &&
-    left.surfaceCount === right.surfaceCount &&
+    left.surface === right.surface &&
     left.surfacesActing === right.surfacesActing &&
     left.connectionLabel === right.connectionLabel &&
     left.canRetry === right.canRetry &&
@@ -181,9 +190,6 @@ export function sameThreadHeader(
     sameTaskHeading(left.task, right.task)
   );
 }
-
-/** Room enough, under a page, to read some of the conversation rather than its last line. */
-const roomyHeight = 140;
 
 /** How close to the bottom still counts as watching the newest entry. */
 const tailThreshold = 96;
@@ -226,19 +232,25 @@ interface ThreadPaneProps {
   readonly quote?: ThreadDraftQuote | null;
   readonly requestId: string | null;
   /**
-   * Docked under a focused page or Mac app: collapsed, only the latest reply
-   * and the composer; expanded, the transcript too. The page is what the
-   * composer includes with the next message.
+   * Shown with a focused page or Mac app rather than on its own screen. The
+   * page is what the composer includes with the next message.
    */
-  readonly sheet?: ConversationSheetMode | undefined;
+  readonly withPage?: PageCompanion | undefined;
   readonly threadId: string;
 }
 
-export interface ConversationSheetMode {
-  readonly expanded: boolean;
-  readonly onExpand: (expanded: boolean) => void;
-  readonly page: BrowserPageContentPart | null;
-}
+/**
+ * How a conversation sits with the page in front of it: `beside`, all of it in
+ * a column of its own; `docked`, under the page, only its latest reply, what
+ * needs the reader and the composer, with the reply opening the conversation.
+ */
+export type PageCompanion =
+  | { readonly kind: "beside"; readonly page: BrowserPageContentPart | null }
+  | {
+      readonly kind: "docked";
+      readonly onShowConversation: () => void;
+      readonly page: BrowserPageContentPart | null;
+    };
 
 /** The pane's complete read set; maps and run entries are scoped to this Thread. */
 function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
@@ -375,9 +387,6 @@ function ThreadPaneForUser(
   // conversation's tail and nothing here may treat it as one.
   const [historical, setHistorical] = useState(false);
   const [returning, setReturning] = useState(false);
-  // Folded under a page with room to spare, the sheet shows the conversation's
-  // latest rows rather than one line of them.
-  const [roomy, setRoomy] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const pendingMutationOwner = (): ThreadMutationOwner | null =>
@@ -439,6 +448,11 @@ function ThreadPaneForUser(
     readonly quote?: ThreadDraftQuote | null;
     readonly text: string;
   } | null>(null);
+  const restoreQueuedDraft = useCallback(
+    (message: { readonly attachments: readonly ArtifactContentPart[]; readonly text: string }) =>
+      setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 })),
+    [],
+  );
   const handedQuote = props.quote ?? null;
   const onQuoteTaken = props.onQuoteTaken;
   useEffect(() => {
@@ -693,8 +707,11 @@ function ThreadPaneForUser(
     () => conversationSurfaces(snapshot, threadId),
     [snapshot, threadId],
   );
-  const surfaceCount = conversationPages.length;
-  const surfacesActing = conversationPages.some((item) => item.acting);
+  const latestPlace = useThreadPlace(hostClient, threadId);
+  const ownThreads = useMemo(() => conversationThreadIds(snapshot, threadId), [snapshot, threadId]);
+  const usedSurface = agentSurface(conversationPages, ownThreads, latestPlace);
+  const surface = usedSurface === null ? null : surfaceGlyph(usedSurface);
+  const surfacesActing = conversationPages.some((item) => actingFor(item, ownThreads));
   // The split heading's own width, which the title's menu is sized to.
   // Held while it reads the same, so the bar rebuilds only when the task moves.
   const heldTask = useRef<TaskHeading | null>(null);
@@ -716,7 +733,7 @@ function ThreadPaneForUser(
   );
   useEffect(() => {
     onHeader?.({
-      surfaceCount,
+      surface,
       surfacesActing,
       connectionLabel,
       canRetry,
@@ -731,7 +748,7 @@ function ThreadPaneForUser(
       isHome,
     });
   }, [
-    surfaceCount,
+    surface,
     surfacesActing,
     connectionLabel,
     canRetry,
@@ -747,23 +764,23 @@ function ThreadPaneForUser(
     isHome,
   ]);
 
-  // The rows the reader opened, for as long as this screen is up: answered
-  // turns' steps and long messages' words.
-  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleRow = useCallback((rowKey: string) => {
-    setOpenRows((open) => {
-      const next = new Set(open);
-      if (!next.delete(rowKey)) next.add(rowKey);
-      return next;
-    });
+  // The reader's choices survive rows leaving the list's mounted window.
+  const [openRows, setOpenRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const toggleRow = useCallback((rowKey: string, open: boolean) => {
+    setOpenRows((choices) => new Map(choices).set(rowKey, !open));
   }, []);
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
     [deploymentId, navigation, threadId],
   );
   const openActivity = useCallback(
-    (turnKey: string) =>
-      navigation.navigate("ConversationActivity", { deploymentId, threadId, turnKey }),
+    (turnKey: string, messageId?: string) =>
+      navigation.navigate("ConversationActivity", {
+        deploymentId,
+        threadId,
+        turnKey,
+        ...(messageId === undefined ? {} : { messageId }),
+      }),
     [deploymentId, navigation, threadId],
   );
   // The reply under way opens the latest Activity: that reply's, and still
@@ -774,7 +791,7 @@ function ThreadPaneForUser(
   );
   // Puts the reader where a link points, and opens the Activity holding it.
   const reveal = useCallback(
-    (place: LinkedPlace): void => {
+    (place: LinkedPlace, entryId: string): void => {
       if (place.index >= 0) {
         scrollAttempts.current = 0;
         pinned.current = false;
@@ -783,9 +800,11 @@ function ThreadPaneForUser(
       }
       const { openKey } = place;
       if (openKey !== null) {
-        setOpenRows((open) => (open.has(openKey) ? open : new Set(open).add(openKey)));
+        setOpenRows((open) =>
+          open.get(openKey) === true ? open : new Map(open).set(openKey, true),
+        );
       }
-      if (place.activityKey !== null) openActivity(place.activityKey);
+      if (place.activityKey !== null) openActivity(place.activityKey, entryId);
     },
     [openActivity],
   );
@@ -796,7 +815,7 @@ function ThreadPaneForUser(
     // A sheet opens over the screen in front of the reader, never under it.
     if (anchor.activityKey !== null && !focused) return;
     anchorShown.current = anchorMessageId;
-    reveal(anchor);
+    reveal(anchor, anchorMessageId);
   }, [anchor, anchorMessageId, focused, reveal]);
   useEffect(() => {
     if (requestId === null || revealed.current === requestId) return;
@@ -806,10 +825,11 @@ function ThreadPaneForUser(
       revealed.current = requestId;
       return;
     }
-    if (receipt === null || (receipt.activityKey !== null && !focused)) return;
+    if (receipt === null || receiptId === null || (receipt.activityKey !== null && !focused))
+      return;
     revealed.current = requestId;
-    reveal(receipt);
-  }, [focused, pendingRequest, receipt, requestId, reveal]);
+    reveal(receipt, receiptId);
+  }, [focused, pendingRequest, receipt, receiptId, requestId, reveal]);
   // A chip opens exactly the page or app it names, pushed so Back returns to
   // where it was opened; one already in front is left as it is.
   const surfaceTurns = useMemo(
@@ -961,8 +981,9 @@ function ThreadPaneForUser(
               onReply={conversational ? replyWith : undefined}
               live={live}
               group={item.group}
-              open={openRows.has(item.group.key)}
+              open={openRows.get(item.group.key) ?? null}
               onToggleOpen={toggleRow}
+              reveal={anchorMessageId ?? receiptId}
               highlightRequestId={requestId}
               askAbout={askAbout}
               onOpenStep={openStep}
@@ -992,6 +1013,7 @@ function ThreadPaneForUser(
       openRows,
       replyWith,
       requestId,
+      receiptId,
       snapshot.homeThreadId,
       viewerUserId,
       workspaces,
@@ -1046,6 +1068,23 @@ function ThreadPaneForUser(
     return rows;
   }, [conversational, drawn, groups, indicator, outcomes, unreadBoundarySequence, viewerUserId]);
 
+  const queueCanRespond = canRespond && thread?.status !== "archived";
+  const queueFooter = useMemo(
+    () =>
+      thread?.role === "work" && inputQueue !== null ? (
+        <AttachmentReader value={hostClient}>
+          <QueuedMessages
+            canRespond={queueCanRespond}
+            hostClient={hostClient}
+            onEdit={restoreQueuedDraft}
+            queue={inputQueue}
+            viewerUserId={viewerUserId}
+          />
+        </AttachmentReader>
+      ) : null,
+    [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
+  );
+
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
     if (pinned.current && !dragging.current) scrollToLatest(false);
@@ -1066,9 +1105,9 @@ function ThreadPaneForUser(
     });
     return () => subscription.remove();
   }, []);
-  // A collapsed sheet with no room shows one line of the latest reply, which
-  // is not the conversation read.
-  const transcriptShown = props.sheet === undefined || props.sheet.expanded || roomy;
+  // Docked under a page, the latest reply is one line of it, which is not the
+  // conversation read.
+  const transcriptShown = props.withPage?.kind !== "docked";
   useEffect(() => {
     // Nothing is marked before the arriving read position is known: marking
     // first would move the boundary this visit's divider is drawn from, and
@@ -1167,36 +1206,35 @@ function ThreadPaneForUser(
 
   // This pane's list scrolls under the Thread screen's transparent bar. iOS
   // takes the bar's height from the screen's own safe area; Android has no such
-  // inset to read, so the number is stated there. A sheet has no bar over it.
-  const sheet = props.sheet ?? null;
-  const underHeader = sheet === null;
-  const collapsed = sheet !== null && !sheet.expanded;
-  const latest = collapsed ? latestReplyLine(groups, indicator) : null;
-  // The latest line stands for the folded conversation when there is no room
-  // for more of it: tapping it opens the rest.
+  // inset to read, so the number is stated there. Beside a page there is no bar
+  // over it.
+  const companion = props.withPage ?? null;
+  const underHeader = companion === null;
+  const docked = companion?.kind === "docked" ? companion : null;
+  const latest = docked === null ? null : latestReplyLine(groups, indicator);
+  // Under a page the latest reply stands for the conversation: it says what the
+  // agent is doing to the page, and a tap opens the rest of what was said.
+  // Before anything has been said there is nothing to stand for, and the page
+  // keeps the line's height.
   const latestLine =
-    sheet === null ? null : (
+    docked === null || latest === null ? null : (
       <Pressable
         accessibilityHint="Shows the conversation"
         accessibilityRole="button"
-        onPress={() => sheet.onExpand(true)}
-        style={({ pressed }) => [styles.latest, sides, pressed && styles.latestPressed]}
+        onPress={docked.onShowConversation}
+        style={({ pressed }) => [styles.latest, pressed && styles.latestPressed]}
+        testID="latest-reply"
       >
-        {latest?.kind === "typing" ? (
+        {latest.kind === "typing" ? (
           <View accessibilityLabel="Opensteer is replying" accessible style={styles.latestText}>
             <TypingDots />
           </View>
         ) : (
-          <AppText
-            numberOfLines={1}
-            role="secondary"
-            style={styles.latestText}
-            tone={latest === null ? "muted" : "soft"}
-          >
-            {latest?.text ?? "Ask about what you see"}
+          <AppText numberOfLines={2} role="secondary" style={styles.latestText} tone="soft">
+            {latest.text}
           </AppText>
         )}
-        <Symbol name="chevron.up" size={12} tint={color.muted} />
+        <Symbol name="chevron.right" size={12} tint={color.muted} />
       </Pressable>
     );
   const transcript = (
@@ -1212,16 +1250,9 @@ function ThreadPaneForUser(
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.key}
-        ListEmptyComponent={
-          sheet === null ? (
-            <EmptyThread />
-          ) : (
-            // Under a page, before anything has been said, the page is the subject.
-            <AppText role="secondary" style={styles.sheetEmpty} tone="muted">
-              Ask about what you see
-            </AppText>
-          )
-        }
+        ListFooterComponent={queueFooter ?? undefined}
+        // Beside a page, before anything has been said, the page is the subject.
+        ListEmptyComponent={companion === null ? <EmptyThread /> : undefined}
         ListHeaderComponent={
           <ThreadHeader
             earlier={canLoadEarlier}
@@ -1325,21 +1356,7 @@ function ThreadPaneForUser(
   );
   const content = (
     <>
-      {collapsed ? (
-        // Folded: as much of the conversation as the room under the page holds,
-        // and at least its latest line, which opens the rest.
-        <View
-          onLayout={(event) => {
-            const next = event.nativeEvent.layout.height >= roomyHeight;
-            setRoomy((current) => (current === next ? current : next));
-          }}
-          style={styles.room}
-        >
-          {roomy ? transcript : latestLine}
-        </View>
-      ) : (
-        transcript
-      )}
+      {docked === null ? transcript : null}
 
       <View
         style={[
@@ -1356,6 +1373,7 @@ function ThreadPaneForUser(
         ]}
         testID="composer-dock"
       >
+        {latestLine}
         {failure !== null ? (
           <Notice
             action={{ label: "Dismiss", onPress: () => setFailure(null) }}
@@ -1377,54 +1395,18 @@ function ThreadPaneForUser(
         ) : null}
         {snapshot.user === null ? null : (
           <>
-            {/* Folded under a page, the open tasks and the questions wait for the
-                conversation to be opened; what needs the reader is one line. */}
-            {collapsed ? (
-              <FoldedRequest
-                onReview={() => sheet.onExpand(true)}
-                ownRequests={snapshot.ownRequests ?? []}
-                threadId={thread.id}
-                user={snapshot.user}
-                waitingRequests={snapshot.waitingRequests}
-              />
-            ) : (
-              <>
-                <WaitingQuestions
-                  canRespond={canRespond}
-                  deploymentId={props.deploymentId}
-                  drafts={client.drafts}
-                  hostClient={props.hostClient}
-                  machines={snapshot.machines}
-                  onOpenTask={taskScope.onViewWork}
-                  threadId={thread.id}
-                  user={snapshot.user}
-                  waitingRequests={snapshot.waitingRequests}
-                />
-              </>
-            )}
-            {/* The conversation's live tab, the one way straight to it: not
-                under a page, which is already in front, nor while typing. */}
-            {sheet === null && !keyboardVisible ? (
-              <TabPreview
-                deploymentId={props.deploymentId}
-                hostClient={props.hostClient}
-                threadId={thread.id}
-              />
-            ) : null}
-            {/* One dock: the tray tucks under the composer's top edge, so the
-                two share a wrapper the dock's own gap cannot reach between.
-                Only work has a tray; a conversation shows what was sent. */}
+            <WaitingQuestions
+              canRespond={canRespond}
+              deploymentId={props.deploymentId}
+              drafts={client.drafts}
+              hostClient={props.hostClient}
+              machines={snapshot.machines}
+              onOpenTask={taskScope.onViewWork}
+              threadId={thread.id}
+              user={snapshot.user}
+              waitingRequests={snapshot.waitingRequests}
+            />
             <View>
-              {inputQueue === null || thread.role !== "work" ? null : (
-                <QueuedMessages
-                  canRespond={canRespond && thread.status !== "archived"}
-                  hostClient={props.hostClient}
-                  onEdit={(message) =>
-                    setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 }))
-                  }
-                  queue={inputQueue}
-                />
-              )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={isHome}
@@ -1464,7 +1446,7 @@ function ThreadPaneForUser(
                 }
                 modelOptions={thread.modelSelection.options}
                 mutationGate={mutationGate}
-                page={sheet?.page ?? null}
+                page={companion?.page ?? null}
                 onChangeModel={(conversation) =>
                   navigation.navigate("ThreadSettings", {
                     ...(conversation ? { conversation: true } : {}),
@@ -1484,7 +1466,6 @@ function ThreadPaneForUser(
                     : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                 }
                 requests={snapshot.ownRequests ?? []}
-                requestFolded={collapsed}
                 restore={restoredDraft}
                 running={stopTarget !== null}
                 // A task card in a conversation stops its own task, and a task's
@@ -1520,11 +1501,23 @@ function ThreadPaneForUser(
       </View>
     </>
   );
-  // A sheet sits inside a screen that already keeps the keyboard clear; a
-  // second avoiding view would lift the composer twice.
+  // Beside or under a page, the screen already keeps the keyboard clear; a
+  // second avoiding view would lift the composer twice. Docked, the pane is as
+  // tall as what it holds, and the page has the rest.
   const pane =
-    sheet !== null ? (
-      <View style={sheet.expanded ? styles.pane : styles.folded}>{content}</View>
+    docked !== null ? (
+      // As tall as what it holds, until the page leaves less: then it scrolls,
+      // so a long request or large text never pushes the composer off screen.
+      <ScrollView
+        alwaysBounceVertical={false}
+        keyboardShouldPersistTaps="handled"
+        style={styles.docked}
+        testID="docked-conversation"
+      >
+        {content}
+      </ScrollView>
+    ) : companion !== null ? (
+      <View style={styles.pane}>{content}</View>
     ) : (
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1690,7 +1683,12 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
       sameEntries(left.turn.assignments, right.turn.assignments)
     );
   }
-  return right.kind !== "turn" && right.kind === left.kind && left.entry === right.entry;
+  return (
+    right.kind !== "turn" &&
+    right.kind === left.kind &&
+    left.entry === right.entry &&
+    (left.kind !== "message" || (right.kind === "message" && left.joinedRun === right.joinedRun))
+  );
 }
 
 function sameEntries(left: readonly object[], right: readonly object[]): boolean {
@@ -1742,9 +1740,6 @@ function EmptyThread(): ReactNode {
 
 const styles = StyleSheet.create({
   body: { flex: 1 },
-  // Folded, the pane grows into whatever the sheet is given and never below
-  // its latest line and composer.
-  folded: { flexGrow: 1 },
   centred: { flex: 1, gap: space[12], justifyContent: "center" },
   // No gap: each row carries the air above it, because how much belongs there
   // depends on whether the row before it was the same voice.
@@ -1785,18 +1780,18 @@ const styles = StyleSheet.create({
   // touches the thing it sits on reads as part of it.
   jumpHome: { alignItems: "center", bottom: space[12], left: 0, position: "absolute", right: 0 },
   jumpPressed: { ...material.floatPressed },
+  // The latest reply under a page, set in from the composer's edge so it reads
+  // as the agent speaking above it rather than as a second field.
   latest: {
     alignItems: "center",
+    borderRadius: radius.md,
     flexDirection: "row",
     gap: space[8],
     minHeight: touchTarget,
+    paddingHorizontal: space[10],
   },
   latestPressed: { ...material.quiet },
   latestText: { flex: 1 },
   pane: { flex: 1 },
-  // Its own basis is nothing and its least is the latest line, so the room is
-  // exactly what the sheet has to spare, whatever it holds.
-  // The latest line, when that is all there is room for, sits on the composer.
-  room: { flexBasis: 0, flexGrow: 1, justifyContent: "flex-end", minHeight: touchTarget },
-  sheetEmpty: { paddingVertical: space[8], textAlign: "center" },
+  docked: { flexGrow: 0, flexShrink: 1 },
 });

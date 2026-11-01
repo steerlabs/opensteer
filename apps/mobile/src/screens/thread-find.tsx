@@ -8,6 +8,7 @@ import {
   FlatList,
   Pressable,
   StyleSheet,
+  TextInput,
   View,
   type ListRenderItemInfo,
 } from "react-native";
@@ -16,7 +17,6 @@ import { color, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { useListContentInsets } from "../ui/screen.js";
-import { TextInput } from "../ui/text-input.js";
 
 /** The Host's cap on a query; a longer one is refused, so it is not sent. */
 const queryLimit = 256;

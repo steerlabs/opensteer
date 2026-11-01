@@ -1,4 +1,9 @@
 import {
+  BootstrapReadDiagnostics,
+  bootstrapDiagnosticHeader,
+} from "@opensteer/shared/bootstrapDiagnostics";
+import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
+import {
   SequenceSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
@@ -404,6 +409,59 @@ describe("HttpHostClient Workspace files", () => {
     ).rejects.toThrow(/larger than this app accepts/);
     client.dispose();
   });
+});
+
+describe("profile preparation", () => {
+  it.each([true, false])(
+    "deduplicates per attach, never waits, and gates old Hosts: %s",
+    async (supported) => {
+      const requests: unknown[] = [];
+      const pending = Promise.withResolvers<Response>();
+      const client = createHttpHostClient({
+        capabilities: supported ? ["browser-profile-prepare-v1"] : [],
+        refreshIntervalMs: 0,
+        fetch: async (input, init) => {
+          if (String(input).endsWith("commands.dispatch")) {
+            requests.push(JSON.parse(String(init?.body)));
+            return pending.promise;
+          }
+          return json(
+            bootstrap([makeWorkspace()], {
+              profileGrants: [],
+              available: true,
+              placements: [],
+              profiles: [],
+              sessions: [],
+            }),
+          );
+        },
+      });
+      try {
+        await client.load();
+        const identity = { kind: "profile" as const, profileId: createId("browserProfile") };
+        expect(client.prepareBrowserProfile(identity)).toBeUndefined();
+        client.prepareBrowserProfile(identity);
+        client.prepareBrowserProfile({ kind: "guest" });
+        await vi.waitFor(
+          () =>
+            expect(
+              requests,
+              `snapshot connection: ${client.getSnapshot().connection}`,
+            ).toHaveLength(supported ? 1 : 0),
+          { timeout: 1000 },
+        );
+        expect(client.getSnapshot().session).toBe("authenticated");
+        const other = { kind: "profile" as const, profileId: createId("browserProfile") };
+        client.prepareBrowserProfile(other);
+        await client.refresh();
+        client.prepareBrowserProfile(identity);
+        await vi.waitFor(() => expect(requests).toHaveLength(supported ? 2 : 0), { timeout: 1000 });
+      } finally {
+        pending.resolve(json({ type: "browser.profile.prepare" }));
+        client.dispose();
+      }
+    },
+  );
 });
 
 describe("HttpHostClient authentication and onboarding", () => {
@@ -1402,6 +1460,27 @@ describe("HttpHostClient harness authentication", () => {
 });
 
 describe("HttpHostClient durable realtime", () => {
+  it("routes viewer-wide history notices to the history cache", async () => {
+    const workspace = makeWorkspace();
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      fetch: async () => json(bootstrap([workspace])),
+      refreshIntervalMs: 0,
+      webSocketFactory: () => socket,
+    });
+    try {
+      await client.load();
+      socket.open();
+      socket.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+      const changed = vi.spyOn(client.browserHistory, "changed");
+      const profileId = createId("browserProfile");
+      socket.receive({ type: "host.browser-history-changed", profileId });
+      expect(changed).toHaveBeenCalledExactlyOnceWith(profileId);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("invalidates Trigger reads when a program-only occurrence changes", async () => {
     const workspace = makeWorkspace();
     const sockets: FakeSocket[] = [];
@@ -1749,6 +1828,52 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
+  it("carries one count-only summary after repeated loads recreate the client", async () => {
+    const diagnostics = new BootstrapReadDiagnostics();
+    const trigger = vi
+      .spyOn(bootstrapReadDiagnostics, "trigger")
+      .mockImplementation(diagnostics.trigger.bind(diagnostics));
+    const start = vi
+      .spyOn(bootstrapReadDiagnostics, "start")
+      .mockImplementation(diagnostics.start.bind(diagnostics));
+    const take = vi
+      .spyOn(bootstrapReadDiagnostics, "takeSummary")
+      .mockImplementation(diagnostics.takeSummary.bind(diagnostics));
+    const summaries: (string | null)[] = [];
+    try {
+      for (let index = 0; index < 12; index++) {
+        const client = createHttpHostClient({
+          refreshIntervalMs: 0,
+          webSocketFactory: () => new FakeSocket(),
+          fetch: async (input, init) => {
+            const request = new Request(input, init);
+            if (new URL(request.url).pathname.endsWith("bootstrap.get"))
+              summaries.push(request.headers.get(bootstrapDiagnosticHeader));
+            return json(bootstrap([]));
+          },
+        });
+        try {
+          await client.load();
+        } finally {
+          client.dispose();
+        }
+      }
+      expect(summaries).toHaveLength(12);
+      expect(summaries.filter(Boolean)).toHaveLength(1);
+      expect(JSON.parse(summaries[5]!)).toEqual({
+        windowMs: expect.any(Number),
+        triggers: { load: 6 },
+        starts: { load: 6 },
+      });
+      expect(summaries.slice(0, 5)).toEqual(Array(5).fill(null));
+      expect(summaries.slice(6)).toEqual(Array(6).fill(null));
+    } finally {
+      trigger.mockRestore();
+      start.mockRestore();
+      take.mockRestore();
+    }
+  });
+
   it.each(["host.browser-sessions-changed", "host.machines.changed"] as const)(
     "refreshes thread-visible bootstrap state on %s without a mounted Computers page",
     async (noticeType) => {
@@ -1916,6 +2041,8 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]!.open();
     sockets[0]!.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
 
+    const triggers = vi.spyOn(bootstrapReadDiagnostics, "trigger");
+    const starts = vi.spyOn(bootstrapReadDiagnostics, "start");
     // Starting: one read begins. Ready lands twice while it is still out.
     sockets[0]!.receive({ type: "host.browser-sessions-changed", workspaceId: workspace.id });
     await vi.waitUntil(() => releases.length === 1);
@@ -1933,6 +2060,17 @@ describe("HttpHostClient durable realtime", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(reads).toBe(3);
+    expect(triggers.mock.calls.map(([reason]) => reason)).toEqual([
+      "host.browser-sessions-changed",
+      "host.browser-sessions-changed",
+      "host.browser-sessions-changed",
+    ]);
+    expect(starts.mock.calls.map(([reason]) => reason)).toEqual([
+      "host.browser-sessions-changed",
+      "host.browser-sessions-changed",
+    ]);
+    triggers.mockRestore();
+    starts.mockRestore();
     client.dispose();
   });
 
@@ -2375,90 +2513,99 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("loads an older durable message window through its continuation cursor", async () => {
-    const workspace = makeWorkspace();
-    const thread = makeThread(workspace.id);
-    const recent = makeMessage(thread.id, "assistant", "Recent");
-    const internalResult: Message = {
-      ...recent,
-      content: [{ text: 'Delegated Thread result\n{"outcome":"completed"}', type: "text" }],
-      id: createId("message"),
-      kind: "run-result",
-      sequence: SequenceSchema.parse("2"),
-    };
-    const earlier = makeMessage(thread.id, "input", "Earlier");
-    const sockets: FakeSocket[] = [];
-    const requestedUrls: string[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      requestedUrls.push(String(input));
-      const path = new URL(String(input)).pathname;
-      if (path === "/v1/rpc/thread.events.list") {
-        return json({
-          thread,
-          events: [
-            agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
-              input: makeThreadInput(earlier),
-              message: earlier,
-            }),
+  it.each([true, false])(
+    "loads an older durable message window through its continuation cursor (turn pages %s)",
+    async (turnPages) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const recent = makeMessage(thread.id, "assistant", "Recent");
+      const internalResult: Message = {
+        ...recent,
+        content: [{ text: 'Delegated Thread result\n{"outcome":"completed"}', type: "text" }],
+        id: createId("message"),
+        kind: "run-result",
+        sequence: SequenceSchema.parse("2"),
+      };
+      const earlier = makeMessage(thread.id, "input", "Earlier");
+      const sockets: FakeSocket[] = [];
+      const requestedUrls: string[] = [];
+      const eventRequests: Record<string, unknown>[] = [];
+      const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        requestedUrls.push(String(input));
+        const path = new URL(String(input)).pathname;
+        if (path === "/v1/rpc/thread.events.list") {
+          eventRequests.push(rpcPayload(new URL(String(input)), init));
+          return json({
+            thread,
+            events: [
+              agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
+                input: makeThreadInput(earlier),
+                message: earlier,
+              }),
+            ],
+            threadId: thread.id,
+            window: {
+              byteCount: 256,
+              hasMore: false,
+              itemCount: 1,
+              nextBefore: null,
+              threadId: thread.id,
+              totalItems: 2,
+            },
+          });
+        }
+        return json(bootstrap([workspace]));
+      }) as unknown as typeof globalThis.fetch;
+      const client = createHttpHostClient({
+        capabilities: async () => (turnPages ? ["history-turns-v1"] : []),
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: {
+          ...workspaceSnapshot(workspace, "2"),
+          messages: [recent, internalResult],
+          messageWindows: [
+            {
+              byteCount: 256,
+              hasMore: true,
+              itemCount: 1,
+              nextBefore: "message_cursor",
+              threadId: thread.id,
+              totalItems: 2,
+            },
           ],
-          threadId: thread.id,
-          window: {
-            byteCount: 256,
-            hasMore: false,
-            itemCount: 1,
-            nextBefore: null,
-            threadId: thread.id,
-            totalItems: 2,
-          },
-        });
-      }
-      return json(bootstrap([workspace]));
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    const socket = sockets[0]!;
-    socket.open();
-    socket.receive({
-      snapshot: {
-        ...workspaceSnapshot(workspace, "2"),
-        messages: [recent, internalResult],
-        messageWindows: [
-          {
-            byteCount: 256,
-            hasMore: true,
-            itemCount: 1,
-            nextBefore: "message_cursor",
-            threadId: thread.id,
-            totalItems: 2,
-          },
-        ],
-        threads: [thread],
-      },
-      type: "host.snapshot",
-    });
+          threads: [thread],
+        },
+        type: "host.snapshot",
+      });
 
-    await client.loadEarlierTranscript(thread.id);
+      await client.loadEarlierTranscript(thread.id);
 
-    expect(
-      client
-        .getSnapshot()
-        .transcripts[thread.id]?.filter((entry) => entry.kind === "message")
-        .map((entry) => entry.body),
-    ).toEqual(["Earlier", "Recent"]);
-    expect(client.getSnapshot().transcriptWindows[thread.id]?.hasMore).toBe(false);
-    expect(requestedUrls).toEqual(
-      expect.arrayContaining([expect.stringContaining("message_cursor")]),
-    );
-    client.dispose();
-  });
+      expect(
+        client
+          .getSnapshot()
+          .transcripts[thread.id]?.filter((entry) => entry.kind === "message")
+          .map((entry) => entry.body),
+      ).toEqual(["Earlier", "Recent"]);
+      expect(client.getSnapshot().transcriptWindows[thread.id]?.hasMore).toBe(false);
+      expect(requestedUrls).toEqual(
+        expect.arrayContaining([expect.stringContaining("message_cursor")]),
+      );
+      expect(eventRequests).toEqual([
+        { before: "message_cursor", threadId: thread.id, ...(turnPages ? { turns: 10 } : {}) },
+      ]);
+      client.dispose();
+    },
+  );
 
   /*
    * History is read over HTTP while the realtime channel keeps delivering. A
@@ -2619,134 +2766,138 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("rebuilds the transcript from durable event history when a Thread is activated", async () => {
-    const workspace = makeWorkspace();
-    const thread = makeThread(workspace.id);
-    const runId = createId("run");
-    const userMessage = makeMessage(thread.id, "input", "Do the work");
-    const eventRequests: string[] = [];
-    const sockets: FakeSocket[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      if (url.pathname === "/v1/rpc/thread.requests.list") {
-        return json({ nextCursor: null, requests: [], threadId: thread.id });
-      }
-      if (url.pathname === "/v1/rpc/thread.events.list") {
-        eventRequests.push(url.pathname);
-        return json({
-          thread,
-          events: [
-            agentEvent(workspace.id, thread.id, runId, "1", "message.created", {
-              input: makeThreadInput(userMessage),
-              message: userMessage,
-            }),
-            agentEvent(workspace.id, thread.id, runId, "2", "run.started", { status: "running" }),
-            agentEvent(workspace.id, thread.id, runId, "4", "reasoning.completed", {
-              blockId: "block-1",
-              text: "Weighing the options carefully.",
-            }),
-            agentEvent(workspace.id, thread.id, runId, "5", "tool.started", {
-              arguments: { command: "pnpm test" },
-              callId: "shell-1",
-              tool: { name: "shell", namespace: "codex" },
-            }),
-            agentEvent(workspace.id, thread.id, runId, "7", "tool.completed", {
-              callId: "shell-1",
-              isError: false,
-              output: { text: "42 passed\n" },
-            }),
-            agentEvent(workspace.id, thread.id, runId, "8", "assistant.message", {
-              content: [{ text: "All checks pass.", type: "text" }],
-              messageId: createId("message"),
-            }),
-            agentEvent(workspace.id, thread.id, runId, "9", "run.completed", {
-              replyMessageId: null,
-              status: "completed",
-            }),
-          ],
-          threadId: thread.id,
-          window: {
-            byteCount: 512,
-            hasMore: false,
-            itemCount: 7,
-            nextBefore: null,
+  it.each([true, false])(
+    "rebuilds the transcript from durable event history when a Thread is activated (turn pages %s)",
+    async (turnPages) => {
+      const workspace = makeWorkspace();
+      const thread = makeThread(workspace.id);
+      const runId = createId("run");
+      const userMessage = makeMessage(thread.id, "input", "Do the work");
+      const eventRequests: Record<string, unknown>[] = [];
+      const sockets: FakeSocket[] = [];
+      const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/rpc/thread.requests.list") {
+          return json({ nextCursor: null, requests: [], threadId: thread.id });
+        }
+        if (url.pathname === "/v1/rpc/thread.events.list") {
+          eventRequests.push(rpcPayload(url, init));
+          return json({
+            thread,
+            events: [
+              agentEvent(workspace.id, thread.id, runId, "1", "message.created", {
+                input: makeThreadInput(userMessage),
+                message: userMessage,
+              }),
+              agentEvent(workspace.id, thread.id, runId, "2", "run.started", { status: "running" }),
+              agentEvent(workspace.id, thread.id, runId, "4", "reasoning.completed", {
+                blockId: "block-1",
+                text: "Weighing the options carefully.",
+              }),
+              agentEvent(workspace.id, thread.id, runId, "5", "tool.started", {
+                arguments: { command: "pnpm test" },
+                callId: "shell-1",
+                tool: { name: "shell", namespace: "codex" },
+              }),
+              agentEvent(workspace.id, thread.id, runId, "7", "tool.completed", {
+                callId: "shell-1",
+                isError: false,
+                output: { text: "42 passed\n" },
+              }),
+              agentEvent(workspace.id, thread.id, runId, "8", "assistant.message", {
+                content: [{ text: "All checks pass.", type: "text" }],
+                messageId: createId("message"),
+              }),
+              agentEvent(workspace.id, thread.id, runId, "9", "run.completed", {
+                replyMessageId: null,
+                status: "completed",
+              }),
+            ],
             threadId: thread.id,
-            totalItems: 7,
-          },
-        });
-      }
-      return json(bootstrap([workspace]));
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    const socket = sockets[0]!;
-    socket.open();
-    socket.receive({
-      snapshot: {
-        ...workspaceSnapshot(workspace, "9"),
-        threads: [thread],
-        threadWindow: {
-          byteCount: 256,
-          hasMore: false,
-          itemCount: 1,
-          nextBefore: null,
-          totalItems: 1,
+            window: {
+              byteCount: 512,
+              hasMore: false,
+              itemCount: 7,
+              nextBefore: null,
+              threadId: thread.id,
+              totalItems: 7,
+            },
+          });
+        }
+        return json(bootstrap([workspace]));
+      }) as unknown as typeof globalThis.fetch;
+      const client = createHttpHostClient({
+        capabilities: async () => (turnPages ? ["history-turns-v1"] : []),
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
         },
-      },
-      type: "host.snapshot",
-    });
+      });
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: {
+          ...workspaceSnapshot(workspace, "9"),
+          threads: [thread],
+          threadWindow: {
+            byteCount: 256,
+            hasMore: false,
+            itemCount: 1,
+            nextBefore: null,
+            totalItems: 1,
+          },
+        },
+        type: "host.snapshot",
+      });
 
-    client.activateThread(thread.id);
-    await vi.waitFor(() =>
-      expect(client.getSnapshot().transcripts[thread.id]?.length).toBeGreaterThan(0),
-    );
+      client.activateThread(thread.id);
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().transcripts[thread.id]?.length).toBeGreaterThan(0),
+      );
 
-    const entries = client.getSnapshot().transcripts[thread.id] ?? [];
-    expect(entries.map((entry) => entry.kind)).toEqual([
-      "message",
-      "run",
-      "reasoning",
-      "tool",
-      "message",
-    ]);
-    expect(entries[1]).toMatchObject({ kind: "run", runId, status: "completed" });
-    expect(entries[2]).toMatchObject({
-      id: `reasoning:${runId}:block-1`,
-      kind: "reasoning",
-      state: "done",
-      text: "Weighing the options carefully.",
-    });
-    expect(entries[3]).toMatchObject({
-      arguments: { command: "pnpm test" },
-      id: `tool:${runId}:shell-1`,
-      integration: null,
-      isError: false,
-      kind: "tool",
-      tool: { name: "shell", namespace: "codex" },
-      output: { text: "42 passed\n" },
-      state: "done",
-    });
-    expect(entries[4]).toMatchObject({
-      body: "All checks pass.",
-      kind: "message",
-      messageKind: "assistant",
-    });
-    expect(eventRequests).toEqual(["/v1/rpc/thread.events.list"]);
+      const entries = client.getSnapshot().transcripts[thread.id] ?? [];
+      expect(entries.map((entry) => entry.kind)).toEqual([
+        "message",
+        "run",
+        "reasoning",
+        "tool",
+        "message",
+      ]);
+      expect(entries[1]).toMatchObject({ kind: "run", runId, status: "completed" });
+      expect(entries[2]).toMatchObject({
+        id: `reasoning:${runId}:block-1`,
+        kind: "reasoning",
+        state: "done",
+        text: "Weighing the options carefully.",
+      });
+      expect(entries[3]).toMatchObject({
+        arguments: { command: "pnpm test" },
+        id: `tool:${runId}:shell-1`,
+        integration: null,
+        isError: false,
+        kind: "tool",
+        tool: { name: "shell", namespace: "codex" },
+        output: { text: "42 passed\n" },
+        state: "done",
+      });
+      expect(entries[4]).toMatchObject({
+        body: "All checks pass.",
+        kind: "message",
+        messageKind: "assistant",
+      });
+      expect(eventRequests).toEqual([{ threadId: thread.id, ...(turnPages ? { turns: 10 } : {}) }]);
 
-    // Re-activating a hydrated Thread must not refetch the history.
-    client.activateThread(thread.id);
-    await Promise.resolve();
-    expect(eventRequests).toHaveLength(1);
-    client.dispose();
-  });
+      // Re-activating a hydrated Thread must not refetch the history.
+      client.activateThread(thread.id);
+      await Promise.resolve();
+      expect(eventRequests).toHaveLength(1);
+      client.dispose();
+    },
+  );
 
   it("surfaces a failed deep-link lookup and retries it on the next activation", async () => {
     const workspace = makeWorkspace();
@@ -6095,6 +6246,56 @@ describe("HttpHostClient browser profiles", () => {
     client.dispose();
   });
 
+  it("keeps pending erasure from delete receipts and bootstrap until completion, including older Hosts", async () => {
+    const profileId = createId("browserProfile");
+    const computerId = createId("runner");
+    const deletion = { profileId, computerId, state: "pending-computer" as const };
+    let browser: HostedBrowserBootstrap = {
+      available: false,
+      placements: [],
+      profiles: [{ id: profileId, name: "Work", revision: 0 }],
+      profileGrants: [],
+      sessions: [],
+    };
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async (input) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([makeWorkspace()], browser));
+        if (path === "/v1/rpc/commands.dispatch")
+          return json({ type: "browser.profile.delete", deletion });
+        throw new Error(`Unexpected request ${path}`);
+      },
+    });
+    try {
+      await client.load();
+      expect(client.getSnapshot().browserProfileDeletions).toBeUndefined();
+      await client.dispatch({
+        type: "browser.profile.delete",
+        profileId,
+        idempotencyKey: "delete-native-profile",
+      });
+      expect(client.getSnapshot().browserProfiles).toEqual([]);
+      expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
+      browser = {
+        ...browser,
+        profiles: [],
+        profileDeletions: [{ ...deletion, state: "pending-restart" }],
+      };
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual(browser.profileDeletions);
+      browser = { ...browser, profileDeletions: [] };
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toEqual([]);
+      delete browser.profileDeletions;
+      await client.refresh();
+      expect(client.getSnapshot().browserProfileDeletions).toBeUndefined();
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("makes a profile saved from a fresh session immediately selectable", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
@@ -6259,135 +6460,6 @@ describe("HttpHostClient voice capability", () => {
       expect(client.getSnapshot().voiceAvailable).toBe(false);
     } finally {
       client.dispose();
-    }
-  });
-});
-
-describe("HttpHostClient screen presentation", () => {
-  it.each([false, true])(
-    "opts in only on Main when the Host supports it (%s)",
-    async (supported) => {
-      const main = makeWorkspace();
-      const other = { ...makeWorkspace("Project"), kind: "specialized" as const };
-      const sockets: FakeSocket[] = [];
-      const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
-      const client = createHttpHostClient({
-        capabilities: supported ? ["screen-show-v1"] : [],
-        lifecycle: platform.lifecycle,
-        refreshIntervalMs: 0,
-        fetch: async () => json(bootstrap([main, other])),
-        webSocketFactory: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      });
-      try {
-        await client.load();
-        client.activateWorkspace(other.id);
-        for (const socket of sockets) socket.open();
-        const mainSocket = sockets.find((socket) => parseSent(socket, 0).workspaceId === main.id)!;
-        const otherSocket = sockets.find(
-          (socket) => parseSent(socket, 0).workspaceId === other.id,
-        )!;
-        expect(mainSocket).toBeDefined();
-        expect(otherSocket).toBeDefined();
-        expect(parseSent(mainSocket, 0).screenShow).toBe(supported ? true : undefined);
-        expect(parseSent(otherSocket, 0).screenShow).toBeUndefined();
-        const ready = { type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 100 };
-        otherSocket.receiveRaw(ready);
-        expect(client.screenPresentation.getEndpoint()).toBeNull();
-        mainSocket.receiveRaw(ready);
-        expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe(
-          supported ? ready.endpointRef : undefined,
-        );
-        platform.enterBackground();
-        expect(client.screenPresentation.getEndpoint()).toBeNull();
-        mainSocket.receiveRaw(ready);
-        expect(client.screenPresentation.getEndpoint()).toBeNull();
-        platform.enterForeground();
-        if (supported) {
-          expect(mainSocket.closeEvents).toEqual([{ code: 1000, reason: "Presentation resumed" }]);
-          const replacement = sockets.at(-1)!;
-          replacement.open();
-          mainSocket.receiveRaw(ready);
-          expect(client.screenPresentation.getEndpoint()).toBeNull();
-          replacement.receiveRaw({ ...ready, endpointRef: "b".repeat(64) });
-          expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("b".repeat(64));
-        } else {
-          expect(mainSocket.closeEvents).toEqual([]);
-        }
-      } finally {
-        client.dispose();
-      }
-    },
-  );
-
-  it("rejects malformed screen frames without logging routing credentials", async () => {
-    const main = makeWorkspace();
-    const socket = new FakeSocket();
-    const diagnostics = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const client = createHttpHostClient({
-      capabilities: ["screen-show-v1"],
-      refreshIntervalMs: 0,
-      fetch: async () => json(bootstrap([main])),
-      webSocketFactory: () => socket,
-    });
-    try {
-      await client.load();
-      socket.open();
-      socket.receiveRaw({
-        type: "host.screen.show",
-        endpointRef: "PRIVATE-ENDPOINT-SENTINEL",
-        target: { conversationId: "PRIVATE-TARGET-SENTINEL" },
-      });
-      expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
-      expect(client.screenPresentation.getEndpoint()).toBeNull();
-      expect(diagnostics).toHaveBeenCalledOnce();
-      expect(JSON.stringify(diagnostics.mock.calls)).not.toContain("PRIVATE-");
-    } finally {
-      client.dispose();
-      diagnostics.mockRestore();
-    }
-  });
-
-  it("replaces a clock-poisoned Main endpoint and recovers without accepting its old readiness", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(100_000);
-    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
-    const main = makeWorkspace();
-    const sockets: FakeSocket[] = [];
-    const client = createHttpHostClient({
-      capabilities: ["screen-show-v1"],
-      refreshIntervalMs: 0,
-      fetch: async () => json(bootstrap([main])),
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    const stop = client.screenPresentation.subscribe(vi.fn());
-    try {
-      await client.load();
-      const first = sockets[0]!;
-      first.open();
-      first.receive({ type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 1_000 });
-      expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("a".repeat(64));
-      vi.setSystemTime(160_000);
-      expect(client.screenPresentation.getEndpoint()).toBeNull();
-      expect(first.closeEvents).toEqual([{ code: 1000, reason: "Presentation clock refreshed" }]);
-      expect(sockets).toHaveLength(2);
-      const second = sockets[1]!;
-      second.open();
-      first.receive({ type: "host.screen.ready", endpointRef: "a".repeat(64), serverTime: 2_000 });
-      expect(client.screenPresentation.getEndpoint()).toBeNull();
-      second.receive({ type: "host.screen.ready", endpointRef: "b".repeat(64), serverTime: 2_000 });
-      expect(client.screenPresentation.getEndpoint()?.endpointRef).toBe("b".repeat(64));
-    } finally {
-      stop();
-      client.dispose();
-      clock.mockRestore();
     }
   });
 });
@@ -10534,6 +10606,8 @@ describe("HttpHostClient owner views", () => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         if (url.pathname.endsWith("/commands.dispatch")) {
           const payload = rpcPayload(url, init);
+          if (payload.type === "browser.history.clear" || payload.type === "browser.history.remove")
+            return json({ type: payload.type });
           if (
             typeof payload.type === "string" &&
             /^(computer\.view|browser\.tab)\./u.test(payload.type)
@@ -10564,6 +10638,349 @@ describe("HttpHostClient owner views", () => {
     };
     return { client, commands, connect, host, sockets, workspace };
   }
+  async function browserOpenWorld() {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      const session = mock.getSnapshot().browserSessions.find((value) => value.state === "ready")!;
+      return await mock.openBrowserTab(session.id, {
+        url: "https://pending.example/",
+        idempotencyKey: "fixture-open",
+      });
+    } finally {
+      mock.dispose();
+    }
+  }
+
+  it("opens authoritative tabs before loading presentation scope without publishing pending rows", async () => {
+    const opened = await browserOpenWorld();
+    const host = ownerViewHost(
+      () => [],
+      async () => json(opened),
+    );
+    try {
+      const target = { identity: { kind: "guest" as const } };
+      const options = { url: "https://pending.example/", idempotencyKey: "before-load" };
+      const opening = host.client.openBrowserTab(target, options);
+      expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
+      await expect(opening).resolves.toEqual(opened);
+      expect(host.commands).toEqual([{ type: "browser.tab.open", ...target, ...options }]);
+      expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
+      expect(host.sockets).toEqual([]);
+      await host.client.load();
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it("publishes a pending browser row synchronously before dispatch and joins the same key", async () => {
+    const opened = await browserOpenWorld();
+    const gate = deferred<void>();
+    const host = ownerViewHost(
+      () => [],
+      async () => {
+        expect(host.client.getSnapshot().pendingBrowserTabs).toMatchObject([
+          { idempotencyKey: "instant", state: "opening", url: "https://pending.example/" },
+        ]);
+        await withTimeout(gate.promise, 2_000, {
+          timeoutError: () => new Error("The delayed browser command was never released."),
+        });
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const handle = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        {
+          url: "https://pending.example/",
+          idempotencyKey: "instant",
+        },
+      );
+      expect(host.client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
+      const joined = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        {
+          url: "https://pending.example/",
+          idempotencyKey: "instant",
+        },
+      );
+      expect(joined.result).toBe(handle.result);
+      gate.resolve();
+      await handle.result;
+      expect(host.commands).toHaveLength(1);
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      gate.resolve();
+      host.client.dispose();
+    }
+  });
+
+  it("retains an uncertain open and retries only its original command key and payload", async () => {
+    const opened = await browserOpenWorld();
+    let uncertain = true;
+    const host = ownerViewHost(
+      () => [],
+      async () => {
+        if (uncertain) throw new TypeError("Connection lost");
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const target = { identity: { kind: "guest" as const } };
+      const options = {
+        url: "https://pending.example/",
+        viewport: { width: 700, height: 500 },
+        idempotencyKey: "uncertain",
+      };
+      await expect(host.client.beginBrowserTabOpen(target, options).result).rejects.toThrow();
+      expect(host.client.getSnapshot().pendingBrowserTabs).toMatchObject([
+        { idempotencyKey: "uncertain", state: "unknown" },
+      ]);
+      uncertain = false;
+      await host.client.beginBrowserTabOpen(target, {
+        url: options.url,
+        idempotencyKey: options.idempotencyKey,
+      }).result;
+      expect(host.commands).toHaveLength(2);
+      expect(host.commands[1]).toEqual(host.commands[0]);
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it("keeps a Host's explicit unknown-outcome conflict on the original key", async () => {
+    const host = ownerViewHost(
+      () => [],
+      async () =>
+        json(
+          {
+            error: {
+              code: "conflict",
+              reason: "browser-tab-open-outcome-unknown",
+              message: "The original page outcome is unknown.",
+            },
+          },
+          409,
+        ),
+    );
+    try {
+      await host.client.load();
+      const target = { identity: { kind: "guest" as const } };
+      const options = { idempotencyKey: "host-unknown" };
+      await expect(host.client.beginBrowserTabOpen(target, options).result).rejects.toMatchObject({
+        reason: "browser-tab-open-outcome-unknown",
+      });
+      expect(host.client.getSnapshot().pendingBrowserTabs).toMatchObject([
+        { idempotencyKey: "host-unknown", state: "unknown" },
+      ]);
+      await expect(host.client.beginBrowserTabOpen(target, options).result).rejects.toThrow();
+      expect(host.commands[1]).toEqual(host.commands[0]);
+    } finally {
+      host.client.dispose();
+    }
+  });
+
+  it.each(["inventory-first", "response-first"])(
+    "merges a pending result once with %s inventory",
+    async (order) => {
+      const opened = await browserOpenWorld();
+      const gate = deferred<void>();
+      const host = ownerViewHost(
+        () => [],
+        async () => {
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+          return json(opened);
+        },
+      );
+      try {
+        const bootstrapAnswer = host.host.bootstrap;
+        await host.client.load();
+        const socket = host.connect();
+        const handle = host.client.beginBrowserTabOpen(
+          { identity: { kind: "guest" } },
+          { idempotencyKey: "merge" },
+        );
+        const inventory = async () => {
+          host.host.bootstrap = async () => {
+            const body = await (await bootstrapAnswer()).json();
+            return json({
+              ...body,
+              browser: {
+                available: true,
+                sessions: [opened.session],
+                profiles: [],
+                placements: [],
+                profileGrants: [],
+              },
+            });
+          };
+          await host.client.refresh();
+          socket.receive({
+            type: "host.browser-tabs-changed",
+            sessionId: opened.sessionId,
+            catalog: { ...opened.catalog, revision: opened.catalog.revision + 1 },
+          });
+        };
+        if (order === "inventory-first") await inventory();
+        gate.resolve();
+        await handle.result;
+        if (order === "response-first") await inventory();
+        expect(
+          host.client
+            .getSnapshot()
+            .browserSessions.filter((value) => value.id === opened.sessionId),
+        ).toHaveLength(1);
+        expect(
+          host.client.getSnapshot().browserSessions.find((value) => value.id === opened.sessionId)
+            ?.tabCatalog?.revision,
+        ).toBe(opened.catalog.revision + 1);
+        expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      } finally {
+        gate.resolve();
+        host.client.dispose();
+      }
+    },
+  );
+
+  it("dismisses an opening immediately and closes only its exact late result", async () => {
+    const opened = await browserOpenWorld();
+    const gate = deferred<void>();
+    const host = ownerViewHost(
+      () => [],
+      async (command) => {
+        if (command.type === "browser.tab.close")
+          return json({
+            sessionId: opened.sessionId,
+            outcome: "tab-closed",
+            catalog: opened.catalog,
+          });
+        await withTimeout(gate.promise, 2_000, {
+          timeoutError: () => new Error("The delayed browser command was never released."),
+        });
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const close = vi.spyOn(host.client, "closeBrowserTab");
+      const handle = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        { idempotencyKey: "dismiss" },
+      );
+      host.client.dismissPendingBrowserTab(handle.idempotencyKey);
+      expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      gate.resolve();
+      await handle.result;
+      expect(close).toHaveBeenCalledExactlyOnceWith(opened.sessionId, opened.tabId, opened.catalog);
+    } finally {
+      gate.resolve();
+      host.client.dispose();
+    }
+  });
+
+  it.each(["sign-out", "person", "deployment"])(
+    "forgets pending browser authority on %s and refuses a late result",
+    async (change) => {
+      const opened = await browserOpenWorld();
+      const gate = deferred<void>();
+      const host = ownerViewHost(
+        () => [],
+        async () => {
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+          return json(opened);
+        },
+      );
+      try {
+        await host.client.load();
+        const handle = host.client.beginBrowserTabOpen(
+          { identity: { kind: "guest" } },
+          { idempotencyKey: "viewer-open" },
+        );
+        const answer = handle.result.catch((error: unknown) => error);
+        const original = host.host.bootstrap;
+        host.host.bootstrap = async () => {
+          if (change === "sign-out")
+            return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+          const body = await (await original()).json();
+          return json(
+            change === "person"
+              ? { ...body, user: { ...body.user, id: createId("user") } }
+              : { ...body, deploymentId: "dep_00000000-0000-4000-8000-000000000002" },
+          );
+        };
+        if (change === "sign-out") await expect(host.client.refresh()).rejects.toThrow();
+        else await host.client.refresh();
+        expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+        gate.resolve();
+        expect(await answer).toMatchObject({ code: "unauthorized" });
+        expect(
+          host.client
+            .getSnapshot()
+            .browserSessions.some((session) => session.id === opened.sessionId),
+        ).toBe(false);
+      } finally {
+        gate.resolve();
+        host.client.dispose();
+      }
+    },
+  );
+
+  it("does not complete a dismissed opening for a viewer who left during its authorized close", async () => {
+    const opened = await browserOpenWorld();
+    const openingGate = deferred<void>();
+    const closingGate = deferred<void>();
+    const closingStarted = deferred<void>();
+    const host = ownerViewHost(
+      () => [],
+      async (command) => {
+        if (command.type === "browser.tab.close") {
+          closingStarted.resolve();
+          await withTimeout(closingGate.promise, 2_000, {
+            timeoutError: () => new Error("The authorized tab close was never released."),
+          });
+          return json({
+            sessionId: opened.sessionId,
+            outcome: "tab-closed",
+            catalog: opened.catalog,
+          });
+        }
+        await withTimeout(openingGate.promise, 2_000, {
+          timeoutError: () => new Error("The pending tab open was never released."),
+        });
+        return json(opened);
+      },
+    );
+    try {
+      await host.client.load();
+      const handle = host.client.beginBrowserTabOpen(
+        { identity: { kind: "guest" } },
+        { idempotencyKey: "dismiss-and-leave" },
+      );
+      const answer = handle.result.catch((error: unknown) => error);
+      host.client.dismissPendingBrowserTab(handle.idempotencyKey);
+      openingGate.resolve();
+      await withTimeout(closingStarted.promise, 2_000, {
+        timeoutError: () => new Error("The dismissed tab was never closed."),
+      });
+      host.host.bootstrap = async () =>
+        json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+      await expect(host.client.refresh()).rejects.toThrow();
+      closingGate.resolve();
+      expect(await answer).toMatchObject({ code: "unauthorized" });
+    } finally {
+      openingGate.resolve();
+      closingGate.resolve();
+      host.client.dispose();
+    }
+  });
+
   const renewals = (commands: readonly Readonly<Record<string, unknown>>[]) =>
     commands.filter((command) => command.type === "computer.view.renew").length;
 
@@ -10814,7 +11231,7 @@ describe("HttpHostClient owner views", () => {
     host.client.dispose();
   });
 
-  it("finishes an open the Host granted although recent sites were cleared meanwhile, and refuses one for a viewer who left", async () => {
+  it("finishes an open the Host granted although history was cleared meanwhile, and refuses one for a viewer who left", async () => {
     const { machine, view } = await ownerViewWorld();
     const sessionId = createBrowserSessionId();
     const workspaceId = WorkspaceIdSchema.parse(createId("workspace"));
@@ -10859,19 +11276,20 @@ describe("HttpHostClient owner views", () => {
     const viewOpen = host.client.openComputerView(view.machineId, view.target);
     const tabOpen = host.client.openBrowserTab(
       { identity: { kind: "guest" } },
-      { url: "https://example.com/" },
+      { url: "https://example.com/", typed: true },
     );
-    // A recent site recorded before the clear is fenced; the domain answers are not.
-    const epoch = host.client.recentSites.epoch;
-    host.client.recentSites.clear(personal);
-    host.client.recentSites.record(personal, "https://late.example/", epoch);
+    expect(host.commands.find((command) => command.type === "browser.tab.open")).toMatchObject({
+      typed: true,
+    });
+    // Clearing history has no effect on unrelated domain answers.
+    await host.client.browserHistory.clear(personal.profileId);
     gate.resolve();
     await expect(viewOpen).resolves.toMatchObject({ viewId: view.viewId });
     await expect(tabOpen).resolves.toMatchObject({ sessionId, tabId: "page-1" });
     expect(
       host.client.getSnapshot().browserSessions.some((session) => session.id === sessionId),
     ).toBe(true);
-    expect(host.client.recentSites.list(personal)).toEqual([]);
+    expect(host.client.browserHistory.entries(personal.profileId)).toEqual([]);
 
     // The person who asked is no longer the one signed in: the answer is not adopted.
     gate = deferred<void>();
@@ -13255,3 +13673,180 @@ it.each([false, true])(
     }
   },
 );
+
+describe("attachment reads", () => {
+  const boundedRead = (client: HttpHostClient, id: string, signal?: AbortSignal) =>
+    withTimeout(client.readAttachment(id, signal), 1_000, {
+      timeoutError: () => new Error("Attachment read did not settle"),
+    });
+  const content = (size = 4) => ({
+    ok: true as const,
+    data: {
+      bytes: new Uint8Array(size),
+      metadata: {
+        contentType: "image/png",
+        etag: "immutable",
+        modifiedAt: null,
+        sizeBytes: size,
+        truncated: false as const,
+      },
+    },
+  });
+  function attachmentRpc(client: HttpHostClient) {
+    const rpc = vi.fn<(typeof client.rpc)["attachment.content"]>();
+    Object.defineProperty(client.rpc, "attachment.content", { value: rpc });
+    return rpc;
+  }
+  function pendingRead() {
+    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    let complete!: (value: ReturnType<typeof content>) => void;
+    const pending = new Promise<ReturnType<typeof content>>((resolve) => {
+      complete = resolve;
+    });
+    const rpc = attachmentRpc(client).mockReturnValue(pending);
+    return { client, rpc, complete };
+  }
+
+  it("shares concurrent reads, isolates cancellation, and caches completed bytes", async () => {
+    const { client, rpc, complete } = pendingRead();
+    try {
+      const abort = new AbortController();
+      const first = boundedRead(client, "image", abort.signal);
+      const rejected = expect(first).rejects.toMatchObject({ name: "AbortError" });
+      const second = boundedRead(client, "image");
+      abort.abort();
+      await rejected;
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(rpc.mock.calls[0]![1]?.signal?.aborted).toBe(false);
+      complete(content());
+      expect((await second).size).toBe(4);
+      expect((await boundedRead(client, "image")).size).toBe(4);
+      expect(rpc).toHaveBeenCalledTimes(1);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("keeps the request through synchronous cleanup and remount, then cancels when unused", async () => {
+    const { client, rpc } = pendingRead();
+    try {
+      const a = new AbortController();
+      const first = boundedRead(client, "image", a.signal);
+      const firstRejected = expect(first).rejects.toMatchObject({ name: "AbortError" });
+      a.abort();
+      const b = new AbortController();
+      const second = boundedRead(client, "image", b.signal);
+      const secondRejected = expect(second).rejects.toMatchObject({ name: "AbortError" });
+      await firstRejected;
+      expect(rpc).toHaveBeenCalledTimes(1);
+      const signal = rpc.mock.calls[0]![1]!.signal!;
+      expect(signal.aborted).toBe(false);
+      b.abort();
+      expect(signal.aborted).toBe(false);
+      await secondRejected;
+      expect(signal.aborted).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("aborts active reads and refuses cached bytes after disposal", async () => {
+    const { client, rpc, complete } = pendingRead();
+    try {
+      const completed = boundedRead(client, "cached");
+      complete(content());
+      await completed;
+      rpc.mockImplementationOnce(() => new Promise(() => undefined));
+      const pending = boundedRead(client, "pending");
+      const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      client.dispose();
+      await rejected;
+      expect(rpc.mock.calls[1]![1]!.signal!.aborted).toBe(true);
+      await expect(boundedRead(client, "cached")).rejects.toMatchObject({ name: "AbortError" });
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("evicts least recently used bytes and excludes oversized items", async () => {
+    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const rpc = attachmentRpc(client).mockResolvedValue(content(12 * 1024 * 1024));
+    try {
+      await boundedRead(client, "a");
+      await boundedRead(client, "b");
+      await boundedRead(client, "a");
+      await boundedRead(client, "c");
+      await boundedRead(client, "a");
+      expect(rpc).toHaveBeenCalledTimes(3);
+      await boundedRead(client, "b");
+      expect(rpc).toHaveBeenCalledTimes(4);
+      rpc.mockResolvedValue(content(33 * 1024 * 1024));
+      await boundedRead(client, "large");
+      await boundedRead(client, "large");
+      expect(rpc).toHaveBeenCalledTimes(6);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("does not cache failures or issue a request for an already aborted caller", async () => {
+    const client = createHttpHostClient({ refreshIntervalMs: 0 });
+    const rpc = attachmentRpc(client)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(content());
+    try {
+      await expect(boundedRead(client, "image")).rejects.toThrow("offline");
+      await boundedRead(client, "image");
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await expect(boundedRead(client, "other", AbortSignal.abort())).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it.each(["sign-out", "user", "deployment"] as const)(
+    "clears bytes and in-flight reads on %s",
+    async (change) => {
+      let payload = bootstrap([]);
+      let authenticated = true;
+      const client = createHttpHostClient({
+        refreshIntervalMs: 0,
+        fetch: async (input) => {
+          const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+          if (path === "/v1/rpc/auth.config") return json(payload.identityConfig);
+          return authenticated ? json(payload) : json({ error: unauthorizedError() }, 401);
+        },
+      });
+      try {
+        await client.load();
+        const rpc = attachmentRpc(client).mockResolvedValue(content());
+        await boundedRead(client, "image");
+        let complete!: (value: ReturnType<typeof content>) => void;
+        rpc.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              complete = resolve;
+            }),
+        );
+        const pending = boundedRead(client, "pending");
+        const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+        if (change === "sign-out") authenticated = false;
+        else if (change === "user")
+          payload = { ...payload, user: { ...payload.user, id: createId("user") } };
+        else payload = { ...payload, deploymentId: createId("deployment") };
+        await client.refresh();
+        await rejected;
+        complete(content());
+        await boundedRead(client, "image");
+        await boundedRead(client, "pending");
+        expect(rpc).toHaveBeenCalledTimes(4);
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+});

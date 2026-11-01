@@ -1,3 +1,4 @@
+import type { PersonNotificationInput, PersonNotificationResult } from "@opensteer/database";
 import { OpensteerError } from "@opensteer/core";
 import type {
   AgentEvent,
@@ -162,19 +163,9 @@ export class CommandService {
     });
   }
 
-  enqueueThreadInput(
-    input: EnqueueThreadInputRequest,
-    options: { readonly onCommitted?: (result: EnqueuedThreadInput) => void } = {},
-  ): Promise<EnqueuedThreadInput> {
+  enqueueThreadInput(input: EnqueueThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueThreadInput(input);
-      if (!result.wasDuplicate && options.onCommitted) {
-        try {
-          options.onCommitted(result);
-        } catch {
-          // Ephemeral UI context cannot undo committed work or prevent its publication.
-        }
-      }
       for (const event of result.events) this.#onWorkspaceEvent(event);
       const workspaceId = result.events[0]?.workspaceId;
       if (workspaceId && input.policy !== "report") this.#onWorkspaceActivity?.(workspaceId);
@@ -210,6 +201,18 @@ export class CommandService {
       for (const event of result.events) this.#onWorkspaceEvent(event);
       return result;
     });
+  }
+
+  publishPersonNotification(input: PersonNotificationInput): Promise<PersonNotificationResult> {
+    return this.#admission.execute(
+      [threadKey(input.admission.sourceThreadId)],
+      byteSize(input),
+      async () => {
+        const result = await this.#store.publishPersonNotification(input);
+        for (const event of result.events) this.#onWorkspaceEvent(event);
+        return result;
+      },
+    );
   }
 
   enqueueAdmittedThreadInput(input: AdmittedThreadInputRequest): Promise<EnqueuedThreadInput> {

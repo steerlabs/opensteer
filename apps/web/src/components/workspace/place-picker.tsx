@@ -44,7 +44,7 @@ function PlaceRow({
       tabIndex={role === "option" ? -1 : undefined}
       type="button"
     >
-      <PlaceMark hostClient={hostClient} icon={place.icon} site={place.site} />
+      <PlaceMark hostClient={hostClient} icon={place.icon} />
       <span className="place-pick__title">{place.title}</span>
       {place.device && place.device.name !== place.title ? (
         <span className="place-pick__device">{place.device.name}</span>

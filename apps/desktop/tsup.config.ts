@@ -12,7 +12,7 @@ export default defineConfig([
     entry: ["src/main.ts", "src/runner-worker.ts"],
     esbuildPlugins: [signingBuildPlugin()],
     metafile: true,
-    external: runnerExternals,
+    external: [...runnerExternals],
     optional: [
       // Electron supplies this module itself; it is never installed with the app.
       "electron",

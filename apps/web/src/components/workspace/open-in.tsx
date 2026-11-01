@@ -43,7 +43,6 @@ export function useOpenPageIn(hostClient: HostClient) {
       if (place.destination.kind !== "browser" || !place.destination.tabId) return;
       const { sessionId, tabId } = place.destination;
       const show = nav.beginPlaceOperation();
-      const epoch = hostClient.recentSites.epoch;
       const stage = document.querySelector(".place .browser-stage");
       const viewport = browserTargetViewport(stage?.getBoundingClientRect() ?? null, phone);
       void hostClient
@@ -65,7 +64,6 @@ export function useOpenPageIn(hostClient: HostClient) {
               },
             )
             .then((opened) => {
-              hostClient.recentSites.record(profile.identity, parsed.url, epoch, { tab: opened });
               show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
               toast.success(`Opened in ${profile.presentation.name} · the original stays`);
             });

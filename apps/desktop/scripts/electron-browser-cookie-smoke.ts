@@ -1,9 +1,13 @@
+import { profileFailureDiagnostic } from "../src/browser/profile-failure-diagnostic.js";
+import { assertCookies, nativeSmokeCookies } from "./test-support/native-profile-smoke.js";
+import { LocalProfileBindingSchema } from "@opensteer/protocol/browser";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 /**
  * Real Electron cookie round trip and live `state.import` sign-in in a
  * disposable, isolated userData directory.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,8 +20,15 @@ import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launche
 
 const smokeDownloads = smokeDesktopDownloads();
 
-const userData = mkdtempSync(path.join(tmpdir(), "opensteer-cookie-smoke-"));
+const childPhase = process.env.OPENSTEER_COOKIE_SMOKE_CHILD;
+const root = realpathSync(
+  process.env.OPENSTEER_COOKIE_SMOKE_ROOT ??
+    mkdtempSync(path.join(tmpdir(), "opensteer-cookie-smoke-")),
+);
+const userData = path.join(root, childPhase ? "child" : "driver");
+mkdirSync(userData, { recursive: true, mode: 0o700 });
 app.setPath("userData", userData);
+app.setPath("sessionData", userData);
 app.commandLine.appendSwitch("headless");
 // The state.import scenario's HTTP fixture answers as *.example.test.
 app.commandLine.appendSwitch(
@@ -119,22 +130,55 @@ const snapshot: BrowserProfileSnapshot = {
   origins: [],
 };
 
-void run().then(
-  () => finish(null),
-  (error: unknown) => finish(error),
-);
+if (childPhase)
+  void run().then(
+    () => finish(null),
+    (error: unknown) => finish(error),
+  );
+else void driver();
+
+async function driver(): Promise<void> {
+  let code = 1;
+  try {
+    code = await new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, [import.meta.filename], {
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          OPENSTEER_COOKIE_SMOKE_CHILD: "1",
+          OPENSTEER_COOKIE_SMOKE_ROOT: root,
+        },
+      });
+      const timeout = setTimeout(() => child.kill("SIGTERM"), 180_000);
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once("exit", (exitCode) => {
+        clearTimeout(timeout);
+        resolve(exitCode ?? 1);
+      });
+    });
+  } finally {
+    clearInterval(liveness);
+    finished = true;
+    rmSync(root, { recursive: true, force: true });
+    app.exit(code);
+  }
+}
 
 async function run(): Promise<void> {
   await app.whenReady();
   const launcher = new ElectronBrowserLauncher({
     downloads: smokeDownloads,
+    localProfileRoot: path.join(userData, "native-profiles"),
     pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
   });
   const request: BrowserLaunchRequest = {
     initialViewport: { devicePixelRatio: 1, height: 480, width: 640 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000099",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
-    snapshot,
+    storage: { kind: "legacy", snapshot },
   };
   const first = await launcher.launch(request);
   const exported = await first.exportSnapshot();
@@ -143,17 +187,61 @@ async function run(): Promise<void> {
     ...request,
     partitionKey: "session:bsn_00000000-0000-4000-8000-000000000100",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000100"),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   if ((await isolated.exportSnapshot()).cookies.length !== 0)
     throw new Error("A fresh partition saw another profile's cookies");
   assertRoundTrip(await first.exportSnapshot(), "concurrent isolated export");
   await isolated.close();
   await first.close();
-  const reopened = await launcher.launch({ ...request, snapshot: exported });
+  const reopened = await launcher.launch({
+    ...request,
+    storage: { kind: "legacy", snapshot: exported },
+  });
   const restored = await reopened.exportSnapshot();
   assertRoundTrip(restored, "reopened export");
   await reopened.close();
+
+  const binding = LocalProfileBindingSchema.parse({
+    version: 1,
+    deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+    profileId: "bpr_00000000-0000-4000-8000-000000000001",
+    runnerId: "rnr_00000000-0000-4000-8000-000000000001",
+    storageInstanceId: "00000000-0000-4000-8000-000000000001",
+    bindingId: "00000000-0000-4000-8000-000000000002",
+    engine: "electron",
+  });
+  const directory = path.join(userData, "native-profiles", "profiles", binding.profileId, "native");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const nativeCookies = nativeSmokeCookies("https://example.test");
+  await launcher.localProfiles.importAndFlush({
+    directory,
+    binding,
+    snapshot: { cookies: nativeCookies, origins: [] },
+    signal: new AbortController().signal,
+  });
+  const native = await launcher.launch({
+    ...request,
+    storage: { kind: "local", binding, directory },
+  });
+  await native.profile!.admit();
+  await native.context.createPage();
+  await assertCookies(native, nativeCookies);
+  await native.close();
+  const nativeReopened = await launcher.launch({
+    ...request,
+    storage: { kind: "local", binding, directory },
+  });
+  await nativeReopened.profile!.admit();
+  await nativeReopened.context.createPage();
+  await assertCookies(nativeReopened, nativeCookies);
+  await nativeReopened.replaceSiteCookies("https://example.test", [], new AbortController().signal);
+  // Replacing a first-party sign-in preserves CHIPS owned by other top-level sites.
+  await assertCookies(
+    nativeReopened,
+    nativeCookies.filter((cookie) => cookie.partitionKey !== undefined),
+  );
+  await nativeReopened.close();
 
   const report = await runStateImportScenario({ engine: "electron", launcher });
   const artifactDirectory =
@@ -202,10 +290,10 @@ function assertRoundTrip(actual: BrowserProfileSnapshot, stage: string): void {
 function finish(error: unknown): void {
   finished = true;
   clearInterval(liveness);
-  rmSync(userData, { recursive: true, force: true });
+  // The driver removes the profile only after this process exits.
   if (error) {
     process.stderr.write(
-      `${JSON.stringify({ event: "electron-browser-cookie-smoke.failed", error: error instanceof Error ? error.stack : String(error) })}\n`,
+      `${JSON.stringify({ event: "electron-browser-cookie-smoke.failed", error: profileFailureDiagnostic(error) })}\n`,
     );
     app.exit(1);
   } else {

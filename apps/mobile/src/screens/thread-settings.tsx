@@ -32,6 +32,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 import { canRespondToRequests } from "@opensteer/client/host";
@@ -65,7 +66,6 @@ import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../u
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -813,229 +813,238 @@ function ModelPickerList(
   const conversation = picker.step.kind === "conversation";
   const disabled = props.disabledReason !== null || refreshingKey !== null;
   const access = accessModeOptions.find((o) => o.mode === props.accessMode);
+  // The engines scroll sideways to the sheet's own edges, not the column's:
+  // a row cut off by padding reads as broken rather than as more to scroll.
+  const bleed = { marginLeft: -insets.paddingLeft, marginRight: -insets.paddingRight };
+  const bleedContent = {
+    gap: space[8],
+    paddingLeft: insets.paddingLeft,
+    paddingRight: insets.paddingRight,
+    paddingVertical: space[12],
+  };
+  // The list is the sheet's direct child, as navigation.tsx requires: iOS sizes
+  // that list to each detent, so anything pinned beside it would stay where
+  // the smaller detent left it while the list ran on underneath. What this
+  // conversation runs with is therefore a row in the list, not a footer.
   return (
-    <View style={{ flex: 1 }}>
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.content, column, insets]}
-      >
-        <SheetBar
-          title={conversation ? "This conversation" : "AI"}
-          {...(conversation
-            ? {}
-            : {
-                onSearch: () => {
-                  if (searching) props.onChangeQuery("");
-                  setSearching((v) => !v);
-                },
-              })}
-          subtitle={null}
-          onBack={props.onBack}
-          onClose={props.onClose}
+    <ScrollView
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={[styles.content, column, insets]}
+    >
+      <SheetBar
+        title={conversation ? "This conversation" : "AI"}
+        {...(conversation
+          ? {}
+          : {
+              onSearch: () => {
+                if (searching) props.onChangeQuery("");
+                setSearching((v) => !v);
+              },
+            })}
+        subtitle={null}
+        onBack={props.onBack}
+        onClose={props.onClose}
+      />
+      {props.disabledReason ? <AppText tone="muted">{props.disabledReason}</AppText> : null}
+      {props.failure ? (
+        <Notice
+          title="That did not change"
+          detail={props.failure}
+          action={{ label: "Dismiss", onPress: props.onDismissFailure }}
         />
-        {props.disabledReason ? <AppText tone="muted">{props.disabledReason}</AppText> : null}
-        {props.failure ? (
-          <Notice
-            title="That did not change"
-            detail={props.failure}
-            action={{ label: "Dismiss", onPress: props.onDismissFailure }}
-          />
-        ) : null}
-        {conversation ? (
-          <>
-            <AppText role="title">Access</AppText>
-            {accessModeOptions.map((option) => {
-              const reason = accessModeUnavailableReason(
-                option.mode,
-                props.accessPlacement ?? { accessModes: null, engineName: "This engine" },
-              );
+      ) : null}
+      {conversation ? (
+        <>
+          <AppText role="title">Access</AppText>
+          {accessModeOptions.map((option) => {
+            const reason = accessModeUnavailableReason(
+              option.mode,
+              props.accessPlacement ?? { accessModes: null, engineName: "This engine" },
+            );
+            return (
+              <Pressable
+                key={option.mode}
+                accessibilityRole="radio"
+                accessibilityState={{
+                  selected: option.mode === props.accessMode,
+                  disabled: disabled || reason !== null,
+                }}
+                disabled={disabled || reason !== null}
+                onPress={() => props.onChangeAccess(option.mode)}
+                style={styles.row}
+              >
+                <View style={styles.rowCopy}>
+                  <AppText>{option.label}</AppText>
+                  <AppText role="caption" tone="muted">
+                    {reason ?? option.description}
+                  </AppText>
+                </View>
+                {option.mode === props.accessMode ? <Symbol name="checkmark" /> : null}
+              </Pressable>
+            );
+          })}
+          <AppText role="title">Account</AppText>
+          {picker.accounts.map((row) => (
+            <Pressable
+              key={row.key}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: row.selected, disabled }}
+              disabled={disabled}
+              onPress={() => chooseAccount(row)}
+              style={styles.row}
+            >
+              <View style={styles.rowCopy}>
+                <AppText>{row.title}</AppText>
+                <AppText role="caption" tone={row.exhausted ? "danger" : "muted"}>
+                  {row.detail}
+                </AppText>
+              </View>
+              {row.selected ? <Symbol name="checkmark" /> : null}
+            </Pressable>
+          ))}
+          {props.footer}
+        </>
+      ) : (
+        <>
+          {searching ? (
+            <TextInput
+              accessibilityLabel="Search models"
+              placeholder="Search models"
+              value={props.query}
+              onChangeText={props.onChangeQuery}
+              style={styles.searchField}
+              maxFontSizeMultiplier={controlFontScaleLimit}
+            />
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="This conversation"
+            onPress={props.onConversation}
+            style={({ pressed }) => [styles.conversationRow, pressed && styles.rowPressed]}
+          >
+            <Symbol
+              name={props.accessMode === "full-access" ? "lock.open" : "lock"}
+              size={15}
+              tint={color.muted}
+            />
+            <AppText numberOfLines={1} role="secondary" style={styles.rowCopy} tone="muted">
+              {access?.label ?? props.accessMode} ·{" "}
+              {picker.accounts.find((a) => a.selected)?.title ?? "Choose account"}
+            </AppText>
+            <Symbol name="chevron.right" size={13} tint={color.muted} />
+          </Pressable>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={bleed}
+            contentContainerStyle={bleedContent}
+          >
+            {[...picker.menu.ready, ...picker.menu.unavailable].map((engine) => {
+              const selected = picker.menu.browsed?.driverKind === engine.driverKind;
               return (
                 <Pressable
-                  key={option.mode}
-                  accessibilityRole="radio"
-                  accessibilityState={{
-                    selected: option.mode === props.accessMode,
-                    disabled: disabled || reason !== null,
-                  }}
-                  disabled={disabled || reason !== null}
-                  onPress={() => props.onChangeAccess(option.mode)}
-                  style={styles.row}
+                  key={engine.driverKind}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
+                  onPress={() => props.onEngine(engine.driverKind)}
+                  style={({ pressed }) => [
+                    styles.chip,
+                    selected && styles.chipSelected,
+                    pressed && styles.chipPressed,
+                    engine.status !== "ready" && styles.dimmed,
+                  ]}
                 >
-                  <View style={styles.rowCopy}>
-                    <AppText>{option.label}</AppText>
-                    <AppText role="caption" tone="muted">
-                      {reason ?? option.description}
-                    </AppText>
-                  </View>
-                  {option.mode === props.accessMode ? <Symbol name="checkmark" /> : null}
+                  <EngineMark
+                    driverKind={engine.driverKind}
+                    tint={selected ? color.text : color.textSoft}
+                  />
+                  <AppText role="secondaryMedium" tone={selected ? "default" : "soft"}>
+                    {engine.name}
+                  </AppText>
                 </Pressable>
               );
             })}
-            <AppText role="title">Account</AppText>
-            {picker.accounts.map((row) => (
-              <Pressable
-                key={row.key}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: row.selected, disabled }}
+          </ScrollView>
+          {picker.unavailableCurrent ? (
+            <Notice
+              title={picker.unavailableCurrent.title}
+              detail={picker.unavailableCurrent.detail}
+              tone="neutral"
+            />
+          ) : null}
+          {picker.menu.blocked ? (
+            <View style={styles.review}>
+              <AppText tone="muted">{picker.menu.blocked.detail}</AppText>
+              <SecondaryButton
+                label={
+                  picker.menu.blocked.availability === "authentication-required"
+                    ? "Sign in"
+                    : "Check again"
+                }
                 disabled={disabled}
-                onPress={() => chooseAccount(row)}
-                style={styles.row}
-              >
-                <View style={styles.rowCopy}>
-                  <AppText>{row.title}</AppText>
-                  <AppText role="caption" tone={row.exhausted ? "danger" : "muted"}>
+                onPress={() => {
+                  const placement = picker.menu.blocked!;
+                  chooseAccount({
+                    key: placement.harnessInstanceId,
+                    placement,
+                    title: placement.accountName,
+                    detail: placement.detail,
+                    selected: false,
+                    exhausted: false,
+                    action: { kind: "refresh", reason: placement.detail },
+                  });
+                }}
+              />
+            </View>
+          ) : null}
+          {picker.models.map((row) => (
+            <Pressable
+              key={row.key}
+              accessibilityRole="radio"
+              accessibilityState={{
+                selected: row.selected,
+                disabled: disabled || row.blockedReason !== null,
+              }}
+              disabled={disabled || row.blockedReason !== null}
+              onPress={() => props.onModel(row)}
+              style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            >
+              <View style={styles.rowCopy}>
+                <AppText role="secondaryMedium">{row.title}</AppText>
+                {row.detail ? (
+                  <AppText numberOfLines={1} role="caption" tone="muted">
                     {row.detail}
                   </AppText>
-                </View>
-                {row.selected ? <Symbol name="checkmark" /> : null}
-              </Pressable>
-            ))}
-            {props.footer}
-          </>
-        ) : (
-          <>
-            {searching ? (
-              <TextInput
-                accessibilityLabel="Search models"
-                placeholder="Search models"
-                value={props.query}
-                onChangeText={props.onChangeQuery}
-                style={styles.searchField}
-                maxFontSizeMultiplier={controlFontScaleLimit}
-              />
-            ) : null}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ gap: 8, paddingVertical: 12, paddingRight: 32 }}
+                ) : null}
+              </View>
+              {row.selected ? (
+                <Symbol name="checkmark" size={15} tint={color.ember} weight="semibold" />
+              ) : null}
+            </Pressable>
+          ))}
+          {picker.options.length ? (
+            <View
+              style={{
+                borderTopWidth: StyleSheet.hairlineWidth,
+                borderColor: color.line,
+                paddingTop: 16,
+              }}
             >
-              {[...picker.menu.ready, ...picker.menu.unavailable].map((engine) => {
-                const selected = picker.menu.browsed?.driverKind === engine.driverKind;
-                return (
-                  <Pressable
-                    key={engine.driverKind}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={`Engine: ${engine.name}${engine.note ? `, ${engine.note}` : ""}`}
-                    onPress={() => props.onEngine(engine.driverKind)}
-                    style={[
-                      styles.chip,
-                      selected && material.accent,
-                      engine.status !== "ready" && styles.dimmed,
-                    ]}
-                  >
-                    <EngineMark
-                      driverKind={engine.driverKind}
-                      tint={selected ? color.inkOnEmber : color.textSoft}
-                    />
-                    <AppText style={{ color: selected ? color.inkOnEmber : color.text }}>
-                      {engine.name}
-                    </AppText>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            {picker.unavailableCurrent ? (
-              <Notice
-                title={picker.unavailableCurrent.title}
-                detail={picker.unavailableCurrent.detail}
-                tone="neutral"
-              />
-            ) : null}
-            {picker.menu.blocked ? (
-              <View style={styles.review}>
-                <AppText tone="muted">{picker.menu.blocked.detail}</AppText>
-                <SecondaryButton
-                  label={
-                    picker.menu.blocked.availability === "authentication-required"
-                      ? "Sign in"
-                      : "Check again"
-                  }
-                  disabled={disabled}
-                  onPress={() => {
-                    const placement = picker.menu.blocked!;
-                    chooseAccount({
-                      key: placement.harnessInstanceId,
-                      placement,
-                      title: placement.accountName,
-                      detail: placement.detail,
-                      selected: false,
-                      exhausted: false,
-                      action: { kind: "refresh", reason: placement.detail },
-                    });
-                  }}
+              {picker.options.map((option) => (
+                <OptionField
+                  key={option.id}
+                  option={option}
+                  busy={props.applyingKey === `option:${option.id}`}
+                  disabledReason={props.disabledReason}
+                  onChange={props.onChangeOption}
                 />
-              </View>
-            ) : null}
-            {picker.models.map((row) => (
-              <Pressable
-                key={row.key}
-                accessibilityRole="radio"
-                accessibilityState={{
-                  selected: row.selected,
-                  disabled: disabled || row.blockedReason !== null,
-                }}
-                disabled={disabled || row.blockedReason !== null}
-                onPress={() => props.onModel(row)}
-                style={styles.row}
-              >
-                <View style={styles.rowCopy}>
-                  <AppText style={{ fontSize: 15 }}>{row.title}</AppText>
-                  {row.detail ? (
-                    <AppText numberOfLines={1} role="caption" tone="muted" style={{ fontSize: 13 }}>
-                      {row.detail}
-                    </AppText>
-                  ) : null}
-                </View>
-                {row.selected ? <Symbol name="checkmark" /> : null}
-              </Pressable>
-            ))}
-            {picker.options.length ? (
-              <View
-                style={{
-                  borderTopWidth: StyleSheet.hairlineWidth,
-                  borderColor: color.line,
-                  paddingTop: 16,
-                }}
-              >
-                {picker.options.map((option) => (
-                  <OptionField
-                    key={option.id}
-                    option={option}
-                    busy={props.applyingKey === `option:${option.id}`}
-                    disabledReason={props.disabledReason}
-                    onChange={props.onChangeOption}
-                  />
-                ))}
-              </View>
-            ) : null}
-          </>
-        )}
-      </ScrollView>
-      {!conversation ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="This conversation"
-          onPress={props.onConversation}
-          style={[
-            styles.control,
-            {
-              paddingHorizontal: 16,
-              paddingBottom: insets.paddingBottom,
-              borderTopWidth: StyleSheet.hairlineWidth,
-              borderColor: color.line,
-            },
-          ]}
-        >
-          <Symbol name={props.accessMode === "full-access" ? "lock.open" : "lock"} />
-          <AppText style={styles.rowCopy}>
-            {access?.label ?? props.accessMode} ·{" "}
-            {picker.accounts.find((a) => a.selected)?.title ?? "Choose account"}
-          </AppText>
-          <Symbol name="chevron.right" />
-        </Pressable>
-      ) : null}
-    </View>
+              ))}
+            </View>
+          ) : null}
+        </>
+      )}
+    </ScrollView>
   );
 }
 
@@ -1731,15 +1740,28 @@ const styles = StyleSheet.create({
   },
   tickFilled: { backgroundColor: color.surface },
   track: { justifyContent: "center", minHeight: 44 },
+  // Engines are quiet capsules; the one being browsed is lifted, not filled
+  // with the accent, which belongs to the action that commits a choice.
   chip: {
-    ...material.control,
-    flexDirection: "row",
+    ...material.quiet,
     alignItems: "center",
-    gap: 8,
-    minHeight: 44,
-    paddingHorizontal: 16,
+    borderColor: "transparent",
     borderRadius: radius.full,
-    alignSelf: "flex-start",
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: touchTarget,
+    paddingHorizontal: space[16] - 1,
+  },
+  chipPressed: { transform: [{ scale: 0.97 }] },
+  chipSelected: { ...material.selected },
+  conversationRow: {
+    alignItems: "center",
+    borderRadius: radius.sm,
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: touchTarget,
+    paddingHorizontal: space[14],
   },
   review: { gap: space[12], padding: space[16] },
   reviewCancel: { alignItems: "center", justifyContent: "center", minHeight: touchTarget },
@@ -1749,15 +1771,17 @@ const styles = StyleSheet.create({
     gap: space[8],
     minHeight: touchTarget,
   },
+  // The system's own sheet buttons: a quiet disc, no rim.
   barButton: {
-    ...material.control,
+    ...material.quiet,
     alignItems: "center",
     borderRadius: radius.full,
+    height: 36,
     justifyContent: "center",
-    minHeight: touchTarget,
-    width: touchTarget,
+    margin: (touchTarget - 36) / 2,
+    width: 36,
   },
-  barButtonPressed: { ...material.platePressed },
+  barButtonPressed: { backgroundColor: material.selected.backgroundColor },
   barButtonSpace: { width: touchTarget },
   barTitle: { alignItems: "center", flex: 1, minWidth: 0, paddingHorizontal: space[4] },
   // The sheet owns the grabber; the list owns its clearance on every subpage.
@@ -1775,6 +1799,7 @@ const styles = StyleSheet.create({
   menuTrigger: { alignSelf: "stretch" },
   row: {
     alignItems: "center",
+    borderRadius: radius.sm,
     flexDirection: "row",
     gap: space[12],
     minHeight: 52,
@@ -1782,6 +1807,7 @@ const styles = StyleSheet.create({
     paddingVertical: space[8],
   },
   rowCopy: { flex: 1, gap: space[2], minWidth: 0 },
+  rowPressed: { ...material.quiet },
   // No line height: iOS lifts a text field's glyphs inside a fixed one.
   searchField: {
     color: color.text,

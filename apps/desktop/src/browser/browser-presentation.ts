@@ -549,10 +549,6 @@ export class DesktopBrowserPresentationManager {
         tokens.size === 1 ? (tokens.values().next().value ?? null) : null,
       );
     });
-    // The renderer's own listeners never see input into the native view.
-    const humanInput = page.surface.page.observeHumanInput?.(() => {
-      if (current()) this.#emit(presentation.owner, { type: "page-input" });
-    });
     const surfaceEvents = page.surface.onEvent((event) => {
       if (event.type === "closed") this.#end(presentation, "page-closed");
       else {
@@ -701,7 +697,6 @@ export class DesktopBrowserPresentationManager {
     contents.on("render-process-gone", gone);
     return () => {
       passkeyInput?.();
-      humanInput?.();
       surfaceEvents();
       contents.off("before-input-event", key);
       contents.off("found-in-page", find);

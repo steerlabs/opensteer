@@ -33,8 +33,10 @@ import { type Kysely, type Transaction } from "kysely";
 import { runWasStopped } from "./run-grants.js";
 import type { DatabaseSchema } from "./schema.js";
 
-/** Identifiers handed to the Account while a decided notification is still fresh. */
+/** Process-local decided alert; only sealed text crosses the Account boundary. */
 export interface NotificationPublication {
+  readonly title: string;
+  readonly body: string;
   readonly eventId: EventId;
   readonly expiresAt: Date;
   readonly id: NotificationId;
@@ -117,6 +119,8 @@ export function requestNotificationAudience(input: {
  */
 export function mayNotify(event: AgentEvent): boolean {
   switch (event.type) {
+    case "message.created":
+      return event.data.addressedToUserId !== undefined;
     case "request.opened":
     case "run.failed":
     case "run.interrupted":
@@ -273,6 +277,10 @@ async function candidatesFor(
   event: AgentEvent,
 ): Promise<readonly NotificationCandidate[]> {
   switch (event.type) {
+    case "message.created":
+      return event.data.addressedToUserId
+        ? replyCandidates(transaction, event, event.data.message.id)
+        : [];
     case "request.opened":
       return requestCandidates(transaction, event);
     case "run.completed":
@@ -343,7 +351,8 @@ async function replyCandidates(
   event: AgentEvent,
   replyMessageId: MessageId,
 ): Promise<readonly NotificationCandidate[]> {
-  const recipient = await personAnswered(transaction, event);
+  const addressed = event.type === "message.created" ? event.data.addressedToUserId : undefined;
+  const recipient = await personAnswered(transaction, event, addressed);
   if (!recipient || recipient.muted) return [];
   const reply = await transaction
     .selectFrom("messages")
@@ -352,11 +361,23 @@ async function replyCandidates(
         .onRef("threadReadMarkers.threadId", "=", "messages.threadId")
         .on("threadReadMarkers.userId", "=", recipient.userId),
     )
-    .select(["messages.content", "messages.sequence", "threadReadMarkers.sequence as readSequence"])
+    .select([
+      "messages.content",
+      "messages.sequence",
+      "messages.addressedToUserId",
+      "messages.runId",
+      "threadReadMarkers.sequence as readSequence",
+    ])
+    .where("messages.kind", "=", "assistant")
     .where("messages.id", "=", replyMessageId)
     .where("messages.threadId", "=", event.threadId)
     .executeTakeFirst();
-  if (!reply) return [];
+  if (
+    !reply ||
+    (addressed !== undefined &&
+      (reply.addressedToUserId !== addressed || reply.runId !== event.runId))
+  )
+    return [];
   if (reply.readSequence !== null && BigInt(reply.readSequence) >= BigInt(reply.sequence)) {
     return [];
   }
@@ -428,6 +449,7 @@ async function interruptionCandidates(
 async function personAnswered(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
+  addressedToUserId?: UserId,
 ): Promise<{ readonly muted: boolean; readonly title: string; readonly userId: UserId } | null> {
   if (!event.runId) return null;
   const run = await transaction
@@ -456,7 +478,13 @@ async function personAnswered(
     .where("workspaceMemberships.state", "=", "active")
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
-  if (!run || run.assignmentId !== null || run.replyTarget !== null) return null;
+  if (
+    !run ||
+    (addressedToUserId
+      ? run.requestedBy !== addressedToUserId
+      : run.assignmentId !== null || run.replyTarget !== null)
+  )
+    return null;
   const title = await threadTitle(transaction, event.threadId);
   if (!title) return null;
   return { muted: run.muted === true, title, userId: run.requestedBy };
@@ -545,9 +573,10 @@ async function activeMembers(
  * Host has no such provider at all: its owner links an Account once, and the
  * link row is the only place that subject exists.
  */
-async function accountSubjectsForUsers(
+export async function accountSubjectsForUsers(
   transaction: Transaction<DatabaseSchema>,
   userIds: readonly UserId[],
+  issuer?: string,
 ): Promise<readonly string[]> {
   if (userIds.length === 0) return [];
   const rows = await transaction
@@ -560,10 +589,13 @@ async function accountSubjectsForUsers(
     .select("authAccounts.accountId as accountId")
     .where("accountDirectoryProvider.singletonKey", "=", "opensteer-account")
     .where("authAccounts.userId", "in", [...userIds])
+    .$if(issuer !== undefined, (query) =>
+      query.where("accountDirectoryProvider.issuer", "=", issuer!),
+    )
     .where("authAccounts.password", "is", null)
     .execute();
   const subjects = new Set(rows.map((row) => row.accountId));
-  const linked = await personalLinkSubjectForOwner(transaction, userIds);
+  const linked = await personalLinkSubjectForOwner(transaction, userIds, issuer);
   if (linked) subjects.add(linked);
   return [...subjects];
 }
@@ -580,6 +612,7 @@ async function accountSubjectsForUsers(
 async function personalLinkSubjectForOwner(
   transaction: Transaction<DatabaseSchema>,
   userIds: readonly UserId[],
+  issuer?: string,
 ): Promise<string | null> {
   const deployment = await transaction
     .selectFrom("deployments")
@@ -600,6 +633,7 @@ async function personalLinkSubjectForOwner(
     .select("subject")
     .where("singletonKey", "=", "opensteer-account")
     .where("state", "=", "active")
+    .$if(issuer !== undefined, (query) => query.where("issuer", "=", issuer!))
     .executeTakeFirst();
   return link?.subject ?? null;
 }

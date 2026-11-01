@@ -36,36 +36,6 @@ const productionPersonalTransport = {
 } as const;
 
 describe("HttpAgentControlClient", () => {
-  it.each(["applied", "superseded", "unavailable", "unsupported", "unconfirmed"] as const)(
-    "preserves a correlated screen receipt without retrying: %s",
-    async (outcome) => {
-      const requestId = randomUUID();
-      const messageId = createId("message");
-      const target = { conversationId: createId("thread") };
-      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, options) => {
-        expect(JSON.parse(String(options?.body))).toEqual({
-          requestId,
-          type: "screen.show",
-          messageId,
-          target,
-        });
-        return Response.json({ requestId, type: "screen.show.result", receipt: { outcome } });
-      });
-      const client = new HttpAgentControlClient({
-        fetch,
-        plan,
-        transport: productionCloudTransport,
-      });
-      await expect(
-        client.request(
-          { requestId, type: "screen.show", messageId, target },
-          new AbortController().signal,
-        ),
-      ).resolves.toEqual({ requestId, type: "screen.show.result", receipt: { outcome } });
-      expect(fetch).toHaveBeenCalledOnce();
-    },
-  );
-
   it("uses the run capability only on a bounded, non-redirecting Host request", async () => {
     const requestId = randomUUID();
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
@@ -349,3 +319,19 @@ describe("HttpAgentControlClient", () => {
 function emptyWindow() {
   return { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
 }
+
+it("maps a person notification to its exact durable message receipt", async () => {
+  const requestId = randomUUID();
+  const messageId = createId("message");
+  const client = new HttpAgentControlClient({
+    plan,
+    transport: productionCloudTransport,
+    fetch: async () => Response.json({ type: "person.notify.result", requestId, messageId }),
+  });
+  await expect(
+    client.request(
+      { type: "person.notify", requestId, message: "Ready." },
+      new AbortController().signal,
+    ),
+  ).resolves.toEqual({ type: "person.notify.result", requestId, messageId });
+});

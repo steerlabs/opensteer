@@ -466,61 +466,10 @@ export function PlaceBrowserView({
     send,
     onReportError,
   });
-  // The person's own address-bar navigation joins their recent sites when
-  // the load it started ends, after any redirects —
-  // not when it is asked for, and never for what an agent does in the page.
-  // The intent lives for that one load; Stop clears it.
-  const visit = useRef<{
-    readonly from: string;
-    readonly typed: boolean;
-    readonly document: string | null;
-    readonly at: number;
-    readonly epoch: number;
-    loading: boolean;
-  } | null>(null);
-  const documentId = catalogTab?.documentId ?? null;
-  const visitIdentity = presentation?.identity ?? null;
-  useEffect(() => {
-    visit.current = null;
-  }, [sessionId, tabId]);
-  useEffect(() => {
-    const pending = visit.current;
-    if (!pending) return;
-    if (!pending.loading) {
-      // Nothing has happened in the page yet: the load it asked for has not begun.
-      if (!loading && url === pending.from && documentId === pending.document) return;
-      if (performance.now() - pending.at > visitStartMs) {
-        visit.current = null;
-        return;
-      }
-      pending.loading = true;
-    }
-    if (loading) return;
-    visit.current = null;
-    if (!url || !/^https?:\/\//iu.test(url)) return;
-    if (visitIdentity?.kind === "profile")
-      hostClient.recentSites.record(
-        { kind: "profile", profileId: visitIdentity.profileId },
-        url,
-        pending.epoch,
-        { title: tab?.title ?? "", typed: pending.typed, tab: { sessionId, tabId } },
-      );
-  }, [documentId, hostClient, loading, url, tab?.title, visitIdentity]);
   const navigateTo = (next: string, typed = true) => {
-    visit.current = {
-      at: performance.now(),
-      document: documentId,
-      epoch: hostClient.recentSites.epoch,
-      from: url,
-      typed,
-      loading: false,
-    };
-    send({ surfaceId: tabId, type: "navigation.go", url: next });
+    send({ surfaceId: tabId, type: "navigation.go", url: next, typed });
   };
-  const stop = () => {
-    visit.current = null;
-    send({ surfaceId: tabId, type: "navigation.stop" });
-  };
+  const stop = () => send({ surfaceId: tabId, type: "navigation.stop" });
 
   // Fit takes the page back from an agent's or another view's size: the
   // same floor-aware size this view follows on a desktop, the phone's own.
@@ -763,7 +712,7 @@ export function PlaceBrowserView({
             !shownTab?.url || shownTab.url === "about:blank" ? (
               <Icon name="search" />
             ) : place ? (
-              <PlaceMark hostClient={hostClient} icon={place.icon} site={place.site} />
+              <PlaceMark hostClient={hostClient} icon={place.icon} />
             ) : null
           }
           canGoBack={catalogTab?.canGoBack}
@@ -957,10 +906,6 @@ export function PlaceBrowserView({
     </>
   );
 }
-
-/** A navigation that takes longer than this to commit is no longer the one asked for. */
-/** A person's navigation that has not begun loading by now did not happen. */
-const visitStartMs = 10_000;
 
 /**
  * Why this exact tab cannot be shown, specifically, or null while it can.

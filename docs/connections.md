@@ -58,6 +58,12 @@ or validator messages: only allowlisted envelope metadata and bounded normalized
 issue paths. Desktop records the same safe metadata while forwarding original
 frames for the client to classify.
 
+An unusually frequent bootstrap logs a count-only `host.bootstrap.loop` summary,
+at most once a minute. Client trigger counts survive client recreation; Host
+publication counts precede socket fanout and retain only fixed type/source labels.
+The optional diagnostic header rides existing reads, so older Hosts ignore it
+and ordinary polling adds no traffic or log lines.
+
 Thread state is absolute and sequenced. Requests update Request records, not
 client-inferred pending counts; the Host's later projection supplies those.
 Only newer state replaces event-owned fields. Reconnect snapshots can invalidate
@@ -140,8 +146,9 @@ in-memory HMAC key: they cannot correlate across lifetimes or expose URLs and
 credentials. See [supervisor sources](../apps/desktop/src/supervisor).
 
 Quit is irreversible: stop new work immediately, continue cleanup after errors,
-and never reopen the app or a modal. Browser profiles save while Runner relay
-and Host remain alive; Runner, Host and database then stop in order. Lost parent
+and never reopen the app or a modal. Native browsers close without clearing their
+stores; legacy profile saves finish while Runner relay and Host remain alive.
+Runner, Host and database then stop in order. Lost parent
 control pipes must contain process trees, including tunnel and detached engine
 helpers. Connector shutdown preserves enabled intent without requiring live
 Host/Account or configuring routes. Tunnel WebSockets cannot drain while their

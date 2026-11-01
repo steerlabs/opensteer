@@ -1,5 +1,4 @@
 import { ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,10 +34,8 @@ import {
   type HarnessSession,
   type HarnessSessionContext,
   type HarnessRuntimeBoundary,
-  type ResolvedAttachment,
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import { MINIMUM_CLAUDE_CODE_VERSION, TESTED_CLAUDE_CODE_VERSION } from "./config.js";
 import {
   ClaudeHarnessDriver,
@@ -60,11 +57,8 @@ const noThreadContext = {
 };
 
 /** A Run's first input, which opens with the Run's thread context. */
-function opening(input: HarnessInput): string {
-  const body = input.content
-    .flatMap((part) => (part.type === "text" ? [part.text] : []))
-    .join("\n");
-  return `${harnessThreadContextPrompt(noThreadContext)}\n\n${harnessInputHeader(input, body)}`;
+function opening(text: string): string {
+  return `${harnessThreadContextPrompt(noThreadContext)}\n\n${text}`;
 }
 
 const temporaryDirectories: string[] = [];
@@ -764,7 +758,6 @@ describe("Claude Agent SDK harness", () => {
     });
     expect(sdk.calls[0]?.options.allowedTools).toEqual([
       "ToolSearch",
-      "mcp__opensteer__screen_show",
       "mcp__opensteer__request_list",
       "mcp__opensteer__request_withdraw",
       "mcp__opensteer__environment_list",
@@ -775,6 +768,7 @@ describe("Claude Agent SDK harness", () => {
       "mcp__opensteer__thread_list",
       "mcp__opensteer__thread_delegate",
       "mcp__opensteer__assignment_cancel",
+      "mcp__opensteer__person_notify",
       "mcp__opensteer__thread_message",
       "mcp__opensteer__thread_write",
       "mcp__opensteer__browser_profile_list",
@@ -1023,13 +1017,12 @@ describe("Claude Agent SDK harness", () => {
     const { adapter, session } = await openSession(sdk);
     const observer = observe(session.events);
 
-    const initial = humanInput("Inspect the README");
-    await send(session, initial);
+    await send(session, "Inspect the README");
     await session.stop();
     await observer.done;
 
     expect(received).toEqual([
-      userInput(opening(initial), { currentRunContext: noComputersNotice }),
+      userInput(opening("Inspect the README"), { currentRunContext: noComputersNotice }),
     ]);
     expect(inputEnded).toBe(true);
     expect(normalizedTypes(observer.events)).toEqual([
@@ -1039,143 +1032,6 @@ describe("Claude Agent SDK harness", () => {
     ]);
     await adapter.close();
   });
-
-  it.each(["text", "file", "image"] as const)(
-    "delivers human initial and steer identity once (%s)",
-    async (mode) => {
-      const withImages = mode === "image";
-      const received: SDKUserMessage[] = [];
-      const firstReceived = new Gate();
-      const injected = new Gate();
-      const sdk = new FakeSdk((parameters) => {
-        const sessionId = providerSessionId(parameters.options);
-        const drained = (async () => {
-          for await (const input of streamingPrompt(parameters)) {
-            received.push(input);
-            if (received.length === 1) firstReceived.open();
-            if (received.length === 2) injected.open();
-          }
-        })();
-        return generatedQuery(async function* () {
-          yield initMessage(sessionId);
-          await withTimeout(injected.reached, 2_000, {
-            timeoutError: () => new Error("Claude did not receive the steered input"),
-          });
-          yield turnResult(sessionId, "Done.", { consumed: received, queued: 0 });
-          await drained;
-        });
-      });
-      const { adapter, session } = await openSession(sdk);
-      const observer = observe(session.events);
-      const attachments = new Map<string, ResolvedAttachment>();
-      const directory = await temporaryDirectory();
-      for (const [id, kind, name, mediaType, bytes] of [
-        [
-          "shot",
-          "image",
-          "shot.png",
-          "image/png",
-          Buffer.from(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
-            "base64",
-          ),
-        ],
-        ["notes", "file", "notes.txt", "text/plain", Buffer.from("Fixture notes")],
-      ] as const) {
-        const path = join(directory, name);
-        await writeFile(path, bytes);
-        attachments.set(id, {
-          attachment: {
-            id,
-            kind,
-            name,
-            mediaType,
-            sizeBytes: bytes.length,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-          },
-          path,
-        });
-      }
-      const inputs = ["First", "Second"].map((text): HarnessInput => ({
-        ...humanInput(text),
-        presentationContext: { currentThreadId: createId("thread") },
-        content: [
-          { type: "text", text },
-          ...(withImages
-            ? [
-                {
-                  type: "artifact" as const,
-                  artifactId: "shot",
-                  name: "shot.png",
-                  mediaType: "image/png",
-                },
-                { type: "text" as const, text: "After the image" },
-              ]
-            : []),
-          ...(mode !== "text"
-            ? [
-                {
-                  type: "artifact" as const,
-                  artifactId: "notes",
-                  name: "notes.txt",
-                  mediaType: "text/plain",
-                },
-              ]
-            : []),
-        ],
-      }));
-      const running = session.execute({
-        attachments,
-        environment: {},
-        inputs: [inputs[0]!],
-        context: noThreadContext,
-        reports: { messages: [], omittedCount: 0, throughSequence: null },
-        requestedBy: createId("user"),
-        runId: createId("run"),
-        signal: new AbortController().signal,
-      });
-      await withTimeout(firstReceived.reached, 2_000, {
-        timeoutError: () => new Error("Claude did not receive the initial input"),
-      });
-      await steering(session)({ input: inputs[1]!, attachments });
-      await running;
-      await session.stop();
-      await observer.done;
-      for (const [index, message] of received.entries()) {
-        const input = inputs[index]!;
-        const blocks = message.message.content;
-        if (typeof blocks === "string") throw new Error("Expected ordered native blocks");
-        const text = blocks
-          .flatMap((block) => (block.type === "text" ? [block.text] : []))
-          .join("\n");
-        expect(text.match(/\[Opensteer input\]/gu)).toHaveLength(1);
-        expect(text.match(/Author: the user Test user/gu)).toHaveLength(1);
-        expect(text.match(/Message ID:/gu)).toHaveLength(1);
-        expect(text).toContain(`Message ID: ${input.messageId}\n`);
-        expect(text).toContain(
-          `Viewed conversation at input: ${input.presentationContext!.currentThreadId}`,
-        );
-        expect(message.origin).toEqual({ kind: "human" });
-        if (mode !== "text") {
-          expect(text).toContain("Attached file: notes.txt");
-          expect(text).toContain(`Readable path: ${join(directory, "notes.txt")}`);
-        }
-        if (withImages) {
-          const imageIndex = blocks.findIndex((block) => block.type === "image");
-          expect(imageIndex).toBeGreaterThan(0);
-          expect(blocks[imageIndex - 1]).toEqual({ type: "text", text: "Image: shot.png" });
-          expect(blocks[imageIndex + 1]).toEqual({ type: "text", text: "After the image" });
-          expect(blocks[imageIndex + 2]).toMatchObject({
-            type: "text",
-            text: expect.stringContaining("Attached file: notes.txt"),
-          });
-        }
-      }
-      expect(received).toHaveLength(2);
-      expect(inputs[0]!.messageId).not.toBe(inputs[1]!.messageId);
-      await adapter.close();
-    },
-  );
 
   it("projects every initial input with typed authorship and queries only after the batch", async () => {
     const received: SDKUserMessage[] = [];
@@ -1193,13 +1049,12 @@ describe("Claude Agent SDK harness", () => {
     const { adapter, session } = await openSession(sdk);
     const observer = observe(session.events);
 
-    const initial = humanInput("Book a flight");
     const scheduled = triggerInput("The fare watch fired", "schedule");
     const webhook = triggerInput("The webhook fired", "webhook");
     const manual = triggerInput("The manual trigger fired", "manual");
     await session.execute({
       environment: {},
-      inputs: [initial, scheduled, webhook, manual],
+      inputs: [humanInput("Book a flight"), scheduled, webhook, manual],
       context: noThreadContext,
       reports: { messages: [], omittedCount: 0, throughSequence: null },
       requestedBy: createId("user"),
@@ -1210,7 +1065,7 @@ describe("Claude Agent SDK harness", () => {
     await observer.done;
 
     expect(received).toEqual([
-      userInput(opening(initial), { shouldQuery: false }),
+      userInput(opening("Book a flight"), { shouldQuery: false }),
       // Claude's origin names no automation, so its name and occurrence come in the header.
       userInput(harnessInputHeader(scheduled, "The fare watch fired"), {
         shouldQuery: false,
@@ -1744,8 +1599,7 @@ describe("Claude Agent SDK harness", () => {
     });
     const { adapter, session } = await openSession(sdk);
     const observer = observe(session.events);
-    const initial = humanInput("Inspect the README");
-    const running = send(session, initial);
+    const running = send(session, "Inspect the README");
 
     await steering(session)({
       input: agentInput("Check the README too."),
@@ -1755,7 +1609,7 @@ describe("Claude Agent SDK harness", () => {
     await observer.done;
 
     expect(received).toEqual([
-      userInput(opening(initial), { currentRunContext: noComputersNotice }),
+      userInput(opening("Inspect the README"), { currentRunContext: noComputersNotice }),
       userInput("Check the README too.", {
         origin: {
           body: "Check the README too.",
@@ -2052,12 +1906,10 @@ describe("Claude Agent SDK harness", () => {
     });
     const { adapter, session } = await openSession(sdk);
     const observer = observe(session.events);
-    const initial = humanInput("Keep working");
-    const steerInput = humanInput("Wrap up soon");
-    const running = send(session, initial);
+    const running = send(session, "Keep working");
 
     await steering(session)({
-      input: steerInput,
+      input: humanInput("Wrap up soon"),
     });
     await injected.reached;
     await session.interrupt();
@@ -2066,8 +1918,8 @@ describe("Claude Agent SDK harness", () => {
     await observer.done;
 
     expect(received).toEqual([
-      userInput(opening(initial), { currentRunContext: noComputersNotice }),
-      userInput(harnessInputHeader(steerInput, "Wrap up soon"), { priority: "next" }),
+      userInput(opening("Keep working"), { currentRunContext: noComputersNotice }),
+      userInput("Wrap up soon", { priority: "next" }),
     ]);
     expect(normalizedTypes(observer.events)).toEqual(["run.interrupted"]);
     await adapter.close();
@@ -2475,8 +2327,7 @@ describe("Claude Agent SDK harness", () => {
       });
       const observer = observe(session.events);
 
-      const initial = humanInput("Current run request");
-      await send(session, initial);
+      await send(session, "Current run request");
       await session.stop();
       await observer.done;
 
@@ -2488,7 +2339,7 @@ describe("Claude Agent SDK harness", () => {
       });
       expect(sdk.calls[0]?.options.sessionId).toBeUndefined();
       expect(received).toEqual([
-        userInput(opening(initial), { currentRunContext: noComputersNotice }),
+        userInput(opening("Current run request"), { currentRunContext: noComputersNotice }),
       ]);
       expect(normalizedTypes(observer.events)).toEqual([
         "run.started",
@@ -2528,29 +2379,25 @@ describe("Claude Agent SDK harness", () => {
       ...baseContext,
       machineAccessNotice: "Other computers: build-box.",
     });
-    const computerInputs = Array.from({ length: 3 }, () => humanInput("Check the computers"));
-    await send(started, computerInputs[0]!);
+    await send(started, "Check the computers");
     await started.stop();
-    for (const [index, machineAccessNotice] of [
-      noComputersNotice,
-      "Other computers: lab-mini.",
-    ].entries()) {
+    for (const machineAccessNotice of [noComputersNotice, "Other computers: lab-mini."]) {
       const session = await adapter.resumeSession(started.providerSessionReference, {
         ...baseContext,
         machineAccessNotice,
       });
-      await send(session, computerInputs[index + 1]!);
+      await send(session, "Check the computers");
       await session.stop();
     }
     expect(received).toEqual([
       [
-        userInput(opening(computerInputs[0]!), {
+        userInput(opening("Check the computers"), {
           currentRunContext: "Other computers: build-box.",
         }),
       ],
-      [userInput(opening(computerInputs[1]!), { currentRunContext: noComputersNotice })],
+      [userInput(opening("Check the computers"), { currentRunContext: noComputersNotice })],
       [
-        userInput(opening(computerInputs[2]!), {
+        userInput(opening("Check the computers"), {
           currentRunContext: "Other computers: lab-mini.",
         }),
       ],
@@ -3236,10 +3083,10 @@ function testProviderState(directory: string, kind: "ambient" | "isolated") {
   } as const;
 }
 
-async function send(session: HarnessSession, text: string | HarnessInput): Promise<void> {
+async function send(session: HarnessSession, text: string): Promise<void> {
   await session.execute({
     environment: {},
-    inputs: [typeof text === "string" ? humanInput(text) : text],
+    inputs: [humanInput(text)],
     context: noThreadContext,
     reports: { messages: [], omittedCount: 0, throughSequence: null },
     requestedBy: createId("user"),

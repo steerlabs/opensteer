@@ -6,7 +6,7 @@ import {
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
 import type { ThreadDraftQuote } from "./client/thread-drafts.js";
-import { headerActions } from "./navigation-header.js";
+import { headerActions, stackScreenOptions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
@@ -14,6 +14,7 @@ import {
   BrowserProfilesScreen,
   type BrowserProfilesDestination,
 } from "./screens/browser-profiles.js";
+import { BrowserHistoryScreen, type BrowserHistoryDestination } from "./screens/browser-history.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ConnectedAppsScreen, type ConnectedAppsDestination } from "./screens/connected-apps.js";
 import type { SurfacesRoute } from "./browser/surface-route.js";
@@ -85,16 +86,7 @@ const RootStack = createNativeStackNavigator({
     ) : (
       <Pane>{children}</Pane>
     ),
-  screenOptions: {
-    contentStyle: { backgroundColor: color.background },
-    headerBackButtonDisplayMode: "minimal",
-    headerLargeStyle: { backgroundColor: color.background },
-    headerLargeTitleStyle: { color: color.text, fontWeight: "700" },
-    headerShadowVisible: false,
-    headerStyle: { backgroundColor: color.background },
-    headerTintColor: color.ember,
-    headerTitleStyle: { color: color.text, fontSize: 17, fontWeight: "600" },
-  },
+  screenOptions: stackScreenOptions,
   screens: {
     Deployments: {
       screen: DeploymentsScreen,
@@ -250,6 +242,10 @@ const RootStack = createNativeStackNavigator({
         title: "Chrome",
       }),
     },
+    BrowserHistory: {
+      screen: BrowserHistoryScreen,
+      options: { title: "Browsing history" },
+    },
     BrowserProfiles: {
       screen: BrowserProfilesScreen,
       options: ({ navigation }) => ({
@@ -365,6 +361,7 @@ type OpensteerRootParamList = {
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
   readonly BrowserProfiles: BrowserProfilesDestination;
+  readonly BrowserHistory: BrowserHistoryDestination;
   readonly ConnectedApps: ConnectedAppsDestination;
   readonly Computer: { readonly deploymentId: string; readonly machineId: string };
   readonly ConversationActivity: {

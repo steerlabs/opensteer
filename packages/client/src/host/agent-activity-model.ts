@@ -1,12 +1,10 @@
-import {
-  ScreenPresentationReceiptSchema,
-  type AssignmentSummary,
-  type BrowserTabWriteInput,
-  type WaitingRequest,
-  type MessageAuthor,
-  type IntegrationCallSubject,
-  type ScreenPresentationReceipt,
-  type ThreadWriteInput,
+import type {
+  AssignmentSummary,
+  BrowserTabWriteInput,
+  WaitingRequest,
+  MessageAuthor,
+  IntegrationCallSubject,
+  ThreadWriteInput,
 } from "@opensteer/core";
 import type { TriggerWriteInput } from "@opensteer/triggers";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
@@ -140,7 +138,13 @@ export interface Turn {
 export type TranscriptGroup =
   | { readonly key: string; readonly kind: "assignment"; readonly entry: AssignmentEntry }
   | { readonly key: string; readonly kind: "delegation"; readonly entry: DelegationEntry }
-  | { readonly key: string; readonly kind: "message"; readonly entry: MessageEntry }
+  | {
+      readonly key: string;
+      readonly kind: "message";
+      readonly entry: MessageEntry;
+      /** It joined a Run already under way, as a steer does, rather than starting one. */
+      readonly joinedRun?: true;
+    }
   | { readonly key: string; readonly kind: "turn"; readonly turn: Turn };
 
 /**
@@ -180,6 +184,7 @@ export function groupTranscriptEntries(
   // Each subagent's stretch: its later steps belong with it, wherever the
   // Run's own agent has got to since.
   const nodeStretch = new Map<string, Extract<Slot, { kind: "stretch" }>>();
+  const runsDrawn = new Set<string>();
   for (const entry of entries) {
     // The composer shows the current AI choice; its retained history is state, not conversation.
     if (entry.kind === "selection") continue;
@@ -203,9 +208,22 @@ export function groupTranscriptEntries(
       open = null;
       continue;
     }
+    if (entry.kind === "message" && entry.addressedToUserId) {
+      slots.push({ group: { entry, key: entry.id, kind: "message" }, kind: "group" });
+      open = { after: entry.id, entries: [], kind: "stretch", runId: entry.runId };
+      slots.push(open);
+      continue;
+    }
     if (entry.kind === "message" && (entry.messageKind === "input" || entry.runId === null)) {
       open = null;
-      slots.push({ group: { entry, key: entry.id, kind: "message" }, kind: "group" });
+      // A Run's first entry follows the message that seeds it, so a Run already
+      // drawn above is one this message joined while it ran.
+      const joinedRun =
+        entry.messageKind === "input" && entry.runId !== null && runsDrawn.has(entry.runId);
+      slots.push({
+        group: { entry, key: entry.id, kind: "message", ...(joinedRun ? { joinedRun } : {}) },
+        kind: "group",
+      });
       // A message a Run took — its seed, or one that joined it while it ran —
       // is answered by what that Run does next, so the Run carries on after
       // it even before it has done anything more.
@@ -234,6 +252,7 @@ export function groupTranscriptEntries(
       slots.push(open);
     }
     open.entries.push(entry);
+    if (entry.runId !== null) runsDrawn.add(entry.runId);
     if (entry.kind === "node") nodeStretch.set(entry.nodeId, open);
     if (entry.kind === "message" && turnReplies.has(entry.id)) open = null;
   }
@@ -410,15 +429,29 @@ export function turnState(turn: Turn): TurnState {
 /**
  * Whether a task's turn has steps to fold behind its status line. The line
  * leads the turn whether it is live or settled, so finishing changes only its
- * words; what the agent wrote is never folded, only what it did.
+ * words. A turn that only spoke has nothing to fold.
  */
 export function turnFolds(turn: Turn): boolean {
   return turn.work.some((entry) => entry.kind !== "message");
 }
 
-/** What a folded turn still shows: everything the agent wrote, where it wrote it. */
+/**
+ * Whether a task's turn shows its whole story. Under way, it is told as it
+ * happens: what the agent says between the steps it takes, in order. Settled,
+ * it folds to its last word. The reader's own choice, once made, holds.
+ */
+export function turnOpen(turn: Turn, chosen: boolean | null): boolean {
+  return chosen ?? turnState(turn) !== "settled";
+}
+
+/**
+ * What a folded turn still shows: its last word — the reply the Run named, or
+ * else the last thing the agent wrote. What it said on the way is part of the
+ * story behind the status line, so it never runs into the answer.
+ */
 export function turnWords(turn: Turn): readonly WorkEntry[] {
-  return turn.work.filter((entry) => entry.kind === "message");
+  const last = turn.reply ?? turn.work.findLast((entry) => entry.kind === "message");
+  return last === undefined ? [] : [last];
 }
 
 /** Why a live turn's Run is still queued, when the client knows; otherwise null. */
@@ -741,10 +774,9 @@ function joinedTurn(turns: readonly Turn[]): Turn {
 
 /**
  * How far into a transcript its reader has been shown, by the Host's message
- * sequence. What a Run writes in a conversation is shown only once the Run has
- * ended — as its reply or among its steps — so reading stops short of the
- * first thing a Run still under way has written. A Run whose own entry is on a
- * page not loaded is under way while its turn still is.
+ * sequence. Active intermediate messages hold back the watermark until a reply
+ * or addressed message settles their stretch, even if the Run continues.
+ * A Run whose own entry is not loaded is under way while its turn still is.
  */
 export function observedSequence(
   entries: readonly TranscriptEntry[],
@@ -753,7 +785,18 @@ export function observedSequence(
   let unshown: bigint | null = null;
   if (conversation) {
     const runs = new Map<string, RunEntry>();
+    const addressed = new Map<string, bigint>();
     for (const entry of entries) {
+      if (
+        entry.kind === "message" &&
+        entry.addressedToUserId &&
+        entry.published !== false &&
+        entry.runId &&
+        entry.sequence !== undefined
+      ) {
+        const sequence = BigInt(entry.sequence);
+        if (sequence > (addressed.get(entry.runId) ?? -1n)) addressed.set(entry.runId, sequence);
+      }
       if (entry.kind === "run" && entry.runId !== null) runs.set(entry.runId, entry);
     }
     for (const group of groupTranscriptEntries(entries)) {
@@ -767,6 +810,8 @@ export function observedSequence(
       for (const entry of group.turn.work) {
         if (entry.kind !== "message" || entry.sequence === undefined) continue;
         const sequence = BigInt(entry.sequence);
+        // An addressed message makes the preceding stretch observable while its Run continues.
+        if (sequence <= (addressed.get(entry.runId ?? "") ?? -1n)) continue;
         if (unshown === null || sequence < unshown) unshown = sequence;
       }
     }
@@ -1007,6 +1052,28 @@ export type WorkRow =
   | { readonly entry: ReasoningEntry; readonly key: string; readonly kind: "reasoning" };
 
 export type StepGroup = "command" | "computer" | "edit" | "explore" | "integrations" | "web";
+
+// Bounds what a long turn mounts and redraws on each streamed step on a phone.
+export const traceWindowRows = 30;
+
+/**
+ * The rows an open trace draws: its latest, where the story is, with how many
+ * earlier ones wait behind one control. A kept entry extends the window back
+ * to its row, including when it belongs to a digest. The last word stays drawn.
+ */
+export function traceWindow(
+  rows: readonly WorkRow[],
+  { showAll, keep }: { readonly showAll: boolean; readonly keep: string | null },
+): { rows: readonly WorkRow[]; hidden: number } {
+  let hidden = showAll ? 0 : Math.max(0, rows.length - traceWindowRows);
+  if (keep !== null && hidden > 0) {
+    const index = rows.findIndex((row) =>
+      row.kind === "steps" ? row.entries.some((entry) => entry.id === keep) : row.entry.id === keep,
+    );
+    if (index >= 0) hidden = Math.min(hidden, index);
+  }
+  return { rows: hidden === 0 ? rows : rows.slice(hidden), hidden };
+}
 
 /**
  * Rows are only ever appended to or grown at the end, so a row's key — its
@@ -1420,11 +1487,8 @@ function toolTone(tool: ToolEntry): ActivityTone {
     case "stopped":
       return "stopped";
     case "done":
-      // A sign-in that did not sign in, or a view that did not switch, must
-      // not read as done.
-      return signInResult(tool)?.signedIn === false || screenShowNotApplied(tool)
-        ? "stopped"
-        : "done";
+      // A sign-in that came back without signing in must not read as done.
+      return signInResult(tool)?.signedIn === false ? "stopped" : "done";
     default:
       return tool.state;
   }
@@ -1795,7 +1859,6 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
   ["request_list", said(["Checking its requests", "Checked its requests"], "list")],
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
-  ["screen_show", screenShowPresentation],
   ["sign_in", signInPresentation],
   [
     "thread_delegate",
@@ -1809,6 +1872,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         label: "Started a task",
       }),
   ],
+  ["person_notify", said(["Sending a notification", "Sent a notification"], "share")],
   ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
   ["thread_message", said(["Sending a message", "Sent a message"], "share")],
   ["thread_read", said(["Reading a conversation", "Read a conversation"], "list")],
@@ -2110,69 +2174,6 @@ function signInResult(tool: ToolEntry): BrowserSignInStep | null {
   return result === null
     ? null
     : browserSignInStep(result, stringField(effectiveArguments(tool), "site"));
-}
-
-/**
- * `screen_show` reads by its receipt. Applied means the view switched on the
- * person's device, not that anything there finished; every other outcome, and
- * a receipt it cannot read, never reads as switched.
- */
-function screenShowPresentation(tool: ToolEntry): ToolPresentation {
-  const receipt = screenShowReceipt(tool);
-  const outcome = receipt?.outcome;
-  return step({
-    activeLabel: "Switching the view",
-    hint: receipt
-      ? (screenShowReasons[receipt.reason ?? ""] ?? screenShowOutcomes[receipt.outcome] ?? "")
-      : "",
-    hintKind: "prose",
-    icon: outcome === "applied" ? "check-circle" : outcome ? "alert-circle" : "laptop",
-    kind: "tool",
-    label:
-      outcome === "applied"
-        ? "Switched the view"
-        : outcome === "unconfirmed"
-          ? "Couldn’t confirm the view switched"
-          : outcome
-            ? "Didn’t switch the view"
-            : "Tried to switch the view",
-  });
-}
-
-const screenShowReasons: Partial<Record<string, string>> = {
-  "already-requested": "This message already asked for a view",
-  busy: "The screen was busy",
-  closed: "That view was closed",
-  expired: "It took too long",
-  forbidden: "That view isn’t available here",
-  "interaction-ended": "The conversation had moved on",
-};
-
-const screenShowOutcomes: Partial<Record<ScreenPresentationReceipt["outcome"], string>> = {
-  superseded: "Something newer came first",
-  unavailable: "That view isn’t available here",
-  unsupported: "Not supported on this device",
-};
-
-function screenShowReceipt(tool: ToolEntry): ScreenPresentationReceipt | null {
-  if (
-    tool.tool?.namespace !== "opensteer" ||
-    tool.tool.name !== "screen_show" ||
-    tool.state !== "done" ||
-    !tool.output
-  )
-    return null;
-  try {
-    const parsed = ScreenPresentationReceiptSchema.safeParse(JSON.parse(tool.output.text));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
-
-function screenShowNotApplied(tool: ToolEntry): boolean {
-  const outcome = screenShowReceipt(tool)?.outcome;
-  return outcome !== undefined && outcome !== "applied";
 }
 
 /** A gateway step's hint is always words about the step, never a reference. */
@@ -2572,16 +2573,7 @@ export function toolStatusLabel(tool: ToolEntry): string {
     case "running":
       return "Running";
     case "done":
-      if (signInResult(tool)?.signedIn === false) return "Didn’t sign in";
-      switch (screenShowReceipt(tool)?.outcome) {
-        case undefined:
-        case "applied":
-          return "Done";
-        case "unconfirmed":
-          return "Not confirmed";
-        default:
-          return "Didn’t switch the view";
-      }
+      return signInResult(tool)?.signedIn === false ? "Didn’t sign in" : "Done";
     case "failed":
       return toolTone(tool) === "stopped" ? "Stopped before finishing" : "Returned an error";
     case "stopped":

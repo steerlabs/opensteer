@@ -1,7 +1,8 @@
-import { moveQueueItem, type ThreadInputQueue } from "@opensteer/core";
+import type { ThreadInputQueue } from "@opensteer/core";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
   BrowserProfileGrantSummary,
+  BrowserProfileDeletionSummary,
   BrowserProfileSummary,
   BrowserSessionSummary,
   HarnessSummary,
@@ -50,7 +51,11 @@ type OptimisticCommandPatch =
       readonly profile: BrowserProfileSummary;
       readonly type: Extract<CommandType, "browser.profile.rename">;
     }
-  | { readonly profileId: string; readonly type: Extract<CommandType, "browser.profile.delete"> }
+  | {
+      readonly profileId: string;
+      readonly deletion?: BrowserProfileDeletionSummary | undefined;
+      readonly type: Extract<CommandType, "browser.profile.delete">;
+    }
   | { readonly sessionId: string; readonly type: Extract<CommandType, "browser.session.close"> }
   | {
       readonly type: Extract<CommandType, "workspace.create">;
@@ -99,12 +104,6 @@ type OptimisticCommandPatch =
       readonly withdrawnAt: string;
     }
   | {
-      readonly beforeMessageId: string | null;
-      readonly messageId: string;
-      readonly threadId: string;
-      readonly type: Extract<CommandType, "thread.input.move">;
-    }
-  | {
       readonly thread: ThreadSummary;
       readonly type: Extract<
         CommandType,
@@ -149,9 +148,17 @@ export const optimisticCommandPatches = {
       existing.id === profile.id ? profile : existing,
     ),
   }),
-  "browser.profile.delete": (snapshot, { profileId }) => ({
+  "browser.profile.delete": (snapshot, { profileId, deletion }) => ({
     ...snapshot,
     browserProfiles: snapshot.browserProfiles.filter((profile) => profile.id !== profileId),
+    browserProfileDeletions: deletion
+      ? [
+          ...(snapshot.browserProfileDeletions ?? []).filter(
+            (item) => item.profileId !== profileId,
+          ),
+          deletion,
+        ]
+      : snapshot.browserProfileDeletions?.filter((item) => item.profileId !== profileId),
     browserProfileGrants: snapshot.browserProfileGrants.filter(
       (grant) => grant.profileId !== profileId,
     ),
@@ -203,7 +210,6 @@ export const optimisticCommandPatches = {
   },
   "thread.execution.update": replaceThread,
   "thread.input.cancel": withdrawQueuedInput,
-  "thread.input.move": moveQueuedInput,
   "thread.input.steer": dropQueuedInput,
   "thread.inputQueue.resume": replaceThread,
   "thread.sendMessage": patchSentMessage,
@@ -295,8 +301,6 @@ export function applyOptimisticCommandPatch(
     case "thread.execution.update":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.cancel":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "thread.input.move":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.steer":
       return optimisticCommandPatches[patch.type](snapshot, patch);
@@ -609,35 +613,6 @@ function dropQueuedInput(
     inputQueues: {
       ...snapshot.inputQueues,
       [threadId]: { ...queue, items: queue.items.filter((item) => item.message.id !== messageId) },
-    },
-  };
-}
-
-/**
- * The queue takes the new order as soon as the person drops a message, so the
- * tray never snaps back while the Host confirms it. A neighbour the queue no
- * longer holds leaves it as it was; the Host's refusal and reread settle it.
- */
-function moveQueuedInput(
-  snapshot: HostSnapshot,
-  patch: {
-    readonly beforeMessageId: string | null;
-    readonly messageId: string;
-    readonly threadId: string;
-  },
-): HostSnapshot {
-  const queue = snapshot.inputQueues[patch.threadId];
-  const moving = queue?.items.find((item) => item.message.id === patch.messageId);
-  const before =
-    patch.beforeMessageId === null
-      ? null
-      : queue?.items.find((item) => item.message.id === patch.beforeMessageId);
-  if (!queue || !moving || before === undefined) return snapshot;
-  return {
-    ...snapshot,
-    inputQueues: {
-      ...snapshot.inputQueues,
-      [patch.threadId]: { ...queue, items: moveQueueItem(queue.items, moving, before) },
     },
   };
 }

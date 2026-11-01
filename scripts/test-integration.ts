@@ -156,6 +156,11 @@ export interface IntegrationTestOptions {
  */
 export const integrationPrerequisites = [
   {
+    filter: "@opensteer/browser-runtime",
+    script: "build",
+    output: "apps/browser-runtime/dist/main.js",
+  },
+  {
     filter: "@opensteer/runner",
     script: "build:native-fs:test",
     output: "apps/runner/native-fs-helper/opensteer-native-fs-test",

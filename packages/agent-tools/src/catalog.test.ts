@@ -22,6 +22,7 @@ const expectedTools = {
     "thread_list",
     "thread_delegate",
     "assignment_cancel",
+    "person_notify",
     "thread_message",
     "thread_write",
     "browser_profile_list",
@@ -34,7 +35,6 @@ const expectedTools = {
     "trigger_write",
   ],
   main: [
-    "screen_show",
     "request_list",
     "request_withdraw",
     "environment_list",
@@ -45,6 +45,7 @@ const expectedTools = {
     "thread_list",
     "thread_delegate",
     "assignment_cancel",
+    "person_notify",
     "thread_message",
     "thread_write",
     "browser_profile_list",
@@ -78,6 +79,7 @@ const expectedTools = {
     "thread_list",
     "thread_delegate",
     "assignment_cancel",
+    "person_notify",
     "thread_message",
     "thread_write",
     "browser_profile_list",
@@ -182,13 +184,13 @@ describe("agent tool catalog", () => {
     expect(schema.safeParse({ ...base, delivery: "notify" }).success).toBe(false);
   });
 
-  it("tells every agent that only replies reach the person and a report alerts no one", () => {
+  it("tells every agent how to notify the person while keeping reports passive", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const description = tool(profileId, "thread_message").description;
       expect(description).toContain(
         '"report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person.',
       );
-      expect(description).toContain("Only replies reach the person");
+      expect(description).toContain("Use person_notify");
       expect(description).not.toMatch(/report"? to publish/u);
     }
     const conversation = platformGuideForRun({ capabilityProfileId: "main", role: "conversation" });
@@ -314,3 +316,23 @@ function tool(
   if (!definition) throw new Error(`Missing ${name} from ${profileId}`);
   return definition;
 }
+
+it("validates person notifications and limits them to Run profiles", () => {
+  const definition = agentToolDefinitions.find((tool) => tool.name === "person_notify")!;
+  for (const message of [
+    "Milestone passed.",
+    " **Review** https://example.com ",
+    "😀".repeat(100),
+  ]) {
+    expect(definition.inputSchema.parse({ message })).toEqual({ message });
+  }
+  for (const message of ["", " ", "a".repeat(201), "a\nb", "a\tb", "a\u200db", "\ud800"]) {
+    expect(definition.inputSchema.safeParse({ message }).success).toBe(false);
+  }
+  expect(definition.inputSchema.safeParse({ message: "Ready", userId: "other" }).success).toBe(
+    false,
+  );
+  for (const profile of ["main", "workspace", "delegated"] as const)
+    expect(capabilityProfileAllowsTool(profile, "person.notify")).toBe(true);
+  expect(capabilityProfileAllowsTool("trigger", "person.notify")).toBe(false);
+});

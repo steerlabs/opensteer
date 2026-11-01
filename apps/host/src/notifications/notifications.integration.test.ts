@@ -382,7 +382,9 @@ integration("Notifications", () => {
             source: programSending(
               "queue",
               "home",
-              "Reminder: buy groceries [[reply Reminder: buy groceries]]",
+              "Reminder: buy groceries " +
+                toolCall("person_notify", { message: "Groceries milestone ready." }) +
+                " [[reply Reminder: buy groceries]]",
             ),
             toolContractVersion: 2,
           },
@@ -405,11 +407,24 @@ integration("Notifications", () => {
     const run = await stack.host.store.database
       .selectFrom("runs")
       .innerJoin("messages", "messages.id", "runs.seedInputId")
-      .select(["runs.assignmentId", "messages.author"])
+      .select(["runs.assignmentId", "runs.requestedBy", "messages.author"])
       .where("runs.id", "=", reminder.runId!)
       .executeTakeFirstOrThrow();
     // The Trigger woke Chat; Chat's own reply is what reached the person.
     expect(run.assignmentId).toBeNull();
+    const milestone = await waitForNotification(
+      received,
+      since,
+      (notification) => notification.body === "Groceries milestone ready.",
+      "Trigger-seeded person notification",
+    );
+    const milestoneMessage = await stack.host.store.database
+      .selectFrom("messages")
+      .select("addressedToUserId")
+      .where("id", "=", milestone.messageId!)
+      .executeTakeFirstOrThrow();
+    expect(milestoneMessage.addressedToUserId).toBe(run.requestedBy);
+
     expect(run.author).toMatchObject({ displayName: "Reminder: buy groceries", kind: "trigger" });
     // Having gone off, the reminder is finished: it leaves the Automations
     // list, and its page says it ran.
@@ -480,7 +495,7 @@ integration("Notifications", () => {
       name: "Morning summary",
       program: `export default async function ({ opensteer }) {
         await opensteer.callTool("thread_delegate", {
-          task: "Summarize the inbox. [[reply Inbox summary ready.]]",
+          task: ${JSON.stringify("Summarize the inbox. " + toolCall("person_notify", { message: "Inbox milestone ready." }) + " [[reply Inbox summary ready.]]")},
           title: "Inbox summary",
           workspaceId: ${JSON.stringify(stack.mainWorkspaceId)},
         });
@@ -489,6 +504,21 @@ integration("Notifications", () => {
     });
     await runTrigger(stack, trigger);
     const taskReply = await waitForReplyIn(stack, "Inbox summary", "Inbox summary ready.");
+    const milestone = await waitForNotification(
+      received,
+      since,
+      (notification) => notification.body === "Inbox milestone ready.",
+      "delegated person notification",
+    );
+    const addressed = await stack.host.store.database
+      .selectFrom("messages")
+      .innerJoin("runs", "runs.id", "messages.runId")
+      .select(["messages.addressedToUserId", "runs.requestedBy", "runs.assignmentId"])
+      .where("messages.id", "=", milestone.messageId!)
+      .executeTakeFirstOrThrow();
+    expect(addressed.assignmentId).not.toBeNull();
+    expect(addressed.addressedToUserId).toBe(addressed.requestedBy);
+
     // The task's result arrives in Chat as a continuation; Chat's reply to it
     // is the one alert, and the task's own reply alerts nobody.
     const result = await waitForMessage(stack, chat, "Inbox summary ready.", 30_000);

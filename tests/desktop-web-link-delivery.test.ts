@@ -49,19 +49,24 @@ async function deliveryFixture() {
   const show = vi.fn();
   const commands = new Map<string, string>();
   let fail = true;
-  const opened = vi.spyOn(client, "openBrowserTab").mockImplementation(async (target, options) => {
+  const opened = vi.spyOn(client, "beginBrowserTabOpen").mockImplementation((target, options) => {
     const key = options!.idempotencyKey!;
-    const command = JSON.stringify({ target, url: options!.url });
-    const previous = commands.get(key);
-    if (previous && previous !== command) throw new Error("Idempotency key already used");
-    commands.set(key, command);
-    if (fail) {
-      fail = false;
-      throw new Error("Response lost");
-    }
-    return { sessionId: "session", tabId: key } as Awaited<
-      ReturnType<typeof client.openBrowserTab>
-    >;
+    return {
+      idempotencyKey: key,
+      result: (async () => {
+        const command = JSON.stringify({ target, url: options!.url });
+        const previous = commands.get(key);
+        if (previous && previous !== command) throw new Error("Idempotency key already used");
+        commands.set(key, command);
+        if (fail) {
+          fail = false;
+          throw new Error("Response lost");
+        }
+        return { sessionId: "session", tabId: key } as Awaited<
+          ReturnType<typeof client.openBrowserTab>
+        >;
+      })(),
+    };
   });
   const start = () => (bound: DesktopWebLink, ack: (id: string) => Promise<void>) =>
     openDesktopWebLink(bound, client, bound.request!.identity, show, ack);
@@ -88,11 +93,20 @@ it("exposes Retry after failure, reuses the exact request and then delivers the 
   const fixture = await deliveryFixture();
   try {
     expect(fixture.opened).toHaveBeenCalledTimes(1);
+    expect(fixture.show).toHaveBeenCalledExactlyOnceWith({
+      kind: "pending-browser",
+      idempotencyKey: fixture.opened.mock.calls[0]![1]!.idempotencyKey,
+    });
     expect(fixture.errors.mock.calls[0]![1].retry).toBeTypeOf("function");
     await fixture.errors.mock.calls[0]![1].retry();
     await vi.waitFor(() => expect(fixture.opened).toHaveBeenCalledTimes(3));
     expect(fixture.opened.mock.calls[1]).toEqual(fixture.opened.mock.calls[0]);
     expect(fixture.opened.mock.calls[2]![1]!.url).toBe("https://example.com/next");
+    expect(fixture.show).toHaveBeenCalledWith({
+      kind: "browser",
+      sessionId: "session",
+      tabId: fixture.opened.mock.calls[2]![1]!.idempotencyKey,
+    });
   } finally {
     fixture.stop();
     fixture.cleanup();
@@ -104,6 +118,11 @@ it("Dismiss drops only the failed link and delivers its successor", async () => 
     await fixture.errors.mock.calls[0]![1].dismiss();
     await vi.waitFor(() => expect(fixture.opened).toHaveBeenCalledTimes(2));
     expect(fixture.opened.mock.calls[1]![1]!.url).toBe("https://example.com/next");
+    expect(fixture.show).toHaveBeenCalledWith({
+      kind: "browser",
+      sessionId: "session",
+      tabId: fixture.opened.mock.calls[1]![1]!.idempotencyKey,
+    });
   } finally {
     fixture.stop();
     fixture.cleanup();

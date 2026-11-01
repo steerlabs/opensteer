@@ -1,3 +1,4 @@
+import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
 import type { RunnerId, UserId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
@@ -25,8 +26,11 @@ import type {
  * while the two `host.machine.access.session.*` messages below, which carry
  * facts about one machine, stay addressed to that machine's managers.
  */
-export function notifyMachinesChanged(realtime: Pick<RealtimeHub, "broadcast">): void {
-  realtime.broadcast({ type: "host.machines.changed" });
+export function notifyMachinesChanged(
+  realtime: Pick<RealtimeHub, "broadcast">,
+  source: BootstrapNoticeSource = "unspecified",
+): void {
+  realtime.broadcast({ type: "host.machines.changed" }, source);
 }
 
 /**
@@ -72,7 +76,8 @@ export function machineAccessNotifier(options: {
   const deliver = (runnerId: RunnerId, message: Parameters<RealtimeHub["sendToUsers"]>[1]) => {
     void (async () => {
       const recipients = await machineManagers(options, runnerId);
-      if (recipients.length > 0) options.realtime.sendToUsers(recipients, message);
+      if (recipients.length > 0)
+        options.realtime.sendToUsers(recipients, message, "machine.access");
     })().catch(options.onError);
   };
   return {

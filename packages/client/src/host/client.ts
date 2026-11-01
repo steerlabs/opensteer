@@ -20,7 +20,7 @@ import type {
   ApprovedComputerApp,
   OwnerWindowInfo,
 } from "@opensteer/protocol";
-import type { RecentSitesStore } from "./recent-sites.js";
+import type { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserIdentityChoice } from "./start-page-model.js";
 import type {
   ChannelAccessPolicy,
@@ -127,8 +127,23 @@ export type BrowserTabOpenInput =
     };
 export interface BrowserTabOpenOptions {
   readonly url?: string;
+  readonly typed?: boolean;
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
+}
+export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
+  readonly idempotencyKey: string;
+  readonly target: BrowserTabOpenInput;
+  readonly state: "opening" | "unknown" | "failed";
+  readonly error?: { readonly code: string; readonly message: string };
+}
+export interface BrowserTabOpenHandle {
+  readonly idempotencyKey: string;
+  readonly result: Promise<BrowserTabOpenResult>;
+}
+export interface PendingBrowserTabDestination {
+  readonly kind: "pending-browser";
+  readonly idempotencyKey: string;
 }
 export interface ComputerViewMutationOptions {
   readonly idempotencyKey?: string;
@@ -299,6 +314,7 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
   published?: boolean;
   quote?: MessageQuote;
@@ -590,6 +606,12 @@ export interface BrowserFrameView {
   header: BrowserBinaryFrameHeader;
 }
 
+export interface BrowserProfileDeletionSummary {
+  profileId: string;
+  computerId: string;
+  state: "pending-computer" | "pending-restart";
+}
+
 export interface BrowserProfileSummary {
   id: string;
   name: string;
@@ -719,6 +741,7 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
   readonly latestPlaces?: readonly ThreadPlaceReference[];
   /**
@@ -760,6 +783,7 @@ export interface HostSnapshot {
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
   browserProfiles: BrowserProfileSummary[];
+  browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
   connection: HostConnectionState;
   /** Reachability reported by the platform, distinct from Host availability. */
@@ -834,6 +858,7 @@ export interface HostSnapshot {
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-v1; absent on older Hosts. */
   voiceAvailable?: boolean;
+  voiceAgentAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
@@ -998,9 +1023,8 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
-  readonly screenPresentation?: import("../screen/contract.js").ScreenPresentationTransport;
   readonly browserPasskeys?: BrowserPasskeys;
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(
     viewId: string,
@@ -1175,6 +1199,12 @@ export interface HostClient {
   latestPlaceOfThread(threadId: string): ThreadPlace | null;
   subscribeLatestPlace(threadId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
+  prepareBrowserProfile(identity?: BrowserIdentityChoice | null): void;
+  beginBrowserTabOpen(
+    target: string | BrowserTabOpenInput,
+    options?: BrowserTabOpenOptions,
+  ): BrowserTabOpenHandle;
+  dismissPendingBrowserTab(idempotencyKey: string): void;
   openBrowserTab(
     target: string | BrowserTabOpenInput,
     options?: BrowserTabOpenOptions,
@@ -1238,16 +1268,6 @@ export interface HostClient {
    * the Thread mutations below call it themselves once the Host accepts.
    */
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences>;
-  /**
-   * Stands one of the reader's own queued messages in front of another, or
-   * at the back when `beforeMessageId` is null. The snapshot's queue takes the
-   * new order at once; a refusal rereads the Host's order and is rethrown.
-   */
-  moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void>;
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;

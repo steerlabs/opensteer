@@ -1,4 +1,5 @@
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
+import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
@@ -18,13 +19,10 @@ import {
 } from "@opensteer/protocol";
 import { placeList } from "../host/places.js";
 import type { NativeViewerSource } from "../host/surfaces.js";
-import {
-  BrowserTabOpenCommandSchema,
-  computerAppIdentityKey,
-  previousReleaseEligibility,
-} from "@opensteer/protocol";
+import { computerAppIdentityKey, previousReleaseEligibility } from "@opensteer/protocol";
 import { MockComputerViews } from "./mock-computer-views.js";
-import { RecentSitesStore, type RecentSitesStorage } from "../host/recent-sites.js";
+import { BrowserHistoryClient } from "../host/browser-history.js";
+import type { BrowserPreferencesStorage } from "../host/browser-preferences.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
@@ -1763,7 +1761,7 @@ const mockMachines: readonly MachineSummary[] = [
 ];
 
 export interface MockHostClientOptions {
-  readonly recentSitesStorage?: RecentSitesStorage;
+  readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
   readonly lifecycle?: ClientLifecycle;
@@ -1951,6 +1949,20 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       await client.signOut();
       return rpcSuccess({});
     },
+    "browser.history.get": async ({ profileId }) => {
+      try {
+        return rpcSuccess(client.places!.history(profileId));
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
+    "browser.history.icons.get": async ({ profileId, iconRefs }) => {
+      try {
+        return rpcSuccess(client.places!.historyIcons(profileId, iconRefs));
+      } catch (error) {
+        return mockRefusal(error);
+      }
+    },
     "browser.searchSuggestions.get": async ({ query }) => {
       client.searchSuggestionRequests.push({ query, at: Date.now() });
       await new Promise((resolve) => setTimeout(resolve, query.startsWith("slow") ? 500 : 30));
@@ -2021,6 +2033,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     // The preview has no Runner to create a call, so voice never starts here.
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.next": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.answer": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
+    "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
     "integration.authorization.get": async (input) =>
@@ -2552,6 +2567,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
       });
     }
+    case "notification.preview.register":
+      return rpcSuccess({
+        type: command.type,
+        installationId: command.installationId,
+        keyId: command.keyId,
+        registered: true,
+      });
     // The preview's agents have no clock of the person's to keep.
     case "viewer.timeZone.update":
       return rpcSuccess({ timeZone: command.timeZone, type: command.type });
@@ -2891,8 +2913,26 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
       return unsupportedMockRpc();
+    case "browser.profile.prepare":
+      return rpcSuccess({ type: command.type });
+    case "browser.history.remove":
+      client.places!.removeHistory(command.profileId, command.url);
+      return rpcSuccess({ type: command.type });
+    case "browser.history.clear":
+      client.places!.removeHistory(command.profileId);
+      return rpcSuccess({ type: command.type });
+    case "browser.profile.delete": {
+      client.places!.history(command.profileId);
+      client.places!.deleteHistory(command.profileId);
+      client.updatePlaces({
+        ...client.getSnapshot(),
+        browserProfiles: client
+          .getSnapshot()
+          .browserProfiles.filter((profile) => profile.id !== command.profileId),
+      });
+      return rpcSuccess({ type: command.type });
+    }
     case "browser.profile.rename":
-    case "browser.profile.delete":
       return unsupportedMockRpc();
     case "computer.view.open":
     case "computer.view.close":
@@ -3324,6 +3364,7 @@ function mockBootstrap(
       placements: snapshot.browserPlacements,
       profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
+      profileDeletions: snapshot.browserProfileDeletions,
       // The catalog names each browser's conversations, as the Host's does.
       sessions: snapshot.browserSessions.map((session) => ({
         ...session,
@@ -3364,7 +3405,7 @@ type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
   readonly browserPasskeys = new BrowserPasskeys();
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: HostClient["retainComputerView"];
   readonly #viewer = new ViewerScope();
@@ -3395,11 +3436,27 @@ export class MockHostClient implements HostClient {
   constructor(options: MockHostClientOptions = {}) {
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
-    this.browserPreferences = new BrowserPreferences(options.recentSitesStorage);
-    this.recentSites = new RecentSitesStore({
-      ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
-      now: () => (options.now?.() ?? new Date()).getTime(),
-      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
+    this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
+    this.browserHistory = new BrowserHistoryClient({
+      get: async (profileId) =>
+        unwrapRpcResult(await this.rpc["browser.history.get"]({ profileId })),
+      icons: async (profileId, iconRefs) =>
+        unwrapRpcResult(await this.rpc["browser.history.icons.get"]({ profileId, iconRefs })),
+      remove: async (profileId, url) => {
+        await this.dispatch({
+          type: "browser.history.remove",
+          profileId,
+          url,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
+      clear: async (profileId) => {
+        await this.dispatch({
+          type: "browser.history.clear",
+          profileId,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
     });
     if (
       options.places !== "absent" &&
@@ -3413,6 +3470,7 @@ export class MockHostClient implements HostClient {
       this.#state.getSnapshot,
       (snapshot) => this.#state.updatePlaces(snapshot),
       options.now ?? (() => new Date()),
+      (profileId) => this.browserHistory.changed(profileId),
     );
     this.#state.places = this.#places;
     this.#workspaceTabActivations = new WorkspaceTabActivations({
@@ -3459,21 +3517,31 @@ export class MockHostClient implements HostClient {
     this.#state.computerViews = this.#ownerViews;
     // The same viewer authority and paused-while-disconnected views as the
     // Host's client; this world's only disconnection is going offline.
-    const syncRecents = () => {
+    let knownProfiles: string[] = [];
+    const syncHistory = () => {
       const snapshot = this.#state.getSnapshot();
       const scope = viewerScopeOf(snapshot);
       if (this.#viewer.change(scope)) {
+        this.#pendingBrowserTabs.clear();
+        this.#state.updatePlaces({
+          ...snapshot,
+          pendingBrowserTabs: this.#pendingBrowserTabs.rows,
+        });
         this.#workspaceTabActivations.clear();
         this.#computerViews.clear();
       }
       this.#computerViews.setConnected(scope !== null && snapshot.connection !== "offline");
-      this.recentSites.setScope(scope);
-      this.recentSites.observeTabs(snapshot.browserSessions, snapshot.connection === "connected");
+      this.browserHistory.setScope(scope);
+      for (const profile of knownProfiles)
+        if (!snapshot.browserProfiles.some((value) => value.id === profile))
+          this.browserHistory.drop(profile);
+      knownProfiles = snapshot.browserProfiles.map((profile) => profile.id);
+      this.browserHistory.setConnected(snapshot.connection === "connected");
       this.browserPreferences.setScope(scope);
     };
-    syncRecents();
+    syncHistory();
     this.#worldSubscription = this.#state.subscribe(() => {
-      syncRecents();
+      syncHistory();
       this.#places.reconcile();
     });
     const frames: BrowserFrameStore = {
@@ -3563,6 +3631,12 @@ export class MockHostClient implements HostClient {
     this.#ownerViews.expire();
     return this.#state.getSnapshot();
   };
+  setBrowserProfileDeletions(
+    deletions: NonNullable<HostSnapshot["browserProfileDeletions"]>,
+  ): void {
+    this.#state.updatePlaces({ ...this.getSnapshot(), browserProfileDeletions: deletions });
+  }
+
   setSearchSuggestionsAvailable(available: boolean): void {
     this.#state.updatePlaces({ ...this.getSnapshot(), searchSuggestionsAvailable: available });
   }
@@ -3777,27 +3851,44 @@ export class MockHostClient implements HostClient {
   };
   readonly readBrowserContextCandidate = (sessionId: string, tabId: string) =>
     this.#places.candidate(sessionId, tabId);
+  readonly #pendingBrowserTabs = new PendingBrowserTabs({
+    admitted: () => viewerScopeOf(this.#state.getSnapshot()) !== null,
+    open: async (target, options) => {
+      const started = this.#viewer.generation;
+      const opened = unwrapRpcResult(
+        await this.rpc["commands.dispatch"]({
+          type: "browser.tab.open",
+          ...target,
+          ...options,
+          idempotencyKey: options.idempotencyKey!,
+        }),
+      );
+      if (started !== this.#viewer.generation)
+        throw new HostClientRequestError({
+          code: "unauthorized",
+          status: 401,
+          message: "The signed-in account changed while the browser was opening.",
+        });
+      if (opened.type !== "browser.tab.open") throw new Error("Unexpected browser command result.");
+      return opened;
+    },
+    close: (result) =>
+      this.closeBrowserTab(
+        result.sessionId,
+        result.tabId,
+        this.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
+          ?.tabCatalog ?? result.catalog,
+      ),
+    changed: (pendingBrowserTabs) =>
+      this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
+  });
+  prepareBrowserProfile(): void {}
+  readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
+  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   readonly openBrowserTab = async (
     target: string | BrowserTabOpenInput,
     options: BrowserTabOpenOptions = {},
-  ) => {
-    const started = this.#viewer.generation;
-    const opened = await this.#places.openTarget(
-      BrowserTabOpenCommandSchema.parse({
-        type: "browser.tab.open",
-        ...(typeof target === "string" ? { sessionId: target } : target),
-        ...options,
-        idempotencyKey: options.idempotencyKey ?? `open-tab:${crypto.randomUUID()}`,
-      }),
-    );
-    if (started !== this.#viewer.generation)
-      throw new HostClientRequestError({
-        code: "unauthorized",
-        status: 401,
-        message: "The signed-in account changed while the browser was opening.",
-      });
-    return opened;
-  };
+  ) => this.beginBrowserTabOpen(target, options).result;
   readonly reopenWorkspaceTab = async () => {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
@@ -4051,15 +4142,6 @@ export class MockHostClient implements HostClient {
     });
   }
 
-  /** Like the session client, the queue takes the new order before the Host answers. */
-  async moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void> {
-    this.#state.moveThreadInput(threadId, messageId, beforeMessageId);
-  }
-
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     await this.dispatch({
       idempotencyKey: `mock-input-queue-resume:${crypto.randomUUID()}`,
@@ -4293,8 +4375,9 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();
-    this.recentSites.dispose();
+    this.browserHistory.dispose();
     this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingWorkspaceTabs: [] });
     this.#computerViews.clear();
     this.#worldSubscription();
@@ -5309,9 +5392,6 @@ class MockHostState {
   >();
   executeCommandOnce(input: HostApiCommand): ReturnType<typeof executeMockCommand> {
     const command = hostApi["commands.dispatch"].payload.parse(input);
-    // Presentation eligibility is transient, not part of the accepted message's content.
-    if (command.type === "thread.sendMessage")
-      Reflect.deleteProperty(command, "screenPresentation");
     if (
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&

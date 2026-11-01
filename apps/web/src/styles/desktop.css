@@ -102,10 +102,8 @@ html.electron-shell .topbar {
 }
 
 html.electron-shell .conv-header {
-  height: var(--desktop-titlebar-height);
-  min-height: var(--desktop-titlebar-height);
+  --conv-header-height: var(--desktop-titlebar-height);
   padding-left: calc(var(--space-12) + var(--desktop-pane-leading-inset));
-  padding-block: var(--space-6);
 }
 
 /* A conversation that is the sheet starts one gutter below the window's top,
@@ -121,9 +119,8 @@ html.electron-shell .conv-header {
   }
 
   html.electron-shell .workspace--talk .conv-header {
+    --conv-header-height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
     app-region: drag;
-    height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
-    min-height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter));
   }
 }
 
@@ -817,6 +814,12 @@ html.native-browser-live *,
 html.native-browser-live *::before,
 html.native-browser-live *::after {
   backdrop-filter: none !important;
+}
+
+/* Glass without its blur would show the page through a menu, so here every
+   float is the opaque one. */
+html.native-browser-live {
+  --fill-glass: var(--fill-float);
 }
 
 /* ---- Setup panel for an app the helper serves ----

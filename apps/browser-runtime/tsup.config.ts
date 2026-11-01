@@ -5,6 +5,8 @@ export default defineConfig(
   nodeApp({
     entry: ["src/egress-main.ts", "src/main.ts"],
     external: [
+      // Loads platform-specific native file-lock prebuilds relative to its package.
+      "fs-native-extensions",
       // Ships a driver and resolves its own package files relative to itself.
       "playwright-core",
       // CJS with dynamic requires of Node builtins; bundling breaks at load.

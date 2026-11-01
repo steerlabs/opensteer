@@ -1,6 +1,6 @@
 import { threadMark } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
-import { useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
 import { placeContentLabel, type ModelSelection, type Request } from "@opensteer/core";
 import {
@@ -285,9 +285,9 @@ function ThreadView({
     return () => cancelAnimationFrame(frame);
   }, [dockedRequests, focusTarget, openRequest, openRequestId, requests]);
   const conversational = thread.role === "conversation";
-  // In work, a message waiting behind the current turn stands in the tray above
-  // the composer, not in the conversation, until a Run takes it. A conversation
-  // has no tray: the reader's own waiting words are a sent bubble at its foot.
+  // In work, a message waiting behind the current turn stands unsent at the
+  // conversation's foot until a Run takes it. In a conversation the reply under
+  // way takes it, so the reader's own waiting words are a sent bubble there.
   const conversation = useMemo(
     () =>
       withoutOwnAssignment(
@@ -671,6 +671,16 @@ function ThreadView({
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
+  /** A message taken back from the queue returns to this composer to be reworded. */
+  const editQueued = useCallback(
+    (message: Omit<ComposerRestore, "key">) =>
+      setRestoredDraft((current) => ({
+        composer: composerKey,
+        restore: { ...message, key: (current?.restore.key ?? 0) + 1 },
+      })),
+    [composerKey],
+  );
+
   /* ---- Quoting an update ---- */
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
@@ -903,6 +913,19 @@ function ThreadView({
                 waitingRequests={snapshot.waitingRequests}
                 assignments={snapshot.assignments}
                 inputQueuePaused={thread.inputQueuePaused}
+                queued={
+                  inputQueue && thread.role === "work" ? (
+                    <QueuedMessages
+                      client={hostClient}
+                      disabled={!canRespond || thread.status === "archived"}
+                      onEdit={editQueued}
+                      onError={reportActionError}
+                      queue={inputQueue}
+                      viewerUserId={snapshot.user?.id ?? null}
+                      workspaces={snapshot.workspaces}
+                    />
+                  ) : null
+                }
                 homeThreadId={snapshot.homeThreadId}
                 askAbout={askAbout}
                 {...(conversational
@@ -1002,20 +1025,6 @@ function ThreadView({
       ) : null}
 
       <div className="composer-dock">
-        {inputQueue && thread.role === "work" ? (
-          <QueuedMessages
-            client={hostClient}
-            disabled={!canRespond || thread.status === "archived"}
-            onEdit={(message) =>
-              setRestoredDraft((current) => ({
-                composer: composerKey,
-                restore: { ...message, key: (current?.restore.key ?? 0) + 1 },
-              }))
-            }
-            onError={reportActionError}
-            queue={inputQueue}
-          />
-        ) : null}
         <InputSurface
           autoContext={home}
           voice={home}

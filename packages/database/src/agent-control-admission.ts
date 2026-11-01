@@ -20,7 +20,6 @@ import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from ".
 import type { DatabaseSchema } from "./schema.js";
 
 export const agentControlActionLimits = {
-  "screen.show": 64,
   "assignment.cancel": 16,
   "machine.full-disk-access.request": 8,
   "browser.access.request": 8,
@@ -52,7 +51,6 @@ export const agentControlActionLimits = {
 export const agentControlMaxDelegationDepth = agentDelegationMaxDepth;
 
 export type AgentControlAction =
-  | "screen.show"
   | "assignment.cancel"
   | "machine.full-disk-access.request"
   | "browser.access.request"
@@ -70,6 +68,7 @@ export type AgentControlAction =
   | "thread.delegate"
   | "thread.list"
   | "thread.message"
+  | "person.notify"
   | "thread.read"
   | "thread.write"
   | "trigger.read"
@@ -151,7 +150,6 @@ export interface WatchControlAdmissionResult {
 }
 
 const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass>> = {
-  "screen.show": "screen.show",
   "assignment.cancel": "assignment.cancel",
   "machine.full-disk-access.request": "machine.full-disk-access.request",
   "browser.access.request": "browser.access.request",
@@ -169,6 +167,7 @@ const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass
   "thread.delegate": "thread.delegate",
   "thread.list": "thread.list",
   "thread.message": "thread.message",
+  "person.notify": "thread.message",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
   "trigger.read": "trigger.read",

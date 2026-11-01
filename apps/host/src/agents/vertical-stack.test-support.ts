@@ -106,7 +106,7 @@ export interface VerticalStackOptions {
   /** Child-process Runner for crash/reaping acceptance journeys. */
   readonly runnerChild?: { readonly fixture: string; readonly arguments: readonly string[] };
   /** Personal Main Runner with its desktop authority; no server enrollment shortcut. */
-  readonly personal?: { readonly integrations: () => PreparedIntegrationsModule };
+  readonly personal?: { readonly integrations?: () => PreparedIntegrationsModule };
   /**
    * A browser this computer relays, reached over the same loopback bridge the
    * desktop app's Runner uses. Without it the Runner offers no browser.
@@ -706,7 +706,7 @@ async function startWithin(
     const executionEnvironmentId = companion?.environment ?? environmentId;
     const executionRunnerId = companion?.id ?? runnerId;
     const executionDataDirectory = companion?.directory ?? runnerDataDirectory;
-    const integrations = options.personal?.integrations();
+    const integrations = options.personal?.integrations?.();
     const containment = new ExecutionContainment({ bootId, dataDirectory: executionDataDirectory });
     const earlierBoots = await containment.reapEarlierBoots();
     const runner = new RunnerRuntime({
@@ -762,7 +762,13 @@ async function startWithin(
       maxConcurrentRuns: options.maxConcurrentRuns ?? 1,
       maxConcurrentTriggerPrograms: 1,
       mode: "development",
-      modules: options.personal ? ["agents", "integrations"] : ["agents", "browser", "shell"],
+      modules: options.personal
+        ? [
+            "agents",
+            ...(integrations ? ["integrations" as const] : []),
+            ...(options.browser ? ["browser" as const] : []),
+          ]
+        : ["agents", "browser", "shell"],
       mountBinary: "unused-at-the-test-boundary",
       name: "Vertical local runner",
       runnerId: executionRunnerId,

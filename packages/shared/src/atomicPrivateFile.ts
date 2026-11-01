@@ -1,8 +1,8 @@
 /** Crash-safe creation and replacement of mode-0600 files in a private directory. */
 
 import { randomUUID } from "node:crypto";
-import { link, mkdir, open, rename, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { link, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { isNodeError } from "./nodeError.js";
 import {
   readBoundedRegularFile,
@@ -60,6 +60,31 @@ export async function replacePrivateFileAtomically(path: string, content: string
     await rm(temporary, { force: true });
     throw error;
   }
+}
+
+/** Only an exclusive directory owner may discard writes that never reached their committed name. */
+export async function discardPrivateFileTemporaryFiles(
+  directory: string,
+  isCommittedName: (name: string) => boolean,
+): Promise<void> {
+  const names = await readdir(directory).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const name of names) {
+    const target = privateFileTemporaryTarget(name);
+    if (target && isCommittedName(target)) await rm(join(directory, name), { force: true });
+  }
+}
+
+export function privateFileTemporaryTarget(name: string): string | undefined {
+  const match =
+    /^(.*)\.tmp-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.exec(name) ??
+    // ProtectedJsonFile uses the older private-file publication convention.
+    /^\.(.*)\.[1-9][0-9]*\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/u.exec(
+      name,
+    );
+  return match?.[1];
 }
 
 export async function readPrivateFileText(

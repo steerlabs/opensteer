@@ -1,7 +1,4 @@
 import {
-  ScreenShowInputSchema,
-  ScreenPresentationReceiptSchema,
-  ScreenSurfaceSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AgentCapabilityProfileIdSchema,
@@ -15,6 +12,7 @@ import {
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
+  PersonNotifyMessageSchema,
   PlaceContentPartSchema,
   MessageSchema,
   MessageContentSchema,
@@ -123,7 +121,6 @@ export const EnvironmentListInputSchema = z
 export type EnvironmentListInput = z.infer<typeof EnvironmentListInputSchema>;
 
 const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
-  ScreenShowInputSchema.extend({ ...requestBase, type: z.literal("screen.show") }),
   EnvironmentListInputSchema.safeExtend({
     ...requestBase,
     type: z.literal("environment.list"),
@@ -221,6 +218,11 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     observationId: z.string().trim().min(1).max(255).optional(),
     threadId: z.union([ThreadIdSchema, z.literal("home")]),
     type: z.literal("thread.message"),
+  }),
+  z.strictObject({
+    type: z.literal("person.notify"),
+    requestId: z.uuid(),
+    message: PersonNotifyMessageSchema,
   }),
   z.strictObject({
     ...requestBase,
@@ -512,11 +514,6 @@ export const RequestCreationResultSchema = z.strictObject({
 export type RequestCreationResult = z.infer<typeof RequestCreationResultSchema>;
 
 const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    ...responseBase,
-    type: z.literal("screen.show.result"),
-    receipt: ScreenPresentationReceiptSchema,
-  }),
   EnvironmentDiscoverySchema.extend({
     ...responseBase,
     type: z.literal("environment.list.result"),
@@ -573,7 +570,6 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     messages: z.array(MessageSchema).max(100),
     thread: ThreadSchema,
     type: z.literal("thread.read.result"),
-    presentableSurfaces: z.array(ScreenSurfaceSchema).max(64).optional(),
     window: AgentThreadMessageWindowSchema,
   }),
   z.strictObject({
@@ -596,6 +592,11 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     ...responseBase,
     result: DeliveredThreadInputResultSchema,
     type: z.literal("thread.message.result"),
+  }),
+  z.strictObject({
+    type: z.literal("person.notify.result"),
+    requestId: z.uuid(),
+    messageId: MessageIdSchema,
   }),
   z.strictObject({
     ...responseBase,

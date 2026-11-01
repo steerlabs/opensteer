@@ -188,7 +188,7 @@ it("reports each agent's cursor where a person's pointer would be", async () => 
     initialViewport: { devicePixelRatio: 1, ...viewport },
     partitionKey: `session:${claims.sessionId}`,
     sessionId: claims.sessionId,
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   cleanup.push(() => browser.close());
   const root = browser.context.pages()[0];

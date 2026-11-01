@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "./mock-host-client.js";
 import { placeList } from "../host/places.js";
@@ -60,6 +61,58 @@ describe("start page mock journey", () => {
       await expect(client.openBrowserTab(result.sessionId)).rejects.toMatchObject({
         reason: "browser-session-closed",
       });
+    } finally {
+      client.dispose();
+    }
+  });
+  it("publishes pending rows before the mock command, keeps refusals and closes a dismissed late tab", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    try {
+      const gate = Promise.withResolvers<void>();
+      const dispatch = client.rpc["commands.dispatch"];
+      const delayed: typeof dispatch = async (command, options) => {
+        if (command.type === "browser.tab.open") {
+          expect(client.getSnapshot().pendingBrowserTabs).toMatchObject([
+            { idempotencyKey: "mock-pending", state: "opening" },
+          ]);
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+        }
+        return dispatch(command, options);
+      };
+      Object.defineProperty(client, "rpc", {
+        value: new Proxy(client.rpc, {
+          get: (target, name) =>
+            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
+        }),
+      });
+      const session = client
+        .getSnapshot()
+        .browserSessions.find((session) => session.state === "ready")!;
+      const close = vi.spyOn(client, "closeBrowserTab");
+      const opening = client.beginBrowserTabOpen(session.id, { idempotencyKey: "mock-pending" });
+      expect(client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
+      client.dismissPendingBrowserTab(opening.idempotencyKey);
+      expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      gate.resolve();
+      const opened = await opening.result;
+      expect(close).toHaveBeenCalledWith(opened.sessionId, opened.tabId, expect.anything());
+      Object.defineProperty(client, "rpc", {
+        value: new Proxy(client.rpc, {
+          get: (target, name) =>
+            name === "commands.dispatch" ? dispatch : Reflect.get(target, name),
+        }),
+      });
+      await expect(
+        client.beginBrowserTabOpen(
+          { identity: { kind: "profile", profileId: "bpr_99999999-9999-4999-8999-999999999999" } },
+          { idempotencyKey: "refused" },
+        ).result,
+      ).rejects.toMatchObject({ reason: "browser-profile-unavailable" });
+      expect(client.getSnapshot().pendingBrowserTabs).toMatchObject([
+        { idempotencyKey: "refused", state: "failed" },
+      ]);
     } finally {
       client.dispose();
     }
@@ -134,14 +187,11 @@ describe("start page mock journey", () => {
         kind: "profile",
         profileId: client.getSnapshot().browserProfiles[0]!.id,
       } as const;
-      client.recentSites.record(
-        profile,
-        "https://recent.example/private",
-        client.recentSites.epoch,
-      );
-      expect(client.recentSites.list(profile)).toHaveLength(1);
+      await client.openBrowserTab({ identity: profile }, { url: "https://recent.example/private" });
+      await client.browserHistory.load(profile.profileId);
+      expect(client.browserHistory.entries(profile.profileId)).toHaveLength(1);
       await client.rpc["auth.signOut"]({});
-      expect(client.recentSites.list(profile)).toEqual([]);
+      expect(client.browserHistory.entries(profile.profileId)).toEqual([]);
       await expect(client.openComputerView(app.machineId, app.target)).rejects.toMatchObject({
         code: "unauthorized",
       });

@@ -66,6 +66,7 @@ vi.mock("react-native-reanimated", () => ({
       <div aria-label={props.accessibilityLabel}>{props.children}</div>
     ),
   },
+  LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
@@ -304,8 +305,13 @@ function render(node: ReactNode): HTMLElement {
   return container;
 }
 
-function activity(turnKey?: string): HTMLElement {
-  const params = { deploymentId, threadId: chatId, ...(turnKey === undefined ? {} : { turnKey }) };
+function activity(turnKey?: string, messageId?: string): HTMLElement {
+  const params = {
+    messageId,
+    deploymentId,
+    threadId: chatId,
+    ...(turnKey === undefined ? {} : { turnKey }),
+  };
   return render(<ConversationActivityScreen route={{ params }} />);
 }
 
@@ -319,6 +325,19 @@ function press(container: HTMLElement, words: string): void {
 }
 
 describe("Run details", () => {
+  it("mounts an early linked message in a long trace", () => {
+    fakeHost(
+      snapshotWith([
+        ...answered.slice(0, -1),
+        ...Array.from({ length: 35 }, (_, i) => wrote(`Later ${i}`, runA)),
+        replyA,
+      ]),
+    );
+    const container = activity(`turn:run:${runA}`, noteA.id);
+    expect(container.textContent).toContain(noteA.body);
+    expect(container.textContent).toContain("Later 34");
+  });
+
   it("opens the exact browser tab used by this reply even when another tab is viewed", () => {
     const browser = {
       access: "full-control",
@@ -498,7 +517,7 @@ describe("the conversation's title", () => {
   const chatHeader: ThreadHeaderState = {
     canRetry: false,
     connectionLabel: null,
-    surfaceCount: 0,
+    surface: null,
     surfacesActing: false,
     task: null,
     title: "Chat",

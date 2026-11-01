@@ -5,6 +5,7 @@ import {
   VoiceRefusalReasonSchema,
   voiceLeaseMs,
   voiceMaxCallMs,
+  type VoiceToolCall,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
 } from "@opensteer/protocol";
@@ -12,10 +13,14 @@ import {
 export interface RunnerVoiceCall {
   readonly answer: string;
   readonly closed: Promise<void>;
+  next?(signal: AbortSignal): Promise<VoiceToolCall | null>;
+  answerCall?(callId: string, ok: boolean, text: string): Promise<void>;
+  context?(text: string): Promise<void>;
   say(text: string): Promise<void>;
   stop(): Promise<void>;
 }
 interface Entry {
+  readonly agent: boolean;
   readonly ownerUserId: UserId;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly abort: AbortController;
@@ -42,6 +47,7 @@ export class VoiceCalls {
   readonly directory: string;
   readonly open: (input: {
     harnessInstanceId: HarnessInstanceId;
+    agent: boolean;
     offer: string;
     signal: AbortSignal;
     directory: string;
@@ -50,6 +56,7 @@ export class VoiceCalls {
     directory: string,
     open: (input: {
       harnessInstanceId: HarnessInstanceId;
+      agent: boolean;
       offer: string;
       signal: AbortSignal;
       directory: string;
@@ -72,7 +79,11 @@ export class VoiceCalls {
   async handle(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     try {
       if (command.action === "start")
-        return { ok: true, answer: (await this.#start(userId, command)).answer };
+        return {
+          ok: true,
+          answer: (await this.#start(userId, command)).answer,
+          ...(command.agent ? { agent: true } : {}),
+        };
       const entry = this.#entries.get(command.sessionId);
       if (
         entry &&
@@ -90,7 +101,21 @@ export class VoiceCalls {
         throw ended();
       }
       if (command.action === "renew") this.#lease(command.sessionId, entry);
-      else await entry.call.say(command.text);
+      else if (command.action === "say") await entry.call.say(command.text);
+      else {
+        if (!entry.agent) throw ended();
+        if (command.action === "next") {
+          if (!entry.call.next) throw ended();
+          return { ok: true, call: await entry.call.next(entry.abort.signal) };
+        }
+        if (command.action === "answer") {
+          if (!entry.call.answerCall) throw ended();
+          await entry.call.answerCall(command.callId, command.ok, command.text);
+        } else {
+          if (!entry.call.context) throw ended();
+          await entry.call.context(command.text);
+        }
+      }
       return { ok: true };
     } catch (error) {
       const parsed = VoiceRefusalReasonSchema.safeParse(
@@ -123,7 +148,8 @@ export class VoiceCalls {
     }
     if (existing)
       return existing.ownerUserId === userId &&
-        existing.harnessInstanceId === command.harnessInstanceId
+        existing.harnessInstanceId === command.harnessInstanceId &&
+        existing.agent === (command.agent === true)
         ? existing.starting
         : Promise.reject(ended());
     const previous = [...this.#entries]
@@ -131,6 +157,7 @@ export class VoiceCalls {
       .map(([id, entry]) => this.#end(id, entry));
     const abort = new AbortController();
     const entry: Entry = {
+      agent: command.agent === true,
       ownerUserId: userId,
       harnessInstanceId: command.harnessInstanceId,
       abort,
@@ -143,6 +170,7 @@ export class VoiceCalls {
           abort.signal.throwIfAborted();
           const call = await this.open({
             harnessInstanceId: command.harnessInstanceId,
+            agent: command.agent === true,
             offer: command.offer,
             signal: abort.signal,
             directory: this.directory,

@@ -170,12 +170,12 @@ async function run(): Promise<void> {
   const siteA = `http://site-a.test:${address.port}`;
   const siteB = `http://site-b.test:${address.port}`;
 
-  const request: BrowserLaunchRequest = {
+  const request = {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000301",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000301"),
-    snapshot: { cookies: [], origins: [] },
-  };
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+  } satisfies BrowserLaunchRequest;
   const launcher = new ElectronBrowserLauncher({
     downloads: smokeDownloads,
     pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),

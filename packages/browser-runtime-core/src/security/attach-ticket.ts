@@ -1,6 +1,9 @@
+import type { z } from "zod";
 import { verify as verifySignature } from "node:crypto";
 import {
   BrowserAttachTicketClaimsSchema,
+  BrowserPreparationTicketClaimsSchema,
+  type BrowserPreparationTicketClaims,
   type BrowserAttachTicketClaims,
 } from "@opensteer/protocol/browser";
 import { decodeBase64Url } from "@opensteer/shared/base64url";
@@ -18,6 +21,10 @@ export interface AttachTicketExpectation {
 
 export interface AttachTicketVerifier {
   verify(token: string, expectation: AttachTicketExpectation): Promise<BrowserAttachTicketClaims>;
+  verifyPreparation?(
+    token: string,
+    expectation: AttachTicketExpectation,
+  ): Promise<BrowserPreparationTicketClaims>;
 }
 
 export type PublicKeySource = Ed25519KeySource;
@@ -39,7 +46,7 @@ export interface Ed25519AttachTicketVerifierOptions {
 interface TicketHeader {
   alg: "EdDSA";
   kid: string;
-  typ: typeof ticketType;
+  typ: string;
 }
 
 export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
@@ -83,6 +90,32 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
     token: string,
     expectation: AttachTicketExpectation,
   ): Promise<BrowserAttachTicketClaims> {
+    return this.verifyClaims(token, expectation, BrowserAttachTicketClaimsSchema, ticketType);
+  }
+
+  async verifyPreparation(
+    token: string,
+    expectation: AttachTicketExpectation,
+  ): Promise<BrowserPreparationTicketClaims> {
+    return this.verifyClaims(
+      token,
+      expectation,
+      BrowserPreparationTicketClaimsSchema,
+      "opensteer-browser-prepare+jwt",
+    );
+  }
+
+  private async verifyClaims<
+    Claims extends Pick<
+      BrowserAttachTicketClaims,
+      "runtimeId" | "issuedAt" | "expiresAt" | "nonce"
+    >,
+  >(
+    token: string,
+    expectation: AttachTicketExpectation,
+    schema: z.ZodType<Claims>,
+    typ: string,
+  ): Promise<Claims> {
     if (
       Buffer.byteLength(token, "utf8") > this.maxTicketBytes ||
       !compactTokenPattern.test(token)
@@ -98,7 +131,7 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
       throw forbidden("The browser attach ticket is malformed.");
     }
 
-    const header = parseHeader(decodeJson(protectedSegment));
+    const header = parseHeader(decodeJson(protectedSegment), typ);
     const keySource = await this.resolvePublicKey(header.kid);
     if (!keySource) throw forbidden("The browser attach ticket key is not trusted.");
     const key = normalizeEd25519PublicKey(keySource, attachTicketKeyFailure);
@@ -115,7 +148,7 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
     );
     if (!valid) throw forbidden("The browser attach ticket signature is invalid.");
 
-    const parsedClaims = BrowserAttachTicketClaimsSchema.safeParse(decodeJson(payloadSegment));
+    const parsedClaims = schema.safeParse(decodeJson(payloadSegment));
     if (!parsedClaims.success) throw forbidden("The browser attach ticket claims are invalid.");
     const claims = parsedClaims.data;
     const now = (expectation.now ?? new Date()).getTime();
@@ -157,7 +190,7 @@ function ticketSegmentBytes(segment: string): Buffer {
   }
 }
 
-function parseHeader(value: unknown): TicketHeader {
+function parseHeader(value: unknown, typ: string): TicketHeader {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw forbidden("The browser attach ticket header is invalid.");
   }
@@ -169,14 +202,14 @@ function parseHeader(value: unknown): TicketHeader {
     keys[1] !== "kid" ||
     keys[2] !== "typ" ||
     record.alg !== "EdDSA" ||
-    record.typ !== ticketType ||
+    record.typ !== typ ||
     typeof record.kid !== "string" ||
     record.kid.length < 1 ||
     record.kid.length > 255
   ) {
     throw forbidden("The browser attach ticket header is invalid.");
   }
-  return { alg: "EdDSA", kid: record.kid, typ: ticketType };
+  return { alg: "EdDSA", kid: record.kid, typ };
 }
 
 function attachTicketKeyFailure(kind: "unreadable" | "not-ed25519", cause?: unknown): Error {
@@ -186,7 +219,7 @@ function attachTicketKeyFailure(kind: "unreadable" | "not-ed25519", cause?: unkn
 }
 
 function validateClaims(
-  claims: BrowserAttachTicketClaims,
+  claims: Pick<BrowserAttachTicketClaims, "runtimeId" | "issuedAt" | "expiresAt">,
   runtimeId: string,
   now: number,
   clockSkewMs: number,

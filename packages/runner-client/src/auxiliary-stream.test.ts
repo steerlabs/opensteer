@@ -92,6 +92,14 @@ describe("openRunnerAuxiliaryStream", () => {
     },
   );
 
+  it("preserves negotiated profile preparation on the bundled Runner stream", async () => {
+    const modern = await openTestStream({ leaseMs: 60_000, browser: true });
+    try {
+      expect(modern.stream).toMatchObject({ localProfiles: 1, profilePrepare: 1 });
+    } finally {
+      modern.close();
+    }
+  });
   it("exposes only the Passwords capabilities opted into by this welcome", async () => {
     const legacy = await openTestStream({ leaseMs: 60_000 });
     expect(legacy.stream).not.toHaveProperty("loginText");
@@ -159,9 +167,14 @@ describe("openRunnerAuxiliaryStream", () => {
 async function openTestStream(options: {
   readonly leaseMs: number;
   readonly passwords?: boolean;
+  readonly browser?: boolean;
   readonly onInvalidated?: () => void;
 }): Promise<OpenedAuxiliaryStream> {
-  const module = options.passwords ? ("integrations" as const) : ("shell" as const);
+  const module = options.browser
+    ? ("browser" as const)
+    : options.passwords
+      ? ("integrations" as const)
+      : ("shell" as const);
   const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
   const runnerId = createId("runner");
   const connectionId = RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`);
@@ -206,6 +219,7 @@ async function openTestStream(options: {
           connectionLeaseId,
           heartbeatIntervalMs: 1_000,
           ...(options.passwords ? { loginText: 1, passwordSignIn: 1 } : {}),
+          ...(options.browser ? { localProfiles: 1, profilePrepare: 1 } : {}),
           module,
           runnerId,
           serverTime: new Date().toISOString(),

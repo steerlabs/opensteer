@@ -1,12 +1,13 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackHeaderItemMenuAction } from "@react-navigation/native-stack";
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { ActingDot, agentWorkingLabel } from "./acting-dot.js";
+import type { SurfaceGlyph } from "./agent-surface.js";
 
 /** An SF Symbol a native bar menu can draw. */
 type MenuSymbol = Extract<
@@ -27,9 +28,31 @@ export interface SurfaceMenuItem {
   readonly onPress: () => void;
 }
 
+/** One of the conversation's tabs and apps, as the bar's switcher lists it. */
+export interface SurfaceChoice {
+  readonly acting: boolean;
+  /** The one on screen now. */
+  readonly current: boolean;
+  readonly glyph: SurfaceGlyph;
+  readonly key: string;
+  readonly onPress: () => void;
+  readonly site: string | null;
+  readonly title: string;
+}
+
+/**
+ * The conversation's tabs and apps around the focused one, for the bar to
+ * switch between; null when there is no other.
+ */
+export const SurfaceSwitcherContext = createContext<{
+  readonly choices: readonly SurfaceChoice[];
+  readonly onShowAll: () => void;
+} | null>(null);
+
 /**
  * The compact bar over a focused page or Mac app: the native Back, the page's
- * title with its site (or the app with its Mac) under it, and ⋯.
+ * title with its site (or the app with its Mac) under it, ⋯, and — while the
+ * conversation has others — its tabs, the one the agent is in marked green.
  *
  * The bar is rebuilt only when what it says changes. The menu's handlers are
  * read when a choice is made, so a page that re-renders on every picture does
@@ -48,12 +71,15 @@ export function useSurfaceHeader(props: {
   const navigation = useNavigation();
   const menu = useRef(props.menu);
   menu.current = props.menu;
+  const switcher = useContext(SurfaceSwitcherContext);
+  const switcherNow = useRef(switcher);
+  switcherNow.current = switcher;
   const titlePress = useRef(props.onTitlePress);
   titlePress.current = props.onTitlePress;
   const pressable = props.onTitlePress !== undefined;
   // What the bar draws, as one value: an unchanged bar is not set again, and
   // the menu it draws is the one this render read.
-  const shape = JSON.stringify(
+  const shape = JSON.stringify([
     props.menu.map(({ destructive, disabled, hint, icon, id, label }) => [
       id,
       label,
@@ -62,12 +88,24 @@ export function useSurfaceHeader(props: {
       destructive === true,
       disabled === true,
     ]),
-  );
+    switcher?.choices.map(({ acting, current, glyph, key, site, title }) => [
+      key,
+      title,
+      site,
+      glyph,
+      acting,
+      current,
+    ]) ?? null,
+  ]);
   const { acting, glyph, secondary, title, titleHint } = props;
 
   useLayoutEffect(() => {
     const items = menu.current;
     const choose = (id: string) => menu.current.find((item) => item.id === id)?.onPress();
+    const choices = switcherNow.current?.choices ?? [];
+    const switchTo = (key: string) =>
+      switcherNow.current?.choices.find((choice) => choice.key === key)?.onPress();
+    const showAll = () => switcherNow.current?.onShowAll();
     navigation.setOptions({
       headerTitle: () => (
         <SurfaceTitle
@@ -79,28 +117,52 @@ export function useSurfaceHeader(props: {
           title={title}
         />
       ),
-      headerRight: () =>
-        items.length === 0 ? null : (
-          <NativeMenu
-            accessibilityLabel="More"
-            accessibilityHint="Shows actions for this page"
-            onPresent={noop}
-            onSettle={noop}
-            options={items.map(({ destructive, disabled, id, label }) => ({
-              ...(destructive === true ? { destructive } : {}),
-              ...(disabled === true ? { disabled } : {}),
-              id,
-              label,
-              onPress: () => choose(id),
-            }))}
-            style={styles.more}
-          >
-            <Symbol name="ellipsis" tint={color.ember} />
-          </NativeMenu>
-        ),
+      headerRight: () => (
+        <View style={styles.trailing}>
+          {choices.length === 0 ? null : (
+            <NativeMenu
+              accessibilityLabel="Tabs"
+              accessibilityHint="Switches to another of this conversation's tabs and apps"
+              onPresent={noop}
+              onSettle={noop}
+              options={[
+                ...choices.map(({ acting, current, key, title }) => ({
+                  id: key,
+                  // Android's dropdown has no second line, so the agent is named in the words.
+                  label: acting ? `${title} · ${agentWorkingLabel}` : title,
+                  onPress: () => switchTo(key),
+                  selected: current,
+                })),
+                { id: "all", label: "All tabs", onPress: showAll },
+              ]}
+              style={styles.more}
+            >
+              <Symbol name="rectangle.on.rectangle" tint={color.ember} />
+            </NativeMenu>
+          )}
+          {items.length === 0 ? null : (
+            <NativeMenu
+              accessibilityLabel="More"
+              accessibilityHint="Shows actions for this page"
+              onPresent={noop}
+              onSettle={noop}
+              options={items.map(({ destructive, disabled, id, label }) => ({
+                ...(destructive === true ? { destructive } : {}),
+                ...(disabled === true ? { disabled } : {}),
+                id,
+                label,
+                onPress: () => choose(id),
+              }))}
+              style={styles.more}
+            >
+              <Symbol name="ellipsis" tint={color.ember} />
+            </NativeMenu>
+          )}
+        </View>
+      ),
       title,
-      unstable_headerRightItems: () =>
-        items.length === 0
+      unstable_headerRightItems: () => [
+        ...(items.length === 0
           ? []
           : [
               {
@@ -129,9 +191,52 @@ export function useSurfaceHeader(props: {
                     }),
                   ),
                 },
-                type: "menu",
+                type: "menu" as const,
               },
-            ],
+            ]),
+        ...(choices.length === 0
+          ? []
+          : [
+              {
+                accessibilityHint: "Switches to another of this conversation's tabs and apps",
+                accessibilityLabel: "Tabs",
+                icon: { name: "square.on.square", type: "sfSymbol" as const },
+                label: "Tabs",
+                menu: {
+                  items: [
+                    ...choices.map(
+                      ({
+                        acting,
+                        current,
+                        glyph,
+                        key,
+                        site,
+                        title,
+                      }): NativeStackHeaderItemMenuAction => ({
+                        ...(acting
+                          ? { description: agentWorkingLabel }
+                          : site === null
+                            ? {}
+                            : { description: site }),
+                        icon: { name: glyph, type: "sfSymbol" as const },
+                        label: title,
+                        onPress: () => switchTo(key),
+                        state: current ? ("on" as const) : ("off" as const),
+                        type: "action" as const,
+                      }),
+                    ),
+                    {
+                      icon: { name: "square.grid.2x2", type: "sfSymbol" as const },
+                      label: "All Tabs",
+                      onPress: showAll,
+                      type: "action" as const,
+                    },
+                  ],
+                },
+                type: "menu" as const,
+              },
+            ]),
+      ],
     });
     // `shape` stands for the menu: the items are read from this render's ref.
   }, [acting, glyph, navigation, pressable, secondary, shape, title, titleHint]);
@@ -219,6 +324,7 @@ const styles = StyleSheet.create({
   },
   pressed: { opacity: 0.6 },
   shrink: { flexShrink: 1 },
+  trailing: { alignItems: "center", flexDirection: "row" },
   // Wide enough for a real page title, narrow enough never to reach the bar's
   // own controls: the native title slot is centred between them.
   title: { alignItems: "center", justifyContent: "center", minHeight: touchTarget, maxWidth: 240 },

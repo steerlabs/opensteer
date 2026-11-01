@@ -28,19 +28,6 @@ own first-owner credential. Native OAuth is server-only.
 When enabled, `runtimeOrigin` must equal `canonicalOrigin`: external Runners
 must reach every capability URL the Host mints. See [Computers](computers.md).
 
-Requested screen presentations use transient Host memory, never persisted routing
-credentials or a person-wide broadcast. A committed human input binds to the exact
-Main subscription socket that issued its endpoint, user and login; replay cannot
-rebind it. Readiness and dispatch deadlines share a Host monotonic clock. The
-client's conservative estimate assumes relative clock-rate error at most 1,000
-ppm and adds that age-dependent uncertainty. Wall/monotonic disagreement,
-backgrounding and reconnect retire the sample and its input opportunities. Active
-voice renews samples within five minutes; idle clients do not keep reconnecting.
-A handshake taking half the dispatch window is unusable and renewed, with
-renewals bounded to one per 30 seconds. This is a supported clock assumption,
-not unconditional synchronization across suspension or arbitrary clock changes.
-See [Voice](voice.md).
-
 ## Credentials and machine-local ownership
 
 [HostAuthenticator](../apps/host/src/identity/auth.ts) selects one Host-issued
@@ -168,6 +155,35 @@ capabilities and never use them to gate mandatory behavior.
   Older Hosts, runtimes and viewers keep the absent policy. See
   [Passkeys](browser-sessions.md#passkeys).
 
+Native browser profiles and runtime-submitted first navigation are independent,
+additive negotiations; neither bumps the Host API epoch. The Host advertises
+`browser-local-profiles-v1` and `browser-initial-navigation-v1`. The runtime offers
+`modules.browser.localProfiles: 1` with its durable storage identity and engine,
+and independently `initialNavigationVersion: 1`; the auxiliary welcome must
+acknowledge each version before extended maintenance/readiness frames are sent.
+See the [Runner contract](../packages/protocol/src/runner.ts) and
+[welcome](../packages/protocol/src/runner-auxiliary.ts).
+
+Native execution requires complete authenticated inventory on the current browser
+auxiliary stream before admission, including deletion tombstones. Partial,
+interrupted or unreadable inventory is never an empty inventory or permission to
+execute. Claims reconcile existing ownership forward; they cannot replace a
+binding, downgrade local authority or reconstruct missing grants. Personal also
+requires Main's reconciliation before issuing named-profile tickets elsewhere.
+
+| Pair                   | Constraint                                                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Old client → new Host  | Accept existing strict requests and return ordinary tab/session results and error envelopes. Storage selection stays internal.                                                                         |
+| New client → old Host  | Keep requests unchanged; pending tabs work locally without a new deletion-status read. Completion retains the old Host's latency.                                                                      |
+| Old runtime → new Host | Unconverted profiles use exact legacy tickets and snapshots. Initializing/local profiles refuse before ticket issuance: “Update this computer to open this profile.” Never supply their recovery seed. |
+| New runtime → old Host | Without welcome negotiation, use legacy behavior only for unconverted profiles. A local marker refuses a legacy ticket; never make a disposable copy from the old seed.                                |
+| New runtime → new Host | Convert once on the bound storage instance and engine, then issue native tickets without a snapshot endpoint or lease. Wrong storage/engine refuses opening; it never authorizes reassignment.         |
+
+Frozen readers must retain the released ticket/welcome/relay shapes; importing
+current identity schemas into the baseline can hide a compatibility break. See
+the [released browser fixture](../apps/host/src/browser/released-browser-protocol.test-support.ts)
+and [DB restore constraints](releases.md#personal-database-snapshots).
+
 [Saved-login compatibility](passwords.md#runtime-and-compatibility) separately
 negotiates integrations `passwordSignIn: 1` for the Personal vault authority and
 `loginText: 1` with a live receiver key for app typing. Auxiliary welcome opt-in
@@ -204,8 +220,20 @@ Upgrade Hosts before Runners needing new execution/storage semantics; Personal
 ships both together. Enrollment is not execution admission. Native continuation,
 execution leases and requester-time-zone support are mandatory execution gates;
 unsupported Runners stay visible but cannot execute. Refused durable events end
-only their still-bound Run, not unrelated Runs or the connection. Upgrade the
-Account before Hosts introducing notification contracts it must accept.
+only their still-bound Run, not unrelated Runs or the connection.
+
+Deploy the Account's notification preview migration and reader on every replica
+of the issuer before distributing phone builds that register preview keys. A Host
+sends `previews` only for registered installations, so preview Hosts (including
+auto-published Beta builds) are safe earlier; one registered phone makes its
+recipient's publications fail against an old strict reader. Keep that reader
+during Account rollback while registered phones exist. `notification-preview-v1` gates phone key
+registration and is advertised only with a preview service and Account channel;
+it changes no epoch. Old phones keep generic alerts, and new phones never
+register against an older Host. The Account receives per-installation ciphertext,
+never the Host's title or excerpt in plaintext. Preview keys die with the Host
+login session through cascading deletion; the phone erases its local key on
+sign-out, and Account sign-out withdraws the push device.
 
 Thread titles use the existing state-change event with optional title; a new kind
 would break previous closed unions. Even tolerant readers acknowledging skipped

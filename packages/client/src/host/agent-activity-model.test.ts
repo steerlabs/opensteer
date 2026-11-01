@@ -17,6 +17,8 @@ import type {
   TranscriptEntry,
 } from "./client.js";
 import {
+  observedSequence,
+  incomingTranscriptMessages,
   activityFeedPresentation,
   conversationActivityTurn,
   conversationTurn,
@@ -33,8 +35,11 @@ import {
   turnFolds,
   turnState,
   turnComputer,
+  turnOpen,
   turnWords,
   workRows,
+  traceWindow,
+  traceWindowRows,
   workSummary,
   type TranscriptGroup,
   type Turn,
@@ -484,6 +489,10 @@ describe("a reply that a message joined", () => {
       `message:${joined.id}`,
       { key: `turn:after:${joined.id}`, reply: null, run: "running", work: [] },
     ]);
+    // The message that seeded the Run started it; only the later one joined it.
+    expect(
+      groups.flatMap((group) => (group.kind === "message" ? [group.joinedRun === true] : [])),
+    ).toEqual([false, true]);
     const composing = groups.flatMap((group) =>
       group.kind === "turn" ? [conversationTurn(group.turn).composing] : [],
     );
@@ -739,10 +748,11 @@ describe("workSummary", () => {
 });
 
 describe("a task's turn", () => {
-  // The ways it could fail: a live turn showing every step as it streams; a
-  // turn split by a message keeping its steps open; folding hiding what the
-  // agent wrote along the way; a reply alone growing a "Worked" line.
-  it("folds every step behind its status line and keeps everything the agent wrote", () => {
+  // The ways it could fail: a live turn hiding the steps between what the agent
+  // says; a settled turn running what it said on the way into its answer, or
+  // hiding the answer; a reader's choice not holding; a reply alone growing a
+  // "Worked" line.
+  it("tells its story in order while live, then folds to its last word", () => {
     const note = message({ body: "Checking tonight first.", id: "note" });
     const reply = message({ body: "Dhamaka has 9:45.", id: "reply" });
     const working = turns([
@@ -751,12 +761,20 @@ describe("a task's turn", () => {
       command("ls", { completedAt: null, state: "running" }),
     ])[0]!;
     expect(turnFolds(working)).toBe(true);
+    expect(turnOpen(working, null)).toBe(true);
+    expect(turnOpen(working, false)).toBe(false);
     expect(turnWords(working)).toEqual([note]);
     expect(workSummary(working)?.label).toBe("Running a command");
 
     const answered = turns([run({ replyMessageId: "reply" }), note, command("ls"), reply])[0]!;
-    expect(turnWords(answered)).toEqual([note, reply]);
+    expect(turnOpen(answered, null)).toBe(false);
+    expect(turnOpen(answered, true)).toBe(true);
+    expect(turnWords(answered)).toEqual([reply]);
     expect(workSummary(answered)?.label).toBe("Worked for 4s");
+
+    // A Run that ended without naming a reply still leaves its last word in view.
+    const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
+    expect(turnWords(failed)).toEqual([note]);
 
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
@@ -791,58 +809,6 @@ describe("Opensteer's own steps", () => {
     });
     expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
     expect(opensteer("thread_message").label).toBe("Sent a message");
-  });
-
-  // A view the receipt does not say switched must never read as switched.
-  it("say a view switched only when its receipt applied", () => {
-    const show = (overrides: Partial<ToolEntry>) => {
-      const entry = tool({
-        arguments: { messageId: "msg_1", target: { conversationId: "thr_1" } },
-        tool: { name: "screen_show", namespace: "opensteer" },
-        ...overrides,
-      });
-      const { detail, icon, label, tone } = activityStepHead(entry);
-      return { detail, icon, label, status: toolStatusLabel(entry), tone };
-    };
-    const receipt = (value: unknown) => ({ output: { text: JSON.stringify(value) } });
-
-    expect(show({ completedAt: null, state: "running" })).toMatchObject({
-      detail: "",
-      label: "Switching the view",
-      tone: "running",
-    });
-    expect(show(receipt({ outcome: "applied" }))).toEqual({
-      detail: "",
-      icon: "check-circle",
-      label: "Switched the view",
-      status: "Done",
-      tone: "done",
-    });
-    expect(show(receipt({ outcome: "superseded", reason: "interaction-ended" }))).toEqual({
-      detail: "The conversation had moved on",
-      icon: "alert-circle",
-      label: "Didn’t switch the view",
-      status: "Didn’t switch the view",
-      tone: "stopped",
-    });
-    expect(show(receipt({ outcome: "unavailable", reason: "forbidden" }))).toMatchObject({
-      detail: "That view isn’t available here",
-      label: "Didn’t switch the view",
-      tone: "stopped",
-    });
-    expect(show(receipt({ outcome: "unsupported" }))).toMatchObject({
-      detail: "Not supported on this device",
-      label: "Didn’t switch the view",
-      tone: "stopped",
-    });
-    expect(show(receipt({ outcome: "unconfirmed", reason: "expired" }))).toMatchObject({
-      detail: "It took too long",
-      label: "Couldn’t confirm the view switched",
-      status: "Not confirmed",
-      tone: "stopped",
-    });
-    for (const unread of [{ output: { text: "not a receipt" } }, receipt({ outcome: "shown" })])
-      expect(show(unread)).toMatchObject({ label: "Tried to switch the view", tone: "done" });
   });
 });
 
@@ -2117,4 +2083,118 @@ it("automatic background work has no Chat indicator, while a new human input sti
       groups: groupTranscriptEntries([automatic, input({ runId: null })]),
     }),
   ).toEqual({ kind: "typing" });
+});
+
+describe("traceWindow", () => {
+  it.each(["note-35", "note-5", "unknown"])("keeps %s mounted", (keep) => {
+    const rows = workRows(Array.from({ length: 40 }, (_, i) => message({ id: `note-${i}` })));
+    const hidden = keep === "note-5" ? 5 : 10;
+    expect(traceWindow(rows, { showAll: false, keep })).toEqual({
+      rows: rows.slice(hidden),
+      hidden,
+    });
+  });
+
+  it("keeps a target inside a digest, including entries after its first", () => {
+    const first = tool();
+    const target = tool();
+    const rows = workRows([
+      message({ id: "before" }),
+      first,
+      target,
+      ...Array.from({ length: 40 }, (_, i) => message({ id: `note-${i}` })),
+    ]);
+    expect(rows[1]?.kind).toBe("steps");
+    expect(traceWindow(rows, { showAll: false, keep: target.id })).toEqual({
+      rows: rows.slice(1),
+      hidden: 1,
+    });
+  });
+
+  it.each([0, traceWindowRows - 1, traceWindowRows, traceWindowRows + 1, 1001])(
+    "bounds %i rows while keeping the last word",
+    (count) => {
+      const rows = workRows(Array.from({ length: count }, (_, i) => message({ id: `note-${i}` })));
+      const window = traceWindow(rows, { showAll: false, keep: null });
+      expect(window.hidden).toBe(Math.max(0, count - traceWindowRows));
+      expect(window.rows).toEqual(rows.slice(-traceWindowRows));
+      expect(window.rows.at(-1)).toBe(rows.at(-1));
+      expect(traceWindow(rows, { showAll: true, keep: null })).toEqual({ rows, hidden: 0 });
+    },
+  );
+});
+
+it("places an addressed message between Run stretches and reveals its exact anchor", () => {
+  const before = reasoning({ id: "before" });
+  const addressed = message({ id: "addressed", addressedToUserId: "person" });
+  const after = reasoning({ id: "after" });
+  const groups = groupTranscriptEntries([before, addressed, after]);
+  expect(groups.map((group) => group.kind)).toEqual(["turn", "message", "turn"]);
+  expect(groups[1]).toMatchObject({ key: "addressed", entry: addressed });
+  expect(groups[2]).toMatchObject({ turn: { work: [after] } });
+  expect(conversationTurnRevealing(groups, addressed.id)).toBeNull();
+});
+
+it.each([true, false])(
+  "keeps child task rows reachable across an addressed message (nested already running: %s)",
+  (nestedRunning) => {
+    const child: Extract<TranscriptEntry, { kind: "node" }> = {
+      kind: "node",
+      id: "child",
+      nodeId: "child",
+      parentNodeId: null,
+      runId: "run-a",
+      createdAt: at(1),
+      completedAt: null,
+      model: null,
+      originCallId: null,
+      prompt: "Research",
+      result: null,
+      status: "running",
+      title: "Research",
+    };
+    const nested = { ...child, id: "nested", nodeId: "nested", parentNodeId: "child" };
+    const first = tool({ nodeId: "child" });
+    const second = tool({ nodeId: "nested" });
+    const groups = groupTranscriptEntries([
+      child,
+      ...(nestedRunning ? [nested] : []),
+      message({ addressedToUserId: "person" }),
+      first,
+      ...(nestedRunning ? [] : [nested]),
+      second,
+    ]);
+    const owner = groups.find(
+      (group) => group.kind === "turn" && group.turn.work.some((entry) => entry.id === child.id),
+    );
+    if (owner?.kind !== "turn") throw new Error("Missing child task row");
+    expect(workRows(owner.turn.work)).toEqual([
+      expect.objectContaining({ kind: "subagent", entry: child }),
+    ]);
+    expect(owner.turn.subagentWork.child).toEqual(
+      nestedRunning ? [nested, first] : [first, nested],
+    );
+    expect(owner.turn.subagentWork.nested).toEqual([second]);
+    expect(workRows(owner.turn.subagentWork.child!)).toContainEqual(
+      expect.objectContaining({ kind: "subagent", entry: nested }),
+    );
+    expect(workRows(owner.turn.subagentWork.nested!)).toHaveLength(1);
+  },
+);
+it("marks an addressed message read beyond the active Run's intermediate message", () => {
+  const notification = message({ id: "notification", sequence: "3", addressedToUserId: "person" });
+  const entries = [
+    message({ messageKind: "input", sequence: "1" }),
+    run({ status: "running" }),
+    message({ sequence: "2" }),
+    notification,
+  ];
+  expect(incomingTranscriptMessages(entries, "person", true)).toContain(notification);
+  expect(observedSequence(entries, true)).toBe("3");
+  expect(observedSequence([...entries, message({ sequence: "4" })], true)).toBe("3");
+  expect(
+    groupTranscriptEntries(entries).some(
+      (group) => group.kind === "turn" && group.turn.run?.status === "running",
+    ),
+  ).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { NotificationPreviews } from "../notifications/notification-preview.js";
 import { addPersonalDeployment } from "./add-deployment.js";
 import { savedViewFixture } from "../../test-support/saved-views.js";
 import {
@@ -353,6 +354,7 @@ function open(
   port: MobileHostPortFactory,
   privateFiles: PrivateFilesystem = new MemoryPrivateFilesystem(),
   options: {
+    readonly notificationPreviews?: NotificationPreviews;
     readonly accountOrigin?: string | null;
     readonly fetch?: MobileClientOptions["fetch"];
     readonly iphoneApps?: MobileClientOptions["iphoneApps"];
@@ -363,6 +365,7 @@ function open(
 ) {
   const opened: string[] = [];
   const client = new MobileClient({
+    ...(options.notificationPreviews ? { notificationPreviews: options.notificationPreviews } : {}),
     accountOrigin: options.accountOrigin ?? null,
     catalogFilePath: "/private/deployments.json",
     doneShelfFilePath: "/private/done-shelf.json",
@@ -2755,3 +2758,48 @@ function sessionExchangeResponse() {
 const settle = async (): Promise<void> => {
   for (let pass = 0; pass < 8; pass += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+it("keeps previews when an Account sign-in starts and is left unfinished", async () => {
+  const port = testPort({ held: true });
+  const previews = new NotificationPreviews(null, {} as never, async () => null);
+  const clear = vi.spyOn(previews, "clear");
+  const { client } = open(port.factory, new MemoryPrivateFilesystem(), {
+    accountOrigin,
+    fetch: accountFetch(),
+    notificationPreviews: previews,
+  });
+  try {
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.initialize();
+    await client.select(serverId);
+    await client.oauth.beginAccountSignIn();
+    expect(clear).not.toHaveBeenCalled();
+  } finally {
+    client.dispose();
+  }
+});
+
+it("refreshes previews when Account sign-in returns on a retained manual Host", async () => {
+  const port = testPort({ held: true });
+  const previews = new NotificationPreviews(null, {} as never, async () => null);
+  const attach = vi.spyOn(previews, "attach");
+  const { client, opened } = open(port.factory, new MemoryPrivateFilesystem(), {
+    accountOrigin,
+    fetch: accountFetch(),
+    notificationPreviews: previews,
+  });
+  try {
+    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.initialize();
+    await client.select(serverId);
+    await vi.waitFor(() => expect(attach).toHaveBeenCalled());
+    await client.clearAccountSavedViews();
+    attach.mockClear();
+    const connections = port.attached.length;
+    await signInTestAccount(client, opened);
+    await vi.waitFor(() => expect(attach).toHaveBeenCalled());
+    expect(port.attached).toHaveLength(connections);
+  } finally {
+    client.dispose();
+  }
+});

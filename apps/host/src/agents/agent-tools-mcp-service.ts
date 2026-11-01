@@ -14,7 +14,6 @@ import {
 import {
   OpensteerError,
   ThreadWriteInputSchema,
-  ScreenShowInputSchema,
   type AgentCapabilityProfileId,
   type ThreadId,
   type UserId,
@@ -112,7 +111,6 @@ function toolDescription(name: string, current: string, version: 1 | 2 | 3 | nul
 }
 
 export class AgentToolsMcpService {
-  readonly #allowMainChatRunScreenShow: boolean;
   readonly #agentControl: Pick<AgentControlService, "handle">;
   readonly #allowedHost: string;
   readonly #allowedOrigin: string;
@@ -120,8 +118,7 @@ export class AgentToolsMcpService {
   readonly #tokens: AgentControlTokenService;
   readonly #runnerCapabilities:
     ((scope: AgentControlRunScope) => Promise<readonly string[]>) | undefined;
-  readonly #store: Pick<OpensteerStore, "getThreadForOwner"> &
-    Partial<Pick<OpensteerStore, "findMainWorkspaceForOwner">>;
+  readonly #store: Pick<OpensteerStore, "getThreadForOwner">;
   readonly #triggerControl: Pick<TriggerControlService, "handle"> | undefined;
   readonly #triggerTokens: TriggerControlTokenService | undefined;
   readonly #watchControl: Pick<WatchControlService, "handle"> | undefined;
@@ -129,7 +126,6 @@ export class AgentToolsMcpService {
   #sessionsBeingCreated = 0;
 
   constructor(options: {
-    readonly allowMainChatRunScreenShow?: boolean;
     readonly agentControl: Pick<AgentControlService, "handle">;
     readonly publicUrl: URL;
     /**
@@ -137,15 +133,13 @@ export class AgentToolsMcpService {
      * accepts. Without it every Run gets the current inventory.
      */
     readonly runnerCapabilities?: (scope: AgentControlRunScope) => Promise<readonly string[]>;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner"> &
-      Partial<Pick<OpensteerStore, "findMainWorkspaceForOwner">>;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner">;
     readonly tokens: AgentControlTokenService;
     readonly triggerControl?: Pick<TriggerControlService, "handle">;
     readonly triggerTokens?: TriggerControlTokenService;
     readonly watchControl?: Pick<WatchControlService, "handle">;
     readonly watchTokens?: WatchControlTokenService;
   }) {
-    this.#allowMainChatRunScreenShow = options.allowMainChatRunScreenShow ?? false;
     this.#agentControl = options.agentControl;
     this.#allowedHost = options.publicUrl.host;
     this.#allowedOrigin = options.publicUrl.origin;
@@ -366,25 +360,14 @@ export class AgentToolsMcpService {
       ...(lacks("browser-profile-create-v1")
         ? previousReleaseToolsForCapabilityProfile(input.profileId)
         : []),
-    ].filter((definition) => definition.name !== "thread_write" || !lacks("task-done-v1"));
-    const screenThread =
-      input.scope === "run" &&
-      input.run &&
-      input.profileId === "main" &&
-      capabilities?.includes("screen-show-v1")
-        ? await this.#store.getThreadForOwner(input.run.threadId, input.run.requestedBy)
-        : null;
-    const screenAllowed =
-      this.#allowMainChatRunScreenShow &&
-      !!screenThread &&
-      screenThread.role === "conversation" &&
-      screenThread.capabilityProfileId === "main" &&
-      !!input.run &&
-      (await this.#store.findMainWorkspaceForOwner?.(input.run.requestedBy))?.homeThreadId ===
-        screenThread.id;
+    ].filter(
+      (definition) =>
+        (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
+        (definition.name !== "person_notify" ||
+          (input.scope === "run" && !lacks("person-notify-v1"))),
+    );
     const advertisedTools: Tool[] = [];
     for (const definition of definitions) {
-      if (definition.name === "screen_show" && !screenAllowed) continue;
       if (
         input.scope !== "run" &&
         anchor &&
@@ -476,15 +459,6 @@ export class AgentToolsMcpService {
   }): Promise<Record<string, unknown>> {
     const { control, input, requestId, token } = call;
     switch (call.name) {
-      case "screen_show": {
-        const response = await control.handle(token, {
-          ...ScreenShowInputSchema.parse(input),
-          requestId,
-          type: "screen.show",
-        });
-        if (response.type !== "screen.show.result") throw unexpectedToolResponse();
-        return response.receipt;
-      }
       case "environment_list": {
         const response = await control.handle(token, {
           ...input,
@@ -570,9 +544,6 @@ export class AgentToolsMcpService {
         });
         if (response.type !== "thread.read.result") throw unexpectedToolResponse();
         return {
-          ...(response.presentableSurfaces
-            ? { presentableSurfaces: response.presentableSurfaces }
-            : {}),
           assignments: response.assignments,
           assignmentWindow: response.assignmentWindow,
           messages: response.messages,
@@ -627,6 +598,15 @@ export class AgentToolsMcpService {
         });
         if (response.type !== "thread.write.result") throw unexpectedToolResponse();
         return { thread: response.thread, doneWhenRunEnds: response.doneWhenRunEnds };
+      }
+      case "person_notify": {
+        const response = await control.handle(token, {
+          type: "person.notify",
+          requestId,
+          message: input.message,
+        });
+        if (response.type !== "person.notify.result") throw unexpectedToolResponse();
+        return { messageId: response.messageId };
       }
       case "thread_message": {
         const response = await control.handle(token, {

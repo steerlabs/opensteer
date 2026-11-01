@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import {
   browserProfileAccessSummary,
   browserProfileDeleteConsequence,
+  browserProfileDeletionRows,
   browserProfileSettingsRows,
   browserProfileSpecialists,
   mutationIdempotencyKey,
@@ -24,6 +25,7 @@ import { SectionHeader } from "../primitives.js";
 export function BrowserProfilesSection() {
   const { snapshot } = useShell();
   const rows = browserProfileSettingsRows(snapshot);
+  const deletions = browserProfileDeletionRows(snapshot);
   // "Add profile…" elsewhere lands here with the name field open.
   const [params] = useSearchParams();
   const [creating, setCreating] = useState(() => params.has("new"));
@@ -38,7 +40,7 @@ export function BrowserProfilesSection() {
           Your profiles
         </h2>
         <div className="card">
-          {rows.length === 0 ? (
+          {rows.length === 0 && deletions.length === 0 ? (
             <div className="card__form">
               <p className="browser-profile-settings__empty">
                 No profiles yet. Create one, or sign in to sites in a Guest browser and save its
@@ -48,6 +50,18 @@ export function BrowserProfilesSection() {
           ) : (
             rows.map((row) => <BrowserProfileRow key={row.profile.id} row={row} />)
           )}
+          {deletions.map((deletion) => (
+            <div className="settings-item" key={deletion.profileId}>
+              <div className="card__row">
+                <span className="card__row-body">
+                  <span className="card__row-title">Deleted profile</span>
+                  <span className="card__row-detail" role="status">
+                    {deletion.status}
+                  </span>
+                </span>
+              </div>
+            </div>
+          ))}
           <div className="card__form">
             {creating ? (
               <NewProfileForm onDone={() => setCreating(false)} />

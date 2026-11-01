@@ -64,8 +64,13 @@ vi.mock("react-native-reanimated", () => ({
     }: {
       children?: ReactNode;
       accessibilityLabel?: string;
-    }) => <div aria-label={accessibilityLabel}>{children}</div>,
+    }) => (
+      <div aria-label={accessibilityLabel} data-animated-view>
+        {children}
+      </div>
+    ),
   },
+  LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined, exit: undefined }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
@@ -156,16 +161,12 @@ const runUsage = {
 function PaneRow(
   props: Omit<ComponentProps<typeof TranscriptGroupRow>, "onToggleOpen" | "open">,
 ): ReactNode {
-  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const [open, setOpen] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   return (
     <TranscriptGroupRow
       {...props}
-      onToggleOpen={(key) => {
-        const next = new Set(open);
-        if (!next.delete(key)) next.add(key);
-        setOpen(next);
-      }}
-      open={open.has(props.group.key)}
+      onToggleOpen={(key, current) => setOpen((choices) => new Map(choices).set(key, !current))}
+      open={open.get(props.group.key) ?? null}
     />
   );
 }
@@ -221,6 +222,34 @@ function press(container: HTMLElement, text: string): void {
 }
 
 describe("native transcript prose", () => {
+  it("keeps finalized streamed prose outside row animations", () => {
+    const { container, render } = setup();
+    render([run, command, { ...note, id: "stream:a", streaming: true }]);
+    const prose = () =>
+      [...container.querySelectorAll("p")].find((p) => p.textContent === note.body)!;
+    expect(prose().closest("[data-animated-view]")).toBeNull();
+    render([run, command, note]);
+    expect(prose().closest("[data-animated-view]")).toBeNull();
+    expect(container.querySelector("[data-animated-view]")?.textContent).toContain("Ran a command");
+  });
+
+  it("windows a long open trace and reveals its earlier rows", () => {
+    const { container, render } = setup();
+    const notes = Array.from({ length: 32 }, (_, i) => ({
+      ...note,
+      id: `note-${i}`,
+      body: `Trace note ${i}.`,
+    }));
+    render([run, ...notes]);
+    expect(container.querySelectorAll("p")).toHaveLength(30);
+    expect(container.textContent).not.toContain("Trace note 0.");
+    expect(container.textContent).toContain("Trace note 31.");
+    press(container, "Show 2 earlier steps");
+    expect(container.querySelectorAll("p")).toHaveLength(32);
+    expect(container.textContent).toContain("Trace note 0.");
+    expect(container.textContent).not.toContain("earlier steps");
+  });
+
   it("keeps an incoming update to one line on Home and opens the exact report in place", () => {
     const { container, render, onOpenThread } = setup(true);
     const threadId = createId("thread");
@@ -388,32 +417,41 @@ describe("native transcript prose", () => {
     expect(container.querySelector('[aria-label="Agent status"]')).toBeNull();
   });
 
-  // Failure modes: a live turn streams every thought and step into view; the
-  // agent's words fold away with its steps; a step can no longer be opened.
-  it("folds a live turn's thoughts and steps behind its status line and keeps its words", () => {
+  it("shows a live task's notes and steps in order, then folds to its last word", () => {
     const { container, render, onOpenStep } = setup();
-    render([run, command, thought, note, { ...command, id: "tool:a:2", callId: "call-2" }]);
-    expect(statusLine(container).textContent).toBe("Working");
+    const answer = { ...note, id: "answer", body: "The final answer." };
+    render([run, note, command, answer]);
+    expect(statusLine(container).getAttribute("aria-expanded")).toBe("true");
+    const text = container.textContent!;
+    expect(text.indexOf(note.body)).toBeLessThan(text.indexOf("Ran a command"));
+    expect(text.indexOf("Ran a command")).toBeLessThan(text.indexOf(answer.body));
+    const message = container.querySelectorAll("p")[1];
+    render([{ ...run, status: "completed" }, note, command, answer]);
     expect(statusLine(container).getAttribute("aria-expanded")).toBe("false");
-    expect(container.textContent).toContain(note.body);
-    expect(container.textContent).not.toContain(thought.text);
+    expect(container.textContent).not.toContain(note.body);
     expect(container.textContent).not.toContain("Ran a command");
-
+    expect(container.querySelector("p")).toBe(message);
     act(() => statusLine(container).click());
-    expect(container.textContent).toContain(thought.text);
+    expect(container.textContent).toContain(note.body);
     press(container, "Ran a command");
     expect(onOpenStep).toHaveBeenCalledWith(command.id);
-
-    // The reader's choice holds as the run ends.
-    render([{ ...run, status: "completed" }, command, thought, note]);
-    expect(statusLine(container).textContent).toBe("Worked for 2s");
-    expect(container.textContent).toContain(thought.text);
-    press(container, "Thought");
-    // The headline can repeat the opening words, so inspect the prose span itself.
-    expect(
-      [...container.querySelectorAll("span")].filter((item) => item.textContent === thought.text),
-    ).toHaveLength(1);
   });
+
+  it.each([true, false])(
+    "keeps the reader's explicit open=%s choice when a task settles",
+    (open) => {
+      const { container, render } = setup();
+      const entries = [note, command, { ...note, id: "answer", body: "Answer." }];
+      render([run, ...entries]);
+      act(() => statusLine(container).click());
+      if (open) act(() => statusLine(container).click());
+      expect(statusLine(container).getAttribute("aria-expanded")).toBe(String(open));
+      render([{ ...run, status: "completed" }, ...entries]);
+      expect(statusLine(container).getAttribute("aria-expanded")).toBe(String(open));
+      expect(container.textContent?.includes(note.body)).toBe(open);
+      expect(container.textContent?.includes("Ran a command")).toBe(open);
+    },
+  );
 
   // Failure mode: the status line jumps from below the reply to above it when
   // the run ends, or the agent's words remount as tools arrive.
@@ -428,12 +466,12 @@ describe("native transcript prose", () => {
     expect(statusLine(container)).toBe(status);
     const answer = { ...note, id: "final-answer", body: "Final answer after the work." };
     render([{ ...run, status: "completed" }, thought, note, command, next, answer]);
-    expect(container.querySelector("p")).toBe(message);
+    expect(container.textContent).not.toContain(note.body);
+    expect(container.textContent).toContain(answer.body);
     expect(statusLine(container)).toBe(status);
     expect(status.textContent).toBe("Worked for 2s");
     const text = container.textContent!;
-    expect(text.indexOf("Worked")).toBeLessThan(text.indexOf(note.body));
-    expect(text.indexOf(note.body)).toBeLessThan(text.indexOf(answer.body));
+    expect(text.indexOf("Worked")).toBeLessThan(text.indexOf(answer.body));
   });
 
   it("keeps the same status line through writing, waiting, stopping and the end, opening every step in place", () => {
@@ -459,7 +497,7 @@ describe("native transcript prose", () => {
       expect(status.textContent).toContain(label);
     }
 
-    // Answered, the turn is its words under a closed "Worked" line, and the
+    // Answered, the turn is its last word under a closed "Worked" line, and the
     // steps are not drawn at all, not merely hidden.
     const answered = [
       { ...run, replyMessageId: answer.id, status: "completed" } satisfies RunEntry,
@@ -471,8 +509,8 @@ describe("native transcript prose", () => {
     expect(statusLine(container)).toBe(status);
     expect(status.textContent).toMatch(/^Worked/u);
     expect(status.getAttribute("aria-expanded")).toBe("false");
-    expect(container.querySelectorAll("p")).toHaveLength(2);
-    expect(container.querySelectorAll("p")[1]).toBe(message);
+    expect(container.querySelectorAll("p")).toHaveLength(1);
+    expect(container.querySelector("p")).toBe(message);
     expect(container.textContent).not.toContain("Ran a command");
 
     // Opened, every step is back where it happened, between the words.
@@ -488,7 +526,8 @@ describe("native transcript prose", () => {
     expect(statusLine(container).getAttribute("aria-expanded")).toBe("true");
     act(() => statusLine(container).click());
     expect(container.textContent).not.toContain("Ran a command");
-    expect(container.textContent).toContain(note.body);
+    expect(container.textContent).not.toContain(note.body);
+    expect(container.textContent).toContain(answer.body);
 
     // A turn that failed or stopped says so below its words; its steps stay one tap away.
     const ended: readonly [RunEntry, string][] = [
@@ -665,4 +704,10 @@ it("quiet Chat keeps automatic replies and lets silent human work open Activity"
     },
   ]);
   expect(task.container.textContent).toContain("Worked for 2m");
+});
+
+it("renders an addressed message as an assistant message in its own row", () => {
+  const view = setup();
+  view.render([{ ...note, id: "notice", addressedToUserId: "person", body: "Milestone passed." }]);
+  expect(view.container.textContent).toContain("Milestone passed.");
 });

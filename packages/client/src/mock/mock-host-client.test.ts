@@ -20,6 +20,25 @@ import { threadStopTarget } from "../host/thread-activity.js";
 import { defaultThreadPlacement, threadPlacementOptions } from "../host/thread-placement.js";
 import { MockHostClient } from "./mock-host-client.js";
 
+it("carries pending profile erasure through the mock catalog and clears completed jobs", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const deletion = {
+      profileId: createId("browserProfile"),
+      computerId: createId("runner"),
+      state: "pending-restart" as const,
+    };
+    client.setBrowserProfileDeletions([deletion]);
+    expect(client.getSnapshot().browserProfileDeletions).toEqual([deletion]);
+    const catalog = unwrap(await client.rpc["bootstrap.get"]({}));
+    expect(catalog.browser.profileDeletions).toEqual([deletion]);
+    client.setBrowserProfileDeletions([]);
+    expect(unwrap(await client.rpc["bootstrap.get"]({})).browser.profileDeletions).toEqual([]);
+  } finally {
+    client.dispose();
+  }
+});
+
 const fixedNow = new Date("2026-08-09T21:15:00.000Z");
 
 function createClient(): MockHostClient {

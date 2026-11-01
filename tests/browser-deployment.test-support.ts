@@ -93,28 +93,33 @@ afterEach(async (context) => {
 }, 90_000);
 
 export async function deployment(
-  browser: Browser | undefined,
+  browser: Pick<Browser, "runtimeId" | "bridgeToken" | "url" | "close"> | undefined,
   browserServiceEnrollmentToken?: string,
   options: {
     readonly scenario?: string;
     readonly maxConcurrentRuns?: number;
     readonly activityClock?: import("@opensteer/shared/clock").Clock;
+    readonly personal?: boolean;
   } = {},
 ): Promise<VerticalStack> {
-  const harnesses = new HarnessRegistry();
-  harnesses.registerDriver(
-    new CodexHarnessDriver({
-      launch: {
-        arguments: [
-          fakeCodex,
-          `--scenario=${options.scenario ?? "browser-agent"}`,
-          "--unique-threads",
-        ],
-        executable: process.execPath,
-      },
-    }),
-  );
+  const harnesses = () => {
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      new CodexHarnessDriver({
+        launch: {
+          arguments: [
+            fakeCodex,
+            `--scenario=${options.scenario ?? "browser-agent"}`,
+            "--unique-threads",
+          ],
+          executable: process.execPath,
+        },
+      }),
+    );
+    return registry;
+  };
   const stack = await startVerticalStack({
+    ...(options.personal ? { personal: {} } : {}),
     ...(browser ? { browser, beforeHostClose: () => browser.close() } : {}),
     ...(options.activityClock ? { browserActivityClock: options.activityClock } : {}),
     browserHarnessExecutable: browserHarness,

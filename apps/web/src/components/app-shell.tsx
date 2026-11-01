@@ -1,5 +1,6 @@
-import { useScreenPresentation } from "./workspace/screen-presentation.js";
-import { interact } from "./workspace/interaction.js";
+import { autoPlacePart } from "./workspace/composer-context.js";
+import { destinationPlaceKey } from "./workspace/navigation.js";
+import { useBrowserTabStrip } from "@opensteer/client/react";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useDictation } from "./dictation.js";
@@ -10,7 +11,7 @@ import {
   webLinkSelection,
   type WebLinkFailureActions,
 } from "../desktop/web-links.js";
-import { lastBrowsingChoice } from "./workspace/start-page.js";
+import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page.js";
 import { DownloadFeedback } from "./browser/browser-downloads.js";
 import { provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -45,6 +46,8 @@ import {
   unwrapRpcResult,
   type ExecutionChoice,
   type ExecutionSelection,
+  type PendingBrowserTabDestination,
+  type WorkspaceSurfaceDestination,
   type HostClient,
   type HostSnapshot,
   type LocalRunnerIdentity,
@@ -300,33 +303,76 @@ export function AppShell({
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
   );
+  const openWebLink = useCallback(
+    (address: string) => openWorkspaceWebLink(hostClient, nav, address, location.state),
+    [hostClient, nav, location.state],
+  );
+  const routerNavigate = useNavigate();
   const { controller: dictation } = useDictation();
-  const presentation = useScreenPresentation(hostClient, nav);
-  // A spoken "go back" or "show …" is the person's own choice, made through
-  // the same calls as a click, so it outdates any presentation still pending.
+  const voicePlaces = useBrowserTabStrip(hostClient).ordered;
   const voice = useVoiceRuntime(
     hostClient,
     (target) => {
-      if (target.kind === "back") nav.back();
-      else if (target.kind === "place") nav.showPlace(target.destination);
+      if (target.kind === "back") void routerNavigate(-1);
+      // Settings covers places, so a shown place opens over Chat instead.
+      else if (target.kind === "place")
+        if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
+        else nav.showPlace(target.destination);
       else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
     },
     dictation,
-    presentation,
+    async () => {
+      const selection = placeSelection(new URLSearchParams(location.search));
+      const key = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
+      const part = await autoPlacePart(
+        hostClient,
+        voicePlaces.find((place) => place.key === key) ?? null,
+      );
+      return part ? [part] : [];
+    },
+    () => {
+      // Pages such as Settings cover the conversation and any place behind them.
+      if (settingsMode) return { title: "Settings" };
+      const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+      if (!match && location.pathname !== "/")
+        return { title: location.pathname.split("/")[1]?.replace(/-/g, " ") ?? "Opensteer" };
+      const selection = placeSelection(new URLSearchParams(location.search));
+      return {
+        threadId: match ? decodeURIComponent(match[1]!) : (snapshot.homeThreadId ?? undefined),
+        ...(selection.kind === "place" ? { destination: selection.destination } : {}),
+      };
+    },
   );
+  useEffect(() => {
+    voice?.refreshContext();
+  }, [voice, location.key]);
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
-  const webLinkView = useRef({ key: location.key, revision: 0, changedAt: 0 });
+  const webLinkView = useRef({
+    key: location.key,
+    revision: 0,
+    changedAt: 0,
+    pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
+  });
   if (webLinkView.current.key !== location.key)
     webLinkView.current = {
       key: location.key,
       revision: webLinkView.current.revision + 1,
       changedAt: Date.now(),
+      pendingBrowserTab: new URLSearchParams(location.search).get("pendingBrowserTab"),
     };
   const [webLinkFailure, setWebLinkFailure] = useState<{
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
+  useEffect(() => {
+    hostClient.prepareBrowserProfile(
+      lastBrowsingChoice({
+        deploymentId: snapshot.deploymentId,
+        userId: snapshot.user?.id ?? null,
+      }),
+    );
+  }, [hostClient, snapshot.connection, snapshot.deploymentId, snapshot.user?.id]);
   const webLinkReady = desktopWebLinksReady(desktopDeployment?.kind === "personal", snapshot);
   useEffect(() => {
     if (
@@ -351,7 +397,16 @@ export function AppShell({
         identity: () => lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
       },
       () => {
-        const select = selection(webLinkNavigation.current.beginPlaceOperation());
+        let pendingKey: string | null = null;
+        const select = selection(
+          (destination: PendingBrowserTabDestination | WorkspaceSurfaceDestination) => {
+            if (destination.kind === "pending-browser") {
+              pendingKey = destination.idempotencyKey;
+              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
+            } else if (pendingKey)
+              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
+          },
+        );
         return (link, acknowledge) =>
           openDesktopWebLink(
             link,
@@ -479,8 +534,6 @@ export function AppShell({
             useApp:
               useComputerViewOnThisMac && viewedDeploymentId && localActivationReady
                 ? async (view, app) => {
-                    // Going to the real app is the person's choice; what they do there is out of sight.
-                    interact();
                     return useComputerViewOnThisMac(
                       DesktopUseComputerViewInputSchema.parse({
                         ...view,
@@ -545,11 +598,7 @@ export function AppShell({
     [openConversation],
   );
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
-  const openMobileNavigation = useCallback(() => {
-    // Opening the drawer is the person's own step, like opening any modal.
-    interact();
-    setMobileNavigationOpen(true);
-  }, []);
+  const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
   const openNewWorkspace = useCallback(() => {
     setNewWorkspaceError(null);
     setNewWorkspaceOpen(true);
@@ -991,6 +1040,7 @@ export function AppShell({
         localMachine={localMachine}
         nav={nav}
         openDrawer={openMobileNavigation}
+        openWebLink={openWebLink}
       >
         {webLinkFailure ? (
           <DesktopWebLinkFailureNotice

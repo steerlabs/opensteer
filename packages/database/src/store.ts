@@ -1,4 +1,10 @@
-import { screenPresentationInput } from "./screen-presentation.js";
+import * as browserProfileStorageStore from "./browser-profile-storage-store.js";
+import { BrowserHistoryStore } from "./browser-history-store.js";
+import {
+  publishPersonNotification,
+  type PersonNotificationInput,
+  type PersonNotificationResult,
+} from "./person-notification-store.js";
 import * as taskDone from "./task-done.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as runnerStore from "./runner-store.js";
@@ -207,6 +213,7 @@ export class OpensteerStore {
   readonly requests: RequestStore;
 
   readonly notificationState: NotificationStateStore;
+  readonly browserHistory: BrowserHistoryStore;
 
   constructor(
     database: Kysely<DatabaseSchema>,
@@ -217,6 +224,7 @@ export class OpensteerStore {
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.requests = new RequestStore(database);
     this.notificationState = new NotificationStateStore(database);
+    this.browserHistory = new BrowserHistoryStore(database);
   }
 
   get database(): Kysely<DatabaseSchema> {
@@ -697,8 +705,56 @@ export class OpensteerStore {
   async deleteBrowserProfile(input: {
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
-  }): Promise<{ readonly sessionIds: readonly BrowserSessionId[] }> {
+  }) {
     return browserSessionStore.deleteBrowserProfile(this.#database, input);
+  }
+
+  getBrowserProfileStorage(
+    input: Parameters<typeof browserProfileStorageStore.getBrowserProfileStorage>[1],
+  ) {
+    return browserProfileStorageStore.getBrowserProfileStorage(this.#database, input);
+  }
+
+  reserveBrowserProfileInitialization(
+    input: Parameters<typeof browserProfileStorageStore.reserveBrowserProfileInitialization>[1],
+  ) {
+    return browserProfileStorageStore.reserveBrowserProfileInitialization(this.#database, input);
+  }
+
+  readBrowserProfileInitialization(
+    input: Parameters<typeof browserProfileStorageStore.readBrowserProfileInitialization>[1],
+  ) {
+    return browserProfileStorageStore.readBrowserProfileInitialization(this.#database, input);
+  }
+
+  completeBrowserProfileInitialization(
+    input: Parameters<typeof browserProfileStorageStore.completeBrowserProfileInitialization>[1],
+  ) {
+    return browserProfileStorageStore.completeBrowserProfileInitialization(this.#database, input);
+  }
+
+  listBrowserProfileErasureJobs(
+    input: Parameters<typeof browserProfileStorageStore.listBrowserProfileErasureJobs>[1],
+  ) {
+    return browserProfileStorageStore.listBrowserProfileErasureJobs(this.#database, input);
+  }
+
+  listPendingBrowserProfileDeletions(
+    input: Parameters<typeof browserProfileStorageStore.listPendingBrowserProfileDeletions>[1],
+  ) {
+    return browserProfileStorageStore.listPendingBrowserProfileDeletions(this.#database, input);
+  }
+
+  acknowledgeBrowserProfileDeletion(
+    input: Parameters<typeof browserProfileStorageStore.acknowledgeBrowserProfileDeletion>[1],
+  ) {
+    return browserProfileStorageStore.acknowledgeBrowserProfileDeletion(this.#database, input);
+  }
+
+  reconcileBrowserProfileInventory(
+    input: Parameters<typeof browserProfileStorageStore.reconcileBrowserProfileInventory>[1],
+  ) {
+    return browserProfileStorageStore.reconcileBrowserProfileInventory(this.#database, input);
   }
 
   async readBrowserProfileRevision(
@@ -763,14 +819,6 @@ export class OpensteerStore {
 
   async countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number> {
     return browserSessionStore.countBrowserSessionAttachments(this.#database, sessionId);
-  }
-
-  async browserSurfaceBelongsToThread(input: {
-    readonly sessionId: import("@opensteer/core").BrowserSessionId;
-    readonly tabId: import("@opensteer/core").BrowserSurfaceId;
-    readonly threadId: ThreadId;
-  }): Promise<boolean> {
-    return browserSessionStore.browserSurfaceBelongsToThread(this.#database, input);
   }
 
   async getThreadBrowserUsage(input: {
@@ -1655,7 +1703,6 @@ export class OpensteerStore {
   }
 
   async loadSteerDispatchInput(commandId: CommandRow["id"]): Promise<{
-    readonly bindingGeneration: number;
     readonly message: Message;
     readonly run: Run;
     readonly runId: RunId;
@@ -1793,10 +1840,6 @@ export class OpensteerStore {
   }
 
   /** Tool authority: the live binding and its grant. */
-  screenPresentationInput(input: Parameters<typeof screenPresentationInput>[1]) {
-    return screenPresentationInput(this.#database, input, this.#executionNow);
-  }
-
   async assertActiveGrant(
     input: Parameters<OpensteerStore["assertActiveExecutionBinding"]>[0] & {
       readonly grantId?: GrantId | undefined;
@@ -2075,6 +2118,10 @@ export class OpensteerStore {
     return snapshotStore.taskPageForUser(this.#database, this.notificationState, input);
   }
 
+  publishPersonNotification(input: PersonNotificationInput): Promise<PersonNotificationResult> {
+    return publishPersonNotification(this.#database, input);
+  }
+
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return snapshotStore.threadMessagePageForOwner(this.#database, input);
   }
@@ -2084,6 +2131,7 @@ export class OpensteerStore {
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
+    readonly maxTurns?: number;
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   }): Promise<ThreadEventPage | null> {

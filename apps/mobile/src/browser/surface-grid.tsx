@@ -11,9 +11,9 @@ import {
 import { useSafeAreaFrame } from "react-native-safe-area-context";
 import { AppMark } from "../computers/app-mark.js";
 import { MacAppPreview } from "../computers/mac-app-view.js";
-import { color, radius, space } from "../theme.js";
+import { color, material, radius, space } from "../theme.js";
 import { useContentInsets } from "../ui/pane.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { agentWorkingLabel } from "./acting-dot.js";
 import { BrowserStream } from "./browser-stream.js";
@@ -55,8 +55,12 @@ export function SurfaceGrid(props: {
   readonly loading: boolean;
   readonly onOpen: (tile: TabTile) => void;
   readonly tiles: readonly TabTile[];
-  /** What an empty grid says it will hold. */
-  readonly emptyDetail: string;
+  /** What an empty grid says: why it is empty, what it will hold, and any way out. */
+  readonly empty: {
+    readonly title: string;
+    readonly detail: string;
+    readonly action?: { readonly label: string; readonly onPress: () => void };
+  };
 }): ReactNode {
   // The pane's width, not the window's: beside a docked sidebar the grid has
   // only what it is drawn in.
@@ -88,12 +92,21 @@ export function SurfaceGrid(props: {
       ListEmptyComponent={
         <View style={styles.empty}>
           <AppText role="bodyMedium" tone={props.loading ? "muted" : "default"}>
-            {props.loading ? "Finding tabs…" : "No tabs yet"}
+            {props.loading ? "Finding tabs…" : props.empty.title}
           </AppText>
           {props.loading ? null : (
             <AppText role="secondary" style={styles.centred} tone="muted">
-              {props.emptyDetail}
+              {props.empty.detail}
             </AppText>
+          )}
+          {props.loading || props.empty.action === undefined ? null : (
+            <View style={styles.emptyAction}>
+              <SecondaryButton
+                compact
+                label={props.empty.action.label}
+                onPress={props.empty.action.onPress}
+              />
+            </View>
           )}
         </View>
       }
@@ -236,7 +249,7 @@ const Tile = memo(function Tile(props: {
                   styles.profile,
                   tile.identity.kind === "guest"
                     ? styles.guest
-                    : { backgroundColor: tile.identity.tint },
+                    : [material.mark, { backgroundColor: tile.identity.tint }],
                 ]}
               >
                 {tile.identity.kind === "profile" ? (
@@ -267,6 +280,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[24],
     paddingTop: space[64],
   },
+  emptyAction: { paddingTop: space[8] },
   glow: {
     backgroundColor: color.surfaceCode,
     borderRadius: radius.md,

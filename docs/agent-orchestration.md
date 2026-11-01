@@ -157,8 +157,7 @@ ordinals. See [`run-attempts.ts`](../packages/database/src/run-attempts.ts) and
 ## Native subagents
 
 Native subagents are nodes of the current attempt with its Run's authority,
-not independent Assignments. The shared external MCP route authenticates the
-Run rather than the native node and cannot enforce root-only tool access.
+not independent Assignments. Unknown nodes cannot issue tool calls or Requests.
 Their words are results, not the Thread's reply. A resumed child is a new node
 with the same native session reference. Nodes cannot outlive their attempt:
 restart, Stop or termination interrupts them. See
@@ -267,7 +266,10 @@ reconnect; unconfirmed steers are not. See
 
 Role controls instructions and presentation, never access. Membership,
 capability profile, execution placement and tool admission remain independent.
-A completed Run's last substantive reply is the single result used by
+An addressed message from person_notify alerts the Run's requester in the same
+Thread without ending work; reports remain passive context for another agent.
+Addressed messages are excluded from reply selection. A completed Run's last
+substantive reply is the single result used by
 conversations, channels and Assignments. Stopped/failed Runs have no completed
 reply; interrupted answer/reasoning text already shown is retained before the
 terminal event, but tool output cannot be invented as completed. See
@@ -358,11 +360,9 @@ parts. Page addresses never enter notification or channel summaries.
 Browser presence reaches only authorized viewers and exposes site/title, never
 path/query. Mac presence reaches only its owner. Patches cannot be overwritten
 by older bootstrap reads. Live acting ends with the Run, even if a late command
-answers. Agent activity alone never navigates the person's selected place. An
-explicit voice input can offer Main Chat one presentation of existing resources,
-subject to the originating client's current interaction and exact source checks
-([Voice](voice.md)). A place ending may select a successor, but being offline or
-awaiting permission does not mean ended. Old links stay exact and show ended state. Mac pictures name
+answers. Agent activity never navigates the person's selected place; a place
+ending may select a successor, but being offline or awaiting permission does
+not mean ended. Old links stay exact and show ended state. Mac pictures name
 both session and app; capture cannot follow a later agent target. Previews do
 not resize pages, and switching views never redirects the agent.
 See [Browser sessions](browser-sessions.md) and [Computer use](computer-use.md).

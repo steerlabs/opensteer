@@ -4,6 +4,7 @@ import {
   BrowserSurfaceIdSchema,
   browserWorkspaceTabUrlMaxLength,
   type BrowserDialog,
+  type BrowserNavigationCommitted,
   type BrowserSurface,
   type BrowserSurfaceId,
   type BrowserWorkspaceTabDescriptor,
@@ -22,6 +23,7 @@ import { PageTitleReader } from "./page-title.js";
 import { PageScriptTargets, type ScriptTarget } from "./script-targets.js";
 
 export type SurfaceLedgerEvent =
+  | BrowserNavigationCommitted
   | {
       change: "closed" | "created" | "updated";
       closure?: "page" | "teardown";
@@ -75,7 +77,26 @@ export interface PageSize {
   readonly width: number;
 }
 
+interface NavigationBinding {
+  url: string;
+  documentId: string;
+  sequence: number;
+  sameDocument: boolean;
+  /** Undefined while awaiting the reply; null for a same-document navigation. */
+  loaderId: string | null | undefined;
+}
+
+interface NavigationCommit {
+  documentId: string;
+  url: string;
+  sequence: number;
+  loaderId: string | null;
+}
+
 interface SurfaceRecord {
+  commitSequence: number;
+  pendingNavigations: Map<string, NavigationBinding>;
+  recentCommits: Map<string, NavigationCommit>;
   navigation: { canGoBack: boolean; canGoForward: boolean } | null;
   navigationRevision: number;
   committedUrl: string;
@@ -323,6 +344,99 @@ export class SurfaceLedger {
         order: record.order,
         openerId: record.openerId,
       }));
+  }
+
+  /** Correlates only this Page.navigate with the document Chromium says it produced. */
+  async navigate(surfaceId: BrowserSurfaceId, url: string, navigationId?: string) {
+    const record = this.records.get(surfaceId);
+    if (!record) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    const pending: NavigationBinding | undefined = navigationId
+      ? {
+          url,
+          documentId: record.documentId,
+          sequence: record.commitSequence,
+          sameDocument: url.split("#", 1)[0] === record.committedUrl.split("#", 1)[0],
+          loaderId: undefined,
+        }
+      : undefined;
+    if (pending && navigationId) {
+      record.pendingNavigations.set(navigationId, pending);
+      if (record.pendingNavigations.size > 32)
+        record.pendingNavigations.delete(record.pendingNavigations.keys().next().value!);
+    }
+    try {
+      const result = z
+        .object({
+          frameId: z.string().optional(),
+          loaderId: z.string().optional(),
+          errorText: z.string().optional(),
+          isDownload: z.boolean().optional(),
+        })
+        .parse(await record.cdp.send("Page.navigate", { url }));
+      if (!pending || !navigationId || record.pendingNavigations.get(navigationId) !== pending)
+        return result;
+      if (
+        this.records.get(surfaceId) !== record ||
+        result.errorText ||
+        result.isDownload ||
+        (!result.loaderId && (!result.frameId || !pending.sameDocument))
+      ) {
+        record.pendingNavigations.delete(navigationId);
+        return result;
+      }
+      pending.loaderId = result.loaderId || null;
+      this.matchNavigation(record, navigationId, pending);
+      return result;
+    } catch (error) {
+      if (navigationId) record.pendingNavigations.delete(navigationId);
+      throw error;
+    }
+  }
+
+  private matchNavigation(
+    record: SurfaceRecord,
+    navigationId: string,
+    pending: NavigationBinding,
+  ): void {
+    if (pending.loaderId === undefined) return;
+    const matched =
+      pending.loaderId === null
+        ? [...record.recentCommits.entries()].find(
+            ([, commit]) =>
+              commit.loaderId === null &&
+              commit.sequence > pending.sequence &&
+              commit.documentId === pending.documentId &&
+              commit.url === pending.url,
+          )
+        : record.recentCommits.has(pending.loaderId)
+          ? ([pending.loaderId, record.recentCommits.get(pending.loaderId)!] as const)
+          : undefined;
+    if (!matched) return;
+    const [key, commit] = matched;
+    if (commit.sequence <= pending.sequence) return;
+    record.recentCommits.delete(key);
+    record.pendingNavigations.delete(navigationId);
+    this.emit({
+      type: "navigation.committed",
+      navigationId,
+      surfaceId: record.id,
+      documentId: commit.documentId,
+      url: commit.url,
+    });
+  }
+
+  private navigationCommitted(record: SurfaceRecord, loaderId: string | null): void {
+    const sequence = ++record.commitSequence;
+    record.recentCommits.set(loaderId ?? `same-document:${sequence}`, {
+      documentId: record.documentId,
+      url: record.committedUrl,
+      sequence,
+      loaderId,
+    });
+    if (record.recentCommits.size > 32)
+      record.recentCommits.delete(record.recentCommits.keys().next().value!);
+    for (const [navigationId, pending] of record.pendingNavigations)
+      this.matchNavigation(record, navigationId, pending);
   }
 
   snapshot(): BrowserSurface[] {
@@ -855,6 +969,9 @@ export class SurfaceLedger {
           makeActive ||
           (answersPerson && Date.now() < this.legacyPersonUntil && openerId === this.activeId);
         const record: SurfaceRecord = {
+          commitSequence: 0,
+          pendingNavigations: new Map(),
+          recentCommits: new Map(),
           navigation: null,
           navigationRevision: 0,
           loaderId: null,
@@ -898,7 +1015,12 @@ export class SurfaceLedger {
             record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
             record.geometryRevision++;
             if (record.announced)
-              this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
+              this.emit({
+                change: "updated",
+                surface: this.toSurface(record),
+                type: "changed",
+              });
+            if (record.loaderId) this.navigationCommitted(record, record.loaderId);
             record.titleReader?.sample();
           },
           onFrameStartedLoading: (parameters) => this.loadingChanged(record, parameters, true),
@@ -966,7 +1088,13 @@ export class SurfaceLedger {
             record.committedUrl = parameters.url;
             record.url = normalizeUrl(record.committedUrl);
             if (record.announced)
-              this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
+              this.emit({
+                type: "changed",
+                change: "updated",
+                surface: this.toSurface(record),
+              });
+            if ("navigationType" in parameters && parameters.navigationType === "fragment")
+              this.navigationCommitted(record, null);
             record.titleReader?.sample();
           },
           userActivitySequence: 0,
@@ -1340,6 +1468,8 @@ export class SurfaceLedger {
   }
 
   private async disposeRecord(record: SurfaceRecord): Promise<void> {
+    record.pendingNavigations.clear();
+    record.recentCommits.clear();
     record.titleReader?.close();
     record.stopObservingHumanInput?.();
     record.unbindGeometry?.();

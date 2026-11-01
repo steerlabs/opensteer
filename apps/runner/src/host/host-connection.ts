@@ -126,7 +126,7 @@ type PostAuthenticationHostMessage = Exclude<
  */
 interface RunnerModuleHandler {
   readonly maxPayloadBytes: number;
-  attach(stream: RunnerModuleStream): void;
+  attach(stream: RunnerModuleStream): Promise<void> | void;
   detach(): Promise<void> | void;
   handleFrame(frame: Buffer, isBinary: boolean): Promise<void>;
 }
@@ -650,12 +650,15 @@ export class ReconnectingHostConnection {
   async #descriptor(): Promise<RunnerDescriptor> {
     const agents = this.#agents;
     await this.#computerUse?.permissions().catch(() => undefined);
+    const browserCapabilities = agents?.browserBridge
+      ? await new LocalBrowserRuntimeBridge(agents.browserBridge).capabilities()
+      : {};
     return {
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(),
         ...(agents?.runtime.harnessDrivers().some((driver) => driver.driverKind === "codex")
-          ? ["voice-v1" as const]
+          ? ["voice-v1" as const, "voice-agent-v1" as const]
           : []),
         ...(agents?.earlierBootsContained ? ["earlier-boots-contained-v1" as const] : []),
       ],
@@ -666,6 +669,7 @@ export class ReconnectingHostConnection {
           ? {
               browser: {
                 runtimeId: agents.browserBridge.runtimeId,
+                ...browserCapabilities,
                 profileSnapshotVersion: browserProfileSnapshotVersion,
                 // The loopback browser runtime ships in the same release as
                 // this Runner, so it parses every frame this Runner relays.
@@ -676,6 +680,7 @@ export class ReconnectingHostConnection {
                 sharedControl: 1,
                 targetControl: 1,
                 navigationVersion: 1,
+                navigationAttributionVersion: 1,
                 workspaceTabRestoreVersion: 1,
                 captureRegion: 1,
                 rasterDemand: 1,
@@ -798,7 +803,7 @@ export class ReconnectingHostConnection {
       ticket,
     });
     try {
-      handler.attach(opened.stream);
+      await handler.attach(opened.stream);
       await sendWireMessage(socket, {
         ...this.#fence.fence,
         modules: [moduleReadiness(module, "ready")],
@@ -1924,12 +1929,12 @@ function runnerCapabilities(): RunnerCapability[] {
     "network-egress",
     "native-session-continuation-v1",
     "requester-time-zone-v1",
-    "screen-show-v1",
     "steer-answer-v1",
     "thread-state-v1",
     "thread-title-v1",
     "thread-icon-v1",
     "task-done-v1",
+    "person-notify-v1",
   ];
 }
 

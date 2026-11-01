@@ -1,3 +1,6 @@
+import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js";
+import { notificationPreviewNative } from "../modules/notification-preview/index.js";
+import { NotificationPreviews } from "./notifications/notification-preview.js";
 import { createExpoSavedViews } from "./platform/expo-saved-views.js";
 import { VoiceOverlay } from "./voice/controls.js";
 import { VoiceProvider } from "./voice/context.js";
@@ -165,7 +168,55 @@ function mobileClient(): MobileRoot {
     }),
   });
   const lifecycle = createMobileLifecycle({ appState: AppState, network: Network });
-  const client = new MobileClient({
+  const platform = Platform.OS === "android" ? "android" : "ios";
+  const port = configuration.mock
+    ? createMockNotificationPort({ permissions: createExpoPushPermissions(Notifications) })
+    : createExpoNotificationPort({
+        application: Application,
+        // Stated by `app.config.ts` from the build's
+        // `OPENSTEER_MOBILE_GOOGLE_SERVICES_FILE`; a manifest without the fact
+        // is a build made before it existed, and an Android token it cannot
+        // mint is the honest reading.
+        androidPushConfigured: Constants.expoConfig?.extra?.["androidPushConfigured"] === true,
+        brandColor: color.ember,
+        channelName: "Opensteer",
+        notifications: Notifications,
+        platform,
+        registry: new AccountNotificationDevicesClient({
+          accountOrigin: configuration.accountOrigin,
+          authorization: {
+            accountAuthorizationLease: () => client.oauth.accountAuthorizationLease(),
+          },
+          fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
+        }),
+        signedInSubject: async () => (await client.oauth.state()).account.identity?.subject ?? null,
+      });
+  const notifications = new MobileNotifications({
+    port,
+    registration: new PushRegistration({
+      // A build with no Account service has nobody to register with, and mock
+      // mode's Account is the port's own: both are settled answers, not
+      // failures, and the Notifications settings says which.
+      accountConfigured: configuration.mock || configuration.accountOrigin !== null,
+      filePath: `${root}${storeName}/notifications.json`,
+      permissions: port.permissions,
+      platform,
+      privateFiles,
+      randomBytes: (size) => getRandomValues(new Uint8Array(size)),
+      registry: port.registry,
+      signedInSubject: port.signedInSubject,
+      tokens: port.tokens,
+    }),
+  });
+  const previews = configuration.mock
+    ? null
+    : new NotificationPreviews(
+        notificationPreviewNative,
+        notifications.registration,
+        port.signedInSubject,
+      );
+  const client: MobileClient = new MobileClient({
+    notificationPreviews: previews,
     lifecycle,
     ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
     accountOrigin: configuration.accountOrigin,
@@ -183,6 +234,9 @@ function mobileClient(): MobileRoot {
           },
         })
       : createNetworkHostPort({
+          browserPreferencesStorage: createBrowsingChoiceStorage(
+            new File(`${root}${storeName}/browsing-choices.json`),
+          ),
           fetch: mobileHostFetch,
           lifecycle,
           now: () => new Date(),
@@ -206,44 +260,12 @@ function mobileClient(): MobileRoot {
     selectionFilePath: `${root}${storeName}/selection.json`,
     signedOutFilePath: `${root}${storeName}/signed-out.json`,
   });
-  const platform = Platform.OS === "android" ? "android" : "ios";
-  const port = configuration.mock
-    ? createMockNotificationPort({ permissions: createExpoPushPermissions(Notifications) })
-    : createExpoNotificationPort({
-        application: Application,
-        // Stated by `app.config.ts` from the build's
-        // `OPENSTEER_MOBILE_GOOGLE_SERVICES_FILE`; a manifest without the fact
-        // is a build made before it existed, and an Android token it cannot
-        // mint is the honest reading.
-        androidPushConfigured: Constants.expoConfig?.extra?.["androidPushConfigured"] === true,
-        brandColor: color.ember,
-        channelName: "Opensteer",
-        notifications: Notifications,
-        platform,
-        registry: new AccountNotificationDevicesClient({
-          accountOrigin: configuration.accountOrigin,
-          authorization: client.oauth,
-          fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
-        }),
-        signedInSubject: async () => (await client.oauth.state()).account.identity?.subject ?? null,
-      });
-  const notifications = new MobileNotifications({
-    port,
-    registration: new PushRegistration({
-      // A build with no Account service has nobody to register with, and mock
-      // mode's Account is the port's own: both are settled answers, not
-      // failures, and the Notifications settings says which.
-      accountConfigured: configuration.mock || configuration.accountOrigin !== null,
-      filePath: `${root}${storeName}/notifications.json`,
-      permissions: port.permissions,
-      platform,
-      privateFiles,
-      randomBytes: (size) => getRandomValues(new Uint8Array(size)),
-      registry: port.registry,
-      signedInSubject: port.signedInSubject,
-      tokens: port.tokens,
-    }),
-  });
+  if (previews) {
+    void previews.start().catch(() => {});
+    notifications.registration.subscribe(() => {
+      void previews.reconcile().catch(() => {});
+    });
+  }
   singleton = { broker, client, iphone, notifications };
   return singleton;
 }

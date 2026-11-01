@@ -35,16 +35,19 @@
   container: browser-view / inline-size;
 }
 
-.browser-view > .browser-stage {
+/* The New tab stands where its page will, so the size it opens a page at is
+   the size that page is shown at, focused or not. */
+.browser-view > .browser-stage,
+.browser-view > .start-page {
   flex: 1;
 }
 
 /* Start, ended and scope notices: the message alone. */
 
-/* Start below the future browser chrome, before a page exists to measure. */
-
-/* A page's or app's own actions, behind one ⋯. */
-.surface-menu.icon-btn {
+/* A page's or app's own actions, behind one ⋯, and the way to put the
+   conversation beside it away, last in the same row. */
+.surface-menu.icon-btn,
+.chat-toggle.icon-btn {
   flex: none;
   width: var(--control-height);
   min-width: var(--control-height);
@@ -55,7 +58,8 @@
   color: var(--muted);
 }
 
-.surface-menu.icon-btn > svg {
+.surface-menu.icon-btn > svg,
+.chat-toggle.icon-btn > svg {
   width: 16px;
   height: 16px;
   color: inherit;
@@ -176,7 +180,8 @@
     height: var(--touch-target);
   }
 
-  .surface-menu {
+  .surface-menu,
+  .chat-toggle {
     min-height: var(--touch-target);
   }
 }
@@ -249,6 +254,8 @@
 }
 
 /* The omnibox: a rounded field, the site's icon at its start. */
+/* Its rim is the plate's, not a bare field's: the address it always shows is
+   what makes it findable. */
 .browser-address {
   display: flex;
   align-items: center;
@@ -256,7 +263,7 @@
   height: var(--control-height);
   padding: 0 var(--space-4) 0 var(--space-12);
   overflow: hidden;
-  border: 1px solid var(--rim-control);
+  border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
   color: var(--text-soft);
   background: var(--sheen) var(--fill-plate);
@@ -456,15 +463,15 @@
   overflow: hidden;
   border: 1px solid var(--rim-plate);
   border-radius: 0 var(--radius-sm) 0 0;
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   color: var(--text-soft);
   font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 /* The profile sheets ride the shared Dialog. A page's own dialog (alert,
@@ -671,10 +678,10 @@
   width: 18px;
   height: 18px;
   border-radius: 5px;
-  color: hsl(var(--site-hue, 30) 28% 86%);
-  background: hsl(var(--site-hue, 30) 22% 26%);
-  font-size: var(--text-3xs);
-  font-weight: var(--weight-heavy);
+  position: relative;
+  color: var(--muted);
+  background: var(--sheen-mark) var(--surface-raised);
+  box-shadow: var(--edge-mark);
   line-height: 1;
 }
 
@@ -683,10 +690,35 @@
   height: 11px;
 }
 
-.site-mark--icon {
-  border-radius: 3px;
+/* A decoded icon stands on its own, without the neutral tile beneath it. */
+.site-mark:has(.site-mark__image.is-ready) {
   background: none;
+  box-shadow: none;
+}
+
+.site-mark:has(.site-mark__image.is-ready) > svg {
+  opacity: 0;
+}
+
+.site-mark__image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
   object-fit: contain;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.site-mark__image.is-ready {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-mark__image {
+    transition: none;
+  }
 }
 
 /* An app without its own icon reads like a site's mark beside it, not a framed tile. */
@@ -737,11 +769,11 @@
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-full);
   color: var(--text);
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
   font-size: var(--text-md);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .browser-keyboard-offer svg {
@@ -1203,10 +1235,10 @@ button.surface-chip:hover {
   padding: 6px;
   border: 1px solid var(--rim-plate);
   border-radius: 12px;
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .browser-downloads {

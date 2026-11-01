@@ -206,12 +206,12 @@ async function run(): Promise<void> {
   const address = server.address();
   assert(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
-  const request: BrowserLaunchRequest = {
+  const request = {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000901",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000901"),
-    snapshot: { cookies: [], origins: [] },
-  };
+    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+  } satisfies BrowserLaunchRequest;
   const launcher = new ElectronBrowserLauncher({
     downloads,
     pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),

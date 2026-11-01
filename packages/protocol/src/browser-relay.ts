@@ -5,6 +5,10 @@ import {
   BrowserBinaryFrameHeaderSchema,
   BrowserClientMessageSchema,
   BrowserServerMessageSchema,
+  InitialPageReadySchema,
+  BrowserEngineSchema,
+  HeldLocalProfileSchema,
+  LocalProfileBindingSchema,
 } from "./browser.js";
 import { ProtocolErrorSchema } from "./common.js";
 import {
@@ -67,7 +71,51 @@ const relayRequestBase = {
   requestId: RunnerAuxiliaryRequestIdSchema,
 } as const;
 
-export const HostToBrowserRelayMessageSchema = z.discriminatedUnion("type", [
+export interface BrowserRelayNegotiation {
+  readonly localProfiles?: 1;
+  readonly profilePrepare?: 1;
+  readonly initialNavigationVersion?: 1;
+}
+
+export const LocalProfileInventorySchema = z.strictObject({
+  ...relayEventBase,
+  module: z.literal("browser"),
+  type: z.literal("browser.profile.inventory"),
+  storageInstanceId: z.uuid(),
+  engine: BrowserEngineSchema,
+  profiles: z.array(HeldLocalProfileSchema).max(128),
+  complete: z.boolean(),
+});
+export type LocalProfileInventory = z.infer<typeof LocalProfileInventorySchema>;
+
+export const DeleteLocalProfileSchema = z.strictObject({
+  ...relayRequestBase,
+  module: z.literal("browser"),
+  capability: BrowserCapabilityReferenceSchema,
+  type: z.literal("browser.profile.delete"),
+  binding: LocalProfileBindingSchema,
+  deletionId: z.uuid(),
+});
+export type DeleteLocalProfile = z.infer<typeof DeleteLocalProfileSchema>;
+
+export const LocalProfileDeletionResultSchema = DeleteLocalProfileSchema.extend({
+  type: z.literal("browser.profile.delete.result"),
+  state: z.enum(["pending-restart", "deleted"]),
+});
+export type LocalProfileDeletionResult = z.infer<typeof LocalProfileDeletionResultSchema>;
+
+const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
+  DeleteLocalProfileSchema,
+  z.strictObject({
+    ...relayRequestBase,
+    type: z.literal("browser.profile.prepare"),
+    capability: BrowserCapabilityReferenceSchema,
+    channelId: BrowserChannelIdSchema,
+    preparationTicket: z
+      .string()
+      .max(16_384)
+      .regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/),
+  }),
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
   RunnerAuxiliaryRejectedSchema,
@@ -107,6 +155,16 @@ export const HostToBrowserRelayMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.client-message"),
   }),
 ]);
+export function createHostToBrowserRelayMessageSchema(negotiation: BrowserRelayNegotiation = {}) {
+  return HostToBrowserRelayWireSchema.refine(
+    (message) =>
+      message.type === "browser.profile.prepare"
+        ? negotiation.localProfiles === 1 && negotiation.profilePrepare === 1
+        : message.type !== "browser.profile.delete" || negotiation.localProfiles === 1,
+    "Local profile maintenance requires browser auxiliary negotiation.",
+  );
+}
+export const HostToBrowserRelayMessageSchema = createHostToBrowserRelayMessageSchema();
 export type HostToBrowserRelayMessage = z.infer<typeof HostToBrowserRelayMessageSchema>;
 
 /** Everything a routing call may send, which excludes the handshake itself. */
@@ -115,7 +173,16 @@ export type RoutedHostToBrowserRelayMessage = Extract<
   { readonly auxiliaryStreamId: unknown }
 >;
 
-export const BrowserRelayToHostMessageSchema = z.discriminatedUnion("type", [
+const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
+  LocalProfileInventorySchema,
+  LocalProfileDeletionResultSchema,
+  z.strictObject({
+    ...relayRequestBase,
+    type: z.literal("browser.profile.prepared"),
+    retained: z.boolean(),
+    capability: BrowserCapabilityReferenceSchema,
+    channelId: BrowserChannelIdSchema,
+  }),
   RunnerAuxiliaryHeartbeatSchema,
   z.strictObject({
     ...relayRequestBase,
@@ -137,6 +204,7 @@ export const BrowserRelayToHostMessageSchema = z.discriminatedUnion("type", [
     capability: BrowserCapabilityReferenceSchema,
     channelId: BrowserChannelIdSchema,
     type: z.literal("browser.attached"),
+    initialPage: InitialPageReadySchema.optional(),
   }),
   z.strictObject({
     ...relayEventBase,
@@ -168,6 +236,37 @@ export const BrowserRelayToHostMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.command-error"),
   }),
 ]);
+export function createBrowserRelayToHostMessageSchema(negotiation: BrowserRelayNegotiation = {}) {
+  return BrowserRelayToHostWireSchema.superRefine((message, context) => {
+    if (
+      message.type === "browser.profile.prepared" &&
+      (negotiation.localProfiles !== 1 || negotiation.profilePrepare !== 1)
+    )
+      context.addIssue({ code: "custom", message: "Profile preparation was not negotiated." });
+    if (
+      (message.type === "browser.profile.inventory" ||
+        message.type === "browser.profile.delete.result") &&
+      negotiation.localProfiles !== 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Local profile maintenance requires browser auxiliary negotiation.",
+      });
+    }
+    if (
+      message.type === "browser.attached" &&
+      message.initialPage !== undefined &&
+      negotiation.initialNavigationVersion !== 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["initialPage"],
+        message: "Initial page readiness requires browser auxiliary negotiation.",
+      });
+    }
+  });
+}
+export const BrowserRelayToHostMessageSchema = createBrowserRelayToHostMessageSchema();
 export type BrowserRelayToHostMessage = z.infer<typeof BrowserRelayToHostMessageSchema>;
 
 export const BrowserRelayFrameHeaderSchema = z.strictObject({

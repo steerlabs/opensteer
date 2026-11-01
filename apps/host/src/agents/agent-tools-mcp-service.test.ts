@@ -11,7 +11,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentControlService, type AgentControlTokenService } from "./agent-control-service.js";
-import type { AgentControlRunScope } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import type {
   TriggerControlService,
@@ -374,6 +373,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
+      "person_notify",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -583,6 +583,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
+      "person_notify",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -713,6 +714,7 @@ describe("AgentToolsMcpService", () => {
         { name: "thread_list" },
         { name: "thread_delegate" },
         { name: "assignment_cancel" },
+        { name: "person_notify" },
         { name: "thread_message" },
         { name: "thread_write" },
         { name: "browser_profile_list" },
@@ -853,6 +855,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
+      "person_notify",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -1001,6 +1004,7 @@ function runnerRelease(input: {
 }): readonly string[] {
   return [
     "task-done-v1",
+    ...(input.previousRelease ? [] : ["person-notify-v1"]),
     ...(input.legacyEnvironment ? [] : ["environment-list-v1"]),
     ...(input.previousRelease ? [] : ["browser-profile-create-v1"]),
   ];
@@ -1012,8 +1016,6 @@ async function startService(input: {
   readonly legacyEnvironment?: boolean;
   readonly previousRelease?: boolean;
   readonly runnerCapabilities?: () => Promise<readonly string[]>;
-  readonly mainHome?: boolean;
-  readonly allowMainChatRunScreenShow?: boolean;
   readonly triggerControl?: TriggerControlService;
   readonly triggerToken?: string;
 }): Promise<{ readonly service: AgentToolsMcpService; readonly url: URL }> {
@@ -1042,7 +1044,6 @@ async function startService(input: {
     toolContractVersion: 1,
   } as Awaited<ReturnType<TriggerControlTokenService["authenticate"]>>;
   service = new AgentToolsMcpService({
-    allowMainChatRunScreenShow: input.allowMainChatRunScreenShow ?? false,
     agentControl: input.agentControl,
     runnerCapabilities:
       input.runnerCapabilities ??
@@ -1053,20 +1054,8 @@ async function startService(input: {
         })),
     publicUrl: url,
     store: {
-      getThreadForOwner: async (threadId) =>
-        ({
-          id: threadId,
-          role: "conversation",
-          capabilityProfileId: "main",
-        }) as import("@opensteer/core").Thread,
-      findMainWorkspaceForOwner: async (ownerId) => {
-        const run = [...claimsByToken.values()].find(
-          (value) => (value as AgentControlRunScope).requestedBy === ownerId,
-        ) as AgentControlRunScope | undefined;
-        return input.mainHome && run
-          ? ({ homeThreadId: run.threadId } as import("@opensteer/core").Workspace)
-          : undefined;
-      },
+      getThreadForOwner: async () =>
+        ({ capabilityProfileId: "main" }) as import("@opensteer/core").Thread,
     },
     tokens: {
       authenticate: async (token: string) => {
@@ -1289,8 +1278,8 @@ it.each([
       [...previousTools].sort(),
     );
     const current = toolsForCapabilityProfile(profile)
-      .filter(({ name }) => name !== "screen_show")
-      .map(({ name }) => name);
+      .map(({ name }) => name)
+      .filter((name) => name !== "person_notify");
     expect(served.filter((name) => current.some((tool) => tool === name)).sort()).toEqual(
       [...current].sort(),
     );
@@ -1470,7 +1459,10 @@ it.each([false, true])(
                   ]
           : toolsForCapabilityProfile(profile)
               .map(({ name }) => name)
-              .filter((name) => name !== "environment_list" && name !== "screen_show");
+              .filter(
+                (name) =>
+                  name !== "environment_list" && (name !== "person_notify" || !legacyBrowser),
+              );
         expect(
           legacy
             .filter(({ name }) => expectedLegacyNames.includes(name))
@@ -1513,8 +1505,8 @@ it.each([false, true])(
           legacyBrowser && profile !== "trigger",
         );
         const currentNames = toolsForCapabilityProfile(profile)
-          .filter(({ name }) => name !== "screen_show")
-          .map(({ name }) => name);
+          .map(({ name }) => name)
+          .filter((name) => name !== "person_notify" || !legacyBrowser);
         // These are the enabled names the release-local Codex inventory check compares.
         expect(
           current
@@ -1562,63 +1554,43 @@ it.each([false, true])(
   },
 );
 
-it("negotiates screen presentation once per MCP session and only for Main's home Run", async () => {
-  for (const [mainHome, supported, allowMainChatRunScreenShow] of [
-    [false, true, true],
-    [true, false, true],
-    [true, true, true],
-    [true, true, false],
-  ] as const) {
-    const capabilities = vi.fn(async () => [
-      ...runnerRelease({}),
-      ...(supported ? ["screen-show-v1"] : []),
-    ]);
-    const handle = vi.fn(async (_token, request) => ({
-      type: "screen.show.result",
-      requestId: request.requestId,
-      receipt: { outcome: "superseded" },
-    }));
-    const fixture = await startService({
-      agentControl: { handle } as unknown as AgentControlService,
-      profiles: { token: "main" },
-      mainHome,
-      allowMainChatRunScreenShow,
-      runnerCapabilities: capabilities,
+it("pins person_notify to the calling Runner capability and returns the exact message receipt", async () => {
+  let supported = true;
+  const messageId = createId("message");
+  const handle = vi.fn(async (_token: string, value: unknown) => {
+    const request = AgentControlRequestSchema.parse(value);
+    return { type: "person.notify.result" as const, requestId: request.requestId, messageId };
+  });
+  const fixture = await startService({
+    agentControl: { handle } as unknown as AgentControlService,
+    profiles: { token: "delegated" },
+    runnerCapabilities: async () => (supported ? ["person-notify-v1"] : []),
+  });
+  const client = await connectClient(fixture.url, "token");
+  try {
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_notify");
+    const result = await client.callTool({
+      name: "person_notify",
+      arguments: { message: "Ready for review." },
     });
-    const client = await connectClient(fixture.url, "token");
-    try {
-      const listed = await client.listTools();
-      expect(listed.tools.some(({ name }) => name === "screen_show")).toBe(
-        mainHome && supported && allowMainChatRunScreenShow,
-      );
-      await client.listTools();
-      expect(capabilities).toHaveBeenCalledOnce();
-      if (mainHome && supported && allowMainChatRunScreenShow) {
-        const messageId = createId("message");
-        const target = { conversationId: createId("thread") };
-        const result = await client.callTool({
-          name: "screen_show",
-          arguments: { messageId, target },
-        });
-        expect(result.structuredContent).toEqual({ outcome: "superseded" });
-        expect(handle).toHaveBeenCalledWith(
-          "token",
-          expect.objectContaining({ type: "screen.show", messageId, target }),
-        );
-      } else {
-        const refused = await client.callTool({
-          name: "screen_show",
-          arguments: {
-            messageId: createId("message"),
-            target: { conversationId: createId("thread") },
-          },
-        });
-        expect(refused.isError).toBe(true);
-        expect(handle).not.toHaveBeenCalled();
-      }
-    } finally {
-      await client.close();
-      await fixture.service.close();
-    }
+    expect(result.structuredContent).toEqual({ messageId });
+    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ messageId }) }]);
+    expect(handle).toHaveBeenCalledWith(
+      "token",
+      expect.objectContaining({
+        type: "person.notify",
+        requestId: expect.any(String),
+        message: "Ready for review.",
+      }),
+    );
+    supported = false;
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_notify");
+    await fixture.service.close();
+    expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain(
+      "person_notify",
+    );
+  } finally {
+    await client.close();
+    await fixture.service.close();
   }
 });

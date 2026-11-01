@@ -350,28 +350,32 @@ function Fixture() {
           </button>
         ) : null}
       </p>
-      {transcript.length > 0 ? (
+      {transcript.length > 0 || queue ? (
         <div className="transcript">
           <AgentTranscript
             attachmentReader={client}
             entries={transcript}
+            queued={
+              queue ? (
+                <QueuedMessages
+                  client={client}
+                  disabled={false}
+                  onEdit={(taken) => {
+                    setQueue(null);
+                    setRestored((current) => ({ ...taken, key: (current?.key ?? 0) + 1 }));
+                  }}
+                  onError={noOp}
+                  queue={queue}
+                  viewerUserId={author.userId}
+                  workspaces={[]}
+                />
+              ) : null
+            }
             viewerUserId={author.userId}
           />
         </div>
       ) : null}
       <div className="composer-dock">
-        {queue ? (
-          <QueuedMessages
-            client={client}
-            disabled={false}
-            onEdit={(taken) => {
-              setQueue(null);
-              setRestored((current) => ({ ...taken, key: (current?.key ?? 0) + 1 }));
-            }}
-            onError={noOp}
-            queue={queue}
-          />
-        ) : null}
         <InputSurface
           disabled={false}
           key={`${deploymentId}:${author.userId}:${thread.id}`}

@@ -42,6 +42,8 @@ const state = vi.hoisted(() => ({
   routes: [] as { name: string; params?: object }[],
   /** The pair's own measured surface, as its reserved-regions provider reports it. */
   pair: { height: 760, width: 390 },
+  /** What every laid-out view measures, once a test lays the screen out. */
+  layout: null as { height: number; width: number } | null,
   regions: [] as import("react-native-reserved-regions").ReservedRegion[],
   regionsReady: true,
   keyboard: false,
@@ -77,6 +79,8 @@ vi.mock("@opensteer/client/react", async () => ({
   useActionReview: (
     await vi.importActual<typeof import("@opensteer/client/react")>("@opensteer/client/react")
   ).useActionReview,
+  useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
+    selector(state.snapshot!),
   useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
   useConversationSurfaces: (_client: unknown, threadId: string) => {
     if (state.snapshot === null) throw new Error("Missing snapshot fixture");
@@ -190,17 +194,22 @@ vi.mock("react-native", () => ({
   View: ({
     children,
     accessibilityLabel,
+    onLayout,
     style,
     testID,
   }: {
     children?: ReactNode;
     accessibilityLabel?: string;
+    onLayout?: (event: { nativeEvent: { layout: { height: number; width: number } } }) => void;
     style?: unknown;
     testID?: string;
   }) => (
     <div
+      ref={(node) => {
+        if (node && onLayout && state.layout) onLayout({ nativeEvent: { layout: state.layout } });
+      }}
       aria-label={accessibilityLabel}
-      data-style={testID === undefined ? undefined : JSON.stringify(flatten(style))}
+      data-style={JSON.stringify(flatten(style))}
       data-testid={testID}
     >
       {children}
@@ -232,7 +241,9 @@ vi.mock("react-native-reserved-regions", async () => {
   };
 });
 vi.mock("react-native-safe-area-context", () => ({
-  SafeAreaProvider: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SafeAreaProvider: ({ children, style }: { children?: ReactNode; style?: unknown }) => (
+    <div data-pane-style={JSON.stringify(flatten(style))}>{children}</div>
+  ),
   useSafeAreaFrame: () => ({ height: 844, width: 390, x: 0, y: 0 }),
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
@@ -275,6 +286,7 @@ vi.mock("../thread/composer-menu.js", () => ({
   NativeMenu: (props: {
     readonly options: readonly {
       readonly disabled?: boolean;
+      readonly selected?: boolean;
       readonly id: string;
       readonly label: string;
       readonly onPress: () => void;
@@ -282,7 +294,12 @@ vi.mock("../thread/composer-menu.js", () => ({
   }) => (
     <div aria-label="More">
       {props.options.map((option) => (
-        <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
+        <button
+          aria-pressed={option.selected}
+          disabled={option.disabled}
+          key={option.id}
+          onClick={option.onPress}
+        >
           {option.label}
         </button>
       ))}
@@ -321,15 +338,17 @@ vi.mock("../thread/thread-pane.js", async () => {
   const { useContentInsets } =
     await vi.importActual<typeof import("../ui/pane.js")>("../ui/pane.js");
   return {
-    ThreadPane: (props: { sheet?: { expanded: boolean; onExpand: (open: boolean) => void } }) => {
+    ThreadPane: (props: { withPage?: { kind: string; onShowConversation?: () => void } }) => {
       const insets = useContentInsets();
       React.useEffect(() => {
         state.conversationMounts += 1;
       }, []);
       return (
         <section data-insets={JSON.stringify(insets)}>
-          {props.sheet?.expanded ? "Conversation open" : "Conversation folded"}
-          <button onClick={() => props.sheet?.onExpand(true)}>Open the conversation</button>
+          {props.withPage?.kind === "beside" ? "Conversation beside" : "Conversation docked"}
+          <button onClick={() => props.withPage?.onShowConversation?.()}>
+            Open the conversation
+          </button>
         </section>
       );
     },
@@ -366,6 +385,7 @@ afterEach(() => {
   state.setParams.mockReset();
   state.routes = [];
   state.pair = { height: 760, width: 390 };
+  state.layout = null;
   state.regions = [];
   state.regionsReady = true;
   state.keyboard = false;
@@ -439,6 +459,7 @@ function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
+  state.hostClient.prepareBrowserProfile ??= vi.fn();
   state.hostClient.browserViewerState = () => liveFeed;
   state.hostClient.browserFrames = { subscribe: () => () => undefined };
   state.snapshot = options.snapshot ?? snapshot([]);
@@ -729,46 +750,125 @@ describe("mobile conversation pages", () => {
     expect(container.querySelectorAll("[data-expected-surface]")).toHaveLength(3);
   });
 
-  it("keeps the person on the page they moved to when a new tab opens after they left", async () => {
-    let open: ((value: { sessionId: string; tabId: string }) => void) | undefined;
-    const openBrowserTab = vi.fn(
-      () =>
-        new Promise<{ sessionId: string; tabId: string }>((resolve) => {
-          open = resolve;
-        }),
-    );
+  it("selects a local pending tab immediately and keeps a later result from stealing focus", async () => {
+    const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
+    const beginBrowserTabOpen = vi.fn(() => ({
+      idempotencyKey: "phone-open",
+      result: gate.promise,
+    }));
     state.hostClient = {
-      openBrowserTab,
+      beginBrowserTabOpen,
       browserViewerState: () => liveFeed,
       browserFrames: { subscribe: () => () => undefined },
     };
-    const { render } = setup({ sessionId: "chosen" });
+    const { render, route, container } = setup({ sessionId: "chosen" });
     state.snapshot = snapshot([session("chosen", child.id)]);
     render();
     await pressAsync(menu(), "New tab");
-    expect(openBrowserTab).toHaveBeenCalledOnce();
-    // Another page was pushed over this one before the Host answered.
+    expect(beginBrowserTabOpen).toHaveBeenCalledOnce();
+    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+      type: "REPLACE",
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: "deployment-a",
+        threadId: "thread-parent",
+        pendingBrowserTab: "phone-open",
+      },
+    });
+    route.params = {
+      deploymentId: "deployment-a",
+      threadId: "thread-parent",
+      pendingBrowserTab: "phone-open",
+    };
+    state.snapshot = {
+      ...state.snapshot!,
+      pendingBrowserTabs: [
+        {
+          idempotencyKey: "phone-open",
+          target: { sessionId: "chosen" },
+          url: "https://waiting.example/",
+          state: "opening",
+        },
+      ],
+    };
+    render();
+    expect(container.textContent).toContain("Opening");
+    expect(container.textContent).toContain("https://waiting.example/");
     state.navigationFocused = false;
-    await act(async () => open?.({ sessionId: "chosen", tabId: "new-page" }));
-    expect(state.dispatch).not.toHaveBeenCalled();
+    state.routes = [
+      { name: "Thread", params: { deploymentId: "deployment-a", threadId: "other" } },
+    ];
+    await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
+    expect(state.dispatch).toHaveBeenCalledOnce();
   });
 
-  it("opens a new tab once and replaces the route with its returned id and address ready", async () => {
-    const openBrowserTab = vi.fn(async () => ({ sessionId: "chosen", tabId: "new-page" }));
-    state.hostClient = {
-      openBrowserTab,
-      browserViewerState: () => liveFeed,
-      browserFrames: { subscribe: () => () => undefined },
+  it("keeps an ambiguous opening's address and completes it on the chosen available computer", async () => {
+    const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
+    const beginBrowserTabOpen = vi.fn(() => ({
+      idempotencyKey: "chosen-computer",
+      result: gate.promise,
+    }));
+    const dismissPendingBrowserTab = vi.fn();
+    state.hostClient = { beginBrowserTabOpen, dismissPendingBrowserTab };
+    const ambiguousSnapshot: HostSnapshot = {
+      ...snapshot([]),
+      browserPlacements: [
+        {
+          runnerId: "available",
+          label: "Available Mac",
+          available: true,
+          kind: "runner",
+          runtimeId: null,
+          environmentIds: [],
+        },
+        {
+          runnerId: "offline",
+          label: "Offline Mac",
+          available: false,
+          kind: "runner",
+          runtimeId: null,
+          environmentIds: [],
+        },
+      ],
+      pendingBrowserTabs: [
+        {
+          idempotencyKey: "ambiguous",
+          target: { identity: { kind: "guest" } },
+          url: "https://waiting.example/",
+          state: "failed",
+          typed: true,
+          viewport: { width: 390, height: 612 },
+          error: {
+            code: "browser-placement-ambiguous",
+            message: "Choose a computer to browse on.",
+          },
+        },
+      ],
     };
-    const { container, render, route } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("chosen", child.id)]);
-    render();
-    await pressAsync(menu(), "New tab");
-    expect(openBrowserTab).toHaveBeenCalledExactlyOnceWith(
-      { sessionId: "chosen" },
-      { idempotencyKey: expect.any(String) },
+    const { container } = setup(
+      { pendingBrowserTab: "ambiguous" },
+      { snapshot: ambiguousSnapshot },
     );
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+    expect(container.textContent).toContain("https://waiting.example/");
+    expect(container.textContent).not.toContain("Open on Offline Mac");
+    await pressAsync(container, "Open on Available Mac");
+    expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
+      { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: "available" } },
+      { url: "https://waiting.example/", typed: true, viewport: { width: 390, height: 612 } },
+    );
+    expect(dismissPendingBrowserTab).toHaveBeenCalledExactlyOnceWith("ambiguous");
+    state.routes = [
+      {
+        name: "WorkspaceBrowser",
+        params: {
+          deploymentId: "deployment-a",
+          threadId: "thread-parent",
+          pendingBrowserTab: "chosen-computer",
+        },
+      },
+    ];
+    await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
+    expect(state.dispatch).toHaveBeenLastCalledWith({
       type: "REPLACE",
       name: "WorkspaceBrowser",
       params: {
@@ -779,26 +879,73 @@ describe("mobile conversation pages", () => {
         editAddress: true,
       },
     });
-    route.params = {
-      deploymentId: "deployment-a",
-      threadId: "thread-parent",
-      sessionId: "chosen",
-      tabId: "new-page",
-      editAddress: true,
-    };
-    state.snapshot = snapshot([
-      {
-        ...session("chosen", child.id),
-        tabs: [
-          { id: "new-page", active: false, title: "", url: "about:blank" },
-        ] as BrowserSessionSummary["tabs"],
-      },
-    ]);
-    render();
-    expect(
-      container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
-    ).toBe("");
   });
+
+  it.each([false, true])(
+    "opens at the valid page size and replaces only the selected pending route (oversized=%s)",
+    async (oversized) => {
+      state.layout = { height: 612.4, width: oversized ? 8000 : 389.6 };
+      const gate = Promise.withResolvers<{ sessionId: string; tabId: string }>();
+      const beginBrowserTabOpen = vi.fn(() => ({
+        idempotencyKey: "phone-open",
+        result: gate.promise,
+      }));
+      state.hostClient = {
+        beginBrowserTabOpen,
+        browserViewerState: () => liveFeed,
+        browserFrames: { subscribe: () => () => undefined },
+      };
+      const { container, render, route } = setup({ sessionId: "chosen" });
+      state.snapshot = snapshot([session("chosen", child.id)]);
+      render();
+      await pressAsync(menu(), "New tab");
+      expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
+        { sessionId: "chosen" },
+        oversized ? undefined : { viewport: { height: 612, width: 390 } },
+      );
+      state.routes = [
+        {
+          name: "WorkspaceBrowser",
+          params: {
+            deploymentId: "deployment-a",
+            threadId: "thread-parent",
+            pendingBrowserTab: "phone-open",
+          },
+        },
+      ];
+      await act(async () => gate.resolve({ sessionId: "chosen", tabId: "new-page" }));
+      expect(state.dispatch).toHaveBeenLastCalledWith({
+        type: "REPLACE",
+        name: "WorkspaceBrowser",
+        params: {
+          deploymentId: "deployment-a",
+          threadId: "thread-parent",
+          sessionId: "chosen",
+          tabId: "new-page",
+          editAddress: true,
+        },
+      });
+      route.params = {
+        deploymentId: "deployment-a",
+        threadId: "thread-parent",
+        sessionId: "chosen",
+        tabId: "new-page",
+        editAddress: true,
+      };
+      state.snapshot = snapshot([
+        {
+          ...session("chosen", child.id),
+          tabs: [
+            { id: "new-page", active: false, title: "", url: "about:blank" },
+          ] as BrowserSessionSummary["tabs"],
+        },
+      ]);
+      render();
+      expect(
+        container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
+      ).toBe("");
+    },
+  );
 
   it.each([false, true])(
     "returns after a successful close, reviewing held work: %s",
@@ -1121,7 +1268,7 @@ describe("mobile conversation pages", () => {
     state.snapshot = snapshot([session("other", child.id), session("chosen", child.id)]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
-    expect(container.textContent).toContain("Conversation folded");
+    expect(container.textContent).toContain("Conversation docked");
     state.snapshot = snapshot([session("other", child.id), session("chosen", child.id, "closed")]);
     render();
     expect(container.textContent).toContain("This tab was closed");
@@ -1146,6 +1293,99 @@ describe("mobile conversation pages", () => {
     ];
     press(container, "Back to tabs");
     expect(state.goBack).toHaveBeenCalledOnce();
+  });
+
+  it("offers the switcher only with siblings, marks current and acting choices, and replaces the route", () => {
+    const { render } = setup({ sessionId: "chosen", tabId: "page-1" });
+    state.snapshot = snapshot([session("chosen", child.id)]);
+    render();
+    const nativeItems = () => {
+      const options = state.setOptions.mock.calls
+        .map(
+          ([value]) =>
+            value as {
+              unstable_headerRightItems?: () => {
+                label: string;
+                menu?: {
+                  items: {
+                    label: string;
+                    description?: string;
+                    state?: string;
+                    icon?: object;
+                    onPress: () => void;
+                  }[];
+                };
+              }[];
+            },
+        )
+        .findLast((value) => value.unstable_headerRightItems !== undefined);
+      return options?.unstable_headerRightItems?.() ?? [];
+    };
+    expect(nativeItems().some((item) => item.label === "Tabs")).toBe(false);
+    const other = {
+      ...session("other", child.id),
+      tabs: [
+        { active: true, id: "page-2", title: "Second page", url: "https://second.example.com" },
+      ],
+    } as BrowserSessionSummary;
+    other.tabCatalog = {
+      generation: 1,
+      revision: 1,
+      tabs: [
+        {
+          ...other.tabs[0]!,
+          order: 0,
+          openerId: null,
+          iconRef: null,
+          availability: "ready",
+          documentId: null,
+          site: "second.example.com",
+          occupants: [
+            {
+              threadId: "thread-parent",
+              home: false,
+              holding: true,
+              acting: true,
+              lastActiveAt: "2026-10-13T00:00:00.000Z",
+            },
+          ],
+        },
+      ],
+    } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>;
+
+    state.snapshot = snapshot([session("chosen", child.id), other]);
+    render();
+    const choices = nativeItems().find((item) => item.label === "Tabs")?.menu?.items;
+    expect(choices).toEqual([
+      expect.objectContaining({
+        label: "Page",
+        state: "on",
+        icon: { type: "sfSymbol", name: "globe" },
+        description: "example.com",
+      }),
+      expect.objectContaining({ label: "Second page", state: "off", description: "Agent working" }),
+      expect.objectContaining({ label: "All Tabs" }),
+    ]);
+    const android = menu();
+    expect(android.querySelector('button[aria-pressed="true"]')?.textContent).toBe("Page");
+    expect(android.textContent).toContain("Second page · Agent working");
+    act(() => choices![1]!.onPress());
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: "deployment-a",
+        threadId: "thread-parent",
+        sessionId: "other",
+        tabId: "page-2",
+      },
+    });
+    act(() => choices![2]!.onPress());
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      name: "WorkspaceBrowser",
+      params: { deploymentId: "deployment-a", threadId: "thread-parent" },
+    });
   });
 
   it("refreshes on focus and keeps the exact view while other browsers arrive", () => {
@@ -1180,8 +1420,7 @@ describe("mobile conversation pages", () => {
 /*
  * A page beside its conversation as the window changes shape. What can go
  * wrong: the page's live channel or the conversation remounts, so a draft or
- * stream is lost; the reader's own choice to keep the conversation folded is
- * overwritten by a wider window; a geometry change navigates; the keyboard
+ * stream is lost; a geometry change navigates; the keyboard
  * lifts the pane nobody is typing in; tabletop's fixed halves leave the
  * conversation's composer no room once the keyboard is up; a fold that has
  * not been measured yet is straddled.
@@ -1209,16 +1448,16 @@ describe("a page beside its conversation", () => {
     return pair?.dataset["testid"]?.slice("pair-".length) ?? "";
   }
 
-  it("keeps the page and the conversation mounted, and the reader's fold, as the pair changes shape", () => {
+  it("keeps the page and the conversation mounted, as the pair changes shape", () => {
     const { container, render } = openPage();
     expect(arrangement(container)).toBe("stacked");
-    expect(container.textContent).toContain("Conversation folded");
+    expect(container.textContent).toContain("Conversation docked");
 
     state.pair = { height: 1000, width: 744 };
     render();
     expect(arrangement(container)).toBe("side");
     // Beside the page there is room for all of it: the conversation is open.
-    expect(container.textContent).toContain("Conversation open");
+    expect(container.textContent).toContain("Conversation beside");
 
     state.pair = { height: 900, width: 900 };
     state.regions = [
@@ -1232,8 +1471,7 @@ describe("a page beside its conversation", () => {
     state.regions = [];
     render();
     expect(arrangement(container)).toBe("stacked");
-    // Back to the reader's own choice, which was to keep it folded.
-    expect(container.textContent).toContain("Conversation folded");
+    expect(container.textContent).toContain("Conversation docked");
 
     expect(state.conversationMounts).toBe(1);
     expect(state.pageMounts).toBe(1);
@@ -1241,15 +1479,46 @@ describe("a page beside its conversation", () => {
     expect(state.goBack).not.toHaveBeenCalled();
   });
 
-  it("returns to the reader's opened conversation after a side-by-side spell", () => {
-    const { container, render } = openPage();
-    press(container, "Open the conversation");
-    state.pair = { height: 1000, width: 744 };
+  it("hides the dock while typing into the stacked page and keeps it mounted", () => {
+    const { container, render } = openPage(true);
+    state.keyboard = true;
     render();
-    state.pair = { height: 760, width: 390 };
-    render();
-    expect(container.textContent).toContain("Conversation open");
+    expect(slot(container, "conversation").style).toMatchObject({ display: "none" });
     expect(state.conversationMounts).toBe(1);
+    expect(state.pageMounts).toBe(1);
+  });
+
+  it("gives the stacked page definite space and sizes the dock and its Pane by content", () => {
+    const { container } = openPage();
+    // The page has what the dock leaves, with no floor that would push the
+    // composer under the keyboard on a short screen.
+    expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 0 });
+    // The dock is its content's height, and gives way (its content scrolls) before the page does.
+    expect(slot(container, "conversation").style).toMatchObject({ flexShrink: 1 });
+    for (const name of ["page", "conversation"] as const) {
+      expect(slot(container, name).style["position"]).not.toBe("absolute");
+    }
+    const pane = container.querySelector<HTMLElement>(
+      '[data-testid="conversation-slot"] > [data-pane-style]',
+    );
+    expect(JSON.parse(pane?.dataset["paneStyle"] ?? "null")).toMatchObject({
+      flex: 0,
+      flexShrink: 1,
+    });
+  });
+
+  it("opens the conversation past its intervening page and grid", () => {
+    const { container } = openPage();
+    state.routes = [
+      { name: "Thread", params: { threadId: "thread-parent" } },
+      { name: "WorkspaceBrowser", params: { threadId: "thread-parent" } },
+      {
+        name: "WorkspaceBrowser",
+        params: { threadId: "thread-parent", sessionId: "browser-child", tabId: "page-1" },
+      },
+    ];
+    press(container, "Open the conversation");
+    expect(state.dispatch).toHaveBeenCalledWith({ type: "POP", count: 2 });
   });
 
   it("stays stacked until the pair's own surface is measured", () => {
@@ -1503,7 +1772,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     state.snapshot = snapshot([session("chosen", child.id)]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
-    expect(container.textContent).not.toContain("Conversation folded");
+    expect(container.textContent).not.toContain("Conversation docked");
     expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
     expect(state.conversationMounts).toBe(0);
   });

@@ -6,17 +6,16 @@ import {
   browserSiteForUrl,
   browserTabTitle,
   reviewHostAction,
-  mutationIdempotencyKey,
+  type BrowserTabOpenHandle,
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
-import { browserPromptTextMaxLength } from "@opensteer/protocol";
+import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,7 +23,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import type { EditingOperation } from "@opensteer/client/editing";
 import type { EditingContext } from "@opensteer/protocol/editing";
 import { createMobileBrowserEditing } from "./browser-editing.js";
@@ -38,8 +37,6 @@ import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { TextInput } from "../ui/text-input.js";
-import { holdRemoteEditing, interact } from "../voice/interaction.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { useSurfaceHeader, type SurfaceMenuItem } from "./surface-header.js";
@@ -56,9 +53,9 @@ const refusedNotice = "The page is reconnecting. Try again in a moment.";
  * navigation, New tab, Fit and Close. The person and the agent use the page at
  * the same time; nothing here takes it from either.
  *
- * The picture is as tall as the page's own shape at this width, so it sits at
- * the top with no band above or below it and the conversation has the rest.
- * Where that is more than the screen has, it shrinks and fits by its height.
+ * The picture is as tall as the page's own shape at this width, so the whole
+ * page is always in view. Where that is more than the room it is given, it
+ * shrinks and fits by its height.
  *
  * Negotiated fields use the native editing proxy. Baseline sessions retain plain typing.
  * The address draft stays as the person left it when the page changes.
@@ -75,7 +72,7 @@ export function BrowserPage(props: {
   readonly session: BrowserSessionSummary;
   readonly tabId: string;
   readonly editAddress: boolean;
-  readonly onOpenTab: (sessionId: string, tabId: string) => void;
+  readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
   readonly onClosed: () => void;
   /** The browser's Workspace, whose agents may use a site once it is signed in. */
   readonly workspaceName: string;
@@ -93,6 +90,9 @@ export function BrowserPage(props: {
       : undefined);
   const [problem, setProblem] = useState<string | null>(null);
   const [addressOpen, setAddressOpen] = useState(props.editAddress);
+  useEffect(() => {
+    if (addressOpen) hostClient.prepareBrowserProfile();
+  }, [addressOpen, hostClient]);
   // Null shows the page's own address; anything else is the person's, kept
   // until they go there or put it away.
   const [addressDraft, setAddressDraft] = useState<string | null>(null);
@@ -100,16 +100,8 @@ export function BrowserPage(props: {
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  const newTabAttempt = useRef<string | null>(null);
   const openingTab = useRef(false);
-  const presence = useRef(true);
-  useEffect(() => {
-    presence.current = true;
-    return () => {
-      presence.current = false;
-      onTyping(false);
-    };
-  }, [onTyping]);
+  useEffect(() => () => onTyping(false), [onTyping]);
   const area = useRef({ height: 0, width: 0 });
   const [aspect, setAspect] = useState(defaultPageAspect);
   const onPageSize = useCallback((size: { readonly height: number; readonly width: number }) => {
@@ -202,7 +194,7 @@ export function BrowserPage(props: {
   const viewport = () => {
     const width = Math.round(area.current.width);
     const height = Math.round(area.current.height);
-    return width > 0 && height > 0 ? { height, width } : null;
+    return width > 0 && height > 0 && browserViewportFits(width, height) ? { height, width } : null;
   };
   const navigate = () => {
     if (!ready) return;
@@ -221,7 +213,10 @@ export function BrowserPage(props: {
       return;
     }
     // The address stays as typed until the page has taken it.
-    if (!send({ type: "navigation.go", url: url.href })) return;
+    if (!send({ type: "navigation.go", url: url.href, typed: true })) return;
+    hostClient.browserPreferences.lastBrowsingChoice = session.profileId
+      ? { kind: "profile", profileId: session.profileId }
+      : { kind: "guest" };
     setProblem(null);
     setAddressDraft(null);
     setAddressOpen(false);
@@ -239,21 +234,20 @@ export function BrowserPage(props: {
           setProblem(operationDetail(error, "This tab could not be closed.")),
         );
   };
-  const openTab = async () => {
+  const openTab = () => {
     if (openingTab.current) return;
     openingTab.current = true;
-    newTabAttempt.current ??= mutationIdempotencyKey("browser-tab-open");
     try {
-      const result = await hostClient.openBrowserTab(
-        { sessionId: session.id },
-        { idempotencyKey: newTabAttempt.current },
+      const size = viewport();
+      props.onOpenTab(
+        hostClient.beginBrowserTabOpen(
+          { sessionId: session.id },
+          size ? { viewport: size } : undefined,
+        ),
       );
-      newTabAttempt.current = null;
-      if (presence.current) props.onOpenTab(result.sessionId, result.tabId);
     } catch (error) {
-      if (presence.current) setProblem(operationDetail(error, "A new tab could not be opened."));
-    } finally {
       openingTab.current = false;
+      setProblem(operationDetail(error, "A new tab could not be opened."));
     }
   };
 
@@ -507,10 +501,7 @@ export function BrowserPage(props: {
             accessibilityHint="Types into the page"
             accessibilityLabel="Keyboard"
             accessibilityRole="button"
-            onPress={() => {
-              interact();
-              setTyping(true);
-            }}
+            onPress={() => setTyping(true)}
             style={({ pressed }) => [styles.keyboard, pressed && styles.pressed]}
           >
             <Symbol name="keyboard" size={18} tint={color.text} />
@@ -530,7 +521,6 @@ export function PageTyping(props: {
   readonly legacy?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }): ReactNode {
-  useLayoutEffect(holdRemoteEditing, []);
   return (
     <View style={[styles.typing, styles.bottom]}>
       {props.legacy ? (
@@ -605,7 +595,9 @@ const styles = StyleSheet.create({
   },
   // Its own height, given up from the picture first when the screen is short.
   page: { flexShrink: 1, minHeight: 0 },
-  picture: { flexShrink: 1, minHeight: 0, width: "100%" },
+  // Fit by its height, it keeps its shape and stays centred rather than
+  // hugging the leading edge.
+  picture: { alignSelf: "center", flexShrink: 1, minHeight: 0, width: "100%" },
   pressed: { opacity: 0.7 },
   row: { alignItems: "center", flexDirection: "row", gap: space[8] },
   textButton: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[6] },

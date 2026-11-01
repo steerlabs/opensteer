@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
 import { describe, expect, it, vi, type MockInstance } from "vitest";
@@ -29,7 +30,6 @@ import {
   tabSearch,
   deferred,
   write,
-  pressEnter,
   firstTaskId,
   setRoot,
 } from "./workspace.interaction.test-support.js";
@@ -125,8 +125,9 @@ describe("the draft's places", () => {
     const icon = (ref: string) => `data:image/png;base64,${btoa(ref)}`;
     const title = () => element(".context-chip__title").textContent;
     const chipIcon = (chip = ".context-chip") =>
-      document.querySelector(`${chip} .site-mark--icon`)?.getAttribute("src") ?? null;
+      document.querySelector(`${chip} .site-mark img`)?.getAttribute("src") ?? null;
     async function open(path: Entry | ((source: MockHostClient) => Entry)) {
+      vi.spyOn(HTMLImageElement.prototype, "naturalWidth", "get").mockReturnValue(32);
       vi.stubGlobal(
         "Image",
         class {
@@ -183,6 +184,7 @@ describe("the draft's places", () => {
       expect(title()).toBe("verified.capitalone.com");
       expect(tab.icon()).toBeNull();
       expect(chipIcon()).toBeNull();
+      expect(element(".context-chip .site-mark").textContent).toBe("");
       await settle(1_100);
       const capitalOne = tab.icon();
       expect(capitalOne).not.toBeNull();
@@ -1008,11 +1010,106 @@ describe("a link arriving at the start page", () => {
   const address = "https://portablefs.example/docs/mounts";
   const state = { startId: "reply-link", startAddress: address, startOpen: true, startFrom: null };
 
+  it("selects each rapid chat link in its click turn and only the latest completion can replace it", async () => {
+    const gates = [deferred<void>(), deferred<void>()];
+    let commands = 0;
+    await mount((source) => {
+      const dispatch = source.rpc["commands.dispatch"];
+      const delayed: typeof dispatch = async (command, options) => {
+        if (command.type === "browser.tab.open")
+          await withTimeout(gates[commands++]!.promise, 2_000, {
+            timeoutError: () => new Error("The chat link command was never released."),
+          });
+        return dispatch(command, options);
+      };
+      Object.defineProperty(source, "rpc", {
+        value: new Proxy(source.rpc, {
+          get: (target, name) =>
+            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
+        }),
+      });
+      const snapshot = source.getSnapshot();
+      localStorage.setItem(
+        `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
+        JSON.stringify({ kind: "profile", profileId: snapshot.browserProfiles[0]!.id }),
+      );
+      return "/threads/thr_00000000-0000-4000-8000-000000000002";
+    });
+    let link!: HTMLAnchorElement;
+    await vi.waitFor(
+      () => {
+        const found = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
+          (anchor) => anchor.textContent === "PortableFS mount guide",
+        );
+        expect(found, "The reply's website link never appeared").toBeDefined();
+        link = found!;
+      },
+      { timeout: 1_000 },
+    );
+    act(() => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      expect(client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
+    });
+    act(() => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      expect(client.getSnapshot().pendingBrowserTabs).toHaveLength(2);
+    });
+    expect(commands).toBe(2);
+    const latest = client.getSnapshot().pendingBrowserTabs![1]!.idempotencyKey;
+    expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${latest}`);
+    await act(async () => gates[0]!.resolve());
+    expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${latest}`);
+    await act(async () => gates[1]!.resolve());
+    expect(element(".place").getAttribute("data-place-key")).toMatch(/^browser:/u);
+    expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+  });
+
+  it("selects a pending link before a delayed command answers and never steals focus after leaving", async () => {
+    const gate = deferred<void>();
+    let answering!: Promise<unknown>;
+    await mount((source) => {
+      const dispatch = source.rpc["commands.dispatch"];
+      const delayed: typeof dispatch = async (command, options) => {
+        if (command.type === "browser.tab.open") {
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+          answering = dispatch(command, options);
+          return answering as ReturnType<typeof dispatch>;
+        }
+        return dispatch(command, options);
+      };
+      Object.defineProperty(source, "rpc", {
+        value: new Proxy(source.rpc, {
+          get: (target, name) =>
+            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
+        }),
+      });
+      const profile = source.getSnapshot().browserProfiles[0]!;
+      localStorage.setItem(
+        `opensteer.browse-with.v1:${encodeURIComponent(source.getSnapshot().deploymentId!)}:${encodeURIComponent(source.getSnapshot().user!.id)}`,
+        JSON.stringify({ kind: "profile", profileId: profile.id }),
+      );
+      return { pathname: "/", search: "?panel=browser", state };
+    });
+    const key = client.getSnapshot().pendingBrowserTabs?.[0]?.idempotencyKey;
+    expect(key).toBeTruthy();
+    expect(element(".place").getAttribute("data-place-key")).toBe(`pending:${key}`);
+    expect(element(".place").textContent).toContain(address);
+    expect(element(".place").textContent).toContain("Opening");
+    await act(async () => goTo!("/"));
+    await act(async () => {
+      gate.resolve();
+    });
+    await answering;
+    expect(new URLSearchParams(history.at(-1)!.search).has("panel")).toBe(false);
+  });
+
   it("opens the exact navigate row once in StrictMode and consumes only the history trigger", async () => {
-    let open!: MockInstance<MockHostClient["openBrowserTab"]>;
+    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
     await mount(
       (source) => {
-        open = vi.spyOn(source, "openBrowserTab");
+        open = vi.spyOn(source, "beginBrowserTabOpen");
         return { pathname: "/", search: "?panel=browser", state };
       },
       { strict: true },
@@ -1024,17 +1121,24 @@ describe("a link arriving at the start page", () => {
       expect.objectContaining({ url: address }),
     );
     // The mock's several computers refuse Guest until the person chooses one.
-    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
-    expect(element(".start-page__refusal").textContent).toContain("Which computer");
-    expect(historyState).toEqual({ ...state, startOpen: false });
+    expect(element(".place").textContent).toContain(address);
+    expect(element(".place").textContent).toContain("Choose a computer");
+    expect(client.getSnapshot().pendingBrowserTabs?.[0]?.state).toBe("failed");
     await act(async () => goTo!("/tasks"));
     await act(async () => goTo!(-1));
     await settle(50);
-    expect(element<HTMLInputElement>(".start-page__input").value).toBe(address);
+    expect(element(".place").textContent).toContain(address);
     expect(open).toHaveBeenCalledTimes(1);
-    await pressEnter(element(".start-page__input"));
+    await click(
+      [...document.querySelectorAll<HTMLButtonElement>(".place button")].find(
+        (button) => button.textContent === "Retry",
+      )!,
+    );
     expect(open).toHaveBeenCalledTimes(2);
-    await click(element(".start-page__refusal-actions button"));
+    const choose = [...document.querySelectorAll<HTMLButtonElement>(".place button")].find(
+      (button) => button.textContent?.startsWith("Open on"),
+    )!;
+    await click(choose);
     await settle(100);
     expect(open).toHaveBeenCalledTimes(3);
     expect(open.mock.calls[2]?.[0]).toMatchObject({ placement: { kind: "runner" } });
@@ -1042,7 +1146,7 @@ describe("a link arriving at the start page", () => {
   });
 
   it("uses the covered tab's profile ahead of a remembered Guest and opens even an already listed URL", async () => {
-    let open!: MockInstance<MockHostClient["openBrowserTab"]>;
+    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
     let profileId: string | null = null;
     let url = "";
     await mount((source) => {
@@ -1057,7 +1161,7 @@ describe("a link arriving at the start page", () => {
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
         '{"kind":"guest"}',
       );
-      open = vi.spyOn(source, "openBrowserTab");
+      open = vi.spyOn(source, "beginBrowserTabOpen");
       return {
         pathname: "/",
         search: "?panel=browser",
@@ -1078,7 +1182,7 @@ describe("a link arriving at the start page", () => {
   });
 
   it("opens a reply link from a start page already open with the tab it covers", async () => {
-    let open!: MockInstance<MockHostClient["openBrowserTab"]>;
+    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
     let profileId: string | null = null;
     let from = "";
     await mount((source) => {
@@ -1092,7 +1196,7 @@ describe("a link arriving at the start page", () => {
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
         '{"kind":"guest"}',
       );
-      open = vi.spyOn(source, "openBrowserTab");
+      open = vi.spyOn(source, "beginBrowserTabOpen");
       return {
         pathname: "/threads/thr_00000000-0000-4000-8000-000000000002",
         search: "?panel=browser",
@@ -1112,9 +1216,9 @@ describe("a link arriving at the start page", () => {
   });
 
   it("consumes an unavailable arrival but keeps its address and refusal", async () => {
-    let open!: MockInstance<MockHostClient["openBrowserTab"]>;
+    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
     await mount((source) => {
-      open = vi.spyOn(source, "openBrowserTab");
+      open = vi.spyOn(source, "beginBrowserTabOpen");
       const snapshot = source.getSnapshot();
       localStorage.setItem(
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
@@ -1129,9 +1233,9 @@ describe("a link arriving at the start page", () => {
   });
 
   it("a consumed arrival survives remount without reopening", async () => {
-    let open!: MockInstance<MockHostClient["openBrowserTab"]>;
+    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
     await mount((source) => {
-      open = vi.spyOn(source, "openBrowserTab");
+      open = vi.spyOn(source, "beginBrowserTabOpen");
       return { pathname: "/", search: "?panel=browser", state: { ...state, startOpen: false } };
     });
     expect(open).not.toHaveBeenCalled();
@@ -1143,20 +1247,32 @@ describe("a link arriving at the start page", () => {
     const target = pageTab();
     if (target.destination.kind !== "browser" || !target.destination.tabId)
       throw new Error("Not a browser tab");
-    const { sessionId, tabId } = target.destination;
-    const open = vi.spyOn(client, "openBrowserTab");
-    const answer = deferred<{ sessionId: string; tabId: string }>();
-    open.mockImplementationOnce(() => answer.promise as never);
+    const result = await client.openBrowserTab(target.destination.sessionId);
+    const { tabId } = result;
+    const gates = [deferred<void>(), deferred<void>()];
+    let commands = 0;
+    const dispatch = client.rpc["commands.dispatch"];
+    const delayed: typeof dispatch = async (command, options) => {
+      if (command.type !== "browser.tab.open") return dispatch(command, options);
+      await withTimeout(gates[commands++]!.promise, 2_000, {
+        timeoutError: () => new Error("The arrival browser command was never released."),
+      });
+      return { ok: true, data: result };
+    };
+    Object.defineProperty(client, "rpc", {
+      value: new Proxy(client.rpc, {
+        get: (target, name) => (name === "commands.dispatch" ? delayed : Reflect.get(target, name)),
+      }),
+    });
+    const open = vi.spyOn(client, "beginBrowserTabOpen");
     await act(async () => goTo!({ pathname: "/", search: "?panel=browser" }, { state }));
     expect(open).toHaveBeenCalledTimes(1);
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
-    await act(async () => answer.resolve({ sessionId, tabId }));
+    await act(async () => gates[0]!.resolve());
     await settle(50);
     expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
-    const late = deferred<{ sessionId: string; tabId: string }>();
-    open.mockImplementationOnce(() => late.promise as never);
     await act(async () =>
       goTo!(
         { pathname: `/threads/${threadId}`, search: "?panel=browser" },
@@ -1168,7 +1284,7 @@ describe("a link arriving at the start page", () => {
     )!;
     await click(element(`.side-tab[data-place-key="${chosen.key}"] .side-tab__main`));
     const before = history.length;
-    await act(async () => late.resolve({ sessionId, tabId }));
+    await act(async () => gates[1]!.resolve());
     await settle(50);
     expect(history.length).toBe(before);
     expect(element(".place").getAttribute("data-place-key")).toBe(chosen.key);

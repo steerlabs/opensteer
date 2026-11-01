@@ -1,3 +1,7 @@
+import {
+  BootstrapNoticeDiagnostics,
+  bootstrapDiagnosticHeader,
+} from "@opensteer/shared/bootstrapDiagnostics";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -54,6 +58,7 @@ import {
 import {
   createHostServer as createProductionHostServer,
   RunnerChallengeAdmission,
+  advertisedCapabilities,
 } from "../server.js";
 import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
 import { WorkspaceService } from "../workspace/workspace-service.js";
@@ -367,14 +372,19 @@ describe("Host signing keys", () => {
         capabilities: [
           "chat-attachments",
           "voice-v1",
+          "voice-agent-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "task-family-v1",
           "snapshot-messages-omit-v1",
+          "history-turns-v1",
           "shared-task-done-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
+          "browser-local-profiles-v1",
+          "browser-profile-prepare-v1",
+          "browser-initial-navigation-v1",
           "browser-frame-window-v1",
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
@@ -425,14 +435,19 @@ describe("Host signing keys", () => {
         capabilities: [
           "chat-attachments",
           "voice-v1",
+          "voice-agent-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "task-family-v1",
           "snapshot-messages-omit-v1",
+          "history-turns-v1",
           "shared-task-done-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
+          "browser-local-profiles-v1",
+          "browser-profile-prepare-v1",
+          "browser-initial-navigation-v1",
           "browser-frame-window-v1",
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
@@ -1927,6 +1942,7 @@ describe("Personal sharing boundary", () => {
         kind: "personal" as const,
       },
     });
+    const diagnostics = new BootstrapNoticeDiagnostics();
     const app = await createHostServer({
       requestResponseVault: {} as never,
       agentControl: {} as never,
@@ -1972,7 +1988,7 @@ describe("Personal sharing boundary", () => {
       egress: {} as never,
       files: {} as never,
       harnessAuthenticationCoordinator: {} as never,
-      realtime: testRealtime(),
+      realtime: testRealtime({ bootstrapDiagnostics: diagnostics }),
       runnerAuthenticator: {} as never,
       runners: { identityForEnvironment: () => undefined } as never,
       securityEffects: {} as never,
@@ -2005,6 +2021,31 @@ describe("Personal sharing boundary", () => {
       const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
       expect(bootstrap.statusCode).toBe(200);
       expect(rpcData(bootstrap)).toMatchObject({ workspaceSharingAvailable: false });
+      const warn = vi.spyOn(app.log, "warn");
+      const diagnostic = JSON.stringify({
+        windowMs: 3600,
+        triggers: { "host.machines.changed": 6 },
+        starts: { "host.machines.changed": 6 },
+      });
+      diagnostics.record("host.machines.changed", "computer-apps.status");
+      const observed = await injectRpcRequest(
+        app,
+        "bootstrap.get",
+        {},
+        { [bootstrapDiagnosticHeader]: diagnostic },
+      );
+      expect(observed.statusCode).toBe(200);
+      expect(rpcData(observed)).toEqual(rpcData(bootstrap));
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          starts: '{"host.machines.changed":6}',
+          notices: '{"host.machines.changed/computer-apps.status":1}',
+        }),
+        "host.bootstrap.loop",
+      );
+      await injectRpcRequest(app, "bootstrap.get", {}, { [bootstrapDiagnosticHeader]: diagnostic });
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
 
       const issued = await injectRpcRequest(app, "commands.dispatch", {
         idempotencyKey: "personal-share-attempt",
@@ -2161,6 +2202,26 @@ describe("thread event history route", () => {
         threadId,
       });
 
+      const turns = await injectRpcRequest(app, "thread.events.list", {
+        before: "17",
+        threadId,
+        turns: 10,
+      });
+      expect(turns.statusCode).toBe(200);
+      expect(threadEventPageForOwner).toHaveBeenLastCalledWith({
+        before: "17",
+        maxTurns: 10,
+        ownerId,
+        threadId,
+      });
+      // A turn page sizes itself; an event count beside it is a contradiction.
+      const turnsWithLimit = await injectRpcRequest(app, "thread.events.list", {
+        limit: 100,
+        threadId,
+        turns: 10,
+      });
+      expect(turnsWithLimit.statusCode).toBe(400);
+
       const invalidCursor = await injectRpcRequest(app, "thread.events.list", {
         before: "not a cursor",
         threadId,
@@ -2171,6 +2232,43 @@ describe("thread event history route", () => {
       const missing = await injectRpcRequest(app, "thread.events.list", { threadId });
       expect(missing.statusCode).toBe(404);
       expect(missing.json()).toMatchObject({ error: { code: "not_found" } });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("browser start command attribution", () => {
+  it("attributes only an authenticated person's explicit start", async () => {
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const profileId = "bpr_00000000-0000-4000-8000-000000000001";
+    const start = vi
+      .fn()
+      .mockRejectedValue(new OpensteerError({ code: "conflict", message: "test start" }));
+    const app = await createHostServer({
+      authenticator: { authenticateUser: async () => ownerId } as never,
+      browser: { start } as never,
+      discovery: testDiscovery,
+    });
+    try {
+      const response = await injectRpcRequest(app, "commands.dispatch", {
+        type: "browser.session.start",
+        workspaceId,
+        idempotencyKey: "person-browser-start",
+        input: { profileId, initialUrl: "https://person.example/" },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(start).toHaveBeenCalledExactlyOnceWith(
+        {
+          ownerId,
+          workspaceId,
+          profileId,
+          initialUrl: "https://person.example/",
+          reuseExisting: false,
+        },
+        { typed: false },
+      );
     } finally {
       await app.close();
     }
@@ -4555,3 +4653,85 @@ function volume(
     updated_unix: now,
   };
 }
+
+it("registers phone previews as a session mutation without durable command admission", async () => {
+  const session = testAuthenticatedSession(createId("user"));
+  const register = vi.fn(async () => undefined);
+  const authenticator = new HostAuthenticator({
+    identity: {
+      nativeOpenIdConfiguration: () => undefined,
+      authenticateNativeAccessToken: async () => ({
+        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+        application: "mobile",
+        clientId: "opensteer-mobile",
+        createdAt: new Date(session.createdAt),
+        expiresAt: new Date(session.expiresAt),
+        sessionId: session.id,
+        subject: session.user.id,
+      }),
+      requireSession: async () => session,
+      userSessionProfile: async () => session.user,
+    } as never,
+    publicUrl: new URL("https://opensteer.example"),
+  });
+  const previews = {
+    register,
+  } as unknown as import("../notifications/notification-preview-service.js").NotificationPreviewService;
+  const app = await createProductionHostServer(
+    hostServerTestDependencies({
+      authenticator,
+      discovery: testDiscovery,
+      notificationPreviews: previews,
+    }),
+  );
+  try {
+    const capabilityDependencies = {
+      attachments: {} as never,
+      authenticator,
+      notificationPreviews: previews,
+    };
+    expect(advertisedCapabilities(capabilityDependencies)).toContain("notification-preview-v1");
+    expect(advertisedCapabilities({ attachments: {} as never, authenticator })).not.toContain(
+      "notification-preview-v1",
+    );
+    const command = {
+      type: "notification.preview.register",
+      installationId: "phone-installation",
+      accountId: `acct_${crypto.randomUUID()}`,
+      keyId: Buffer.alloc(16).toString("base64url"),
+      key: Buffer.alloc(32).toString("base64url"),
+    };
+    const headers = { authorization: "Bearer native-phone" };
+    const response = await injectRpcRequest(app, "commands.dispatch", command, headers);
+    expect(rpcData(response)).toEqual({
+      type: command.type,
+      installationId: command.installationId,
+      keyId: command.keyId,
+      registered: true,
+    });
+    expect(register).toHaveBeenCalledWith({
+      ...command,
+      userId: session.user.id,
+      authSessionId: session.id,
+    });
+    expect(response.body).not.toContain(command.key);
+    const invalid = await injectRpcRequest(
+      app,
+      "commands.dispatch",
+      { ...command, key: "secret-invalid-key" },
+      headers,
+    );
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body).not.toContain("secret-invalid-key");
+    expect(register).toHaveBeenCalledTimes(1);
+    const spoof = await injectRpcRequest(
+      app,
+      "commands.dispatch",
+      { ...command, userId: createId("user") },
+      headers,
+    );
+    expect(spoof.statusCode).toBe(400);
+  } finally {
+    await app.close();
+  }
+});

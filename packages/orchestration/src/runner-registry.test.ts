@@ -309,48 +309,6 @@ describe("Runner connection registry", () => {
     expect(onCommandAccepted).not.toHaveBeenCalled();
   });
 
-  it("records a send synchronously before the peer can use its command, but never for a refused send", async () => {
-    const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
-    });
-    const environmentId = createId("environment");
-    const peer = new MemoryRunnerPeer("screen-runner");
-    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-screen"), peer);
-    const command = executeCommand(environmentId);
-    let recorded = false;
-    const send = peer.send.bind(peer);
-    vi.spyOn(peer, "send").mockImplementation(async (message) => {
-      if (message.type === "host.command") expect(recorded).toBe(true);
-      await send(message);
-    });
-    const dispatched = registry.dispatch(command, new AbortController().signal, {
-      onSending: () => {
-        recorded = true;
-      },
-    });
-    await vi.waitFor(() =>
-      expect(peer.messages.some((message) => message.type === "host.command")).toBe(true),
-    );
-    await registry.handle(peer, {
-      ...fenceOf(peer),
-      type: "runner.command-accepted",
-      commandId: command.commandId,
-      correlationId: command.correlationId,
-    });
-    await dispatched;
-    const neverSent = vi.fn();
-    await expect(
-      registry.dispatch(executeCommand(environmentId), new AbortController().signal, {
-        beforeSend: async () => {
-          throw new Error("revoked");
-        },
-        onSending: neverSent,
-      }),
-    ).rejects.toThrow("revoked");
-    expect(neverSent).not.toHaveBeenCalled();
-    await registry.close();
-  });
-
   it("survives its Runner disconnecting during an execute's last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -2631,7 +2589,7 @@ describe("Runner voice relay", () => {
     harnessInstanceId,
     offer: "private-offer",
   };
-  async function fixture(voice = true) {
+  async function fixture(voice = true, agent = false) {
     const registry = new RunnerRegistry({
       hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
     });
@@ -2640,11 +2598,49 @@ describe("Runner voice relay", () => {
     const identity = hello(createId("runner"), environmentId, "boot-1");
     await registerAttached(
       registry,
-      { ...identity, capabilities: voice ? ["voice-v1"] : [] },
+      {
+        ...identity,
+        capabilities: voice ? ["voice-v1", ...(agent ? ["voice-agent-v1" as const] : [])] : [],
+      },
       peer,
     );
     return { registry, environmentId, peer };
   }
+  it.each([false, true])(
+    "negotiates agent support %s without sending new fields to old Runners",
+    async (agent) => {
+      const f = await fixture(true, agent);
+      try {
+        const pending = f.registry.voice(
+          f.environmentId,
+          userId,
+          { ...command, agent: true },
+          new AbortController().signal,
+        );
+        const sent = f.peer.messages.at(-1);
+        if (sent?.type !== "host.voice") throw new Error("Voice request missing");
+        expect(sent.command).toEqual({ ...command, ...(agent ? { agent: true } : {}) });
+        await f.registry.handle(f.peer, {
+          ...fenceOf(f.peer),
+          type: "runner.voice",
+          requestId: sent.requestId,
+          result: { ok: true, answer: "answer", ...(agent ? { agent: true } : {}) },
+        });
+        expect(await pending).toEqual({ ok: true, answer: "answer", agent });
+        if (!agent)
+          await expect(
+            f.registry.voice(
+              f.environmentId,
+              userId,
+              { action: "next", sessionId, harnessInstanceId },
+              new AbortController().signal,
+            ),
+          ).rejects.toMatchObject({ reason: "voice-ended" });
+      } finally {
+        await f.registry.close();
+      }
+    },
+  );
   it("correlates fenced answers and refusals, ignoring late replies", async () => {
     const f = await fixture();
     try {

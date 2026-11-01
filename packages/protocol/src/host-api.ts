@@ -1,4 +1,4 @@
-import { ScreenPresentationInputSchema } from "./screen-presentation.js";
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
   WorkspaceTabsInputSchema,
   WorkspaceTabLineageSchema,
@@ -57,6 +57,9 @@ import {
   LocalPasswordRecoveryTokenSchema,
   MessageContentSchema,
   MessageIdSchema,
+  NotificationInstallationIdSchema,
+  NotificationPreviewKeyIdSchema,
+  NotificationPreviewKeySchema,
   MessageViewSchema,
   ModelSelectionSchema,
   OpensteerErrorCodeSchema,
@@ -154,17 +157,24 @@ import { z } from "zod";
 import {
   BrowserProfileNameSchema,
   BrowserProfileSchema,
+  BrowserProfileDeletionSchema,
   CreateBrowserProfileBodySchema,
   BrowserContextCandidateInputSchema,
   BrowserContextCandidateSchema,
   BrowserTabCloseCommandSchema,
   BrowserTabCloseResultSchema,
   BrowserTabOpenCommandSchema,
+  BrowserOpenIdentitySchema,
   BrowserTabOpenResultSchema,
   BrowserTabCatalogInputSchema,
   BrowserTabCatalogViewSchema,
   BrowserTabIconInputSchema,
   BrowserTabIconResultSchema,
+  BrowserHistoryIconsInputSchema,
+  BrowserHistoryIconsSchema,
+  BrowserHistoryInputSchema,
+  BrowserHistorySchema,
+  BrowserHistoryUrlSchema,
   browserUsageRunBatchSize,
   ThreadBrowserUsageSchema,
   CreateBrowserProfileGrantResponseSchema,
@@ -188,6 +198,7 @@ import {
   DurableWindowSchema,
   TaskPageSchema,
   ThreadEventPageSchema,
+  turnPageMaxTurns,
   ThreadMessagePageSchema,
   WorkspaceCatalogPageSchema,
   WorkspaceViewSchema,
@@ -227,7 +238,11 @@ import {
 } from "./runner.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import {
+  VoiceAnswerInputSchema,
+  VoiceContextInputSchema,
   VoiceEmptyResultSchema,
+  VoiceNextInputSchema,
+  VoiceNextResultSchema,
   VoiceRenewInputSchema,
   VoiceSayInputSchema,
   VoiceStartInputSchema,
@@ -456,7 +471,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.sendMessage"),
-    screenPresentation: ScreenPresentationInputSchema.optional(),
     quotedMessageId: MessageIdSchema.optional(),
   }),
   z.strictObject({
@@ -517,6 +531,13 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     workspaceId: WorkspaceIdSchema,
     muted: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("notification.preview.register"),
+    installationId: NotificationInstallationIdSchema,
+    accountId: ControlPlaneAccountIdSchema,
+    keyId: NotificationPreviewKeyIdSchema,
+    key: NotificationPreviewKeySchema,
   }),
   // The reader's IANA time zone, which a client reports from its own clock so
   // an agent asked for "5pm" means the person's 5pm.
@@ -973,9 +994,27 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.profile.delete"),
   }),
   z.strictObject({
+    type: z.literal("browser.profile.prepare"),
+    idempotencyKey: idempotencyKeySchema,
+    identity: BrowserOpenIdentitySchema,
+  }),
+  z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     sessionId: z.string().min(1),
     type: z.literal("browser.session.close"),
+  }),
+  /** Forgets one address from the person's own profile's history, and its site's icon when unused. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    url: BrowserHistoryUrlSchema,
+    type: z.literal("browser.history.remove"),
+  }),
+  /** Forgets the person's own profile's whole history and its retained icons. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    profileId: BrowserProfileIdSchema,
+    type: z.literal("browser.history.clear"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1101,6 +1140,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   WorkspaceNotificationPreferenceSchema.extend({
     type: z.literal("workspace.notifications.update"),
+  }),
+  z.object({
+    type: z.literal("notification.preview.register"),
+    installationId: NotificationInstallationIdSchema,
+    keyId: NotificationPreviewKeyIdSchema,
+    registered: z.literal(true),
   }),
   z.object({ timeZone: TimeZoneSchema, type: z.literal("viewer.timeZone.update") }),
   z.object({
@@ -1286,8 +1331,14 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   CreateBrowserProfileGrantResponseSchema.extend({ type: z.literal("browser.profile.grant") }),
   z.object({ type: z.literal("browser.profileGrant.revoke") }),
   z.object({ profile: BrowserProfileSchema, type: z.literal("browser.profile.rename") }),
-  z.object({ type: z.literal("browser.profile.delete") }),
+  z.object({
+    type: z.literal("browser.profile.delete"),
+    deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
+  }),
+  z.object({ type: z.literal("browser.profile.prepare") }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.history.remove") }),
+  z.object({ type: z.literal("browser.history.clear") }),
   z.object({
     revision: TriggerRevisionViewSchema,
     trigger: TriggerViewSchema,
@@ -1329,6 +1380,12 @@ export const hostApi = defineRpc({
   "workspace.tabs.get": declaration("GET", WorkspaceTabsInputSchema, WorkspaceTabLineageSchema),
   "browser.tabs.get": declaration("GET", BrowserTabCatalogInputSchema, BrowserTabCatalogViewSchema),
   "browser.tabIcon.get": declaration("GET", BrowserTabIconInputSchema, BrowserTabIconResultSchema),
+  "browser.history.get": declaration("GET", BrowserHistoryInputSchema, BrowserHistorySchema),
+  "browser.history.icons.get": declaration(
+    "GET",
+    BrowserHistoryIconsInputSchema,
+    BrowserHistoryIconsSchema,
+  ),
   /**
    * Where an Android phone reaches this Deployment now, as the Host itself
    * knows it — the target `runner.enrollment.createPhone` pairs with, read
@@ -1477,6 +1534,16 @@ export const hostApi = defineRpc({
   "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
   /** Ends a call. Ending one that is already over succeeds. */
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
+  /**
+   * The call agent's next tool call for this device, held open briefly while
+   * there is none. Unanswered calls are delivered again. Requires
+   * `voice-agent-v1` and a call started with `agent`.
+   */
+  "voice.next": declaration("POST", VoiceNextInputSchema, VoiceNextResultSchema),
+  /** This device's result for one tool call; answering twice keeps the first. */
+  "voice.answer": declaration("POST", VoiceAnswerInputSchema, VoiceEmptyResultSchema),
+  /** Replaces what the call's agent knows the person sees and can open. */
+  "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
   "integration.authorization.get": declaration(
     "GET",
     z.strictObject({ attemptId: IntegrationAuthorizationAttemptIdSchema }),
@@ -1611,11 +1678,20 @@ export const hostApi = defineRpc({
   "thread.events.list": declaration(
     "GET",
     z
-      .strictObject({ threadId: ThreadIdSchema, aroundMessageId: MessageIdSchema.optional() })
+      .strictObject({
+        threadId: ThreadIdSchema,
+        aroundMessageId: MessageIdSchema.optional(),
+        /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
+        turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
+      })
       .extend(durablePageInputSchema.shape)
       .refine(
         (input) => !input.aroundMessageId || !input.before,
         "An anchored read cannot also page",
+      )
+      .refine(
+        (input) => input.turns === undefined || (!input.aroundMessageId && !input.limit),
+        "A turn page sets its own size",
       ),
     ThreadEventPageSchema,
   ),

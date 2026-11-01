@@ -1119,6 +1119,10 @@ export const DesktopHostHttpRequestSchema = z.strictObject({
   headers: z.strictObject({
     accept: DesktopAcceptHeaderSchema.optional(),
     apiVersion: DesktopApiVersionSchema.optional(),
+    bootstrapDiagnostics: z
+      .string()
+      .regex(/^[\x20-\x7e]{1,2048}$/u)
+      .optional(),
     contentType: z.literal("application/json").optional(),
     idempotencyKey: DesktopIdempotencyKeySchema.optional(),
   }),
@@ -1601,8 +1605,6 @@ export const DesktopBrowserPresentationEventSchema = z.discriminatedUnion("type"
   }),
   z.strictObject({ key: DesktopForwardedKeySchema, type: z.literal("key") }),
   z.strictObject({ focused: z.boolean(), type: z.literal("window-focus") }),
-  /** The person pressed or typed into this window's shown page; never what or where. */
-  z.strictObject({ type: z.literal("page-input") }),
 ]);
 export type DesktopBrowserPresentationEvent = z.infer<typeof DesktopBrowserPresentationEventSchema>;
 

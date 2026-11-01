@@ -853,10 +853,11 @@ class CodexHarnessAdapter implements HarnessAdapter {
           input.providerState,
           this.#source,
         );
+        // Codex dispatches dynamic tools through code mode, even with shell tools disabled.
         const features = Object.fromEntries(
           Object.entries(await codexFeatureBoundary(this.#launch)).map(([name, approved]) => [
             name,
-            name === "unified_exec" && approved,
+            approved && (name === "unified_exec" || (input.agent && name === "code_mode_host")),
           ]),
         );
         return {
@@ -3512,12 +3513,10 @@ async function assertCodexMcpBoundary(
         throw protocolError(`Opensteer MCP server ${name} exposed unsupported resources`);
       }
       const actualTools = Object.keys(tools);
-      // Negotiated tools can be absent on an older Host or ineligible Run.
-      // All other operations and both managed servers remain required.
+      // Older Hosts do not advertise the negotiated computer REPL. Other
+      // gateway operations and the agent-control server remain required.
       const requiredTools = [...expectedTools].filter(
-        (tool) =>
-          (name !== "opensteer_integrations" || tool !== "computer") &&
-          (name !== "opensteer" || tool !== "screen_show"),
+        (tool) => name !== "opensteer_integrations" || tool !== "computer",
       );
       const missingTools = requiredTools.filter((tool) => !actualTools.includes(tool));
       const extraTools = actualTools.filter((tool) => !expectedTools.has(tool));

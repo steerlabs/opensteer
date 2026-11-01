@@ -4664,6 +4664,12 @@ export function migrationProvider() {
         "0114_run_started_by": runStartedByMigration,
         "0115_better_auth_17": betterAuth17Migration,
         "0116_screen_show": screenShowMigration,
+        "0117_remove_screen_show": removeScreenShowMigration,
+        "0118_browser_history": browserHistoryMigration,
+        "0119_person_notifications": personNotificationsMigration,
+        "0120_notification_preview_keys": notificationPreviewKeysMigration,
+        "0121_native_browser_profiles": nativeBrowserProfilesMigration,
+        "0122_thread_event_history": threadEventHistoryMigration,
       };
     },
   };
@@ -6290,5 +6296,177 @@ export const screenShowMigration: Migration = {
         .raw(`alter table agent_control_requests add constraint ${name} ${next}`)
         .execute(database);
     }
+  },
+};
+
+/** Voice moved screen changes onto the call's own agent; no Run requests them any more. */
+export const removeScreenShowMigration: Migration = {
+  async up(database) {
+    await sql`
+      delete from agent_control_requests
+      where action = 'screen.show' or action_class = 'screen.show'
+    `.execute(database);
+    for (const column of ["action", "action_class"] as const) {
+      const name = `agent_control_requests_${column}_check`;
+      const result = await sql<{ definition: string }>`
+        select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid = 'agent_control_requests'::regclass and conname = ${name}
+      `.execute(database);
+      const definition = result.rows[0]?.definition;
+      const added = ", 'screen.show'::text";
+      if (!definition?.includes(added))
+        throw new Error(`Cannot narrow ${name} after screen presentation`);
+      await sql.raw(`alter table agent_control_requests drop constraint ${name}`).execute(database);
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint ${name} ${definition.replace(added, "")}`,
+        )
+        .execute(database);
+    }
+  },
+};
+
+export const browserHistoryMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table browser_history_entries (
+        profile_id text not null references browser_profiles(id) on delete cascade,
+        url text not null,
+        origin text not null,
+        title varchar(200) not null,
+        typed_count integer not null check (typed_count >= 0),
+        visit_count integer not null check (visit_count > 0),
+        last_visit_at timestamptz not null,
+        primary key (profile_id, url)
+      );
+      create index browser_history_entries_newest on browser_history_entries (profile_id, last_visit_at desc, url);
+      create table browser_history_icons (
+        profile_id text not null references browser_profiles(id) on delete cascade,
+        origin text not null,
+        icon_ref text not null,
+        favicon text not null,
+        primary key (profile_id, origin)
+      );
+    `.execute(database);
+  },
+};
+
+const personNotificationsMigration: Migration = {
+  async up(database) {
+    await database.schema
+      .alterTable("messages")
+      .addColumn("addressed_to_user_id", "text")
+      .execute();
+    await database.schema
+      .alterTable("agent_control_requests")
+      .addColumn("result_message_id", "text")
+      .execute();
+    await sql`alter table agent_control_requests
+      drop constraint agent_control_requests_action_mapping_check,
+      add constraint agent_control_requests_action_mapping_check check (
+        action_class = case
+          when action = 'workspace.list' then 'workspace.inspect'
+          when action = 'person.notify' then 'thread.message'
+          else action end
+      )`.execute(database);
+    const result = await sql<{
+      definition: string;
+    }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'public.agent_control_requests'::regclass and conname = 'agent_control_requests_action_check'`.execute(
+      database,
+    );
+    const definition = result.rows[0]?.definition;
+    if (!definition?.includes("'thread.message'::text"))
+      throw new Error("Cannot extend agent-control actions for person notifications");
+    await sql`alter table agent_control_requests drop constraint agent_control_requests_action_check`.execute(
+      database,
+    );
+    await sql
+      .raw(
+        `alter table agent_control_requests add constraint agent_control_requests_action_check ${definition.replace("'thread.message'::text", "'thread.message'::text, 'person.notify'::text")}`,
+      )
+      .execute(database);
+  },
+};
+
+export const notificationPreviewKeysMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table notification_preview_keys (
+        user_id text not null references users(id) on delete cascade,
+        installation_id text not null,
+        auth_session_id text not null references auth_sessions(id) on delete cascade,
+        account_id text not null,
+        key_id text not null,
+        encrypted_key bytea not null,
+        encryption_key_version integer not null,
+        created_at timestamptz not null,
+        updated_at timestamptz not null,
+        primary key (user_id, installation_id)
+      );
+      create index notification_preview_keys_auth_session_id on notification_preview_keys(auth_session_id);
+    `.execute(database);
+  },
+};
+
+export const nativeBrowserProfilesMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table browser_profiles
+        add column storage_state text not null default 'vault' check (storage_state in ('vault', 'initializing', 'local')),
+        add column storage_binding_version integer check (storage_binding_version = 1),
+        add column storage_deployment_id text references deployments(id),
+        add column storage_runner_id text references runners(id),
+        add column storage_instance_id uuid,
+        add column storage_binding_id uuid unique,
+        add column storage_engine text check (storage_engine in ('electron', 'chromium')),
+        add column frozen_seed_revision bigint check (frozen_seed_revision between 0 and 9007199254740991),
+        add column frozen_seed_digest text check (frozen_seed_digest ~ '^[a-f0-9]{64}$'),
+        add column initialization_token_hash text check (initialization_token_hash ~ '^[a-f0-9]{64}$'),
+        add column initialization_token_expires_at timestamptz,
+        add constraint browser_profiles_storage_binding_check check (
+          (storage_state = 'vault'
+            and storage_binding_version is null and storage_deployment_id is null
+            and storage_runner_id is null and storage_instance_id is null
+            and storage_binding_id is null and storage_engine is null
+            and frozen_seed_revision is null and frozen_seed_digest is null)
+          or (storage_state in ('initializing', 'local')
+            and storage_binding_version is not null and storage_deployment_id is not null
+            and storage_runner_id is not null and storage_instance_id is not null
+            and storage_binding_id is not null and storage_engine is not null
+            and frozen_seed_revision is not null and frozen_seed_digest is not null)
+        ),
+        add constraint browser_profiles_initialization_token_check check (
+          (initialization_token_hash is null and initialization_token_expires_at is null)
+          or (storage_state = 'initializing'
+            and initialization_token_hash is not null and initialization_token_expires_at is not null)
+        );
+      create index browser_profiles_storage_owner on browser_profiles (storage_runner_id, storage_instance_id);
+      create table browser_profile_deletions (
+        deletion_id uuid primary key,
+        profile_id text not null unique references browser_profiles(id),
+        binding_version integer not null check (binding_version = 1),
+        deployment_id text not null references deployments(id),
+        runner_id text not null references runners(id),
+        storage_instance_id uuid not null,
+        binding_id uuid not null,
+        engine text not null check (engine in ('electron', 'chromium')),
+        state text not null check (state in ('pending-computer', 'pending-restart', 'deleted')),
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        deleted_at timestamptz,
+        constraint browser_profile_deletions_completion_check check ((state = 'deleted') = (deleted_at is not null))
+      );
+      create index browser_profile_deletions_pending on browser_profile_deletions (runner_id, storage_instance_id) where state <> 'deleted';
+    `.execute(database);
+  },
+};
+
+/** A Thread's history is read newest first from its own events, never the Workspace's. */
+export const threadEventHistoryMigration: Migration = {
+  async up(database) {
+    await sql`
+      create index workspace_events_thread_history
+        on public.workspace_events (thread_id, sequence) include (type)
+    `.execute(database);
   },
 };

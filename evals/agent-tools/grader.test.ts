@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { grade, majority, partialMatch } from "./grader.js";
@@ -31,27 +32,6 @@ describe("case boundary failure modes", () => {
   it("parses defaults and identifies line numbers", () => {
     expect(parseCases(line())[0]?.expect.maxInvalidCalls).toBe(0);
     expect(() => parseCases(`${line()}\n{`)).toThrow(/line 2/);
-  });
-  it("validates identified input context without admitting routing credentials", () => {
-    const turn = {
-      text: "Show that conversation",
-      messageId: "msg_00000000-0000-4000-8000-000000000001",
-      presentationContext: { currentThreadId: "thr_00000000-0000-4000-8000-000000000001" },
-    };
-    expect(parseCases(line({ turns: [turn] }))[0]?.turns).toEqual([turn]);
-    expect(() => parseCases(line({ turns: [{ ...turn, messageId: "invalid" }] }))).toThrow();
-    expect(() =>
-      parseCases(
-        line({
-          turns: [
-            {
-              ...turn,
-              presentationContext: { ...turn.presentationContext, endpointRef: "private" },
-            },
-          ],
-        }),
-      ),
-    ).toThrow();
   });
 });
 describe("trajectory grading failure modes", () => {
@@ -89,4 +69,11 @@ describe("trajectory grading failure modes", () => {
     expect(majority([true, false])).toBe(false);
     expect(majority([true, false, true])).toBe(true);
   });
+});
+
+it("parses all orchestration cases including person notification guards", async () => {
+  const cases = parseCases(
+    await readFile(new URL("./cases/orchestration.ndjson", import.meta.url), "utf8"),
+  );
+  expect(cases.filter((value) => value.id.startsWith("person-notify-"))).toHaveLength(7);
 });

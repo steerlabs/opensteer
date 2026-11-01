@@ -10,7 +10,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId, RunnerCapabilitySchema, type Thread, type Workspace } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
@@ -84,20 +84,9 @@ export async function startFakeHost(testCase: EvalCase) {
   if (!address || typeof address === "string") throw new Error("No eval listener");
   const url = new URL(`http://127.0.0.1:${address.port}`);
   const agent = new AgentToolsMcpService({
-    // This fixture evaluates the proposed enabled inventory, not production authority admission.
-    allowMainChatRunScreenShow: true,
     publicUrl: url,
     agentControl: { handle: async () => unavailable() },
-    runnerCapabilities: async () => RunnerCapabilitySchema.options,
-    store: {
-      getThreadForOwner: async () =>
-        ({
-          id: scope.threadId,
-          role: testCase.role,
-          capabilityProfileId: testCase.profile,
-        }) as Thread,
-      findMainWorkspaceForOwner: async () => ({ homeThreadId: scope.threadId }) as Workspace,
-    },
+    store: { getThreadForOwner: async () => null },
     tokens: agentTokens,
   });
   const integrations = new IntegrationToolsMcpService({
@@ -225,6 +214,12 @@ export async function startFakeHost(testCase: EvalCase) {
                 offset < result.$responses.length
                   ? result.$responses[offset]
                   : { status: "unavailable", message: "Case mock response sequence exhausted" };
+            }
+            if (isRecord(result) && typeof result.$error === "string") {
+              return {
+                isError: true,
+                content: [{ type: "text", text: result.$error }],
+              };
             }
             return {
               content: [{ type: "text", text: JSON.stringify(result) }],

@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeHasAgents, placeList, type HostSnapshot } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
@@ -20,12 +21,64 @@ import {
   settle,
   element,
   click,
+  isMockPage,
   pageTab,
   tabSearch,
   write,
   setRoot,
+  deferred,
 } from "./workspace.interaction.test-support.js";
 describe("workspace tab commands", () => {
+  it("closes a pending row immediately and never selects its exact late tab", async () => {
+    const gate = deferred<void>();
+    let completion: Promise<unknown> = Promise.resolve();
+    await mount((source) => {
+      const dispatch = source.rpc["commands.dispatch"];
+      const delayed: typeof dispatch = async (command, options) => {
+        if (command.type === "browser.tab.open")
+          await withTimeout(gate.promise, 2_000, {
+            timeoutError: () => new Error("The delayed browser command was never released."),
+          });
+        return dispatch(command, options);
+      };
+      Object.defineProperty(source, "rpc", {
+        value: new Proxy(source.rpc, {
+          get: (target, name) =>
+            name === "commands.dispatch" ? delayed : Reflect.get(target, name),
+        }),
+      });
+      const session = source
+        .getSnapshot()
+        .browserSessions.find((session) => session.profileId && session.state === "ready")!;
+      localStorage.setItem(
+        `opensteer.browse-with.v1:${encodeURIComponent(source.getSnapshot().deploymentId!)}:${encodeURIComponent(source.getSnapshot().user!.id)}`,
+        JSON.stringify({ kind: "profile", profileId: session.profileId }),
+      );
+      const begin = source.beginBrowserTabOpen;
+      vi.spyOn(source, "beginBrowserTabOpen").mockImplementation((target, options) => {
+        const opening = begin(target, options);
+        completion = opening.result;
+        return opening;
+      });
+      return {
+        pathname: "/",
+        search: "?panel=browser",
+        state: { startId: "dismiss", startAddress: "https://dismiss.example/", startOpen: true },
+      };
+    });
+    const close = vi.spyOn(client, "closeBrowserTab");
+    const key = client.getSnapshot().pendingBrowserTabs![0]!.idempotencyKey;
+    await click(element(`.side-tab[data-place-key="pending:${key}"] .side-tab__close`));
+    expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    expect(new URLSearchParams(history.at(-1)!.search).has("pendingBrowserTab")).toBe(false);
+    await act(async () => {
+      gate.resolve();
+      await completion;
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(new URLSearchParams(history.at(-1)!.search).has("browserTab")).toBe(false);
+  });
+
   let receive: ((command: DesktopWorkspaceTabCommand) => void) | null = null;
   function nativeMenu() {
     const unsubscribe = vi.fn(() => {
@@ -300,6 +353,64 @@ describe("tabs that read like a browser's", () => {
     expect(document.querySelector(".side-tab.is-active")).toBeNull();
   });
 
+  it("Tabs with agents lists the places tasks are in, keeps the tab in front, narrows with a profile and clears back", async () => {
+    const quietOf = (source: MockHostClient) =>
+      placeList(source.getSnapshot()).find(
+        (place) => place.kind === "browser" && isMockPage(place, source) && !placeHasAgents(place),
+      )!;
+    await mount((source) => `/${tabSearch(quietOf(source))}`);
+    const places = placeList(client.getSnapshot());
+    const quiet = quietOf(client);
+    const busy = places.filter(placeHasAgents).map((place) => place.key);
+    expect(busy.length).toBeGreaterThan(0);
+    expect(busy.length).toBeLessThan(places.length);
+    const filter = () => element<HTMLButtonElement>(".side-tab-filter");
+    const option = (label: string) => {
+      const found = [
+        ...document.querySelectorAll<HTMLElement>(".popover [role=menuitemradio]"),
+      ].find((node) => node.getAttribute("aria-label") === label);
+      if (!found) throw new Error(`Missing filter option ${label}`);
+      return found;
+    };
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
+    await click(filter());
+    expect(option("All tabs").getAttribute("aria-checked")).toBe("true");
+    expect(option("Tabs with agents").getAttribute("aria-description")).toBe(`${busy.length} tabs`);
+    await click(option("Tabs with agents"));
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs: Tabs with agents");
+    expect(filter().textContent).toBe("With agents");
+    // The tab in front stays where it is in the list; the others without an agent go.
+    expect(rowKeys()).toEqual(
+      places.flatMap(({ key }) => (busy.includes(key) || key === quiet.key ? [key] : [])),
+    );
+    expect(row(quiet.key).classList.contains("is-active")).toBe(true);
+    await click(main(busy[0]!));
+    expect(rowKeys()).toEqual(busy);
+    // A profile no task works in leaves nothing, and says why.
+    const idle = places.find(
+      (place) =>
+        place.identity &&
+        !places.some(
+          (other) =>
+            placeHasAgents(other) &&
+            other.identity?.kind === place.identity!.kind &&
+            other.identity.name === place.identity!.name,
+        ),
+    )!.identity!;
+    await click(filter());
+    expect(option(idle.name).getAttribute("aria-description")).toBe("0 tabs");
+    await click(option(idle.name));
+    expect(filter().getAttribute("aria-label")).toBe(`Filter tabs: ${idle.name} tabs with agents`);
+    expect(element(".side-section--tabs .sidebar__empty").textContent).toBe(
+      "No tasks are using tabs in this profile.",
+    );
+    expect(rowKeys()).toEqual([busy[0]]);
+    await click(element(".side-tab-filter__clear"));
+    expect(rowKeys()).toEqual(places.map(({ key }) => key));
+    expect(document.querySelector(".side-section--tabs .sidebar__empty")).toBeNull();
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
+  });
+
   it("shows only the profile in the toolbar until its menu names the computer", async () => {
     let busyClient!: MockHostClient;
     await mount("/", {
@@ -525,12 +636,12 @@ describe("tabs that read like a browser's", () => {
     expect(history.length).toBe(before);
   });
 
-  it("a loading tab shows a spinner in place of its icon; the toolbar's Reload becomes Stop and stops it", async () => {
+  it("a loading tab keeps a neutral mark; the toolbar's Reload becomes Stop and stops it", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const { sessionId, tabId } = browserOf(place);
-    const spinning = () => row(place.key).querySelector(".place-mark--loading") !== null;
-    expect(spinning()).toBe(false);
+    const loading = () => main(place.key).getAttribute("aria-label")?.includes("loading") ?? false;
+    expect(loading()).toBe(false);
     expect(element(".browser-controls [aria-label='Reload page']")).toBeTruthy();
     await act(async () => {
       client.sendBrowserCommand(sessionId, {
@@ -539,15 +650,17 @@ describe("tabs that read like a browser's", () => {
       });
     });
     await settle(60);
-    expect(spinning()).toBe(true);
+    expect(loading()).toBe(true);
+    expect(row(place.key).querySelector(".site-mark")?.textContent).toBe("");
+    expect(row(place.key).querySelector(".place-mark .spinner")).toBeNull();
     expect(main(place.key).getAttribute("aria-label")).toContain("loading");
     const send = vi.spyOn(client, "sendBrowserCommand");
     await click(element(".browser-controls [aria-label='Stop loading']"));
     expect(send).toHaveBeenCalledWith(sessionId, { surfaceId: tabId, type: "navigation.stop" });
     await settle(60);
-    expect(spinning()).toBe(false);
+    expect(loading()).toBe(false);
     expect(element(".browser-controls [aria-label='Reload page']")).toBeTruthy();
-    // A load that finishes by itself takes its spinner with it.
+    // A completed load no longer marks the tab as loading.
     await act(async () => {
       client.sendBrowserCommand(sessionId, {
         surfaceId: BrowserSurfaceIdSchema.parse(tabId),
@@ -555,9 +668,9 @@ describe("tabs that read like a browser's", () => {
       });
     });
     await settle(60);
-    expect(spinning()).toBe(true);
+    expect(loading()).toBe(true);
     await settle(1_200);
-    expect(spinning()).toBe(false);
+    expect(loading()).toBe(false);
   });
 
   it("the address: a click selects the whole address; Esc restores it and keeps the field; Enter navigates and hands the keyboard on", async () => {
@@ -599,6 +712,7 @@ describe("tabs that read like a browser's", () => {
       surfaceId: tabId,
       type: "navigation.go",
       url: "https://example.org/",
+      typed: true,
     });
     // The edit is done: the keyboard goes to the page where it can take it, never to the body.
     expect(document.querySelector(".browser-address__go")).toBeNull();

@@ -1,3 +1,4 @@
+import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransportError } from "@opensteer/client/connections";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 import type {
@@ -439,17 +440,20 @@ function hostMethod(value: string): "DELETE" | "GET" | "PATCH" | "POST" | "PUT" 
 function hostRequestHeaders(headers: Headers): {
   accept?: string;
   apiVersion?: string;
+  bootstrapDiagnostics?: string;
   contentType?: "application/json" | "application/octet-stream";
   idempotencyKey?: string;
 } {
   const output: {
     accept?: string;
     apiVersion?: string;
+    bootstrapDiagnostics?: string;
     contentType?: "application/json" | "application/octet-stream";
     idempotencyKey?: string;
   } = {};
   for (const [name, value] of headers) {
     if (name === "accept") output.accept = value;
+    else if (name === bootstrapDiagnosticHeader) output.bootstrapDiagnostics = value;
     else if (name === hostApiVersionHeader) output.apiVersion = value;
     else if (
       name === "content-type" &&

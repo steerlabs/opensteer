@@ -1,8 +1,13 @@
+import { randomUUID } from "node:crypto";
+import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
+import {
+  HttpProfileInitializationClient,
+  type ProfileInitializationClient,
+} from "./profile-initialization-client.js";
 import { HostRelayAuthenticator } from "./passkeys/host-relay.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
-import { createHash } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -11,17 +16,16 @@ import {
   SessionCdpRouter,
 } from "@opensteer/browser-core";
 import {
-  EmptyBrowserProfileSnapshot,
-  type BrowserProfileSnapshot,
-  type BrowserOriginCaptureFailure,
-} from "@opensteer/browser-profile/snapshot";
-import {
-  browserStateImportRuntimeTimeoutMs,
   type BrowserAttachTicketClaims,
+  type BrowserPreparationTicketClaims,
   type BrowserSessionId,
   type BrowserSurfaceId,
+  type InitialPageReady,
+  type LocalProfileBinding,
+  type HeldLocalProfile,
+  type BrowserEngine,
 } from "@opensteer/protocol";
-import { AsyncMutex, settleCleanup } from "./async.js";
+import { AsyncMutex, LifecycleLanes, settleCleanup } from "./async.js";
 import type {
   BrowserLauncher,
   BrowserPartitionKey,
@@ -36,35 +40,21 @@ import type {
 } from "./browser/presentation.js";
 import { HostSignIns } from "./browser/host-sign-ins.js";
 import type { BrowserLoginAuthority } from "./browser/sign-in.js";
-import { SessionFiles } from "./browser/session-files.js";
+import { SessionFiles, sessionFilesRoot } from "./browser/session-files.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { AttachTicketVerifier } from "./security/attach-ticket.js";
 import {
   isProfileAttachTicketClaims,
-  type BrowserProfileAttachTicketClaims,
   type BrowserProfileStateClient,
-} from "./profile-state-client.js";
+} from "./legacy-snapshot-adapter.js";
+import { LegacySnapshotAdapter, type BrowserCheckpointFailure } from "./legacy-snapshot-adapter.js";
+export type { BrowserCheckpointFailure } from "./legacy-snapshot-adapter.js";
 
 export type BrowserRuntimeState = "closed" | "closing" | "idle" | "ready" | "starting";
 
-const profileSnapshotTimeoutMs = 15_000;
-// Includes the existing 20 s import drain and one bounded save request.
-const profileCloseTimeoutMs = browserStateImportRuntimeTimeoutMs + profileSnapshotTimeoutMs;
-type CheckpointStage =
-  "quiesce" | "imports" | "checkpoint-lock" | "snapshot" | "host-commit" | "browser-close";
-
-export interface BrowserCheckpointFailure {
-  readonly runtimeId: string;
-  readonly profileId: string;
-  readonly sessionId: string;
-  readonly phase: "periodic" | "final";
-  readonly stage: CheckpointStage;
-  readonly elapsedMs: number;
-  readonly error: BrowserRuntimeError;
-}
-
-interface BrowserRuntimeOptions {
+const shutdownAdmissionTimeoutMs = 15_000;
+export interface BrowserRuntimeOptions {
   /** How often an in-use profile's changed state is saved; a clean close always saves. */
   checkpointIntervalMs?: number;
   checkpointRetryMs?: number;
@@ -74,6 +64,12 @@ interface BrowserRuntimeOptions {
   maxProfileHosts?: number;
   maxSessionsPerProfile?: number;
   profileStateClient: BrowserProfileStateClient;
+  /**
+   * The caller must own this root exclusively for the process lifetime (desktop
+   * application lock or standalone OS lock). Only one live runtime may use it.
+   */
+  localProfiles?: { readonly root: string };
+  initializationClient?: ProfileInitializationClient;
   runtimeId: string;
   /** Emptied on first use; each live session stages page-bound files beneath it. */
   sessionFilesRoot: string;
@@ -84,6 +80,7 @@ interface BrowserRuntimeOptions {
   loginAuthority?: BrowserLoginAuthority;
   ticketVerifier: AttachTicketVerifier;
   onCheckpointFailure?: (diagnostic: BrowserCheckpointFailure) => void;
+  onOpenTiming?: (diagnostic: BrowserOpenTiming) => void;
   onStartFailure?: (diagnostic: {
     readonly correlationId: string;
     readonly stage: string;
@@ -91,7 +88,20 @@ interface BrowserRuntimeOptions {
   }) => void;
 }
 
+export interface BrowserOpenTiming {
+  readonly correlationId: string;
+  readonly stage: "lane-wait" | "profile-acquire" | "root-page-ready" | "navigation-submitted";
+  readonly elapsedMs: number;
+  readonly elapsedSinceStartMs: number;
+  readonly acquisition?: "warm" | "cold" | "conversion" | "legacy" | "guest";
+}
+
 export interface BrowserRuntimeHealth {
+  initialNavigationVersion: 1;
+  localProfiles?: 1;
+  profilePrepare?: 1;
+  profilePrepareInstanceId?: string;
+  localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   checkpointFailures: number;
   profileHostCount: number;
   runtimeId: string;
@@ -110,18 +120,10 @@ interface ActiveSession {
   readonly presentations: Set<() => void>;
 }
 
-/**
- * A host's identity, fixed when it launches. Durable profile state — the lease
- * claims and the revision a checkpoint builds on — exists only on the profile
- * arm, so a fresh host has nothing to commit and no way to name a profile.
- */
 interface ProfileHostIdentity {
   readonly key: BrowserPartitionKey;
   readonly kind: "profile";
-  /** Digest of the state the current revision holds, so unchanged state is not saved again. */
-  profileDigest: string;
-  profileRevision: number;
-  profileStateClaims: BrowserProfileAttachTicketClaims;
+  readonly snapshot: LegacySnapshotAdapter;
 }
 
 interface FreshHostIdentity {
@@ -129,21 +131,21 @@ interface FreshHostIdentity {
   readonly kind: "fresh";
 }
 
-type BrowserHostIdentity = FreshHostIdentity | ProfileHostIdentity;
+interface NativeHostIdentity {
+  readonly key: BrowserPartitionKey;
+  readonly kind: "local";
+  readonly binding: LocalProfileBinding;
+}
+type BrowserHostIdentity = FreshHostIdentity | ProfileHostIdentity | NativeHostIdentity;
 
-interface BrowserHost {
+export interface BrowserHost {
   acceptingSessions: boolean;
+  lastUsed: number;
   passkeys: HostRelayAuthenticator | undefined;
   readonly passkeysEnabled: boolean;
   holdUntilClosed: boolean;
   browser: LaunchedBrowser;
-  /** Serializes every profile commit, periodic or final, against one revision chain. */
-  readonly checkpoints: AsyncMutex;
-  checkpointTimer: NodeJS.Timeout | null;
   cleanup: { readonly result: Promise<void> } | null;
-  snapshotExport: Promise<BrowserProfileSnapshot> | null;
-  finalSnapshotSaved: boolean;
-  closeTimer: NodeJS.Timeout | null;
   generation: number;
   identity: BrowserHostIdentity;
   onBrowserClose: () => void;
@@ -151,6 +153,7 @@ interface BrowserHost {
   router: SessionCdpRouter;
   sessions: Map<string, ActiveSession>;
   readonly signIns: HostSignIns;
+  readonly helperCancellation: AbortController;
   /**
    * Every session on a host shares its cookie jar, so sign-ins arriving through
    * different sessions apply one after another rather than interleaving their
@@ -166,18 +169,25 @@ interface BrowserHost {
  * from the profile namespace.
  */
 function browserHostKey(claims: BrowserAttachTicketClaims): BrowserPartitionKey {
-  return claims.identity.kind === "profile"
-    ? `profile:${claims.identity.profileId}`
-    : `session:${claims.sessionId}`;
+  return claims.identity.kind === "fresh"
+    ? `session:${claims.sessionId}`
+    : `profile:${claims.identity.kind === "profile" ? claims.identity.profileId : claims.identity.binding.profileId}`;
 }
 
 export class BrowserAttachment {
+  readonly initialPage?: InitialPageReady;
   private closePromise: Promise<void> | null = null;
   private readonly controller: BrowserController;
   private readonly detach: () => Promise<void>;
   readonly sessionId: string;
 
-  constructor(sessionId: string, controller: BrowserController, detach: () => Promise<void>) {
+  constructor(
+    sessionId: string,
+    controller: BrowserController,
+    detach: () => Promise<void>,
+    initialPage?: InitialPageReady,
+  ) {
+    if (initialPage) this.initialPage = initialPage;
     this.sessionId = sessionId;
     this.controller = controller;
     this.detach = detach;
@@ -208,7 +218,37 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly launcher: BrowserLauncher;
   private readonly maxProfileHosts: number;
   private readonly maxSessionsPerProfile: number;
-  private readonly mutex = new AsyncMutex();
+  private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
+  private readonly profilePrepareInstanceId = randomUUID();
+  private readonly preparationAttempts = new Set<string>();
+  private reservations = 0;
+  private speculative:
+    | {
+        controller: AbortController;
+        profileId: string;
+        host: BrowserHost | undefined;
+        consumed: boolean;
+      }
+    | undefined;
+  private readonly pendingSessions = new Set<string>();
+  private usage = 0;
+  private readonly onOpenTiming: NonNullable<BrowserRuntimeOptions["onOpenTiming"]>;
+  private readonly localProfilesOptions: BrowserRuntimeOptions["localProfiles"];
+  private localStore: LocalProfileStore | undefined;
+  private readonly initializationClient: ProfileInitializationClient;
+  private readonly deletedProfiles = new Set<string>();
+  private readonly deletions = new Map<
+    string,
+    {
+      binding: LocalProfileBinding;
+      deletionId: string;
+      result: Promise<"pending-restart" | "deleted">;
+    }
+  >();
+  private readonly initialOperations = new Map<
+    string,
+    { fingerprint: string; sessionId: string; result?: InitialPageReady }
+  >();
   private readonly hosts = new Map<BrowserPartitionKey, BrowserHost>();
   private readonly profileStateClient: BrowserProfileStateClient;
   private readonly runtimeId: string;
@@ -241,6 +281,10 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.idleProfileHostTimeoutMs = options.idleProfileHostTimeoutMs ?? 0;
     this.launcher = options.launcher;
+    this.onOpenTiming = options.onOpenTiming ?? (() => {});
+    this.localProfilesOptions = options.localProfiles;
+    this.initializationClient =
+      options.initializationClient ?? new HttpProfileInitializationClient();
     this.maxProfileHosts = options.maxProfileHosts ?? 8;
     this.maxSessionsPerProfile = options.maxSessionsPerProfile ?? 32;
     this.profileStateClient = options.profileStateClient;
@@ -252,6 +296,18 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new TypeError("sessionFilesRoot must be an absolute normalized path.");
     }
     this.sessionFilesRoot = options.sessionFilesRoot;
+    if (options.localProfiles) {
+      const localRoot = options.localProfiles.root;
+      if (!path.isAbsolute(localRoot) || path.resolve(localRoot) !== localRoot)
+        throw new TypeError("localProfiles.root must be an absolute normalized path.");
+      if (
+        localRoot === this.sessionFilesRoot ||
+        localRoot.startsWith(this.sessionFilesRoot + path.sep) ||
+        (this.sessionFilesRoot.startsWith(localRoot + path.sep) &&
+          this.sessionFilesRoot !== sessionFilesRoot(localRoot))
+      )
+        throw new TypeError("Local profiles and disposable session files must use separate roots.");
+    }
     this.loginAuthority = options.loginAuthority;
     this.onCheckpointFailure =
       options.onCheckpointFailure ??
@@ -290,6 +346,19 @@ export class BrowserRuntime implements NativePresentationSource {
 
   health(): BrowserRuntimeHealth {
     return {
+      initialNavigationVersion: 1,
+      ...(this.localProfileStorage
+        ? {
+            localProfiles: 1,
+            localProfileStorage: this.localProfileStorage,
+            ...(this.launcher.localProfiles?.preparation
+              ? {
+                  profilePrepare: 1 as const,
+                  profilePrepareInstanceId: this.profilePrepareInstanceId,
+                }
+              : {}),
+          }
+        : {}),
       checkpointFailures: this.checkpointFailures,
       profileHostCount: this.hosts.size,
       runtimeId: this.runtimeId,
@@ -302,6 +371,12 @@ export class BrowserRuntime implements NativePresentationSource {
     if (this.shuttingDown || this.state === "closed")
       return Promise.reject(new Error("The Browser Runtime is shutting down."));
     this.preparation ??= (async () => {
+      if (this.localProfilesOptions && this.launcher.localProfiles) {
+        this.localStore = await LocalProfileStore.acquire(
+          this.localProfilesOptions.root,
+          this.launcher.localProfiles.engine,
+        );
+      }
       for (let attempt = 0; ; attempt += 1) {
         try {
           // This root contains only sessions from an earlier runtime. No
@@ -394,276 +469,730 @@ export class BrowserRuntime implements NativePresentationSource {
     };
   }
 
-  attach(
+  get localProfileStorage(): { storageInstanceId: string; engine: BrowserEngine } | undefined {
+    return this.localStore && !this.shuttingDown
+      ? { storageInstanceId: this.localStore.storageInstanceId, engine: this.localStore.engine }
+      : undefined;
+  }
+
+  async localProfileInventory(): Promise<HeldLocalProfile[]> {
+    await this.prepare();
+    if (!this.localStore)
+      throw new BrowserRuntimeError("conflict", "Native profiles are unavailable.");
+    return this.localStore.inventory();
+  }
+
+  deleteLocalProfile(
+    binding: LocalProfileBinding,
+    deletionId: string,
+  ): Promise<"pending-restart" | "deleted"> {
+    if (this.shuttingDown)
+      return Promise.reject(
+        new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down."),
+      );
+    // Fence immediately, before waiting for already admitted conversion/page work.
+    if (
+      !this.localStore ||
+      binding.storageInstanceId !== this.localStore.storageInstanceId ||
+      binding.engine !== this.localStore.engine
+    )
+      return Promise.reject(
+        new BrowserRuntimeError(
+          "conflict",
+          "The deletion belongs to another local storage instance.",
+        ),
+      );
+    const previous = this.deletions.get(binding.profileId);
+    if (previous) {
+      if (previous.deletionId !== deletionId || !sameLocalBinding(previous.binding, binding))
+        return Promise.reject(
+          new BrowserRuntimeError(
+            "conflict",
+            "A different profile deletion already owns this binding.",
+          ),
+        );
+      return previous.result;
+    }
+    this.deletedProfiles.add(binding.profileId);
+    if (this.speculative?.profileId === binding.profileId) this.speculative?.controller.abort();
+    const store = this.localStore;
+    const durable = store.tombstone(binding, deletionId);
+    void durable.catch(() => undefined);
+    const result = this.lanes.run(`profile:${binding.profileId}`, async () => {
+      const claim = await durable;
+      const engine = this.launcher.localProfiles!;
+      const host = this.hosts.get(`profile:${binding.profileId}`);
+      if (host) {
+        if (host.identity.kind !== "local" || !sameLocalBinding(host.identity.binding, binding))
+          throw new BrowserRuntimeError(
+            "conflict",
+            "The deletion binding does not match the browser host.",
+          );
+        host.helperCancellation.abort();
+        await this.cleanupHost(host, false);
+      }
+      if (claim.erasure === "deleted") return "deleted" as const;
+      const released = await engine.release(store.directory(binding));
+      if (released === "retained-until-exit") {
+        store.retainDirectory(binding);
+        return "pending-restart" as const;
+      }
+      await store.erase(binding, deletionId);
+      return "deleted" as const;
+    });
+    const deletion = { binding, deletionId, result };
+    this.deletions.set(binding.profileId, deletion);
+    void result.catch(() => {
+      if (this.deletions.get(binding.profileId) === deletion)
+        this.deletions.delete(binding.profileId);
+    });
+    return result;
+  }
+
+  async attach(
     ticket: string,
     sink: BrowserControllerSink,
-    options: { passkeys?: boolean } = {},
+    options: {
+      passkeys?: boolean;
+      localProfiles?: boolean;
+      initialNavigation?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<BrowserAttachment> {
-    return this.mutex.run(async () => {
+    const started = performance.now();
+    const correlationId = randomUUID();
+    const timing = (
+      stage: BrowserOpenTiming["stage"],
+      since: number,
+      acquisition?: BrowserOpenTiming["acquisition"],
+    ) => {
+      const now = performance.now();
+      try {
+        this.onOpenTiming({
+          correlationId,
+          stage,
+          elapsedMs: now - since,
+          elapsedSinceStartMs: now - started,
+          ...(acquisition ? { acquisition } : {}),
+        });
+      } catch {
+        // Diagnostics cannot change browser ownership or readiness.
+      }
+    };
+    const verified = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+    const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
+    const hostKey = browserHostKey(claims);
+    const queued = performance.now();
+    return this.lanes.run(hostKey, async () => {
+      timing("lane-wait", queued);
+      options.signal?.throwIfAborted();
       if (this.shuttingDown || this.state === "closed") {
         throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
       }
-      const verified = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
-      const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
-      if (this.sessions.has(claims.sessionId)) {
-        throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
-      }
-      if (!/^[A-Za-z0-9_-]{1,128}$/u.test(claims.sessionId)) {
+      if (
+        (claims.identity.kind === "profile-local" && !options.localProfiles) ||
+        (claims.initialNavigationVersion === 1 && !options.initialNavigation)
+      )
+        throw new BrowserRuntimeError(
+          "conflict",
+          "Browser attachment features were not negotiated.",
+        );
+      if (!/^[A-Za-z0-9_-]{1,128}$/u.test(claims.sessionId))
         throw new BrowserRuntimeError("bad_message", "The Browser Session ID is invalid.");
-      }
-      try {
-        await this.prepare();
-      } catch (error) {
-        throw this.startFailure(claims.sessionId, "runtime-preparation", error);
-      }
-      const files = new SessionFiles(path.join(this.sessionFilesRoot, claims.sessionId));
-      this.state = "starting";
-
-      const hostKey = browserHostKey(claims);
-      let host = this.hosts.get(hostKey);
-      let createdHost = false;
-      let ledger: SurfaceLedger | null = null;
-      let controller: BrowserController | null = null;
-      let rootPage = null as Awaited<ReturnType<LaunchedBrowser["context"]["createPage"]>> | null;
-      const sessionGeneration = ++this.generation;
-      let stage = "profile-state";
-      try {
-        const passkeysEnabled = claims.passkeys === 1;
-        if (host && host.passkeysEnabled !== passkeysEnabled) {
-          if (!host.acceptingSessions || host.sessions.size > 0) {
-            throw new BrowserRuntimeError(
-              "conflict",
-              "The browser profile is in use with a different passkey mode. Close its sessions and retry.",
-              { retryable: true },
-            );
-          }
-          stage = "profile-close";
-          host.holdUntilClosed = true;
-          await this.checkpointAndCloseHost(host);
-          host = undefined;
-          stage = "profile-state";
-        }
-        if (!host) {
-          if (this.hosts.size >= this.maxProfileHosts) {
-            throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
-          }
-          // A fresh identity has no durable state to restore: it starts empty
-          // and never touches the profile-state endpoint.
-          const profileClaims = isProfileAttachTicketClaims(claims) ? claims : null;
-          const profileState = profileClaims
-            ? await this.profileStateClient.load(profileClaims)
-            : null;
-          stage = "context-launch";
-          const passkeys =
-            claims.passkeys === 1
-              ? new HostRelayAuthenticator((targetId) => {
-                  for (const session of this.sessions.values()) {
-                    if (session.host.identity.key !== hostKey || session.claims.passkeys !== 1)
-                      continue;
-                    const surfaceId = session.ledger.surfaceIdForTarget(targetId);
-                    if (surfaceId)
-                      return {
-                        sessionId: session.sessionId,
-                        surfaceId,
-                        send: (message) => {
-                          void session.controller
-                            .sendPasskey(message)
-                            .catch(() => passkeys?.disconnect(session.sessionId));
-                        },
-                      };
-                  }
-                  return undefined;
-                })
-              : undefined;
-          const browser = await this.launcher.launch({
-            ...(passkeys ? { authenticator: passkeys } : {}),
-            initialViewport: this.initialViewport,
-            partitionKey: hostKey,
-            sessionId: claims.sessionId,
-            snapshot: profileState?.snapshot ?? EmptyBrowserProfileSnapshot,
-          });
-          rootPage = browser.context.pages()[0] ?? null;
-          if (!rootPage) throw new BrowserRuntimeError("internal", "Browser has no root page.");
-          const generation = ++this.generation;
-          const stateImports = new AsyncMutex();
-          const router = new SessionCdpRouter(
-            browser.cdp,
-            {
-              maxSessions: this.maxSessionsPerProfile,
-            },
-            browser.clipboard?.machineClipboardShared !== false,
+      const operationKey = claims.initialNavigation
+        ? `${claims.subject}:${claims.initialNavigation.operationKey}`
+        : undefined;
+      const fingerprint = JSON.stringify({
+        sessionId: claims.sessionId,
+        identity:
+          claims.identity.kind === "profile-local"
+            ? claims.identity.binding
+            : claims.identity.kind === "profile"
+              ? claims.identity.profileId
+              : "fresh",
+        navigation: claims.initialNavigation,
+      });
+      if (
+        claims.identity.kind !== "fresh" &&
+        this.deletedProfiles.has(hostKey.slice("profile:".length))
+      )
+        throw new BrowserRuntimeError("conflict", "This browser profile has been deleted.");
+      const previous = operationKey ? this.initialOperations.get(operationKey) : undefined;
+      if (previous) {
+        const active = this.sessions.get(previous.sessionId);
+        if (previous.fingerprint !== fingerprint || !active || !previous.result)
+          throw new BrowserRuntimeError(
+            "conflict",
+            "The initial browser operation already has an outcome; it cannot start another browser.",
           );
-          const onBrowserClose = () => {
-            // Signal controllers before waiting for the Runtime mutex: a
-            // detach already holding it may be waiting on dead Chromium CDP.
-            for (const session of host?.sessions.values() ?? []) {
-              endPresentations(session);
-              session.controller.browserDisconnected();
-            }
-            void this.closeHost(hostKey, generation, false).catch(() => undefined);
-          };
-          host = {
-            passkeys,
-            passkeysEnabled,
-            holdUntilClosed: false,
-            acceptingSessions: true,
-            browser,
-            checkpoints: new AsyncMutex(),
-            checkpointTimer: null,
-            cleanup: null,
-            snapshotExport: null,
-            finalSnapshotSaved: false,
-            closeTimer: null,
-            generation,
-            identity:
-              profileClaims && profileState
-                ? {
-                    key: hostKey,
-                    kind: "profile",
-                    profileDigest: snapshotDigest(profileState.snapshot),
-                    profileRevision: profileState.revision,
-                    profileStateClaims: profileClaims,
-                  }
-                : { key: hostKey, kind: "fresh" },
-            onBrowserClose,
-            quiesced: false,
-            router,
-            sessions: new Map(),
-            signIns: new HostSignIns({
-              authority: this.loginAuthority,
-              runtimeId: this.runtimeId,
-            }),
-            stateImports,
-            stateMutations: new Map(),
-          };
-          browser.onClose(onBrowserClose);
-          this.hosts.set(hostKey, host);
-          createdHost = true;
-          if (host.identity.kind === "profile") this.scheduleCheckpoint(host);
-        } else {
-          if (!host.acceptingSessions) {
+        await active.controller.reattach(sink);
+        active.generation = ++this.generation;
+        const generation = active.generation;
+        return new BrowserAttachment(
+          active.sessionId,
+          active.controller,
+          () => this.detach(active.sessionId, generation),
+          previous.result,
+        );
+      }
+      if (this.sessions.has(claims.sessionId) || this.pendingSessions.has(claims.sessionId))
+        throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
+      this.pendingSessions.add(claims.sessionId);
+      if (operationKey)
+        this.initialOperations.set(operationKey, { fingerprint, sessionId: claims.sessionId });
+      try {
+        try {
+          await this.prepare();
+        } catch (error) {
+          throw this.startFailure(claims.sessionId, "runtime-preparation", error);
+        }
+        if (claims.identity.kind === "profile-local" && !this.localStore)
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Native browser profile storage is unavailable.",
+          );
+        if (
+          claims.identity.kind === "profile" &&
+          (await this.localStore?.hasProfile(claims.identity.profileId))
+        )
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Update this Host to open this native browser profile.",
+          );
+        const files = new SessionFiles(path.join(this.sessionFilesRoot, claims.sessionId));
+        this.state = "starting";
+
+        const acquiring = performance.now();
+        let pageStarting = acquiring;
+        let host = this.hosts.get(hostKey);
+        let createdHost = false;
+        let ledger: SurfaceLedger | null = null;
+        let controller: BrowserController | null = null;
+        let rootPage = null as Awaited<ReturnType<LaunchedBrowser["context"]["createPage"]>> | null;
+        const sessionGeneration = ++this.generation;
+        let stage = "profile-state";
+        try {
+          const acquired = await this.acquireHost(claims, hostKey, false, options.signal);
+          if (!acquired.host) throw new Error("Browser acquisition returned no host.");
+          host = acquired.host;
+          createdHost = acquired.createdHost || this.speculative?.host === host;
+          options.signal?.throwIfAborted();
+          const acquisition = acquired.acquisition;
+          if (this.speculative?.host === host) this.speculative.consumed = true;
+          timing("profile-acquire", acquiring, acquisition);
+          pageStarting = performance.now();
+          stage = "profile-admission";
+          await host.browser.profile?.admit(options.signal);
+          if (
+            options.signal?.aborted ||
+            this.shuttingDown ||
+            (claims.identity.kind !== "fresh" &&
+              this.deletedProfiles.has(hostKey.slice("profile:".length)))
+          )
             throw new BrowserRuntimeError(
               "conflict",
-              host.identity.kind === "profile"
-                ? "The browser profile is finishing its durable checkpoint."
-                : "The browser session is finishing its shutdown.",
-              { retryable: true },
+              "This browser profile has been deleted or stopped.",
             );
-          }
-          if (host.sessions.size >= this.maxSessionsPerProfile) {
-            throw new BrowserRuntimeError("conflict", "Browser Host session capacity is full.");
-          }
-          if (host.closeTimer) {
-            clearTimeout(host.closeTimer);
-            host.closeTimer = null;
-          }
           stage = "page-create";
-          rootPage = await host.browser.context.createPage();
-          if (host.identity.kind === "profile" && isProfileAttachTicketClaims(claims)) {
-            host.identity.profileStateClaims = claims;
-          }
-        }
+          rootPage =
+            host.browser.context.pages()[0] && createdHost
+              ? host.browser.context.pages()[0]!
+              : await host.browser.context.createPage();
 
-        stage = "session-initialize";
-        const sessionRouter = host.router;
-        ledger = new SurfaceLedger(host.browser.context, {
-          navigationVersion: claims.navigationVersion,
-          beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
-          // Every page the session holds, a tab the person opened included, is
-          // one its agents can list and attach to.
-          claimTarget: (targetId) => sessionRouter.claimTarget(claims.sessionId, targetId),
-          // A person who started the browser from a view gets its first page
-          // at that view's size, before anything loads there.
-          initialViewport: claims.viewport
-            ? { devicePixelRatio: 1, ...claims.viewport }
-            : this.initialViewport,
-          rootPages: [rootPage],
-          ...(claims.workspaceTabRestoreVersion === 1 && claims.dormantSurfaceIds
-            ? { dormantSurfaceIds: claims.dormantSurfaceIds }
-            : {}),
-          ...(claims.workspaceTabRestoreVersion === 1 && claims.initialSurfaceId
-            ? { initialSurfaceId: claims.initialSurfaceId }
-            : {}),
-        });
-        sessionRouter.registerSession(
-          claims.sessionId,
-          await rootPage.targetId(),
-          ledger.resolveTarget.bind(ledger),
-          files.root,
-        );
-        await ledger.start();
-        const hostBrowser = host.browser;
-        const stateImports = host.stateImports;
-        const stateHost = host;
-        controller = new BrowserController({
-          passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
-          cdpRouter: host.router,
-          clipboard: hostBrowser.clipboard,
-          claims,
-          exportSnapshot: () => stateImports.run(() => hostBrowser.exportSnapshot()),
-          files,
-          ledger,
-          replaceSiteCookies: (site, cookies, deadline) => {
-            if (!stateHost.acceptingSessions) {
-              throw new BrowserRuntimeError("conflict", "The browser host is shutting down.", {
-                retryable: true,
+          options.signal?.throwIfAborted();
+          stage = "session-initialize";
+          const sessionRouter = host.router;
+          ledger = new SurfaceLedger(host.browser.context, {
+            navigationVersion: claims.navigationVersion,
+            beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
+            // Every page the session holds, a tab the person opened included, is
+            // one its agents can list and attach to.
+            claimTarget: (targetId) => sessionRouter.claimTarget(claims.sessionId, targetId),
+            // A person who started the browser from a view gets its first page
+            // at that view's size, before anything loads there.
+            initialViewport: claims.viewport
+              ? { devicePixelRatio: 1, ...claims.viewport }
+              : this.initialViewport,
+            rootPages: [rootPage],
+            ...(claims.workspaceTabRestoreVersion === 1 && claims.dormantSurfaceIds
+              ? { dormantSurfaceIds: claims.dormantSurfaceIds }
+              : {}),
+            ...(claims.workspaceTabRestoreVersion === 1 && claims.initialSurfaceId
+              ? { initialSurfaceId: claims.initialSurfaceId }
+              : {}),
+          });
+          sessionRouter.registerSession(
+            claims.sessionId,
+            await rootPage.targetId(),
+            ledger.resolveTarget.bind(ledger),
+            files.root,
+          );
+          await ledger.start();
+          const hostBrowser = host.browser;
+          const stateImports = host.stateImports;
+          const stateHost = host;
+          controller = new BrowserController({
+            passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
+            cdpRouter: host.router,
+            clipboard: hostBrowser.clipboard,
+            claims,
+            exportSnapshot: () => {
+              if (stateHost.identity.kind === "local")
+                throw new BrowserRuntimeError(
+                  "conflict",
+                  "Native browser profile snapshot export is unavailable.",
+                );
+              return stateImports.run(() => hostBrowser.exportSnapshot());
+            },
+            files,
+            ledger,
+            replaceSiteCookies: (site, cookies, deadline) => {
+              if (!stateHost.acceptingSessions) {
+                throw new BrowserRuntimeError("conflict", "The browser host is shutting down.", {
+                  retryable: true,
+                });
+              }
+              const mutation = stateImports.run(() => {
+                deadline.throwIfAborted();
+                return hostBrowser.replaceSiteCookies(site, cookies, deadline);
               });
-            }
-            const mutation = stateImports.run(() => {
-              deadline.throwIfAborted();
-              return hostBrowser.replaceSiteCookies(site, cookies, deadline);
+              stateHost.stateMutations.set(mutation, deadline);
+              const finished = () => {
+                stateHost.stateMutations.delete(mutation);
+              };
+              void mutation.then(finished, finished);
+              return mutation;
+            },
+            signIns: host.signIns,
+            sink,
+          });
+          const active: ActiveSession = {
+            claims,
+            controller,
+            files,
+            generation: sessionGeneration,
+            host,
+            ledger,
+            sessionId: claims.sessionId,
+            presentations: new Set(),
+          };
+          host.sessions.set(claims.sessionId, active);
+          this.sessions.set(claims.sessionId, active);
+          stage = "session-snapshot";
+          await controller.start();
+          timing("root-page-ready", pageStarting);
+          let initialPage: InitialPageReady | undefined;
+          if (claims.initialNavigationVersion === 1 && claims.initialNavigation) {
+            const navigating = performance.now();
+            initialPage = controller.startInitialNavigation(rootPage, claims.initialNavigation);
+            timing("navigation-submitted", navigating);
+            this.initialOperations.set(operationKey!, {
+              fingerprint,
+              sessionId: claims.sessionId,
+              result: initialPage,
             });
-            stateHost.stateMutations.set(mutation, deadline);
-            const finished = () => {
-              stateHost.stateMutations.delete(mutation);
-            };
-            void mutation.then(finished, finished);
-            return mutation;
-          },
-          signIns: host.signIns,
-          sink,
-        });
-        const active: ActiveSession = {
-          claims,
-          controller,
-          files,
-          generation: sessionGeneration,
-          host,
-          ledger,
-          sessionId: claims.sessionId,
-          presentations: new Set(),
-        };
-        host.sessions.set(claims.sessionId, active);
-        this.sessions.set(claims.sessionId, active);
-        stage = "session-snapshot";
-        await controller.start();
-        this.state = "ready";
-        return new BrowserAttachment(claims.sessionId, controller, () =>
-          this.detach(claims.sessionId, sessionGeneration),
-        );
-      } catch (error) {
-        if (host) {
-          host.sessions.delete(claims.sessionId);
-          await host.router.unregisterSession(claims.sessionId).catch(() => undefined);
+          }
+          host.lastUsed = ++this.usage;
+          this.state = "ready";
+          return new BrowserAttachment(
+            claims.sessionId,
+            controller,
+            () => this.detach(claims.sessionId, sessionGeneration),
+            initialPage,
+          );
+        } catch (error) {
+          if (host) {
+            host.sessions.delete(claims.sessionId);
+            await host.router.unregisterSession(claims.sessionId).catch(() => undefined);
+          }
+          this.sessions.delete(claims.sessionId);
+          await settleCleanup([
+            async () => controller?.close(),
+            async () => ledger?.closeOwnedPages(),
+            async () => ledger?.close(),
+            () => files.dispose(),
+            async () => {
+              if (createdHost && host) await this.cleanupHost(host, false);
+              else if (rootPage) await rootPage.close();
+            },
+          ]).catch(() => undefined);
+          this.updateState();
+          throw this.startFailure(claims.sessionId, stage, error);
         }
-        this.sessions.delete(claims.sessionId);
-        await settleCleanup([
-          async () => controller?.close(),
-          async () => ledger?.closeOwnedPages(),
-          async () => ledger?.close(),
-          () => files.dispose(),
-          async () => {
-            if (createdHost && host) await this.cleanupHost(host, false);
-            else if (rootPage) await rootPage.close();
-          },
-        ]).catch(() => undefined);
-        this.updateState();
-        throw this.startFailure(claims.sessionId, stage, error);
+      } finally {
+        this.pendingSessions.delete(claims.sessionId);
       }
     });
   }
 
+  private async acquireHost(
+    claims: BrowserAttachTicketClaims | BrowserPreparationTicketClaims,
+    hostKey: BrowserPartitionKey,
+    preparation = false,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<{
+    host: BrowserHost | undefined;
+    createdHost: boolean;
+    acquisition: BrowserOpenTiming["acquisition"];
+  }> {
+    const assertCurrent = () => {
+      signal.throwIfAborted();
+      if (
+        this.shuttingDown ||
+        (claims.identity.kind !== "fresh" &&
+          this.deletedProfiles.has(hostKey.slice("profile:".length)))
+      )
+        throw new BrowserRuntimeError(
+          "conflict",
+          "This browser profile has been deleted or stopped.",
+        );
+    };
+    assertCurrent();
+    let host = this.hosts.get(hostKey);
+    let createdHost = false;
+    let reserved = false;
+    let stage = "profile-state";
+    let acquisition: BrowserOpenTiming["acquisition"] =
+      claims.identity.kind === "profile-local"
+        ? "cold"
+        : claims.identity.kind === "profile"
+          ? "legacy"
+          : "guest";
+    try {
+      const passkeysEnabled = claims.passkeys === 1;
+      if (host && host.passkeysEnabled !== passkeysEnabled) {
+        if (!host.acceptingSessions || host.sessions.size > 0) {
+          throw new BrowserRuntimeError(
+            "conflict",
+            "The browser profile is in use with a different passkey mode. Close its sessions and retry.",
+            { retryable: true },
+          );
+        }
+        stage = "profile-close";
+        host.holdUntilClosed = true;
+        await this.checkpointAndCloseHost(host);
+        host = undefined;
+        stage = "profile-state";
+      }
+      if (!host) {
+        if (preparation && this.hosts.size + this.reservations >= this.maxProfileHosts)
+          throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
+        await this.reserveCapacity();
+        reserved = true;
+        // A fresh identity has no durable state to restore: it starts empty
+        // and never touches the profile-state endpoint.
+        const profileClaims =
+          "sessionId" in claims && isProfileAttachTicketClaims(claims) ? claims : null;
+        const profileState = profileClaims
+          ? await LegacySnapshotAdapter.load(this.profileStateClient, profileClaims)
+          : null;
+        let localDirectory: string | undefined;
+        if (claims.identity.kind === "profile-local") {
+          const identity = claims.identity;
+          const store = this.localStore!;
+          const marker = await store.inspect(identity.binding, identity.initialization?.seed);
+          if (identity.initialization) {
+            if (marker?.phase === "ready")
+              localDirectory = await store.requireReady(identity.binding);
+            if (marker?.phase !== "ready") {
+              acquisition = "conversion";
+              stage = "profile-initialization";
+              localDirectory = await store.initialize(
+                identity.binding,
+                identity.initialization.seed,
+              );
+              const snapshot = await this.initializationClient.load(identity, signal);
+              assertCurrent();
+              store.engineOwnsDirectory(identity.binding);
+              await this.launcher.localProfiles!.importAndFlush({
+                directory: localDirectory,
+                binding: identity.binding,
+                snapshot,
+                signal,
+              });
+              signal.throwIfAborted();
+              await store.ready(identity.binding, identity.initialization.seed);
+            }
+            signal.throwIfAborted();
+            await this.initializationClient.complete(identity, signal);
+          }
+          localDirectory = await store.requireReady(identity.binding);
+        }
+        assertCurrent();
+        if (preparation && this.launcher.localProfiles?.preparation === "conversion") {
+          this.reservations--;
+          reserved = false;
+          return { host: undefined, createdHost: false, acquisition };
+        }
+        stage = "context-launch";
+        const passkeys =
+          claims.passkeys === 1
+            ? new HostRelayAuthenticator((targetId) => {
+                for (const session of this.sessions.values()) {
+                  if (session.host.identity.key !== hostKey || session.claims.passkeys !== 1)
+                    continue;
+                  const surfaceId = session.ledger.surfaceIdForTarget(targetId);
+                  if (surfaceId)
+                    return {
+                      sessionId: session.sessionId,
+                      surfaceId,
+                      send: (message) => {
+                        void session.controller
+                          .sendPasskey(message)
+                          .catch(() => passkeys?.disconnect(session.sessionId));
+                      },
+                    };
+                }
+                return undefined;
+              })
+            : undefined;
+        if (localDirectory && claims.identity.kind === "profile-local")
+          this.localStore!.engineOwnsDirectory(claims.identity.binding);
+        const browser = await this.launcher.launch(
+          {
+            ...(passkeys ? { authenticator: passkeys } : {}),
+            initialViewport: this.initialViewport,
+            partitionKey: hostKey,
+            ...("sessionId" in claims ? { sessionId: claims.sessionId } : {}),
+            ...(preparation ? { preparation: true } : {}),
+            storage:
+              claims.identity.kind === "profile-local" && localDirectory
+                ? { kind: "local", binding: claims.identity.binding, directory: localDirectory }
+                : profileState
+                  ? { kind: "legacy", snapshot: profileState.snapshot }
+                  : { kind: "guest" },
+          },
+          signal,
+        );
+        const generation = ++this.generation;
+        const stateImports = new AsyncMutex();
+        const router = new SessionCdpRouter(
+          browser.cdp,
+          {
+            maxSessions: this.maxSessionsPerProfile,
+          },
+          browser.clipboard?.machineClipboardShared !== false,
+        );
+        const onBrowserClose = () => {
+          // Signal controllers before waiting for this profile's lifecycle
+          // lane: detach may already be waiting on dead Chromium CDP.
+          for (const session of host?.sessions.values() ?? []) {
+            endPresentations(session);
+            session.controller.browserDisconnected();
+          }
+          void this.closeHost(hostKey, generation, false).catch(() => undefined);
+        };
+        const launchedHost: BrowserHost = {
+          passkeys,
+          passkeysEnabled,
+          holdUntilClosed: false,
+          acceptingSessions: true,
+          lastUsed: ++this.usage,
+          browser,
+          cleanup: null,
+          generation,
+          identity:
+            profileClaims && profileState
+              ? {
+                  key: hostKey,
+                  kind: "profile",
+                  snapshot: new LegacySnapshotAdapter(profileClaims, profileState, {
+                    checkpointIntervalMs: this.checkpointIntervalMs,
+                    checkpointRetryMs: this.checkpointRetryMs,
+                    idleProfileHostTimeoutMs: this.idleProfileHostTimeoutMs,
+                    runtimeId: this.runtimeId,
+                    profileStateClient: this.profileStateClient,
+                    shuttingDown: () => this.shuttingDown,
+                    current: () => this.hosts.get(hostKey) === launchedHost,
+                    closeHost: () => this.closeHost(hostKey, generation, true),
+                    quiesceHost: () => this.quiesceHost(launchedHost),
+                    disposeHost: () => this.disposeHost(launchedHost),
+                    onCheckpointFailure: (diagnostic) => {
+                      this.checkpointFailures++;
+                      this.onCheckpointFailure(diagnostic);
+                    },
+                  }),
+                }
+              : claims.identity.kind === "profile-local"
+                ? { key: hostKey, kind: "local", binding: claims.identity.binding }
+                : { key: hostKey, kind: "fresh" },
+          onBrowserClose,
+          quiesced: false,
+          router,
+          sessions: new Map(),
+          signIns: new HostSignIns({
+            authority: this.loginAuthority,
+            runtimeId: this.runtimeId,
+          }),
+          stateImports,
+          helperCancellation: new AbortController(),
+          stateMutations: new Map(),
+        };
+        host = launchedHost;
+        browser.onClose(onBrowserClose);
+        this.hosts.set(hostKey, host);
+        this.reservations--;
+        reserved = false;
+        createdHost = true;
+        await browser.profile?.ready();
+        assertCurrent();
+        if (host.identity.kind === "profile") host.identity.snapshot.scheduleCheckpoint(host);
+      } else {
+        if (claims.identity.kind === "profile-local") {
+          await this.localStore!.inspect(
+            claims.identity.binding,
+            claims.identity.initialization?.seed,
+          );
+          await this.localStore!.requireReady(claims.identity.binding);
+        }
+        if (
+          host.identity.kind === "local" &&
+          (claims.identity.kind !== "profile-local" ||
+            !sameLocalBinding(host.identity.binding, claims.identity.binding))
+        )
+          throw new BrowserRuntimeError("conflict", "The browser host binding does not match.");
+        if (!host.acceptingSessions) {
+          throw new BrowserRuntimeError(
+            "conflict",
+            host.identity.kind === "profile"
+              ? "The browser profile is finishing its durable checkpoint."
+              : "The browser session is finishing its shutdown.",
+            { retryable: true },
+          );
+        }
+        if (host.sessions.size >= this.maxSessionsPerProfile) {
+          throw new BrowserRuntimeError("conflict", "Browser Host session capacity is full.");
+        }
+        if (host.identity.kind === "profile") host.identity.snapshot.cancelClose();
+        acquisition = "warm";
+        if (
+          host.identity.kind === "profile" &&
+          "sessionId" in claims &&
+          isProfileAttachTicketClaims(claims)
+        ) {
+          host.identity.snapshot.profileStateClaims = claims;
+        }
+      }
+
+      assertCurrent();
+      return { host, createdHost, acquisition };
+    } catch (error) {
+      if (reserved) this.reservations--;
+      if (createdHost && host) await this.cleanupHost(host, false).catch(() => undefined);
+      this.updateState();
+      throw this.startFailure("sessionId" in claims ? claims.sessionId : hostKey, stage, error);
+    }
+  }
+
+  async prepareProfile(
+    ticket: string,
+    options: {
+      localProfiles?: boolean;
+      profilePrepare?: boolean;
+      passkeys?: boolean;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<{ retained: boolean; closed: Promise<void>; close(): Promise<void> }> {
+    if (
+      !options.localProfiles ||
+      !options.profilePrepare ||
+      !this.launcher.localProfiles?.preparation ||
+      !this.ticketVerifier.verifyPreparation
+    )
+      throw new BrowserRuntimeError("conflict", "Profile preparation was not negotiated.");
+    const verified = await this.ticketVerifier.verifyPreparation(ticket, {
+      runtimeId: this.runtimeId,
+    });
+    const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
+    options.signal?.throwIfAborted();
+    const profileId = claims.identity.binding.profileId;
+    if (this.preparationAttempts.has(profileId))
+      return { retained: false, closed: Promise.resolve(), close: async () => {} };
+    this.preparationAttempts.add(profileId);
+    if (this.speculative)
+      return { retained: false, closed: Promise.resolve(), close: async () => {} };
+    const ended = Promise.withResolvers<void>();
+    const operation = {
+      controller: new AbortController(),
+      profileId: claims.identity.binding.profileId,
+      consumed: false,
+      host: undefined as BrowserHost | undefined,
+    };
+    this.speculative = operation;
+    const hostKey = `profile:${claims.identity.binding.profileId}` as const;
+    const cancel = () => {
+      if (!operation.consumed) operation.controller.abort();
+    };
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    const close = async () => {
+      cancel();
+      options.signal?.removeEventListener("abort", cancel);
+      ended.resolve();
+      await this.lanes.run(hostKey, async () => {
+        const host = operation.host;
+        if (
+          !operation.consumed &&
+          host &&
+          this.hosts.get(hostKey) === host &&
+          host.sessions.size === 0
+        )
+          await this.cleanupHost(host, false);
+        if (this.speculative === operation) this.speculative = undefined;
+      });
+    };
+    try {
+      await this.lanes.run(hostKey, async () => {
+        operation.controller.signal.throwIfAborted();
+        await this.prepare();
+        if (this.deletedProfiles.has(claims.identity.binding.profileId))
+          throw new BrowserRuntimeError("conflict", "This browser profile has been deleted.");
+        // Speculation never displaces a useful host, including one with another engine policy.
+        if (this.hosts.has(hostKey) || this.hosts.size + this.reservations >= this.maxProfileHosts)
+          return;
+        const acquired = await this.acquireHost(claims, hostKey, true, operation.controller.signal);
+        if (!acquired.host) return;
+        operation.host = acquired.host;
+        acquired.host.browser.onClose(() => {
+          ended.resolve();
+          if (this.speculative === operation && !operation.consumed) this.speculative = undefined;
+        });
+        if (acquired.host.browser.context.pages().length)
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Prepared profiles must not create user pages.",
+          );
+      });
+      if (!operation.host) await close();
+      return { retained: operation.host !== undefined, closed: ended.promise, close };
+    } catch (error) {
+      await close();
+      throw error;
+    }
+  }
+
+  private async reserveCapacity(): Promise<void> {
+    // Synchronous counters/selection are the entire capacity reservation. No I/O
+    // holds this critical section, including an evicted host's process exit.
+    if (this.hosts.size + this.reservations < this.maxProfileHosts) {
+      this.reservations++;
+      return;
+    }
+    const victim = [...this.hosts.values()]
+      .filter(
+        (host) =>
+          host.acceptingSessions && host.sessions.size === 0 && !this.lanes.busy(host.identity.key),
+      )
+      .sort((a, b) => a.lastUsed - b.lastUsed)[0];
+    if (!victim)
+      throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
+    victim.acceptingSessions = false;
+    await this.closeHost(victim.identity.key, victim.generation, true);
+    return this.reserveCapacity();
+  }
+
   private startFailure(correlationId: string, stage: string, error: unknown): BrowserRuntimeError {
+    if (error instanceof BrowserRuntimeError && error.reason?.startsWith("session-start."))
+      return error;
     try {
       this.onStartFailure({ correlationId, stage, error });
     } catch {
@@ -680,16 +1209,18 @@ export class BrowserRuntime implements NativePresentationSource {
 
   shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.speculative?.controller.abort();
     for (const session of this.sessions.values()) endPresentations(session);
     const entered = Promise.withResolvers<void>();
     const controller = new AbortController();
-    const operation = this.mutex.run(async () => {
+    const operation = (async () => {
+      await this.lanes.drain();
       entered.resolve();
       controller.signal.throwIfAborted();
       if (this.state === "closed") return;
       await withTimeout(
         this.preparation?.catch(() => undefined) ?? Promise.resolve(),
-        profileSnapshotTimeoutMs,
+        shutdownAdmissionTimeoutMs,
         {
           timeoutError: () =>
             new BrowserRuntimeError(
@@ -710,11 +1241,12 @@ export class BrowserRuntime implements NativePresentationSource {
       }
       this.hosts.clear();
       this.sessions.clear();
+      await this.localStore?.close();
       this.state = "closed";
-    });
+    })();
     // A timed-out queued stop must never run later without its caller.
     void operation.catch(() => undefined);
-    return withTimeout(entered.promise, profileSnapshotTimeoutMs, {
+    return withTimeout(entered.promise, shutdownAdmissionTimeoutMs, {
       timeoutError: () =>
         new BrowserRuntimeError(
           "conflict",
@@ -734,7 +1266,8 @@ export class BrowserRuntime implements NativePresentationSource {
   private detach(sessionId: string, generation: number): Promise<void> {
     const current = this.sessions.get(sessionId);
     if (current?.generation === generation) endPresentations(current);
-    return this.mutex.run(async () => {
+    if (!current) return Promise.resolve();
+    return this.lanes.run(current.host.identity.key, async () => {
       const active = this.sessions.get(sessionId);
       if (!active || active.generation !== generation) return;
       this.sessions.delete(sessionId);
@@ -746,12 +1279,12 @@ export class BrowserRuntime implements NativePresentationSource {
       if (identity.kind === "profile") {
         if (closeHost) {
           if (isProfileAttachTicketClaims(active.claims)) {
-            identity.profileStateClaims = active.claims;
+            identity.snapshot.profileStateClaims = active.claims;
           }
-        } else if (identity.profileStateClaims.sessionId === active.claims.sessionId) {
+        } else if (identity.snapshot.profileStateClaims.sessionId === active.claims.sessionId) {
           const remaining = [...host.sessions.values()].at(-1);
           if (remaining && isProfileAttachTicketClaims(remaining.claims)) {
-            identity.profileStateClaims = remaining.claims;
+            identity.snapshot.profileStateClaims = remaining.claims;
           }
         }
       }
@@ -759,243 +1292,64 @@ export class BrowserRuntime implements NativePresentationSource {
         await settleCleanup([
           ...closeSession(active),
           () => active.files.dispose(),
-          ...((closeHost && this.idleProfileHostTimeoutMs === 0
+          ...((closeHost &&
+          (host.identity.kind === "fresh" ||
+            (host.identity.kind === "profile" && this.idleProfileHostTimeoutMs === 0))
             ? [() => this.checkpointAndCloseHost(host)]
             : []) satisfies (() => Promise<void>)[]),
         ]);
       } finally {
-        if (closeHost && this.idleProfileHostTimeoutMs > 0) this.scheduleHostClose(host);
+        if (closeHost) host.lastUsed = ++this.usage;
+        if (closeHost && host.identity.kind === "profile" && this.idleProfileHostTimeoutMs > 0)
+          host.identity.snapshot.scheduleHostClose(host);
         this.updateState();
       }
     });
   }
 
-  /**
-   * A profile in use saves its changed state on an interval, so a crash or a
-   * forced quit loses at most one interval instead of everything since it
-   * opened. Failures leave the live browser untouched and try again next time.
-   */
-  private scheduleCheckpoint(host: BrowserHost): void {
-    host.checkpointTimer = setTimeout(() => {
-      let retryable = true;
-      void this.checkpointInUse(host)
-        .catch((error: unknown) => {
-          retryable = !(error instanceof BrowserRuntimeError) || error.retryable;
-        })
-        .finally(() => {
-          if (this.hosts.get(host.identity.key)?.generation === host.generation) {
-            if (host.acceptingSessions && retryable) this.scheduleCheckpoint(host);
-          }
-        });
-    }, this.checkpointIntervalMs);
-    host.checkpointTimer.unref();
+  private checkpointAndCloseHost(host: BrowserHost): Promise<void> {
+    return host.identity.kind === "profile"
+      ? host.identity.snapshot.checkpointAndCloseHost(host)
+      : this.cleanupHost(host, false);
   }
-
-  private checkpointInUse(host: BrowserHost): Promise<void> {
-    const identity = host.identity;
-    if (identity.kind !== "profile") return Promise.resolve();
-    const started = performance.now();
-    let stage: CheckpointStage = "checkpoint-lock";
-    return host.checkpoints
-      .run(async () => {
-        if (!host.acceptingSessions || host.sessions.size === 0) return;
-        // Cookie imports rewrite one site's cookies in several steps; a save
-        // between them would capture half a sign-in.
-        stage = "snapshot";
-        const { snapshot, failures } = await this.exportCheckpointSnapshot(host);
-        const digest = snapshotDigest(snapshot);
-        if (!host.acceptingSessions) return;
-        if (digest === identity.profileDigest) {
-          this.reportOriginFailures(host, "periodic", started, failures);
-          return;
-        }
-        stage = "host-commit";
-        identity.profileRevision = await this.profileStateClient.commit(
-          identity.profileStateClaims,
-          identity.profileRevision,
-          snapshot,
-          true,
-        );
-        identity.profileDigest = digest;
-        this.reportOriginFailures(host, "periodic", started, failures);
-      })
-      .catch((error: unknown) => {
-        throw this.checkpointFailure(host, "periodic", stage, started, error);
-      });
-  }
-
-  private scheduleHostClose(host: BrowserHost, delayMs = this.idleProfileHostTimeoutMs): void {
-    if (host.closeTimer) clearTimeout(host.closeTimer);
-    host.closeTimer = setTimeout(() => {
-      void this.closeHost(host.identity.key, host.generation, true).catch((error: unknown) => {
-        const current = this.hosts.get(host.identity.key);
-        if (
-          !this.shuttingDown &&
-          (!(error instanceof BrowserRuntimeError) || error.retryable) &&
-          current?.generation === host.generation &&
-          current.sessions.size === 0
-        ) {
-          this.scheduleHostClose(current, this.checkpointRetryMs);
-        }
-      });
-    }, delayMs);
-    host.closeTimer.unref();
-  }
-
-  private async checkpointAndCloseHost(host: BrowserHost): Promise<void> {
-    try {
-      await this.cleanupHost(host, true);
-    } catch (error) {
-      const current = this.hosts.get(host.identity.key);
-      if (
-        !this.shuttingDown &&
-        (!(error instanceof BrowserRuntimeError) || error.retryable) &&
-        current?.generation === host.generation &&
-        current.sessions.size === 0
-      ) {
-        this.scheduleHostClose(current, this.checkpointRetryMs);
-      }
-      throw error;
-    }
-  }
-
   private closeHost(
     key: BrowserPartitionKey,
     generation: number,
     checkpoint: boolean,
   ): Promise<void> {
-    return this.mutex.run(async () => {
+    return this.lanes.run(key, async () => {
       const host = this.hosts.get(key);
       if (!host || host.generation !== generation) return;
       await this.cleanupHost(host, checkpoint);
       this.updateState();
     });
   }
-
   private cleanupHost(host: BrowserHost, checkpoint: boolean): Promise<void> {
-    if (this.hosts.get(host.identity.key)?.generation !== host.generation) return Promise.resolve();
-    // An expired attempt can still own a native operation. Do not overlap it
-    // or silently restart its deadline when another caller asks to stop.
+    if (this.hosts.get(host.identity.key) !== host) return Promise.resolve();
+    if (host.identity.kind === "profile")
+      return host.identity.snapshot.cleanupHost(host, checkpoint);
     if (host.cleanup) return host.cleanup.result;
-    const controller = new AbortController();
-    const started = performance.now();
-    let stage: CheckpointStage = "quiesce";
-    const operation = this.cleanupHostOnce(host, checkpoint, controller.signal, (next) => {
-      stage = next;
-    });
-    const result = withTimeout(operation, profileCloseTimeoutMs, {
-      timeoutError: () =>
-        new BrowserRuntimeError(
-          "conflict",
-          `Browser profile close timed out during ${stage}; shutdown did not complete.`,
-          {
-            retryable: true,
-            reason: `profile-checkpoint.${stage}-timeout`,
-          },
-        ),
-    }).catch((error: unknown) => {
-      controller.abort(error);
-      throw checkpoint && host.identity.kind === "profile"
-        ? this.checkpointFailure(host, "final", stage, started, error)
-        : error;
-    });
-    const pending = { result };
-    host.cleanup = pending;
+    const result = (async () => {
+      host.acceptingSessions = false;
+      host.passkeys?.close();
+      host.signIns.close();
+      await this.quiesceHost(host);
+      await host.stateImports.run(async () => {});
+      await this.disposeHost(host);
+    })();
+    host.cleanup = { result };
     const release = () => {
-      if (host.cleanup === pending) host.cleanup = null;
+      if (host.cleanup?.result === result) host.cleanup = null;
     };
-    void operation.then(release, release);
+    void result.then(release, release);
     return result;
   }
-
-  private async cleanupHostOnce(
-    host: BrowserHost,
-    checkpoint: boolean,
-    signal: AbortSignal,
-    stage: (next: CheckpointStage) => void,
-  ): Promise<void> {
-    const identity = host.identity;
-    const started = performance.now();
-    if (this.hosts.get(identity.key)?.generation !== host.generation) return;
-    host.acceptingSessions = false;
-    host.passkeys?.close();
-    host.signIns.close();
-    if (host.checkpointTimer) clearTimeout(host.checkpointTimer);
-    host.checkpointTimer = null;
-    if (host.closeTimer) clearTimeout(host.closeTimer);
-    host.closeTimer = null;
-    await this.quiesceHost(host);
-    signal.throwIfAborted();
-    // A fresh host has no durable state: closing it is always checkpoint-free.
-    // The final commit is unconditional: it also ends the profile's lease grace.
-    if (checkpoint && identity.kind === "profile" && !host.finalSnapshotSaved) {
-      // A periodic checkpoint may already hold checkpoints while waiting for
-      // an import, so its lock cannot guard this deadline-aware drain.
-      if (host.stateMutations.size > 0) {
-        stage("imports");
-        try {
-          await withTimeout(
-            Promise.allSettled(host.stateMutations.keys()),
-            browserStateImportRuntimeTimeoutMs,
-            {
-              signal: AbortSignal.any([signal, ...host.stateMutations.values()]),
-              timeoutError: () => new Error("Sign-in import drain timed out."),
-            },
-          );
-        } catch (cause) {
-          throw new BrowserRuntimeError(
-            "conflict",
-            "Could not save this browser profile because a sign-in import is still pending. Unsaved state remains in memory, and " +
-              (this.shuttingDown
-                ? "shutdown did not complete."
-                : "Opensteer will retry saving it automatically."),
-            { cause, retryable: true, reason: "profile-checkpoint.import-pending" },
-          );
-        }
-      }
-      stage("checkpoint-lock");
-      await host.checkpoints.run(async () => {
-        signal.throwIfAborted();
-        stage("snapshot");
-        const { snapshot, failures } = await this.exportCheckpointSnapshot(host, signal);
-        signal.throwIfAborted();
-        stage("host-commit");
-        try {
-          identity.profileRevision = await this.profileStateClient.commit(
-            identity.profileStateClaims,
-            identity.profileRevision,
-            snapshot,
-          );
-        } catch (error) {
-          if (error instanceof BrowserRuntimeError && error.reason?.startsWith("profile-state.")) {
-            // A refused or lost commit cannot be replayed safely. Release the
-            // quiesced browser so the next attachment restores durable state.
-            // The commit stays the caller's error: it is why state went unsaved.
-            await this.cleanupHostOnce(host, false, signal, () => undefined).catch(
-              (disposal: unknown) =>
-                this.checkpointFailure(host, "final", "browser-close", started, disposal),
-            );
-          }
-          throw error;
-        }
-        identity.profileDigest = snapshotDigest(snapshot);
-        // A successful final commit retires this lease. A later close failure
-        // must retry disposal without attempting another commit on that lease.
-        host.finalSnapshotSaved = true;
-        this.reportOriginFailures(host, "final", started, failures);
-      });
-    }
-    signal.throwIfAborted();
-    stage("browser-close");
-    if (host.closeTimer) clearTimeout(host.closeTimer);
+  private async disposeHost(host: BrowserHost): Promise<void> {
     const closed = () => {
-      if (this.hosts.get(identity.key)?.generation === host.generation)
-        this.hosts.delete(identity.key);
+      if (this.hosts.get(host.identity.key) === host) this.hosts.delete(host.identity.key);
     };
-    // A context close event can precede process exit. A mode change reserves the
-    // profile until close completes, even if the checkpoint deadline expires.
     const onClose = () => {
-      if (!host.holdUntilClosed) closed();
+      if (host.identity.kind !== "local" && !host.holdUntilClosed) closed();
     };
     host.browser.onClose(onClose);
     host.browser.offClose(host.onBrowserClose);
@@ -1005,112 +1359,6 @@ export class BrowserRuntime implements NativePresentationSource {
     } finally {
       host.browser.offClose(onClose);
     }
-  }
-
-  private async exportCheckpointSnapshot(
-    host: BrowserHost,
-    signal?: AbortSignal,
-  ): Promise<{ snapshot: BrowserProfileSnapshot; failures: BrowserOriginCaptureFailure[] }> {
-    if (host.snapshotExport)
-      throw new BrowserRuntimeError(
-        "conflict",
-        "A previous browser profile snapshot is still pending; unsaved state remains in memory.",
-        {
-          retryable: true,
-          reason: "profile-checkpoint.snapshot-pending",
-        },
-      );
-    const controller = new AbortController();
-    const deadline = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const failures: BrowserOriginCaptureFailure[] = [];
-    const operation = host.stateImports.run(async () => {
-      deadline.throwIfAborted();
-      return host.browser.exportSnapshot((failure) => failures.push(failure));
-    });
-    host.snapshotExport = operation;
-    const release = () => {
-      if (host.snapshotExport === operation) host.snapshotExport = null;
-    };
-    void operation.then(release, release);
-    try {
-      const snapshot = await withTimeout(operation, profileSnapshotTimeoutMs, {
-        signal: deadline,
-        timeoutError: () =>
-          new BrowserRuntimeError(
-            "conflict",
-            "Browser profile snapshot timed out; unsaved state remains in memory.",
-            {
-              retryable: true,
-              reason: "profile-checkpoint.snapshot-timeout",
-            },
-          ),
-      });
-      return { snapshot, failures };
-    } catch (error) {
-      // Native snapshot export has no cancellation API. It keeps the state
-      // lock until it settles; its late result cannot initiate a commit.
-      controller.abort(error);
-      throw error;
-    }
-  }
-
-  private reportOriginFailures(
-    host: BrowserHost,
-    phase: BrowserCheckpointFailure["phase"],
-    started: number,
-    failures: readonly BrowserOriginCaptureFailure[],
-  ): void {
-    if (failures.length === 0) return;
-    this.checkpointFailure(
-      host,
-      phase,
-      "snapshot",
-      started,
-      new BrowserRuntimeError(
-        "internal",
-        `Browser profile saved incompletely: ${failures.length} site(s) could not be captured. Other sites and cookies were saved; the last captured state was retained where available. ${JSON.stringify(failures)}`,
-        { retryable: true, reason: "profile-checkpoint.origins-incomplete" },
-      ),
-    );
-  }
-
-  private checkpointFailure(
-    host: BrowserHost,
-    phase: BrowserCheckpointFailure["phase"],
-    stage: CheckpointStage,
-    started: number,
-    cause: unknown,
-  ): BrowserRuntimeError {
-    const error =
-      cause instanceof BrowserRuntimeError
-        ? cause
-        : new BrowserRuntimeError(
-            "internal",
-            `Browser profile checkpoint failed during ${stage}.`,
-            {
-              cause,
-              retryable: true,
-              reason: `profile-checkpoint.${stage}-failed`,
-            },
-          );
-    this.checkpointFailures += 1;
-    const identity = host.identity;
-    if (identity.kind === "profile") {
-      try {
-        this.onCheckpointFailure({
-          runtimeId: this.runtimeId,
-          profileId: identity.profileStateClaims.identity.profileId,
-          sessionId: identity.profileStateClaims.sessionId,
-          phase,
-          stage,
-          elapsedMs: performance.now() - started,
-          error,
-        });
-      } catch {
-        /* Reporting cannot change checkpoint ownership. */
-      }
-    }
-    return error;
   }
 
   private async quiesceHost(host: BrowserHost): Promise<void> {
@@ -1123,7 +1371,7 @@ export class BrowserRuntime implements NativePresentationSource {
       checkpointSession &&
       isProfileAttachTicketClaims(checkpointSession.claims)
     ) {
-      host.identity.profileStateClaims = checkpointSession.claims;
+      host.identity.snapshot.profileStateClaims = checkpointSession.claims;
     }
     await settleCleanup(
       sessions.flatMap((session) => [...closeSession(session), () => session.files.dispose()]),
@@ -1159,18 +1407,4 @@ function closeSession(session: ActiveSession): Array<() => Promise<void>> {
     () => session.ledger.closeOwnedPages(),
     () => session.ledger.close(),
   ];
-}
-
-/**
- * Browsers list cookies and origins in no promised order, so the digest reads
- * them sorted: the same state never looks changed.
- */
-function snapshotDigest(snapshot: BrowserProfileSnapshot): string {
-  const cookies = snapshot.cookies
-    .map((cookie) => JSON.stringify(cookie))
-    .sort((left, right) => left.localeCompare(right));
-  const origins = snapshot.origins
-    .map((origin) => JSON.stringify(origin))
-    .sort((left, right) => left.localeCompare(right));
-  return createHash("sha256").update(JSON.stringify({ cookies, origins })).digest("hex");
 }

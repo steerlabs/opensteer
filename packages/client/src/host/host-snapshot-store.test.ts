@@ -21,6 +21,27 @@ describe("Host snapshot selectors", () => {
     observer.unsubscribe();
   });
 
+  it("publishes pending profile erasure changes to settings without other catalog changes", () => {
+    const harness = clientHarness();
+    const store = hostSnapshotStore(harness.client);
+    const selection = createHostSelection(store, (snapshot) => snapshot, sameStableHostSnapshot);
+    const observer = observeSelection(store, selection);
+    try {
+      for (const state of ["pending-computer", "pending-restart"] as const) {
+        const browserProfileDeletions = [
+          { profileId: "bpr_deleted", computerId: "rnr_owner", state },
+        ];
+        harness.publish({ ...harness.snapshot(), browserProfileDeletions });
+        expect(observer.value().browserProfileDeletions).toEqual(browserProfileDeletions);
+      }
+      harness.publish({ ...harness.snapshot(), browserProfileDeletions: [] });
+      expect(observer.value().browserProfileDeletions).toEqual([]);
+      expect(observer.renderCount()).toBe(4);
+    } finally {
+      observer.unsubscribe();
+    }
+  });
+
   it("multiplexes every consumer through one HostClient subscription", () => {
     const harness = clientHarness();
     const firstStore = hostSnapshotStore(harness.client);

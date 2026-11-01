@@ -1,4 +1,3 @@
-import type { ScreenPresentationService } from "../screen/screen-presentation-service.js";
 import { environmentDiscovery } from "./environment-discovery.js";
 import type { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { isPlaceContentPart, provisionalThreadTitle } from "@opensteer/core";
@@ -100,8 +99,6 @@ export class AgentControlTokenService extends RunCapabilityTokenService<"openste
 }
 
 export class AgentControlService {
-  readonly #allowMainChatRunScreenShow: boolean;
-  readonly #screenPresentation: ScreenPresentationService | undefined;
   readonly #supportsLoginFill: (scope: AgentControlRunScope) => boolean;
   readonly #browserSources: Pick<BrowserSourceService, "agentSignIn">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
@@ -135,8 +132,6 @@ export class AgentControlService {
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
-    readonly allowMainChatRunScreenShow?: boolean;
-    readonly screenPresentation?: ScreenPresentationService;
     readonly supportsLoginFill?: (scope: AgentControlRunScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentSignIn">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
@@ -169,8 +164,6 @@ export class AgentControlService {
     readonly workspaceWake?: AgentWorkspaceWaker;
     readonly workspaces: AgentWorkspaceCreator;
   }) {
-    this.#allowMainChatRunScreenShow = options.allowMainChatRunScreenShow ?? false;
-    this.#screenPresentation = options.screenPresentation;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
@@ -246,52 +239,17 @@ export class AgentControlService {
 
     assertToolAllowed(claims.capabilityProfileId, request);
 
-    if (request.type === "screen.show") {
-      let receipt: import("@opensteer/core").ScreenPresentationReceipt;
-      try {
-        const service = this.#screenPresentation;
-        if (
-          !this.#allowMainChatRunScreenShow ||
-          !service ||
-          !(await this.#store.runnerCapabilities(claims.runnerId))?.includes("screen-show-v1")
-        ) {
-          receipt = { outcome: "unsupported" };
-        } else {
-          const assertInput = async () => {
-            const admitted = await this.#store.screenPresentationInput({
-              ...claims,
-              messageId: request.messageId,
-            });
-            if (
-              !admitted ||
-              !service.registry.matches(request.messageId, claims.requestedBy, claims.threadId) ||
-              !service.registry.inputWasSent(
-                request.messageId,
-                claims.runId,
-                claims.bindingGeneration,
-                admitted.steerCommandId,
-              )
-            )
-              throw forbidden("Input is not admitted to this Run");
-          };
-          await assertInput();
-          await this.#admit(claims, request);
-          const previous = service.registry.replay(request.messageId, request.target);
-          if (previous) receipt = await previous;
-          else {
-            await service.authorizeTarget(claims.requestedBy, request.target);
-            // Target resolution may wait on several services. The attempt and input must still stand.
-            await assertInput();
-            receipt = await service.registry.show(request.messageId, request.target);
-          }
-        }
-      } catch {
-        receipt = { outcome: "unavailable", reason: "forbidden" };
-      }
+    if (request.type === "person.notify") {
+      if (!(await this.#store.runnerCapabilities(claims.runnerId))?.includes("person-notify-v1"))
+        throw forbidden("Runner does not support person notifications");
+      const result = await this.#commands.publishPersonNotification({
+        admission: this.#admissionRequest(claims, request),
+        message: request.message,
+      });
       return AgentControlResponseSchema.parse({
-        type: "screen.show.result",
+        type: "person.notify.result",
         requestId: request.requestId,
-        receipt,
+        messageId: result.message.id,
       });
     }
 
@@ -546,19 +504,13 @@ export class AgentControlService {
       return AgentControlResponseSchema.parse({
         assignments: assignments.assignments,
         assignmentWindow: assignments.window,
-        messages: await this.#readableMessages(claims.runId, page.messages),
+        messages: await this.#readableMessages(
+          claims.runId,
+          page.messages.map(({ addressedToUserId: _addressedToUserId, ...message }) => message),
+        ),
         requestId: request.requestId,
         thread,
         type: "thread.read.result",
-        ...(this.#screenPresentation &&
-        (await this.#store.runnerCapabilities(claims.runnerId))?.includes("screen-show-v1")
-          ? {
-              presentableSurfaces: await this.#screenPresentation.presentableSurfaces(
-                claims.requestedBy,
-                thread.id,
-              ),
-            }
-          : {}),
         window: page.window,
       });
     }
@@ -822,7 +774,10 @@ export class AgentControlService {
             });
       return AgentControlResponseSchema.parse({
         profiles: data
-          ? profiles.map((profile) => ({ ...profile, siteData: data.profiles.get(profile.id) }))
+          ? profiles.map((profile) => {
+              const siteData = data.profiles.get(profile.id);
+              return siteData ? { ...profile, siteData } : profile;
+            })
           : profiles,
         ...(data ? { site: data.site } : {}),
         requestId: request.requestId,
@@ -1100,7 +1055,6 @@ export class AgentControlService {
 const toolForAction: Readonly<
   Record<Exclude<AgentControlRequest["type"], "trigger.control">, AgentToolId>
 > = {
-  "screen.show": "screen.show",
   "machine.full-disk-access.request": "machine.full-disk-access.request",
   "browser.access.request": "browser.access.request",
   // Previous-release Runners still send this action; it shares the current permission.
@@ -1120,6 +1074,7 @@ const toolForAction: Readonly<
   "thread.delegate": "thread.delegate",
   "thread.list": "thread.list",
   "thread.message": "thread.message",
+  "person.notify": "person.notify",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
   "workspace.create": "workspace.create",

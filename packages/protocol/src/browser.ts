@@ -1,5 +1,11 @@
 import { browserBase } from "./browser-message-base.js";
 import {
+  LocalProfileBindingSchema,
+  FrozenProfileSeedSchema,
+  PendingBrowserProfileDeletionSchema,
+} from "./browser-profile-storage.js";
+export * from "./browser-profile-storage.js";
+import {
   PasskeyCeremonySchema,
   PasskeyCancelSchema,
   PasskeyRuntimeCancelSchema,
@@ -143,8 +149,95 @@ export const BrowserAttachTicketIdentitySchema = z.discriminatedUnion("kind", [
     profileStateUrl: z.url().max(8_192),
   }),
   z.strictObject({ kind: z.literal("fresh") }),
+  z.strictObject({
+    kind: z.literal("profile-local"),
+    binding: LocalProfileBindingSchema,
+    initialization: z
+      .strictObject({
+        seed: FrozenProfileSeedSchema,
+        initializationUrl: z.url().max(8_192),
+        initializationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+      })
+      .optional(),
+  }),
 ]);
 export type BrowserAttachTicketIdentity = z.infer<typeof BrowserAttachTicketIdentitySchema>;
+
+/** Preparation grants native acquisition only; it grants no session, page or navigation. */
+export const BrowserPreparationTicketClaimsSchema = z.strictObject({
+  audience: z.literal("opensteer-browser-runtime"),
+  purpose: z.literal("profile-prepare"),
+  identity: BrowserAttachTicketIdentitySchema.options[2],
+  passkeys: z.literal(1).optional(),
+  runtimeId: z.string().min(1).max(255),
+  subject: z.string().min(1).max(255),
+  issuedAt: IsoDateTimeSchema,
+  expiresAt: IsoDateTimeSchema,
+  nonce: z.string().min(16).max(255),
+});
+export type BrowserPreparationTicketClaims = z.infer<typeof BrowserPreparationTicketClaimsSchema>;
+
+const BrowserInitialNavigationUrlSchema = z
+  .url()
+  .max(8_192)
+  .refine((value) => {
+    const url = new URL(value);
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password;
+  }, "Only HTTP and HTTPS addresses without credentials may open.");
+
+export const InitialNavigationSchema = z.strictObject({
+  operationKey: z.string().min(1).max(255),
+  url: BrowserInitialNavigationUrlSchema.optional(),
+  /** Host-issued only when navigation attribution is negotiated. */
+  navigationId: z.uuid().optional(),
+});
+export type InitialNavigation = z.infer<typeof InitialNavigationSchema>;
+
+export const InitialPageReadySchema = z.strictObject({
+  operationKey: z.string().min(1).max(255),
+  surfaceId: BrowserSurfaceIdSchema,
+  navigation: z.enum(["blank", "submitted"]),
+});
+export type InitialPageReady = z.infer<typeof InitialPageReadySchema>;
+
+/** Private bridge readiness; never a viewer message. */
+const BrowserBridgeAttachedWireSchema = z.strictObject({
+  type: z.literal("browser.attached"),
+  initialPage: InitialPageReadySchema.optional(),
+});
+export function createBrowserBridgeAttachedSchema(
+  negotiation: { readonly initialNavigationVersion?: 1 } = {},
+) {
+  return BrowserBridgeAttachedWireSchema.refine(
+    (message) => message.initialPage === undefined || negotiation.initialNavigationVersion === 1,
+    "Initial page readiness requires browser auxiliary negotiation.",
+  );
+}
+export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
+export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
+
+export const ProfileInitializationSeedResponseSchema = z.object({
+  binding: LocalProfileBindingSchema.strip(),
+  seed: FrozenProfileSeedSchema.strip(),
+  snapshot: BrowserProfileSnapshotSchema,
+});
+export type ProfileInitializationSeedResponse = z.infer<
+  typeof ProfileInitializationSeedResponseSchema
+>;
+
+export const CompleteProfileInitializationSchema = z.strictObject({
+  binding: LocalProfileBindingSchema,
+  seed: FrozenProfileSeedSchema,
+});
+export type CompleteProfileInitialization = z.infer<typeof CompleteProfileInitializationSchema>;
+
+export const CompleteProfileInitializationResultSchema = z.object({
+  state: z.literal("local"),
+  binding: LocalProfileBindingSchema.strip(),
+});
+export type CompleteProfileInitializationResult = z.infer<
+  typeof CompleteProfileInitializationResultSchema
+>;
 
 export const browserWorkspaceTabUrlMaxLength = 16_384;
 
@@ -163,6 +256,10 @@ export const BrowserAttachTicketClaimsSchema = z
     audience: z.literal("opensteer-browser-runtime"),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
+    initialNavigationVersion: z.literal(1).optional(),
+    initialNavigation: InitialNavigationSchema.optional(),
+    /** Host opt-in to navigation IDs and committed-document reports. */
+    navigationAttributionVersion: z.literal(1).optional(),
     /**
      * The Host understands the editing contract (`editing.ts`): the runtime may
      * put `editingVersion` in its snapshot, accept editing commands and emit
@@ -195,6 +292,14 @@ export const BrowserAttachTicketClaimsSchema = z
       })
       .optional(),
   })
+  .refine(
+    (claims) =>
+      (claims.initialNavigationVersion !== undefined) === (claims.initialNavigation !== undefined),
+    {
+      path: ["initialNavigation"],
+      message: "Initial navigation requires both its version and operation.",
+    },
+  )
   .refine(
     (claims) =>
       claims.editingVersion === 2 ? claims.clipboard !== undefined : claims.clipboard === undefined,
@@ -418,7 +523,11 @@ const BaselineBrowserClientMessageSchema = z
       ...browserBase,
       surfaceId: BrowserSurfaceIdSchema.optional(),
       type: z.literal("navigation.go"),
+      /** Host-issued; never trusted from a consumer. */
+      navigationId: z.uuid().optional(),
       url: z.url(),
+      /** The person typed this address; their browsing history ranks it for completion. */
+      typed: z.boolean().optional(),
     }),
     z.strictObject({
       ...browserBase,
@@ -580,6 +689,8 @@ const BaselineBrowserClientMessageSchema = z
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
       actorToken: z.uuid().optional(),
+      /** Host-only attribution for Page.navigate and Opensteer.openTab. */
+      navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),
     }),
     /**
@@ -661,6 +772,8 @@ const BrowserSnapshotSchema = z
     passkeyConsumerToken: z.uuid().optional(),
     targetedStreamingVersion: z.literal(1).optional(),
     inputLanesVersion: z.literal(1).optional(),
+    /** Runtime → Host only; permits Host-issued navigationId on navigation commands. */
+    navigationAttributionVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
@@ -700,11 +813,22 @@ export const BrowserRuntimeActivitySchema = z.strictObject({
 });
 export type BrowserRuntimeActivity = z.infer<typeof BrowserRuntimeActivitySchema>;
 
+/** Runtime → Host only: one fact per Host-issued navigation, independent of surface churn. */
+export const BrowserNavigationCommittedSchema = z.strictObject({
+  type: z.literal("navigation.committed"),
+  navigationId: z.uuid(),
+  surfaceId: BrowserSurfaceIdSchema,
+  documentId: z.string().min(1).max(255),
+  url: z.url(),
+});
+export type BrowserNavigationCommitted = z.infer<typeof BrowserNavigationCommittedSchema>;
+
 const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   BrowserPasskeyOfferSchema,
   BrowserPasskeyWithdrawnSchema,
   BrowserPasskeyNoticeSchema,
   BrowserRuntimeActivitySchema,
+  BrowserNavigationCommittedSchema,
   BrowserSnapshotSchema,
   z.strictObject({
     type: z.literal("browser.workspace-tabs"),
@@ -1114,6 +1238,47 @@ export const BrowserTabIconResultSchema = z.object({ favicon: BrowserFaviconSche
 export type BrowserTabIconInput = z.infer<typeof BrowserTabIconInputSchema>;
 export type BrowserTabIconResult = z.infer<typeof BrowserTabIconResultSchema>;
 
+/** A browsing-history address: web only, without credentials. */
+export const BrowserHistoryUrlSchema = z
+  .url()
+  .max(2048)
+  .refine((value) => {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+  }, "Only HTTP and HTTPS addresses without credentials enter browsing history.");
+export const browserHistoryMaxEntries = 300;
+export const browserHistoryRetentionMs = 90 * 86_400_000;
+/** A page a person loaded in one browser profile, at the address it committed. */
+export const BrowserHistoryEntrySchema = z.object({
+  url: BrowserHistoryUrlSchema,
+  title: z.string().max(200),
+  typedCount: z.number().int().nonnegative().safe(),
+  visitCount: z.number().int().positive().safe(),
+  lastVisitAt: z.iso.datetime(),
+});
+export type BrowserHistoryEntry = z.infer<typeof BrowserHistoryEntrySchema>;
+export const BrowserHistoryInputSchema = z.strictObject({ profileId: BrowserProfileIdSchema });
+/** A profile's history, newest first, and the retained icon of each site in it. */
+export const BrowserHistorySchema = z.object({
+  entries: z.array(BrowserHistoryEntrySchema).max(browserHistoryMaxEntries),
+  icons: z
+    .array(z.object({ origin: BrowserHistoryUrlSchema, iconRef: BrowserTabIconRefSchema }))
+    .max(browserHistoryMaxEntries),
+});
+export type BrowserHistory = z.infer<typeof BrowserHistorySchema>;
+export const browserHistoryIconsMaxRefs = 24;
+export const BrowserHistoryIconsInputSchema = z.strictObject({
+  profileId: BrowserProfileIdSchema,
+  iconRefs: z.array(BrowserTabIconRefSchema).min(1).max(browserHistoryIconsMaxRefs),
+});
+/** The asked icons the profile's history still retains; a ref it no longer holds is absent. */
+export const BrowserHistoryIconsSchema = z.object({
+  icons: z
+    .array(z.object({ iconRef: BrowserTabIconRefSchema, favicon: BrowserFaviconSchema }))
+    .max(browserHistoryIconsMaxRefs),
+});
+export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
+
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
@@ -1441,6 +1606,16 @@ export const BrowserTabWriteResultSchema = z.object({
 export type BrowserTabWriteResult = z.infer<typeof BrowserTabWriteResultSchema>;
 
 export const HostedBrowserBootstrapSchema = z.object({
+  profileDeletions: z
+    .array(z.unknown())
+    .max(128)
+    .transform((values) =>
+      values.flatMap((value) => {
+        const parsed = PendingBrowserProfileDeletionSchema.safeParse(value);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    )
+    .optional(),
   workspaceTabRestoreVersion: z.literal(1).optional(),
   workspaceTabs: z.array(WorkspaceTabLineageSchema).max(100).optional(),
   /** 1 when this Host keeps tab groups and accepts their commands; clients show groups only then. */
@@ -1655,14 +1830,9 @@ const browserTabOpenFields = {
       "The viewport exceeds frame limits.",
     )
     .optional(),
-  url: z
-    .url()
-    .max(8192)
-    .refine((value) => {
-      const url = new URL(value);
-      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password;
-    }, "Only HTTP and HTTPS addresses without credentials may open.")
-    .optional(),
+  url: BrowserInitialNavigationUrlSchema.optional(),
+  /** The person typed `url`; their browsing history ranks it for completion. */
+  typed: z.boolean().optional(),
   idempotencyKey: z.string().min(1).max(255),
 };
 export const BrowserSessionTabOpenCommandSchema = z.strictObject({

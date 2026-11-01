@@ -1,3 +1,4 @@
+import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
 import { taskMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
@@ -30,7 +31,6 @@ import {
   taskRowLabel,
   type HostClient,
   type PlaceItem,
-  type PlaceBrowserIdentity,
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
@@ -69,13 +69,16 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
-import { SideSplit, useTasksShare } from "./workspace/side-split.js";
+import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import {
-  TabProfileFilter,
-  tabMatchesProfile,
-  tabProfileChoices,
-} from "./workspace/tab-profile-filter.js";
+  TabFilter,
+  allTabs,
+  tabFilterActive,
+  tabFilterEmptyWords,
+  tabMatchesFilter,
+  type TabFilterValue,
+} from "./workspace/tab-filter.js";
 import type { SortRow } from "./workspace/tab-sort.js";
 import { useTabSort, type TabSortHandle } from "./workspace/use-tab-sort.js";
 import { useTaskSnapshot } from "./task-rows.js";
@@ -124,12 +127,35 @@ export function Sidebar({
   const directory = useTaskDirectory(hostClient);
   const places = usePlaceList(hostClient);
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
-  const [profile, setProfile] = useState<PlaceBrowserIdentity | null>(null);
-  useEffect(() => setProfile(null), [hostClient]);
-  const profileChoices = useMemo(() => tabProfileChoices(places), [places]);
+  const [filter, setFilter] = useState<TabFilterValue>(allTabs);
+  const [heldTabs, setHeldTabs] = useState<{
+    readonly height: number;
+    readonly rows: number;
+  } | null>(null);
+  useEffect(() => {
+    setFilter(allTabs);
+    setHeldTabs(null);
+  }, [hostClient]);
+  const tabsSection = useRef<HTMLElement | null>(null);
+  // A filter draws fewer rows in the box all of them took, its floor included, so the line
+  // between Tasks and Tabs stays put until the filter clears.
+  const filterTabs = (next: TabFilterValue) => {
+    if (!tabFilterActive(next)) setHeldTabs(null);
+    else if (!tabFilterActive(filter) && tabsSection.current)
+      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: places.length });
+    setFilter(next);
+  };
+  const shownPlaceKey =
+    workspace.selection.kind === "place"
+      ? destinationPlaceKey(workspace.selection.destination)
+      : null;
+  // The tab in front stays listed whatever the filter, so opening one never hides where you are.
   const filteredPlaces = useMemo(
-    () => (profile ? places.filter((place) => tabMatchesProfile(place, profile)) : places),
-    [places, profile],
+    () =>
+      tabFilterActive(filter)
+        ? places.filter((place) => place.key === shownPlaceKey || tabMatchesFilter(place, filter))
+        : places,
+    [places, filter, shownPlaceKey],
   );
   const liveStrip = browserTabStrip(filteredPlaces, layout);
   const searchStrip = browserTabStrip(places, layout);
@@ -188,10 +214,6 @@ export function Sidebar({
         : null;
   // A helper has no row, so the task it works for, or Chat, is where the reader is.
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
-  const shownPlaceKey =
-    workspace.selection.kind === "place"
-      ? destinationPlaceKey(workspace.selection.destination)
-      : null;
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -390,12 +412,9 @@ export function Sidebar({
     <nav
       aria-hidden={mobile && !mobileOpen}
       aria-label="Main navigation"
-      // The open drawer holds the keyboard over a scrim: a modal, which no presentation moves under.
-      aria-modal={mobile && mobileOpen ? true : undefined}
       className={classes.join(" ")}
       id="app-sidebar"
       inert={mobile && !mobileOpen}
-      role={mobile && mobileOpen ? "dialog" : undefined}
       onKeyDown={handleKeyDown}
       ref={sidebarRef}
     >
@@ -445,10 +464,7 @@ export function Sidebar({
         namedDevices={namedDevices}
         onClose={closeSearch}
         onLoadMore={loadMore}
-        onOpenPlace={(place) => {
-          if (profile && !tabMatchesProfile(place, profile)) setProfile(null);
-          openPlace(place);
-        }}
+        onOpenPlace={openPlace}
         onOpenTask={openTask}
         open={searching}
         openerRef={searchOpener}
@@ -531,13 +547,14 @@ export function Sidebar({
         <section
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
-          style={sectionFloor(filteredPlaces.length)}
+          ref={tabsSection}
+          style={{ ...sectionFloor(heldTabs?.rows ?? places.length), maxHeight: heldTabs?.height }}
         >
           <div className="side-head">
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
               Tabs
             </h2>
-            <TabProfileFilter choices={profileChoices} onChange={setProfile} value={profile} />
+            <TabFilter onChange={filterTabs} places={places} value={filter} />
             {places.length > 0 ? (
               <button
                 aria-label="New tab"
@@ -557,9 +574,10 @@ export function Sidebar({
               ref={motion}
               signature={motionSignature}
             >
-              {profile && filteredPlaces.length === 0 ? (
-                <li className="sidebar__empty" data-motion-key="profile-empty" role="status">
-                  No tabs in this profile.
+              {tabFilterActive(filter) &&
+              !filteredPlaces.some((place) => tabMatchesFilter(place, filter)) ? (
+                <li className="sidebar__empty" data-motion-key="filter-empty" role="status">
+                  {tabFilterEmptyWords(filter)}
                 </li>
               ) : null}
               {strip.web.flatMap((row) => {
@@ -587,6 +605,7 @@ export function Sidebar({
                       )),
                 ];
               })}
+              <PendingBrowserTabRows hostClient={hostClient} onOpen={onCloseMobile} />
               {strip.native.length > 0 && strip.web.length > 0 ? (
                 <li aria-hidden className="side-divider" data-motion-key="divider" />
               ) : null}
@@ -1108,13 +1127,7 @@ const TabRowItem = memo(function TabRowItem({
         type="button"
       >
         <span aria-hidden className="place-mark-badged">
-          {place.loading ? (
-            <span className="place-mark place-mark--loading">
-              <span className="spinner" />
-            </span>
-          ) : (
-            <PlaceMark hostClient={hostClient} icon={place.icon} site={place.site} />
-          )}
+          <PlaceMark hostClient={hostClient} icon={place.icon} />
           {badge ? (
             <span className="pbadge">
               <ProfileAvatar identity={badge} size={14} />

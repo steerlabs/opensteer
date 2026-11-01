@@ -241,7 +241,7 @@ export const hostApiVersion = 48;
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
-  "screen-show-v1",
+  "notification-preview-v1",
   "workspace-tab-reopen-v1",
   "iphone-apps-v1",
   "ownerViewWindows",
@@ -249,6 +249,9 @@ export const HostCapabilitySchema = z.enum([
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
   "browser-passkeys-v1",
+  "browser-local-profiles-v1",
+  "browser-profile-prepare-v1",
+  "browser-initial-navigation-v1",
   "browser-capture-region-v1",
   "browser-frame-window-v1",
   "browser-raster-demand-v1",
@@ -271,11 +274,15 @@ export const HostCapabilitySchema = z.enum([
   "task-family-v1",
   /** A subscription may omit snapshot message history and its windows. */
   "snapshot-messages-omit-v1",
+  /** `thread.events.list` takes `turns`: a page of whole turns rather than a count of events. */
+  "history-turns-v1",
   "shared-task-done-v1",
   /** A person can rename and delete their browser profiles. */
   "browser-profile-manage-v1",
   /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
   "voice-v1",
+  /** A call can run its own agent: `agent` on `voice.start`, then `voice.next`, `voice.answer` and `voice.context`. */
+  "voice-agent-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

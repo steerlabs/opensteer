@@ -1,3 +1,4 @@
+import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import type { DeploymentLifecycle } from "@opensteer/core";
 import type {
   ControlPlaneAccountId,
@@ -468,6 +469,11 @@ export interface NotificationPublicationTable {
 
 /** One attempt-tracked delivery of one publication to one device. */
 export interface NotificationDeliveryTable {
+  preview: ColumnType<
+    NotificationPreviewEnvelope | null,
+    NotificationPreviewEnvelope | null | undefined,
+    NotificationPreviewEnvelope | null
+  >;
   notificationId: NotificationId;
   deviceId: string;
   deploymentId: DeploymentId;

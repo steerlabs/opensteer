@@ -1,11 +1,20 @@
+import { gate } from "@opensteer/shared/test-support/observation";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { createId } from "@opensteer/core";
+import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
-import { SurfaceLedger } from "@opensteer/browser-runtime-core";
+import { SurfaceLedger, type BrowserLaunchRequest } from "@opensteer/browser-runtime-core";
 import type { BaseWindow } from "electron";
 import { describe, expect, it, vi } from "vitest";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
 const electron = vi.hoisted(() => ({
+  storage: undefined as undefined | (() => Promise<unknown>),
+  blankLoad: undefined as undefined | (() => Promise<void>),
   bootstrap: undefined as
     | undefined
     | ((
@@ -32,6 +41,9 @@ const electron = vi.hoisted(() => ({
   views: [] as Array<{
     options: { webPreferences?: { focusOnNavigation?: boolean } };
     webContents: {
+      close: ReturnType<typeof vi.fn>;
+      loadURL: ReturnType<typeof vi.fn>;
+      getURL: ReturnType<typeof vi.fn<() => string>>;
       isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
       beginFrameSubscription: ReturnType<typeof vi.fn>;
       focus: ReturnType<typeof vi.fn>;
@@ -70,7 +82,11 @@ vi.mock("electron", () => {
         return (
           result ??
           Promise.resolve(
-            method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-1" } } : {},
+            method === "Target.getTargetInfo"
+              ? { targetInfo: { targetId: "target-1" } }
+              : method === "Network.getAllCookies"
+                ? { cookies: [] }
+                : {},
           )
         );
       }),
@@ -81,12 +97,17 @@ vi.mock("electron", () => {
         setImmediate(() => callback({ getSize: () => ({ width: 800, height: 600 }) })),
     );
     readonly endFrameSubscription = vi.fn();
-    readonly close = vi.fn();
+    readonly close = vi.fn(() => {
+      for (const [event, listener] of this.once.mock.calls) if (event === "destroyed") listener();
+    });
     readonly stopFindInPage = vi.fn();
     readonly getTitle = vi.fn(() => "");
     readonly getURL = vi.fn(() => "about:blank");
     readonly isDestroyed = vi.fn(() => false);
-    readonly loadURL = vi.fn(async () => undefined);
+    readonly loadURL = vi.fn(async (url: string) =>
+      url === "about:blank" ? electron.blankLoad?.() : undefined,
+    );
+    readonly executeJavaScriptInIsolatedWorld = vi.fn(async () => electron.storage?.() ?? {});
     readonly off = vi.fn();
     readonly on = vi.fn();
     readonly once = vi.fn();
@@ -137,6 +158,8 @@ vi.mock("electron", () => {
   }
 
   const makeSession = () => ({
+    cookies: { on: vi.fn(), off: vi.fn(), flushStore: vi.fn(async () => undefined) },
+    flushStorageData: vi.fn(),
     clearCache: vi.fn(async () => undefined),
     clearStorageData: vi.fn(async () => undefined),
     getPreloadScripts: vi.fn(() => []),
@@ -152,10 +175,24 @@ vi.mock("electron", () => {
 
   const sessions = new Map<string, ReturnType<typeof makeSession>>();
   return {
+    app: { on: vi.fn(), whenReady: vi.fn(async () => undefined) },
+    safeStorage: {
+      isAsyncEncryptionAvailable: async () => true,
+      getSelectedStorageBackend: () => "gnome_libsecret",
+      encryptStringAsync: async (text: string) => Buffer.from(text),
+      decryptStringAsync: async (text: Buffer) => ({
+        result: text.toString(),
+        shouldReEncrypt: false,
+      }),
+    },
     BaseWindow: MockBaseWindow,
     WebContentsView: MockWebContentsView,
     screen: { getDisplayMatching: vi.fn(() => ({ scaleFactor: 1 })), on: vi.fn(), off: vi.fn() },
     session: {
+      fromPath: vi.fn((directory: string) => {
+        if (!sessions.has(directory)) sessions.set(directory, makeSession());
+        return sessions.get(directory)!;
+      }),
       fromPartition: vi.fn((partition: string) => {
         if (!sessions.has(partition)) sessions.set(partition, makeSession());
         return sessions.get(partition)!;
@@ -204,7 +241,7 @@ describe("ElectronBrowserLauncher focus", () => {
         sessionId,
         partitionKey: `session:${sessionId}`,
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       try {
         expect(browser.clipboard).toBe(supported ? clipboard : undefined);
@@ -227,7 +264,7 @@ describe("ElectronBrowserLauncher focus", () => {
       initialViewport: { devicePixelRatio: 1, height: 1600, width: 2560 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000003",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
 
     expect(electron.hosts).not.toHaveLength(0);
@@ -267,7 +304,7 @@ describe("Electron input attribution", () => {
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: "session:bsn_00000000-0000-4000-8000-000000000004",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000004"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       const page = browser.context.pages()[0]!;
       const presentation = electronPagePresentation(page)!;
@@ -332,7 +369,7 @@ describe("Electron title reads at teardown", () => {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000006",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000006"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const contents = electron.views.at(-1)!.webContents;
     const held = Promise.withResolvers<unknown>();
@@ -403,7 +440,7 @@ async function hubPage(session: string) {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: `session:${sessionId}`,
     sessionId: BrowserSessionIdSchema.parse(sessionId),
-    snapshot: { cookies: [], origins: [] },
+    storage: { kind: "guest" },
   });
   const page = browser.context.pages()[0]!;
   const contents = electron.views.at(-1)!.webContents;
@@ -771,7 +808,7 @@ describe("Electron geometry lifecycle", () => {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000005",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000005"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     const page = browser.context.pages()[0]!;
     const native = electronPagePresentation(page)!;
@@ -1303,7 +1340,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
       partitionKey: "session:security",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     try {
       const view = electron.views.at(-1)!;
@@ -1345,7 +1382,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
             initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
             partitionKey: key,
             sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-            snapshot: { cookies: [], origins: [] },
+            storage: { kind: "guest" },
           }),
         );
         expect(electron.views.at(-1)!.options.webPreferences).toMatchObject({
@@ -1371,7 +1408,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
         partitionKey: "session:race",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       try {
         const page = browser.context.pages()[0]!,
@@ -1449,7 +1486,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
       partitionKey: "session:provenance",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     try {
       const page = browser.context.pages()[0]!,
@@ -1491,7 +1528,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
         partitionKey: "session:independent-provenance",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       });
       try {
         const otherActivity = vi.fn();
@@ -1584,7 +1621,7 @@ it.each([false, true])(
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "session:bsn_00000000-0000-4000-8000-000000000099",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000099"),
-      snapshot: { cookies: [], origins: [] },
+      storage: { kind: "guest" },
     });
     try {
       try {
@@ -1650,7 +1687,7 @@ it("closes a failed provider bootstrap without retrying an initial domain enable
         initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
         partitionKey: "session:bsn_00000000-0000-4000-8000-000000000098",
         sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000098"),
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
       })
       .catch(() => undefined);
     expect(attempts).toBe(1);
@@ -1677,7 +1714,7 @@ it("updates provider header policy disabled, enabled, disabled on the same Sessi
         sessionId,
         partitionKey: `session:${sessionId}`,
         initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-        snapshot: { cookies: [], origins: [] },
+        storage: { kind: "guest" },
         ...(provider
           ? {
               authenticator: {
@@ -1716,4 +1753,779 @@ it("updates provider header policy disabled, enabled, disabled on the same Sessi
   } finally {
     launcher.close();
   }
+});
+
+describe("native Electron profiles", () => {
+  async function fixture(policyFailure = false) {
+    const root = await mkdtemp(path.join(tmpdir(), "opensteer-native-unit-"));
+    const binding: LocalProfileBinding = {
+      version: 1,
+      deploymentId: createId("deployment"),
+      profileId: createId("browserProfile"),
+      runnerId: createId("runner"),
+      storageInstanceId: randomUUID(),
+      bindingId: randomUUID(),
+      engine: "electron",
+    };
+    const directory = path.join(root, "profiles", binding.profileId, "native");
+    const onLocalProfileOpenTiming = vi.fn();
+    const launcher = new ElectronBrowserLauncher({
+      downloads: {
+        accept: vi.fn(() => {
+          if (policyFailure) throw new Error("policy failed");
+        }),
+      },
+      pagePolicyPreloadPath: "/policy.cjs",
+      localProfileRoot: root,
+      onLocalProfileOpenTiming,
+    });
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    return {
+      root,
+      binding,
+      directory,
+      launcher,
+      onLocalProfileOpenTiming,
+      launch: async (preparation = false, signal?: AbortSignal) => {
+        const browser = await launcher.launch(
+          {
+            ...(preparation ? { preparation: true } : {}),
+            sessionId,
+            partitionKey: `profile:${binding.profileId}`,
+            initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+            storage: { kind: "local", binding, directory },
+          },
+          signal,
+        );
+        if (!preparation) {
+          await browser.profile!.admit(signal);
+          await browser.context.createPage();
+        }
+        return browser;
+      },
+    };
+  }
+  it("verifies safeStorage during engine startup without unwrapping a profile key", async () => {
+    const f = await fixture();
+    const { safeStorage } = await import("electron");
+    const encrypt = vi.spyOn(safeStorage, "encryptStringAsync");
+    const decrypt = vi.spyOn(safeStorage, "decryptStringAsync");
+    try {
+      await f.launcher.prepare();
+      expect(f.launcher.nativeProfilesAvailable).toBe(true);
+      expect(encrypt).toHaveBeenCalledWith("opensteer-desktop-protected-storage-readiness-v1");
+      expect(decrypt).toHaveBeenCalledExactlyOnceWith(
+        Buffer.from("opensteer-desktop-protected-storage-readiness-v1"),
+      );
+      expect(await readdir(f.root)).toEqual([]);
+    } finally {
+      encrypt.mockRestore();
+      decrypt.mockRestore();
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each(["unavailable", "basic_text"])(
+    "keeps Guest and legacy browsing available with %s native-profile encryption",
+    async (provider) => {
+      const f = await fixture();
+      const { session } = await import("electron");
+      const { VerifiedDesktopSecretCryptography } =
+        await import("../secrets/verified-secret-cryptography.js");
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+      const available = vi
+        .spyOn(VerifiedDesktopSecretCryptography.prototype, "isAsyncEncryptionAvailable")
+        .mockResolvedValue(provider !== "unavailable");
+      const backend = vi
+        .spyOn(VerifiedDesktopSecretCryptography.prototype, "getSelectedStorageBackend")
+        .mockReturnValue("basic_text");
+      const sessions = vi.mocked(session.fromPath).mock.calls.length;
+      try {
+        await expect(f.launcher.prepare()).resolves.toBeUndefined();
+        expect(f.launcher.nativeProfilesAvailable).toBe(false);
+        for (const storage of [
+          { kind: "guest" },
+          { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+        ] satisfies BrowserLaunchRequest["storage"][]) {
+          const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+          const browser = await f.launcher.launch({
+            sessionId,
+            partitionKey: `session:${sessionId}`,
+            initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+            storage,
+          });
+          expect(browser.context.pages()).toHaveLength(1);
+          await browser.close();
+        }
+        await expect(f.launch(true)).rejects.toThrow(/encryption is unavailable/u);
+        await expect(
+          f.launcher.localProfiles.importAndFlush({
+            directory: f.directory,
+            binding: f.binding,
+            snapshot: { cookies: [], origins: [] },
+            signal: new AbortController().signal,
+          }),
+        ).rejects.toThrow(/encryption is unavailable/u);
+        expect(vi.mocked(session.fromPath).mock.calls).toHaveLength(sessions);
+        expect(await readdir(f.root)).toEqual([]);
+      } finally {
+        available.mockRestore();
+        backend.mockRestore();
+        Object.defineProperty(process, "platform", platform);
+        f.launcher.close();
+        await rm(f.root, { recursive: true, force: true });
+      }
+    },
+  );
+  it("reopens a prepared host after ordinary capacity eviction without retiring its Session", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const before = vi.mocked(session.fromPath).mock.calls.length;
+      const prepared = await f.launch(true);
+      expect(prepared.context.pages()).toEqual([]);
+      await prepared.close();
+      const reopened = await f.launch();
+      expect(reopened.context.pages()).toHaveLength(1);
+      await reopened.close();
+      expect(vi.mocked(session.fromPath).mock.calls).toHaveLength(before);
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("waits for origin import completion, verifies cookies and commits localStorage before ready", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    let finish!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const importing = vi.fn(() => committed);
+    electron.storage = importing;
+    try {
+      const initializing = f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: {
+          cookies: [],
+          origins: ["https://a.test", "https://b.test"].map((origin) => ({
+            origin,
+            localStorage: [{ name: "key", value: "value" }],
+          })),
+        },
+        signal: new AbortController().signal,
+      });
+      await vi.waitFor(() => expect(importing).toHaveBeenCalled(), { timeout: 1000 });
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(profile.flushStorageData).not.toHaveBeenCalled();
+      finish();
+      await initializing;
+      expect(profile.flushStorageData).toHaveBeenCalledOnce();
+      expect(profile.clearStorageData).toHaveBeenCalledExactlyOnceWith({
+        origin: expect.stringMatching(/^https:\/\/[a-f0-9-]+\.invalid$/u),
+        storages: ["localstorage"],
+      });
+      expect(profile.cookies.flushStore.mock.invocationCallOrder[0]).toBeLessThan(
+        profile.flushStorageData.mock.invocationCallOrder[0],
+      );
+      expect(profile.flushStorageData.mock.invocationCallOrder[0]).toBeLessThan(
+        profile.clearStorageData.mock.invocationCallOrder[0],
+      );
+    } finally {
+      finish();
+      electron.storage = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("leaves normal native admission and page creation to the shared runtime", async () => {
+    const f = await fixture();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launcher.launch({
+        partitionKey: `profile:${f.binding.profileId}`,
+        initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+        storage: { kind: "local", binding: f.binding, directory: f.directory },
+      });
+      expect(browser.context.pages()).toEqual([]);
+      await expect(browser.context.createPage()).rejects.toThrow(/admitted/);
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("does not admit a prepared profile when attachment is cancelled during readiness recovery", async () => {
+    const f = await fixture();
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    const held = gate({ label: "prepared profile recovery", deadlineMs: 1000 });
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch(true);
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      vi.spyOn(owner, "ready").mockImplementationOnce(() => held.enter());
+      const opened = vi.spyOn(owner.gate, "open");
+      const cancellation = new AbortController();
+      const admission = browser.profile!.admit(cancellation.signal);
+      const refused = expect(admission).rejects.toThrow();
+      await held.entered;
+      cancellation.abort();
+      held.release();
+      await refused;
+      expect(opened).not.toHaveBeenCalled();
+      expect(browser.context.pages()).toEqual([]);
+      await browser.close();
+    } finally {
+      held.release();
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("cancels conversion helpers and fences retained storage without clearing it", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    const cancellation = new AbortController();
+    const held = Promise.withResolvers<unknown>();
+    const entered = vi.fn();
+    electron.storage = () => {
+      entered();
+      return held.promise;
+    };
+    const initializing = f.launcher.localProfiles.importAndFlush({
+      directory: f.directory,
+      binding: f.binding,
+      snapshot: {
+        cookies: [],
+        origins: [{ origin: "https://a.test", localStorage: [{ name: "k", value: "v" }] }],
+      },
+      signal: cancellation.signal,
+    });
+    const observed = initializing.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(entered).toHaveBeenCalled(), { timeout: 1000 });
+      const helper = electron.views.at(-1)!;
+      cancellation.abort();
+      expect(helper.webContents.close).toHaveBeenCalled();
+      held.resolve({});
+      await expect(initializing).rejects.toThrow();
+      await expect(f.launch()).rejects.toThrow();
+      const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(native.clearStorageData).not.toHaveBeenCalled();
+      expect(native.clearCache).not.toHaveBeenCalled();
+    } finally {
+      held.resolve({});
+      await observed;
+      electron.storage = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("detects silent cookie import rejection by readback and keeps failed native data fenced", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    try {
+      await expect(
+        f.launcher.localProfiles.importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: {
+            cookies: [
+              {
+                name: "missing",
+                value: "value",
+                domain: "site.test",
+                path: "/",
+                expires: -1,
+                httpOnly: true,
+                secure: true,
+              },
+            ],
+            origins: [],
+          },
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow();
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+      await expect(f.launch()).rejects.toThrow();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("retains the underlying initialization cause without exposing it on the wire", async () => {
+    const f = await fixture();
+    const failure = new Error("private cookie=secret https://private.test", {
+      cause: new TypeError("private key"),
+    });
+    electron.storage = () => Promise.reject(failure);
+    try {
+      const error = await f.launcher.localProfiles
+        .importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: {
+            cookies: [],
+            origins: [{ origin: "https://a.test", localStorage: [{ name: "k", value: "v" }] }],
+          },
+          signal: new AbortController().signal,
+        })
+        .catch((error: unknown) => error);
+      expect(error).toHaveProperty("cause.cause", failure);
+      expect(JSON.stringify(error)).not.toContain("secret");
+    } finally {
+      electron.storage = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("keeps an actionable encryption failure on subsequent opens and preserves all native data", async () => {
+    const f = await fixture();
+    const { safeStorage, session } = await import("electron");
+    const encrypt = vi
+      .spyOn(safeStorage, "encryptStringAsync")
+      .mockRejectedValue(new Error("unavailable"));
+    try {
+      await expect(
+        f.launcher.localProfiles.importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: { cookies: [], origins: [] },
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
+      await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+      await expect(readdir(path.dirname(f.directory))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      encrypt.mockRestore();
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("rejects an out-of-scope sign-in without poisoning a ready profile", async () => {
+    const f = await fixture();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch();
+      await expect(
+        browser.replaceSiteCookies(
+          "https://example.test",
+          [
+            {
+              name: "partitioned",
+              value: "value",
+              domain: "example.test",
+              path: "/",
+              expires: -1,
+              httpOnly: true,
+              secure: true,
+              sameSite: "None",
+              partitionKey: "https://other.test",
+              partitionKeyHasCrossSiteAncestor: true,
+            },
+          ],
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("outside the requested site");
+      const reopened = await f.launch();
+      await reopened.close();
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("announces a native page and registers its ledger without awaiting the initial renderer load", async () => {
+    const f = await fixture();
+    const loaded = Promise.withResolvers<void>();
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const browser = await f.launch(true);
+      await browser.profile!.admit();
+      electron.blankLoad = () => loaded.promise;
+      const creating = browser.context.createPage();
+      const announced = vi.fn();
+      void creating.then(announced, () => undefined);
+      await vi.waitFor(() => expect(announced).toHaveBeenCalled(), { timeout: 1000 });
+      const page = await creating;
+      const view = electron.views.at(-1)!;
+      expect(view.webContents.loadURL).toHaveBeenCalledExactlyOnceWith("about:blank");
+      expect(view.webContents.loadURL.mock.invocationCallOrder[0]).toBeLessThan(
+        electron.hosts.at(-1)!.setIgnoreMouseEvents.mock.invocationCallOrder[0]!,
+      );
+      view.webContents.getURL.mockReturnValue("");
+      expect(page.url()).toBe("about:blank");
+      const ledger = new SurfaceLedger(browser.context, { rootPages: [page] });
+      await ledger.start();
+      expect(ledger.snapshot()).toHaveLength(1);
+      page.submitNavigation!("https://site.test/");
+      expect(view.webContents.loadURL.mock.calls).toEqual([
+        ["about:blank"],
+        ["https://site.test/"],
+      ]);
+      loaded.reject(new Error("ERR_ABORTED: superseded by real navigation"));
+      await ledger.close();
+      await browser.close();
+    } finally {
+      loaded.resolve();
+      electron.blankLoad = undefined;
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("prepares with Guest only and never allocates a persistent Session", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    const calls = vi.mocked(session.fromPath).mock.calls.length;
+    try {
+      await f.launcher.prepare();
+      expect(vi.mocked(session.fromPath).mock.calls).toHaveLength(calls);
+      expect(await readdir(f.root)).toEqual([]);
+    } finally {
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("prepares page-free, cancels worker requests through recovery, and admits only once", async () => {
+    const f = await fixture();
+    const { app, session } = await import("electron");
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    try {
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const start = electron.views.length;
+      const browser = await f.launch(true);
+      expect(f.launcher.localProfiles.preparation).toBe(1);
+      expect(browser.profile).toBeDefined();
+      expect(browser.context.pages()).toEqual([]);
+      expect(electron.views).toHaveLength(start);
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const before = profile.webRequest.onBeforeRequest.mock.calls[0]![0];
+      const worker = vi.fn();
+      before({ url: "https://site.test/" }, worker);
+      expect(worker).toHaveBeenCalledExactlyOnceWith({ cancel: true });
+      for (const [event, listener] of vi.mocked(app.on).mock.calls)
+        if ((event as string) === "child-process-gone")
+          (listener as (event: unknown, details: unknown) => void)(
+            {},
+            { type: "Utility", serviceName: "network.mojom.NetworkService" },
+          );
+      await browser.profile!.ready();
+      const recovered = vi.fn();
+      before({ url: "https://site.test/" }, recovered);
+      expect(recovered).toHaveBeenCalledExactlyOnceWith({ cancel: true });
+      await expect(browser.context.createPage()).rejects.toThrow(/admitted/u);
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      const open = vi.spyOn(owner.gate, "open");
+      await Promise.all([browser.profile!.admit(), browser.profile!.admit()]);
+      expect(open).toHaveBeenCalledOnce();
+      const admitted = vi.fn();
+      before({ url: "https://site.test/" }, admitted);
+      expect(admitted).toHaveBeenCalledExactlyOnceWith({ cancel: false });
+      expect(worker).toHaveBeenCalledOnce();
+      expect(recovered).toHaveBeenCalledOnce();
+      await browser.context.createPage();
+      expect(browser.context.pages()).toHaveLength(1);
+      await browser.close();
+      const idle = vi.fn();
+      before({ url: "https://site.test/" }, idle);
+      expect(idle).toHaveBeenCalledExactlyOnceWith({ cancel: true });
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("unwraps the mirror key during preparation, waits before ready and fences cancellation", async () => {
+    const f = await fixture();
+    const { safeStorage, session } = await import("electron");
+    await f.launcher.localProfiles.importAndFlush({
+      directory: f.directory,
+      binding: f.binding,
+      snapshot: { cookies: [], origins: [] },
+      signal: new AbortController().signal,
+    });
+    // Simulate the next process's uncached key without changing the approved provider.
+    const { ElectronLocalProfile } = await import("./electron-local-profile.js");
+    const owner = new ElectronLocalProfile(f.directory, f.binding, () => {});
+    const held = Promise.withResolvers<{ result: string; shouldReEncrypt: boolean }>();
+    const decrypt = vi
+      .spyOn(safeStorage, "decryptStringAsync")
+      .mockImplementationOnce(() => held.promise);
+    const read = vi.spyOn(safeStorage, "decryptStringAsync");
+    try {
+      owner.start();
+      const ready = owner.ready();
+      const settled = vi.fn();
+      void ready.then(settled, settled);
+      await vi.waitFor(() => expect(read).toHaveBeenCalled(), { timeout: 1000 });
+      expect(settled).not.toHaveBeenCalled();
+      const retiring = owner.retire();
+      held.reject(new Error("cancelled unwrap"));
+      await expect(ready).rejects.toThrow();
+      await retiring;
+      await expect(owner.admit()).rejects.toThrow();
+      const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(native.clearCache).not.toHaveBeenCalled();
+      expect(native.clearStorageData).not.toHaveBeenCalled();
+    } finally {
+      decrypt.mockRestore();
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each(["during-restore", "prepared"])(
+    "retires a cancelled launch (%s) without erasing storage",
+    async (phase) => {
+      const f = await fixture();
+      const { session } = await import("electron");
+      const cancellation = new AbortController();
+      const held = Promise.withResolvers<unknown>();
+      const capturing = vi.fn();
+      try {
+        await f.launcher.localProfiles.importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: { cookies: [], origins: [] },
+          signal: new AbortController().signal,
+        });
+        if (phase === "during-restore") {
+          const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+          const owner = acquireElectronLocalProfile({
+            root: f.root,
+            directory: f.directory,
+            binding: f.binding,
+            configure: () => {},
+          });
+          electron.bootstrap = (method) => {
+            if (method !== "Network.getAllCookies") return undefined;
+            capturing();
+            return held.promise;
+          };
+          owner.suspend();
+          owner.recoverAfterNetworkLoss();
+        }
+        const launching = f.launch(true, cancellation.signal);
+        const observed = launching.catch(() => undefined);
+        if (phase === "prepared") {
+          const browser = await launching;
+          cancellation.abort();
+          await expect(browser.profile!.admit()).rejects.toThrow();
+          await browser.close();
+        } else {
+          await vi.waitFor(() => expect(capturing).toHaveBeenCalled(), { timeout: 1000 });
+          const target = electron.views.at(-1)!;
+          expect(target.webContents.close).not.toHaveBeenCalled();
+          cancellation.abort();
+          expect(target.webContents.close).toHaveBeenCalled();
+          held.resolve({ cookies: [] });
+          await expect(launching).rejects.toThrow();
+        }
+        await observed;
+        await expect(f.launch()).rejects.toThrow();
+        const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+        expect(native.clearCache).not.toHaveBeenCalled();
+        expect(native.clearStorageData).not.toHaveBeenCalled();
+        expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
+      } finally {
+        held.resolve({ cookies: [] });
+        electron.bootstrap = undefined;
+        f.launcher.close();
+        await rm(f.root, { recursive: true, force: true });
+      }
+    },
+  );
+  it("remembers a Session even if policy setup fails and never retries conversion in that process", async () => {
+    const f = await fixture(true);
+    try {
+      await expect(
+        f.launcher.localProfiles.importAndFlush({
+          directory: f.directory,
+          binding: f.binding,
+          snapshot: { cookies: [], origins: [] },
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow("policy failed");
+      expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
+      await expect(f.launch()).rejects.toThrow();
+    } finally {
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("releases idle cookie renderers and recreates them for cookie changes and Network Service recovery", async () => {
+    const f = await fixture();
+    const { app, session } = await import("electron");
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    try {
+      const start = electron.views.length;
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const first = electron.views
+        .slice(start)
+        .filter((view) =>
+          view.webContents.debugger.sendCommand.mock.calls.some(
+            ([method]) => method === "Network.getAllCookies",
+          ),
+        )
+        .at(-1)!;
+      expect(first.webContents.close).toHaveBeenCalled();
+      expect(first.webContents.loadURL).not.toHaveBeenCalled();
+      const browser = await f.launch();
+      const page = browser.context.pages()[0]!;
+      const view = electron.views.at(-1)!;
+      // Snapshot-only bookkeeping must not add a navigation subscription here.
+      expect(
+        view.webContents.on.mock.calls.filter(([name]) => name === "did-frame-navigate"),
+      ).toHaveLength(0);
+      await page.close();
+      await browser.close();
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      await owner.mirror.flush();
+      const captured = electron.views.at(-1)!;
+      await vi.waitFor(() => expect(captured.webContents.close).toHaveBeenCalled(), {
+        timeout: 1000,
+      });
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const beforeRecovery = electron.views.length;
+      for (const [event, listener] of vi.mocked(app.on).mock.calls)
+        if ((event as string) === "child-process-gone")
+          (listener as (event: unknown, details: unknown) => void)(
+            {},
+            { type: "Utility", serviceName: "network.mojom.NetworkService" },
+          );
+      await owner.ready();
+      expect(electron.views.length).toBeGreaterThan(beforeRecovery);
+      expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("retains the exact persistent Session through close and deletion reports pending restart", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    try {
+      expect(await f.launcher.localProfiles.release(f.directory)).toBe("released");
+      await f.launcher.localProfiles.importAndFlush({
+        directory: f.directory,
+        binding: f.binding,
+        snapshot: { cookies: [], origins: [] },
+        signal: new AbortController().signal,
+      });
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const browser = await f.launch();
+      await browser.close();
+      expect(f.onLocalProfileOpenTiming.mock.calls.map(([timing]) => timing.stage)).toEqual([
+        "session-created",
+        "mirror-restored",
+        "admitted",
+        "page-create-started",
+        "web-contents-view-created",
+        "blank-navigation-submitted",
+        "resting-host-created",
+        "page-policy-dispatched",
+        "page-policy-ready",
+        "blank-loaded",
+        "renderer-ready",
+        "page-announced",
+        "first-page-created",
+      ]);
+      const durations = f.onLocalProfileOpenTiming.mock.calls.map(([timing]) => timing.elapsedMs);
+      expect(durations).toEqual([...durations].sort((a, b) => a - b));
+      const reopened = await f.launch();
+      await reopened.close();
+      expect(session.fromPath).toHaveBeenCalledWith(f.directory);
+      expect(profile.clearCache).not.toHaveBeenCalled();
+      expect(profile.clearStorageData).not.toHaveBeenCalled();
+      expect(profile.cookies.flushStore).toHaveBeenCalled();
+      expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
+    } finally {
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("refuses a missing ready mirror before constructing any page and retains the Session after failure", async () => {
+    const f = await fixture();
+    const count = electron.views.length;
+    try {
+      await expect(f.launch()).rejects.toThrow();
+      expect(electron.views).toHaveLength(count);
+      expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
+    } finally {
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
 });

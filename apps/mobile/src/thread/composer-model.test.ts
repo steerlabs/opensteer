@@ -14,6 +14,7 @@ const idle: ComposerState = {
   sending: false,
   text: "",
   textHidden: false,
+  voice: false,
 };
 
 describe("composerView", () => {
@@ -25,6 +26,14 @@ describe("composerView", () => {
 
   it("puts Stop in the round slot while a run has nothing typed against it", () => {
     expect(composerView({ ...idle, running: true }).action).toBe("stop");
+  });
+
+  it("offers voice instead of a dead Send while there is nothing to send", () => {
+    expect(composerView({ ...idle, voice: true }).action).toBe("voice");
+    expect(composerView({ ...idle, voice: true, text: "hi" }).action).toBe("send");
+    expect(composerView({ ...idle, voice: true, attachments: 1 }).action).toBe("send");
+    expect(composerView({ ...idle, voice: true, running: true }).action).toBe("stop");
+    expect(composerView({ ...idle, voice: false }).action).toBe("send");
   });
 
   it("keeps Send in the slot when a run is answered by typing", () => {

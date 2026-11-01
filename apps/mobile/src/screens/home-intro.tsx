@@ -310,10 +310,12 @@ export function HomeIntro(props: {
           draftKey: homeIntroDraftKey,
           drafts,
           files: introFiles,
+          onReady: () => {
+            if (isCurrentHost()) onHomeReady(home.id);
+          },
           threadId: home.id,
           userId,
         });
-        if (isCurrentHost()) onHomeReady(home.id);
       } catch (error) {
         setFailure(operationDetail(error, "Chat could not be started."));
       } finally {

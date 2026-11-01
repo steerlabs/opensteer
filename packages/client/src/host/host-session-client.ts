@@ -1,6 +1,8 @@
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
+import { PendingBrowserTabs } from "./pending-browser-tabs.js";
+import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
+import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
-import { SocketScreenPresentationTransport } from "../screen/transport.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
@@ -10,7 +12,8 @@ import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
 import { DisplaySourceSchema } from "@opensteer/protocol";
-import { RecentSitesStore, type RecentSitesStorage } from "./recent-sites.js";
+import { BrowserHistoryClient } from "./browser-history.js";
+import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
@@ -151,6 +154,7 @@ import { withThreadNames, applyOptimisticCommandPatch } from "./optimistic-comma
 
 const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 const defaultRefreshIntervalMs = 15_000;
+const historyPageTurns = 10;
 const defaultReconnectBaseDelayMs = 300;
 /** How long a missed live frame waits before its Thread's streams are reread. */
 const liveRefreshDelayMs = 250;
@@ -265,10 +269,7 @@ const realtimeResyncSchema = z.object({
   reason: z.string().min(1),
 });
 type RealtimeMessage =
-  | Exclude<
-      HostToClientMessage,
-      { type: "host.events" | "host.resync-required" | "host.screen.ready" | "host.screen.show" }
-    >
+  | Exclude<HostToClientMessage, { type: "host.events" | "host.resync-required" }>
   | { type: "host.events"; events: RealtimeEvent[] }
   | z.infer<typeof realtimeResyncSchema>;
 
@@ -526,7 +527,7 @@ export interface HttpHostClientOptions {
   readonly viewerPlatform?: "mac" | "pc";
   /** Verified by the connection owner for this client’s attachment. Null is unknown. */
   readonly capabilities?: readonly HostCapability[] | null | HostCapabilityReader;
-  readonly recentSitesStorage?: RecentSitesStorage;
+  readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   /** The Host's origin. There is no ambient default: a React Native bundle has
    * no document to read one from, and a renderer may address another Host. */
   readonly baseUrl: string | URL;
@@ -549,16 +550,24 @@ export interface HttpHostClientOptions {
   readonly webSocketFactory?: (url: string) => WebSocketClient;
 }
 
+// Keep thumbnails across remounts without retaining unbounded file bytes on phones.
+const attachmentCacheByteBudget = 32 * 1024 * 1024;
+
+type AttachmentRead = {
+  readonly controller: AbortController;
+  readonly promise: Promise<Blob>;
+  callers: number;
+};
+
 export class HttpHostClient {
-  readonly screenPresentation = new SocketScreenPresentationTransport(undefined, (socket) => {
-    const channel = [...this.#channels.values()].find((candidate) => candidate.socket === socket);
-    if (channel) this.#replaceChannel(channel, "Presentation clock refreshed");
-  });
   readonly browserPasskeys: BrowserPasskeys;
-  readonly recentSites: RecentSitesStore;
+  readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   readonly retainComputerView: OwnerViewHostClient["retainComputerView"];
   readonly #viewer = new ViewerScope();
+  readonly #attachmentReads = new Map<string, AttachmentRead>();
+  readonly #attachmentCache = new Map<string, Blob>();
+  #attachmentCacheBytes = 0;
   readonly #ownerViews = new OwnerViewRecords();
   #computerViews: { clear(): void; setConnected(connected: boolean): void } = {
     clear: () => undefined,
@@ -744,13 +753,62 @@ export class HttpHostClient {
     }
     return catalog;
   }
+  readonly #pendingBrowserTabs = new PendingBrowserTabs({
+    admitted: () => viewerScopeOf(this.#snapshot) !== null,
+    open: (target, options) => this.#openBrowserTab(target, options),
+    close: (result) =>
+      this.closeBrowserTab(
+        result.sessionId,
+        result.tabId,
+        this.#snapshot.browserSessions.find((session) => session.id === result.sessionId)
+          ?.tabCatalog ?? result.catalog,
+      ),
+    changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
+  });
+  readonly #preparedBrowserProfiles = new Set<string>();
+  prepareBrowserProfile(
+    identity?: import("./start-page-model.js").BrowserIdentityChoice | null,
+  ): void {
+    if (
+      this.#snapshot.session !== "authenticated" ||
+      !this.#snapshot.browserAvailable ||
+      this.#snapshot.connection === "offline" ||
+      !this.#capabilities?.includes("browser-profile-prepare-v1")
+    )
+      return;
+    const choice = identity === undefined ? this.browserPreferences.lastBrowsingChoice : identity;
+    if (!choice || choice.kind === "guest") return;
+    if (this.#preparedBrowserProfiles.has(choice.profileId)) return;
+    this.#preparedBrowserProfiles.add(choice.profileId);
+    void this.rpc["commands.dispatch"]({
+      type: "browser.profile.prepare",
+      identity: choice,
+      idempotencyKey: mutationIdempotencyKey("prepare-profile"),
+    }).catch(() => undefined);
+  }
+  readonly beginBrowserTabOpen: OwnerViewHostClient["beginBrowserTabOpen"] = (target, options) => {
+    if (typeof target !== "string" && "identity" in target)
+      this.browserPreferences.lastBrowsingChoice = target.identity;
+    return this.#pendingBrowserTabs.begin(target, options);
+  };
+  readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
+    // Authenticated RPC callers need not load a workspace's presentation first.
+    if (!viewerScopeOf(this.#snapshot))
+      return this.#openBrowserTab(
+        typeof target === "string" ? { sessionId: target } : target,
+        options,
+      );
+    return this.beginBrowserTabOpen(target, options).result;
+  }
+  async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
     const started = this.#viewer.generation;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
         type: "browser.tab.open",
         ...(typeof target === "string" ? { sessionId: target } : target),
         ...(options.url === undefined ? {} : { url: options.url }),
+        ...(options.typed === undefined ? {} : { typed: options.typed }),
         ...(options.viewport ? { viewport: options.viewport } : {}),
         idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
       }),
@@ -1079,7 +1137,7 @@ export class HttpHostClient {
   #backgroundedAt: number | null = null;
   #workspacePageLoad: Promise<void> | null = null;
   #bootstrapPromise: Promise<void> | null = null;
-  #rereadPending = false;
+  #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
   /**
    * Per task list — `null` for the reader's whole list, else a Workspace's —
@@ -1105,10 +1163,27 @@ export class HttpHostClient {
     this.#readCapabilities =
       typeof options.capabilities === "function" ? options.capabilities : null;
     this.#capabilities = Array.isArray(options.capabilities) ? [...options.capabilities] : null;
-    this.browserPreferences = new BrowserPreferences(options.recentSitesStorage);
-    this.recentSites = new RecentSitesStore({
-      ...(options.recentSitesStorage ? { storage: options.recentSitesStorage } : {}),
-      readIcon: (sessionId, iconRef) => this.readBrowserTabIcon(sessionId, iconRef),
+    this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
+    this.browserHistory = new BrowserHistoryClient({
+      get: async (profileId) =>
+        unwrapRpcResult(await this.rpc["browser.history.get"]({ profileId })),
+      icons: async (profileId, iconRefs) =>
+        unwrapRpcResult(await this.rpc["browser.history.icons.get"]({ profileId, iconRefs })),
+      remove: async (profileId, url) => {
+        await this.dispatch({
+          type: "browser.history.remove",
+          profileId,
+          url,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
+      clear: async (profileId) => {
+        await this.dispatch({
+          type: "browser.history.clear",
+          profileId,
+          idempotencyKey: crypto.randomUUID(),
+        });
+      },
     });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -1182,6 +1257,7 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-v1") === true,
+      voiceAgentAvailable: this.#capabilities?.includes("voice-agent-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
@@ -1389,11 +1465,14 @@ export class HttpHostClient {
         break;
       case "browser.profile.delete":
         if (commandIs(parsedCommand, result.type)) {
-          // Its history on this device goes with it.
-          this.recentSites.clear({ kind: "profile", profileId: parsedCommand.profileId });
+          this.browserHistory.drop(parsedCommand.profileId);
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               profileId: parsedCommand.profileId,
+              deletion:
+                result.deletion && result.deletion.state !== "deleted"
+                  ? { ...result.deletion, state: result.deletion.state }
+                  : undefined,
               type: result.type,
             }),
           );
@@ -1621,10 +1700,84 @@ export class HttpHostClient {
   }
 
   async readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob> {
-    const content = unwrapRpcResult(
-      await this.rpc["attachment.content"]({ attachmentId }, signal ? { signal } : undefined),
-    );
-    return new Blob([content.bytes], { type: content.metadata.contentType });
+    if (this.#disposed || signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const cached = this.#attachmentCache.get(attachmentId);
+    if (cached) {
+      this.#attachmentCache.delete(attachmentId);
+      this.#attachmentCache.set(attachmentId, cached);
+      return cached;
+    }
+    let read = this.#attachmentReads.get(attachmentId);
+    if (!read) {
+      const controller = new AbortController();
+      const promise = this.rpc["attachment.content"](
+        { attachmentId },
+        { signal: controller.signal },
+      )
+        .then(unwrapRpcResult)
+        .then((content) => new Blob([content.bytes], { type: content.metadata.contentType }));
+      read = { controller, promise, callers: 0 };
+      this.#attachmentReads.set(attachmentId, read);
+      const current = read;
+      void promise.then(
+        (blob) => {
+          if (this.#attachmentReads.get(attachmentId) !== current) return;
+          this.#attachmentReads.delete(attachmentId);
+          if (blob.size > attachmentCacheByteBudget) return;
+          this.#attachmentCache.set(attachmentId, blob);
+          this.#attachmentCacheBytes += blob.size;
+          while (this.#attachmentCacheBytes > attachmentCacheByteBudget) {
+            const oldest = this.#attachmentCache.keys().next().value!;
+            this.#attachmentCacheBytes -= this.#attachmentCache.get(oldest)!.size;
+            this.#attachmentCache.delete(oldest);
+          }
+        },
+        () => {
+          if (this.#attachmentReads.get(attachmentId) === current)
+            this.#attachmentReads.delete(attachmentId);
+        },
+      );
+    }
+    const current = read;
+    current.callers += 1;
+    return new Promise<Blob>((resolve, reject) => {
+      let attached = true;
+      const detach = () => {
+        if (!attached) return false;
+        attached = false;
+        signal?.removeEventListener("abort", abort);
+        current.controller.signal.removeEventListener("abort", abort);
+        current.callers -= 1;
+        // React cleans up and mounts passive effects in the same commit.
+        queueMicrotask(() => {
+          if (current.callers !== 0 || this.#attachmentReads.get(attachmentId) !== current) return;
+          this.#attachmentReads.delete(attachmentId);
+          current.controller.abort();
+        });
+        return true;
+      };
+      const abort = () => {
+        if (detach()) reject(new DOMException("Aborted", "AbortError"));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      current.controller.signal.addEventListener("abort", abort, { once: true });
+      void current.promise.then(
+        (blob) => {
+          if (detach()) resolve(blob);
+        },
+        (error: unknown) => {
+          if (detach()) reject(error);
+        },
+      );
+    });
+  }
+
+  #clearAttachmentReads(): void {
+    const reads = [...this.#attachmentReads.values()];
+    this.#attachmentReads.clear();
+    this.#attachmentCache.clear();
+    this.#attachmentCacheBytes = 0;
+    for (const read of reads) read.controller.abort();
   }
 
   async discardAttachment(attachmentId: string): Promise<void> {
@@ -2231,7 +2384,7 @@ export class HttpHostClient {
 
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
-    await this.#bootstrap();
+    await this.#bootstrap("load");
   }
 
   async refresh(options?: { readonly retryConnection?: boolean }): Promise<void> {
@@ -2241,11 +2394,15 @@ export class HttpHostClient {
         channel.refused = false;
         channel.protocolFailed = false;
       }
+    await this.#refresh("refresh");
+  }
+
+  async #refresh(reason: BootstrapReason): Promise<void> {
     this.#assignmentReads.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
     this.#requestReads.clear();
-    await this.#bootstrap(false, true);
+    await this.#bootstrap(reason, false, true);
   }
 
   /**
@@ -2258,7 +2415,7 @@ export class HttpHostClient {
    */
   async reauthenticate(): Promise<void> {
     if (this.#disposed) return;
-    await this.#bootstrap(true, true);
+    await this.#bootstrap("reauthenticate", true, true);
   }
 
   async loadEarlierTranscript(threadId: string): Promise<void> {
@@ -2543,7 +2700,12 @@ export class HttpHostClient {
   }
 
   async #readThreadHistory(threadId: string) {
-    const page = unwrapRpcResult(await this.rpc["thread.events.list"]({ threadId }));
+    const page = unwrapRpcResult(
+      await this.rpc["thread.events.list"]({
+        threadId,
+        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
+      }),
+    );
     if (page.threadId !== threadId || page.thread.id !== threadId)
       throw new Error("Thread event page mismatch.");
     return page;
@@ -3090,23 +3252,6 @@ export class HttpHostClient {
     );
   }
 
-  async moveThreadInput(
-    threadId: string,
-    messageId: string,
-    beforeMessageId: string | null,
-  ): Promise<void> {
-    const patch = { beforeMessageId, messageId, threadId, type: "thread.input.move" } as const;
-    this.#update(applyOptimisticCommandPatch(this.#snapshot, patch));
-    try {
-      // Each drop is its own arrangement, so a lost answer is settled by the
-      // reread below rather than replayed over whatever came after it.
-      await this.dispatch({ ...patch, idempotencyKey: mutationIdempotencyKey("input-move") });
-    } catch (error) {
-      this.#reloadInputQueue(threadId);
-      throw error;
-    }
-  }
-
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     // Resume is idempotent on the Host, so a lost answer is simply asked again.
     await this.dispatch({
@@ -3256,8 +3401,10 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
-    this.recentSites.dispose();
+    this.#clearAttachmentReads();
+    this.browserHistory.dispose();
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
     this.#disposed = true;
@@ -3310,7 +3457,13 @@ export class HttpHostClient {
     this.#browserWatchFrameListeners.clear();
   }
 
-  async #bootstrap(force = false, revalidateCapabilities = false): Promise<void> {
+  async #bootstrap(
+    reason: BootstrapReason,
+    force = false,
+    revalidateCapabilities = false,
+    trigger = true,
+  ): Promise<void> {
+    if (trigger) bootstrapReadDiagnostics.trigger(reason);
     if (this.#bootstrapPromise && !force) {
       // A bootstrap already under way may be reusing evidence this caller
       // asked to replace, so the reverification runs beside it.
@@ -3318,10 +3471,10 @@ export class HttpHostClient {
       await Promise.all([this.#bootstrapPromise, this.#refreshCapabilities({ revalidate: true })]);
       // An explicit refresh may follow a mutation committed after that read
       // began. Read again after it settles so its stale answer cannot win.
-      if (!this.#disposed) await this.#bootstrap();
+      if (!this.#disposed) await this.#bootstrap(reason, false, false, false);
       return;
     }
-    const operation = this.#performBootstrap(revalidateCapabilities);
+    const operation = this.#performBootstrap(reason, revalidateCapabilities);
     this.#bootstrapPromise = operation;
     try {
       await operation;
@@ -3329,8 +3482,9 @@ export class HttpHostClient {
       if (this.#bootstrapPromise === operation) {
         this.#bootstrapPromise = null;
         if (this.#rereadPending) {
-          this.#rereadPending = false;
-          this.#reread();
+          const reason = this.#rereadPending;
+          this.#rereadPending = null;
+          this.#reread(reason, false);
         }
       }
     }
@@ -3345,13 +3499,14 @@ export class HttpHostClient {
    * and then ready, never leaves the client on the stale read it would have
    * joined. Hidden, it waits: coming to the foreground rereads anyway.
    */
-  #reread(): void {
+  #reread(reason: BootstrapReason, trigger = true): void {
     if (this.#disposed || this.#visibility === "background") return;
     if (this.#bootstrapPromise) {
-      this.#rereadPending = true;
+      if (trigger) bootstrapReadDiagnostics.trigger(reason);
+      this.#rereadPending ??= reason;
       return;
     }
-    void this.#bootstrap().catch(() => undefined);
+    void this.#bootstrap(reason, false, false, trigger).catch(() => undefined);
   }
 
   /**
@@ -3633,6 +3788,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       voiceAvailable: capabilities.includes("voice-v1"),
+      voiceAgentAvailable: capabilities.includes("voice-agent-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
     if (changed) {
@@ -3643,7 +3799,7 @@ export class HttpHostClient {
     }
   }
 
-  async #performBootstrap(revalidateCapabilities: boolean): Promise<void> {
+  async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
     const presenceMark = this.#presenceCounter;
     const ownerViewRevision = this.#ownerViews.revision;
@@ -3653,6 +3809,7 @@ export class HttpHostClient {
     if (this.#readCapabilities)
       await this.#refreshCapabilities(revalidateCapabilities ? { revalidate: true } : undefined);
     if (generation !== this.#viewerGeneration || this.#disposed) return;
+    bootstrapReadDiagnostics.start(reason);
     const response = await this.rpc["bootstrap.get"]({});
     if (!response.ok && response.error.code === "unauthorized") {
       if (this.#disposed || this.#snapshot.session !== "authentication-required") return;
@@ -3848,6 +4005,9 @@ export class HttpHostClient {
       browserAvailable: payload.browser.available,
       browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
       browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
+      browserProfileDeletions: payload.browser.profileDeletions?.map((deletion) => ({
+        ...deletion,
+      })),
       browserSessions,
       latestPlaces: payload.latestPlaces ?? [],
       connection: workspaces.length ? this.#snapshot.connection : "connected",
@@ -3965,7 +4125,7 @@ export class HttpHostClient {
     if (this.#refreshTimer || this.#refreshIntervalMs === 0) return;
     if (this.#visibility === "background") return;
     this.#refreshTimer = globalThis.setInterval(() => {
-      void this.#bootstrap().catch(() => undefined);
+      void this.#bootstrap("interval").catch(() => undefined);
     }, this.#refreshIntervalMs);
   }
 
@@ -3990,7 +4150,6 @@ export class HttpHostClient {
    */
   #enterBackground(): void {
     if (this.#disposed || this.#visibility === "background") return;
-    this.screenPresentation.clear();
     this.#visibility = "background";
     this.#targetedControl.suspend(true, this.#network !== "offline");
     this.#targetedWatch.suspend(true);
@@ -4032,13 +4191,6 @@ export class HttpHostClient {
     this.#backgroundedAt = null;
     const trusted = backgroundedForMs < this.#socketTrustWindowMs && this.#network !== "offline";
     for (const channel of this.#channels.values()) {
-      if (
-        channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-        this.#capabilities?.includes("screen-show-v1")
-      ) {
-        this.#replaceChannel(channel, "Presentation resumed");
-        continue;
-      }
       if (trusted && channel.socket?.readyState === 1) {
         this.#probeChannel(channel);
         continue;
@@ -4064,7 +4216,8 @@ export class HttpHostClient {
     }
     this.#recomputeConnection();
     this.#startRefresh();
-    if (this.#snapshot.session === "authenticated") void this.refresh().catch(() => undefined);
+    if (this.#snapshot.session === "authenticated")
+      void this.#refresh("foreground").catch(() => undefined);
   }
 
   /**
@@ -4290,11 +4443,6 @@ export class HttpHostClient {
       if (channel.socket !== socket) return;
       channel.progressAt = Date.now();
       try {
-        const screenShow =
-          this.#capabilities?.includes("screen-show-v1") === true &&
-          channel.workspaceId === this.#snapshot.homeWorkspaceId &&
-          this.#visibility === "foreground";
-        if (screenShow) this.screenPresentation.begin(socket);
         socket.send(
           JSON.stringify({
             afterSequence: channel.cursor,
@@ -4302,7 +4450,6 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
-            ...(screenShow ? { screenShow: true } : {}),
             ...(this.#capabilities?.includes("snapshot-messages-omit-v1")
               ? { snapshotMessages: "omit" }
               : {}),
@@ -4346,7 +4493,6 @@ export class HttpHostClient {
     });
     socket.addEventListener("close", () => {
       if (channel.socket !== socket) return;
-      this.screenPresentation.clear(socket);
       channel.socket = null;
       channel.synchronized = false;
       this.#scheduleReconnect(channel);
@@ -4451,10 +4597,6 @@ export class HttpHostClient {
       return { ...live, type: "host.live", progress: { ...live.progress, items } };
     }
     const message = HostToClientMessageSchema.parse(value);
-    if (message.type === "host.screen.ready" || message.type === "host.screen.show") {
-      if (channel.socket) this.screenPresentation.receive(channel.socket, message);
-      return null;
-    }
     if (
       (message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
@@ -4560,13 +4702,17 @@ export class HttpHostClient {
       });
       return;
     }
+    if (message.type === "host.browser-history-changed") {
+      this.browserHistory.changed(message.profileId);
+      return;
+    }
     if (message.type === "host.browser-sessions-changed") {
       // The catalog is viewer-wide, whichever Workspace this socket follows.
       // A session opened, ended or changed hands. Browser Sessions arrive on
       // the bootstrap, not the event stream, so the reread is the whole answer
       // — the same one the refresh poll gives, taken now instead of at the end
       // of the interval.
-      this.#reread();
+      this.#reread(message.type);
       return;
     }
     if (message.type === "host.thread-place-changed") {
@@ -4612,7 +4758,7 @@ export class HttpHostClient {
       // Machine state also says, in a Thread, when its turn is at work on a Mac.
       // Refresh it here so correctness never depends on mounting Computers.
       this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
-      this.#reread();
+      this.#reread(message.type);
       return;
     }
     channel.cursor = maxSequence(channel.cursor, message.sequence);
@@ -4635,7 +4781,7 @@ export class HttpHostClient {
     const reconnected = channel.reconnectAttempt > 0;
     channel.synchronized = true;
     channel.reconnectAttempt = 0;
-    if (reconnected) this.#reread();
+    if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
     this.#recomputeConnection();
     // A task notice sent while this socket was away is lost with it, and so is
@@ -5035,7 +5181,6 @@ export class HttpHostClient {
     const socket = channel.socket;
     channel.socket = null;
     channel.synchronized = false;
-    if (socket) this.screenPresentation.clear(socket);
     if (reconnect) this.#scheduleReconnect(channel);
     try {
       socket?.close(code, reason);
@@ -5328,6 +5473,7 @@ export class HttpHostClient {
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
         ...(currentWindow?.nextBefore ? { before: currentWindow.nextBefore } : {}),
+        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
         threadId,
       }),
     );
@@ -5440,6 +5586,7 @@ export class HttpHostClient {
   }
 
   #expireSession(): void {
+    this.#clearAttachmentReads();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
     this.#retainedWorkspaceTabLineages.clear();
@@ -5657,9 +5804,19 @@ export class HttpHostClient {
     ) {
       this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
     }
+    if (this.#snapshot.connection === "connected" && snapshot.connection !== "connected")
+      this.#preparedBrowserProfiles.clear();
+    const shouldPrepare =
+      snapshot.connection !== this.#snapshot.connection ||
+      snapshot.session !== this.#snapshot.session ||
+      snapshot.homeWorkspaceId !== this.#snapshot.homeWorkspaceId ||
+      snapshot.browserAvailable !== this.#snapshot.browserAvailable;
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#preparedBrowserProfiles.clear();
+      this.#pendingBrowserTabs.clear();
+      this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();
@@ -5668,10 +5825,17 @@ export class HttpHostClient {
         browserTabGroups: this.#tabGroups.receive(snapshot.browserTabGroups),
       };
     }
-    snapshot = { ...snapshot, activatingWorkspaceTabs: this.#workspaceTabActivations.ids };
+    snapshot = {
+      ...snapshot,
+      activatingWorkspaceTabs: this.#workspaceTabActivations.ids,
+      pendingBrowserTabs: this.#pendingBrowserTabs.rows,
+    };
     // A dropped connection pauses the views being watched; it does not end them.
     this.#computerViews.setConnected(scope !== null && snapshot.connection === "connected");
-    this.recentSites.setScope(scope);
+    this.browserHistory.setScope(scope);
+    for (const profile of this.#snapshot.browserProfiles)
+      if (!snapshot.browserProfiles.some((value) => value.id === profile.id))
+        this.browserHistory.drop(profile.id);
     this.browserPreferences.setScope(scope);
     let reconcileBrowserTargets: (() => void) | undefined;
     if (snapshot.session !== "authenticated") {
@@ -5816,6 +5980,7 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-v1") === true,
+      voiceAgentAvailable: this.#capabilities?.includes("voice-agent-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       // An unchanged Thread keeps its identity: screens compare records by
       // reference, and every publish passes through here.
@@ -5831,12 +5996,10 @@ export class HttpHostClient {
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     reconcileBrowserTargets?.();
-    this.recentSites.observeTabs(
-      this.#snapshot.browserSessions,
-      this.#snapshot.connection === "connected",
-    );
+    this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
+    if (shouldPrepare) this.prepareBrowserProfile();
   }
 }
 

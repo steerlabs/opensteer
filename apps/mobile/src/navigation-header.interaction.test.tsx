@@ -27,12 +27,18 @@ vi.mock("react-native", () => ({
     accessibilityLabel,
     children,
     onPress,
+    style,
   }: {
     accessibilityLabel?: string;
     children?: ReactNode;
     onPress?: () => void;
+    style?: (state: { pressed: boolean }) => unknown;
   }) => (
-    <button aria-label={accessibilityLabel} onClick={onPress}>
+    <button
+      aria-label={accessibilityLabel}
+      data-style={JSON.stringify(style?.({ pressed: false }))}
+      onClick={onPress}
+    >
       {children}
     </button>
   ),
@@ -52,9 +58,13 @@ vi.mock("./ui/mobile-client-context.js", () => ({ useHostValue: () => harness.at
 vi.mock("./ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("./ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("./browser/browser-button.js", () => ({ BrowserButton: () => null }));
+vi.mock("./ui/symbol.js", () => ({
+  Symbol: ({ name, tint }: { name: string; tint: string }) => (
+    <span data-symbol={name} data-tint={tint} />
+  ),
+}));
 
+import { color } from "./theme.js";
 import { browserHeaderActions, useSidebarMenu } from "./navigation-header.js";
 import { SidebarControlContext, SidebarDockedContext } from "./sidebar/sidebar-context.js";
 
@@ -134,28 +144,77 @@ describe("the Menu in a sidebar destination's bar", () => {
 describe("the conversation bar's family and tabs", () => {
   it("keeps separate native items with accessible counts and an attention tint", () => {
     const open = vi.fn();
-    const options = browserHeaderActions(false, true, vi.fn(), {
-      action: {
-        icon: "arrow.triangle.branch",
-        label: "2 tasks running, one needs you, 1 automation",
-        badge: "2",
-        accessibilityLabel: "2 tasks running, one needs you, 1 automation",
-        tintColor: "#amber",
-        onPress: open,
+    const options = browserHeaderActions(
+      { acting: false, glyph: "globe", onPress: vi.fn() },
+      {
+        action: {
+          icon: "checklist",
+          label: "2 tasks running, one needs you, 1 automation",
+          badge: "2",
+          accessibilityLabel: "2 tasks running, one needs you, 1 automation",
+          accessibilityHint: "Opens this conversation's tasks and automations",
+          tintColor: "#amber",
+          onPress: open,
+        },
+        content: null,
       },
-      content: null,
-    });
+    );
     const items = options.unstable_headerRightItems?.({ tintColor: "white", canGoBack: true });
     expect(items).toEqual([
       expect.objectContaining({
-        icon: { name: "arrow.triangle.branch", type: "sfSymbol" },
+        icon: { name: "checklist", type: "sfSymbol" },
         accessibilityLabel: "2 tasks running, one needs you, 1 automation",
+        accessibilityHint: "Opens this conversation's tasks and automations",
         tintColor: "#amber",
         badge: expect.objectContaining({ value: "2" }),
       }),
-      expect.objectContaining({ accessibilityLabel: "Tabs" }),
+      expect.objectContaining({ accessibilityLabel: "Page" }),
     ]);
     if (items?.[0]?.type === "button") items[0].onPress();
     expect(open).toHaveBeenCalledOnce();
   });
+});
+
+it.each([
+  ["globe", "Page"],
+  ["laptopcomputer", "Mac app"],
+  ["smartphone", "Phone"],
+] as const)("shows %s with an acting label and green tint", (glyph, label) => {
+  const onPress = vi.fn();
+  const options = browserHeaderActions({ glyph, acting: true, onPress });
+  const items = options.unstable_headerRightItems?.({ tintColor: "white", canGoBack: true });
+  expect(items).toEqual([
+    expect.objectContaining({
+      icon: { name: glyph, type: "sfSymbol" },
+      accessibilityLabel: `${label}, agent working`,
+      tintColor: color.green,
+    }),
+  ]);
+  if (items?.[0]?.type === "button") items[0].onPress();
+  expect(onPress).toHaveBeenCalledOnce();
+});
+it("omits the surface control without surfaces", () => {
+  expect(
+    browserHeaderActions(null).unstable_headerRightItems?.({ tintColor: "white", canGoBack: true }),
+  ).toEqual([]);
+});
+
+it("gives the Android surface glyph a 48 point target and the same accessible press", () => {
+  const onPress = vi.fn();
+  const options = browserHeaderActions({ acting: true, glyph: "smartphone", onPress });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  roots.push(root);
+  act(() => root.render(<>{options.headerRight?.({ tintColor: "white", canGoBack: true })}</>));
+  const button = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Phone, agent working"]',
+  )!;
+  expect(JSON.parse(button.dataset["style"]!)).toContainEqual(
+    expect.objectContaining({ height: 48, width: 48 }),
+  );
+  expect(button.querySelector('[data-symbol="smartphone"]')?.getAttribute("data-tint")).toBe(
+    color.green,
+  );
+  act(() => button.click());
+  expect(onPress).toHaveBeenCalledOnce();
 });

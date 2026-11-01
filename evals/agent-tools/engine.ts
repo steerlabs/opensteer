@@ -184,8 +184,6 @@ export async function runEngine(input: {
     // Consume real preceding turns in the same native session; only the last
     // turn's reply and calls are graded. All turns remain in the transcript.
     for (const turn of c.turns) {
-      const current = typeof turn === "string" ? { text: turn } : turn;
-      const first = c.turns[0]!;
       input.onTurnStart();
       finalText = "";
       failure = undefined;
@@ -199,7 +197,7 @@ export async function runEngine(input: {
             c.profile === "delegated"
               ? {
                   id: createId("delegation"),
-                  objective: typeof first === "string" ? first : first.text,
+                  objective: c.turns[0]!,
                   origin: "run",
                   parentThreadId: createId("thread"),
                 }
@@ -211,14 +209,10 @@ export async function runEngine(input: {
         inputs: [
           {
             author: { kind: "human", displayName: "Eval user", principalId: "eval" },
-            content: [{ type: "text", text: current.text }],
+            content: [{ type: "text", text: turn }],
             createdAt: new Date().toISOString(),
             kind: "input",
-            messageId: "messageId" in current ? current.messageId : createId("message"),
-            ...("presentationContext" in current && current.presentationContext
-              ? { presentationContext: current.presentationContext }
-              : {}),
-            ...("quote" in current && current.quote ? { quote: current.quote } : {}),
+            messageId: createId("message"),
           },
         ],
         reports: { messages: [], omittedCount: 0, throughSequence: null },

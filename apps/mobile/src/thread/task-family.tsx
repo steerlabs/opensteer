@@ -52,7 +52,7 @@ export function FamilyButton(props: {
           ))}
         </View>
       ) : earlierOnly ? (
-        <Symbol name="arrow.triangle.branch" size={16} tint={color.muted} />
+        <Symbol name="checklist" size={16} tint={color.muted} />
       ) : null}
       {glance.running > 0 || earlierOnly ? (
         <AppText

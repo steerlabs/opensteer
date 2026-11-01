@@ -1,3 +1,5 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { gate } from "@opensteer/shared/test-support/observation";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -37,6 +39,129 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it("cancels page-free preparation through the authenticated loopback bridge", async () => {
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(),
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    const held = gate({ label: "loopback preparation", deadlineMs: 2000 });
+    const closed = Promise.withResolvers<void>();
+    const close = vi.fn(async () => {
+      closed.resolve();
+    });
+    let signal: AbortSignal | undefined;
+    vi.spyOn(runtime, "prepareProfile").mockImplementation(async (_ticket, options) => {
+      expect(options).toMatchObject({ localProfiles: true, profilePrepare: true });
+      signal = options?.signal;
+      await held.enter();
+      return { retained: true, closed: closed.promise, close };
+    });
+    const token = "a".repeat(64);
+    const server = new BrowserRuntimeServer({
+      port: 0,
+      runtime,
+      relayBridge: { token, updateAttachKeys: () => {} },
+    });
+    const address = await server.start();
+    const keys = generateKeyPairSync("ed25519");
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser/prepare`, {
+      headers: {
+        authorization: "Bearer abc.def.ghi",
+        "x-opensteer-browser-local-profiles": "1",
+        "x-opensteer-browser-profile-prepare": "1",
+        "x-opensteer-browser-bridge-token": token,
+        "x-opensteer-browser-attach-keys": Buffer.from(
+          JSON.stringify([
+            {
+              keyId: "test",
+              publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+            },
+          ]),
+        ).toString("base64url"),
+      },
+    });
+    try {
+      await withTimeout(once(socket, "open"), 2000, {
+        timeoutError: () => new Error("Preparation bridge never opened"),
+      });
+      await held.entered;
+      socket.close();
+      await vi.waitFor(
+        () => expect(signal?.aborted, "Loopback close never cancelled preparation").toBe(true),
+        { timeout: 1000 },
+      );
+      held.release();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce(), { timeout: 1000 });
+      expect(runtime.health().sessionCount).toBe(0);
+    } finally {
+      held.release();
+      socket.terminate();
+      await server.close();
+    }
+  });
+  it("negotiates initial-page readiness through the authenticated bridge", async () => {
+    const claims = validClaims({
+      initialNavigationVersion: 1,
+      initialNavigation: { operationKey: "initial-test", url: "https://example.test/" },
+    });
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(),
+      profileStateClient: new FakeProfileStateClient(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(claims),
+    });
+    const bridgeToken = "b".repeat(64);
+    const keys = generateKeyPairSync("ed25519");
+    const server = new BrowserRuntimeServer({
+      port: 0,
+      runtime,
+      relayBridge: { token: bridgeToken, updateAttachKeys: () => {} },
+    });
+    try {
+      const address = await server.start();
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser`, {
+        headers: {
+          authorization: "Bearer abc.def.ghi",
+          "x-opensteer-browser-initial-navigation": "1",
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          "x-opensteer-browser-attach-keys": Buffer.from(
+            JSON.stringify([
+              {
+                keyId: "test-key",
+                publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+              },
+            ]),
+          ).toString("base64url"),
+        },
+      });
+      const result = await settleWithin(
+        new Promise<unknown>((resolve, reject) => {
+          socket.once("error", reject);
+          socket.on("message", (raw, binary) => {
+            if (binary) return;
+            const message = JSON.parse(String(raw));
+            if (message.type === "browser.attached") resolve(message);
+          });
+        }),
+        2000,
+      );
+      expect(result).toMatchObject({
+        settled: "fulfilled",
+        value: {
+          type: "browser.attached",
+          initialPage: { operationKey: "initial-test", navigation: "submitted" },
+        },
+      });
+      socket.terminate();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("refuses listening and health until initialization succeeds, including failed initialization", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),

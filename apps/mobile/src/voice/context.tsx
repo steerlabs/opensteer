@@ -1,34 +1,15 @@
+import { show } from "./navigation.js";
+import { voicePlaces } from "./places.js";
 import { VoiceController } from "@opensteer/client/voice";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useState, type ReactNode } from "react";
-import { AppState, Keyboard, Platform, TextInput } from "react-native";
+import { paramsDestination } from "../browser/surface-route.js";
 import { useDictation } from "../dictation/context.js";
 import { navigationRef } from "../navigation-ref.js";
 import { useVoiceBackgroundStop } from "../platform/use-voice-background-stop.js";
 import { voiceMediaPort } from "../platform/voice.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { VoiceContext } from "./controls.js";
-import { mobileScreenPresentation, type PresentationDevice } from "./presentation.js";
-import { drawerOpen, observeInteraction, remoteEditing } from "./interaction.js";
-
-const device: PresentationDevice = {
-  active: () => AppState.currentState === "active",
-  editing: () => TextInput.State.currentlyFocusedInput() != null || remoteEditing(),
-  covered: drawerOpen,
-  macVideo: Platform.OS !== "ios",
-  observe(listener) {
-    const keyboard = Keyboard.addListener("keyboardDidShow", listener);
-    const stopInteraction = observeInteraction(listener);
-    const app = AppState.addEventListener("change", (state) => {
-      if (state !== "active") listener();
-    });
-    return () => {
-      keyboard.remove();
-      app.remove();
-      stopInteraction();
-    };
-  },
-};
 
 /**
  * The runtime's one voice controller for the attached Host: a new Host ends
@@ -42,27 +23,34 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     if (!hostClient) return;
-    const presentation = mobileScreenPresentation({
-      navigator: navigationRef,
-      device,
-      hostClient,
-      deploymentId: () => client.getSnapshot().selection.deploymentId,
-    });
     const created = new VoiceController({
       hostClient,
       media: voiceMediaPort,
-      navigate: presentation.show,
-      presentation: presentation.port,
+      navigate: (target) => show(client.getSnapshot().selection.deploymentId, target),
       createId: randomUUID,
+      currentView: () => {
+        const route = navigationRef.getCurrentRoute();
+        const params = route?.params as { threadId?: string } | undefined;
+        return {
+          threadId:
+            route?.name === "Home"
+              ? (hostClient.getSnapshot().homeThreadId ?? undefined)
+              : params?.threadId,
+          destination: paramsDestination(params) ?? undefined,
+          title: route?.name,
+        };
+      },
+      places: () => voicePlaces(hostClient, navigationRef.getCurrentRoute()),
       onStart: async () => {
         const owner = dictation.getSnapshot().owner;
         if (owner) await dictation.stop(owner);
       },
     });
+    const unsubscribe = navigationRef.addListener("state", () => created.refreshContext());
     setController(created);
     return () => {
+      unsubscribe();
       created.dispose();
-      presentation.dispose();
       setController(null);
     };
   }, [client, dictation, hostClient]);

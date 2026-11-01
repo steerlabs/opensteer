@@ -1,9 +1,10 @@
 # Browser sessions
 
-A profile's sessions share one Chromium host and its sign-ins on their computer;
-each Guest session has its own browser. Sessions partition page access even when
-they share a profile. A session's identity is fixed at creation. Website sign-in
-is separate: [Chrome sign-ins](browser-sources.md) and [Passwords](passwords.md).
+A named profile keeps Chromium-native browser data on its owning computer. Its
+live sessions share an engine host; each Guest session has its own ephemeral
+browser. Sessions partition page access even when they share a profile. A
+session's identity is fixed at creation. Website sign-in is separate:
+[Chrome sign-ins](browser-sources.md) and [Passwords](passwords.md).
 
 ## Opening web links in Opensteer
 
@@ -37,6 +38,13 @@ is not closure: clients recover omitted inventories through authorized reads.
 Durable restoration is negotiated with `workspaceTabRestoreVersion`; older
 clients and runtimes retain the live-only view and close controls.
 
+Opening selects a client-local pending tab immediately on web, desktop and mobile.
+On negotiated runtimes, `browser.tab.open` returns once the page exists and its
+initial navigation was submitted, before document load. Only committed URLs
+become restore URLs. An uncertain transport result keeps its original operation
+key; late completion must not steal focus after the person navigates elsewhere.
+Dismissing pending presentation does not prove the Host canceled the open.
+
 Source: `apps/host/src/browser/browser-service.ts`,
 `packages/database/src/browser-session-store.ts`,
 `packages/browser-runtime-core/src/browser/surface-ledger.ts`.
@@ -62,8 +70,13 @@ window; later user actions need new keys.
 Automatic personal reuse requires positive personal creation provenance and a
 ready browser at the resolved placement. Unknown provenance is ineligible.
 Opener/occupant projections recheck reader visibility and must not expose other
-people or inaccessible conversation IDs. Browsing history is local to the signed-in
-person, Deployment and profile; Guest and agent activity create none. Search
+people or inaccessible conversation IDs. The Host keeps browsing history and site
+icons in each profile, readable and clearable only by its owner. It records a
+person's explicit tab opens and address-bar navigations only when the browser
+matches the navigation reply to its committed document (including HTTP redirects).
+The runtime sends each attribution once with the URL frozen at that commit, so
+later page scripts cannot change the visit while its reply is pending. Agent navigations
+and Guest browsing create no visits; runtimes without attribution record none. Search
 suggestions send search words to Google only under the negotiated feature and
 local preference.
 
@@ -83,9 +96,11 @@ launch and navigation are not blindly replayed. An initial website navigation
 error opens the existing browser on its error page; transport/CDP failure fails
 start. See `packages/browser-runtime-core/src/runtime.ts` and the Host service.
 
-History has bounded retention. Clearing it removes retained icons and fences
-pending navigation/icon writes; a later asynchronous result must not resurrect
-deleted history. See `packages/client/src/host/recent-sites.ts`.
+History retains at most 300 addresses for 90 days. Removing the last address of a
+site removes its retained icon; clearing history or deleting the profile removes
+all of both. Erasure is ordered after already-recorded visits; a navigation that
+commits afterward is a new visit. Replayed tab opens create no visits. Device-local
+history is not imported.
 
 The private cursor observer sends element centre and page scale only, never
 values, text, selectors or attributes. See
@@ -404,9 +419,9 @@ it is off by default and needs no Host API epoch change. A runtime launches the
 page provider only after it advertises `modules.browser.passkeys: 1`, receives
 `passkeys: 1` in the browser auxiliary welcome and holds a signed attach ticket
 with `passkeys: 1`; otherwise the existing page policy applies. A shared profile
-browser is reused only in a matching passkey mode: an idle one is checkpointed
-and closed before relaunch, and one held by another session refuses the attach
-for retry.
+browser is reused only in a matching passkey mode: an idle one closes before
+relaunch without clearing native data, and one held by another session refuses
+the attach for retry. Only the legacy adapter checkpoints before closing.
 
 - Viewers opt in on their control socket with `passkeys=native` or
   `passkeys=notice`. Only opted-in viewers receive the mode and its consumer
@@ -432,48 +447,134 @@ Profiles are durable identities, not account names. Main and the person can crea
 empty profiles; specialized Workspaces require a browser-access Request, with
 creation and grant atomic. Delegated/trigger work creates none. Saving Guest
 state copies once into a new profile and never links subsequent Guest activity.
-The previous-release profile-save tool remains compatibility-only. Saved-state
-site inspection cannot prove a currently valid website sign-in.
+The previous-release profile-save tool remains compatibility-only. A profile name
+or stored data never proves a currently valid website sign-in. Native profiles
+omit `siteData`; missing inspection means unknown, not empty. Never inspect the
+frozen conversion seed or launch a browser just to populate that list.
 
 Only the person renames or deletes a profile, behind `browser-profile-manage-v1`;
-agents get no destructive tool. One transaction closes the profile's tabs, archives
-the row (sessions keep naming the identity they were created with), erases its vault
-revisions and revokes its grants. It holds the profile's session lock, which session
-creation and revision commits take, and the owner's grant lock, which every grant
-takes, so no session, save, grant or creation replay can follow. Only stopping the
-profile's live sessions comes after; they are already fenced, and a Host restart
-fails them anyway.
+agents get no destructive tool. Deletion fences new work, closes durable tabs,
+revokes grants and erases every vault revision, including the frozen seed. It also
+requires erasure on the owning computer; archival alone is not disk deletion.
+An offline owner leaves visible `pending-computer` work. Electron cannot unload a
+persistent Session, so a profile whose Session existed in this process stays
+`pending-restart` until the next start removes its tree before Session creation.
+Never remove a live engine's directory or force an app restart for erasure.
+Deletion preserves completed downloads outside the profile tree and retains a
+nonsecret tombstone to refuse stale tickets and reconcile Host DB rollback.
+An unfinished deletion still occupies one of the owner's 128 profile slots until
+disk erasure completes, so bootstrap can report every pending deletion without
+truncation, including after repeated create/delete cycles.
 
 ## Profile state
 
-The Profile Vault is the only durable state; Runtime disk profiles are disposable.
-A profile lease and final-save grace fence ownership and revision commits. Stop
-saves before disconnecting. Periodic checkpoints preserve the existing final-save
-grace deadline without extending it; only a final commit retires grace. The optional
-profile-checkpoint header distinguishes periodic saves while the JSON body stays
-compatible with previous releases; an absent header retains final-save semantics.
-A refused or transport-failed final commit disposes the quiesced browser and reports
-the typed failure; a later attachment restores the last durable revision. A late native
-export retains its lock until settled but must never commit after its deadline.
-A final save drains admitted imports before export; it is not a transaction over
-later autonomous page/worker writes.
+Native profile storage belongs permanently to its bound computer, storage root
+and engine. Creation may leave a profile unplaced; its first supported open or
+authorized preparation on Personal's Main computer fixes that placement.
+Reconnect, update, eviction and reenrollment cannot move it.
+Missing native data, root identity or mismatched markers refuse opening; never
+create an empty replacement, use another computer or substitute Guest. Chromium
+owns recovery within its databases; marker validation is not an internal
+corruption check.
 
-Restoration must finish before first navigation. On Playwright, keep the restore
-page until Chromium acknowledges localStorage writes via a same-origin storage
-event; closing sooner loses writes. Desktop saves include stored origins and
-visited origins because Clear-Site-Data/eviction can remove storage without running
-that origin's documents. Hidden storage helpers bypass service workers and consume
-no user-page admission slots.
+Electron's native roots live beneath its `sessionData` tree, namespaced by
+Deployment, outside disposable Runner slots. The Network Service's macOS sandbox
+receives only that tree at process launch; `session.fromPath()` outside it can
+appear to work while persistent cookies and caches never reach disk. Keep Host
+databases and credentials outside this browser-only grant. See the
+[desktop paths](../apps/desktop/src/app/application-paths.ts).
 
-Malformed/over-budget origins retain their last captured state where available;
-other origins and cookies still commit. An incomplete save must report failure
-without logging storage keys/values and remain retryable. Direct export reports
-incompleteness with its usable snapshot. There is no UI checkpoint warning.
+The caller holds exclusive ownership of the profile root for its process lifetime:
+the desktop application lock covers its Deployment roots, and the standalone
+runtime holds an OS file lock. Logical runtime restarts may re-acquire a root in
+the same process, but cannot erase directories still retained by Electron
+Sessions. Their deletion tombstones are completed after process exit, before
+any persistent Session opens that directory again.
 
-Sources: `packages/browser-profile/src/snapshot.ts`,
-`packages/browser-runtime-core/src/runtime.ts`,
-`apps/desktop/src/browser/electron-browser-launcher.ts`,
-`apps/browser-runtime/src/browser/playwright-launcher.ts`.
+The [storage contract](../packages/protocol/src/browser-profile-storage.ts) advances
+`vault` → `initializing` → `local` once. Conversion freezes one exact vault revision
+and fences legacy reads and commits under the profile transaction lock. A matching
+unpromoted initialization can restart from that seed only after the old process
+exits; a ready marker permits completion replay, never reimport. The encrypted
+frozen seed remains a recovery artifact until deletion. It never receives native
+checkpoints and never automatically reseeds missing or damaged native storage.
+An unavailable seed blocks initialization retries; never substitute another
+revision. A ready native profile no longer needs the seed to open.
+
+Conversion guarantees committed state across a **process crash**, not power loss
+or hardware failure. Electron's localStorage acknowledgement and
+`flushStorageData()` alone do not prove a DB commit. The
+[conversion barrier](../apps/desktop/src/browser/electron-browser-launcher.ts)
+depends on pinned Electron 44.9.2 / Chromium 152.0.7977.167 ordering: flushing
+followed by clearing localStorage for a fresh, unloaded `.invalid` origin waits behind the
+queued commits. A loaded origin does not provide that barrier. Engine upgrades
+must requalify this dependency with an immediate crash and reopen.
+
+Full Chromium preserves session cookies through native restore-last-session
+policy, with no Opensteer mirror or expiry rewriting. Opensteer owns tab restore:
+Chromium can defer restoring old tabs until the first window even with startup
+windows suppressed, so the launcher removes only recognized tab/window restore
+records while no browser owns the directory. Cookie and origin storage remain
+intact. The [native storage adapter](../apps/browser-runtime/src/browser/native-profile-storage.ts)
+also pins the cookie commit barrier used for controlled cookie writes.
+
+Electron persists session cookies through an encrypted per-profile mirror with
+an OS-wrapped key; Guest creates neither. Native files use Chromium's platform
+protection; named launches must not disable OS cookie encryption or use testing
+key-store fallbacks. An unavailable approved mirror-key provider refuses opening
+with instructions to unlock the login keychain and restart the app; the store and mirror stay intact.
+This also prevents an already-created Session from bypassing restoration on retry.
+The Session-wide request gate covers workers as well as pages. Prepared Sessions
+cancel requests until a real open admits them, including after Network Service
+recovery; restoration alone never admits them. Cookie-change events
+invalidate an authoritative Session-scoped capture rather than supplying cookie
+identities, because Electron's event payload omits partition keys. Controlled
+cookie writes await native and mirror persistence. A missing, corrupt or mismatched
+ready-profile mirror refuses opening and preserves the store; never replace it
+with an empty mirror or recover an older mirror or seed. See the
+[mirror owner](../apps/desktop/src/browser/session-cookie-mirror.ts).
+
+After Network Service loss, mirror capture/publication suspends while gates close
+and restoration runs again. Chromium can briefly expose a jar without session
+cookies to a surviving page or worker before restoration; persistent cookies are
+unaffected. Restoration may deliver Cookie Store change events to registered
+service workers. These are accepted Electron limits; stock Electron would lose
+session cookies permanently. The mirror preserves the last committed state across
+process crashes, not website mutations or logouts not yet captured and published.
+
+Lifecycle serialization is per profile, so slow conversion cannot block unrelated
+profiles. Closing the last tab keeps a native host warm without an idle timer;
+capacity pressure evicts the least recently used idle host, never an active one.
+Close, eviction, failure cleanup and relaunch never clear native storage. A ready
+profile requires a binding-matched sentinel inside its native directory before
+any engine opens it. Missing or mismatched sentinels preserve the store and
+refuse opening; this unreleased format has no sentinel-free migration. Electron
+eviction releases views/controllers but retains its Session and mirror until
+process exit, so it does not bound all Session memory. See the
+[runtime](../packages/browser-runtime-core/src/runtime.ts).
+
+Clients may express their last explicit profile choice through negotiated
+preparation before opening a tab. Preparation has a distinct signed purpose,
+creates no session or user page, and retains at most one speculative native host per
+runtime within existing capacity. It never evicts a useful host. Only Personal's
+Main computer may proactively convert an unbound profile; server Deployments
+prepare already-bound profiles on their owner. Reconnect preserves the attempt
+limit for that runtime incarnation. Revocation or deletion cancels preparation;
+an actual open joins the same profile lane and takes over its capability hold.
+Chromium preparation performs only one-time conversion and closes its importer;
+preparing a ready profile does no engine work. It retains no browser that could
+run restored background workers before a real open. Electron retains a page-free
+host with its Session-wide request gate dormant until attachment; recovery also
+preserves that dormant state. See the
+[launcher contract](../packages/browser-runtime-core/src/browser/backend.ts).
+
+The [legacy snapshot adapter](../packages/browser-runtime-core/src/legacy-snapshot-adapter.ts)
+serves old runtimes, Guest save and one-time conversion. Only legacy named-profile
+execution uses periodic/final snapshots, leases and final-save grace. It must
+drain admitted imports before final export, retain last captured state for
+incomplete origins and report incomplete saves without logging storage contents.
+A final export cannot transact over later autonomous page/worker writes. Guest
+remains ephemeral even when its tab descriptor survives a restart.
 
 ## Tab groups
 

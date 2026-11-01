@@ -1,9 +1,8 @@
 import type { PlaceContentPart } from "@opensteer/core";
 import { lastExecutionSelection } from "../host/execution-preferences.js";
 import { composerExecutionSelection } from "../host/model-catalog.js";
-import { VoiceSessionIdSchema } from "@opensteer/protocol/voice";
-import type { ScreenPresentationInput } from "@opensteer/protocol";
-import { classifyClientFailure } from "../connections/operation-error.js";
+import { VoiceSessionIdSchema, type VoiceToolCall } from "@opensteer/protocol/voice";
+import { ClientOperationError, classifyClientFailure } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { PendingSendCommand } from "../host/pending-send.js";
 import { heldThread } from "../host/task-list.js";
@@ -21,11 +20,9 @@ import {
   type VoiceSnapshot,
   type VoiceTarget,
 } from "./contract.js";
-import { routeUtterance, voiceTargets } from "./router.js";
+import { VoiceContextLinks, type VoiceView } from "./context.js";
 import { VoiceSpeaker } from "./speaker.js";
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
-import type { ScreenPresentationPort } from "../screen/contract.js";
-import { ScreenPresentationController } from "../screen/controller.js";
 
 export interface VoiceAccount {
   readonly environmentId: string;
@@ -106,8 +103,8 @@ export interface VoiceControllerInput extends VoiceTimers {
   readonly hostClient: HostClient;
   readonly media: VoiceMediaPort | null;
   readonly navigate: (target: VoiceTarget) => void;
-  readonly presentation?: ScreenPresentationPort;
   readonly createId: () => string;
+  readonly currentView?: () => VoiceView;
   readonly places?: () => Promise<readonly PlaceContentPart[]>;
   readonly onStart?: () => void | Promise<void>;
   /** Semantic provider seam, also usable by offline implementations and tests. */
@@ -119,14 +116,27 @@ interface VoiceSession {
   readonly abort: AbortController;
   readonly baseline: HostSnapshot;
   readonly turns: Set<string>;
+  readonly earlyUtterances: Extract<VoiceCallEvent, { type: "heard" }>[];
   readonly pending: Map<string, { messageId: string | null; runId: string | null }>;
+  readonly links: VoiceContextLinks;
+  readonly answers: Map<string, Promise<{ ok: boolean; text: string }>>;
+  /** The person's utterances not yet handed to Chat, oldest first. */
+  utterances: { turnId: string; text: string }[];
+  readonly heardWaiters: Set<() => void>;
+  /** Page context captured as each utterance was heard, by turn. */
+  readonly pages: Map<string, Promise<readonly PlaceContentPart[]>>;
+  contextDesired: string | null;
+  contextTimer: VoiceTimer | null;
+  contextSends: Promise<void>;
+  thinkingTimer: VoiceTimer | null;
+  thinking: boolean;
+  toolRunning: boolean;
   hearing: boolean;
   speaking: boolean;
   call: VoiceCall | null;
   speaker: VoiceSpeaker | null;
   idleTimer: VoiceTimer | null;
   sends: Promise<void>;
-  readonly presentation: ScreenPresentationController | null;
 }
 
 /** One per app runtime; meters bypass the React snapshot subscription. */
@@ -189,23 +199,26 @@ export class VoiceController {
       abort: new AbortController(),
       baseline,
       turns: new Set(),
+      earlyUtterances: [],
       pending: new Map(),
+      links: new VoiceContextLinks(),
+      answers: new Map(),
+      utterances: [],
+      heardWaiters: new Set(),
+      pages: new Map(),
+      contextDesired: null,
+      contextTimer: null,
+      contextSends: Promise.resolve(),
+      thinkingTimer: null,
+      thinking: false,
+      toolRunning: false,
       hearing: false,
       speaking: false,
       call: null,
       speaker: null,
       idleTimer: null,
       sends: Promise.resolve(),
-      presentation:
-        this.#input.presentation && this.#input.hostClient.screenPresentation
-          ? new ScreenPresentationController({
-              ...this.#input,
-              transport: this.#input.hostClient.screenPresentation,
-              port: this.#input.presentation,
-            })
-          : null,
     };
-    session.presentation?.start(session.id);
     this.#session = session;
     this.#publish({ phase: "connecting", muted: false, heard: null, spoken: null, since: null });
     try {
@@ -215,6 +228,7 @@ export class VoiceController {
         ...this.#input,
         ...account,
         rpc: this.#input.hostClient.rpc,
+        agent: baseline.voiceAgentAvailable === true,
         media,
         createId: () => session.id,
       });
@@ -227,6 +241,7 @@ export class VoiceController {
         return;
       }
       session.call = call;
+      for (const event of session.earlyUtterances.splice(0)) this.#receive(session, event);
       call.setMuted(this.#snapshot.muted);
       media.keepAwake?.(true);
       this.#publish({ since: this.#timers.now() });
@@ -249,6 +264,10 @@ export class VoiceController {
         },
       });
       this.#touch(session);
+      if (call.agent) {
+        this.refreshContext(true);
+        void this.#tools(session, account);
+      }
     } catch (error) {
       if (this.#session === session)
         await this.#end(
@@ -308,7 +327,8 @@ export class VoiceController {
       snapshot.deploymentId !== session.baseline.deploymentId ||
       snapshot.user?.id !== session.baseline.user?.id ||
       snapshot.session !== "authenticated" ||
-      !snapshot.voiceAvailable
+      !snapshot.voiceAvailable ||
+      JSON.stringify(voiceAccount(snapshot)) !== JSON.stringify(voiceAccount(session.baseline))
     ) {
       void this.#end(session);
       return;
@@ -334,6 +354,7 @@ export class VoiceController {
       )
         session.pending.delete(key);
     }
+    this.refreshContext();
     this.#settlePhase(session);
   }
   #settlePhase(session: VoiceSession): void {
@@ -343,7 +364,7 @@ export class VoiceController {
         ? "hearing"
         : session.speaking
           ? "speaking"
-          : session.pending.size
+          : session.pending.size || session.thinking || session.toolRunning
             ? "thinking"
             : "listening",
     });
@@ -364,10 +385,21 @@ export class VoiceController {
       case "hearing":
         this.#touch(session);
         session.hearing = true;
+        this.refreshContext(true);
         this.#publish({ heard: event.text });
         this.#settlePhase(session);
         break;
       case "heard": {
+        // What the person was looking at when they spoke, not when a send runs.
+        if (event.text.trim() && !session.pages.has(event.turnId)) {
+          session.pages.set(event.turnId, this.#places());
+          if (session.pages.size > 10) session.pages.delete(session.pages.keys().next().value!);
+        }
+        if (!session.call) {
+          this.#publish({ heard: event.text });
+          session.earlyUtterances.push(event);
+          return;
+        }
         if (session.turns.has(event.turnId)) return;
         session.turns.add(event.turnId);
         this.#touch(session);
@@ -375,21 +407,24 @@ export class VoiceController {
         this.#publish({ heard: event.text });
         this.#settlePhase(session);
         if (!event.text.trim()) return;
-        const presentation = session.presentation?.captureUtterance();
-        const target = routeUtterance(
-          event.text,
-          voiceTargets(this.#input.hostClient.getSnapshot()),
-        );
-        if (target) this.#input.navigate(target);
-        else {
-          const captured = presentation?.view ?? this.#input.presentation?.capture();
-          const places = this.#places(captured?.places ?? this.#input.places);
+        if (session.call?.agent) {
+          session.utterances = [
+            ...session.utterances,
+            { turnId: event.turnId, text: event.text },
+          ].slice(-10);
+          for (const notify of session.heardWaiters) notify();
+          session.thinking = true;
+          this.#timers.clear(session.thinkingTimer);
+          session.thinkingTimer = this.#timers.set(() => {
+            session.thinking = false;
+            this.#settlePhase(session);
+          }, 8_000);
+          this.#settlePhase(session);
+        } else {
           session.pending.set(event.turnId, { messageId: null, runId: null });
           this.#settlePhase(session);
           session.sends = session.sends
-            .then(() =>
-              this.#send(session, event.turnId, event.text, places, presentation?.context),
-            )
+            .then(() => this.#send(session, event.turnId, event.text, event.turnId))
             .catch(() => {
               if (this.#session !== session) return;
               session.pending.delete(event.turnId);
@@ -401,6 +436,8 @@ export class VoiceController {
       }
       case "speaking":
         if (!session.speaking) session.speaker?.speaking();
+        session.thinking = false;
+        this.#timers.clear(session.thinkingTimer);
         session.speaking = true;
         this.#publish({ spoken: event.text });
         this.#settlePhase(session);
@@ -422,12 +459,206 @@ export class VoiceController {
         break;
     }
   }
+  /** Platforms call this after their visible route changes. */
+  refreshContext(immediate = false): void {
+    const session = this.#session;
+    if (!session?.call?.agent) return;
+    // Host snapshots change many times a second while Chat streams; build at most once per window.
+    if (!immediate) {
+      session.contextTimer ??= this.#timers.set(() => {
+        session.contextTimer = null;
+        this.refreshContext(true);
+      }, 250);
+      return;
+    }
+    this.#timers.clear(session.contextTimer);
+    session.contextTimer = null;
+    const text = session.links.build(
+      this.#input.hostClient.getSnapshot(),
+      this.#input.currentView?.(),
+    );
+    if (text === session.contextDesired) return;
+    session.contextDesired = text;
+    session.contextSends = session.contextSends
+      .then(async () => {
+        // A newer description supersedes one still waiting to go out.
+        if (this.#session !== session || session.contextDesired !== text) return;
+        const account = voiceAccount(session.baseline);
+        if (!account) return;
+        const result = await this.#input.hostClient.rpc["voice.context"](
+          { ...account, sessionId: session.id, text },
+          { signal: session.abort.signal },
+        );
+        if (result.ok) return;
+        if (result.error.reason === "voice-ended") void this.#end(session);
+        else if (session.contextDesired === text) session.contextDesired = null;
+      })
+      .catch(() => {
+        if (session.contextDesired === text) session.contextDesired = null;
+      });
+  }
+
+  async #pause(session: VoiceSession, ms: number): Promise<void> {
+    if (session.abort.signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        this.#timers.clear(timer);
+        session.abort.signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const timer = this.#timers.set(done, ms);
+      session.abort.signal.addEventListener("abort", done, { once: true });
+    });
+  }
+
+  async #tools(session: VoiceSession, account: VoiceAccount): Promise<void> {
+    const rpc = this.#input.hostClient.rpc;
+    const address = { ...account, sessionId: session.id };
+    let failures = 0;
+    while (this.#session === session) {
+      try {
+        const result = await rpc["voice.next"](address, { signal: session.abort.signal });
+        if (this.#session !== session) return;
+        if (!result.ok) {
+          if (result.error.reason === "voice-ended") {
+            void this.#end(session);
+            return;
+          }
+          throw result.error;
+        }
+        failures = 0;
+        const call = result.data.call;
+        if (!call) {
+          await this.#pause(session, 100);
+          continue;
+        }
+        let answer = session.answers.get(call.id);
+        if (!answer) {
+          answer = this.#execute(session, call).catch(() => ({
+            ok: false,
+            text: "Couldn't do that. Try again.",
+          }));
+          session.answers.set(call.id, answer);
+        }
+        const body = { ...address, callId: call.id, ...(await answer) };
+        if (this.#session !== session) return;
+        await this.#attempt(session, async () => {
+          const value = await rpc["voice.answer"](body, { signal: session.abort.signal });
+          if (!value.ok) {
+            if (value.error.reason === "voice-ended") throw value.error;
+            if (value.error.retryable)
+              throw new ClientOperationError("Voice answer unavailable", "transient");
+            throw value.error;
+          }
+          return value;
+        });
+      } catch (error) {
+        if (this.#session !== session) return;
+        if (classifyClientFailure(error).reason === "voice-ended") {
+          void this.#end(session);
+          return;
+        }
+        await this.#pause(session, Math.min(4_000, 250 * 2 ** Math.min(failures++, 4)));
+      }
+    }
+  }
+
+  /**
+   * The utterances a hand-off names: its turn's last input, located in this
+   * device's own transcript, and up to `count - 1` unsent ones before it.
+   * Speech and tool calls travel separately, so wait briefly for the
+   * transcript; never substitute whatever was said most recently.
+   */
+  async #utterancesFor(
+    session: VoiceSession,
+    heard: readonly string[],
+    count: number,
+  ): Promise<VoiceSession["utterances"] | null> {
+    const said = normalizedSpeech(heard.at(-1) ?? "");
+    if (!said) return null;
+    const find = () => {
+      // Exact words only: "book a flight" must never match "don't book a flight".
+      const index = session.utterances.findLastIndex(
+        (item) => normalizedSpeech(item.text) === said,
+      );
+      return index < 0 ? null : session.utterances.slice(Math.max(0, index + 1 - count), index + 1);
+    };
+    const found = find();
+    if (found || session.abort.signal.aborted) return found;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        this.#timers.clear(timer);
+        session.heardWaiters.delete(check);
+        session.abort.signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const check = () => {
+        if (find()) done();
+      };
+      const timer = this.#timers.set(done, 3_000);
+      session.heardWaiters.add(check);
+      session.abort.signal.addEventListener("abort", done, { once: true });
+    });
+    return this.#session === session ? find() : null;
+  }
+
+  async #execute(
+    session: VoiceSession,
+    call: VoiceToolCall,
+  ): Promise<{ ok: boolean; text: string }> {
+    if (this.#session !== session) return { ok: false, text: "The call ended." };
+    session.toolRunning = true;
+    this.#settlePhase(session);
+    try {
+      if (call.tool === "show" && typeof call.input.link === "string") {
+        const resolved = session.links.resolve(
+          call.input.link,
+          this.#input.hostClient.getSnapshot(),
+        );
+        if (!resolved) return { ok: false, text: "That isn't open any more." };
+        this.#input.navigate(resolved.target);
+        this.refreshContext(true);
+        return { ok: true, text: `Showing ${resolved.title.slice(0, 180)}.` };
+      }
+      if (call.tool === "send_to_chat") {
+        const count = call.input.messages;
+        if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 5)
+          return { ok: false, text: "Choose between 1 and 5 messages." };
+        const chosen = await this.#utterancesFor(session, call.heard, count);
+        if (this.#session !== session) return { ok: false, text: "The call ended." };
+        if (!chosen)
+          return {
+            ok: false,
+            text: "Nothing was sent: I couldn't find those words in what the person said. Ask them to say it again.",
+          };
+        const text = chosen.map((item) => item.text).join("\n");
+        session.pending.set(call.id, { messageId: null, runId: null });
+        try {
+          await this.#send(session, call.id, text, chosen.at(-1)!.turnId);
+        } catch (error) {
+          session.pending.delete(call.id);
+          return classifyClientFailure(error).classification === "transient"
+            ? {
+                ok: false,
+                text: "Chat may or may not have received this; the outcome is unknown. Don't send it again unless the person asks.",
+              }
+            : { ok: false, text: "Chat didn't accept this, so nothing was sent." };
+        }
+        session.utterances = session.utterances.filter((item) => !chosen.includes(item));
+        return { ok: true, text: `Sent to Chat: “${text.slice(0, 3900)}”.` };
+      }
+      return { ok: false, text: "This device can't do that yet." };
+    } finally {
+      session.toolRunning = false;
+      this.#settlePhase(session);
+    }
+  }
+
   async #send(
     session: VoiceSession,
     turnId: string,
     text: string,
-    capturedPlaces: Promise<readonly PlaceContentPart[]>,
-    screenPresentation: ScreenPresentationInput | undefined,
+    spokenTurnId: string,
   ): Promise<void> {
     if (this.#session !== session) return;
     const host = this.#input.hostClient;
@@ -454,7 +685,7 @@ export class VoiceController {
       threadId = home.id;
     }
     if (this.#session !== session) return;
-    const places = await capturedPlaces;
+    const places = (await session.pages.get(spokenTurnId)) ?? [];
     if (this.#session !== session) return;
     const command: PendingSendCommand = {
       type: "thread.sendMessage",
@@ -463,10 +694,7 @@ export class VoiceController {
       content: [{ type: "text", text }, ...places],
       idempotencyKey: `voice:${session.id}:${turnId}`,
     };
-    const result = await this.#attempt(session, () => {
-      const current = session.presentation?.inputContext(screenPresentation);
-      return host.dispatch({ ...command, ...(current ? { screenPresentation: current } : {}) });
-    });
+    const result = await this.#attempt(session, () => host.dispatch(command));
     if (this.#session !== session || result.type !== "thread.sendMessage") return;
     const pending = session.pending.get(turnId);
     if (pending) {
@@ -475,12 +703,13 @@ export class VoiceController {
     }
     this.#hostChanged();
   }
-  async #places(resolve: VoiceControllerInput["places"]): Promise<readonly PlaceContentPart[]> {
-    if (!resolve) return [];
+  async #places(): Promise<readonly PlaceContentPart[]> {
+    if (!this.#input.places) return [];
     let timer: VoiceTimer | null = null;
     try {
       return await Promise.race([
-        Promise.resolve(resolve()),
+        // Read the platform now: the caller is capturing what is showing this instant.
+        this.#input.places(),
         new Promise<readonly PlaceContentPart[]>((resolve) => {
           timer = this.#timers.set(() => resolve([]), 1_500);
         }),
@@ -498,6 +727,7 @@ export class VoiceController {
       if (this.#session !== session || classifyClientFailure(error).classification !== "transient")
         throw error;
       // An unknown transport outcome repeats the exact command and key once.
+      if (this.#session !== session) throw error;
       return action();
     }
   }
@@ -506,11 +736,19 @@ export class VoiceController {
     this.#session = null;
     session.abort.abort();
     session.speaker?.dispose();
-    session.presentation?.dispose();
     this.#timers.clear(session.idleTimer);
+    this.#timers.clear(session.contextTimer);
+    this.#timers.clear(session.thinkingTimer);
     this.#input.media?.keepAwake?.(false);
     this.#publish({ phase: "idle", since: null, muted: false, notice: kind ? notice(kind) : null });
     for (const listener of this.#levels) listener({ input: 0, output: 0 });
     return session.call?.close().catch(() => {}) ?? Promise.resolve();
   }
+}
+
+function normalizedSpeech(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }

@@ -101,6 +101,7 @@ import type {
 import type { IntegrationAdapterSnapshot } from "@opensteer/integration-core/adapter";
 import type {
   BrowserSessionId,
+  BrowserEngine,
   BrowserSessionOpenerRecord,
   BrowserTabOpenBinding,
   HarnessInstanceCatalog,
@@ -163,6 +164,18 @@ export interface AuthAccountTable {
   refreshTokenExpiresAt: NullableTimestamp;
   scope: string | null;
   password: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface NotificationPreviewKeyTable {
+  userId: UserId;
+  installationId: string;
+  authSessionId: AuthSessionId;
+  accountId: string;
+  keyId: string;
+  encryptedKey: Buffer;
+  encryptionKeyVersion: number;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -789,6 +802,7 @@ export interface ThreadTable {
 }
 
 export interface MessageTable {
+  addressedToUserId: Generated<UserId | null>;
   quote: Generated<import("@opensteer/core").MessageQuote | null>;
   author: JsonColumn<MessageAuthor>;
   id: MessageId;
@@ -1251,11 +1265,11 @@ export interface CommandTable {
 }
 
 export interface AgentControlRequestTable {
+  resultMessageId: Generated<MessageId | null>;
   runId: RunId;
   requestId: string;
   sourceThreadId: ThreadId;
   action:
-    | "screen.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
@@ -1273,6 +1287,7 @@ export interface AgentControlRequestTable {
     | "thread.delegate"
     | "thread.list"
     | "thread.message"
+    | "person.notify"
     | "thread.read"
     | "thread.write"
     | "trigger.read"
@@ -1283,7 +1298,6 @@ export interface AgentControlRequestTable {
     | "workspace.inspect"
     | "workspace.mount";
   actionClass:
-    | "screen.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
@@ -1403,14 +1417,57 @@ interface CredentialVaultCanaryTable {
   createdAt: Timestamp;
 }
 
-interface BrowserProfileTable {
+export interface BrowserProfileTable {
   id: BrowserProfileId;
   ownerId: UserId;
   name: string;
   revision: Generated<number>;
+  storageState: Generated<"vault" | "initializing" | "local">;
+  storageBindingVersion: Generated<1 | null>;
+  storageDeploymentId: Generated<DeploymentId | null>;
+  storageRunnerId: Generated<RunnerId | null>;
+  storageInstanceId: Generated<string | null>;
+  storageBindingId: Generated<string | null>;
+  storageEngine: Generated<BrowserEngine | null>;
+  frozenSeedRevision: ColumnType<string | null, number | null | undefined, number | null>;
+  frozenSeedDigest: Generated<string | null>;
+  initializationTokenHash: Generated<string | null>;
+  initializationTokenExpiresAt: NullableTimestamp;
   archivedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+}
+
+export interface BrowserProfileDeletionTable {
+  deletionId: string;
+  profileId: BrowserProfileId;
+  bindingVersion: 1;
+  deploymentId: DeploymentId;
+  runnerId: RunnerId;
+  storageInstanceId: string;
+  bindingId: string;
+  engine: BrowserEngine;
+  state: "pending-computer" | "pending-restart" | "deleted";
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deletedAt: NullableTimestamp;
+}
+
+interface BrowserHistoryEntryTable {
+  profileId: BrowserProfileId;
+  url: string;
+  origin: string;
+  title: string;
+  typedCount: number;
+  visitCount: number;
+  lastVisitAt: Timestamp;
+}
+
+interface BrowserHistoryIconTable {
+  profileId: BrowserProfileId;
+  origin: string;
+  iconRef: string;
+  favicon: string;
 }
 
 interface BrowserProfileRevisionTable {
@@ -1991,6 +2048,7 @@ export interface DatabaseSchema {
   users: UserTable;
   authAccounts: AuthAccountTable;
   authSessions: AuthSessionTable;
+  notificationPreviewKeys: NotificationPreviewKeyTable;
   personalRemoteAccess: PersonalRemoteAccessTable;
   personalRemoteAccountLink: PersonalRemoteAccountLinkTable;
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;
@@ -2058,6 +2116,9 @@ export interface DatabaseSchema {
   credentials: CredentialTable;
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
+  browserProfileDeletions: BrowserProfileDeletionTable;
+  browserHistoryEntries: BrowserHistoryEntryTable;
+  browserHistoryIcons: BrowserHistoryIconTable;
   browserProfileRevisions: BrowserProfileRevisionTable;
   browserSessions: BrowserSessionTable;
   workspaceTabs: WorkspaceTabTable;

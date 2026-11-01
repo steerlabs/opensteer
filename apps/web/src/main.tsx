@@ -114,11 +114,11 @@ async function renderOpensteer(): Promise<void> {
           import("./host/browser-host-client.js"),
           import("./host/browser-lifecycle.js"),
         ]).then(
-          ([{ MockHostClient }, { browserRecentSitesStorage }, { browserClientLifecycle }]) => {
+          ([{ MockHostClient }, { browserPreferencesStorage }, { browserClientLifecycle }]) => {
             const world = new URLSearchParams(window.location.search).get("mock-world");
             const client = new MockHostClient({
               lifecycle: browserClientLifecycle(),
-              recentSitesStorage: browserRecentSitesStorage,
+              browserPreferencesStorage,
               ...(world === "first-run" || world === "busy" || world === "stress" ? { world } : {}),
             });
             // The preview's own client, for journeys that count what the page sends.

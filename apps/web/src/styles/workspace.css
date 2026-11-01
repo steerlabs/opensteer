@@ -144,6 +144,10 @@
   background: var(--surface-elevated);
 }
 
+.place > .place-state {
+  flex: 1;
+}
+
 .place-state__title {
   color: var(--text-soft);
   font-size: var(--text-xl);
@@ -271,6 +275,18 @@
   height: 100%;
   object-fit: contain;
   border-radius: 50%;
+}
+
+/* The orb is a picture, which an inset light would sit beneath; its light
+   is a layer over it. */
+.chat-orb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--sheen-mark);
+  box-shadow: var(--edge-mark);
+  pointer-events: none;
 }
 .task-state {
   display: inline-grid;
@@ -607,7 +623,7 @@
   height: 15px;
 }
 
-.side-profile-filter.is-active {
+.side-tab-filter.is-active {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -619,22 +635,22 @@
   background-color: var(--fill-quiet);
 }
 
-.side-profile-filter .pavatar {
+.side-tab-filter .pavatar {
   flex: none;
 }
 
-.side-profile-filter > span:last-child {
+.side-tab-filter > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-sm);
 }
 
-.side-profile-clear {
+.side-tab-filter__clear {
   width: 22px;
 }
 
-.side-profile-count {
+.side-tab-filter__count {
   margin-inline-start: auto;
   color: var(--muted);
   font-size: var(--text-sm);
@@ -648,9 +664,11 @@
   align-items: center;
   gap: var(--space-4);
   height: 22px;
-  padding: 0 var(--space-8) 0 var(--space-4);
+  padding: 0 calc(var(--space-8) - 1px) 0 calc(var(--space-4) - 1px);
+  border: 1px solid var(--amber-line);
   border-radius: var(--radius-full);
   background: var(--amber-wash);
+  box-shadow: var(--edge-tint);
   color: var(--amber-text);
   font-size: var(--text-sm);
   font-weight: var(--weight-heavy);
@@ -810,9 +828,14 @@ button.side-needs:hover {
   -webkit-touch-callout: none;
 }
 
+/* The conversation docked beside the place: lit like the selection, a step
+   quieter, so the place's own row stays the one that reads as chosen. */
 .side-home.is-open,
 .side-task.is-open {
+  --ring-bg: var(--cutout-quiet);
   border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-quiet);
+  box-shadow: var(--edge-plate);
 }
 
 .side-home__main,
@@ -990,13 +1013,6 @@ button.side-needs:hover {
 
 .side-tab__marks {
   padding-right: var(--space-2);
-}
-
-/* A loading page spins where its icon sits, as a browser's tab does. */
-.place-mark--loading .spinner {
-  width: 13px;
-  height: 13px;
-  border-width: 1.75px;
 }
 
 /* Between a browser's tabs and the Mac apps and phones: a hairline in the
@@ -1285,15 +1301,28 @@ button.side-needs:hover {
 
 /* ---- Conversation header ---- */
 
+/* The head is a bar of one fixed height on every surface, set once through
+   --conv-header-height; the desktop titlebar only changes that value. A way
+   back adds its own row above the bar, so the head grows instead of the bar
+   being squeezed. Nothing else sets the head's height. */
 .conv-header {
+  --conv-header-height: 50px;
   display: flex;
   flex: none;
-  align-items: center;
-  gap: var(--space-8);
-  height: 50px;
-  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-16);
+  flex-direction: column;
+  padding-inline: var(--space-16) var(--space-8);
   border-bottom: 1px solid transparent;
   background: var(--ground);
+}
+
+.conv-header__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  /* The head's own rule is the bar's last pixel. */
+  height: calc(var(--conv-header-height) - 1px);
+  min-width: 0;
+  container: conv-header-bar / inline-size;
 }
 
 .workspace--work .conv-header {
@@ -1337,7 +1366,8 @@ button.side-needs:hover {
   align-items: center;
   gap: var(--space-8);
   flex: 1;
-  min-width: 0;
+  /* However much the bar holds, the name keeps a readable floor. */
+  min-width: min(96px, 40%);
 }
 
 .conv-header__title {
@@ -1405,6 +1435,15 @@ button.side-needs:hover {
   line-height: 1.35;
 }
 
+/* What the bar says about the conversation and its controls hold the end. */
+.conv-header__end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+  margin-left: auto;
+}
+
 .conv-header__actions {
   display: flex;
   flex: none;
@@ -1412,20 +1451,13 @@ button.side-needs:hover {
   gap: var(--space-2);
 }
 
-/* Work handed out by another conversation leads back to it, one quiet line
-   above the name. */
-.conv-header--trail {
-  flex-wrap: wrap;
-  row-gap: 0;
-  height: auto;
-  min-height: 50px;
-  padding-top: var(--space-6);
-}
-
+/* Work handed out by another conversation leads back to it, one quiet row
+   above the bar. */
 .conv-header__trail {
   display: flex;
-  flex-basis: 100%;
+  align-items: center;
   min-width: 0;
+  padding-top: var(--space-6);
 }
 
 .conv-header__back {
@@ -1959,11 +1991,11 @@ button.start-apps__row--away:focus-visible {
   padding: var(--space-6);
   border: 1px solid var(--rim-plate);
   border-radius: 14px;
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   list-style: none;
   box-shadow: var(--edge-plate), var(--lift-float);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .start-result {
@@ -2149,7 +2181,8 @@ button.start-apps__row--away:focus-visible {
   width: var(--pavatar-size);
   height: var(--pavatar-size);
   border-radius: 50%;
-  background: var(--pavatar-tint);
+  background: var(--sheen-mark) var(--pavatar-tint);
+  box-shadow: var(--edge-mark);
   color: var(--text-on-color);
   font: 800 calc(var(--pavatar-size) * 0.6) / 1 var(--font-sans);
   letter-spacing: -0.03em;
@@ -2597,11 +2630,14 @@ html[data-tab-sorting] * {
 
 /* Exactly the composer's width: an implicit column grows to a chip's whole
    untruncated title, and the chips' 100% cap then resolves against that. */
+/* Inset evenly from the composer's edge, so each chip's corner can follow
+   the composer's own. */
 .context-chips {
+  --chip-inset: var(--space-8);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-6);
-  padding: var(--space-10) var(--space-12) 0;
+  padding: var(--chip-inset) var(--chip-inset) 0;
 }
 
 .context-chips__row {
@@ -2610,6 +2646,7 @@ html[data-tab-sorting] * {
   gap: var(--space-6);
 }
 
+/* A segment of the composer it sits in: no frame of its own. */
 .context-chip {
   --ring-bg: var(--surface-raised);
   display: inline-flex;
@@ -2617,20 +2654,19 @@ html[data-tab-sorting] * {
   gap: var(--space-8);
   max-width: min(100%, 320px);
   height: var(--control-height);
-  padding: 0 var(--space-4) 0 var(--space-4);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
+  padding: 0 var(--space-4);
+  --chip-radius: calc(var(--composer-radius) - 1px - var(--chip-inset, var(--space-8)));
+  border-radius: var(--chip-radius);
+  background-color: var(--fill-quiet);
   color: var(--text-soft);
   font-size: var(--text-md);
-  box-shadow: var(--edge-plate);
 }
 
 .context-chip__thumb {
   flex: none;
   width: 44px;
   height: 28px;
-  border-radius: 5px;
+  border-radius: calc(var(--chip-radius) - var(--space-4));
   object-fit: cover;
   object-position: top;
   box-shadow: 0 0 0 1px var(--line);
@@ -2838,8 +2874,11 @@ html[data-tab-sorting] * {
 
 /* ---- The omnibox's profile chip and its menu ---- */
 
+/* The profile is a segment of the address: one capsule inside the other,
+   the same gap all round. */
 .browser-address--chip {
-  padding-left: var(--space-4);
+  --segment-inset: var(--space-2);
+  padding-left: var(--segment-inset);
 }
 
 .profile-chip {
@@ -2849,17 +2888,16 @@ html[data-tab-sorting] * {
   gap: var(--space-6);
   min-width: 0;
   max-width: 200px;
-  height: var(--control-height-sm);
-  padding: 0 calc(var(--space-8) - 1px) 0 calc(var(--space-4) - 1px);
+  height: calc(var(--control-height) - 2px - 2 * var(--segment-inset, var(--space-2)));
+  padding: 0 var(--space-8) 0 var(--space-2);
   border-radius: var(--radius-full);
-  background: var(--sheen) var(--fill-plate);
+  background-color: var(--fill-quiet);
   color: var(--text);
   font-size: var(--text-sm);
   font-weight: var(--weight-strong);
   white-space: nowrap;
   --ring-bg: transparent;
-  border: 1px solid var(--rim-plate);
-  box-shadow: var(--edge-plate);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .profile-chip:hover,
@@ -2874,11 +2912,26 @@ html[data-tab-sorting] * {
   text-overflow: ellipsis;
 }
 
-/* A phone's row has room for the disc alone; its name and menu are the same. */
+/* A finger gets the address's whole height to aim at, while the chip itself
+   keeps its even inset: the target is a layer over it, not its size. */
+@media (any-pointer: coarse) {
+  .profile-chip {
+    position: relative;
+    min-height: 0;
+  }
+
+  .profile-chip::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1px - var(--segment-inset, var(--space-2))) 0;
+  }
+}
+
+/* A phone's row has room for the disc alone; its name and menu are the same.
+   Still a segment: square to the address's height, inset like the chip. */
 .browser-toolbar--compact .profile-chip {
   flex: none;
-  width: var(--control-height);
-  height: var(--control-height);
+  width: calc(var(--control-height) - 2px - 2 * var(--segment-inset, var(--space-2)));
   padding: 0;
   justify-content: center;
 }
@@ -3119,11 +3172,11 @@ html[data-tab-sorting] * {
   padding: var(--space-14) var(--space-18);
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-float);
+  background: var(--sheen) var(--fill-glass);
   box-shadow: var(--edge-plate), var(--lift-float);
   transform: translate(-50%, -50%);
-  -webkit-backdrop-filter: var(--blur-float);
-  backdrop-filter: var(--blur-float);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
 }
 
 .occupant-mark {
@@ -3247,13 +3300,6 @@ html[data-tab-sorting] * {
 .conv-header:not(.conv-header--area) .conv-header__text {
   flex: 0 1 max-content;
 }
-.conv-header__state,
-.conv-header__actions {
-  margin-left: auto;
-}
-.conv-header__state + .conv-header__actions {
-  margin-left: 0;
-}
 .conv-header__specialist {
   flex: 0 1 auto;
   min-width: 0;
@@ -3272,31 +3318,31 @@ html[data-tab-sorting] * {
   white-space: nowrap;
 }
 
-/* The family shares the lineage line; the parent's name yields first. */
-.conv-header__trail {
-  align-items: center;
-  gap: var(--space-8);
-}
-
 .conv-header__back > :not(.conv-header__back-title) {
   flex-shrink: 0;
 }
 
+/* A glance at the conversation's tasks, at the end of its bar. */
 .task-family-button {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: var(--space-6);
-  margin-left: auto;
-  padding: var(--space-4) var(--space-6);
-  border-radius: var(--radius-xs);
+  height: var(--control-height-sm);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .task-family-button:hover,
 .task-family-button[aria-expanded="true"] {
+  color: var(--text);
   background-color: var(--fill-quiet);
 }
 
@@ -3339,16 +3385,25 @@ html[data-tab-sorting] * {
   height: 14px;
 }
 
-.popover.popover--task-family {
-  min-width: 0;
-  max-width: calc(100vw - 20px);
-  transform: translateX(6px);
+/* A narrow bar keeps the name readable: the mark's badge alone says it needs
+   the reader, the reason waits in the transcript, and the tasks' glance shows
+   one running mark and its count, leaving automations to its panel. It comes
+   after the rules it overrides. */
+@container conv-header-bar (max-width: 479px) {
+  .conv-header__state,
+  .conv-header__cause,
+  .task-family-button__automations--separated {
+    display: none;
+  }
+
+  .task-family-button__marks .task-mark + .task-mark {
+    display: none;
+  }
 }
 
-/* However much came before, the list scrolls inside the window. */
-.task-family {
-  max-height: min(520px, calc(100vh - 120px));
-  overflow-y: auto;
+.popover.popover--task-family {
+  width: min(380px, calc(100vw - 20px));
+  max-width: none;
   overscroll-behavior: contain;
 }
 

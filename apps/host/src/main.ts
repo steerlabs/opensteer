@@ -28,7 +28,6 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
         "body.password",
         "body.token",
         "body.verifier",
-        "body.screenPresentation",
       ],
       serializers: { req: safeRequestLog },
     },

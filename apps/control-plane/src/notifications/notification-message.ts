@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import type { PublishedNotificationKind } from "@opensteer/control-plane-protocol";
 import {
   buildMobileThreadDeepLink,
@@ -19,12 +21,9 @@ interface NotificationPhrase {
 }
 
 /**
- * Every word a phone shows comes from this table.
- *
- * Nothing the Host said reaches a lock screen, because the Host never said
- * anything: the publication carries identifiers only. Fixed phrases are
- * also the whole privacy argument — a notification cannot leak a prompt, a
- * Thread title or a person's name if there is no field it could arrive in.
+ * Generic text for phones without a preview key and for iOS when its extension
+ * cannot run. Private previews are authenticated ciphertext: the Account never
+ * sees their words and the native phone alone replaces this text.
  *
  * The last three rows are what Hosts before Host API epoch 30 publish. Their
  * people keep the words those Hosts were built with until the Host upgrades.
@@ -33,7 +32,7 @@ const notificationPhrases: Readonly<Record<PublishedNotificationKind, Notificati
   "reply-published": { anchor: "message", body: "Opensteer replied", title: "Opensteer" },
   "request-opened": {
     anchor: "request",
-    body: "Opensteer needs your approval",
+    body: "Opensteer needs you",
     title: "Opensteer",
   },
   "run-failed": { anchor: "thread", body: "Opensteer couldn't finish", title: "Opensteer" },
@@ -50,6 +49,10 @@ export interface NotificationMessage {
   readonly body: string;
   readonly data: {
     readonly deepLink: string;
+    readonly notificationId?: string;
+    readonly installationId?: string;
+    readonly expiresAt?: string;
+    readonly preview?: string;
     readonly deploymentId: string;
     readonly kind: PublishedNotificationKind;
     readonly messageId?: string;
@@ -61,6 +64,12 @@ export interface NotificationMessage {
 
 export function notificationMessage(input: {
   readonly deploymentId: string;
+  readonly preview?: {
+    readonly envelope: NotificationPreviewEnvelope;
+    readonly notificationId: string;
+    readonly installationId: string;
+    readonly expiresAt: Date;
+  };
   readonly kind: PublishedNotificationKind;
   readonly messageId?: string | null;
   readonly requestId: string | null;
@@ -82,6 +91,19 @@ export function notificationMessage(input: {
     data: {
       deepLink: buildMobileThreadDeepLink({ deploymentId, messageId, requestId, threadId }),
       deploymentId,
+      ...(input.preview
+        ? {
+            notificationId: input.preview.notificationId,
+            installationId: input.preview.installationId,
+            expiresAt: input.preview.expiresAt.toISOString(),
+            preview: JSON.stringify({
+              version: 1,
+              keyId: input.preview.envelope.keyId,
+              nonce: input.preview.envelope.nonce,
+              ciphertext: input.preview.envelope.ciphertext,
+            }),
+          }
+        : {}),
       kind: input.kind,
       ...(messageId === null ? {} : { messageId }),
       ...(requestId === null ? {} : { requestId }),
@@ -89,4 +111,28 @@ export function notificationMessage(input: {
     },
     title: phrase.title,
   };
+}
+
+export function notificationCollapseId(input: {
+  readonly deploymentId: string;
+  readonly kind: PublishedNotificationKind;
+  readonly requestId: string | null;
+  readonly notificationId: string;
+  readonly threadId: string;
+}): string {
+  return (
+    "osn1_" +
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.deploymentId,
+          input.kind,
+          input.kind === "request-opened"
+            ? (input.requestId ?? input.notificationId)
+            : input.threadId,
+        ]),
+        "utf8",
+      )
+      .digest("base64url")
+  );
 }

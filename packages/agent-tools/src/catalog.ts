@@ -3,10 +3,10 @@ import {
   BrowserTabReadInputSchema,
   BrowserTabWriteInputSchema,
   ThreadWriteInputSchema,
-  ScreenShowInputSchema,
 } from "@opensteer/core";
 import {
   MessageIdSchema,
+  PersonNotifyMessageSchema,
   PlaceContentPartSchema,
   AgentCapabilityProfileIdSchema,
   DelegationModelChoiceSchema,
@@ -30,7 +30,6 @@ import {
 } from "@opensteer/triggers";
 
 export const AgentToolIdSchema = z.enum([
-  "screen.show",
   "environment.list",
   "workspace.list",
   "workspace.create",
@@ -39,6 +38,7 @@ export const AgentToolIdSchema = z.enum([
   "thread.list",
   "thread.delegate",
   "thread.message",
+  "person.notify",
   "thread.write",
   "assignment.cancel",
   "request.list",
@@ -60,7 +60,6 @@ export const AgentToolIdSchema = z.enum([
 export type AgentToolId = z.infer<typeof AgentToolIdSchema>;
 
 export const AgentToolNameSchema = z.enum([
-  "screen_show",
   "environment_list",
   "workspace_list",
   "workspace_create",
@@ -69,6 +68,7 @@ export const AgentToolNameSchema = z.enum([
   "thread_list",
   "thread_delegate",
   "thread_message",
+  "person_notify",
   "thread_write",
   "assignment_cancel",
   "request_list",
@@ -173,20 +173,6 @@ const browserAccessRequestAnnotations = {
 } as const satisfies AgentToolAnnotations;
 
 const definitions = [
-  {
-    annotations: {
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-      readOnlyHint: false,
-      title: "Show a view",
-    },
-    description:
-      "Show an existing conversation or exact browser, app or phone surface on the device that sent this voice input, only when the person explicitly asks to see it. Ask a short question in Chat if the target is ambiguous; never present proactively while doing work. Use this input's messageId; each input permits one presentation. Only Main Chat's Run may call this; independent tasks and triggers cannot. Do work with existing tools first; this tool only changes the view. Use exact task-session references from thread_read or an explicitly supplied owner-view reference. A conversation and surface must belong together. Applied confirms navigation, not pixels or work success. Superseded, unavailable, unsupported or unconfirmed means do not promise the view changed; never retry with another target for the same message.",
-    id: "screen.show",
-    inputSchema: ScreenShowInputSchema,
-    name: "screen_show",
-  },
   {
     annotations: {
       destructiveHint: false,
@@ -400,6 +386,20 @@ const definitions = [
     name: "assignment_cancel",
   },
   {
+    id: "person.notify",
+    name: "person_notify",
+    description:
+      "Send the person who started this Run a short message in this Thread and alert them on their devices, without ending this Run. Use it only when they have likely walked away and something is worth coming back for, or they asked to be told; never for routine progress or when your final reply is imminent.",
+    inputSchema: z.strictObject({ message: PersonNotifyMessageSchema }),
+    annotations: {
+      title: "Notify Person",
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+    },
+  },
+  {
     annotations: {
       destructiveHint: false,
       idempotentHint: false,
@@ -408,7 +408,7 @@ const definitions = [
       title: "Message Thread",
     },
     description:
-      'To send an asynchronous update, set delivery: "report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person. "queue" starts an idle Thread or waits for its next turn; "steer" directs a compatible active Run and fails if none can be steered. queue/steer joins an active task; returned assignmentId identifies it (null if none). To continue a finished task and receive its result, use thread_delegate. Only replies reach the person: queue to their conversational Thread so its reply notifies them. threadId "home" is Chat; any Thread may report there, but queue requires reach. disposition is steering, run-queued or pending; accepted does not mean read. The Host supplies authorship.',
+      'To send an asynchronous update, set delivery: "report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person. "queue" starts an idle Thread or waits for its next turn; "steer" directs a compatible active Run and fails if none can be steered. queue/steer joins an active task; returned assignmentId identifies it (null if none). To continue a finished task and receive its result, use thread_delegate. Use person_notify for a worthwhile message to the person while continuing this Run. threadId "home" is Chat; any Thread may report there, but queue requires reach. disposition is steering, run-queued or pending; accepted does not mean read. The Host supplies authorship.',
     id: "thread.message",
     inputSchema: z.strictObject({
       delivery: z.enum(["report", "queue", "steer"]),
@@ -445,7 +445,7 @@ const definitions = [
       title: "List Browser Profiles",
     },
     description:
-      "To choose an available profile, use browser_profile_list. Main inherits active owner profiles; specialists see granted profiles. Names do not verify identity or login. site adds siteData and savedAt (null if never saved); saved cookies/storage suggest login but do not prove it. Active profiles save about every two minutes. Verify on the website.",
+      "List profiles: Main inherits owner profiles; specialists see grants. Named profiles keep browser data on their owning computer. site may add siteData; missing means unknown, not empty. A name or stored data never proves website login; verify on the website.",
     id: "browser.profile.list",
     inputSchema: z.strictObject({
       site: z
@@ -454,7 +454,7 @@ const definitions = [
         .min(1)
         .max(2_048)
         .optional()
-        .describe("Check each profile's saved data for this website, e.g. brex.com."),
+        .describe("Check website data where available, e.g. brex.com; missing means unknown."),
     }),
     name: "browser_profile_list",
   },
@@ -573,12 +573,12 @@ const definitions = [
       title: "Open Browser Session",
     },
     description:
-      "To attach a session, pass sessionId. For a new session choose profileId (granted profile) or fresh: true (Guest). Exactly one is required; environmentId never chooses identity. Guest needs no grant, can sign in, and loses state on close. profileId/fresh always create another session; a Run may hold several. Drive each returned id with Browser Harness (opensteer-browser). Identity is fixed: open another session to switch profiles. Sessions outlive Runs.",
+      "Attach with sessionId, or create a session with profileId (granted profile) or fresh: true (Guest). Choose exactly one. Guest needs no grant and loses data on close. A Run may hold several sessions; sessions outlive Runs. Drive returned ids with Browser Harness (opensteer-browser). Session identity is fixed; a profile's computer is fixed after first open. Report update refusals; never work around one with another profile, computer or Guest.",
     id: "browser.session.open",
     inputSchema: z
       .strictObject({
         environmentId: EnvironmentIdSchema.optional().describe(
-          "Defaults to this Run's machine, else the only connected browser.",
+          "A placed profile uses its fixed computer. Otherwise defaults to this Run's machine, else the only connected browser; never chooses identity.",
         ),
         fresh: z.literal(true).optional(),
         profileId: BrowserProfileIdSchema.optional(),
@@ -599,7 +599,7 @@ const definitions = [
       title: "Create Browser Profile",
     },
     description:
-      "When the person asks for a new profile or names one they lack, check browser_profile_list then create it with name. Names can repeat and do not imply login. Creation opens nothing: use browser_session_open with returned profile.id, then sign in. The profile retains sign-ins.",
+      "For a requested new or missing profile, list first, then create with name. Names may repeat and never prove login. Creation opens nothing; placement may wait until first open. Open profile.id with browser_session_open, then sign in. Report update refusals; never create replacements.",
     id: "browser.profile.create",
     inputSchema: z.strictObject({
       name: z
@@ -786,7 +786,6 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
     AgentCapabilityProfileIdSchema.parse("main"),
     "Owner-level coordination from the personal Main Workspace",
     [
-      "screen.show",
       "workspace.list",
       "workspace.create",
       "workspace.mount",
@@ -795,6 +794,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "environment.list",
       "thread.delegate",
       "thread.message",
+      "person.notify",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -823,6 +823,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "environment.list",
       "thread.delegate",
       "thread.message",
+      "person.notify",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -850,6 +851,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "environment.list",
       "thread.delegate",
       "thread.message",
+      "person.notify",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -1005,6 +1007,11 @@ export function platformGuideForRun(input: {
     platformGuideForCapabilityProfile(input.capabilityProfileId),
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationRoleGuide : workRoleGuide,
+    ...(capabilityProfileAllowsTool(input.capabilityProfileId, "person.notify")
+      ? [
+          "person_notify alerts the person mid-Run; reserve it for what they would want to know now.",
+        ]
+      : []),
     replyFormatGuide,
   ].join("\n\n");
 }

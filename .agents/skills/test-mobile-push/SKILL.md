@@ -32,3 +32,8 @@ A simulator or Metro export does not prove them. Keep credentials and device IDs
 
 Record only evidence for the affected flow; report unavailable device checks as
 unverified. Stop every server/capture process and release the device afterward.
+
+## Private preview signing and acceptance
+
+Follow [install-mobile-beta](../install-mobile-beta/SKILL.md#private-preview-signing-and-acceptance)
+for provisioning and signed-device acceptance requirements.

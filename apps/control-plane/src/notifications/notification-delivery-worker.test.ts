@@ -1,3 +1,4 @@
+import { notificationCollapseId } from "./notification-message.js";
 import { createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -13,6 +14,8 @@ function delivery(
   overrides: Partial<ClaimedNotificationDelivery> = {},
 ): ClaimedNotificationDelivery {
   return {
+    installationId: "test-installation",
+    preview: null,
     apsEnvironment: "development",
     attempts: 1,
     deploymentId: createId("deployment"),
@@ -185,8 +188,8 @@ describe("NotificationDeliveryWorker", () => {
     await expect(harness.instance.deliverOnce()).resolves.toBe(2);
 
     expect(sender).toHaveBeenCalledTimes(1);
-    // An approval collapses only with approvals about the same Thread.
-    expect(sender.mock.calls[0]?.[0].collapseKey).toBe(`${kept.threadId}:request-opened`);
+    // Each Request has its own replacement identity.
+    expect(sender.mock.calls[0]?.[0].collapseKey).toBe(notificationCollapseId(kept));
     expect(harness.settleDelivery.mock.calls).toEqual([
       [
         {

@@ -217,13 +217,21 @@ must not prevent launch. APFS clones share disk failure risk. A completed snapsh
 has `snapshot.json`; retain the newest three. See
 [snapshot implementation](../apps/desktop/src/supervisor/personal-database-snapshot.ts).
 
-Restore manually with Opensteer and its PostgreSQL stopped: set aside the current
-PostgreSQL data directory, clone the chosen snapshot's `postgres` directory into
-its place (`cp -cRp` on macOS), set the deployment manifest's `release` to
-`snapshot.json`'s `fromRelease`, then start that matching older app. Retain the
-set-aside data: work after the snapshot is absent from the restored database.
-Follow [the restore journey](../apps/desktop/scripts/personal-database-snapshot-journey.ts)
-for exact paths and ordering. Installing an older binary alone is not a restore.
+Restore with Opensteer and PostgreSQL stopped, preserving the current data for
+recovery. Installing an older binary alone is not a restore. A database snapshot
+does not include native browser storage, and restoring a preconversion DB must
+not revive its old vault seed as authority.
+
+Recovery requires a Host that understands native profiles, with named-profile
+execution unavailable until every profile-owning runtime storage root reconciles
+its inventory, including deletion tombstones. Personal reconciles Main before
+named-profile ticket issuance. On Account-attached Deployments, reopening profiles
+elsewhere before their owners reconcile is unsupported. An unavailable owner
+leaves recovery incomplete and never authorizes importing an old seed elsewhere.
+Runtime claims advance existing ownership; they do not recreate missing ownership
+or grants. Restoring both the DB and runtime storage backwards is outside this
+guarantee. See [profile authority](browser-sessions.md#profile-state) and
+[runtime admission](host-boundaries.md#compatibility).
 
 ## Release gates
 

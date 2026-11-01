@@ -94,6 +94,8 @@ export const databaseLockOrder = [
   "auth_verifications",
   // Browser profile mutations reserve their revisions and sources before downstream grants.
   "browser_profiles",
+  "browser_history_entries",
+  "browser_history_icons",
   "browser_profile_revisions",
   "browser_session_attachments",
   "browser_sign_ins",
@@ -155,6 +157,8 @@ export const databaseLockOrder = [
   "integration_skills",
   "thread_state_pending",
   "browser_profile_grants",
+  // Erasure acknowledgements follow profile archival, history cleanup and grant revocation.
+  "browser_profile_deletions",
   "browser_site_grants",
   // Independent credential and access lifecycles have no earlier observed dependencies.
   "credentials",
@@ -178,6 +182,7 @@ export const databaseLockOrder = [
   "users",
   "account_directory_projections",
   "auth_sessions",
+  "notification_preview_keys",
   "host_account_adoption_proofs",
   "account_directory_provider",
   "auth_accounts",
