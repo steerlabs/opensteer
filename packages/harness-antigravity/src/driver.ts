@@ -19,7 +19,8 @@ import {
   generateContainedAcpTitle,
   normalizeAcpUpdate,
   type AcpErrorContext,
-  type AcpErrorInterpretation,
+  type AcpHeldAssistantContext,
+  type AcpHeldAssistantDecision,
   type AcpInspectionSnapshot,
   type AcpNormalizedUpdate,
   type AcpPermissionRequest,
@@ -330,34 +331,20 @@ function classifyError(error: unknown): OpensteerError {
 }
 
 export function normalizeAntigravityUpdate(update: unknown): readonly AcpNormalizedUpdate[] {
-  return normalizeAcpUpdate(update).map((entry) =>
-    entry.kind === "assistant" && looksLikeProviderFailureMessage(entry.text)
-      ? { ...entry, deferUntilPromptSettles: true }
-      : entry,
-  );
-}
-
-function looksLikeProviderFailureMessage(message: string): boolean {
-  return /api.?key|auth|billing|could not|credit|denied|deplet|error|exhaust|fail|forbidden|invalid|limit|permission|prepay|provider|quota|rate|terminated|token|unable|went wrong/iu.test(
-    message,
-  );
+  const normalized = normalizeAcpUpdate(update);
+  return normalized.length > 0 ? normalized : [{ kind: "ignore" }];
 }
 
 export function classifyAntigravityAcpError(
   error: unknown,
   context: AcpErrorContext,
-): OpensteerError | AcpErrorInterpretation | undefined {
-  const turnFailure = antigravityTurnFailure(
-    context.stderrTail,
-    context.operation === "prompt-result" ? context.providerSessionReference : undefined,
-  );
-  if (turnFailure) {
-    const interpretation = classifyAntigravityTurnFailure(turnFailure);
-    return turnFailure.message
-      ? { discardAssistantText: turnFailure.message, error: interpretation }
-      : interpretation;
+): OpensteerError {
+  if (context.operation === "prompt") {
+    const turnFailure = antigravityErrorBlocks(context.stderrTail).findLast(
+      (block) => block.sessionId === context.providerSessionReference,
+    );
+    if (turnFailure) return classifyAntigravityTurnFailure(turnFailure);
   }
-  if (context.operation === "prompt-result") return undefined;
   return classifyError(error);
 }
 
@@ -365,28 +352,21 @@ interface AntigravityTurnFailure {
   readonly grpcStatus?: string;
   readonly httpStatus?: number;
   readonly message?: string;
+  readonly sessionId: string;
 }
 
 function antigravityTurnFailure(
-  stderr: string,
-  providerSessionReference: string | undefined,
-): AntigravityTurnFailure | undefined {
-  const systemMarkers = [...stderr.matchAll(/System step error \(HTTP (\d{3})\)/gu)];
-  const sdkMarkers = [
-    ...stderr.matchAll(/Antigravity SDK error processing prompt for session\s+(\S+)/gu),
-  ];
-  const scopedSdkMarker = sdkMarkers.some(
-    (match) => providerSessionReference === undefined || match[1] === providerSessionReference,
-  );
-  if (systemMarkers.length === 0 && !scopedSdkMarker) return undefined;
-
+  sessionId: string,
+  diagnostics: readonly string[],
+): AntigravityTurnFailure {
+  const stderr = diagnostics.join("\n");
   const providerFailures = [
     ...stderr.matchAll(
       /Error\s+(\d{3}),\s*Message:\s*([^\r\n]*?),\s*Status:\s*([A-Z_]+),\s*Details:/gu,
     ),
   ];
   const provider = providerFailures.at(-1);
-  const system = systemMarkers.at(-1);
+  const system = [...stderr.matchAll(/System step error \(HTTP (\d{3})\)/gu)].at(-1);
   const statuses = [...stderr.matchAll(/\bStatus:\s*([A-Z_]+)/gu)];
   const systemMessages = [...stderr.matchAll(/System step error \(HTTP \d{3}\):\s*([^\r\n]+)/gu)];
   const grpcStatus = provider?.[3] ?? statuses.at(-1)?.[1];
@@ -396,7 +376,40 @@ function antigravityTurnFailure(
     ...(grpcStatus ? { grpcStatus } : {}),
     ...(httpStatus ? { httpStatus: Number(httpStatus) } : {}),
     ...(message ? { message } : {}),
+    sessionId,
   };
+}
+
+function antigravityErrorBlocks(stderr: string): readonly AntigravityTurnFailure[] {
+  const blocks: AntigravityTurnFailure[] = [];
+  let pending: string[] = [];
+  for (const line of stderr.split(/\r?\n/gu)) {
+    if (
+      /received model response error|Agent run failed|System step error \(HTTP \d{3}\)/u.test(line)
+    ) {
+      pending.push(line);
+    }
+    const marker = line.match(
+      /Antigravity SDK error processing prompt for session\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/iu,
+    );
+    if (!marker) continue;
+    if (pending.length > 0) blocks.push(antigravityTurnFailure(marker[1]!, pending));
+    pending = [];
+  }
+  return blocks;
+}
+
+export function settleAntigravityHeldAssistant(
+  context: AcpHeldAssistantContext,
+): AcpHeldAssistantDecision {
+  const blocks = antigravityErrorBlocks(context.stderrTail).filter(
+    (block) => block.sessionId === context.providerSessionReference,
+  );
+  if (blocks.length === 0) return { status: "pending" };
+  const matching = blocks.find((block) => block.message?.trim() === context.assistantText.trim());
+  return matching
+    ? { error: classifyAntigravityTurnFailure(matching), status: "failed" }
+    : { status: "succeeded" };
 }
 
 function classifyAntigravityTurnFailure(failure: AntigravityTurnFailure): OpensteerError {
@@ -429,7 +442,7 @@ function sanitizeAntigravityFailure(message: string): string {
     .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
     .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
     .replace(
-      /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*\S+/giu,
+      /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
       "$1=[REDACTED]",
     )
     .replace(/[\r\n\0]+/gu, " ")
@@ -933,6 +946,11 @@ class AntigravityAdapter implements HarnessAdapter {
       hooks: {
         authenticationMethod: () => this.#authMethod,
         classifyError: classifyAntigravityAcpError,
+        holdAssistant: {
+          deadlineMs: 500,
+          maxCharacters: 2_048,
+          settle: settleAntigravityHeldAssistant,
+        },
         normalizeUpdate: normalizeAntigravityUpdate,
         permissionChoices,
         transformStdout: (stdout) => transformAntigravityStdout(stdout),

@@ -21,6 +21,7 @@ import {
   antigravitySessionPolicy,
   classifyAntigravityAcpError,
   normalizeAntigravityUpdate,
+  settleAntigravityHeldAssistant,
 } from "./driver.js";
 
 const temporaryDirectories: string[] = [];
@@ -124,15 +125,25 @@ describe("Antigravity ACP policy", () => {
   });
 });
 
-type FailureScenario =
-  "credits-stderr-first" | "credits-stdout-first" | "generic" | "rate-limit" | "unauthorized";
+type TurnScenario =
+  | "credits-split"
+  | "credits-stderr-first"
+  | "credits-stdout-first"
+  | "foreign-session"
+  | "late-block"
+  | "long-reply"
+  | "rate-limit"
+  | "redaction"
+  | "success-order"
+  | "thought-first"
+  | "unauthorized";
 
 describe("Antigravity in-turn provider failures", () => {
   it.each(["credits-stderr-first", "credits-stdout-first"] as const)(
     "fails depleted credits with %s delivery and drops the error reply",
     async (scenario) => {
-      const fixture = await setupFailureTurn(scenario);
-      const events = await executeFailureTurn(fixture);
+      const fixture = await setupTurn(scenario);
+      const events = await executeTurn(fixture);
 
       const failed = events.find((event) => event.type === "run.failed");
       expect(failed).toMatchObject({
@@ -142,13 +153,22 @@ describe("Antigravity in-turn provider failures", () => {
           retryable: false,
         },
       });
-      expectAssistantText(events).toBe("");
+      expectAssistantDeltas(events).toBe("");
     },
   );
 
+  it("drops a provider error split across assistant chunks", async () => {
+    const events = await executeTurn(await setupTurn("credits-split"));
+
+    expect(events.find((event) => event.type === "run.failed")).toMatchObject({
+      data: { code: harnessUsageLimitFailureCode },
+    });
+    expectAssistantDeltas(events).toBe("");
+    expectAssistantMessages(events).toEqual([]);
+  });
+
   it("classifies HTTP 429 as a usage limit and keeps its reset detail", async () => {
-    const fixture = await setupFailureTurn("rate-limit");
-    const events = await executeFailureTurn(fixture);
+    const events = await executeTurn(await setupTurn("rate-limit"));
 
     expect(events.find((event) => event.type === "run.failed")).toMatchObject({
       data: {
@@ -156,12 +176,11 @@ describe("Antigravity in-turn provider failures", () => {
         message: expect.stringContaining("2026-11-01T18:00:00Z"),
       },
     });
-    expectAssistantText(events).toBe("");
+    expectAssistantDeltas(events).toBe("");
   });
 
   it("routes HTTP 401 through Antigravity authentication-required", async () => {
-    const fixture = await setupFailureTurn("unauthorized");
-    const events = await executeFailureTurn(fixture);
+    const events = await executeTurn(await setupTurn("unauthorized"));
 
     expect(events.find((event) => event.type === "run.failed")).toMatchObject({
       data: {
@@ -169,52 +188,134 @@ describe("Antigravity in-turn provider failures", () => {
         message: "Antigravity requires Google authentication",
       },
     });
-    expectAssistantText(events).toBe("");
+    expectAssistantDeltas(events).toBe("");
   });
 
-  it("uses a sanitized provider message for other failures", async () => {
-    const fixture = await setupFailureTurn("generic");
-    const events = await executeFailureTurn(fixture);
+  it("redacts a key-looking string from a generic provider failure", async () => {
+    const events = await executeTurn(await setupTurn("redaction"));
     const failed = events.find((event) => event.type === "run.failed");
 
     expect(failed).toMatchObject({
-      data: { code: "harness_error", message: "Provider exploded: [REDACTED]" },
+      data: { code: "harness_error", message: "API key=[REDACTED]" },
     });
-    expect(JSON.stringify(failed)).not.toContain("fixture-owned-secret");
-    expectAssistantText(events).toBe("");
+    expect(JSON.stringify(events)).not.toContain("AIza012345678901234567890123456789");
+    expectAssistantDeltas(events).toBe("");
   });
 
-  it("does not fail a successful turn for an unrelated stderr error", async () => {
-    const fixture = await setupFailureTurn("unrelated");
+  it("preserves successful multi-chunk reply order", async () => {
+    const events = await executeTurn(await setupTurn("success-order", 0));
+
+    expectAssistantDeltas(events).toBe("The error is fixed.");
+    expectAssistantMessages(events).toEqual(["The error is fixed."]);
+    expect(events.some((event) => event.type === "run.failed")).toBe(false);
+  });
+
+  it("streams a thought-first reply without holding its assistant text", async () => {
+    const fixture = await setupTurn("thought-first");
     const session = await fixture.adapter.startSession(fixture.context);
     const observed = observe(session.events);
-    await session.execute(fixture.turn("Reply READY"));
+    await session.execute(fixture.turn("Think first"));
+    await expectTerminal(observed.events, "run.completed");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+
+    const thought = observed.events.findIndex((event) => event.type === "reasoning.delta");
+    const reply = observed.events.findIndex((event) => event.type === "assistant.delta");
+    const terminal = observed.events.findIndex((event) => event.type === "run.completed");
+    expect(thought).toBeGreaterThan(-1);
+    expect(reply).toBeGreaterThan(thought);
+    expect(reply).toBeLessThan(terminal);
+    expectAssistantDeltas(observed.events).toBe("READY");
+  });
+
+  it("flushes an assistant-only reply in order after it exceeds 2048 characters", async () => {
+    const events = await executeTurn(await setupTurn("long-reply"));
+
+    expectAssistantDeltas(events).toBe(`${"a".repeat(1_024)}${"b".repeat(1_025)}`);
+    expectAssistantMessages(events).toEqual([`${"a".repeat(1_024)}${"b".repeat(1_025)}`]);
+  });
+
+  it("ignores a complete error block attributed to another session", async () => {
+    const events = await executeTurn(await setupTurn("foreign-session", 0));
+
+    expect(events.some((event) => event.type === "run.failed")).toBe(false);
+    expectAssistantDeltas(events).toBe("FOREIGN SAFE");
+    expectAssistantMessages(events).toEqual(["FOREIGN SAFE"]);
+  });
+
+  it("does not attach pending diagnostics to the block for a different session", () => {
+    expect(
+      settleAntigravityHeldAssistant({
+        assistantText: "wrong session",
+        providerSessionReference: "11111111-1111-4111-8111-111111111111",
+        stderrTail: [
+          "received model response error: Error 500, Message: wrong session, Status: INTERNAL, Details: []",
+          "System step error (HTTP 402): Agent execution terminated due to error.",
+          "Antigravity SDK error processing prompt for session 22222222-2222-4222-8222-222222222222",
+        ].join("\n"),
+      }),
+    ).toEqual({ status: "pending" });
+  });
+
+  it("takes status and message only from the matching session block", () => {
+    const foreign = [
+      "received model response error: Error 402, Message: current echo, Status: RESOURCE_EXHAUSTED, Details: []",
+      "System step error (HTTP 402): foreign failure",
+      "Antigravity SDK error processing prompt for session 22222222-2222-4222-8222-222222222222",
+    ];
+    const current = [
+      "received model response error: Error 500, Message: current echo, Status: INTERNAL, Details: []",
+      "System step error (HTTP 500): current failure",
+      "Antigravity SDK error processing prompt for session 11111111-1111-4111-8111-111111111111",
+    ];
+
+    expect(
+      settleAntigravityHeldAssistant({
+        assistantText: "current echo",
+        providerSessionReference: "11111111-1111-4111-8111-111111111111",
+        stderrTail: [...foreign, ...current].join("\n"),
+      }),
+    ).toMatchObject({
+      error: { code: "harness_error", message: "current echo" },
+      status: "failed",
+    });
+  });
+
+  it("uses only this session's block to classify a prompt RPC error", () => {
+    const foreign = [
+      "received model response error: Error 429, Message: foreign quota, Status: RESOURCE_EXHAUSTED, Details: []",
+      "Antigravity SDK error processing prompt for session 22222222-2222-4222-8222-222222222222",
+    ].join("\n");
+
+    expect(
+      classifyAntigravityAcpError(new Error("prompt RPC failed"), {
+        operation: "prompt",
+        providerSessionReference: "11111111-1111-4111-8111-111111111111",
+        stderrTail: foreign,
+      }),
+    ).toMatchObject({ code: "harness_error", message: "Antigravity could not continue" });
+  });
+
+  it("does not let a late block without a current echo fail the next turn", async () => {
+    const fixture = await setupTurn("late-block");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("First turn"));
+    await session.execute(fixture.turn("Second turn"));
     await vi.waitFor(() => {
-      expect(observed.events.some((event) => event.type === "run.completed")).toBe(true);
+      expect(observed.events.filter((event) => event.type === "run.completed")).toHaveLength(2);
     });
     await session.stop();
     await observed.done;
     await fixture.adapter.close();
 
     expect(observed.events.some((event) => event.type === "run.failed")).toBe(false);
-    expectAssistantText(observed.events).toBe("READYREADY");
-  });
-
-  it("ignores an SDK marker for a different native session", () => {
-    expect(
-      classifyAntigravityAcpError(undefined, {
-        operation: "prompt-result",
-        providerSessionReference: "11111111-1111-4111-8111-111111111111",
-        stderrTail: [
-          "Error 500, Message: wrong session, Status: INTERNAL, Details: []",
-          "Antigravity SDK error processing prompt for session 22222222-2222-4222-8222-222222222222",
-        ].join("\n"),
-      }),
-    ).toBeUndefined();
+    expectAssistantDeltas(observed.events).toBe("FIRSTSECOND");
   });
 });
 
-async function setupFailureTurn(scenario: FailureScenario | "unrelated") {
+async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-antigravity-error-"));
   temporaryDirectories.push(directory);
   const workspacePath = join(directory, "workspace");
@@ -238,6 +339,11 @@ async function setupFailureTurn(scenario: FailureScenario | "unrelated") {
     engineLabel: "Antigravity",
     hooks: {
       classifyError: classifyAntigravityAcpError,
+      holdAssistant: {
+        deadlineMs,
+        maxCharacters: 2_048,
+        settle: settleAntigravityHeldAssistant,
+      },
       normalizeUpdate: normalizeAntigravityUpdate,
       permissionChoices: () => [],
     },
@@ -336,13 +442,11 @@ async function setupFailureTurn(scenario: FailureScenario | "unrelated") {
   };
 }
 
-async function executeFailureTurn(fixture: Awaited<ReturnType<typeof setupFailureTurn>>) {
+async function executeTurn(fixture: Awaited<ReturnType<typeof setupTurn>>) {
   const session = await fixture.adapter.startSession(fixture.context);
   const observed = observe(session.events);
   await session.execute(fixture.turn("Trigger provider failure"));
-  await vi.waitFor(() => {
-    expect(observed.events.some((event) => event.type === "run.failed")).toBe(true);
-  });
+  await expectTerminal(observed.events);
   await session.stop();
   await observed.done;
   await fixture.adapter.close();
@@ -357,16 +461,31 @@ function observe(events: AsyncIterable<HarnessEvent>) {
   return { done, events: collected };
 }
 
-function expectAssistantText(events: readonly HarnessEvent[]) {
+function expectAssistantDeltas(events: readonly HarnessEvent[]) {
   return expect(
-    events
-      .flatMap((event) =>
-        event.type === "assistant.delta"
-          ? [event.data.text]
-          : event.type === "assistant.message"
-            ? event.data.content.flatMap((part) => (part.type === "text" ? [part.text] : []))
-            : [],
-      )
-      .join(""),
+    events.flatMap((event) => (event.type === "assistant.delta" ? [event.data.text] : [])).join(""),
   );
+}
+
+function expectAssistantMessages(events: readonly HarnessEvent[]) {
+  return expect(
+    events.flatMap((event) =>
+      event.type === "assistant.message"
+        ? event.data.content.flatMap((part) => (part.type === "text" ? [part.text] : []))
+        : [],
+    ),
+  );
+}
+
+async function expectTerminal(
+  events: readonly HarnessEvent[],
+  expected?: "run.completed" | "run.failed",
+): Promise<void> {
+  await vi.waitFor(() => {
+    expect(
+      events.some((event) =>
+        expected ? event.type === expected : ["run.completed", "run.failed"].includes(event.type),
+      ),
+    ).toBe(true);
+  });
 }

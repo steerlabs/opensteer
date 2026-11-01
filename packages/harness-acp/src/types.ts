@@ -93,7 +93,6 @@ export interface AcpPermissionChoice {
 
 export type AcpNormalizedUpdate =
   | {
-      readonly deferUntilPromptSettles?: boolean;
       readonly kind: "assistant";
       readonly messageId?: string;
       readonly text: string;
@@ -122,29 +121,37 @@ export type AcpNormalizedUpdate =
 
 export type AcpErrorContext =
   | {
-      readonly operation: "initialize" | "authenticate" | "new" | "resume" | "prompt" | "cancel";
+      readonly operation: "initialize" | "authenticate" | "new" | "resume" | "cancel";
       readonly stderrTail: string;
     }
   | {
-      readonly operation: "prompt-result";
+      readonly operation: "prompt";
       readonly providerSessionReference: string;
       readonly stderrTail: string;
     };
 
-export interface AcpErrorInterpretation {
-  /** Exact native assistant text that merely repeated the classified provider failure. */
-  readonly discardAssistantText?: string;
-  readonly error: OpensteerError;
+export interface AcpHeldAssistantContext {
+  readonly assistantText: string;
+  readonly providerSessionReference: string;
+  readonly stderrTail: string;
 }
+
+export type AcpHeldAssistantDecision =
+  | { readonly status: "failed"; readonly error: OpensteerError }
+  | { readonly status: "pending" }
+  | { readonly status: "succeeded" };
 
 export interface AcpNativeHooks {
   /** Engine-specific extensions and quirks only; standard ACP updates are normalized first. */
   normalizeUpdate?(update: unknown): readonly AcpNormalizedUpdate[] | undefined;
   /** Also interprets a settled prompt result when `error` is undefined. */
-  classifyError(
-    error: unknown,
-    context: AcpErrorContext,
-  ): OpensteerError | AcpErrorInterpretation | undefined;
+  classifyError(error: unknown, context: AcpErrorContext): OpensteerError;
+  /** Holds a short assistant-only prefix until the prompt result can validate it. */
+  holdAssistant?: {
+    readonly deadlineMs: number;
+    readonly maxCharacters: number;
+    readonly settle: (context: AcpHeldAssistantContext) => AcpHeldAssistantDecision;
+  };
   permissionChoices(request: AcpPermissionRequest): readonly AcpPermissionChoice[];
   authenticationMethod?(
     context: HarnessSessionContext,
