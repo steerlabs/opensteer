@@ -9,12 +9,11 @@ import {
   canonicalModelReference,
   harnessUsageLimitFailureCode,
   modelDisplayName,
-  type RequestId,
-  type RequestResponse,
   type ThreadAccessMode,
 } from "@opensteer/core";
 import {
   AcpHarnessAdapter,
+  acpProtocolOutputBytes,
   createAcpProtocolClient,
   generateContainedAcpTitle,
   normalizeAcpUpdate,
@@ -49,7 +48,6 @@ import {
   type HarnessModelDescriptor,
   type HarnessProcessLaunch,
   type HarnessProviderState,
-  type HarnessRunInput,
   type HarnessSession,
   type HarnessSessionContext,
   type HarnessTitleInput,
@@ -202,7 +200,7 @@ async function startProtocol(input: {
   const combined = AbortSignal.any([input.signal, lifetime.signal]);
   const process = spawnSupervised({
     ...input.launch,
-    maxOutputBytes: 512 * 1_024,
+    maxOutputBytes: acpProtocolOutputBytes,
     signal: combined,
   });
   let stderrError: unknown;
@@ -958,6 +956,7 @@ class AntigravityAdapter implements HarnessAdapter {
       hooks: {
         authenticationMethod: () => this.#authMethod,
         classifyError: classifyAntigravityAcpError,
+        generateTitle: (context, input) => this.#generateTitle(context, input),
         holdAssistant: {
           deadlineMs: 500,
           maxCharacters: 2_048,
@@ -978,7 +977,7 @@ class AntigravityAdapter implements HarnessAdapter {
     assertNativeUser(context);
     const session = await this.#adapter.startSession(context);
     this.#assertSessionReference(session.providerSessionReference);
-    return this.#withTitle(session, context);
+    return session;
   }
 
   async resumeSession(
@@ -989,7 +988,7 @@ class AntigravityAdapter implements HarnessAdapter {
     this.#assertSessionReference(providerSessionReference);
     const session = await this.#adapter.resumeSession(providerSessionReference, context);
     this.#assertSessionReference(session.providerSessionReference);
-    return this.#withTitle(session, context);
+    return session;
   }
 
   close(): Promise<void> {
@@ -1009,10 +1008,6 @@ class AntigravityAdapter implements HarnessAdapter {
       runtime: this.#runtime,
     });
     return { ...launch, cwd: context.workspacePath };
-  }
-
-  #withTitle(session: HarnessSession, context: HarnessSessionContext): HarnessSession {
-    return new AntigravitySession(session, (input) => this.#generateTitle(context, input));
   }
 
   #assertSessionReference(value: string): void {
@@ -1071,41 +1066,5 @@ class AntigravityAdapter implements HarnessAdapter {
     } finally {
       await rm(scratch, { force: true, recursive: true });
     }
-  }
-}
-
-class AntigravitySession implements HarnessSession {
-  readonly events: AsyncIterable<import("@opensteer/harness").HarnessEvent>;
-  readonly #generate: (input: HarnessTitleInput) => Promise<string>;
-  readonly #session: HarnessSession;
-
-  constructor(session: HarnessSession, generate: (input: HarnessTitleInput) => Promise<string>) {
-    this.#session = session;
-    this.#generate = generate;
-    this.events = session.events;
-  }
-
-  get providerSessionReference(): string {
-    return this.#session.providerSessionReference;
-  }
-
-  execute(run: HarnessRunInput): Promise<void> {
-    return this.#session.execute(run);
-  }
-
-  interrupt(): Promise<void> {
-    return this.#session.interrupt();
-  }
-
-  resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void> {
-    return this.#session.resolveRequest(requestId, response);
-  }
-
-  generateTitle(input: HarnessTitleInput): Promise<string> {
-    return this.#generate(input);
-  }
-
-  stop(): Promise<void> {
-    return this.#session.stop();
   }
 }

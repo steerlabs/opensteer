@@ -78,6 +78,26 @@ describe("ACP lifecycle", () => {
     await observed.done;
     expect(observed.events.map((event) => event.type)).toContain("run.failed");
     expect(observed.events.map((event) => event.type)).not.toContain("run.completed");
+    expectAssistantBeforeTerminal(observed.events, "streamed", "run.failed");
+    expectReasoningBeforeTerminal(observed.events, "weighing it", "run.failed");
+    await fixture.adapter.close();
+  });
+
+  it("saves a partial reply when the engine rejects the prompt after a wait-for-prompt cancel", async () => {
+    const fixture = await setup("wait-interruption");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    const controller = new AbortController();
+    const execution = session.execute(fixture.turn("stop", controller.signal));
+    await fixture.heldAssistantReached;
+    controller.abort(new Error("person stopped the Run"));
+    await execution;
+    await expectTerminal(observed.events, "run.interrupted");
+    expectAssistantBeforeTerminal(observed.events, "partial reply", "run.interrupted");
+    expectReasoningBeforeTerminal(observed.events, "weighing it", "run.interrupted");
+    expectUsageBeforeTerminal(observed.events, "run.interrupted");
+    await session.stop();
+    await observed.done;
     await fixture.adapter.close();
   });
 
@@ -125,6 +145,7 @@ describe("ACP lifecycle", () => {
     await session.execute(fixture.turn("fail after end_turn"));
     await expectTerminal(observed.events, "run.failed");
     expectUsageBeforeTerminal(observed.events, "run.failed");
+    expect(JSON.stringify(observed.events)).not.toContain("native provider error");
     await session.stop();
     await observed.done;
     await fixture.adapter.close();
@@ -196,6 +217,49 @@ describe("ACP lifecycle", () => {
     await session.stop();
     await observed.done;
     await fixture.adapter.close();
+  });
+
+  it("ends the engine process when it never answers session close", async () => {
+    const fixture = await setup("close-hang");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    let stopped = false;
+    const stopping = session.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.waitFor(
+      () => {
+        if (!stopped) throw new Error("stop never finished after the close deadline");
+      },
+      { timeout: 2_000 },
+    );
+    await stopping;
+    vi.useRealTimers();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
+  it("keeps reading the protocol after a long session's traffic passes 512 KiB", async () => {
+    const fixture = await setup("long-session", { agent: await longSessionAgent() });
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    try {
+      for (let turn = 1; turn <= 4; turn += 1) {
+        await withinDeadline(
+          session.execute(fixture.turn(`turn ${turn}`)),
+          1_000,
+          `turn ${turn} never completed`,
+        );
+      }
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+    await observed.done;
+    expect(observed.events.filter((event) => event.type === "run.completed")).toHaveLength(4);
+    expect(observed.events.filter((event) => event.type === "assistant.message")).toHaveLength(4);
   });
 
   it("accepts only a permission choice the agent actually offered", async () => {
@@ -306,6 +370,9 @@ describe("ACP boundaries", () => {
 
 type Scenario =
   | "background"
+  | "close-hang"
+  | "long-session"
+  | "wait-interruption"
   | "held-interruption"
   | "held-prompt-error"
   | "held-assistant-deadline"
@@ -318,7 +385,7 @@ type Scenario =
   | "usage-held-assistant-error"
   | "usage-success";
 
-async function setup(scenario: Scenario) {
+async function setup(scenario: Scenario, real: { readonly agent?: string } = {}) {
   const directory = await temporaryDirectory();
   const workspacePath = join(directory, "workspace");
   await mkdir(workspacePath);
@@ -374,7 +441,9 @@ async function setup(scenario: Scenario) {
                 },
               },
             }
-          : scenario === "held-interruption" || scenario === "held-prompt-error"
+          : scenario === "held-interruption" ||
+              scenario === "held-prompt-error" ||
+              scenario === "wait-interruption"
             ? {
                 holdAssistant: {
                   deadlineMs: 0,
@@ -399,7 +468,7 @@ async function setup(scenario: Scenario) {
           : undefined,
     },
     launch: ({ context }) => ({
-      args: ["-e", "process.stdin.resume()"],
+      args: real.agent ? [real.agent] : ["-e", "process.stdin.resume()"],
       cwd: context.workspacePath,
       environment: context.environment,
       executable: process.execPath,
@@ -413,7 +482,10 @@ async function setup(scenario: Scenario) {
         auto: "auto",
         "full-access": "full",
       },
-      cancel: { behavior: "cancel-and-kill", metadata: { outcome: "cancelled" } },
+      cancel:
+        scenario === "wait-interruption"
+          ? { behavior: "wait-for-prompt" }
+          : { behavior: "cancel-and-kill", metadata: { outcome: "cancelled" } },
       clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
       clientInfo: { name: "opensteer_test", version: "0.0.0" },
       eagerAuthentication: false,
@@ -437,9 +509,13 @@ async function setup(scenario: Scenario) {
       notifyHeldAssistantReached,
     );
   };
-  const adapter = new AcpHarnessAdapter(instanceId, options, {
-    createClient: createClient as typeof import("./protocol.js").createAcpProtocolClient,
-  });
+  const adapter = new AcpHarnessAdapter(
+    instanceId,
+    options,
+    real.agent
+      ? {}
+      : { createClient: createClient as typeof import("./protocol.js").createAcpProtocolClient },
+  );
   const environment = { PATH: process.env.PATH ?? "" };
   const context: HarnessSessionContext = {
     accessMode: "full-access",
@@ -521,12 +597,17 @@ function fakeClient(
   process: SupervisedProcess,
   notifyHeldAssistantReached: () => void,
 ): AcpProtocolClient {
+  let cancelled: () => void = () => undefined;
+  const cancellation = new Promise<void>((resolve) => {
+    cancelled = resolve;
+  });
   return {
     authenticate: async () => undefined,
     logout: async () => undefined,
-    cancel: async () => undefined,
+    cancel: async () => cancelled(),
     close: () => undefined,
-    closeSession: async () => undefined,
+    closeSession: (): Promise<void> =>
+      scenario === "close-hang" ? new Promise(() => undefined) : Promise.resolve(),
     initialize: async () => ({
       agentCapabilities: {},
       authMethods: [],
@@ -535,6 +616,23 @@ function fakeClient(
     }),
     newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
     prompt: async () => {
+      if (scenario === "wait-interruption") {
+        handlers.update("new-session", {
+          sessionUpdate: "usage_update",
+          usage: { inputTokens: 11, outputTokens: 7, thoughtTokens: 3 },
+        });
+        handlers.update("new-session", {
+          content: { text: "partial reply", type: "text" },
+          sessionUpdate: "agent_message_chunk",
+        });
+        handlers.update("new-session", {
+          content: { text: "weighing it", type: "text" },
+          sessionUpdate: "agent_thought_chunk",
+        });
+        notifyHeldAssistantReached();
+        await cancellation;
+        throw new Error("prompt RPC failed after cancel");
+      }
       if (scenario === "held-interruption" || scenario === "held-prompt-error") {
         handlers.update("new-session", {
           sessionUpdate: "usage_update",
@@ -596,6 +694,10 @@ function fakeClient(
           content: { text: "streamed", type: "text" },
           sessionUpdate: "agent_message_chunk",
         });
+        handlers.update("new-session", {
+          content: { text: "weighing it", type: "text" },
+          sessionUpdate: "agent_thought_chunk",
+        });
         throw new Error("prompt RPC failed");
       }
       if (scenario === "permission") {
@@ -655,16 +757,84 @@ function expectUsageBeforeTerminal(
   expect(usage[0]?.index).toBeLessThan(events.findIndex((event) => event.type === terminal));
 }
 
+/** The live delta is what the person saw; the message is what outlives the terminal event. */
 function expectAssistantBeforeTerminal(
   events: readonly HarnessEvent[],
   text: string,
   terminal: "run.failed" | "run.interrupted",
 ): void {
-  const assistant = events.findIndex(
+  const end = events.findIndex((event) => event.type === terminal);
+  const delta = events.findIndex(
     (event) => event.type === "assistant.delta" && event.data.text === text,
   );
-  expect(assistant).toBeGreaterThan(-1);
-  expect(assistant).toBeLessThan(events.findIndex((event) => event.type === terminal));
+  expect(delta).toBeGreaterThan(-1);
+  expect(delta).toBeLessThan(end);
+  const saved = events.flatMap((event, index) =>
+    event.type === "assistant.message" ? [{ event, index }] : [],
+  );
+  expect(saved).toHaveLength(1);
+  expect(saved[0]?.event.data.content).toEqual([{ text, type: "text" }]);
+  expect(saved[0]?.index).toBeLessThan(end);
+}
+
+function expectReasoningBeforeTerminal(
+  events: readonly HarnessEvent[],
+  text: string,
+  terminal: "run.failed" | "run.interrupted",
+): void {
+  const saved = events.findIndex(
+    (event) => event.type === "reasoning.completed" && event.data.text === text,
+  );
+  expect(saved).toBeGreaterThan(-1);
+  expect(saved).toBeLessThan(events.findIndex((event) => event.type === terminal));
+}
+
+async function withinDeadline<T>(operation: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A real ACP agent whose every turn streams about 220 KiB of reply. */
+async function longSessionAgent(): Promise<string> {
+  const directory = await temporaryDirectory();
+  const agent = join(directory, "agent.mjs");
+  await writeFile(
+    agent,
+    `
+import { createInterface } from "node:readline";
+const sessionId = "long-session";
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const chunk = "x".repeat(1_024);
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+  } else if (message.method === "session/new") {
+    send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: [] } });
+  } else if (message.method === "session/prompt") {
+    for (let index = 0; index < 200; index += 1) {
+      send({ jsonrpc: "2.0", method: "session/update", params: {
+        sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: chunk } }
+      }});
+    }
+    send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+  } else if (message.id !== undefined) {
+    send({ jsonrpc: "2.0", id: message.id, result: {} });
+  }
+});
+`,
+  );
+  return agent;
 }
 
 async function expectTerminal(

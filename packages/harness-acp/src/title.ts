@@ -1,7 +1,11 @@
 import { OpensteerError } from "@opensteer/core";
 import { spawnSupervised, type HarnessProcessLaunch } from "@opensteer/harness";
 import { normalizeAcpUpdate } from "./adapter.js";
-import { createAcpProtocolClient } from "./protocol.js";
+import {
+  acpProtocolOutputBytes,
+  closeAcpSessionBestEffort,
+  createAcpProtocolClient,
+} from "./protocol.js";
 import type { AcpProtocolVersion } from "./types.js";
 
 const maximumTitleOutputCharacters = 64_000;
@@ -30,7 +34,7 @@ export async function generateContainedAcpTitle(input: {
   input.signal.addEventListener("abort", abort, { once: true });
   const process = spawnSupervised({
     ...input.launch,
-    maxOutputBytes: 128 * 1_024,
+    maxOutputBytes: acpProtocolOutputBytes,
     signal: lifetime.signal,
   });
   let output = "";
@@ -112,7 +116,7 @@ export async function generateContainedAcpTitle(input: {
     }
     return { sessionId: session.sessionId, text };
   } finally {
-    if (sessionId) await client.closeSession(sessionId).catch(() => undefined);
+    if (sessionId) await closeAcpSessionBestEffort(client, sessionId);
     client.close();
     lifetime.abort(new Error("Title generation finished"));
     await process.terminate().catch(() => undefined);

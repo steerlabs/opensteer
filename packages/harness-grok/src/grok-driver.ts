@@ -415,6 +415,8 @@ class GrokHarnessAdapter implements HarnessAdapter {
             this.#apiKeyStores.has(context.providerState.continuationKey),
           ),
         classifyError: grokAcpError,
+        generateTitle: (context, input) =>
+          generateGrokTitle(this.#dependencies, this.#config, context, input),
         normalizeUpdate: normalizeGrokUpdate,
         permissionChoices: grokPermissionChoices,
         rewritePromptText: rewriteGrokSkillInvocation,
@@ -468,10 +470,7 @@ class GrokHarnessAdapter implements HarnessAdapter {
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     assertNativeUser(context);
-    return this.#withTitle(
-      await this.#delegate.startSession(this.#resolvedContext(context)),
-      context,
-    );
+    return this.#delegate.startSession(this.#resolvedContext(context));
   }
 
   async resumeSession(
@@ -480,10 +479,7 @@ class GrokHarnessAdapter implements HarnessAdapter {
   ): Promise<HarnessSession> {
     assertNativeUser(context);
     await assertGrokSessionExists(providerSessionReference, context);
-    return this.#withTitle(
-      await this.#delegate.resumeSession(providerSessionReference, this.#resolvedContext(context)),
-      context,
-    );
+    return this.#delegate.resumeSession(providerSessionReference, this.#resolvedContext(context));
   }
 
   close(): Promise<void> {
@@ -495,17 +491,6 @@ class GrokHarnessAdapter implements HarnessAdapter {
       context,
       this.#modelEfforts.get(context.providerState.continuationKey) ?? new Map(),
     );
-  }
-
-  #withTitle(session: HarnessSession, context: HarnessSessionContext): HarnessSession {
-    return {
-      ...session,
-      execute: (run) => session.execute(run),
-      generateTitle: (input) => generateGrokTitle(this.#dependencies, this.#config, context, input),
-      interrupt: () => session.interrupt(),
-      resolveRequest: (requestId, response) => session.resolveRequest(requestId, response),
-      stop: () => session.stop(),
-    };
   }
 }
 

@@ -97,6 +97,52 @@ process.stdout.write("Contained title\\n");
     expect(await stat(observed.home).catch(() => undefined)).toBeUndefined();
   });
 
+  it("keeps the native session reference on a session that can name its Thread", async () => {
+    const root = await temporaryDirectory();
+    const workspace = join(root, "workspace");
+    const executable = join(root, "fake-grok");
+    await mkdir(workspace);
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node
+const { createInterface } = require("node:readline");
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.id === undefined) return;
+  if (message.method === "initialize") {
+    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+  } else if (message.method === "session/new") {
+    send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "grok-native-session", configOptions: [] } });
+  } else {
+    send({ jsonrpc: "2.0", id: message.id, result: {} });
+  }
+});
+`,
+      { mode: 0o700 },
+    );
+    const context = sessionContext(root, workspace, {
+      GROK_HOME: join(root, "grok-home"),
+      PATH: process.env.PATH ?? "",
+    });
+    const adapter = await new GrokHarnessDriver({ executable }).create({
+      config: {},
+      instanceId: context.harnessInstanceId,
+      sourceId: "xai",
+    });
+    try {
+      const session = await adapter.startSession(context);
+      try {
+        expect(session.providerSessionReference).toBe("grok-native-session");
+        expect(session.generateTitle).toBeTypeOf("function");
+      } finally {
+        await session.stop();
+      }
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("strips ambient API keys and disables ambient compatibility discovery", async () => {
     const root = await temporaryDirectory();
     const context = sessionContext(root, join(root, "workspace"), {

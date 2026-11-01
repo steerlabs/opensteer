@@ -155,6 +155,7 @@ describe("Antigravity in-turn provider failures", () => {
         },
       });
       expectAssistantDeltas(events).toBe("");
+      expectAssistantMessages(events).toEqual([]);
     },
   );
 
