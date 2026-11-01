@@ -743,11 +743,4 @@ describe("sidebar Done shelf", () => {
     expect(load).toHaveBeenCalledTimes(2);
     expect(more.disabled).toBe(false);
   });
-
-  it("redirects a stale Tasks address to Chat", async () => {
-    await mount("/tasks");
-    expect(history.at(-1)?.path).toBe("/");
-    expect(element(".side-home__main").getAttribute("aria-current")).toBe("page");
-    expect(document.querySelector('[aria-label="All tasks"]')).toBeNull();
-  });
 });

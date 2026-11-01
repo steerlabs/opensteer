@@ -2,7 +2,6 @@ import { act, Fragment, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   MemoryRouter,
-  Navigate,
   Route,
   Routes,
   useLocation,
@@ -144,7 +143,6 @@ async function mount(
                 }
               >
                 <Route index element={<HomeRoute />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
                 <Route path="new" element={<NewTaskRoute />} />
                 <Route path="threads/:threadId" element={<ThreadRoute />} />
                 <Route path="live" element={<LiveRedirect />} />
