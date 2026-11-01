@@ -46,7 +46,36 @@ class EditingFixtureActivity : ComponentActivity() {
         setContentView(layout)
         when (mode) {
             "webview" -> {
-                val web = WebView(this)
+                val inputId = java.util.UUID.randomUUID().toString()
+                // The harness exposes the virtual editor only after the accessibility IME starts.
+                var exposeEditor = false
+                val web = object : WebView(this) {
+                    override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider? =
+                        if (exposeEditor) super.getAccessibilityNodeProvider() else null
+
+                    override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+                        val connection = super.onCreateInputConnection(info)
+                        if (connection != null && info.inputType != 0) {
+                            android.util.Log.d("AgentPhoneFixture", "WebView input started $inputId")
+                            receipts.record("editing_web_input_started", inputId)
+                        }
+                        return connection
+                    }
+                }
+                val release = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+                        exposeEditor = true
+                        web.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+                        web.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED)
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= 33) registerReceiver(release,
+                    android.content.IntentFilter("com.opensteer.agentphone.fixture.EXPOSE_WEB_EDITOR"),
+                    "android.permission.DUMP", null, RECEIVER_EXPORTED)
+                else exposeEditor = true
+                lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
+                    override fun onDestroy(owner: androidx.lifecycle.LifecycleOwner) { if (Build.VERSION.SDK_INT >= 33) unregisterReceiver(release) }
+                })
                 web.id = R.id.fixture_text
                 web.settings.javaScriptEnabled = true
                 web.addJavascriptInterface(object {

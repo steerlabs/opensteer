@@ -145,7 +145,7 @@ it.each([
   async function decodedPixels(
     name: string,
     frame: ReceivedFrame,
-    black = false,
+    black: boolean | null = false,
     following: readonly ReceivedFrame[] = [],
   ) {
     const input = join(directory, `${name}.h264`);
@@ -200,7 +200,9 @@ it.each([
       independentDecoder: "ffmpeg",
     };
     if (black) expect(Math.max(...maxima), "protected central pixels are black").toBeLessThan(8);
-    else expect(Math.max(...mean), "real fixture pixels are visible").toBeGreaterThan(8);
+    else if (black === false)
+      expect(Math.max(...mean), "real fixture pixels are visible").toBeGreaterThan(8);
+    return Math.max(...mean);
   }
   async function flush() {
     await json("display.json", {
@@ -894,7 +896,17 @@ it.each([
           return current.tree.some((line) => line.label === "Record a tap") ? current : undefined;
         },
         15_000,
-      );
+      ).catch(async (error: unknown) => {
+        await json("fixture-observation-timeout.json", {
+          accessibility: await phone.shell("dumpsys accessibility"),
+          windows: await phone.shell("dumpsys window"),
+          observation: transcript.at(-1),
+          screenshotErrors: await phone.shell(
+            "logcat -d -s AccessibilityService AccessibilityInteractionClient AccessibilityManagerService",
+          ),
+        });
+        throw error;
+      });
     }
     async function sessionId() {
       const active = await sessions();
@@ -939,26 +951,55 @@ it.each([
       if (!frame) throw new Error("Viewer has no picture geometry.");
       return frame;
     };
+    async function visiblePicture(name: string, view: ComputerDisplayViewer, after: number) {
+      // The physical display is briefly black while it wakes.
+      const generation = latest(view).header.generation;
+      const deadline = performance.now() + 15_000;
+      await state(
+        view,
+        0,
+        (message) => message.state === "live" && message.generation === generation,
+      );
+      let decoded = -1;
+      await eventually(
+        `${name}: fresh fixture pixels after live`,
+        async () => {
+          view.check();
+          const frame = latest(view).header;
+          if (view.trace.frames.length <= after || frame.sequence === decoded) return undefined;
+          expect(frame.generation).toBe(generation);
+          const key = view.trace.frames.findLastIndex((picture) => picture.header.key);
+          const pictures = view.trace.frames.slice(key);
+          decoded = frame.sequence;
+          return (
+            (await decodedPixels(name, pictures[0]!, null, pictures.slice(1))) > 8 || undefined
+          );
+        },
+        Math.max(1, deadline - performance.now()),
+      );
+    }
     async function replayPictures(view: ComputerDisplayViewer) {
       const requested =
         view.sent.findLast((entry) => entry.message.type === "display.keyframe")?.sentMs ??
         -Infinity;
       await delay(Math.max(0, 510 - (performance.now() - requested)));
-      const after = view.trace.frames.length;
       const cursor = view.trace.events.length;
       view.send({ type: "display.keyframe" });
       return view.wait("current replay picture", () => {
-        const reset = view.trace.events
-          .slice(cursor)
-          .findLast(
-            (event) =>
-              event.kind === "message" &&
-              event.message.type === "display.state" &&
-              event.message.replayThrough !== undefined,
-          );
+        const events = view.trace.events.slice(cursor);
+        const index = events.findLastIndex(
+          (event) =>
+            event.kind === "message" &&
+            event.message.type === "display.state" &&
+            event.message.replayThrough !== undefined,
+        );
+        const reset = events[index];
         if (reset?.kind !== "message" || reset.message.type !== "display.state") return undefined;
         const sequence = reset.message.replayThrough;
-        const pictures = view.trace.frames.slice(after);
+        // Live frames can arrive just before the replay state; the replay starts after it.
+        const pictures = events
+          .slice(index + 1)
+          .flatMap((event) => (event.kind === "frame" ? [event.frame] : []));
         const through = pictures.findIndex((picture) => picture.header.sequence === sequence);
         return through < 0 ? undefined : pictures.slice(0, through + 1);
       });
@@ -1456,6 +1497,27 @@ it.each([
             sendPointer("down", at);
             sendPointer("up", at);
             await receipt("editing_web_focus", before);
+            if (api >= 33) {
+              const started = await receipt("editing_web_input_started", before);
+              await eventually(
+                "IME starts before the WebView exposes its virtual editor",
+                async () => {
+                  const log = await phone.shell(
+                    "logcat -d -v brief -s AgentPhoneFixture:D OpensteerDisplay:D",
+                  );
+                  const marker = `WebView input started ${started.detail}`;
+                  const offset = log.lastIndexOf(marker);
+                  return offset >= 0 &&
+                    log.slice(offset + marker.length).includes("Owner editor started bound=false")
+                    ? true
+                    : undefined;
+                },
+                15_000,
+              );
+              await phone.shell(
+                "am broadcast -a com.opensteer.agentphone.fixture.EXPOSE_WEB_EDITOR -p com.opensteer.agentphone.fixture",
+              );
+            }
           }
           await context(start);
           const typed = "ASCII café 한글 🧑‍💻";
@@ -1957,10 +2019,9 @@ it.each([
           const replay = await replayPictures(view);
           await decodedPixels(`flag-secure-${index}`, replay[0]!, true, replay.slice(1));
         }
+        const after = first.trace.frames.length;
         await phone.shell(`am start -W -n ${fixtureActivities.display}`);
-        await delay(500);
-        const restored = await replayPictures(first);
-        await decodedPixels("secure-fixture-after", restored[0]!, false, restored.slice(1));
+        await visiblePicture("secure-fixture-after", first, after);
       });
 
       await phase("mixed-source-static-sleep-and-local-wake", async () => {
@@ -1989,7 +2050,7 @@ it.each([
           const frame = await firstFrame(view, counts[index]!);
           expect(frame.header.generation).toBeGreaterThan(before[index]!.generation);
           expect(frame.header.key).toBe(true);
-          await decodedPixels(`mixed-static-wake-${index}`, frame);
+          await visiblePicture(`mixed-static-wake-${index}`, view, counts[index]!);
         }
         evidence.sleepSources = {
           owner: protectedOwner.source,
@@ -2443,15 +2504,42 @@ it.each([
           const after = own.view.trace.frames.length;
           await delay(500);
           expect(own.view.trace.frames).toHaveLength(after);
-          const screen = await physicalScreen();
-          await phone.shell(
-            `input swipe ${Math.round(screen.width / 2)} ${Math.round(screen.height * 0.8)} ${Math.round(screen.width / 2)} ${Math.round(screen.height * 0.2)} 300`,
+          await eventually(
+            "keyguard takes focus before opening the PIN bouncer",
+            async () =>
+              /mCurrentFocus=Window\{[^}]*\bNotificationShade\}/u.test(
+                await phone.shell("dumpsys window"),
+              )
+                ? true
+                : undefined,
+            15_000,
+          );
+          await phone.shell("wm dismiss-keyguard");
+          await eventually(
+            "PIN bouncer is showing before entering the PIN",
+            async () =>
+              /isBouncerShowing\(\): true/u.test(
+                await phone.shell("dumpsys activity service com.android.systemui/.SystemUIService"),
+              )
+                ? true
+                : undefined,
+            15_000,
           );
           await phone.shell(`input text ${pin}`);
           await phone.shell("input keyevent KEYCODE_ENTER");
+          await eventually(
+            "keyguard disappears after entering the PIN once",
+            async () =>
+              /KeyguardServiceDelegate[\s\S]*?\bshowing=false/u.test(
+                await phone.shell("dumpsys window policy"),
+              )
+                ? true
+                : undefined,
+            15_000,
+          );
           const resumed = await firstFrame(own.view, after);
           expect(resumed.header.generation).toBeGreaterThan(generation);
-          await decodedPixels("locally-unlocked-pin", resumed);
+          await visiblePicture("locally-unlocked-pin", own.view, after);
           await closeOwner(own.source);
           await closed(own.view);
         } finally {

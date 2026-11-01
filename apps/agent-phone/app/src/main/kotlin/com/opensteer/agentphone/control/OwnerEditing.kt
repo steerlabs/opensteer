@@ -168,6 +168,7 @@ class OwnerEditing(private val service: AccessibilityService, private val device
             admit()
             val bound = onMain {
                 val ime = service.inputMethod as? OwnerInputMethod
+                ime?.fillEditor(node)
                 if (ime?.currentInputStarted == true && ime.editor == node && device.ownerFocusedNode() == node)
                     ime.currentInputConnection?.let { Bound(ime, ime.epoch, it, ime.selectionStart, ime.selectionEnd) } else null
             }

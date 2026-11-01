@@ -5,7 +5,7 @@ import android.accessibilityservice.InputMethod
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
 
-/** Input start binds a connection to an accessibility identity, including virtual/resource-less editors. */
+/** Binds an input session to an accessibility identity, including virtual/resource-less editors. */
 @android.annotation.TargetApi(33)
 class OwnerInputMethod(private val service: AccessibilityService, private val changed: () -> Unit) : InputMethod(service) {
     var editor: AccessibilityNodeInfo? = null
@@ -16,6 +16,13 @@ class OwnerInputMethod(private val service: AccessibilityService, private val ch
         private set
     var epoch = 0L
         private set
+
+    // WebView can start input before its virtual editor enters the accessibility tree.
+    fun fillEditor(node: AccessibilityNodeInfo) {
+        if (!currentInputStarted || editor != null) return
+        val packageName = currentInputEditorInfo?.packageName ?: return
+        if (node.packageName?.toString() == packageName && ownerFocusedEditor(service) == node) editor = node
+    }
 
     override fun onStartInput(info: EditorInfo, restarting: Boolean) {
         super.onStartInput(info, restarting)
