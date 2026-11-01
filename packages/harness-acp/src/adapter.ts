@@ -394,23 +394,40 @@ class AcpHarnessSession implements HarnessSession {
     const modelOption = snapshot.configOptions.find(
       (option) => option.category === policy.modelCategory,
     );
-    if (modelOption) {
-      await this.#client.setConfigOption(
-        sessionId,
-        { id: modelOption.id, type: "select", value: modelId },
-        signal,
-      );
+    if (
+      !modelOption ||
+      modelOption.type !== "select" ||
+      !modelOption.options?.some((option) => option.value === modelId)
+    ) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `${this.#options.engineLabel} does not offer model ${modelId} in this session`,
+      });
     }
+    await this.#client.setConfigOption(
+      sessionId,
+      { id: modelOption.id, type: "select", value: modelId },
+      signal,
+    );
     const effort = selection.options[policy.effortOptionId];
     const effortOption = snapshot.configOptions.find(
       (option) => option.category === policy.effortCategory,
     );
-    if (effortOption && typeof effort === "string") {
+    if (
+      effortOption &&
+      typeof effort === "string" &&
+      effortOption.options?.some((option) => option.value === effort)
+    ) {
       await this.#client.setConfigOption(
         sessionId,
         { id: effortOption.id, type: "select", value: effort },
         signal,
       );
+    } else if (typeof effort === "string") {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `${this.#options.engineLabel} does not offer effort ${effort} for this model`,
+      });
     }
   }
 

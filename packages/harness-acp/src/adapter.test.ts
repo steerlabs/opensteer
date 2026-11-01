@@ -309,6 +309,7 @@ function fakeClient(
 ): AcpProtocolClient {
   return {
     authenticate: async () => undefined,
+    logout: async () => undefined,
     cancel: async () => undefined,
     close: () => undefined,
     closeSession: async () => undefined,

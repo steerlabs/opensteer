@@ -81,6 +81,7 @@ export interface AcpProtocolClient {
     readonly signal: AbortSignal;
   }): Promise<AcpInspectionSnapshot>;
   authenticate(methodId: string, signal: AbortSignal): Promise<void>;
+  logout(signal: AbortSignal): Promise<void>;
   newSession(environment: AcpSessionEnvironment, signal: AbortSignal): Promise<AcpSessionSnapshot>;
   resumeSession(
     reference: string,
@@ -230,6 +231,9 @@ function createV1Client(
         { cancellationSignal: signal },
       );
     },
+    logout: async (signal) => {
+      await agent.request<unknown, unknown>("logout", {}, { cancellationSignal: signal });
+    },
     newSession: async (environment, signal) =>
       v1Snapshot(
         await agent.request(acpV1.methods.agent.session.new, v1Environment(environment), {
@@ -373,6 +377,9 @@ function createV2Client(
         { methodId },
         { cancellationSignal: signal },
       );
+    },
+    logout: async (signal) => {
+      await agent.request(acpV2.methods.agent.auth.logout, {}, { cancellationSignal: signal });
     },
     newSession: async (environment, signal) => {
       const response = await agent.request(
