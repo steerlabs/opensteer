@@ -3,7 +3,6 @@ import {
   routeOnAccount,
   withSetting,
   type ModelSetting,
-  composerExecutionSelection,
   lastExecutionSelection,
   accessModeOptions,
   accessModeUnavailableReason,
@@ -47,7 +46,7 @@ import {
   type,
 } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { startingPlacement } from "../thread/first-message.js";
+import { firstMessageExecution } from "../thread/first-message.js";
 import {
   cancelFirstMessagePickerAttempt,
   finishFirstMessagePickerAttempt,
@@ -77,8 +76,8 @@ export type NewThreadScreenProps = StaticScreenProps<{
   readonly conversation?: boolean;
   readonly deploymentId: string;
   /**
-   * Set when the choice is for Chat's first message. Chat takes no default
-   * account when several could run it; a new task takes the deployment's.
+   * Set when the choice is for Chat's first message. Chat uses its ranked
+   * model default; a new task uses the person's task execution preference.
    */
   readonly home?: boolean;
   /** The Send whose choice this sheet answers, when Send opened it. */
@@ -1050,8 +1049,8 @@ function ModelPickerList(
 
 /**
  * Which AI a first message starts its Thread on, chosen before that Thread
- * exists. Each choice is recorded as this person's latest, which is what the
- * first message reads back; nothing is started here — the message does that.
+ * exists. Task choices become the person's latest task default; Chat choices
+ * stay in this picker visit and return directly to Chat's first message.
  */
 export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
   const navigation = useNavigation();
@@ -1106,22 +1105,16 @@ function SubscribedNewThread(props: {
   const acceptedChoice = useRef<ExecutionSelection | null>(null);
   const pendingChoice = useRef<Promise<ExecutionSelection | null> | null>(null);
   const preferences = snapshot.executionPreferences;
-  const placements = useMemo(
-    () => threadPlacementOptions(snapshot.environments, snapshot.harnesses),
-    [snapshot.environments, snapshot.harnesses],
+  const execution = useMemo(
+    () => firstMessageExecution(props.home ? "home" : "task", snapshot, chosen),
+    [chosen, props.home, snapshot],
   );
-  const remembered = lastExecutionSelection(preferences);
-  const resolved = composerExecutionSelection({
-    chosen,
-    defaultPlacement: startingPlacement(
-      props.home ? "home" : "task",
-      snapshot,
-      placements.filter((placement) => placement.available),
-    ),
-    placements,
-    remembered,
-  });
-  const displayed = resolved ?? chosen ?? remembered;
+  const placements = execution.placements;
+  const pickerPreferences = useMemo(
+    () => (props.home ? { ...preferences, history: [] } : preferences),
+    [preferences, props.home],
+  );
+  const displayed = execution.selection ?? execution.blocked;
   const disabledReason = settingsDisabledReason({
     canRespond: canRespondToRequests(snapshot),
     kind: "draft",
@@ -1130,12 +1123,12 @@ function SubscribedNewThread(props: {
     () =>
       buildThreadModelPicker({
         placements,
-        preferences,
+        preferences: pickerPreferences,
         query,
         step,
         subject: { kind: "draft", selection: displayed },
       }),
-    [displayed, placements, preferences, query, step],
+    [displayed, pickerPreferences, placements, query, step],
   );
 
   const finishAttempt = useCallback(() => {
@@ -1246,7 +1239,7 @@ function SubscribedNewThread(props: {
         return;
       }
       if (change.optionValues !== undefined && displayed !== null) {
-        const latest = lastExecutionSelection(live.executionPreferences);
+        const latest = props.home ? chosen : lastExecutionSelection(live.executionPreferences);
         if (
           latest !== null &&
           (latest.environmentId !== displayed.environmentId ||
@@ -1261,7 +1254,7 @@ function SubscribedNewThread(props: {
       const selectedRoute = selectionForRoute(
         { model: descriptor, placement },
         displayed,
-        live.executionPreferences.history,
+        props.home ? [] : live.executionPreferences.history,
       );
       const next: ExecutionSelection = {
         ...selectedRoute,
@@ -1278,7 +1271,10 @@ function SubscribedNewThread(props: {
       working.current = true;
       setApplyingKey(change.busyKey);
       setFailure(null);
-      const outcome = props.hostClient.rememberExecution({ selection: validated }).then(
+      const saved = props.home
+        ? Promise.resolve(validated)
+        : props.hostClient.rememberExecution({ selection: validated }).then(() => validated);
+      const outcome = saved.then(
         () => {
           acceptedChoice.current = validated;
           if (mounted.current && change.optionValues === undefined && !change.keepOpen) close();
@@ -1301,7 +1297,16 @@ function SubscribedNewThread(props: {
         if (mounted.current) setApplyingKey(null);
       });
     },
-    [client, disabledReason, displayed, close, props.deploymentId, props.hostClient],
+    [
+      chosen,
+      client,
+      close,
+      disabledReason,
+      displayed,
+      props.deploymentId,
+      props.home,
+      props.hostClient,
+    ],
   );
 
   const changeAccess = useCallback(
@@ -1322,16 +1327,11 @@ function SubscribedNewThread(props: {
         return;
       }
       const livePlacements = threadPlacementOptions(live.environments, live.harnesses);
-      const liveSelection = composerExecutionSelection({
+      const liveSelection = firstMessageExecution(
+        props.home ? "home" : "task",
+        live,
         chosen,
-        defaultPlacement: startingPlacement(
-          props.home ? "home" : "task",
-          live,
-          livePlacements.filter((p) => p.available),
-        ),
-        placements: livePlacements,
-        remembered: lastExecutionSelection(live.executionPreferences),
-      });
+      ).selection;
       const placement =
         liveSelection === null ? null : placementForSelection(livePlacements, liveSelection);
       const reason = accessModeUnavailableReason(
@@ -1387,10 +1387,10 @@ function SubscribedNewThread(props: {
         setFailure(row.action.reason);
         return;
       }
-      const route = routeOnAccount(row.placement, displayed, preferences.history);
+      const route = routeOnAccount(row.placement, displayed, pickerPreferences.history);
       if (route) chooseRoute(route, { busyKey: row.key, keepOpen: true });
     },
-    [chooseRoute, displayed, preferences.history],
+    [chooseRoute, displayed, pickerPreferences.history],
   );
   const changeOption = useCallback(
     (id: string, value: boolean | string): void => {
@@ -1419,9 +1419,9 @@ function SubscribedNewThread(props: {
       onFailure={setFailure}
       footer={
         <View style={styles.startThread}>
-          {/* Each choice above is already recorded as this person's latest,
-              so there is nothing left to apply here — only to go back to the
-              message this choice is for. */}
+          {/* A task choice is recorded as the latest task default; a Chat
+              choice returns through its picker visit. Either way there is
+              nothing left to apply here. */}
           <PrimaryButton label="Done" onPress={close} />
         </View>
       }

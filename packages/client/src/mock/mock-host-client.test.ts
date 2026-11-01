@@ -364,12 +364,39 @@ describe("MockHostClient", () => {
         .map((request) => request.presentation.title),
     ).toContain("Send the launch email");
 
-    const home = await client.createHome(threadInput(client, workspaceId));
+    await client.createThread(threadInput(client, workspaceId));
+    const taskDefault = structuredClone(client.getSnapshot().executionPreferences.history);
+    const homeInput = threadInput(client, workspaceId);
+    const home = await client.createHome({
+      ...homeInput,
+      modelSelection: ModelSelectionSchema.parse({
+        ...homeInput.modelSelection,
+        options: { effort: "high" },
+      }),
+    });
     expect(client.getSnapshot().homeThreadId).toBe(home.id);
     expect(
       client.getSnapshot().workspaces.find((workspace) => workspace.id === workspaceId)
         ?.homeThreadId,
     ).toBe(home.id);
+    expect(client.getSnapshot().executionPreferences.history).toEqual(taskDefault);
+
+    await client.updateThreadExecution(home.id, {
+      harnessInstanceId: home.harnessInstanceId,
+      modelSelection: ModelSelectionSchema.parse({
+        ...home.modelSelection,
+        options: { effort: "low" },
+      }),
+    });
+    expect(client.getSnapshot().executionPreferences.history).toEqual(taskDefault);
+    const chatSelection = client
+      .getSnapshot()
+      .threads.find(({ id }) => id === home.id)?.modelSelection;
+
+    await client.createThread(threadInput(client, workspaceId));
+    expect(client.getSnapshot().threads.find(({ id }) => id === home.id)?.modelSelection).toEqual(
+      chatSelection,
+    );
   });
 
   it("rebinds a withdrawn queued attachment to a resend in the same Thread", async () => {

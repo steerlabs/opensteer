@@ -44,6 +44,7 @@ import {
   FirstMessageInvitation,
   handOverFirstMessage,
 } from "../thread/first-message.js";
+import { beginFirstMessagePickerAttempt } from "../thread/first-message-picker-attempt.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { Notice, SecondaryButton } from "../ui/primitives.js";
 
@@ -119,6 +120,7 @@ export function HomeIntro(props: {
   // The update this first message answers lives with the shared draft, so it
   // survives leaving this screen and edits made from another mounted view.
   const [sending, setSending] = useState(false);
+  const [explicitSelection, setExplicitSelection] = useState<ExecutionSelection | null>(null);
   // The Home the Host answered with when it is not the AI chosen here: another
   // device started it first. Held separately because the answer can arrive
   // before the snapshot carries that Home.
@@ -157,8 +159,8 @@ export function HomeIntro(props: {
 
   const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
   const execution = useMemo(
-    () => firstMessageExecution("home", snapshot),
-    [snapshot.environments, snapshot.executionPreferences, snapshot.harnesses],
+    () => firstMessageExecution("home", snapshot, explicitSelection),
+    [explicitSelection, snapshot],
   );
   const { placements, selection: chosen } = execution;
 
@@ -255,11 +257,14 @@ export function HomeIntro(props: {
       setFailure(null);
       try {
         const live = hostClient.getSnapshot();
-        const { placements: livePlacements, selection: rememberedSelection } =
-          firstMessageExecution("home", live);
+        const { placements: livePlacements, selection: defaultSelection } = firstMessageExecution(
+          "home",
+          live,
+          explicitSelection,
+        );
         const selection =
           requestedSelection === null
-            ? rememberedSelection
+            ? defaultSelection
             : resolveExecutionSelection(requestedSelection, livePlacements);
         if (selection === null) throw new Error("Choose which AI runs Chat before sending.");
         const placement = placementForSelection(livePlacements, selection);
@@ -326,6 +331,7 @@ export function HomeIntro(props: {
     [
       deploymentId,
       drafts,
+      explicitSelection,
       hostClient,
       isCurrentHost,
       introFiles,
@@ -338,13 +344,21 @@ export function HomeIntro(props: {
     ],
   );
 
-  const chooseAI = (pickerAttemptId?: string, conversation?: boolean): void =>
+  const chooseAI = (pickerAttemptId?: string, conversation?: boolean): void => {
+    const attempt = pickerAttemptId === undefined ? beginFirstMessagePickerAttempt() : null;
+    const attemptId = pickerAttemptId ?? attempt?.id;
+    if (attempt !== null) {
+      void attempt.result.then((selection) => {
+        if (selection !== null) setExplicitSelection(selection);
+      });
+    }
     navigation.navigate("NewThread", {
       deploymentId,
       home: true,
       ...(conversation ? { conversation: true } : {}),
-      ...(pickerAttemptId === undefined ? {} : { pickerAttemptId }),
+      ...(attemptId === undefined ? {} : { pickerAttemptId: attemptId }),
     });
+  };
   const empty = text.trim() === "" && held === null && quote === null && staged.items.length === 0;
 
   return (

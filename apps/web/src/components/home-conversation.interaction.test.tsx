@@ -3,7 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
+import { HarnessModelDescriptorSchema } from "@opensteer/protocol";
 import type {
   MessageEntry,
   RunEntry,
@@ -530,6 +531,82 @@ describe("Home conversation", () => {
     );
     expect(node.querySelector('[aria-label="Talk to Opensteer"]')).not.toBeNull();
     expect(node.querySelector(".voice-dock")).not.toBeNull();
+  });
+
+  it("shows the ranked Chat model without reading the task execution history", async () => {
+    stubLayoutApis();
+    const client = new MockHostClient({ latencyMs: 0 });
+    clients.push(client);
+    const base = client.getSnapshot();
+    const home = base.threads.find(({ id }) => id === base.homeThreadId)!;
+    const taskChoice = home;
+    const terra = HarnessModelDescriptorSchema.parse({
+      displayName: "GPT-6.1-Terra",
+      isDefault: false,
+      modelId: "gpt-6.1-terra",
+      options: [
+        {
+          defaultValue: "medium",
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          values: ["low", "medium", "high", "xhigh"].map((value) => ({
+            label: value,
+            value,
+          })),
+        },
+      ],
+      providerId: "openai",
+    });
+    const snapshot = {
+      ...base,
+      environments: base.environments.map((environment) => ({
+        ...environment,
+        harnessCatalogs: environment.harnessCatalogs.map((catalog) =>
+          catalog.harnessInstanceId === home.harnessInstanceId && catalog.status === "ready"
+            ? {
+                ...catalog,
+                models: [terra],
+              }
+            : catalog,
+        ),
+      })),
+      executionPreferences: {
+        ...base.executionPreferences,
+        history: [
+          {
+            environmentId: EnvironmentIdSchema.parse(taskChoice.environmentId),
+            harnessInstanceId: HarnessInstanceIdSchema.parse(taskChoice.harnessInstanceId),
+            modelSelection: taskChoice.modelSelection,
+          },
+        ],
+      },
+      homeThreadId: null,
+      threads: base.threads.filter(({ id }) => id !== home.id),
+      workspaces: base.workspaces.map((workspace) =>
+        workspace.id === base.homeWorkspaceId ? { ...workspace, homeThreadId: null } : workspace,
+      ),
+    };
+    vi.spyOn(client, "getSnapshot").mockReturnValue(snapshot);
+    const remember = vi.spyOn(client, "rememberExecution");
+    const { node, root } = setup();
+    await act(async () =>
+      root.render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={["/"]}>
+            <Routes>
+              <Route element={<AppShell hostClient={client} loadError={null} />}>
+                <Route index element={<HomeRoute />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      ),
+    );
+
+    expect(node.querySelector(".exec-pill")?.textContent).toContain("GPT-6.1-Terra");
+    expect(node.querySelector(".exec-pill")?.textContent).toContain("high");
+    expect(remember).not.toHaveBeenCalled();
   });
 
   it("uses the routed Home's real settings and opens a task as its own conversation", async () => {

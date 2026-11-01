@@ -2,6 +2,7 @@ import { VoiceDock, VoiceMic, useVoiceAvailable } from "../voice/controls.js";
 import {
   accountGettingReady,
   accessModeConflict,
+  chatExecutionSelection,
   placementForSelection,
   composerExecutionSelection,
   defaultThreadPlacement,
@@ -103,9 +104,8 @@ export interface FirstMessageExecution {
 /**
  * What a first message starts on when nothing has been chosen.
  *
- * A task takes the deployment's default. Chat takes an account only when
- * exactly one can run: which one runs — and pays for — the conversation a
- * person lives in is theirs to say, so several are a question.
+ * A task takes the deployment's default. Chat takes the first runnable model
+ * in its product ranking, preserving placement and default-account order on ties.
  */
 export function startingPlacement(
   target: FirstMessageTarget,
@@ -115,23 +115,41 @@ export function startingPlacement(
   if (target === "task") {
     return defaultThreadPlacement(snapshot.environments, snapshot.harnesses) ?? null;
   }
-  return runnable.length === 1 ? (runnable[0] ?? null) : null;
+  const selection = chatExecutionSelection({ chosen: null, existing: null, placements: runnable });
+  return selection === null ? null : placementForSelection(runnable, selection);
 }
 
 export function firstMessageExecution(
   target: FirstMessageTarget,
-  snapshot: Pick<HostSnapshot, "environments" | "executionPreferences" | "harnesses">,
+  snapshot: Pick<
+    HostSnapshot,
+    "environments" | "executionPreferences" | "harnesses" | "homeThreadId" | "threads"
+  >,
+  chosen: ExecutionSelection | null = null,
 ): FirstMessageExecution {
   const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
   const runnable = placements.filter((placement) => placement.available);
-  const remembered = lastExecutionSelection(snapshot.executionPreferences);
-  const selection = composerExecutionSelection({
-    chosen: null,
-    defaultPlacement: startingPlacement(target, snapshot, runnable),
-    placements,
-    remembered,
-  });
-  const blocked = selection === null ? remembered : null;
+  const remembered =
+    target === "task" ? lastExecutionSelection(snapshot.executionPreferences) : null;
+  const home =
+    target === "home" ? snapshot.threads.find(({ id }) => id === snapshot.homeThreadId) : undefined;
+  const existing = home
+    ? {
+        environmentId: home.environmentId,
+        harnessInstanceId: home.harnessInstanceId,
+        modelSelection: home.modelSelection,
+      }
+    : null;
+  const selection =
+    target === "home"
+      ? chatExecutionSelection({ chosen, existing, placements })
+      : composerExecutionSelection({
+          chosen,
+          defaultPlacement: startingPlacement(target, snapshot, runnable),
+          placements,
+          remembered,
+        });
+  const blocked = selection === null ? (chosen ?? existing ?? remembered) : null;
   const placement = selection === null ? null : placementForSelection(placements, selection);
   return {
     accessMode: snapshot.executionPreferences.accessMode,

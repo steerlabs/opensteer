@@ -12,6 +12,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { MockHostClient } from "@opensteer/client/mock";
+import { HarnessModelDescriptorSchema } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Voice's controls animate with Reanimated, which cannot load here; these tests are not about voice.
@@ -21,7 +22,12 @@ vi.mock("../voice/controls.js", () => ({
   useVoiceAvailable: () => false,
 }));
 
-import { ExecutionSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
+import {
+  EnvironmentIdSchema,
+  ExecutionSelectionSchema,
+  HarnessInstanceIdSchema,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 
 import {
   mobile,
@@ -50,6 +56,54 @@ describe("Expo engine/account/model journeys", () => {
   let root: Root | undefined;
   let snapshot: HostSnapshot;
   const listeners = new Set<() => void>();
+
+  it("uses the ranked Chat model while tasks keep their remembered default", () => {
+    const home = base.threads.find(({ id }) => id === base.homeThreadId)!;
+    const taskChoice = {
+      environmentId: EnvironmentIdSchema.parse(cursor.environmentId),
+      harnessInstanceId: HarnessInstanceIdSchema.parse(cursor.harnessInstanceId),
+      modelSelection: cursor.modelSelection,
+    };
+    const terra = HarnessModelDescriptorSchema.parse({
+      displayName: "GPT-6.1-Terra",
+      isDefault: false,
+      modelId: "gpt-6.1-terra",
+      options: [
+        {
+          defaultValue: "medium",
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          values: ["low", "medium", "high"].map((value) => ({ label: value, value })),
+        },
+      ],
+      providerId: "openai",
+    });
+    const ranked: HostSnapshot = {
+      ...base,
+      environments: base.environments.map((environment) => ({
+        ...environment,
+        harnessCatalogs: environment.harnessCatalogs.map((catalog) =>
+          catalog.harnessInstanceId === codex.harnessInstanceId && catalog.status === "ready"
+            ? {
+                ...catalog,
+                models: [terra],
+              }
+            : catalog,
+        ),
+      })),
+      executionPreferences: { ...base.executionPreferences, history: [taskChoice] },
+      homeThreadId: null,
+      threads: base.threads.filter(({ id }) => id !== home.id),
+    };
+
+    expect(firstMessageExecution("home", ranked).selection).toMatchObject({
+      harnessInstanceId: codex.harnessInstanceId,
+      modelSelection: { modelId: "gpt-6.1-terra", options: { effort: "high" } },
+    });
+    expect(firstMessageExecution("task", ranked).selection).toEqual(taskChoice);
+  });
+
   const access = vi.fn(async (threadId: string, mode: ThreadAccessMode) => {
     const updated = {
       ...snapshot.threads.find((thread) => thread.id === threadId)!,
@@ -69,7 +123,12 @@ describe("Expo engine/account/model journeys", () => {
     snapshot = next;
     for (const listener of listeners) listener();
   }
-  async function mount(draft = false, auto = false, history: readonly ExecutionSelection[] = []) {
+  async function mount(
+    draft = false,
+    auto = false,
+    history: readonly ExecutionSelection[] = [],
+    home = false,
+  ) {
     snapshot = {
       ...base,
       connection: "connected",
@@ -110,7 +169,7 @@ describe("Expo engine/account/model journeys", () => {
     await act(async () =>
       root!.render(
         draft ? (
-          <NewThreadScreen route={{ params: { deploymentId: "test-deployment" } }} />
+          <NewThreadScreen route={{ params: { deploymentId: "test-deployment", home } }} />
         ) : (
           <ThreadSettingsScreen
             route={{ params: { deploymentId: "test-deployment", threadId: original.id } }}
@@ -288,6 +347,14 @@ describe("Expo engine/account/model journeys", () => {
     expect(remember).toHaveBeenCalledExactlyOnceWith({
       selection: expect.objectContaining({ harnessInstanceId: cursor.harnessInstanceId }),
     });
+    expect(navigation.goBack).toHaveBeenCalled();
+  });
+
+  it("keeps a Chat choice out of the task execution history", async () => {
+    await mount(true, false, [], true);
+    await press("Cursor");
+    await press(cursor.models[0]!.displayName);
+    expect(remember).not.toHaveBeenCalled();
     expect(navigation.goBack).toHaveBeenCalled();
   });
 
