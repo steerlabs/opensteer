@@ -114,6 +114,10 @@ export interface AcpProtocolClient {
 }
 
 const SetModelResponseSchema = z.looseObject({});
+const ExtensionSessionUpdateSchema = z.looseObject({
+  sessionId: z.string(),
+  update: z.unknown(),
+});
 const SessionConfigSelectEntrySchema = z.looseObject({
   description: z.string().nullish(),
   name: z.string(),
@@ -180,6 +184,12 @@ function createV1Client(
         ),
       );
       return { action: "accept", content };
+    })
+    .onNotification("_x.ai/session/update", ExtensionSessionUpdateSchema, ({ params }) => {
+      handlers.update(params.sessionId, params.update);
+    })
+    .onNotification("x.ai/session_notification", ExtensionSessionUpdateSchema, ({ params }) => {
+      handlers.update(params.sessionId, params.update);
     });
   const connection = app.connect(
     acpV1.ndJsonStream(

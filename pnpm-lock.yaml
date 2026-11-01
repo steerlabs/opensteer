@@ -985,6 +985,9 @@ importers:
       '@opensteer/harness-cursor':
         specifier: workspace:*
         version: link:../../packages/harness-cursor
+      '@opensteer/harness-grok':
+        specifier: workspace:*
+        version: link:../../packages/harness-grok
       '@opensteer/harness-opencode':
         specifier: workspace:*
         version: link:../../packages/harness-opencode
@@ -1798,6 +1801,31 @@ importers:
       '@opensteer/integration-core':
         specifier: workspace:*
         version: link:../integration-core
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
+  packages/harness-grok:
+    dependencies:
+      '@opensteer/core':
+        specifier: workspace:*
+        version: link:../core
+      '@opensteer/harness':
+        specifier: workspace:*
+        version: link:../harness
+      '@opensteer/harness-acp':
+        specifier: workspace:*
+        version: link:../harness-acp
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared

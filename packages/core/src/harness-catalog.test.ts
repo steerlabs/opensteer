@@ -20,15 +20,15 @@ describe("harness catalog", () => {
     for (const line of imports) expect(line).toMatch(/^\s*import type\b/u);
   });
 
-  it("separates the engines whose bytes a distribution ships from the one it does not", () => {
-    // Cursor's CLI has no established redistribution grant, so the person
-    // installs it: nothing here stages, version-asserts or names its bytes.
+  it("separates the engines whose bytes a distribution ships from those it does not", () => {
+    // These CLIs have no established redistribution grant, so the person
+    // installs them: nothing here stages, version-asserts or names their bytes.
     expect(shippedHarnessKinds).toEqual(["codex", "opencode", "pi"]);
     expect(
       harnessCatalog
         .filter((entry) => entry.runtime.shape === "installed")
         .map((entry) => entry.kind),
-    ).toEqual(["claude", "cursor"]);
+    ).toEqual(["claude", "grok", "cursor"]);
     expect(shippedHarnessKindRecord((kind) => kind.length)).toEqual({
       codex: 5,
       opencode: 8,
@@ -56,6 +56,12 @@ describe("harness catalog", () => {
       command: "agent",
       installUrl: "https://cursor.com/install",
       minimumVersion: "2026.09.10",
+      shape: "installed",
+    });
+    expect(harnessCatalogEntry("grok")?.runtime).toEqual({
+      command: "grok",
+      installUrl: "https://x.ai/cli",
+      minimumVersion: "1.0.70",
       shape: "installed",
     });
   });

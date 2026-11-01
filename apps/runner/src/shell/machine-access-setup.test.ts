@@ -113,6 +113,15 @@ describe("machine access eligibility", () => {
       ["linux", "codex", "full-access", true],
       ["win32", "claude", "full-access", false],
       ["win32", "codex", "full-access", false],
+      // Grok's command sandbox has not been qualified against the relay, so
+      // every cell remains denied until a real measurement proves otherwise.
+      ["darwin", "grok", "approval-required", false],
+      ["darwin", "grok", "auto", false],
+      ["darwin", "grok", "full-access", false],
+      ["linux", "grok", "approval-required", false],
+      ["linux", "grok", "auto", false],
+      ["linux", "grok", "full-access", false],
+      ["win32", "grok", "full-access", false],
       // OpenCode, Pi and Cursor have no command sandbox of their own and run
       // only on native-user Runners, so a model-run command reaches the relay
       // in every mode. The darwin rows were measured 2026-09-17; the linux rows

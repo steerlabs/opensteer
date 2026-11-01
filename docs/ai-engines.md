@@ -62,6 +62,8 @@ Workspace skills shadow integration skills; `opensteer-` belongs to bundled skil
 
 Deliver skill discovery metadata rather than every body. Pi disables ambient discovery in favor of the resolved plan. On Codex resume, send current Workspace and Opensteer instructions through keyed turn context: changed startup instructions do not refresh an existing conversation. An absent Workspace file must clear prior instructions. See `apps/runner/agent-skills/skills`, `packages/harness/src/skill-catalog.ts` and each driver's protocol tests. Transport success alone does not prove model behavior.
 
+ACP engines do not share one resume or cancellation contract. Each driver declares whether the native protocol loads or resumes, whether replayed updates are suppressed, and whether cancellation kills the process or waits for the prompt RPC; those choices are not inferred from an ACP protocol version.
+
 ## Thread names and symbols
 
 Naming uses the selected account in a separate, contained process with no tools, ambient instructions, hooks, plugins or persistent chat history. Deny unexpected interaction requests. Its process must exit before containment teardown or engine reuse. Preserve the person's title/symbol independently; only provisional fields may change. Symbol negotiation must leave old title-only reports readable. See `packages/harness/src/thread-title.ts` and the drivers' title implementations.

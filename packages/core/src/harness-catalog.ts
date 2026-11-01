@@ -150,6 +150,19 @@ export const harnessCatalog = [
     machineAccess: { platforms: ["darwin", "linux"], accessModes: "all" },
   },
   {
+    kind: "grok",
+    label: "Grok",
+    brandProviderId: "xai",
+    runtime: {
+      command: "grok",
+      installUrl: "https://x.ai/cli",
+      minimumVersion: "1.0.70",
+      shape: "installed",
+    },
+    userEnvironmentVariables: ["GROK_HOME"],
+    machineAccess: { platforms: [], accessModes: [] },
+  },
+  {
     kind: "opencode",
     label: "OpenCode",
     brandProviderId: "opencode",

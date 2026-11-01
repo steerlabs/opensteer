@@ -15,6 +15,7 @@
     { "path": "./packages/workspace" },
     { "path": "./packages/harness" },
     { "path": "./packages/harness-acp" },
+    { "path": "./packages/harness-grok" },
     { "path": "./packages/harness-codex" },
     { "path": "./packages/harness-claude" },
     { "path": "./packages/access" },

@@ -37,6 +37,19 @@ afterEach(async () => {
 });
 
 describe("ACP lifecycle", () => {
+  it("stops reported background children before terminal completion", async () => {
+    const fixture = await setup("background");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("start child"));
+    await session.stop();
+    await observed.done;
+    const types = observed.events.map((event) => event.type);
+    expect(types).toContain("node.started");
+    expect(types.indexOf("node.completed")).toBeLessThan(types.indexOf("run.completed"));
+    await fixture.adapter.close();
+  });
+
   it("suppresses load replay and publishes only the live prompt", async () => {
     const fixture = await setup("replay");
     const session = await fixture.adapter.resumeSession("native-session", fixture.context);
@@ -161,7 +174,7 @@ describe("ACP boundaries", () => {
   });
 });
 
-type Scenario = "permission" | "prompt-error" | "replay";
+type Scenario = "background" | "permission" | "prompt-error" | "replay";
 
 async function setup(scenario: Scenario) {
   const directory = await temporaryDirectory();
@@ -195,6 +208,14 @@ async function setup(scenario: Scenario) {
           label: option.label,
           optionId: option.id,
         })),
+      normalizeUpdate: (update) =>
+        scenario === "background" &&
+        typeof update === "object" &&
+        update !== null &&
+        "sessionUpdate" in update &&
+        update.sessionUpdate === "child-started"
+          ? [{ key: "child", kind: "subagent", state: "started" }]
+          : undefined,
     },
     launch: ({ context }) => ({
       args: ["-e", "process.stdin.resume()"],
@@ -320,6 +341,10 @@ function fakeClient(
     }),
     newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
     prompt: async () => {
+      if (scenario === "background") {
+        handlers.update("new-session", { sessionUpdate: "child-started" });
+        return { stopReason: "end_turn" };
+      }
       if (scenario === "prompt-error") {
         handlers.update("new-session", {
           content: { text: "streamed", type: "text" },

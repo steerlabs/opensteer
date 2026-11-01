@@ -141,6 +141,8 @@ class AcpHarnessSession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #closed = false;
   #opening = true;
+  #processEnded = false;
+  #expectedProcessExit = false;
   #providerSessionReference: string | undefined;
   #replaying = false;
   #stopPromise: Promise<void> | undefined;
@@ -259,6 +261,7 @@ class AcpHarnessSession implements HarnessSession {
         this.#lifetime.signal,
       );
       if (result.usage) active.usage = result.usage;
+      await this.#stopBackgroundChildren(active);
       this.#flushTurn(active);
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
       await active.completion.promise;
@@ -569,6 +572,21 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
+  async #stopBackgroundChildren(active: ActiveTurn): Promise<void> {
+    if (
+      active.nodes.liveKeys().length === 0 ||
+      this.#options.policy.cancel.behavior !== "cancel-and-kill"
+    ) {
+      return;
+    }
+    await this.#client
+      .cancel(this.providerSessionReference, this.#options.policy.cancel.metadata)
+      .catch(() => undefined);
+    this.#expectedProcessExit = true;
+    await this.#process.terminate().catch(() => undefined);
+    await this.#process.exited.catch(() => undefined);
+  }
+
   async #permission(request: AcpPermissionRequest, signal: AbortSignal): Promise<string | null> {
     const active = this.#active;
     if (!active || active.terminal || active.interruptRequested) return null;
@@ -651,7 +669,7 @@ class AcpHarnessSession implements HarnessSession {
     if (!this.#publisher.claimTerminal(active)) return;
     active.nodes.endAll("failed");
     this.#cancelPending("run-ended");
-    this.#publish(runFailedEvent(error));
+    this.#publish(runFailedEvent(acpFailure(error)));
     active.completion.resolve();
   }
 
@@ -667,6 +685,8 @@ class AcpHarnessSession implements HarnessSession {
     readonly code: number | null;
     readonly signal: NodeJS.Signals | null;
   }): void {
+    this.#processEnded = true;
+    if (this.#expectedProcessExit) return;
     if (this.#closed || this.#opening) return;
     const error = new OpensteerError({
       code: "harness_error",
@@ -731,7 +751,23 @@ class AcpHarnessSession implements HarnessSession {
       throw new OpensteerError({ code: "harness_error", message: "ACP session is closed" });
     }
     if (this.#publisher.unusable) throw this.#publisher.unusable;
+    if (this.#processEnded) {
+      throw new OpensteerError({ code: "harness_error", message: "ACP process has ended" });
+    }
   }
+}
+
+function acpFailure(error: OpensteerError): {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+} {
+  const nativeCode = error.details?.acpFailureCode;
+  return {
+    code: typeof nativeCode === "string" ? nativeCode : error.code,
+    message: error.message,
+    retryable: error.retryable,
+  };
 }
 
 export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdate[] {

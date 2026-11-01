@@ -14,6 +14,7 @@ export * from "./model-servers.js";
 export * from "./process-supervisor.js";
 export * from "./provider-secret-file.js";
 export * from "./registry.js";
+export * from "./reasoning-effort.js";
 export * from "./retired-config.js";
 export * from "./runtime-artifact.js";
 export * from "./secret-authentication.js";
