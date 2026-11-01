@@ -1,16 +1,12 @@
 import { Popover } from "../popover.js";
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import {
-  threadInDirectory,
-  threadMark,
-  markColorPaint,
-  type PlaceOccupant,
-} from "@opensteer/client/host";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { threadInDirectory, threadMark, type PlaceOccupant } from "@opensteer/client/host";
 import {
   TaskMark,
   TaskBadge,
   TaskState,
   ChatOrb,
+  WorkingRing,
   taskStateWords,
   type TaskMarkSize,
 } from "./task-mark.js";
@@ -182,24 +178,18 @@ function OccupantMark({
   return (
     <button
       aria-label={`Open ${name} at ${placeTitle}${words ? ` — ${words}` : ""}`}
-      className={`occupant-mark${acting || lingering ? " is-acting" : ""}`}
-      style={
-        {
-          "--acting-hue": home
-            ? "var(--ember)"
-            : mark.color === null || mark.icon === null
-              ? "var(--muted)"
-              : markColorPaint[mark.color].glyph,
-        } as CSSProperties
-      }
+      className="occupant-mark"
       data-thread-id={threadId}
       onClick={() => onOpen(threadId)}
       ref={ref}
       title={name}
       type="button"
     >
-      {home ? <ChatOrb size={size} /> : <TaskMark size={size} mark={mark} />}
-      <TaskBadge state={state} />
+      <span className="occupant-mark__mark">
+        {home ? <ChatOrb size={size} /> : <TaskMark size={size} mark={mark} />}
+        {acting || lingering ? <WorkingRing mark={home ? null : mark} settling={!acting} /> : null}
+        <TaskBadge state={state} />
+      </span>
     </button>
   );
 }

@@ -298,6 +298,7 @@
   pointer-events: none;
 }
 .task-state {
+  position: relative;
   display: inline-grid;
   flex: none;
   place-items: center;
@@ -305,10 +306,8 @@
   height: 16px;
   color: var(--muted);
 }
-.task-state__spinner {
-  width: 14px;
-  height: 14px;
-  animation: spin 1s linear infinite;
+.task-state > .working-ring {
+  inset: 1px;
 }
 .task-state__pause {
   width: 12px;
@@ -346,10 +345,6 @@
   border-radius: 50%;
   box-shadow: 0 0 0 1.5px var(--ring-bg, var(--bg));
 }
-.occupant-mark > .task-badge {
-  right: 1px;
-  bottom: 1px;
-}
 .task-badge .task-state {
   width: 9px;
   height: 9px;
@@ -363,8 +358,67 @@
   width: 9px;
   height: 9px;
 }
+/* Work in progress, everywhere it shows: a slow arc with a fading tail that
+   traces its mark's own outline, so it reads as that mark at work and never
+   as a control. The arc travels and the outline stays put, so a tile's ring
+   keeps its corners. Its steady pace lives for minutes beside other work. */
+@property --working-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0turn;
+}
+.working-ring {
+  position: absolute;
+  inset: -3.5px;
+  padding: 1.5px;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from var(--working-angle),
+      transparent 35%,
+      color-mix(in srgb, var(--working-hue) 25%, transparent) 60%,
+      var(--working-hue)
+    ),
+    var(--line);
+  mask:
+    linear-gradient(var(--mask-ink) 0 0) content-box,
+    linear-gradient(var(--mask-ink) 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: working-turn 1.8s linear infinite;
+  --working-hue: var(--ember);
+}
+/* Around a task's tile: the tile's corner, widened by the ring's offset. */
+.task-mark--16 + .working-ring {
+  border-radius: 8.5px;
+}
+.task-mark--20 + .working-ring {
+  border-radius: 9.5px;
+}
+.task-mark--22 + .working-ring {
+  border-radius: 10.5px;
+}
+@keyframes working-turn {
+  to {
+    --working-angle: 1turn;
+  }
+}
+/* The work stopped: the arc closes and fades over the mark's linger. */
+.working-ring[data-settling] {
+  background: var(--working-hue);
+  animation: working-settle 2s ease-out forwards;
+}
+@keyframes working-settle {
+  from {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .task-state__spinner {
+  .working-ring:not([data-settling]) {
+    background: color-mix(in srgb, var(--working-hue) 70%, transparent);
     animation: none;
   }
 }
@@ -385,7 +439,13 @@
   height: var(--control-height-sm);
   border-radius: var(--radius-xs);
   --ring-bg: var(--bg);
-  --acting-hue: var(--ember);
+}
+
+/* The ring and badge belong to the mark, whatever size the button is. */
+.occupant-mark__mark {
+  position: relative;
+  display: grid;
+  place-items: center;
 }
 
 .place .occupant-mark,
@@ -1352,22 +1412,6 @@ button.side-needs:hover {
 .conv-header__mark > .task-badge {
   right: -2px;
   bottom: -1px;
-}
-
-/* A task at work: a slow arc around its mark instead of a word beside it. */
-.conv-header__ring {
-  position: absolute;
-  inset: -4px;
-  width: 28px;
-  height: 28px;
-  animation: spin 1.4s linear infinite;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .conv-header__ring {
-    animation: none;
-  }
 }
 
 .conv-header__text {
@@ -3186,34 +3230,6 @@ html[data-tab-sorting] * {
   transform: translate(-50%, -50%);
   -webkit-backdrop-filter: var(--blur-glass);
   backdrop-filter: var(--blur-glass);
-}
-
-.occupant-mark {
-  position: relative;
-}
-.occupant-mark.is-acting::after {
-  position: absolute;
-  inset: -3px;
-  border: 1.5px solid var(--acting-hue);
-  border-radius: calc(var(--radius-xs) + 3px);
-  content: "";
-  pointer-events: none;
-  animation: occupant-acting 1.6s ease-in-out infinite;
-}
-@keyframes occupant-acting {
-  0%,
-  100% {
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .occupant-mark.is-acting::after {
-    animation: none;
-    opacity: 0.8;
-  }
 }
 
 .native-app-cursors {

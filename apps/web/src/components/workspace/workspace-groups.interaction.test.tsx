@@ -679,7 +679,7 @@ describe("task marks", () => {
     expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("plane");
     expect(element(".conv-header").textContent).toContain("Travel");
     // Working shows on the task's mark and is spoken with its name, never as a word beside it.
-    expect(element(".conv-header__mark [data-state]").getAttribute("data-state")).toBe("working");
+    expect(element(".conv-header__mark > .working-ring").getAttribute("aria-hidden")).toBe("true");
     expect(element(".conv-header__menu").getAttribute("aria-label")).toContain("working");
     expect(element(".conv-header").textContent).not.toContain("Working");
     expect(element(".task-mark").getAttribute("aria-hidden")).toBe("true");
@@ -705,6 +705,12 @@ describe("task marks", () => {
     expect(occupants().every((el) => el.querySelector('.task-mark[data-icon="hotel"]'))).toBe(true);
     expect(occupants()[0]?.getAttribute("aria-label")).toContain("working");
     expect(occupants()[0]?.querySelector(".task-badge")).toBeNull();
+    // The ring hugs the mark, in the task's hue, whatever size its button is.
+    expect(
+      occupants()[0]
+        ?.querySelector<HTMLElement>(".occupant-mark__mark > .working-ring")
+        ?.style.getPropertyValue("--working-hue"),
+    ).toBeTruthy();
   });
   it("makes overflow occupants keyboard reachable by task name", async () => {
     await mount("/");
