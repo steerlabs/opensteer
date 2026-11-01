@@ -90,7 +90,7 @@ install Playwright's pinned Chromium first. It reuses the mobile network proxy's
 database clones, browser and proxies; the caller still owns the selected emulator.
 Canvas output and relay-to-canvas age do not measure a physical viewer's screen latency.
 For API 36 idle traffic, set `OPENSTEER_PHONE_BENCH_IDLE_MS=60000` to include periodic
-IDRs from the projection privacy timer; compare payload and wire rates separately.
+encoder IDRs while the projection keeps feeding frames. Compare payload and wire rates separately.
 The ADB swipe-to-next-frame metric is workload timing, not remote input effect latency.
 
 For manual acceptance/release evidence, set `OPENSTEER_AGENT_PHONE_E2E_ARTIFACT_DIR` outside
