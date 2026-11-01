@@ -340,7 +340,8 @@ export class RunnerRuntime {
   readonly #driverInstallationFacts = new Map<HarnessId, HarnessInstallation>();
   readonly #driverInstallationInspections = new Map<HarnessId, Promise<void>>();
   readonly #driverInstallationOperations = new Map<HarnessId, HarnessInstallation>();
-  readonly #pendingDriverInstallationAdvertisements = new Set<HarnessId>();
+  readonly #pendingDriverInstallationAdvertisements = new Map<HarnessId, HarnessInstallation>();
+  readonly #pendingHarnessCatalogInvalidations = new Set<HarnessInstanceId>();
   readonly #installationQueues = new Map<string, Promise<void>>();
   readonly #installationLifetime = new AbortController();
   readonly #installationTasks = new Set<Promise<void>>();
@@ -595,11 +596,44 @@ export class RunnerRuntime {
     installation: HarnessInstallation,
     fallback?: RunnerMessageSink,
   ): Promise<void> {
-    this.#pendingDriverInstallationAdvertisements.add(driverKind);
+    this.#pendingDriverInstallationAdvertisements.set(driverKind, installation);
     const connection = this.#connection ?? fallback;
     if (!connection) return;
     await connection.send({ driverKind, installation, type: "runner.harness-installation" });
-    this.#pendingDriverInstallationAdvertisements.delete(driverKind);
+    if (this.#pendingDriverInstallationAdvertisements.get(driverKind) === installation) {
+      this.#pendingDriverInstallationAdvertisements.delete(driverKind);
+    }
+  }
+
+  async #publishDriverInstallationOutcome(
+    driverKind: HarnessId,
+    outcome: HarnessInstallation,
+    fallback?: RunnerMessageSink,
+  ): Promise<void> {
+    try {
+      await this.#publishDriverInstallation(driverKind, outcome, fallback);
+    } catch {
+      return;
+    }
+    if (this.#driverInstallationOperations.get(driverKind) !== outcome) return;
+    this.#driverInstallationOperations.delete(driverKind);
+    if (outcome.update !== "succeeded") return;
+    const current = this.#driverInstallationFacts.get(driverKind);
+    if (current)
+      await this.#publishDriverInstallation(driverKind, current, fallback).catch(() => undefined);
+  }
+
+  async #publishPendingHarnessCatalogInvalidations(fallback?: RunnerMessageSink): Promise<void> {
+    const connection = this.#connection ?? fallback;
+    if (!connection) return;
+    for (const harnessInstanceId of this.#pendingHarnessCatalogInvalidations) {
+      try {
+        await connection.send({ harnessInstanceId, type: "runner.harness-catalog-invalidated" });
+        this.#pendingHarnessCatalogInvalidations.delete(harnessInstanceId);
+      } catch {
+        // The next connection replays every invalidation not confirmed sent.
+      }
+    }
   }
 
   #canDeliverMessageAttachments(driverKind: HarnessId): boolean {
@@ -1193,25 +1227,27 @@ export class RunnerRuntime {
         }
       }
       for (const [harnessInstanceId, authentication] of this.#harnessAuthentications) {
-        if (
-          authentication.expiresAt <= Date.now() ||
-          (authentication.state.status !== "not-started" &&
-            authentication.state.status !== "pending")
-        )
-          continue;
         const definition = this.#harnesses.state(
           harnessInstanceId as HarnessInstanceId,
         )?.definition;
         if (
-          definition?.driverKind === driverKind &&
-          this.#harnesses.installationAffects(driverKind, definition.stateKind)
-        ) {
+          definition?.driverKind !== driverKind ||
+          !this.#harnesses.installationAffects(driverKind, definition.stateKind)
+        )
+          continue;
+        if (authentication.expiresAt <= Date.now()) {
+          await this.#discardAuthentication(harnessInstanceId, true);
+          continue;
+        }
+        if (
+          authentication.state.status === "not-started" ||
+          authentication.state.status === "pending"
+        )
           return reject(
             "conflict",
             "This AI engine is signing in. Finish or cancel sign-in before updating.",
             true,
           );
-        }
       }
       const resolved = await this.#harnesses.driverInstallation(driverKind).catch(() => undefined);
       if (!resolved) return reject("not_found", "This installed AI engine is not available", false);
@@ -1225,7 +1261,13 @@ export class RunnerRuntime {
       this.#driverInstallationFacts.set(driverKind, resolved.descriptor);
       const updating: HarnessInstallation = { ...resolved.descriptor, update: "updating" };
       this.#driverInstallationOperations.set(driverKind, updating);
-      await this.#publishDriverInstallation(driverKind, updating, sink);
+      try {
+        await this.#publishDriverInstallation(driverKind, updating, sink);
+      } catch (error) {
+        this.#driverInstallationOperations.delete(driverKind);
+        this.#pendingDriverInstallationAdvertisements.set(driverKind, resolved.descriptor);
+        throw error;
+      }
       const task = this.#performHarnessUpdate(driverKind, resolved.plan, resolved.descriptor, sink);
       this.#installationTasks.add(task);
       void task.finally(() => this.#installationTasks.delete(task));
@@ -1242,6 +1284,7 @@ export class RunnerRuntime {
     previous: HarnessInstallation,
     sink: RunnerMessageSink,
   ): Promise<void> {
+    let outcome: HarnessInstallation;
     try {
       await this.#warm.evict((engine) => {
         const definition = this.#harnesses.state(engine.harnessInstanceId)?.definition;
@@ -1275,6 +1318,9 @@ export class RunnerRuntime {
       );
       await operation;
       const affected = await this.#harnesses.invalidateDriver(driverKind);
+      for (const harnessInstanceId of affected) {
+        this.#pendingHarnessCatalogInvalidations.add(harnessInstanceId);
+      }
       const refreshed = await this.#harnesses.driverInstallation(driverKind);
       const succeeded: HarnessInstallation = {
         ...(refreshed?.descriptor ?? previous),
@@ -1283,26 +1329,19 @@ export class RunnerRuntime {
       };
       const current = refreshed?.descriptor ?? previous;
       this.#driverInstallationFacts.set(driverKind, current);
-      this.#driverInstallationOperations.set(driverKind, succeeded);
-      await this.#publishDriverInstallation(driverKind, succeeded, sink);
-      this.#driverInstallationOperations.delete(driverKind);
-      await this.#publishDriverInstallation(driverKind, current, sink);
-      for (const harnessInstanceId of affected) {
-        await (this.#connection ?? sink).send({
-          harnessInstanceId,
-          type: "runner.harness-catalog-invalidated",
-        });
-      }
+      outcome = succeeded;
     } catch (error) {
-      const failed: HarnessInstallation = {
+      outcome = {
         ...previous,
         detail: safeMessage(error, safeMessageOptions).slice(0, 2_000),
         update: "failed",
       };
-      this.#driverInstallationOperations.set(driverKind, failed);
-      await this.#publishDriverInstallation(driverKind, failed, sink).catch(() => undefined);
-      this.#driverInstallationOperations.delete(driverKind);
     } finally {
+      this.#driverInstallationOperations.set(driverKind, outcome!);
+      await Promise.allSettled([
+        this.#publishDriverInstallationOutcome(driverKind, outcome!, sink),
+        this.#publishPendingHarnessCatalogInvalidations(sink),
+      ]);
       this.#driverMaintenance.delete(driverKind);
     }
   }
@@ -1449,12 +1488,18 @@ export class RunnerRuntime {
     }
     if (revoked.length > 0) this.revokeRuns(revoked);
     await Promise.all(resumed);
-    for (const driverKind of this.#pendingDriverInstallationAdvertisements) {
-      const installation =
-        this.#driverInstallationOperations.get(driverKind) ??
-        this.#driverInstallationFacts.get(driverKind);
-      if (installation) await this.#publishDriverInstallation(driverKind, installation, sink);
+    for (const [driverKind, installation] of this.#pendingDriverInstallationAdvertisements) {
+      const operation = this.#driverInstallationOperations.get(driverKind);
+      if (
+        operation === installation &&
+        (installation.update === "failed" || installation.update === "succeeded")
+      ) {
+        await this.#publishDriverInstallationOutcome(driverKind, installation, sink);
+      } else {
+        await this.#publishDriverInstallation(driverKind, installation, sink);
+      }
     }
+    await this.#publishPendingHarnessCatalogInvalidations(sink);
   }
 
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
