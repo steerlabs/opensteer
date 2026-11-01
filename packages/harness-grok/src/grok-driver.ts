@@ -597,8 +597,9 @@ export function rewriteGrokSkillInvocation(
 
 export function grokAcpError(
   error: unknown,
-  context: { readonly stderrTail: string },
-): OpensteerError {
+  context: { readonly operation?: string; readonly stderrTail: string },
+): OpensteerError | undefined {
+  if (context.operation === "prompt-result") return undefined;
   const source = `${error instanceof Error ? error.message : ""}\n${context.stderrTail}`;
   const message = sanitizeGrokError(error);
   if (/rate[ _-]?limit|usage[ _-]?limit|quota|capacity.*exhaust/iu.test(source)) {

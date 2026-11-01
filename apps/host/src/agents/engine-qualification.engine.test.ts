@@ -1052,7 +1052,7 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
     } catch (error) {
       const blocked =
         error instanceof Error &&
-        /authentication|required.*sign|sign in|quota|usage.limit|not installed|ENOENT|credentials|not configured|not signed|not ready/iu.test(
+        /authentication|required.*sign|sign in|quota|harness[_ -]?usage[_ -]?limit|usage[ _-]?limit|not installed|ENOENT|credentials|not configured|not signed|not ready/iu.test(
           error.message,
         );
       await writeFile(
