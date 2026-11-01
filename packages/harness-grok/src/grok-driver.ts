@@ -1,4 +1,3 @@
-import { isRecord } from "@opensteer/shared/isRecord";
 import {
   HarnessIdSchema,
   OpensteerError,
@@ -55,6 +54,7 @@ import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/pro
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import { isRecord } from "@opensteer/shared/isRecord";
 import { GrokHarnessConfigSchema, type GrokHarnessConfig } from "./config.js";
 import {
   completeGrokModelCatalog,

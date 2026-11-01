@@ -1,4 +1,3 @@
-import { isRecord } from "@opensteer/shared/isRecord";
 import {
   OpensteerError,
   createId,
@@ -32,6 +31,7 @@ import {
   type HarnessSessionContext,
   type SupervisedProcess,
 } from "@opensteer/harness";
+import { isRecord } from "@opensteer/shared/isRecord";
 import type {
   AcpElicitationRequest,
   AcpMcpServer,

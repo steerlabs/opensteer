@@ -1,4 +1,3 @@
-import { isRecord } from "@opensteer/shared/isRecord";
 import * as acpV1 from "@agentclientprotocol/sdk/unstable";
 import * as acpV2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import { OpensteerError } from "@opensteer/core";
@@ -9,6 +8,7 @@ import { isAbsolute, relative } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { z } from "zod";
 import type { SupervisedProcess } from "@opensteer/harness";
+import { isRecord } from "@opensteer/shared/isRecord";
 import type {
   AcpClientCapabilities,
   AcpClientInfo,
