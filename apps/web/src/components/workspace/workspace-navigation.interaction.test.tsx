@@ -429,6 +429,9 @@ describe("the conversation survives layout changes", () => {
     await click(expand!);
     expect(document.querySelector(".place")).toBeNull();
     expect(element(".conv-header--area .conv-header__name").textContent).toBe("Tasks");
+    // The menu's button went with the dock; focus carries on in the page.
+    await settle();
+    expect(element(".workspace__conversation").contains(document.activeElement)).toBe(true);
   });
 });
 

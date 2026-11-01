@@ -272,6 +272,7 @@ export function ConversationHeader({
                   expand: () => {
                     setMenuOpen(false);
                     nav.hideComputer();
+                    focusAfterExpand();
                   },
                   find: () => {
                     setMenuOpen(false);
@@ -548,7 +549,7 @@ export function AreaHeader({
         {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
         {mark ? <span className="conv-header__mark">{mark}</span> : null}
         <div className="conv-header__text">
-          <h1 className="conv-header__title">
+          <h1 className="conv-header__title" tabIndex={-1}>
             {docked ? (
               <button
                 aria-expanded={menuOpen}
@@ -592,12 +593,27 @@ export function AreaHeader({
             expand: () => {
               setMenuOpen(false);
               nav.hideComputer();
+              focusAfterExpand();
             },
             find: null,
           }}
         />
       ) : null}
     </header>
+  );
+}
+
+/**
+ * Expanding can take away the menu's own button (Chat and a page name it only
+ * while docked), so focus goes where the reader carries on: the composer, or
+ * else the page's name.
+ */
+function focusAfterExpand() {
+  requestAnimationFrame(() =>
+    (
+      document.querySelector<HTMLElement>("[data-composer-input]") ??
+      document.querySelector<HTMLElement>(".workspace__conversation .conv-header__title")
+    )?.focus(),
   );
 }
 
