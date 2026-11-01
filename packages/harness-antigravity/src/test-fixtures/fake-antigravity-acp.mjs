@@ -38,6 +38,32 @@ function prompt(id) {
     send({ id, jsonrpc: "2.0", result: { stopReason: "end_turn" } });
   };
 
+  if (scenario.startsWith("exit-")) {
+    const message = "Your prepayment credits are depleted.";
+    if (scenario !== "exit-partial") {
+      process.stderr.write(
+        `${failureTranscript(
+          402,
+          message,
+          "RESOURCE_EXHAUSTED",
+          scenario === "exit-foreign-echo" ? foreignSessionId : sessionId,
+        )}\n`,
+      );
+    }
+    const reply =
+      scenario === "exit-partial" || scenario === "exit-distinct-reply" ? "Partial reply" : message;
+    emitChunk(reply.slice(0, 5));
+    emitChunk(reply.slice(5));
+    process.stdout.write("", () => process.exit(23));
+    return;
+  }
+  if (scenario === "block-across-start") {
+    process.stderr.write(`E Antigravity SDK error processing prompt for session ${sessionId}\n`);
+    emitChunk("Your prepayment credits are depleted.");
+    emitResult();
+    return;
+  }
+
   if (scenario === "success-order") {
     emitChunk("The error");
     emitChunk(" is fixed.");
@@ -154,6 +180,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     case "session/new":
+      if (scenario === "block-across-start") {
+        const lines = failureTranscript(
+          402,
+          "Your prepayment credits are depleted.",
+          "RESOURCE_EXHAUSTED",
+        ).split("\n");
+        process.stderr.write(`${lines.slice(0, -1).join("\n")}\n`);
+      }
       if (scenario === "late-block") {
         process.stderr.write(`${failureTranscript(500, "old failure", "INTERNAL")}\n`);
       }

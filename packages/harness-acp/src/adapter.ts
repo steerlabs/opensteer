@@ -330,6 +330,7 @@ class AcpHarnessSession implements HarnessSession {
             const interpretation = this.#options.hooks.classifyError(error, {
               operation: "prompt",
               providerSessionReference: this.providerSessionReference,
+              stderrBeforePrompt: this.#stderrBefore(active.stderrStart),
               stderrTail: this.#stderrSince(active.stderrStart),
             });
             this.#fail(active, interpretation);
@@ -684,6 +685,7 @@ class AcpHarnessSession implements HarnessSession {
         active.heldAssistant.map((update) => update.text).join(""),
       ).trim(),
       providerSessionReference: this.providerSessionReference,
+      stderrBeforePrompt: this.#stderrBefore(active.stderrStart),
       stderrTail: this.#stderrSince(active.stderrStart),
     });
   }
@@ -865,7 +867,15 @@ class AcpHarnessSession implements HarnessSession {
     });
     this.#publisher.latchUnusable(error);
     const active = this.#active;
-    if (active && !active.terminal) this.#fail(active, error);
+    if (active && !active.terminal) {
+      const heldDecision = this.#heldAssistantDecision(active);
+      if (heldDecision.status === "failed" && heldDecision.discardAssistant) {
+        active.heldAssistant.length = 0;
+      } else {
+        this.#flushHeldAssistant(active);
+      }
+      this.#fail(active, heldDecision.status === "failed" ? heldDecision.error : error);
+    }
     this.#cancelPending("process-lost");
     this.#publisher.closeStream(error);
   }
@@ -893,6 +903,10 @@ class AcpHarnessSession implements HarnessSession {
 
   #stderrSince(position: number): string {
     return this.#sanitizeStderr(this.#stderr.slice(Math.max(0, position - this.#stderrDropped)));
+  }
+
+  #stderrBefore(position: number): string {
+    return this.#sanitizeStderr(this.#stderr.slice(0, Math.max(0, position - this.#stderrDropped)));
   }
 
   #sanitizeStderr(value: string): string {

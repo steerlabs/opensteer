@@ -338,9 +338,10 @@ export function classifyAntigravityAcpError(
   context: AcpErrorContext,
 ): OpensteerError {
   if (context.operation === "prompt") {
-    const turnFailure = antigravityErrorBlocks(context.stderrTail).findLast(
-      (block) => block.sessionId === context.providerSessionReference,
-    );
+    const turnFailure = antigravityErrorBlocks(
+      context.stderrTail,
+      context.stderrBeforePrompt,
+    ).findLast((block) => block.sessionId === context.providerSessionReference);
     if (turnFailure) return classifyAntigravityTurnFailure(turnFailure);
   }
   return classifyError(error);
@@ -378,13 +379,19 @@ function antigravityTurnFailure(
   };
 }
 
-function antigravityErrorDiagnostics(stderr: string): {
+function antigravityErrorDiagnostics(
+  stderr: string,
+  stderrBeforePrompt = "",
+): {
   readonly blocks: readonly AntigravityTurnFailure[];
   readonly pending: boolean;
 } {
   const blocks: AntigravityTurnFailure[] = [];
   let pending: string[] = [];
-  for (const line of stderr.split(/\r?\n/gu)) {
+  let position = 0;
+  for (const line of `${stderrBeforePrompt}${stderr}`.split("\n")) {
+    const lineStart = position;
+    position += line.length + 1;
     if (
       /received model response error|Agent run failed|System step error \(HTTP \d{3}\)/u.test(line)
     ) {
@@ -394,20 +401,29 @@ function antigravityErrorDiagnostics(stderr: string): {
       /Antigravity SDK error processing prompt for session\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/iu,
     );
     if (!marker) continue;
-    if (pending.length > 0) blocks.push(antigravityTurnFailure(marker[1]!, pending));
+    // Diagnostics can precede the prompt; the session marker closes and attributes the block.
+    if (
+      pending.length > 0 &&
+      lineStart + marker.index! + marker[0].length > stderrBeforePrompt.length
+    ) {
+      blocks.push(antigravityTurnFailure(marker[1]!, pending));
+    }
     pending = [];
   }
   return { blocks, pending: pending.length > 0 };
 }
 
-function antigravityErrorBlocks(stderr: string): readonly AntigravityTurnFailure[] {
-  return antigravityErrorDiagnostics(stderr).blocks;
+function antigravityErrorBlocks(
+  stderr: string,
+  stderrBeforePrompt?: string,
+): readonly AntigravityTurnFailure[] {
+  return antigravityErrorDiagnostics(stderr, stderrBeforePrompt).blocks;
 }
 
 export function settleAntigravityHeldAssistant(
   context: AcpHeldAssistantContext,
 ): AcpHeldAssistantDecision {
-  const diagnostics = antigravityErrorDiagnostics(context.stderrTail);
+  const diagnostics = antigravityErrorDiagnostics(context.stderrTail, context.stderrBeforePrompt);
   const blocks = diagnostics.blocks.filter(
     (block) => block.sessionId === context.providerSessionReference,
   );
