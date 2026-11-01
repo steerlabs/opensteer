@@ -4643,6 +4643,7 @@ class HostedBrowserBroker {
           openerId: surface.openerId ?? null,
           availability: this.live ? "ready" : "unavailable",
           ...(surface.loading ? { loading: true } : {}),
+          ...(surface.navigationFailed ? { navigationFailed: true } : {}),
           ...(surface.canGoBack === undefined ? {} : { canGoBack: surface.canGoBack }),
           ...(surface.canGoForward === undefined ? {} : { canGoForward: surface.canGoForward }),
           documentId: surface.documentId ?? null,

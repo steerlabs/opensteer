@@ -366,11 +366,13 @@ export class BrowserController {
       // The engine already starts the initial blank document to create its renderer.
       if (navigation.url === undefined) return result;
       const url = safeNavigationUrl(navigation.url);
-      if (navigation.navigationId && this.claims.navigationAttributionVersion === 1)
-        void this.ledger
-          .navigate(result.surfaceId, url, navigation.navigationId)
-          .catch(() => undefined);
-      else page.submitNavigation(url);
+      void this.ledger
+        .navigate(
+          result.surfaceId,
+          url,
+          this.claims.navigationAttributionVersion === 1 ? navigation.navigationId : undefined,
+        )
+        .catch(() => undefined);
     }
     return result;
   }

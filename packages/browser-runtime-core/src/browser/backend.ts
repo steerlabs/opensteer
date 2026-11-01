@@ -56,13 +56,8 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
-export interface BrowserPageNavigation {
-  /** Submits navigation synchronously and observes its completion/errors separately. */
-  submitNavigation(url: string): void;
-}
-
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
-export interface BrowserPage extends BrowserPageNavigation {
+export interface BrowserPage {
   readonly capture?: PageCapturePort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.

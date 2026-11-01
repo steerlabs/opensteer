@@ -328,6 +328,7 @@ export const BrowserSurfaceSchema = z.strictObject({
    * and from an older Browser Runtime.
    */
   loading: z.boolean().optional(),
+  navigationFailed: z.boolean().optional(),
   documentId: z.string().min(1).max(255).optional(),
   geometryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   order: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -1158,6 +1159,7 @@ export const BrowserTabSummarySchema = z.strictObject({
   availability: z.enum(["ready", "starting", "unavailable"]),
   /** The tab's page is loading (its surface's `loading`); absent while it is not. */
   loading: z.boolean().optional(),
+  navigationFailed: z.boolean().optional(),
   documentId: z.string().min(1).max(255).nullable().default(null),
   occupants: z
     .array(PlaceOccupantSchema)

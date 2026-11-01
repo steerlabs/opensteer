@@ -601,6 +601,7 @@ export interface BrowserTabSummary {
   sizedByAgent?: boolean | undefined;
   /** The page is loading; absent from an older Browser Runtime. */
   loading?: boolean | undefined;
+  navigationFailed?: boolean | undefined;
   id: BrowserSurfaceId;
   title: string;
   url: string;

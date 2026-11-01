@@ -703,7 +703,6 @@ function observeContext(
     const existing = wrapped.get(page);
     if (existing) return existing;
     const observed: BrowserPage = {
-      submitNavigation: (url) => page.submitNavigation(url),
       agentCdp: () => page.agentCdp(),
       cdp: async () => {
         const targetId = await page.targetId();

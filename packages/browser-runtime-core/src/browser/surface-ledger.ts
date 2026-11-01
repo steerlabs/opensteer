@@ -99,6 +99,8 @@ interface SurfaceRecord {
   recentCommits: Map<string, NavigationCommit>;
   navigation: { canGoBack: boolean; canGoForward: boolean } | null;
   navigationRevision: number;
+  navigationFailed: boolean;
+  navigationAttempt: number;
   committedUrl: string;
   /** The committed document's loader, from its commit or the first title sample. */
   loaderId: string | null;
@@ -350,6 +352,8 @@ export class SurfaceLedger {
   async navigate(surfaceId: BrowserSurfaceId, url: string, navigationId?: string) {
     const record = this.records.get(surfaceId);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    const attempt = ++record.navigationAttempt;
+    this.setNavigationFailed(record, false);
     const pending: NavigationBinding | undefined = navigationId
       ? {
           url,
@@ -373,6 +377,8 @@ export class SurfaceLedger {
           isDownload: z.boolean().optional(),
         })
         .parse(await record.cdp.send("Page.navigate", { url }));
+      if (attempt === record.navigationAttempt)
+        this.setNavigationFailed(record, !!result.errorText);
       if (!pending || !navigationId || record.pendingNavigations.get(navigationId) !== pending)
         return result;
       if (
@@ -389,8 +395,17 @@ export class SurfaceLedger {
       return result;
     } catch (error) {
       if (navigationId) record.pendingNavigations.delete(navigationId);
+      if (attempt === record.navigationAttempt) this.setNavigationFailed(record, true);
       throw error;
     }
+  }
+
+  private setNavigationFailed(record: SurfaceRecord, failed: boolean): void {
+    if (this.records.get(record.id) !== record || record.navigationFailed === failed) return;
+    record.navigationFailed = failed;
+    if (failed) record.loading = false;
+    if (record.announced)
+      this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
   }
 
   private matchNavigation(
@@ -974,6 +989,8 @@ export class SurfaceLedger {
           recentCommits: new Map(),
           navigation: null,
           navigationRevision: 0,
+          navigationFailed: false,
+          navigationAttempt: 0,
           loaderId: null,
           titleReader: null,
           documentId: randomUUID(),
@@ -1539,6 +1556,7 @@ export class SurfaceLedger {
       ...record.navigation,
       ...(record.favicon === null ? {} : { favicon: record.favicon }),
       ...(record.loading ? { loading: true } : {}),
+      ...(record.navigationFailed ? { navigationFailed: true } : {}),
       id: record.id,
       sizedByAgent: record.agentMetrics !== null,
       documentId: record.documentId,

@@ -120,9 +120,6 @@ export class FakeCdpSession implements CdpSession {
  * in that live context.
  */
 export class FakePage implements BrowserPage {
-  submitNavigation(url: string): void {
-    void this.cdpSession.send("Page.navigate", { url }).catch(() => undefined);
-  }
   readonly cdpSession: FakeCdpSession;
   closeCount = 0;
   private closed = false;

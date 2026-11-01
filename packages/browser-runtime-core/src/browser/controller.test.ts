@@ -115,6 +115,75 @@ describe("BrowserController", () => {
     },
   );
 
+  it.each([
+    ["initial", "reply"],
+    ["initial", "rejection"],
+    ["additional", "reply"],
+    ["additional", "rejection"],
+  ] as const)("publishes %s navigation failures in page state (%s)", async (kind, failure) => {
+    const fail = (page: FakePage) =>
+      page.cdpSession.responses.set(
+        "Page.navigate",
+        failure === "reply"
+          ? { errorText: "net::ERR_NAME_NOT_RESOLVED" }
+          : () => Promise.reject(new Error("Navigation transport failed")),
+      );
+    fail(page);
+    const createPage = context.createPage.bind(context);
+    vi.spyOn(context, "createPage").mockImplementation(async () => {
+      const page = await createPage();
+      fail(page as FakePage);
+      return page;
+    });
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims(),
+      exportSnapshot,
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    try {
+      await controller.start();
+      let id: string;
+      if (kind === "initial")
+        id = controller.startInitialNavigation(page, {
+          operationKey: "failed-nav",
+          url: "https://missing.test/",
+        }).surfaceId;
+      else {
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: "failed-nav", url: "https://missing.test/" },
+          },
+        });
+        id = ledger.snapshot().find((surface) => surface.id !== ledger.snapshot()[0]?.id)!.id;
+      }
+      await vi.waitFor(
+        () =>
+          expect(ledger.snapshot().find((surface) => surface.id === id)).toMatchObject({
+            navigationFailed: true,
+          }),
+        { timeout: 1000 },
+      );
+      expect(
+        sink.messages.some(
+          (message) =>
+            message.type === "browser.surfaces.changed" &&
+            message.surfaces.some((surface) => surface.id === id && "navigationFailed" in surface),
+        ),
+      ).toBe(true);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("attributes only viewer input that reaches the page", async () => {
     const passkeys = new HostRelayAuthenticator(() => undefined);
     const record = vi.spyOn(passkeys, "record");

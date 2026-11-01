@@ -2231,11 +2231,10 @@ describe("native Electron profiles", () => {
       const ledger = new SurfaceLedger(browser.context, { rootPages: [page] });
       await ledger.start();
       expect(ledger.snapshot()).toHaveLength(1);
-      page.submitNavigation!("https://site.test/");
-      expect(view.webContents.loadURL.mock.calls).toEqual([
-        ["about:blank"],
-        ["https://site.test/"],
-      ]);
+      await ledger.navigate(ledger.snapshot()[0]!.id, "https://site.test/");
+      expect(view.webContents.debugger.sendCommand).toHaveBeenCalledWith("Page.navigate", {
+        url: "https://site.test/",
+      });
       loaded.reject(new Error("ERR_ABORTED: superseded by real navigation"));
       await ledger.close();
       await browser.close();

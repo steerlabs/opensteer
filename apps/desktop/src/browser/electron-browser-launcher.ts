@@ -1824,11 +1824,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return this.#webContents.loadURL(url);
   }
 
-  submitNavigation(url: string): void {
-    // Loading and failure remain page observations, independent of submission.
-    void this.loadInitialUrl(url).catch(() => undefined);
-  }
-
   cdp(): Promise<CdpSession> {
     return this.#cdpPromise;
   }

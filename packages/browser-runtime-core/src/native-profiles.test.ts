@@ -151,7 +151,7 @@ describe("native profile runtime", () => {
   });
   it("does not submit a second blank navigation to an already-created initial page", async () => {
     const f = await fixture();
-    const navigation = vi.spyOn(FakePage.prototype, "submitNavigation");
+    const navigation = vi.spyOn(FakePage.prototype, "cdp");
     const claims = f.claims(1, 1);
     f.verifier.setClaims("blank", {
       ...claims,
@@ -164,7 +164,12 @@ describe("native profile runtime", () => {
         initialNavigation: true,
       });
       expect(attachment.initialPage).toMatchObject({ navigation: "blank" });
-      expect(navigation).not.toHaveBeenCalled();
+      const browser = f.launcher.browsersByPartition.get("profile:" + f.binding(1).profileId)!;
+      expect(
+        (browser.context.pages()[0] as FakePage).cdpSession.sent.filter(
+          (command) => command.method === "Page.navigate",
+        ),
+      ).toEqual([]);
       await attachment.close();
     } finally {
       navigation.mockRestore();

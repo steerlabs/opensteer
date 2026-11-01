@@ -855,10 +855,6 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
-  submitNavigation(url: string): void {
-    // Loading and failure remain page observations, independent of submission.
-    void this.page.goto(url).catch(() => undefined);
-  }
   private cdpPromise: Promise<CdpSession> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;

@@ -642,6 +642,9 @@ export function PlaceBrowserView({
     geometry && (geometry.fitAvailable || geometry.sized || tab?.sizedByAgent === true);
   const notice =
     (sheet === null ? actionError : null) ??
+    (tab?.navigationFailed || catalogTab?.navigationFailed
+      ? "This page could not be loaded. Reload to try again."
+      : null) ??
     (!ended && session?.error !== dismissedError ? session?.error : null);
   const blankPage = url === "" || url === "about:blank";
   return (
