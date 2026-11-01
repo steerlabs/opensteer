@@ -805,14 +805,17 @@ export class HttpHostClient {
   async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
     const started = this.#viewer.generation;
     const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "browser.tab.open",
-        ...(typeof target === "string" ? { sessionId: target } : target),
-        ...(options.url === undefined ? {} : { url: options.url }),
-        ...(options.typed === undefined ? {} : { typed: options.typed }),
-        ...(options.viewport ? { viewport: options.viewport } : {}),
-        idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
-      }),
+      await this.rpc["commands.dispatch"](
+        {
+          type: "browser.tab.open",
+          ...(typeof target === "string" ? { sessionId: target } : target),
+          ...(options.url === undefined ? {} : { url: options.url }),
+          ...(options.typed === undefined ? {} : { typed: options.typed }),
+          ...(options.viewport ? { viewport: options.viewport } : {}),
+          idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
+        },
+        options.signal ? { signal: options.signal } : undefined,
+      ),
     );
     if (started !== this.#viewer.generation)
       throw new HostClientRequestError({
@@ -986,11 +989,11 @@ export class HttpHostClient {
     surfaceId: string,
     expected: Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">,
   ) {
+    const viewer = this.#viewer.generation;
     if (
       this.#snapshot.workspaceTabRestoreVersion === 1 &&
       this.#snapshot.workspaceTabs?.some((group) => group.tabs?.some((tab) => tab.id === surfaceId))
     ) {
-      const viewer = this.#viewer.generation;
       const result = unwrapRpcResult(
         await this.rpc["commands.dispatch"]({
           type: "workspace.tab.close",
@@ -1034,6 +1037,12 @@ export class HttpHostClient {
         idempotencyKey: `close-tab:${sessionId}:${surfaceId}:${expected.generation}:${inventoryRevision}`,
       }),
     );
+    if (viewer !== this.#viewer.generation)
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "The signed-in account changed while closing the tab.",
+      });
     if (result.type !== "browser.tab.close") throw new Error("Unexpected browser command result.");
     const catalog = this.#acceptCatalog(sessionId, result.catalog);
     this.#patchBrowserSession(sessionId, {
@@ -4205,6 +4214,7 @@ export class HttpHostClient {
   #enterForeground(): void {
     if (this.#disposed || this.#visibility === "foreground") return;
     const backgroundedForMs = Date.now() - (this.#backgroundedAt ?? Date.now());
+    this.#pendingBrowserTabs.checkDeadlines();
     this.#visibility = "foreground";
     this.#targetedControl.suspend(this.#network === "offline");
     this.#targetedWatch.suspend(this.#network === "offline");

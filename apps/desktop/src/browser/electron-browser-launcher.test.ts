@@ -1,5 +1,6 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { gate } from "@opensteer/shared/test-support/observation";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -1805,7 +1806,7 @@ describe("native Electron profiles", () => {
       },
     };
   }
-  it("verifies safeStorage during engine startup without unwrapping a profile key", async () => {
+  it("advertises engine support at startup without opening a browser or checking the keychain", async () => {
     const f = await fixture();
     const { safeStorage } = await import("electron");
     const encrypt = vi.spyOn(safeStorage, "encryptStringAsync");
@@ -1813,10 +1814,8 @@ describe("native Electron profiles", () => {
     try {
       await f.launcher.prepare();
       expect(f.launcher.nativeProfilesAvailable).toBe(true);
-      expect(encrypt).toHaveBeenCalledWith("opensteer-desktop-protected-storage-readiness-v1");
-      expect(decrypt).toHaveBeenCalledExactlyOnceWith(
-        Buffer.from("opensteer-desktop-protected-storage-readiness-v1"),
-      );
+      expect(encrypt).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
       expect(await readdir(f.root)).toEqual([]);
     } finally {
       encrypt.mockRestore();
@@ -1843,7 +1842,7 @@ describe("native Electron profiles", () => {
       const sessions = vi.mocked(session.fromPath).mock.calls.length;
       try {
         await expect(f.launcher.prepare()).resolves.toBeUndefined();
-        expect(f.launcher.nativeProfilesAvailable).toBe(false);
+        expect(f.launcher.nativeProfilesAvailable).toBe(true);
         for (const storage of [
           { kind: "guest" },
           { kind: "legacy", snapshot: { cookies: [], origins: [] } },
@@ -2113,28 +2112,54 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
-  it("keeps an actionable encryption failure on subsequent opens and preserves all native data", async () => {
+  it("retries a locked mirror key on the same Session without clearing native data", async () => {
     const f = await fixture();
     const { safeStorage, session } = await import("electron");
-    const encrypt = vi
-      .spyOn(safeStorage, "encryptStringAsync")
-      .mockRejectedValue(new Error("unavailable"));
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    await f.launcher.localProfiles.importAndFlush({
+      directory: f.directory,
+      binding: f.binding,
+      snapshot: { cookies: [], origins: [] },
+      signal: new AbortController().signal,
+    });
+    const owner = acquireElectronLocalProfile({
+      root: f.root,
+      directory: f.directory,
+      binding: f.binding,
+      configure: () => {},
+    });
+    await owner.retire();
+    const before = await Promise.all(
+      ["session-cookie-key.v1.json", "session-cookies.v1.json"].map((name) =>
+        readFile(path.join(path.dirname(f.directory), name)),
+      ),
+    );
+    const decrypt = vi
+      .spyOn(safeStorage, "decryptStringAsync")
+      .mockRejectedValue(new Error("locked"));
     try {
-      await expect(
-        f.launcher.localProfiles.importAndFlush({
-          directory: f.directory,
-          binding: f.binding,
-          snapshot: { cookies: [], origins: [] },
-          signal: new AbortController().signal,
-        }),
-      ).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
-      await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*restart Opensteer/u);
-      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
-      expect(profile.clearCache).not.toHaveBeenCalled();
-      expect(profile.clearStorageData).not.toHaveBeenCalled();
-      await expect(readdir(path.dirname(f.directory))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*Retry opening/u);
+      await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*Retry opening/u);
+      const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(native).toBe(owner.session);
+      expect(native.clearCache).not.toHaveBeenCalled();
+      expect(native.clearStorageData).not.toHaveBeenCalled();
+      expect(
+        await Promise.all(
+          ["session-cookie-key.v1.json", "session-cookies.v1.json"].map((name) =>
+            readFile(path.join(path.dirname(f.directory), name)),
+          ),
+        ),
+      ).toEqual(before);
+      decrypt.mockRestore();
+      const retried = await f.launch();
+      expect(vi.mocked(session.fromPath).mock.results.at(-1)!.value).toBe(native);
+      const callback = vi.fn();
+      native.webRequest.onBeforeRequest.mock.calls[0]![0]({ url: "https://site.test/" }, callback);
+      expect(callback).toHaveBeenCalledExactlyOnceWith({ cancel: false });
+      await retried.close();
     } finally {
-      encrypt.mockRestore();
+      decrypt.mockRestore();
       await f.launcher.localProfiles.release(f.directory);
       f.launcher.close();
       await rm(f.root, { recursive: true, force: true });
@@ -2248,7 +2273,7 @@ describe("native Electron profiles", () => {
         signal: new AbortController().signal,
       });
       const start = electron.views.length;
-      const browser = await f.launch(true);
+      let browser = await f.launch(true);
       expect(f.launcher.localProfiles.preparation).toBe(1);
       expect(browser.profile).toBeDefined();
       expect(browser.context.pages()).toEqual([]);
@@ -2264,7 +2289,8 @@ describe("native Electron profiles", () => {
             {},
             { type: "Utility", serviceName: "network.mojom.NetworkService" },
           );
-      await browser.profile!.ready();
+      await expect(browser.profile!.ready()).rejects.toThrow();
+      browser = await f.launch(true);
       const recovered = vi.fn();
       before({ url: "https://site.test/" }, recovered);
       expect(recovered).toHaveBeenCalledExactlyOnceWith({ cancel: true });
@@ -2334,8 +2360,61 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+
+  it("cancels a hung cookie read and retries the same Electron Session without releasing the read", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    await f.launcher.localProfiles.importAndFlush({
+      directory: f.directory,
+      binding: f.binding,
+      snapshot: { cookies: [], origins: [] },
+      signal: new AbortController().signal,
+    });
+    const previous = acquireElectronLocalProfile({
+      root: f.root,
+      directory: f.directory,
+      binding: f.binding,
+      configure: () => {},
+    });
+    await previous.retire();
+    const entered = Promise.withResolvers<void>();
+    const never = new Promise<unknown>(() => {});
+    const cancellation = new AbortController();
+    electron.bootstrap = (method) => {
+      if (method !== "Network.getAllCookies") return undefined;
+      entered.resolve();
+      return never;
+    };
+    const launching = f.launch(true, cancellation.signal);
+    const refused = expect(launching).rejects.toThrow();
+    try {
+      await withTimeout(entered.promise, 1_000, {
+        timeoutError: () => new Error("Cookie read was never issued."),
+      });
+      cancellation.abort();
+      await withTimeout(refused, 1_000, {
+        timeoutError: () => new Error("Cancelled launch still waits for its cookie read."),
+      });
+      electron.bootstrap = undefined;
+      const retried = await f.launch();
+      const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      expect(native).toBe(previous.session);
+      const answer = vi.fn();
+      native.webRequest.onBeforeRequest.mock.calls[0]![0]({ url: "https://site.test/" }, answer);
+      expect(answer).toHaveBeenCalledExactlyOnceWith({ cancel: false });
+      expect(native.clearStorageData).not.toHaveBeenCalled();
+      await retried.close();
+    } finally {
+      electron.bootstrap = undefined;
+      cancellation.abort();
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it.each(["during-restore", "prepared"])(
-    "retires a cancelled launch (%s) without erasing storage",
+    "retries a cancelled launch (%s) without erasing storage",
     async (phase) => {
       const f = await fixture();
       const { session } = await import("electron");
@@ -2382,7 +2461,8 @@ describe("native Electron profiles", () => {
           await expect(launching).rejects.toThrow();
         }
         await observed;
-        await expect(f.launch()).rejects.toThrow();
+        const retried = await f.launch();
+        await retried.close();
         const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
         expect(native.clearCache).not.toHaveBeenCalled();
         expect(native.clearStorageData).not.toHaveBeenCalled();
@@ -2463,7 +2543,9 @@ describe("native Electron profiles", () => {
             {},
             { type: "Utility", serviceName: "network.mojom.NetworkService" },
           );
-      await owner.ready();
+      await expect(owner.ready()).rejects.toThrow();
+      const retried = await f.launch();
+      await retried.close();
       expect(electron.views.length).toBeGreaterThan(beforeRecovery);
       expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
       expect(profile.clearStorageData).not.toHaveBeenCalled();

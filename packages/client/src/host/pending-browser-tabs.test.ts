@@ -54,7 +54,10 @@ it("bounds completed results without evicting unfinished openings or their exact
       ).toHaveLength(2);
       lost = false;
       await pending.begin(target, { idempotencyKey: "unknown", url: uncertainOptions.url }).result;
-      expect(open).toHaveBeenLastCalledWith(target, uncertainOptions);
+      expect(open).toHaveBeenLastCalledWith(target, {
+        ...uncertainOptions,
+        signal: expect.any(AbortSignal),
+      });
       gate.resolve(opened);
       await waiting.result;
       expect(pending.rows).toEqual([]);
@@ -65,5 +68,58 @@ it("bounds completed results without evicting unfinished openings or their exact
     }
   } finally {
     client.dispose();
+  }
+});
+
+it("settles a never-answering buffered open at the deadline and supports Retry and Close", async () => {
+  vi.useFakeTimers();
+  const open = vi.fn(() => new Promise<never>(() => {}));
+  const pending = new PendingBrowserTabs({
+    admitted: () => true,
+    open,
+    close: vi.fn(),
+    changed: vi.fn(),
+  });
+  try {
+    const handle = pending.begin({ identity: { kind: "guest" } }, { idempotencyKey: "hung" });
+    const settled = vi.fn();
+    void handle.result.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(pending.rows).toMatchObject([{ state: "unknown" }]);
+    expect(settled).toHaveBeenCalledOnce();
+    const retry = pending.begin({ identity: { kind: "guest" } }, { idempotencyKey: "hung" });
+    void retry.result.catch(() => {});
+    expect(open).toHaveBeenCalledTimes(2);
+    pending.dismiss("hung");
+    expect(pending.rows).toEqual([]);
+  } finally {
+    pending.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("checks the action deadline on foregrounding and fences a late buffered answer", async () => {
+  vi.useFakeTimers();
+  const result = Promise.withResolvers<never>();
+  const pending = new PendingBrowserTabs({
+    admitted: () => true,
+    open: () => result.promise,
+    close: vi.fn(),
+    changed: vi.fn(),
+  });
+  try {
+    const handle = pending.begin({ identity: { kind: "guest" } });
+    const refused = expect(handle.result).rejects.toMatchObject({
+      reason: "browser-tab-open-outcome-unknown",
+    });
+    vi.setSystemTime(Date.now() + 25_000);
+    pending.checkDeadlines();
+    await refused;
+    expect(pending.rows).toMatchObject([{ state: "unknown" }]);
+    pending.dismiss(handle.idempotencyKey);
+    expect(pending.rows).toEqual([]);
+  } finally {
+    pending.dispose();
+    vi.useRealTimers();
   }
 });

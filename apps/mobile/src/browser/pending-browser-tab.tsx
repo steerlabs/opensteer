@@ -1,3 +1,4 @@
+import { browserAddressParts } from "@opensteer/client/host";
 import { memo } from "react";
 import { ActivityIndicator, View } from "react-native";
 import {
@@ -69,6 +70,7 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
   const pending = useHostSelector(hostClient, (snapshot) =>
     snapshot.pendingBrowserTabs?.find((row) => row.idempotencyKey === route.pendingBrowserTab),
   );
+  const parts = browserAddressParts(pending?.url ?? "");
   const placements = useHostSelector(hostClient, (snapshot) => snapshot.browserPlacements);
   const close = () => {
     if (route.pendingBrowserTab) hostClient.dismissPendingBrowserTab(route.pendingBrowserTab);
@@ -86,7 +88,7 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
           : "This opening is no longer available";
   useSurfaceHeader({
     acting: false,
-    secondary: pending?.url ?? null,
+    secondary: parts ? `${parts.host}${parts.rest}` : null,
     glyph: "globe",
     title,
     menu: [{ id: "close", icon: "xmark", label: "Close tab", onPress: close }],
@@ -106,7 +108,14 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
   return (
     <Screen>
       <View>
-        <AppText>{pending?.url ?? "New tab"}</AppText>
+        <AppText
+          accessibilityLabel={pending?.url ?? "New tab"}
+          style={{ fontSize: 13 }}
+          numberOfLines={1}
+        >
+          {parts?.host ?? "New tab"}
+          <AppText style={{ opacity: 0.55, fontSize: 13 }}>{parts?.rest ?? ""}</AppText>
+        </AppText>
         {pending?.state === "opening" ? (
           <ActivityIndicator accessibilityLabel="Opening tab" />
         ) : null}
@@ -114,15 +123,12 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
           title={title}
           detail={
             pending?.state === "unknown"
-              ? "The Host may have opened this tab. Check again to recover the same opening."
+              ? "The Host may have opened this tab. Retry to recover the same opening."
               : (pending?.error?.message ?? "")
           }
         />
         {pending && pending.state !== "opening" ? (
-          <SecondaryButton
-            label={pending.state === "unknown" ? "Check again" : "Retry"}
-            onPress={() => retry()}
-          />
+          <SecondaryButton label="Retry" onPress={() => retry()} />
         ) : null}
         {pending?.state === "failed" &&
         pending.error?.code === "browser-placement-ambiguous" &&

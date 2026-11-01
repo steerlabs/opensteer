@@ -3866,14 +3866,18 @@ export class MockHostClient implements HostClient {
   readonly #pendingBrowserTabs = new PendingBrowserTabs({
     admitted: () => viewerScopeOf(this.#state.getSnapshot()) !== null,
     open: async (target, options) => {
+      const { signal, ...payload } = options;
       const started = this.#viewer.generation;
       const opened = unwrapRpcResult(
-        await this.rpc["commands.dispatch"]({
-          type: "browser.tab.open",
-          ...target,
-          ...options,
-          idempotencyKey: options.idempotencyKey!,
-        }),
+        await this.rpc["commands.dispatch"](
+          {
+            type: "browser.tab.open",
+            ...target,
+            ...payload,
+            idempotencyKey: options.idempotencyKey!,
+          },
+          signal ? { signal } : undefined,
+        ),
       );
       if (started !== this.#viewer.generation)
         throw new HostClientRequestError({

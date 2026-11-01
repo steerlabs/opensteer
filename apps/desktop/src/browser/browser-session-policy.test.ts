@@ -104,7 +104,7 @@ it("keeps site policy readable for provider frames and denies foreign ancestors"
   }
 });
 
-it("holds every request at a closed restoration gate, including service workers", async () => {
+it("immediately cancels every request at a closed restoration gate, including service workers", async () => {
   const { BrowserSessionRequestGate, applyBrowserSessionPolicy } =
     await import("./browser-session-policy.js");
   const { vi } = await import("vitest");
@@ -132,16 +132,16 @@ it("holds every request at a closed restoration gate, including service workers"
   const remove = gate.allowStorageHelper(2);
   before({ url: "https://site.test/", webContentsId: 2 }, helper);
   expect(helper).toHaveBeenCalledWith({ cancel: false });
-  expect(worker).not.toHaveBeenCalled();
-  expect(page).not.toHaveBeenCalled();
+  expect(worker).toHaveBeenCalledExactlyOnceWith({ cancel: true });
+  expect(page).toHaveBeenCalledExactlyOnceWith({ cancel: true });
   remove();
   gate.open();
-  expect(worker).toHaveBeenCalledWith({ cancel: false });
-  expect(page).toHaveBeenCalledWith({ cancel: false });
+  expect(worker).toHaveBeenCalledOnce();
+  expect(page).toHaveBeenCalledOnce();
   gate.close();
   const blocked = vi.fn();
   before({ url: "https://site.test/", webContentsId: 2 }, blocked);
-  expect(blocked).not.toHaveBeenCalled();
+  expect(blocked).toHaveBeenCalledExactlyOnceWith({ cancel: true });
   gate.fail();
   expect(blocked).toHaveBeenCalledWith({ cancel: true });
   expect(session.webRequest.onBeforeRequest).toHaveBeenCalledOnce();

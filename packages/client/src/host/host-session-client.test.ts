@@ -11486,15 +11486,25 @@ describe("HttpHostClient owner views", () => {
     );
     try {
       await host.client.load();
-      const close = vi.spyOn(host.client, "closeBrowserTab");
+      const closed = deferred<void>();
+      const originalClose = host.client.closeBrowserTab.bind(host.client);
+      const close = vi.spyOn(host.client, "closeBrowserTab").mockImplementation(async (...args) => {
+        const result = await originalClose(...args);
+        closed.resolve();
+        return result;
+      });
       const handle = host.client.beginBrowserTabOpen(
         { identity: { kind: "guest" } },
         { idempotencyKey: "dismiss" },
       );
+      const cancelled = expect(handle.result).rejects.toMatchObject({ name: "AbortError" });
       host.client.dismissPendingBrowserTab(handle.idempotencyKey);
       expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
+      await cancelled;
       gate.resolve();
-      await handle.result;
+      await withTimeout(closed.promise, 2_000, {
+        timeoutError: () => new Error("The exact late tab was never closed."),
+      });
       expect(close).toHaveBeenCalledExactlyOnceWith(opened.sessionId, opened.tabId, opened.catalog);
     } finally {
       gate.resolve();
@@ -11592,7 +11602,12 @@ describe("HttpHostClient owner views", () => {
         json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
       await expect(host.client.refresh()).rejects.toThrow();
       closingGate.resolve();
-      expect(await answer).toMatchObject({ code: "unauthorized" });
+      expect(await answer).toMatchObject({ name: "AbortError" });
+      expect(
+        host.client
+          .getSnapshot()
+          .browserSessions.some((session) => session.id === opened.sessionId),
+      ).toBe(false);
     } finally {
       openingGate.resolve();
       closingGate.resolve();

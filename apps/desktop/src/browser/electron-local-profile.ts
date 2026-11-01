@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import path from "node:path";
 import { app, session, safeStorage, WebContentsView, type Session } from "electron";
 import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
@@ -10,6 +11,26 @@ import { SessionCookieMirror } from "./session-cookie-mirror.js";
 // Electron retains Sessions by path until exit, across logical runtime/host eviction.
 const profiles = new Map<string, ElectronLocalProfile>();
 const retainedDirectories = new Set<string>();
+const sessionMutations = new WeakMap<Session, Promise<unknown>>();
+/** A rejected CDP waiter is not proof that Chromium cancelled an issued mutation. */
+export function electronSessionCookieCommand(
+  session: Session,
+  method: string,
+  send: () => Promise<unknown>,
+): Promise<unknown> {
+  if (method !== "Network.setCookies") return send();
+  if (sessionMutations.has(session)) return Promise.reject(persistenceFailure());
+  const pending = send();
+  sessionMutations.set(session, pending);
+  void pending.then(
+    () => {
+      if (sessionMutations.get(session) === pending) sessionMutations.delete(session);
+    },
+    () => undefined,
+  );
+  return pending;
+}
+
 const cryptography = new VerifiedDesktopSecretCryptography(safeStorage);
 let watchingNetworkService = false;
 
@@ -55,14 +76,14 @@ export function acquireElectronLocalProfile(input: {
     existing.assertUsable();
     return existing;
   }
-  if (retainedDirectories.has(input.directory)) throw persistenceFailure();
+
   if (!watchingNetworkService) {
     watchingNetworkService = true;
     app.on("child-process-gone", (_event, details) => {
       if (!isNetworkService(details)) return;
       // Suspend ALL owners before any recovery can provoke a capture in another Session.
       for (const profile of profiles.values()) profile.suspend();
-      for (const profile of profiles.values()) profile.recoverAfterNetworkLoss();
+      for (const profile of profiles.values()) void profile.retire().catch(() => undefined);
     });
   }
   const profile = new ElectronLocalProfile(input.directory, binding, input.configure);
@@ -91,6 +112,8 @@ export async function releaseElectronLocalProfile(
 
 export class ElectronLocalProfile {
   readonly session: Session;
+  readonly #directory: string;
+  readonly #cancellation = new AbortController();
   readonly gate = new BrowserSessionRequestGate();
   readonly binding: LocalProfileBinding;
   readonly mirror: SessionCookieMirror;
@@ -111,6 +134,7 @@ export class ElectronLocalProfile {
     configure: (session: Session, gate: BrowserSessionRequestGate) => void,
   ) {
     this.binding = binding;
+    this.#directory = directory;
     this.gate.dormant();
     this.session = session.fromPath(directory);
     retainedDirectories.add(directory);
@@ -135,7 +159,15 @@ export class ElectronLocalProfile {
           // Cookie CDP commands need the Session, not a loaded renderer document.
           view.webContents.debugger.attach("1.3");
         }
-        return await this.#cookieTarget.webContents.debugger.sendCommand(method, parameters);
+        const pending = electronSessionCookieCommand(this.session, method, () =>
+          this.#cookieTarget!.webContents.debugger.sendCommand(method, parameters),
+        );
+        const result = await withTimeout(pending, 5_000, {
+          signal: this.#cancellation.signal,
+          timeoutError: persistenceFailure,
+        });
+        this.assertUsable();
+        return result;
       } finally {
         this.#cookieCommands--;
         if (this.#idle) this.#releaseIdleCookieTarget();
@@ -172,8 +204,17 @@ export class ElectronLocalProfile {
   }
 
   start(initialize?: (profile: ElectronLocalProfile) => Promise<void>): void {
-    this.#ready = (initialize ? initialize(this) : this.mirror.recover())
+    this.#ready = withTimeout(
+      Promise.resolve().then(async () => {
+        if (sessionMutations.has(this.session)) throw persistenceFailure();
+        if (initialize) await initialize(this);
+        else await this.mirror.recover();
+      }),
+      5_000,
+      { signal: this.#cancellation.signal, timeoutError: persistenceFailure },
+    )
       .then(() => {
+        this.assertUsable();
         this.#suspended = false;
       })
       .catch((error: unknown) => {
@@ -181,6 +222,10 @@ export class ElectronLocalProfile {
         throw this.#failure;
       });
     void this.#ready.catch(() => undefined);
+  }
+
+  get hasContexts(): boolean {
+    return this.#contexts.size > 0;
   }
 
   async ready(): Promise<void> {
@@ -253,12 +298,16 @@ export class ElectronLocalProfile {
   retire(): Promise<void> {
     if (this.#retirement) return this.#retirement;
     this.#retired = true;
+    this.#cancellation.abort(persistenceFailure());
+    if (profiles.get(this.#directory) === this) profiles.delete(this.#directory);
     this.gate.fail();
     const stopped = this.mirror.stop();
     this.#releaseIdleCookieTarget();
     const contexts = [...this.#contexts].map((close) => close());
     this.#retirement = (async () => {
-      await Promise.all([stopped, ...contexts]);
+      await withTimeout(Promise.all([stopped, ...contexts]), 2_000, {
+        timeoutError: persistenceFailure,
+      });
       this.#releaseIdleCookieTarget();
     })();
     return this.#retirement;
@@ -282,7 +331,7 @@ export class ElectronLocalProfile {
     this.#failure ??= persistenceFailure(error);
     this.mirror.suspend();
     this.gate.fail();
-    for (const close of this.#contexts) void close().catch(() => undefined);
+    void this.retire().catch(() => undefined);
   }
 }
 
@@ -291,7 +340,7 @@ function persistenceFailure(cause?: unknown): BrowserRuntimeError {
   return new BrowserRuntimeError(
     "conflict",
     cause instanceof ProtectedStorageUnavailableError
-      ? "Browser profile encryption is unavailable. Unlock the login keychain in Keychain Access, then restart Opensteer and reopen this profile. The profile was preserved."
+      ? "Browser profile encryption is unavailable. Unlock the login keychain in Keychain Access, then Retry opening this profile. The profile was preserved."
       : "Browser profile storage is unavailable. The profile was preserved.",
     { cause, reason: "browser-profile-persistence-failed" },
   );

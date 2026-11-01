@@ -43,7 +43,10 @@ On negotiated runtimes, `browser.tab.open` returns once the page exists and its
 initial navigation was submitted, before document load. Only committed URLs
 become restore URLs. An uncertain transport result keeps its original operation
 key; late completion must not steal focus after the person navigates elsewhere.
-Dismissing pending presentation does not prove the Host canceled the open.
+The client bounds its RPC wait independently of buffered transport and checks
+the action deadline on foregrounding. Retry of an uncertain result retains its
+operation key. Dismissing pending presentation does not prove the Host canceled
+the open; a late known page is closed through the existing close command.
 
 Source: `apps/host/src/browser/browser-service.ts`,
 `packages/database/src/browser-session-store.ts`,
@@ -522,11 +525,13 @@ Electron persists session cookies through an encrypted per-profile mirror with
 an OS-wrapped key; Guest creates neither. Native files use Chromium's platform
 protection; named launches must not disable OS cookie encryption or use testing
 key-store fallbacks. An unavailable approved mirror-key provider refuses opening
-with instructions to unlock the login keychain and restart the app; the store and mirror stay intact.
+with instructions to unlock the login keychain and Retry; the store and mirror stay intact.
 This also prevents an already-created Session from bypassing restoration on retry.
-The Session-wide request gate covers workers as well as pages. Prepared Sessions
-cancel requests until a real open admits them, including after Network Service
-recovery; restoration alone never admits them. Cookie-change events
+The Session-wide request gate covers workers as well as pages and cancels
+requests immediately until a real open admits them. Electron retains its Session
+by path, so the installed gate follows the current owner across replacement;
+retiring an old owner cannot disable its replacement. Restoration alone never
+admits requests. Cookie-change events
 invalidate an authoritative Session-scoped capture rather than supplying cookie
 identities, because Electron's event payload omits partition keys. Controlled
 cookie writes await native and mirror persistence. A missing, corrupt or mismatched
@@ -534,8 +539,9 @@ ready-profile mirror refuses opening and preserves the store; never replace it
 with an empty mirror or recover an older mirror or seed. See the
 [mirror owner](../apps/desktop/src/browser/session-cookie-mirror.ts).
 
-After Network Service loss, mirror capture/publication suspends while gates close
-and restoration runs again. Chromium can briefly expose a jar without session
+After Network Service loss, mirror publication stops, gates refuse requests and
+views close. The next explicit open restores under its normal acquisition
+deadline; it does not start an automatic recovery loop. Chromium can briefly expose a jar without session
 cookies to a surviving page or worker before restoration; persistent cookies are
 unaffected. Restoration may deliver Cookie Store change events to registered
 service workers. These are accepted Electron limits; stock Electron would lose
@@ -564,8 +570,8 @@ an actual open joins the same profile lane and takes over its capability hold.
 Chromium preparation performs only one-time conversion and closes its importer;
 preparing a ready profile does no engine work. It retains no browser that could
 run restored background workers before a real open. Electron retains a page-free
-host with its Session-wide request gate dormant until attachment; recovery also
-preserves that dormant state. See the
+host with its Session-wide request gate dormant until attachment; restoration on the next explicit open also
+keeps the gate dormant until admission. See the
 [launcher contract](../packages/browser-runtime-core/src/browser/backend.ts).
 
 The [legacy snapshot adapter](../packages/browser-runtime-core/src/legacy-snapshot-adapter.ts)

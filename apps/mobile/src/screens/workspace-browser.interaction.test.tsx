@@ -793,7 +793,9 @@ describe("mobile conversation pages", () => {
     };
     render();
     expect(container.textContent).toContain("Opening");
-    expect(container.textContent).toContain("https://waiting.example/");
+    expect(container.textContent).toContain("waiting.example");
+    expect(container.textContent).not.toContain("https://waiting.example/");
+    expect(container.querySelector('[aria-label="https://waiting.example/"]')).not.toBeNull();
     state.navigationFocused = false;
     state.routes = [
       { name: "Thread", params: { deploymentId: "deployment-a", threadId: "other" } },
@@ -849,7 +851,9 @@ describe("mobile conversation pages", () => {
       { pendingBrowserTab: "ambiguous" },
       { snapshot: ambiguousSnapshot },
     );
-    expect(container.textContent).toContain("https://waiting.example/");
+    expect(container.textContent).toContain("waiting.example");
+    expect(container.textContent).not.toContain("https://waiting.example/");
+    expect(container.querySelector('[aria-label="https://waiting.example/"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Open on Offline Mac");
     await pressAsync(container, "Open on Available Mac");
     expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(

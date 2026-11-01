@@ -1,3 +1,4 @@
+import { serializePrivateFileCommit } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedRegularFile as readPrivateFile } from "@opensteer/shared/privateFiles";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -43,6 +44,7 @@ interface ProtectedJsonFileOptions<T> {
   readonly privateFiles?: DesktopPrivateFilesystem;
   readonly platform?: NodeJS.Platform;
   readonly schema: z.ZodType<T>;
+  readonly assertCurrent?: () => void;
 }
 
 /**
@@ -88,6 +90,7 @@ export class ProtectedJsonFile<T> {
   readonly #platform: NodeJS.Platform;
   readonly #privateFiles: DesktopPrivateFilesystem | undefined;
   readonly #schema: z.ZodType<T>;
+  readonly #assertCurrent: (() => void) | undefined;
 
   constructor(options: ProtectedJsonFileOptions<T>) {
     if (!Number.isSafeInteger(options.maxFileBytes) || options.maxFileBytes < 1) {
@@ -97,6 +100,7 @@ export class ProtectedJsonFile<T> {
       throw new TypeError("Protected JSON plaintext size must be a positive bounded integer.");
     }
     this.#content = options.content;
+    this.#assertCurrent = options.assertCurrent;
     this.#cryptography = options.cryptography;
     this.#filePath = path.resolve(options.filePath);
     this.#maxFileBytes = options.maxFileBytes;
@@ -195,9 +199,16 @@ export class ProtectedJsonFile<T> {
     }
     const serialized = `${JSON.stringify({ ciphertext: encrypted.toString("base64"), schemaVersion: 1 })}\n`;
     if (this.#privateFiles) {
+      this.#assertCurrent?.();
       await this.#privateFiles.writeFileAtomic(this.#filePath, serialized);
     } else {
-      await writeAtomicFile(this.#filePath, serialized, this.#maxFileBytes, this.#messages);
+      await writeAtomicFile(
+        this.#filePath,
+        serialized,
+        this.#maxFileBytes,
+        this.#messages,
+        this.#assertCurrent,
+      );
     }
   }
 
@@ -239,6 +250,7 @@ async function writeAtomicFile(
   value: string,
   maxBytes: number,
   messages: ProtectedJsonMessages,
+  assertCurrent?: () => void,
 ): Promise<void> {
   if (Buffer.byteLength(value, "utf8") > maxBytes) {
     throw new Error(`${messages.protectedStore} is too large.`);
@@ -261,8 +273,11 @@ async function writeAtomicFile(
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, filePath);
-    await syncDirectory(directory);
+    await serializePrivateFileCommit(filePath, async () => {
+      assertCurrent?.();
+      await rename(temporaryPath, filePath);
+      await syncDirectory(directory);
+    });
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(temporaryPath, { force: true }).catch(() => undefined);

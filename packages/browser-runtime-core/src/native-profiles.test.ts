@@ -131,6 +131,47 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   };
 }
 describe("native profile runtime", () => {
+  it("expires a hung restore, retries the same profile without releasing it, and bounds shutdown", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>();
+    const never = new Promise<void>(() => {});
+    const launch = f.launcher.launch.bind(f.launcher);
+    vi.spyOn(f.launcher, "launch").mockImplementationOnce(async (request, signal) => {
+      const browser = await launch(request, signal);
+      return Object.assign(browser, {
+        profile: {
+          ready: () => {
+            entered.resolve();
+            return never;
+          },
+          admit: async () => {},
+        },
+      });
+    });
+    vi.useFakeTimers();
+    vi.useFakeTimers();
+    const opening = f.open(1, 1);
+    const settled = vi.fn();
+    void opening.then(settled, settled);
+    await entered.promise;
+    try {
+      const other = await f.open(2, 2);
+      await other.close();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(settled, "expired restore must release the profile lane").toHaveBeenCalled();
+      await expect(opening).rejects.toThrow();
+      await (await f.open(1, 3)).close();
+      const stopped = vi.fn();
+      const shutdown = f.runtime.shutdown().then(stopped);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(stopped, "shutdown must not join the abandoned restore").toHaveBeenCalled();
+      await shutdown;
+    } finally {
+      vi.useRealTimers();
+      // A red regression must not make fixture cleanup join the deliberately hung collaborator.
+      if (!settled.mock.calls.length) runtimes.splice(runtimes.indexOf(f.runtime), 1);
+    }
+  });
   it("does not submit a second blank navigation to an already-created initial page", async () => {
     const f = await fixture();
     const navigation = vi.spyOn(FakePage.prototype, "submitNavigation");
@@ -170,7 +211,7 @@ describe("native profile runtime", () => {
       cancellation.abort();
       held.release();
       await refused;
-      expect(f.initializationClient.load.mock.calls[0]?.[1]).toBe(cancellation.signal);
+      expect(f.initializationClient.load.mock.calls[0]?.[1]?.aborted).toBe(true);
       expect(f.initializationClient.complete).not.toHaveBeenCalled();
       expect(f.launcher.launchCount).toBe(0);
       const marker = JSON.parse(
@@ -534,7 +575,7 @@ describe("native profile runtime", () => {
     for (const timing of f.timings) {
       expect(timing.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(timing.elapsedSinceStartMs).toBeGreaterThanOrEqual(timing.elapsedMs);
-      expect(timing.correlationId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(timing.correlationId).toMatch(/^open-/);
     }
     expect(JSON.stringify(f.timings)).not.toContain("example.test");
     await warm.close();

@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { DesktopSecretCryptography } from "./protected-json-file.js";
 
 const readinessProbe = "opensteer-desktop-protected-storage-readiness-v1";
@@ -48,7 +49,9 @@ export class VerifiedDesktopSecretCryptography implements DesktopSecretCryptogra
 
   async isAsyncEncryptionAvailable(): Promise<boolean> {
     if (this.#verified) return true;
-    this.#verification ??= this.#verify();
+    this.#verification ??= withTimeout(this.#verify(), 5_000, {
+      timeoutError: () => new Error("Protected storage verification timed out."),
+    }).catch(() => false);
     try {
       const verified = await this.#verification;
       if (verified) this.#verified = true;

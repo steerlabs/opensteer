@@ -10,6 +10,14 @@ export interface BrowserSessionPolicyOptions {
   readonly pagePolicyPreloadPath: string;
 }
 
+const requestGates = new WeakMap<Session, BrowserSessionRequestGate>();
+export function bindBrowserSessionRequestGate(
+  session: Session,
+  gate: BrowserSessionRequestGate,
+): void {
+  requestGates.set(session, gate);
+}
+
 /**
  * The rules every Browser Session page shares: no device permissions except
  * HTML fullscreen, downloads owned by the desktop, negotiated WebAuthn policy, only web schemes, and a Chrome
@@ -19,10 +27,11 @@ export function applyBrowserSessionPolicy(
   session: Session,
   options: BrowserSessionPolicyOptions,
 ): void {
+  if (options.requestGate) bindBrowserSessionRequestGate(session, options.requestGate);
   session.webRequest.onBeforeRequest((details, callback) => {
     if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
-    else if (options.requestGate)
-      options.requestGate.beforeRequest(details.webContentsId, callback);
+    else if (requestGates.has(session))
+      requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });
   session.setPermissionCheckHandler((_contents, permission) => permission === "fullscreen");
@@ -104,41 +113,33 @@ function isAllowedBrowserRequest(value: string): boolean {
 /** Session-wide: worker requests need the same restoration fence as page requests. */
 export class BrowserSessionRequestGate {
   #mode: "closed" | "dormant" | "open" | "failed" = "closed";
-  readonly #pending = new Set<(response: { cancel: boolean }) => void>();
   readonly #helpers = new Set<number>();
 
   beforeRequest(
     webContentsId: number | undefined,
     callback: (response: { cancel: boolean }) => void,
   ): void {
-    if (this.#mode === "failed") callback({ cancel: true });
-    else if (
-      this.#mode === "open" ||
-      (webContentsId !== undefined && this.#helpers.has(webContentsId))
-    )
-      callback({ cancel: false });
-    else if (this.#mode === "dormant") callback({ cancel: true });
-    else this.#pending.add(callback);
+    callback({
+      cancel:
+        this.#mode !== "open" &&
+        !(
+          this.#mode !== "failed" &&
+          webContentsId !== undefined &&
+          this.#helpers.has(webContentsId)
+        ),
+    });
   }
   close(): void {
     if (this.#mode !== "failed") this.#mode = "closed";
   }
   dormant(): void {
-    if (this.#mode === "failed") return;
-    this.#mode = "dormant";
-    for (const callback of this.#pending) callback({ cancel: true });
-    this.#pending.clear();
+    if (this.#mode !== "failed") this.#mode = "dormant";
   }
   open(): void {
-    if (this.#mode === "failed") return;
-    this.#mode = "open";
-    for (const callback of this.#pending) callback({ cancel: false });
-    this.#pending.clear();
+    if (this.#mode !== "failed") this.#mode = "open";
   }
   fail(): void {
     this.#mode = "failed";
-    for (const callback of this.#pending) callback({ cancel: true });
-    this.#pending.clear();
   }
   /** Only synthetic Fetch-fulfilled storage helpers may cross a closed gate. */
   allowStorageHelper(webContentsId: number): () => void {

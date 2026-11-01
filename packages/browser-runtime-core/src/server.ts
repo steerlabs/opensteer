@@ -349,10 +349,9 @@ export class BrowserRuntimeServer {
   }
 
   private async closeOnce(): Promise<void> {
-    // A failed profile save rejects here, before any connection is touched,
-    // so a retry still reaches every session and health.
-    await this.runtime.shutdown();
-    // Every session is saved and closed: no connection has work left to finish.
+    // Admission/attempt abort is synchronous; sockets never wait for persistence.
+    const persistence = this.runtime.shutdown();
+    void persistence.catch(() => undefined);
     await this.listening?.catch(() => undefined);
     const closed = [new Promise<void>((resolve) => this.websocketServer.close(() => resolve()))];
     if (this.httpServer.listening) closed.push(closeHttpServerNow(this.httpServer));
@@ -364,6 +363,7 @@ export class BrowserRuntimeServer {
       websocket.terminate();
     }
     await Promise.all(closed);
+    await persistence;
   }
 }
 

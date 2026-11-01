@@ -1,3 +1,4 @@
+import { BrowserAddressDisplay } from "../browser/browser-chrome.js";
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router";
 import type { BrowserTabOpenInput, HostClient, PendingBrowserTab } from "@opensteer/client/host";
@@ -68,7 +69,11 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
       <div className="browser-view">
         <div className="browser-toolbar surface-row">
           {props.leading}
-          <span className="browser-address">{pending?.url ?? "New tab"}</span>
+          <span className="browser-address">
+            <span className="browser-address__field">
+              <BrowserAddressDisplay url={pending?.url ?? "about:blank"} />
+            </span>
+          </span>
           <span className="launcher__spacer" />
           <button
             type="button"
@@ -92,13 +97,13 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
             {pending?.error ? (
               <p>
                 {pending.state === "unknown"
-                  ? "The Host may have opened this tab. Check again to recover the same opening."
+                  ? "The Host may have opened this tab. Retry to recover the same opening."
                   : pending.error.message}
               </p>
             ) : null}
             {pending && pending.state !== "opening" ? (
               <button className="btn" type="button" onClick={() => retry()}>
-                {pending.state === "unknown" ? "Check again" : "Retry"}
+                Retry
               </button>
             ) : null}
             {pending?.state === "failed" &&

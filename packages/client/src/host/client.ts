@@ -126,6 +126,7 @@ export type BrowserTabOpenInput =
       readonly placement?: { readonly kind: "runner"; readonly runnerId: string };
     };
 export interface BrowserTabOpenOptions {
+  readonly signal?: AbortSignal;
   readonly url?: string;
   readonly typed?: boolean;
   readonly viewport?: { readonly width: number; readonly height: number };

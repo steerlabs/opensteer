@@ -1,6 +1,6 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { z } from "zod";
-import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -59,12 +59,13 @@ import {
 } from "@opensteer/browser-runtime-core";
 import {
   applyBrowserSessionPolicy,
+  bindBrowserSessionRequestGate,
   updateBrowserPasskeyPolicy,
   type BrowserSessionRequestGate,
 } from "./browser-session-policy.js";
 import {
   acquireElectronLocalProfile,
-  prepareElectronLocalProfiles,
+  electronSessionCookieCommand,
   requireElectronLocalProfiles,
   releaseElectronLocalProfile,
   type ElectronLocalProfile,
@@ -230,25 +231,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   prepare(): Promise<void> {
     this.#preparation ??= (async () => {
       await app.whenReady();
-      this.#nativeProfilesAvailable = await prepareElectronLocalProfiles();
-      const sessionId = createBrowserSessionId();
-      const browser = await this.launch({
-        initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
-        partitionKey: `session:${sessionId}`,
-        sessionId,
-        storage: { kind: "guest" },
-      });
-      try {
-        const page = browser.context.pages()[0]!;
-        const channel = await page.cdp();
-        try {
-          await channel.send("Runtime.enable");
-        } finally {
-          await channel.detach();
-        }
-      } finally {
-        await browser.close();
-      }
+      // Engine support is stable. Keychain availability is checked on each explicit acquisition.
+      this.#nativeProfilesAvailable = true;
     })();
     return this.#preparation;
   }
@@ -277,15 +261,20 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
           ),
       });
       timing("session-created");
+      const sharedOwner = profile.hasContexts;
+      let context: ElectronBrowserContext | undefined;
       const cancel = () => {
-        void profile.retire().catch(() => undefined);
+        if (sharedOwner) void context?.close().catch(() => undefined);
+        else void profile.retire().catch(() => undefined);
       };
       const removeCancellation = () => signal?.removeEventListener("abort", cancel);
       signal?.addEventListener("abort", cancel, { once: true });
       if (signal?.aborted) cancel();
-      let context: ElectronBrowserContext | undefined;
       try {
-        await profile.ready();
+        await withTimeout(profile.ready(), 5_000, {
+          ...(signal ? { signal } : {}),
+          timeoutError: () => new Error("Browser profile restore timed out. Retry to reopen it."),
+        });
         signal?.throwIfAborted();
         timing("mirror-restored");
         this.#configureSession(
@@ -319,6 +308,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         return browser;
       } catch (error) {
         removeCancellation();
+        if (!sharedOwner) void profile.retire().catch(() => undefined);
         await context?.close().catch(() => undefined);
         throw error;
       }
@@ -376,6 +366,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     provider: boolean,
     requestGate?: BrowserSessionRequestGate,
   ): void {
+    if (requestGate) bindBrowserSessionRequestGate(profileSession, requestGate);
     if (this.#configuredSessions.has(profileSession)) {
       updateBrowserPasskeyPolicy(profileSession, provider);
       return;
@@ -1030,7 +1021,9 @@ class ElectronBrowserContext implements BrowserContext {
     const inspector = contents.debugger;
     const pending = new Set<Promise<unknown>>();
     const send = (method: string, parameters?: Record<string, unknown>) =>
-      inspector.sendCommand(method, parameters);
+      electronSessionCookieCommand(this.#profileSession, method, () =>
+        inspector.sendCommand(method, parameters),
+      );
     const onMessage = (_event: Electron.Event, method: string, parameters: unknown) => {
       if (method !== "Fetch.requestPaused") return;
       const requestId = asRecord(parameters).requestId;

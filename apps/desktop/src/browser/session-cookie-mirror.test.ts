@@ -83,7 +83,8 @@ async function fixture() {
       };
     },
     onFailure: vi.fn(),
-    publish: vi.fn(async (file: string, contents: string) => {
+    publish: vi.fn(async (file: string, contents: string, assertCurrent: () => void) => {
+      assertCurrent();
       writes.push(contents);
       await writeFile(file, contents, { mode: 0o600 });
     }),
@@ -137,26 +138,29 @@ describe("encrypted Session cookie mirror", () => {
       read.mockRestore();
     }
   });
-  it("discards uncommitted mirror and key sidecars without promoting either", async () => {
+  it("preserves another writer’s uncommitted sidecars without promoting either", async () => {
     const f = await fixture();
     const first = f.create();
     await first.initialize(async () => {});
     await first.stop();
-    await writeFile(
-      path.join(f.directory, `session-cookies.v1.json.tmp-${randomUUID()}`),
-      "incomplete",
+    const mirrorTemporary = path.join(f.directory, `session-cookies.v1.json.tmp-${randomUUID()}`);
+    const keyTemporary = path.join(
+      f.directory,
+      `.session-cookie-key.v1.json.123.${randomUUID()}.tmp`,
     );
-    await writeFile(
-      path.join(f.directory, `.session-cookie-key.v1.json.123.${randomUUID()}.tmp`),
-      "incomplete",
-    );
+    await writeFile(mirrorTemporary, "incomplete");
+    await writeFile(keyTemporary, "incomplete");
     const mirror = f.create();
     try {
       await mirror.recover();
-      expect((await readdir(f.directory)).sort()).toEqual([
-        "session-cookie-key.v1.json",
-        "session-cookies.v1.json",
-      ]);
+      expect((await readdir(f.directory)).sort()).toEqual(
+        [
+          path.basename(keyTemporary),
+          path.basename(mirrorTemporary),
+          "session-cookie-key.v1.json",
+          "session-cookies.v1.json",
+        ].sort(),
+      );
     } finally {
       await mirror.stop();
     }

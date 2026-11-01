@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { BrowserTabOpenResult } from "@opensteer/protocol";
 import {
   HostClientRequestError,
@@ -14,6 +15,9 @@ interface Opening {
   handle: BrowserTabOpenHandle;
   state: "opening" | "unknown" | "failed" | "opened";
   dismissed: boolean;
+  cancellation: AbortController;
+  transportCancellation: AbortController;
+  readonly expiresAt: number;
 }
 
 function fingerprint(target: BrowserTabOpenInput, options: BrowserTabOpenOptions): string {
@@ -26,6 +30,7 @@ function fingerprint(target: BrowserTabOpenInput, options: BrowserTabOpenOptions
           target.placement?.runnerId,
         ],
     options.url,
+    options.typed,
     options.viewport?.width,
     options.viewport?.height,
   ]);
@@ -91,7 +96,7 @@ export class PendingBrowserTabs {
       reject = no;
     });
     const handle = { idempotencyKey: key, result };
-    const opening: Opening = previous ?? {
+    const opening: Opening = {
       target:
         "sessionId" in input
           ? { sessionId: input.sessionId }
@@ -100,13 +105,16 @@ export class PendingBrowserTabs {
               ...(input.placement ? { placement: { ...input.placement } } : {}),
             },
       options: {
-        ...options,
+        ...(previous?.options ?? options),
         ...(options.viewport ? { viewport: { ...options.viewport } } : {}),
         idempotencyKey: key,
       },
       handle,
       state: "opening",
-      dismissed: false,
+      dismissed: previous?.dismissed ?? false,
+      cancellation: new AbortController(),
+      transportCancellation: new AbortController(),
+      expiresAt: Date.now() + 25_000,
     };
     // Install the handle before publishing: a synchronous subscriber may join it.
     opening.handle = handle;
@@ -131,12 +139,44 @@ export class PendingBrowserTabs {
     generation: number,
     uncertain: boolean,
   ): Promise<BrowserTabOpenResult> {
+    const abort = () => {
+      opening.transportCancellation.abort(opening.options.signal?.reason);
+      opening.cancellation.abort(opening.options.signal?.reason);
+    };
     try {
       this.#requireCurrent(generation);
-      const result = await this.#ports.open(opening.target, opening.options);
+      opening.options.signal?.addEventListener("abort", abort, { once: true });
+      if (opening.options.signal?.aborted) abort();
+      const work = this.#ports.open(opening.target, {
+        ...opening.options,
+        signal: opening.transportCancellation.signal,
+      });
+      void work.then(
+        (result) => {
+          if (opening.dismissed && generation === this.#generation)
+            void this.#ports
+              .close(result)
+              .finally(() => {
+                if (this.#opens.get(key) === opening) this.#opens.delete(key);
+              })
+              .catch(() => undefined);
+        },
+        () => undefined,
+      );
+      const result = await withTimeout(work, 25_000, {
+        signal: opening.cancellation.signal,
+        timeoutError: () => {
+          const error = openingTimeout();
+          opening.transportCancellation.abort(error);
+          opening.cancellation.abort(error);
+          return error;
+        },
+      });
+      this.checkDeadlines();
+      opening.cancellation.signal.throwIfAborted();
       this.#requireCurrent(generation);
       opening.state = "opened";
-      if (opening.dismissed) await this.#ports.close(result);
+      if (this.#opens.get(key) !== opening) throw new Error("This opening was replaced.");
       this.#requireCurrent(generation);
       this.#remove(key);
       this.#completed.add(key);
@@ -147,7 +187,7 @@ export class PendingBrowserTabs {
       }
       return result;
     } catch (error) {
-      if (generation === this.#generation) {
+      if (generation === this.#generation && this.#opens.get(key) === opening) {
         opening.state =
           uncertain ||
           !isHostRefusal(error) ||
@@ -171,6 +211,8 @@ export class PendingBrowserTabs {
           });
       }
       throw error;
+    } finally {
+      opening.options.signal?.removeEventListener("abort", abort);
     }
   }
 
@@ -183,10 +225,21 @@ export class PendingBrowserTabs {
       });
   }
 
+  checkDeadlines(): void {
+    const now = Date.now();
+    for (const opening of this.#opens.values())
+      if (opening.state === "opening" && now >= opening.expiresAt) {
+        const error = openingTimeout();
+        opening.transportCancellation.abort(error);
+        opening.cancellation.abort(error);
+      }
+  }
+
   readonly dismiss = (key: string): void => {
     const opening = this.#opens.get(key);
     if (!opening) return;
     opening.dismissed = true;
+    opening.cancellation.abort();
     this.#remove(key);
   };
 
@@ -197,6 +250,15 @@ export class PendingBrowserTabs {
 
   clear(): void {
     this.#generation += 1;
+    for (const opening of this.#opens.values()) {
+      const error = new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "The signed-in account changed while the browser was opening.",
+      });
+      opening.transportCancellation.abort(error);
+      opening.cancellation.abort(error);
+    }
     this.#opens.clear();
     this.#completed.clear();
     this.#rows = [];
@@ -215,4 +277,13 @@ export class PendingBrowserTabs {
     this.#rows = rows;
     this.#ports.changed(rows);
   }
+}
+
+function openingTimeout(): HostClientRequestError {
+  return new HostClientRequestError({
+    code: "unavailable",
+    status: 504,
+    reason: "browser-tab-open-outcome-unknown",
+    message: "The Host may have opened this tab. Retry to recover the same opening, or close it.",
+  });
 }

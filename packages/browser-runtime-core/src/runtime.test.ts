@@ -744,19 +744,27 @@ describe("BrowserRuntime", () => {
         else {
           await vi.advanceTimersByTimeAsync(browserStateImportRuntimeTimeoutMs);
           expect(settled).toBe(true);
-          expect(stopError).toBeInstanceOf(AggregateError);
-          const saveError = stopError instanceof AggregateError ? stopError.errors[0] : undefined;
-          expect(saveError).toBeInstanceOf(BrowserRuntimeError);
-          expect(saveError).toMatchObject({
-            code: "conflict",
-            retryable: true,
-            cause: { name: "AbortError" },
-            message:
-              "Could not save this browser profile because a sign-in import is still pending. Unsaved state remains in memory, and " +
-              (closePath === "shutdown"
-                ? "shutdown did not complete."
-                : "Opensteer will retry saving it automatically."),
-          });
+          if (closePath === "shutdown") {
+            expect(stopError).toMatchObject({
+              code: "conflict",
+              retryable: true,
+              reason: "runtime-shutdown.queue-timeout",
+            });
+          } else {
+            expect(stopError).toBeInstanceOf(AggregateError);
+            const saveError = stopError instanceof AggregateError ? stopError.errors[0] : undefined;
+            expect(saveError).toBeInstanceOf(BrowserRuntimeError);
+            expect(saveError).toMatchObject({
+              code: "conflict",
+              retryable: true,
+              cause: { name: "AbortError" },
+              message:
+                "Could not save this browser profile because a sign-in import is still pending. Unsaved state remains in memory, and " +
+                (closePath === "shutdown"
+                  ? "shutdown did not complete."
+                  : "Opensteer will retry saving it automatically."),
+            });
+          }
           expect(exported).not.toHaveBeenCalled();
           expect(profileState.commits).toEqual([]);
           expect(browser.closeCount).toBe(0);

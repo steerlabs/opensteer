@@ -171,15 +171,18 @@ async function request<Name extends keyof typeof hostApi>(
       ? attachmentMaxBytes
       : workspaceFilePreviewMaxBytes
     : 16 * 1_024 * 1_024;
-  const headersTimeoutMs = options.bufferedResponses
-    ? bufferedHostResponseTimeoutMs(maximumBytes)
-    : "binaryRequest" in declaration
-      ? bufferedHostResponseTimeoutMs(
-          call?.body instanceof Uint8Array
-            ? call.body.byteLength
-            : (call?.body?.size ?? attachmentMaxBytes),
-        )
-      : hostResponseHeadersTimeoutMs;
+  const headersTimeoutMs =
+    name === "commands.dispatch" && "type" in payload && payload.type === "browser.tab.open"
+      ? 25_000
+      : options.bufferedResponses
+        ? bufferedHostResponseTimeoutMs(maximumBytes)
+        : "binaryRequest" in declaration
+          ? bufferedHostResponseTimeoutMs(
+              call?.body instanceof Uint8Array
+                ? call.body.byteLength
+                : (call?.body?.size ?? attachmentMaxBytes),
+            )
+          : hostResponseHeadersTimeoutMs;
   const stallTimeoutMs = hostResponseStallTimeoutMs;
   try {
     call?.signal?.throwIfAborted();

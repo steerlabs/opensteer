@@ -329,7 +329,7 @@ describe("BrowserRuntimeServer", () => {
     await server.close();
   });
 
-  it("keeps transport alive until a retryable shutdown checkpoint succeeds", async () => {
+  it("closes transport before reporting a retryable shutdown checkpoint failure", async () => {
     const delegate = new FakeProfileStateClient();
     let commitAttempts = 0;
     const runtime = new BrowserRuntime({
@@ -354,15 +354,13 @@ describe("BrowserRuntimeServer", () => {
     await once(websocket, "open");
     await waitFor(() => runtime.health().sessionCount === 1);
 
-    await expect(server.close()).rejects.toThrow(/checkpointed/i);
-    expect(websocket.readyState).toBe(WebSocket.OPEN);
-    const health = await fetch(`http://${address.host}:${address.port}/health`);
-    expect(health.status).toBe(200);
-    expect(await health.json()).toMatchObject({ profileHostCount: 1, state: "closing" });
-
     const socketClosed = once(websocket, "close");
-    await server.close();
+    await expect(server.close()).rejects.toThrow(/checkpointed/i);
     await socketClosed;
+    expect(websocket.readyState).toBe(WebSocket.CLOSED);
+    await expect(fetch(`http://${address.host}:${address.port}/health`)).rejects.toThrow();
+    await server.close();
+    expect(runtime.health()).toMatchObject({ profileHostCount: 0, state: "closed" });
     expect(commitAttempts).toBe(2);
     expect(runtime.health().state).toBe("closed");
   });
@@ -686,7 +684,7 @@ describe("BrowserRuntimeServer shutdown", () => {
     }
   }, 30_000);
 
-  it("keeps every connection through a failed profile save, then ends them all when a retry saves", async () => {
+  it("closes every connection despite a failed profile save and permits persistence retry", async () => {
     const delegate = new FakeProfileStateClient();
     let commitAttempts = 0;
     const runtime = new BrowserRuntime({
@@ -713,18 +711,16 @@ describe("BrowserRuntimeServer shutdown", () => {
     const connections = [...held, silent];
 
     const failed = await observeClose(server.close());
-    const openAfterFailure = connections
-      .filter((connection) => connection.kind !== "keep-alive")
-      .every((connection) => !connection.isClosed());
-    const health = await fetch(`http://${address.host}:${address.port}/health`);
+    const closedAfterFailure = await allClosed(connections);
+    const refusedAfterFailure = await connectionRefused(address.port);
     const retried = await observeClose(server.close());
     const everyConnectionClosed = await allClosed(connections);
     const listenerRefused = await connectionRefused(address.port);
     cases.push({
-      name: "failed profile save keeps transport; retry ends it",
+      name: "failed profile save releases transport; persistence remains retryable",
       failedClose: failed,
-      openAfterFailure,
-      healthAfterFailure: health.status,
+      closedAfterFailure,
+      refusedAfterFailure,
       retriedClose: retried,
       commitAttempts,
       connections: connections.map((connection) => connection.report()),
@@ -732,8 +728,8 @@ describe("BrowserRuntimeServer shutdown", () => {
     });
 
     expect(failed.settled).toBe("rejected");
-    expect(openAfterFailure).toBe(true);
-    expect(health.status).toBe(200);
+    expect(closedAfterFailure).toBe(true);
+    expect(refusedAfterFailure).toBe(true);
     expect(retried.settled).toBe("closed");
     expect(commitAttempts).toBe(2);
     expect(everyConnectionClosed).toBe(true);

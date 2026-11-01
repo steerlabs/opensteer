@@ -50,6 +50,22 @@ describe("VerifiedDesktopSecretCryptography", () => {
     await expect(verified.isAsyncEncryptionAvailable()).resolves.toBe(true);
     expect(cryptography.encryptStringAsync).toHaveBeenCalledTimes(2);
   });
+  it("bounds an unresolved readiness probe and retries without releasing the old probe", async () => {
+    vi.useFakeTimers();
+    const cryptography = delegate();
+    vi.spyOn(cryptography, "isAsyncEncryptionAvailable").mockImplementationOnce(
+      () => new Promise<boolean>(() => {}),
+    );
+    const verified = new VerifiedDesktopSecretCryptography(cryptography);
+    try {
+      const first = verified.isAsyncEncryptionAvailable();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(first).resolves.toBe(false);
+      await expect(verified.isAsyncEncryptionAvailable()).resolves.toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function delegate(): DesktopSecretCryptography {
