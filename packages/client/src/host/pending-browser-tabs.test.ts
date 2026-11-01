@@ -1,3 +1,4 @@
+import { HostClientRequestError } from "./client.js";
 import type { BrowserTabOpenInput, BrowserTabOpenOptions } from "./client.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
@@ -121,5 +122,38 @@ it("checks the action deadline on foregrounding and fences a late buffered answe
   } finally {
     pending.dispose();
     vi.useRealTimers();
+  }
+});
+
+it("turns an uncertain retry into a confirmed failure when the Host replays terminal settlement", async () => {
+  let confirmed = false;
+  const open = vi.fn(async () => {
+    if (!confirmed) throw new TypeError("Response lost");
+    throw new HostClientRequestError({
+      code: "conflict",
+      status: 409,
+      reason: "browser-tab-open-failed",
+      message: "Opening failed",
+    });
+  });
+  const pending = new PendingBrowserTabs({
+    admitted: () => true,
+    open,
+    close: vi.fn(),
+    changed: vi.fn(),
+  });
+  try {
+    const target = { identity: { kind: "guest" as const } };
+    await expect(pending.begin(target, { idempotencyKey: "lost" }).result).rejects.toThrow(
+      "Response lost",
+    );
+    expect(pending.rows[0]?.state).toBe("unknown");
+    confirmed = true;
+    await expect(pending.begin(target, { idempotencyKey: "lost" }).result).rejects.toThrow(
+      "Opening failed",
+    );
+    expect(pending.rows[0]?.state).toBe("failed");
+  } finally {
+    pending.dispose();
   }
 });

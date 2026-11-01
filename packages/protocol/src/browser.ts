@@ -1871,6 +1871,7 @@ export const BrowserTabOpenRefusalReasonSchema = z.enum([
   "browser-placement-unavailable",
   "browser-placement-ambiguous",
   "browser-tab-open-outcome-unknown",
+  "browser-tab-open-failed",
 ]);
 export type BrowserTabOpenRefusalReason = z.infer<typeof BrowserTabOpenRefusalReasonSchema>;
 /** Host bindings live at least 24 hours; one older successful binding per identity retains placement. */
@@ -1886,6 +1887,7 @@ export const BrowserTabOpenBindingSchema = z.strictObject({
   outcome: z.discriminatedUnion("kind", [
     z.strictObject({ kind: z.literal("pending") }),
     z.strictObject({ kind: z.literal("opened"), tabId: BrowserSurfaceIdSchema }),
+    z.strictObject({ kind: z.literal("failed"), reason: z.enum(["failed", "interrupted"]) }),
   ]),
 });
 export type BrowserTabOpenBinding = z.infer<typeof BrowserTabOpenBindingSchema>;

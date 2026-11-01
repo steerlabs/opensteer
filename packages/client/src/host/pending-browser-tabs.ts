@@ -188,11 +188,14 @@ export class PendingBrowserTabs {
       return result;
     } catch (error) {
       if (generation === this.#generation && this.#opens.get(key) === opening) {
+        const terminalFailure =
+          error instanceof HostClientRequestError && error.reason === "browser-tab-open-failed";
         opening.state =
-          uncertain ||
-          !isHostRefusal(error) ||
-          (error instanceof HostClientRequestError &&
-            error.reason === "browser-tab-open-outcome-unknown")
+          !terminalFailure &&
+          (uncertain ||
+            !isHostRefusal(error) ||
+            (error instanceof HostClientRequestError &&
+              error.reason === "browser-tab-open-outcome-unknown"))
             ? "unknown"
             : "failed";
         if (!opening.dismissed)

@@ -1883,6 +1883,9 @@ export async function failActiveBrowserSessions(
 }> {
   const now = new Date();
   const profileLeaseExpiresAt = new Date(now.getTime() + browserProfileCheckpointGraceMs);
+  if (placementKey === undefined) {
+    await interruptPendingBrowserTabOpens(database);
+  }
   let sessionIds: BrowserSessionId[] = [];
   return withRequestWorkspaceLocks(
     database,
@@ -2344,6 +2347,10 @@ export async function settleBrowserTabOpen(
     .set({ binding })
     .where("ownerId", "=", binding.callerUserId)
     .where("idempotencyKey", "=", binding.idempotencyKey)
+    .where(sql<boolean>`binding -> 'outcome' ->> 'kind' = 'pending'`)
+    .where(sql<boolean>`binding ->> 'requestFingerprint' = ${binding.requestFingerprint}`)
+    .where(sql<boolean>`binding ->> 'chosenSessionId' = ${binding.chosenSessionId}`)
+    .where(sql<boolean>`binding ->> 'initialPageOperationKey' = ${binding.initialPageOperationKey}`)
     .executeTakeFirstOrThrow();
 }
 
@@ -2394,4 +2401,13 @@ export async function browserSessionOpenerForBinding(
   return row.home
     ? { kind: "opensteer", threadId: row.threadId }
     : { kind: "task", threadId: row.threadId, runId };
+}
+
+/** Fence pending attempts before accepting Runtime streams after Host restart. */
+export async function interruptPendingBrowserTabOpens(
+  database: Kysely<DatabaseSchema>,
+): Promise<void> {
+  await sql`update browser_tab_opens
+    set binding = jsonb_set(binding, '{outcome}', '{"kind":"failed","reason":"interrupted"}'::jsonb)
+    where binding -> 'outcome' ->> 'kind' = 'pending'`.execute(database);
 }

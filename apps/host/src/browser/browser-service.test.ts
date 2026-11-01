@@ -365,6 +365,86 @@ describe("BrowserService", () => {
     expect(recordVisit).toHaveBeenCalledOnce();
   });
 
+  it("durably replays a failed initial open without starting another browser", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const create = vi.spyOn(repository, "createBrowserSession");
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({
+        url: runtime.url,
+        initialNavigationVersion: true,
+        initialPageMismatch: true,
+      }),
+    });
+    cleanups.push(() => service.close());
+    const command = {
+      type: "browser.tab.open" as const,
+      identity: { kind: "guest" as const },
+      idempotencyKey: randomUUID(),
+    };
+    await expect(service.openTab(ownerId, command)).rejects.toBeDefined();
+    expect(
+      (await repository.getBrowserTabOpen(ownerId, command.idempotencyKey))?.outcome,
+    ).toMatchObject({ kind: "failed" });
+    await expect(service.openTab(ownerId, command)).rejects.toMatchObject({
+      reason: "browser-tab-open-failed",
+    });
+    expect(create).toHaveBeenCalledOnce();
+    await expect(
+      service.openTab(ownerId, { ...command, url: "https://different.test/" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("replays a failed additional tab while leaving the shared browser ready", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const service = freshService({ keys, repository, runtime });
+    const opened = await service.start({ ownerId, workspaceId, fresh: true });
+    const command = {
+      type: "browser.tab.open" as const,
+      sessionId: opened.session.id,
+      idempotencyKey: randomUUID(),
+    };
+    const opening = service.openTab(ownerId, command);
+    const refused = expect(opening).rejects.toMatchObject({ reason: "browser-tab-open-failed" });
+    const request = await runtime.nextCommand();
+    expect(request.type).toBe("cdp.command");
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: request.requestId,
+      error: { code: "conflict", message: "Could not create page", retryable: false },
+    });
+    await refused;
+    expect((await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state).toBe(
+      "ready",
+    );
+    await expect(service.openTab(ownerId, command)).rejects.toMatchObject({
+      reason: "browser-tab-open-failed",
+    });
+    expect(runtime.receivedCommands()).toHaveLength(1);
+    const retry = service.openTab(ownerId, { ...command, idempotencyKey: randomUUID() });
+    const retried = expect(retry).rejects.toMatchObject({ reason: "browser-tab-open-failed" });
+    const next = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: next.requestId,
+      error: { code: "conflict", message: "Could not create page", retryable: false },
+    });
+    await retried;
+    expect(runtime.receivedCommands()).toHaveLength(2);
+  });
+
   it("refuses mismatched initial page readiness", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
@@ -5060,7 +5140,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     );
   }
   async settleBrowserTabOpen(binding: import("@opensteer/protocol").BrowserTabOpenBinding) {
-    this.tabOpens.set(`${binding.callerUserId}:${binding.idempotencyKey}`, binding);
+    const key = binding.callerUserId + ":" + binding.idempotencyKey;
+    const current = this.tabOpens.get(key);
+    if (
+      current?.outcome.kind === "pending" &&
+      current.requestFingerprint === binding.requestFingerprint
+    )
+      this.tabOpens.set(key, binding);
   }
   async rememberedBrowserPlacement() {
     return null;
@@ -5663,6 +5749,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly failed: number;
   }> {
     let count = 0;
+    if (placementKey === undefined)
+      for (const [key, binding] of this.tabOpens)
+        if (binding.outcome.kind === "pending")
+          this.tabOpens.set(key, {
+            ...binding,
+            outcome: { kind: "failed", reason: "interrupted" },
+          });
     const events: AgentEvent[] = [];
     for (const session of this.#sessions.values()) {
       if ((placementKey && session.placementKey !== placementKey) || terminal(session.state))

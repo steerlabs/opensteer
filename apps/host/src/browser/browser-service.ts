@@ -1520,123 +1520,153 @@ export class BrowserService {
     const command = parsed.url ? { ...parsed, url: safeNavigationUrl(parsed.url) } : parsed;
     // A caller/key binds once; only opens of the same identity share selection/start work.
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
-      let pendingFinish: (() => Promise<void>) | undefined;
-      const select = async () => {
-        const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
-        let binding = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
-        if (binding) {
-          if (binding.requestFingerprint !== fingerprint)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Idempotency key already used.",
+      let admitted: BrowserTabOpenBinding | undefined;
+      try {
+        let pendingFinish: (() => Promise<void>) | undefined;
+        const select = async () => {
+          const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+          let binding = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
+          if (binding) {
+            if (binding.requestFingerprint !== fingerprint)
+              throw new OpensteerError({
+                code: "conflict",
+                message: "Idempotency key already used.",
+              });
+            return binding;
+          }
+          let record: BrowserSessionRecord | null = null;
+          let opening: StartBrowserSessionInput | null = null;
+          let identityKey: string | null = null;
+          let runnerId: RunnerId;
+          if (command.sessionId !== undefined) {
+            record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
+            if (!record)
+              throw new OpensteerError({
+                code: "not_found",
+                message: "Browser session not found.",
+              });
+            this.#requireOpenableSession(record);
+            runnerId = record.runnerId;
+          } else {
+            const resolved = await this.#resolveIdentityOpen(ownerId, {
+              identity: command.identity!,
+              ...(command.placement ? { placement: command.placement } : {}),
             });
-          return binding;
-        }
-        let record: BrowserSessionRecord | null = null;
-        let opening: StartBrowserSessionInput | null = null;
-        let identityKey: string | null = null;
-        let runnerId: RunnerId;
-        if (command.sessionId !== undefined) {
-          record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
-          if (!record)
-            throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
-          this.#requireOpenableSession(record);
-          runnerId = record.runnerId;
-        } else {
-          const resolved = await this.#resolveIdentityOpen(ownerId, {
-            identity: command.identity!,
-            ...(command.placement ? { placement: command.placement } : {}),
-          });
-          const { workspace, profileId, placement } = resolved;
-          identityKey = resolved.identityKey;
-          runnerId = placement.runnerId;
-          const sessions = await this.#repository.listBrowserSessions(ownerId);
-          record =
-            sessions
-              .filter(
-                (candidate) =>
-                  candidate.workspaceId === workspace.id &&
-                  candidate.state === "ready" &&
-                  candidate.origin === "workspace" &&
-                  candidate.opener?.kind === "person" &&
-                  candidate.opener.userId === ownerId &&
-                  candidate.profileId === profileId &&
-                  samePlacement(placement, placementOf(candidate)) &&
-                  this.#brokers.get(candidate.id)?.live,
-              )
-              .sort(
-                (left, right) =>
-                  left.createdAt.getTime() - right.createdAt.getTime() ||
-                  left.id.localeCompare(right.id),
-              )[0] ?? null;
-          if (!record)
-            opening = {
-              ownerId,
-              workspaceId: workspace.id,
-              placement,
-              sessionId: createBrowserSessionId(),
-              ...(profileId ? { profileId } : { fresh: true as const }),
-              ...(command.url ? { initialUrl: command.url } : {}),
-              ...(command.viewport ? { viewport: command.viewport } : {}),
-            };
-        }
-        binding = {
-          callerUserId: ownerId,
-          idempotencyKey: command.idempotencyKey,
-          requestFingerprint: fingerprint,
-          chosenSessionId: record?.id ?? opening!.sessionId!,
-          browserStarted: opening !== null,
-          initialPageOperationKey: createHash("sha256")
-            .update(`${ownerId}:${command.idempotencyKey}`)
-            .digest("hex"),
-          outcome: { kind: "pending" },
-        };
-        await this.#repository.bindBrowserTabOpen({ binding, identityKey, runnerId });
-        if (opening) {
-          let tabId: BrowserSurfaceId | undefined;
-          const finish = await this.#prepareStart(
-            { ...opening!, initialPageOperationKey: binding.initialPageOperationKey },
-            (openedTabId) => {
-              tabId = openedTabId;
-            },
-            command.url ? { ownerId, typed: command.typed === true } : undefined,
-          );
-          const openingBinding = binding;
-          pendingFinish = async () => {
-            await finish();
-            if (!tabId)
-              throw this.#tabOpenRefusal(
-                "browser-tab-open-outcome-unknown",
-                "The browser opened without a confirmed page. Inspect the browser before trying again.",
-              );
-            await this.#repository.settleBrowserTabOpen({
-              ...openingBinding,
-              outcome: { kind: "opened", tabId },
-            });
+            const { workspace, profileId, placement } = resolved;
+            identityKey = resolved.identityKey;
+            runnerId = placement.runnerId;
+            const sessions = await this.#repository.listBrowserSessions(ownerId);
+            record =
+              sessions
+                .filter(
+                  (candidate) =>
+                    candidate.workspaceId === workspace.id &&
+                    candidate.state === "ready" &&
+                    candidate.origin === "workspace" &&
+                    candidate.opener?.kind === "person" &&
+                    candidate.opener.userId === ownerId &&
+                    candidate.profileId === profileId &&
+                    samePlacement(placement, placementOf(candidate)) &&
+                    this.#brokers.get(candidate.id)?.live,
+                )
+                .sort(
+                  (left, right) =>
+                    left.createdAt.getTime() - right.createdAt.getTime() ||
+                    left.id.localeCompare(right.id),
+                )[0] ?? null;
+            if (!record)
+              opening = {
+                ownerId,
+                workspaceId: workspace.id,
+                placement,
+                sessionId: createBrowserSessionId(),
+                ...(profileId ? { profileId } : { fresh: true as const }),
+                ...(command.url ? { initialUrl: command.url } : {}),
+                ...(command.viewport ? { viewport: command.viewport } : {}),
+              };
+          }
+          binding = {
+            callerUserId: ownerId,
+            idempotencyKey: command.idempotencyKey,
+            requestFingerprint: fingerprint,
+            chosenSessionId: record?.id ?? opening!.sessionId!,
+            browserStarted: opening !== null,
+            initialPageOperationKey: createHash("sha256")
+              .update(`${ownerId}:${command.idempotencyKey}`)
+              .digest("hex"),
+            outcome: { kind: "pending" },
           };
-        }
-        return binding;
-      };
-      const selectAndStart = async () => {
-        let binding = await select();
-        // Another open of this identity must see the admitted session ready
-        // before selecting reuse. Different identities have independent lanes.
-        if (pendingFinish) {
-          await pendingFinish();
-          binding =
-            (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ?? binding;
-        }
-        return binding;
-      };
-      const binding =
-        command.identity === undefined
-          ? await selectAndStart()
-          : await this.#serializeKey(
-              `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : "guest"}`,
-              selectAndStart,
+          await this.#repository.bindBrowserTabOpen({ binding, identityKey, runnerId });
+          admitted = binding;
+          if (opening) {
+            let tabId: BrowserSurfaceId | undefined;
+            const finish = await this.#prepareStart(
+              { ...opening!, initialPageOperationKey: binding.initialPageOperationKey },
+              (openedTabId) => {
+                tabId = openedTabId;
+              },
+              command.url ? { ownerId, typed: command.typed === true } : undefined,
             );
-      return this.#resumeTabOpen(ownerId, command, binding);
+            const openingBinding = binding;
+            pendingFinish = async () => {
+              await finish();
+              if (!tabId)
+                throw this.#tabOpenRefusal(
+                  "browser-tab-open-outcome-unknown",
+                  "The browser opened without a confirmed page. Inspect the browser before trying again.",
+                );
+              await this.#repository.settleBrowserTabOpen({
+                ...openingBinding,
+                outcome: { kind: "opened", tabId },
+              });
+            };
+          }
+          return binding;
+        };
+        const selectAndStart = async () => {
+          let binding = await select();
+          // Another open of this identity must see the admitted session ready
+          // before selecting reuse. Different identities have independent lanes.
+          if (pendingFinish) {
+            await pendingFinish();
+            binding =
+              (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ??
+              binding;
+          }
+          return binding;
+        };
+        const binding =
+          command.identity === undefined
+            ? await selectAndStart()
+            : await this.#serializeKey(
+                `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : "guest"}`,
+                selectAndStart,
+              );
+        return await this.#resumeTabOpen(ownerId, command, binding);
+      } catch (error) {
+        // Initial-start failures close their exact broker before reaching here.
+        // An additional page can fail definitively only on the Runtime's reply;
+        // a missing response retains its key and uncertain outcome.
+        if (admitted && (admitted.browserStarted || error instanceof BrowserCdpRefusal)) {
+          await this.#repository.settleBrowserTabOpen({
+            ...admitted,
+            outcome: { kind: "failed", reason: "failed" },
+          });
+          const settled = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
+          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+        }
+        throw error;
+      }
     });
+  }
+
+  #tabOpenFailure(binding: BrowserTabOpenBinding): OpensteerError {
+    return this.#tabOpenRefusal(
+      "browser-tab-open-failed",
+      binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
+        ? "Opening was interrupted by a Host restart. Retry to open a new page."
+        : "The browser could not open this page. Retry to open a new page.",
+    );
   }
 
   #requireOpenableSession(record: BrowserSessionRecord): void {
@@ -1667,6 +1697,7 @@ export class BrowserService {
     command: BrowserTabOpenCommand,
     binding: BrowserTabOpenBinding,
   ): Promise<BrowserTabOpenResult> {
+    if (binding.outcome.kind === "failed") throw this.#tabOpenFailure(binding);
     return this.#serializeKey(binding.chosenSessionId, async () => {
       const record = await this.#repository.getBrowserSessionForOwner(
         binding.chosenSessionId,
@@ -1711,6 +1742,9 @@ export class BrowserService {
         broker.bindHistoryNavigation(navigationId, tabId);
         binding = { ...binding, outcome: { kind: "opened", tabId } };
         await this.#repository.settleBrowserTabOpen(binding);
+        binding =
+          (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ?? binding;
+        if (binding.outcome.kind === "failed") throw this.#tabOpenFailure(binding);
       }
       if (binding.outcome.kind !== "opened")
         throw this.#tabOpenRefusal(
@@ -5408,7 +5442,7 @@ class HostedBrowserBroker {
     clearTimeout(pending.timeout);
     this.#pendingCdpRequests.delete(message.requestId);
     if (message.type === "cdp.error") {
-      pending.reject(agentProtocolError(message.error));
+      pending.reject(new BrowserCdpRefusal(agentProtocolError(message.error)));
       return;
     }
     if (message.type !== pending.expectedType) {
@@ -6712,3 +6746,15 @@ const editingServerKinds = new Set<string>([
   "clipboard.part",
   "browser.contextmenu",
 ]);
+
+class BrowserCdpRefusal extends OpensteerError {
+  constructor(cause: OpensteerError) {
+    super({
+      cause,
+      code: cause.code,
+      message: cause.message,
+      retryable: cause.retryable,
+      ...(cause.reason ? { reason: cause.reason } : {}),
+    });
+  }
+}
