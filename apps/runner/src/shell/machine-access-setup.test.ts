@@ -131,6 +131,12 @@ describe("machine access eligibility", () => {
       ["darwin", "cursor", "full-access", true],
       ["linux", "cursor", "full-access", true],
       ["win32", "cursor", "full-access", false],
+      ["darwin", "muse", "approval-required", false],
+      ["darwin", "muse", "full-access", false],
+      ["linux", "muse", "approval-required", false],
+      ["linux", "muse", "full-access", false],
+      ["win32", "muse", "approval-required", false],
+      ["win32", "muse", "full-access", false],
     ];
     for (const [platform, driverKind, accessMode, reachable] of matrix) {
       expect({
