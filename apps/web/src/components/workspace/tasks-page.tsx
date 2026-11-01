@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { RowMotion } from "./row-motion.js";
+import { useMemo, useRef, useState } from "react";
 import { filterThreads, taskAttention, taskTime } from "@opensteer/client/host";
 import { useMinuteClock } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
@@ -38,60 +39,71 @@ export function TasksPage() {
       rows: matches ? group.rows.filter((row) => matches.has(row.threadId)) : group.rows,
     }))
     .filter((group) => group.rows.length > 0);
+  const motionList = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="thread tasks-page">
-      <AreaHeader hostClient={hostClient} title="Tasks" />
-      <div className="tasks-page__body">
-        <input
-          aria-label="Search tasks"
-          className="text-input tasks-page__search"
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search tasks…"
-          type="search"
-          value={query}
-        />
-        {groups.length === 0 ? (
-          <p className="tasks-page__empty">
-            {matches ? `No tasks match “${query.trim()}”.` : "No tasks yet."}
-          </p>
-        ) : (
-          groups.map((group) => (
-            <TaskGroup
-              count={group.done ? null : group.rows.length}
-              id={group.id}
-              key={group.id}
-              title={group.title}
+    <RowMotion
+      list={motionList}
+      signature={groups
+        .map((group) => group.id + group.rows.map((row) => row.threadId).join(","))
+        .join(";")}
+      lifted={false}
+      snap={false}
+      nested
+    >
+      <div className="thread tasks-page" ref={motionList}>
+        <AreaHeader hostClient={hostClient} title="Tasks" />
+        <div className="tasks-page__body">
+          <input
+            aria-label="Search tasks"
+            className="text-input tasks-page__search"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search tasks…"
+            type="search"
+            value={query}
+          />
+          {groups.length === 0 ? (
+            <p className="tasks-page__empty">
+              {matches ? `No tasks match “${query.trim()}”.` : "No tasks yet."}
+            </p>
+          ) : (
+            groups.map((group) => (
+              <TaskGroup
+                count={group.done ? null : group.rows.length}
+                id={group.id}
+                key={group.id}
+                title={group.title}
+              >
+                {group.rows.map((row) => (
+                  <li key={row.threadId} data-motion-key={row.threadId}>
+                    <TaskRowLink
+                      done={group.done}
+                      onSetDone={setTaskDone}
+                      row={row}
+                      time={taskTime(row, now)}
+                    />
+                  </li>
+                ))}
+              </TaskGroup>
+            ))
+          )}
+          {list.hasMore ? (
+            <button
+              className="btn btn--ghost btn--small tasks-page__more"
+              disabled={loading}
+              onClick={() => {
+                setLoading(true);
+                void hostClient
+                  .loadEarlierTasks()
+                  .catch(reportActionError)
+                  .finally(() => setLoading(false));
+              }}
+              type="button"
             >
-              {group.rows.map((row) => (
-                <li key={row.threadId}>
-                  <TaskRowLink
-                    done={group.done}
-                    onSetDone={setTaskDone}
-                    row={row}
-                    time={taskTime(row, now)}
-                  />
-                </li>
-              ))}
-            </TaskGroup>
-          ))
-        )}
-        {list.hasMore ? (
-          <button
-            className="btn btn--ghost btn--small tasks-page__more"
-            disabled={loading}
-            onClick={() => {
-              setLoading(true);
-              void hostClient
-                .loadEarlierTasks()
-                .catch(reportActionError)
-                .finally(() => setLoading(false));
-            }}
-            type="button"
-          >
-            {loading ? "Loading…" : "Show more"}
-          </button>
-        ) : null}
+              {loading ? "Loading…" : "Show more"}
+            </button>
+          ) : null}
+        </div>
       </div>
-    </div>
+    </RowMotion>
   );
 }

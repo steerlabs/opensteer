@@ -35,6 +35,8 @@ export class RowMotion extends Component<{
   readonly list: RefObject<HTMLElement | null>;
   readonly signature: string;
   readonly lifted: boolean;
+  readonly snap?: boolean;
+  readonly nested?: boolean;
   readonly children: ReactNode;
 }> {
   #held: Held | null = null;
@@ -55,7 +57,7 @@ export class RowMotion extends Component<{
     const before =
       held ??
       (previous.signature !== this.props.signature
-        ? { positions: rowPositions(list), keep: null }
+        ? { positions: rowPositions(list, this.props.nested), keep: null }
         : null);
     if (before) list.setAttribute("data-moving", "");
     return before;
@@ -63,7 +65,15 @@ export class RowMotion extends Component<{
 
   override componentDidUpdate(_props: unknown, _state: unknown, before: Held | null): void {
     const list = this.props.list.current;
-    if (list && before) slideRows(list, before.positions, before.keep, () => this.props.lifted);
+    if (list && before)
+      slideRows(
+        list,
+        before.positions,
+        before.keep,
+        () => this.props.lifted,
+        this.props.snap !== false,
+        this.props.nested,
+      );
   }
 
   override render(): ReactNode {
@@ -71,10 +81,12 @@ export class RowMotion extends Component<{
   }
 }
 
-export function rowPositions(list: HTMLElement): Map<string, number> {
+export function rowPositions(list: HTMLElement, nested = false): Map<string, number> {
   const origin = list.getBoundingClientRect().top;
   const positions = new Map<string, number>();
-  for (const row of list.querySelectorAll<HTMLElement>(":scope > [data-motion-key]"))
+  for (const row of list.querySelectorAll<HTMLElement>(
+    nested ? "[data-motion-key]" : ":scope > [data-motion-key]",
+  ))
     positions.set(row.dataset.motionKey!, row.getBoundingClientRect().top - origin);
   return positions;
 }
@@ -92,13 +104,19 @@ function slideRows(
   before: RowPositions,
   keep: string | null,
   lifted: () => boolean,
+  snap: boolean,
+  nested = false,
 ): void {
-  const rows = [...list.querySelectorAll<HTMLElement>(":scope > [data-motion-key]")];
+  const rows = [
+    ...list.querySelectorAll<HTMLElement>(
+      nested ? "[data-motion-key]" : ":scope > [data-motion-key]",
+    ),
+  ];
   for (const row of rows)
     for (const animation of row.getAnimations())
       if (animation.id === "row-motion") animation.cancel();
   // A reorder lands on a row top at once, `keep` in view; while a row is lifted, its drag owns the scroll.
-  if (!lifted()) {
+  if (snap && !lifted()) {
     const top = snapTop(list, rows.find((row) => row.dataset.motionKey === keep) ?? null);
     if (Math.abs(list.scrollTop - top) > 0.5) list.scrollTop = top;
   }
@@ -107,7 +125,7 @@ function slideRows(
     list.removeAttribute("data-moving");
   };
   if (!before.size || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return still();
-  const after = rowPositions(list);
+  const after = rowPositions(list, nested);
   const started: Animation[] = [];
   const arrivals = rows.filter((row) => !before.has(row.dataset.motionKey!));
   for (const row of rows) {
@@ -148,7 +166,7 @@ function slideRows(
   const land = () => {
     if (slides.get(list) !== token) return stop();
     const top = snapTop(list);
-    if (lifted() || Math.abs(top - list.scrollTop) <= 0.5) {
+    if (!snap || lifted() || Math.abs(top - list.scrollTop) <= 0.5) {
       stop();
       return still();
     }

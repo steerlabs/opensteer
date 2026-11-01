@@ -74,9 +74,15 @@ vi.mock("@react-navigation/native", () => ({
     replace: (name: string, params?: object) => ({ payload: { name, params }, type: "REPLACE" }),
   },
 }));
-vi.mock("react-native-reanimated", () => ({
-  default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
-}));
+vi.mock("react-native-reanimated", () => {
+  const transition = { duration: () => transition, easing: () => transition };
+  return {
+    LinearTransition: transition,
+    Easing: { out: (value: unknown) => value, cubic: (value: number) => value },
+    useReducedMotion: () => true,
+    default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
+  };
+});
 vi.mock("../ui/motion.js", () => ({ appear: {}, exit: {} }));
 vi.mock("react-native-reserved-regions", () => ({
   ReservedRegionsProvider: (props: {

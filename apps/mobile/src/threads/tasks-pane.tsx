@@ -1,3 +1,5 @@
+import Animated from "react-native-reanimated";
+import { useTaskMotion } from "./task-motion.js";
 import {
   canRespondToRequests,
   describeHostConnection,
@@ -15,7 +17,6 @@ import { useHostSnapshot } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
   ActivityIndicator,
-  FlatList,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -59,6 +60,7 @@ type TasksRow =
 
 export function TasksPane(props: {
   readonly deploymentId: string;
+  readonly openThreadId?: string | null;
   /** Content above the list, scrolling with it: a specialist's own heading. */
   readonly header?: ReactNode;
   readonly hostClient: HostClient;
@@ -98,7 +100,10 @@ export function TasksPane(props: {
   const now = Date.now();
   const read =
     workspaceId === null ? snapshot.tasks : (snapshot.workspaceTasks[workspaceId] ?? null);
-  const list = workspaceId === null ? taskList(snapshot) : workspaceTaskList(snapshot, workspaceId);
+  const list =
+    workspaceId === null
+      ? taskList(snapshot, { openThreadId: props.openThreadId })
+      : workspaceTaskList(snapshot, workspaceId, { openThreadId: props.openThreadId });
   const searching = query.trim() !== "";
   // The shared matcher decides what a query finds; the list decides the order.
   const matches = searching
@@ -250,8 +255,10 @@ export function TasksPane(props: {
     [moveTask, onOpenTask, signIn],
   );
 
+  const motion = useTaskMotion(rows.map((row) => row.key));
   return (
-    <FlatList
+    <Animated.FlatList
+      {...(motion ? { itemLayoutAnimation: motion } : {})}
       // Rows carry their own inset, so the list's gutter is where their mark
       // column begins rather than where their words do.
       contentContainerStyle={[

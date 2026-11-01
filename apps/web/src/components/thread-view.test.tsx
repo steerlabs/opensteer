@@ -36,6 +36,7 @@ function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
     color: null,
     accessMode: "auto",
     continuationIdentity: codexContinuation,
+    askedAt: "2026-09-04T00:00:00.000Z",
     createdAt: "2026-09-04T00:00:00.000Z",
     environmentId: "environment-main",
     harnessInstanceId: "harness-work",
