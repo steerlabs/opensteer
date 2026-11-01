@@ -173,6 +173,9 @@ class AcpHarnessSession implements HarnessSession {
         update: (_sessionId, update) => this.#handleUpdate(update),
       },
       process,
+      ...(options.hooks.transformStdout
+        ? { stdout: options.hooks.transformStdout(process.stdout) }
+        : {}),
       version: options.policy.protocolVersion,
     });
     this.#abortListener = () => void this.stop();

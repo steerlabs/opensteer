@@ -128,6 +128,8 @@ export interface AcpNativeHooks {
     inspection: AcpInspectionSnapshot,
   ): string | undefined;
   rewritePromptText?(text: string, context: HarnessSessionContext): Promise<string> | string;
+  /** Removes engine-owned non-JSON lines before the ACP SDK sees stdout. */
+  transformStdout?(stdout: AsyncIterable<Buffer>): AsyncIterable<Buffer>;
 }
 
 export interface AcpLaunchOptions {

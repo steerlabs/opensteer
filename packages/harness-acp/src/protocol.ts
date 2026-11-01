@@ -141,16 +141,18 @@ const SessionConfigOptionSchema = z.looseObject({
 export function createAcpProtocolClient(options: {
   readonly handlers: AcpProtocolHandlers;
   readonly process: SupervisedProcess;
+  readonly stdout?: AsyncIterable<Buffer>;
   readonly version: AcpProtocolVersion;
 }): AcpProtocolClient {
   return options.version === 1
-    ? createV1Client(options.process, options.handlers)
-    : createV2Client(options.process, options.handlers);
+    ? createV1Client(options.process, options.handlers, options.stdout)
+    : createV2Client(options.process, options.handlers, options.stdout);
 }
 
 function createV1Client(
   process: SupervisedProcess,
   handlers: AcpProtocolHandlers,
+  stdout: AsyncIterable<Buffer> = process.stdout,
 ): AcpProtocolClient {
   const app = acpV1
     .client({ name: "Opensteer" })
@@ -184,7 +186,7 @@ function createV1Client(
   const connection = app.connect(
     acpV1.ndJsonStream(
       Writable.toWeb(process.child.stdin),
-      Readable.toWeb(process.child.stdout) as ReadableStream<Uint8Array>,
+      Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
     ),
   );
   const agent = connection.agent;
@@ -300,6 +302,7 @@ function createV1Client(
 function createV2Client(
   process: SupervisedProcess,
   handlers: AcpProtocolHandlers,
+  stdout: AsyncIterable<Buffer> = process.stdout,
 ): AcpProtocolClient {
   const idle = new Map<string, { readonly done: Deferred<string>; running: boolean }>();
   const app = acpV2
@@ -327,7 +330,7 @@ function createV2Client(
   const connection = app.connect(
     acpV2.ndJsonStream(
       Writable.toWeb(process.child.stdin),
-      Readable.toWeb(process.child.stdout) as ReadableStream<Uint8Array>,
+      Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
     ),
   );
   const agent = connection.agent;
