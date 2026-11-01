@@ -282,9 +282,11 @@
 }
 
 /* At rest the address reads as Chrome's does: the site, then the rest dimmed.
-   The field stays underneath, so a click edits the whole address. */
+   The field stays underneath, so a click edits the whole address, but paints
+   nothing: when the window loses focus it keeps its selection, which
+   `::selection` would draw over the display. */
 .browser-address input.is-dressed {
-  color: transparent;
+  opacity: 0;
 }
 
 .browser-address__mark {

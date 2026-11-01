@@ -32,6 +32,26 @@ const value = (input: Locator) =>
     end: node.selectionEnd,
   }));
 const shot = (name: string) => page.screenshot({ path: path.join(artifactDirectory, name) });
+// The largest channel difference between two same-sized screenshots; text
+// antialiasing alone moves a channel by one or two.
+const pixelDifference = (a: Buffer, b: Buffer) =>
+  page.evaluate(
+    async (images) => {
+      const [first, second] = await Promise.all(
+        images.map(async (base64) => {
+          const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+          const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+          const context = canvas.getContext("2d")!;
+          context.drawImage(bitmap, 0, 0);
+          return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+        }),
+      );
+      if (first!.length !== second!.length) return 255;
+      return first!.reduce((most, value, i) => Math.max(most, Math.abs(value - second![i]!)), 0);
+    },
+    [a.toString("base64"), b.toString("base64")],
+  );
 const launcher = async () => {
   await page.locator('.side-section--tabs [aria-label="New tab"]').click();
   await field().waitFor();
@@ -456,6 +476,31 @@ try {
       return { first, second, word, triple, drag };
     },
   );
+  await check("a selection kept while the window is away paints nothing at rest", async () => {
+    await page.locator("[data-live-page]").click({ position: { x: 100, y: 100 } });
+    await address().click();
+    const selected = await value(address());
+    // As Chromium does when the window or the page's view takes focus: the field
+    // hears blur but stays active and keeps its selection.
+    await address().evaluate((node: HTMLInputElement) => {
+      node.dispatchEvent(new FocusEvent("blur"));
+      node.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await page.locator(".browser-address__display").waitFor();
+    const field = page.locator(".browser-address__field");
+    const withSelection = await field.screenshot();
+    await shot("06-address-window-away.png");
+    await address().evaluate((node: HTMLInputElement) => node.setSelectionRange(0, 0));
+    const withoutSelection = await field.screenshot();
+    await address().evaluate((node: HTMLInputElement) => node.blur());
+    const difference = await pixelDifference(withSelection, withoutSelection);
+    expectThat(
+      { selected, difference },
+      selected.start === 0 && selected.end === selected.value.length && difference <= 8,
+      "the field's selection showed through the address at rest",
+    );
+    return { selected, difference };
+  });
   await check(
     "open tab never steals Enter; arrow fills switch row; equivalent navigate action stays",
     async () => {
