@@ -480,6 +480,56 @@ describe("BrowserService", () => {
     expect(runtime.receivedCommands()).toHaveLength(2);
   });
 
+  it("keeps an unanswered additional tab recoverable by its original key", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const service = freshService({ keys, repository, runtime });
+    const opened = await service.start({ ownerId, workspaceId, fresh: true });
+    const command = {
+      type: "browser.tab.open" as const,
+      sessionId: opened.session.id,
+      idempotencyKey: randomUUID(),
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let request: Record<string, unknown>;
+    try {
+      const opening = service.openTab(ownerId, command);
+      const unknown = expect(opening).rejects.toMatchObject({
+        reason: "browser-tab-open-outcome-unknown",
+      });
+      request = await runtime.nextCommand();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await unknown;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect((await repository.getBrowserTabOpen(ownerId, command.idempotencyKey))?.outcome).toEqual({
+      kind: "pending",
+    });
+    const retry = service.openTab(ownerId, command);
+    const resent = await runtime.nextCommand();
+    expect(resent).toMatchObject({
+      type: "cdp.command",
+      command: {
+        parameters: {
+          idempotencyKey: (request.command as { parameters: { idempotencyKey: string } }).parameters
+            .idempotencyKey,
+        },
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resent.requestId,
+      result: { tabId: "page-2" },
+    });
+    await expect(retry).resolves.toMatchObject({ tabId: "page-2" });
+  });
+
   it("refuses mismatched initial page readiness", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");

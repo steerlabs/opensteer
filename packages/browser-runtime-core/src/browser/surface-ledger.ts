@@ -1062,6 +1062,9 @@ export class SurfaceLedger {
             // A new document has no title until its own document names one.
             record.title = "";
             record.favicon = null;
+            // Reload and history commit without navigate(); Chromium's error page is not a recovery.
+            if (!("unreachableUrl" in frame) && !record.committedUrl.startsWith("chrome-error://"))
+              record.navigationFailed = false;
             record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
             record.geometryRevision++;
             if (record.announced)

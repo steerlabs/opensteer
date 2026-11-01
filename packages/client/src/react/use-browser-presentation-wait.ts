@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
 import {
   BrowserPresentationWait,
-  browserOpeningTimeoutMs,
   browserPresentationTimeoutMessage,
 } from "../host/browser-presentation-wait.js";
 
@@ -15,8 +14,7 @@ export function useBrowserPresentationWait(
   const wait = useMemo(
     () =>
       new BrowserPresentationWait(
-        client.browserPresentationDeadline?.(sessionId, tabId) ??
-          Date.now() + browserOpeningTimeoutMs,
+        client.browserPresentationDeadline?.(sessionId, tabId) ?? undefined,
       ),
     [client, sessionId, tabId],
   );

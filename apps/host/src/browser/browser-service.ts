@@ -1454,7 +1454,7 @@ export class BrowserService {
   async openTab(ownerId: UserId, input: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
     const expiresAt = Date.now() + 20_000;
     const cancellation = new AbortController();
-    const budget: { signal: AbortSignal; expiresAt: number; admitted?: BrowserTabOpenBinding } = {
+    const budget: BrowserTabOpenBudget = {
       signal: cancellation.signal,
       expiresAt: expiresAt - 2_000,
     };
@@ -1475,6 +1475,16 @@ export class BrowserService {
       );
     } catch (error) {
       cancellation.abort(error);
+      // An unanswered page request may still have opened its page; its key recovers it.
+      if (
+        budget.pageRequested &&
+        !(error instanceof BrowserCdpRefusal) &&
+        !(error instanceof OpensteerError && error.reason === "browser-tab-open-failed")
+      )
+        throw this.#tabOpenRefusal(
+          "browser-tab-open-outcome-unknown",
+          "Opening did not confirm its outcome. Retry this request to recover its original page.",
+        );
       if (budget.admitted) {
         const remaining = Math.max(1, expiresAt - Date.now());
         try {
@@ -1526,7 +1536,7 @@ export class BrowserService {
   #openTab(
     ownerId: UserId,
     input: BrowserTabOpenCommand,
-    budget: { signal: AbortSignal; expiresAt: number; admitted?: BrowserTabOpenBinding },
+    budget: BrowserTabOpenBudget,
   ): Promise<BrowserTabOpenResult> {
     const parsed = BrowserTabOpenCommandSchema.parse(input);
     const command = parsed.url ? { ...parsed, url: safeNavigationUrl(parsed.url) } : parsed;
@@ -1718,7 +1728,7 @@ export class BrowserService {
     ownerId: UserId,
     command: BrowserTabOpenCommand,
     binding: BrowserTabOpenBinding,
-    budget: { signal: AbortSignal; expiresAt: number },
+    budget: BrowserTabOpenBudget,
   ): Promise<BrowserTabOpenResult> {
     if (binding.outcome.kind === "failed") throw this.#tabOpenFailure(binding);
     return this.#serializeKey(binding.chosenSessionId, async () => {
@@ -1749,6 +1759,7 @@ export class BrowserService {
         const navigationId = command.url
           ? broker.beginHistoryNavigation(ownerId, command.typed === true)
           : undefined;
+        budget.pageRequested = true;
         const response = await broker.requestCdp({
           type: "cdp.command",
           requestId: randomUUID(),
@@ -6516,6 +6527,13 @@ const editingServerKinds = new Set<string>([
   "clipboard.part",
   "browser.contextmenu",
 ]);
+
+interface BrowserTabOpenBudget {
+  readonly signal: AbortSignal;
+  readonly expiresAt: number;
+  admitted?: BrowserTabOpenBinding;
+  pageRequested?: boolean;
+}
 
 class BrowserCdpRefusal extends OpensteerError {
   constructor(cause: OpensteerError) {

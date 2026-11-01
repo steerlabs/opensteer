@@ -35,3 +35,17 @@ it("checks elapsed time on foreground render before a suspended timer runs", () 
     wait.dispose();
   }
 });
+it("starts an existing page's viewing wait when viewing starts, not when it mounts hidden", async () => {
+  vi.useFakeTimers();
+  const wait = new BrowserPresentationWait(undefined);
+  try {
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(wait.getSnapshot()).toBe("waiting");
+    wait.start();
+    await vi.advanceTimersByTimeAsync(24_999);
+    expect(wait.getSnapshot()).toBe("waiting");
+    expect(wait.presented()).toBe(true);
+  } finally {
+    wait.dispose();
+  }
+});
