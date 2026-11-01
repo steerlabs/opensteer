@@ -178,19 +178,33 @@ async function extractReleaseMembers(
   });
   unzip.register(UnzipInflate);
   unzip.register(UnzipPassThrough);
-  for await (const chunk of createReadStream(archive, { signal })) {
-    unzip.push(chunk as Uint8Array);
+  try {
+    for await (const chunk of createReadStream(archive, { signal })) {
+      unzip.push(chunk as Uint8Array);
+      if (failure) throw failure;
+      // Inflating is synchronous; let the disk catch up before reading more.
+      for (const output of outputs) if (output.writableNeedDrain) await once(output, "drain");
+    }
+    unzip.push(new Uint8Array(0), true);
+    await Promise.all(
+      outputs.map((output) =>
+        output.writableFinished || output.destroyed ? undefined : once(output, "finish"),
+      ),
+    );
     if (failure) throw failure;
-    // Inflating is synchronous; let the disk catch up before reading more.
-    for (const output of outputs) if (output.writableNeedDrain) await once(output, "drain");
+  } catch (error) {
+    await Promise.all(
+      outputs.map(
+        (output) =>
+          new Promise<void>((resolve) => {
+            if (output.closed) return resolve();
+            output.once("close", resolve);
+            output.destroy();
+          }),
+      ),
+    );
+    throw error;
   }
-  unzip.push(new Uint8Array(0), true);
-  await Promise.all(
-    outputs.map((output) =>
-      output.writableFinished || output.destroyed ? undefined : once(output, "finish"),
-    ),
-  );
-  if (failure) throw failure;
 }
 
 async function inspectExtractedRelease(
