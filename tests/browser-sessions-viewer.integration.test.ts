@@ -152,7 +152,7 @@ run("Browser Sessions through a whole deployment", () => {
       closing.data.type === "browser.tab.close" &&
       closing.data.outcome === "session-closed"
     ) {
-      expect(opening).toMatchObject({ ok: false, error: { reason: "browser-session-closed" } });
+      expect(opening).toMatchObject({ ok: false, error: { reason: "browser-tab-open-failed" } });
       expect(
         await stack.api["commands.dispatch"]({ ...command, idempotencyKey: randomUUID() }),
       ).toMatchObject({ ok: false, error: { reason: "browser-session-closed" } });
@@ -1359,9 +1359,9 @@ run("Browser Sessions through a whole deployment", () => {
     120_000,
   );
 
-  it("keeps proof-v2 browser computers connected while translating older viewer contracts", async () => {
+  it("keeps current browser computers connected while forwarding viewer commands", async () => {
     const startView = { height: 777, width: 1_111 };
-    const journey = async (sharedControl: boolean) => {
+    const journey = async () => {
       const stack = await deployment(undefined);
       const enrollment = await stack.api["commands.dispatch"]({
         allowedModules: ["browser"],
@@ -1381,8 +1381,8 @@ run("Browser Sessions through a whole deployment", () => {
         Number(stack.hostOrigin.port),
         enrollment.data.token,
         {
-          agentReady: sharedControl,
-          initialDialog: { ...releasedDialog, ...(sharedControl ? { id: randomUUID() } : {}) },
+          agentReady: true,
+          initialDialog: { ...releasedDialog, id: randomUUID() },
         },
       );
       addCleanup("protocol runtime", () => runtime.close());
@@ -1432,7 +1432,7 @@ run("Browser Sessions through a whole deployment", () => {
 
       const changed = nextJson(control.socket, "browser.dialog.changed");
       runtime.sendServer({
-        dialog: { ...releasedDialog, ...(sharedControl ? { id: randomUUID() } : {}) },
+        dialog: { ...releasedDialog, id: randomUUID() },
         type: "browser.dialog.changed",
       });
       const dialogEvent = BrowserServerMessageSchema.parse(await changed);
@@ -1441,50 +1441,11 @@ run("Browser Sessions through a whole deployment", () => {
       }
       const dialogId = dialogEvent.dialog.id;
       expect(dialogId).not.toBe(snapshotDialog?.id);
-      const refusals: { code: number; reason: string }[] = [];
-      if (!sharedControl) {
-        const staleClosed = waitForBrowserClosing(late.socket);
-        late.socket.send(
-          JSON.stringify({ accept: true, dialogId: snapshotDialog!.id, type: "dialog.respond" }),
-        );
-        refusals.push(await staleClosed);
-      }
       control.socket.send(JSON.stringify({ accept: true, dialogId, type: "dialog.respond" }));
       control.socket.send(JSON.stringify({ type: "navigation.reload" }));
-      await waitFor(
-        async () => forwarded.some((command) => command.type === "navigation.reload"),
-        10_000,
-      );
-      if (!sharedControl) {
-        const duplicate = await openBrowserView(stack, sessionId, "control");
-        addCleanup("duplicate viewer", async () => duplicate.socket.terminate());
-        const duplicateClosed = waitForBrowserClosing(duplicate.socket);
-        duplicate.socket.send(JSON.stringify({ accept: false, dialogId, type: "dialog.respond" }));
-        refusals.push(await duplicateClosed);
-        const closed = nextJson(control.socket, "browser.dialog.changed");
-        runtime.sendServer({ dialog: null, type: "browser.dialog.changed" });
-        expect(await closed).toEqual({ dialog: null, type: "browser.dialog.changed" });
-        const afterClose = await openBrowserView(stack, sessionId, "control");
-        addCleanup("closed-session viewer", async () => afterClose.socket.terminate());
-        expect(afterClose.snapshot.dialog).toBeNull();
-        const afterCloseRefused = waitForBrowserClosing(afterClose.socket);
-        afterClose.socket.send(JSON.stringify({ accept: true, dialogId, type: "dialog.respond" }));
-        refusals.push(await afterCloseRefused);
-        const reopened = nextJson(control.socket, "browser.dialog.changed");
-        runtime.sendServer({ dialog: releasedDialog, type: "browser.dialog.changed" });
-        const reopenedEvent = BrowserServerMessageSchema.parse(await reopened);
-        if (reopenedEvent.type !== "browser.dialog.changed" || !reopenedEvent.dialog) {
-          throw new Error("The browser did not reopen its dialog.");
-        }
-        expect(reopenedEvent.dialog.id).not.toBe(dialogId);
-        expect(reopenedEvent.dialog.id).not.toBe(snapshotDialog?.id);
-        expect(refusals).toEqual(
-          Array.from({ length: 3 }, () => ({
-            code: 4002,
-            reason: "There is no active browser dialog.",
-          })),
-        );
-      }
+      await vi.waitFor(() => expect(forwarded).toContainEqual({ type: "navigation.reload" }), {
+        timeout: 10_000,
+      });
       expect(runtime.protocolErrors()).toEqual([]);
       expect(runtime.streamOpen()).toBe(true);
       expect(control.socket.readyState).toBe(WebSocket.OPEN);
@@ -1498,29 +1459,22 @@ run("Browser Sessions through a whole deployment", () => {
         forwarded,
         protocolErrors: runtime.protocolErrors(),
         receivedCommands: runtime.receivedCommands(),
-        refusals,
         snapshotDialog,
         streamOpen: runtime.streamOpen(),
         ticketViewport,
       };
     };
-    const older = await journey(false);
-    const current = await journey(true);
-    expect(older.browserModule).toEqual({
+    const current = await journey();
+    expect(current.browserModule).toEqual({
       wireVersion: 1,
       localProfileStorage: {
         storageInstanceId: "20000000-0000-4000-8000-000000000001",
         engine: "chromium",
       },
       runtimeId: "browser-runtime-integration",
+      cdpBoundary: 1,
+      sharedControl: 1,
     });
-    expect(older.ticketViewport).toBeNull();
-    expect(older.forwarded).toEqual([
-      { type: "surface.open", url: "https://example.com/" },
-      { height: 650, type: "viewport.set", width: 900 },
-      { accept: true, type: "dialog.respond" },
-      { type: "navigation.reload" },
-    ]);
     expect(current.ticketViewport).toEqual(startView);
     expect(current.forwarded).toEqual([
       { height: 700, surfaceId: "page-integration", type: "viewport.follow", width: 1_000 },
@@ -1529,7 +1483,7 @@ run("Browser Sessions through a whole deployment", () => {
       { accept: true, dialogId: current.dialogId, type: "dialog.respond" },
       { type: "navigation.reload" },
     ]);
-    await writeViewReport("older-runtime", { startView, older, current });
+    await writeViewReport("current-runtime", { startView, current });
   }, 120_000);
 
   it("requires dialog ids from a computer advertising shared control", async () => {

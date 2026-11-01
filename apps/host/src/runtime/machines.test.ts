@@ -151,7 +151,7 @@ describe("Machines projection", () => {
         runner({
           modules: {
             agents: runner().modules.agents,
-            browser: { wireVersion: 2, runtimeId: "chromium" },
+            browser: { wireVersion: 1, runtimeId: "chromium" },
           },
           // The browser is advertised but has reported nothing: a person should
           // see that it exists and is not working, not that it was never there.

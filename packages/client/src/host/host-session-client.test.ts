@@ -6069,7 +6069,11 @@ describe("HttpHostClient catalog startup", () => {
     const seed = new MockHostClient();
     const saved = seed.getSnapshot().workspaceTabs!.find((group) => group.tabs?.length)!;
     seed.dispose();
-    const group = { ...saved, session: { ...saved.session, workspaceId: workspace.id } };
+    const group = {
+      ...saved,
+      revision: 2,
+      session: { ...saved.session, workspaceId: workspace.id },
+    };
     const sessions = Array.from({ length: 4 }, () => ({
       ...group.session,
       id: createBrowserSessionId(),

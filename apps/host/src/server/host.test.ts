@@ -369,7 +369,7 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(48);
+      expect(discovery.json().apiVersion).toBe(49);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
         apiVersion: hostApiVersion,
@@ -526,10 +526,11 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
-      expect(hostApiVersion).toBe(48);
+      expect(hostApiVersion).toBe(49);
       for (const legacyHostApiVersion of [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-        26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49,
+        26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+        50,
       ]) {
         const legacyEpoch = await injectRpcRequest(
           app,

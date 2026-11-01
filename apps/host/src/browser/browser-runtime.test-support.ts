@@ -335,6 +335,15 @@ export async function startBrowserRuntime(
     }
   });
 
+  if (!options.runtimeUrl)
+    send({
+      type: "browser.profile.inventory",
+      storageInstanceId: "20000000-0000-4000-8000-000000000001",
+      engine: "chromium",
+      profiles: [],
+      complete: true,
+    });
+
   return {
     runnerId,
     close: async () => {

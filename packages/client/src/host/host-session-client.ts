@@ -12,17 +12,11 @@ import { browserTabOrderTabs } from "./browser-tab-order.js";
 import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
-import { DisplaySourceSchema } from "@opensteer/protocol";
 import { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
-import type {
-  BrowserTabOpenInput,
-  BrowserTabOpenOptions,
-  HostClient as OwnerViewHostClient,
-} from "./client.js";
 import {
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,

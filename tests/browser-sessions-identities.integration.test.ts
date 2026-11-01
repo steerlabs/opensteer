@@ -20,8 +20,11 @@ import { loadingSite } from "./browser-sessions.test-support.js";
 
 run("Browser Sessions through a whole deployment", () => {
   it("opens personal identities atomically and replays durable page outcomes without spare tabs", async () => {
-    const legacyBrowsers: LaunchedBrowser[] = [];
-    const browser = await startBrowser({ onLaunch: (browser) => legacyBrowsers.push(browser) });
+    const launchedBrowsers: { browser: LaunchedBrowser; native: boolean }[] = [];
+    const browser = await startBrowser({
+      onLaunch: (browser, request) =>
+        launchedBrowsers.push({ browser, native: request.storage.kind === "local" }),
+    });
     addCleanup("local Browser Runtime", () => browser.close());
     const stack = await deployment(browser);
     await browserAvailable(stack);
@@ -124,15 +127,14 @@ run("Browser Sessions through a whole deployment", () => {
       ok: true,
       data: { browserStarted: true, catalog: { tabs: [expect.any(Object)] } },
     });
-    // Unnegotiated profiles and Guest still use isolated incognito contexts;
-    // adding native default-context support must not change this compatibility path.
-    for (const launched of legacyBrowsers) {
+    // Native profiles use Chromium's default context; Guest has its own disposable context.
+    expect(launchedBrowsers.filter(({ native }) => native)).toHaveLength(1);
+    for (const { browser: launched, native } of launchedBrowsers) {
       const contexts = (await launched.cdp.send("Target.getBrowserContexts")) as {
         browserContextIds: string[];
       };
-      expect(contexts.browserContextIds).toHaveLength(1);
-      expect(contexts.browserContextIds[0]).toEqual(expect.any(String));
-      expect(contexts.browserContextIds[0]!.length).toBeGreaterThan(0);
+      expect(contexts.browserContextIds).toHaveLength(native ? 0 : 1);
+      if (!native) expect(contexts.browserContextIds[0]).toEqual(expect.any(String));
     }
     const after = await stack.host.browser.bootstrap(owner);
     expect(after.sessions.find((session) => session.id === legacy.session.id)?.opener).toEqual({
@@ -287,7 +289,7 @@ run("Browser Sessions through a whole deployment", () => {
     });
     expect(detachedReply).toMatchObject({
       ok: false,
-      error: { reason: "browser-session-unavailable", retryable: true },
+      error: { reason: "browser-tab-open-failed", retryable: false },
     });
     const navigationEntered = Promise.withResolvers<void>();
     const navigationRelease = Promise.withResolvers<void>();
@@ -437,12 +439,18 @@ run("Browser Sessions through a whole deployment", () => {
     const unknown = await stack.api["commands.dispatch"](starting);
     expect(unknown).toMatchObject({
       ok: false,
-      error: { reason: "browser-tab-open-outcome-unknown" },
+      error: { reason: "browser-tab-open-failed" },
     });
+    expect(
+      await stack.host.store.getBrowserTabOpen(owner.id, starting.idempotencyKey),
+    ).toMatchObject({ outcome: { kind: "failed" } });
     const initialCatalog = await stack.api["browser.tabs.get"]({
       sessionId: initialBinding.chosenSessionId,
     });
-    expect(initialCatalog).toMatchObject({ ok: true, data: { tabs: [expect.any(Object)] } });
+    expect(initialCatalog).toMatchObject({ ok: false });
+    expect(
+      await stack.host.store.getBrowserSessionForOwner(initialBinding.chosenSessionId, owner.id),
+    ).toMatchObject({ state: "failed" });
     const malformed = [];
     for (const input of [
       { ...next, sessionId: first.sessionId },
@@ -459,7 +467,7 @@ run("Browser Sessions through a whole deployment", () => {
     await stack.restartHost();
     expect(await stack.api["commands.dispatch"](starting)).toMatchObject({
       ok: false,
-      error: { reason: "browser-session-closed" },
+      error: { reason: "browser-tab-open-failed" },
     });
     expect((await stack.host.browser.bootstrap(owner.id)).sessions).toHaveLength(2);
     const directory =

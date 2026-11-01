@@ -1,3 +1,4 @@
+import { nativeRuntimeProfile } from "./native-profile.test-support.js";
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { once } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -1605,11 +1606,14 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
     // Three sessions of one profile, so they share one Browser Host.
+    const profile = await nativeRuntimeProfile();
+    cleanup.push(profile.close);
     const verifier = new FakeTicketVerifier();
     for (const index of [1, 2, 3]) {
       verifier.setClaims(
         `ticket-${index}`,
         validClaims({
+          identity: profile.identity,
           sessionId: BrowserSessionIdSchema.parse(
             `bsn_00000000-0000-4000-8000-00000000010${index}`,
           ),
@@ -1617,6 +1621,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       );
     }
     const runtime = new BrowserRuntime({
+      localProfiles: profile.localProfiles,
       launcher: new PlaywrightChromiumLauncher({
         chromiumSandbox: false,
         executablePath,

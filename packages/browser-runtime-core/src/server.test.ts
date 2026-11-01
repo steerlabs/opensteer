@@ -569,10 +569,15 @@ describe("BrowserRuntimeServer shutdown", () => {
     }
   }, 30_000);
 
-  it("closes every connection despite a failed profile save and permits persistence retry", async () => {
-    let commitAttempts = 0;
+  it("closes every connection despite failed owned-resource cleanup", async () => {
+    const launcher = new FakeLauncher();
+    const close = launcher.browser.close.bind(launcher.browser);
+    vi.spyOn(launcher.browser, "close").mockImplementationOnce(async () => {
+      await close();
+      throw new Error("Owned-resource cleanup failed");
+    });
     const runtime = new BrowserRuntime({
-      launcher: new FakeLauncher(),
+      launcher,
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -593,12 +598,12 @@ describe("BrowserRuntimeServer shutdown", () => {
     const everyConnectionClosed = await allClosed(connections);
     const listenerRefused = await connectionRefused(address.port);
     cases.push({
-      name: "failed profile save releases transport; persistence remains retryable",
+      name: "failed resource cleanup still releases transport",
       failedClose: failed,
       closedAfterFailure,
       refusedAfterFailure,
       retriedClose: retried,
-      commitAttempts,
+      closeAttempts: launcher.browser.closeCount,
       connections: connections.map((connection) => connection.report()),
       listenerRefused,
     });
@@ -607,7 +612,7 @@ describe("BrowserRuntimeServer shutdown", () => {
     expect(closedAfterFailure).toBe(true);
     expect(refusedAfterFailure).toBe(true);
     expect(retried.settled).toBe("closed");
-    expect(commitAttempts).toBe(2);
+    expect(launcher.browser.closeCount).toBe(1);
     expect(everyConnectionClosed).toBe(true);
     expect(listenerRefused).toBe(true);
   }, 30_000);

@@ -2102,9 +2102,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         false,
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(attachment.handle(frame({ type: "state.export" }), false)).rejects.toMatchObject({
-      code: "forbidden",
-    });
     await attachment.handle(frame({ type: "navigation.reload" }), false);
     attachment.close();
     expect(connection.imports()).toHaveLength(2);

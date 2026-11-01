@@ -26,6 +26,7 @@ import {
 } from "../packages/browser-runtime-core/src/test-support/passkey-provider-scenario.js";
 import { servePasskeyRoutingFixture } from "../packages/browser-runtime-core/src/test-support/passkey-routing-fixture.js";
 import {
+  BrowserBridgeAttachedSchema,
   BrowserClientMessageSchema,
   BrowserServerMessageSchema,
   createBrowserSessionId,
@@ -179,7 +180,12 @@ it.each([true, false])(
       });
       socket.on("message", (data, binary) => {
         assert(!binary);
-        const message = BrowserServerMessageSchema.parse(JSON.parse(data.toString()));
+        const value = JSON.parse(data.toString()) as { type?: unknown };
+        if (value.type === "browser.attached") {
+          BrowserBridgeAttachedSchema.parse(value);
+          return;
+        }
+        const message = BrowserServerMessageSchema.parse(value);
         if (message.type === "browser.snapshot") surfaceId = message.surfaces[0]?.id ?? null;
         if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
           surfaces = message.surfaces;

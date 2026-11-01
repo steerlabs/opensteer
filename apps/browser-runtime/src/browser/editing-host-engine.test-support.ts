@@ -6,6 +6,7 @@ import {
 import { testSessionFilesRoot } from "@opensteer/browser-runtime-core/test-support";
 import { BrowserAttachTicketClaimsSchema } from "@opensteer/protocol";
 import { chromium } from "playwright-core";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { PlaywrightChromiumLauncher } from "./playwright-launcher.js";
 
@@ -90,7 +91,11 @@ runtime.attach = async (ticket, sink) => {
   };
   return attached;
 };
-const server = new BrowserRuntimeServer({ runtime, port: 0 });
+const server = new BrowserRuntimeServer({
+  runtime,
+  port: 0,
+  relayBridge: { token: randomUUID(), updateAttachKeys: () => {} },
+});
 let stopping: Promise<void> | undefined;
 const stop = () => {
   stopping ??= server.close().finally(() => process.exit());

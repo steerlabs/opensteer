@@ -154,7 +154,10 @@ export interface Browser {
 /** This computer's Chromium behind the loopback bridge its Runner relays for. */
 export async function startBrowser(
   options: {
-    onLaunch?: (browser: LaunchedBrowser) => void;
+    onLaunch?: (
+      browser: LaunchedBrowser,
+      request: import("../packages/browser-runtime-core/src/index.js").BrowserLaunchRequest,
+    ) => void;
   } = {},
 ): Promise<Browser> {
   const profileRoot = await mkdtemp(path.join(tmpdir(), "opensteer-browser-e2e-"));
@@ -172,7 +175,7 @@ export async function startBrowser(
       localProfiles: launcher.localProfiles,
       launch: async (request, signal) => {
         const browser = await launcher.launch(request, signal);
-        options.onLaunch?.(browser);
+        options.onLaunch?.(browser, request);
         return browser;
       },
     },

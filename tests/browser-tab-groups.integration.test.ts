@@ -108,6 +108,7 @@ async function deployment() {
   const keys = new Map<string, KeyObject>();
   const bridgeToken = randomBytes(32).toString("base64url");
   const runtime = new BrowserRuntime({
+    localProfiles: { root },
     runtimeId: "tab-groups-e2e",
     launcher: new PlaywrightChromiumLauncher({
       chromiumSandbox: false,
