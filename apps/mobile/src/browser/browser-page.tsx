@@ -595,7 +595,9 @@ const styles = StyleSheet.create({
   },
   // Its own height, given up from the picture first when the screen is short.
   page: { flexShrink: 1, minHeight: 0 },
-  picture: { flexShrink: 1, minHeight: 0, width: "100%" },
+  // Fit by its height, it keeps its shape and stays centred rather than
+  // hugging the leading edge.
+  picture: { alignSelf: "center", flexShrink: 1, minHeight: 0, width: "100%" },
   pressed: { opacity: 0.7 },
   row: { alignItems: "center", flexDirection: "row", gap: space[8] },
   textButton: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[6] },

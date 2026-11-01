@@ -1214,8 +1214,10 @@ function ThreadPaneForUser(
   const latest = docked === null ? null : latestReplyLine(groups, indicator);
   // Under a page the latest reply stands for the conversation: it says what the
   // agent is doing to the page, and a tap opens the rest of what was said.
+  // Before anything has been said there is nothing to stand for, and the page
+  // keeps the line's height.
   const latestLine =
-    docked === null ? null : (
+    docked === null || latest === null ? null : (
       <Pressable
         accessibilityHint="Shows the conversation"
         accessibilityRole="button"
@@ -1223,18 +1225,13 @@ function ThreadPaneForUser(
         style={({ pressed }) => [styles.latest, pressed && styles.latestPressed]}
         testID="latest-reply"
       >
-        {latest?.kind === "typing" ? (
+        {latest.kind === "typing" ? (
           <View accessibilityLabel="Opensteer is replying" accessible style={styles.latestText}>
             <TypingDots />
           </View>
         ) : (
-          <AppText
-            numberOfLines={2}
-            role="secondary"
-            style={styles.latestText}
-            tone={latest === null ? "muted" : "soft"}
-          >
-            {latest?.text ?? "Ask about what you see"}
+          <AppText numberOfLines={2} role="secondary" style={styles.latestText} tone="soft">
+            {latest.text}
           </AppText>
         )}
         <Symbol name="chevron.right" size={12} tint={color.muted} />
@@ -1254,16 +1251,8 @@ function ThreadPaneForUser(
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.key}
         ListFooterComponent={queueFooter ?? undefined}
-        ListEmptyComponent={
-          companion === null ? (
-            <EmptyThread />
-          ) : (
-            // Beside a page, before anything has been said, the page is the subject.
-            <AppText role="secondary" style={styles.besideEmpty} tone="muted">
-              Ask about what you see
-            </AppText>
-          )
-        }
+        // Beside a page, before anything has been said, the page is the subject.
+        ListEmptyComponent={companion === null ? <EmptyThread /> : undefined}
         ListHeaderComponent={
           <ThreadHeader
             earlier={canLoadEarlier}
@@ -1805,5 +1794,4 @@ const styles = StyleSheet.create({
   latestText: { flex: 1 },
   pane: { flex: 1 },
   docked: { flexGrow: 0, flexShrink: 1 },
-  besideEmpty: { paddingVertical: space[8], textAlign: "center" },
 });

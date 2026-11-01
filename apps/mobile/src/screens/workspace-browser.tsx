@@ -1172,9 +1172,9 @@ const styles = StyleSheet.create({
   centred: { textAlign: "center" },
   conversationName: { alignItems: "center", paddingHorizontal: space[16] },
   // Under the page, the conversation is as tall as its latest reply, what
-  // needs the reader and the composer, and the page has everything else. When
-  // that is more than the page leaves — large text, a short screen, the
-  // keyboard — it shrinks and its own content scrolls.
+  // needs the reader and the composer, and the page has everything else. Only
+  // when that is more than the whole surface — large text on a short screen
+  // with the keyboard up — does it shrink and its own content scroll.
   docked: { backgroundColor: color.background, flexShrink: 1 },
   ended: {
     alignItems: "center",
@@ -1191,9 +1191,10 @@ const styles = StyleSheet.create({
   // default, and filling a pane that its content sizes is zero.
   ownHeight: { flex: 0, flexShrink: 1 },
   page: { flexShrink: 1, minHeight: 0 },
-  // Stacked, the page has the room the dock leaves, and never less than enough
-  // to see what the agent is doing.
-  pageAboveDock: { flex: 1, minHeight: 160 },
+  // Stacked, the page has exactly the room the dock leaves. It has no floor:
+  // with the keyboard up on a short screen, a floor is what pushes the
+  // composer under the keyboard, and the composer is what is being used.
+  pageAboveDock: { flex: 1, minHeight: 0 },
   // The page at its own shape, centred in the room it is given, as a picture
   // is: the bands above and below are even, and the page never jumps when the
   // dock under it grows by a line.
