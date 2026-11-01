@@ -48,6 +48,19 @@ describe("task family", () => {
       newer.id,
     ]);
   });
+  it("keeps each parent's Assignment when the same worker serves two parents", () => {
+    const first = assignment(1, "completed");
+    const second = {
+      ...assignment(2, "open", first.workerThread.id),
+      parentThreadId: createId("thread"),
+    };
+    const source = reader([first, second]);
+    expect(taskFamily(source, parent).earlier.map((task) => task.assignmentId)).toEqual([first.id]);
+    expect(
+      taskFamily(source, second.parentThreadId).running.map((task) => task.assignmentId),
+    ).toEqual([second.id]);
+  });
+
   it("orders running by handoff, earlier by settlement, and active automations by next fire before paused", () => {
     const a = assignment(1),
       b = assignment(2),

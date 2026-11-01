@@ -43,6 +43,8 @@ const harness = vi.hoisted(() => ({
       onOpenPlace: (destination: object) => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
+      onSchedules: () => void;
+      onChat: () => void;
     };
     scroll: { offset: number };
     shelves: { list: unknown };
@@ -160,6 +162,8 @@ vi.mock("./sidebar-panel.js", () => ({
         <button onClick={() => props.actions.onOpenTask("deployment-a", "thread-b")}>Task B</button>
         <button onClick={() => props.actions.onOpenPlace(tabB)}>Tab B</button>
         <button onClick={props.actions.onTabs}>Tabs</button>
+        <button onClick={props.actions.onSchedules}>Schedules</button>
+        <button onClick={props.actions.onChat}>Chat</button>
       </nav>
     );
   },
@@ -272,6 +276,46 @@ function typeDraft(container: HTMLElement, words: string) {
 const lastPanel = () => harness.panels.at(-1)!;
 
 describe("the sidebar as the window changes shape", () => {
+  it("allows drawer drag on Schedules and replaces sidebar destinations without growing the stack", async () => {
+    const schedules = {
+      key: "schedules",
+      name: "Schedules",
+      params: { deploymentId: "deployment-a" },
+    };
+    const { container } = await mount([home, schedules]);
+    expect(harness.drawer.lock).toBe("unlocked");
+    press(container, "Schedules");
+    expect(harness.dispatch).not.toHaveBeenCalled();
+    press(container, "Tabs");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      payload: { name: "Tabs", params: { deploymentId: "deployment-a" } },
+    });
+    press(container, "Chat");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({ type: "POP_TO_TOP" });
+  });
+
+  it("replaces Tabs with Schedules and resets deep screens to Chat plus Schedules", async () => {
+    const { container } = await mount([
+      home,
+      { key: "tabs", name: "Tabs", params: { deploymentId: "deployment-a" } },
+    ]);
+    press(container, "Schedules");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      payload: { name: "Schedules", params: { deploymentId: "deployment-a" } },
+    });
+    const deep = await mount([home, threadA, { key: "detail", name: "Schedule" }]);
+    press(deep.container, "Schedules");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "RESET",
+      payload: {
+        index: 1,
+        routes: [home, { name: "Schedules", params: { deploymentId: "deployment-a" } }],
+      },
+    });
+  });
+
   it("keeps the stack mounted with its draft, and navigates nowhere, through unfold and fold", async () => {
     const { container, render } = await mount([home, threadA]);
     typeDraft(container, "half a thought");

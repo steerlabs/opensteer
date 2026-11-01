@@ -575,15 +575,21 @@ vi.mock("../thread/composer-menu.js", () => ({
       readonly label: string;
       readonly onPress: () => void;
     }[];
-  }) => (
-    <div aria-label={props.accessibilityLabel ?? "Menu"} data-menu>
-      {props.options.map((option) => (
-        <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
-          {option.label}
-        </button>
-      ))}
-    </div>
-  ),
+  }) => {
+    harness.draws.set(
+      `menu:${props.accessibilityLabel}`,
+      (harness.draws.get(`menu:${props.accessibilityLabel}`) ?? 0) + 1,
+    );
+    return (
+      <div aria-label={props.accessibilityLabel ?? "Menu"} data-menu>
+        {props.options.map((option) => (
+          <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
+            {option.label}
+          </button>
+        ))}
+      </div>
+    );
+  },
 }));
 vi.mock("../thread/composer-pills.js", () => ({ ComposerPills: () => null }));
 vi.mock("../ui/composer-action.js", () => ({
@@ -1426,6 +1432,27 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(shown()).toEqual(places.map(({ title }) => title));
   });
 
+  it("does not redraw the page bar when Chat streams a token", async () => {
+    let host!: ReturnType<typeof steerable>;
+    const w = await world({ prepare: (mock) => void (host = steerable(mock)) });
+    await openSidebarTabs(w);
+    await press(row(front(w), "Friday dinner"));
+    const before = harness.draws.get("menu:Ask") ?? 0;
+    expect(before).toBeGreaterThan(0);
+    const home = w.host.getSnapshot().homeThreadId!;
+    await host.change((snapshot) => ({
+      ...snapshot,
+      transcripts: {
+        ...snapshot.transcripts,
+        [home]: [
+          ...(snapshot.transcripts[home] ?? []),
+          { id: "streamed-token", text: "Hello" } as never,
+        ],
+      },
+    }));
+    expect(harness.draws.get("menu:Ask")).toBe(before);
+  });
+
   it("is not redrawn by a streamed token, and a sign-in waiting on the reader marks only its tab", async () => {
     let host!: ReturnType<typeof steerable>;
     const w = await world({
@@ -1891,6 +1918,18 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
     await w.render();
     expect(screen.querySelector('[data-testid="pair-side"]')).not.toBeNull();
     expect(beside()).toEqual([`${occupant}:companion`]);
+    const companion = () => screen.querySelector<HTMLElement>('[data-testid="conversation-slot"]')!;
+    await typeDraft(companion(), "Keep the occupant’s question");
+    await press(control(screen, "Ask in Chat"));
+    expect(draftShown(companion())).toBe("");
+    await press(control(screen, "Close Chat"));
+    expect(draftShown(companion())).toBe("Keep the occupant’s question");
+    const mounted = [
+      `${occupant}:companion`,
+      `${snapshot.homeThreadId}:companion`,
+      `${occupant}:companion`,
+    ];
+    expect(beside()).toEqual(mounted);
     harness.pair = { height: 900, width: 900 };
     harness.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
@@ -1903,8 +1942,9 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
     harness.regions = [];
     harness.pair = { height: 1000, width: 744 };
     await w.render();
-    // The same thread, never mounted again, and the same page throughout.
-    expect(beside()).toEqual([`${occupant}:companion`]);
+    // Layout changes keep the restored draft and both live panes mounted.
+    expect(beside()).toEqual(mounted);
+    expect(draftShown(companion())).toBe("Keep the occupant’s question");
     expect(harness.pageMounts).toHaveLength(1);
     w.record("J7 layouts");
   });

@@ -373,6 +373,7 @@ vi.mock("../platform/attachment-draft-files.js", () => ({
   removeChatDraftFile: vi.fn(),
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
+  useSavedSurface: () => ({ source: "live" }),
   useHostUserId: (client: HostClient | null) => client?.getSnapshot().user?.id ?? null,
   useHostValue: <T,>(client: HostClient | null, select: (snapshot: never) => T, fallback: T) =>
     client === null ? fallback : select(client.getSnapshot() as never),
@@ -396,8 +397,16 @@ vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => harness.insets,
   usePaneGeometry: () => "",
 }));
-vi.mock("../ui/screen.js", () => ({ useGutter: () => 16, useReadingColumn: () => ({}) }));
-vi.mock("../sidebar/sidebar-context.js", () => ({ useSidebarVisible: () => false }));
+vi.mock("../ui/screen.js", () => ({
+  Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
+  useGutter: () => 16,
+  useReadingColumn: () => ({}),
+}));
+vi.mock("../sidebar/sidebar-context.js", () => ({
+  useSidebarVisible: () => false,
+  useSidebarControl: () => null,
+  useSidebarDocked: () => false,
+}));
 vi.mock("../ui/motion.js", () => ({
   appear: undefined,
   duration: { enter: 0, exit: 0 },
@@ -1168,6 +1177,66 @@ describe("a conversation with a page", () => {
         content: expect.arrayContaining([included]),
       }),
     );
+  });
+
+  it("Home clears its page route param only when a new message is on its way", async () => {
+    const { HomeScreen } = await import("../screens/home.js");
+    const host = fakeHost(
+      snapshotFor({ entries: [said("Hello", null)], run: null, threadId: chatId }),
+    );
+    const { container, drafts, root } = await mount(host, chatId);
+    harness.activeHost = host.client;
+    const included = page();
+    await act(async () =>
+      root.render(<HomeScreen route={{ params: { deploymentId, page: included } }} />),
+    );
+    expect(text(container)).toContain("Research page");
+    expect(harness.setParams).not.toHaveBeenCalledWith({ page: undefined });
+    await type(container, "Message", "Explain this page");
+    expect(host.dispatch).not.toHaveBeenCalled();
+    await press(container, "Send message");
+    expect(harness.setParams).toHaveBeenCalledWith({ page: undefined });
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.arrayContaining([included]),
+      }),
+    );
+    expect(drafts.readPending(deploymentId, userId, chatId)).toBeNull();
+  });
+
+  it("leaving Ask without sending sends nothing, and an ended page remains the reference sent", async () => {
+    const included = page();
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const first = await mount(host, workId, { askedPage: included });
+    await type(first.container, "Message", "Explain this");
+    await act(async () => first.root.render(<div />));
+    expect(host.dispatch).not.toHaveBeenCalled();
+    const second = await mount(host, workId, { askedPage: included });
+    host.move({ ...host.client.getSnapshot(), browserSessions: [] });
+    await type(second.container, "Message", "Explain the page I saw");
+    await press(second.container, "Send message");
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.arrayContaining([included]),
+      }),
+    );
+  });
+
+  it("keeps an offline Ask editable without dispatching it", async () => {
+    const included = page();
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      network: "offline",
+    });
+    const { container } = await mount(host, workId, { askedPage: included });
+    await type(container, "Message", "Keep this question");
+    expect(text(container)).toContain("Research page");
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled,
+    ).toBe(true);
+    expect(host.dispatch).not.toHaveBeenCalled();
   });
 
   it("includes a page Ask handed to its own screen until the person removes it", async () => {
@@ -3555,4 +3624,54 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   } finally {
     observer.disconnect();
   }
+});
+
+it("keeps New task creation and message keys when Ask is left after a lost creation answer", async () => {
+  const { NewTaskPane } = await import("../screens/new-task.js");
+  const { newTaskDraftKey } = await import("./first-message.js");
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
+  const createThread = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("Connection lost"))
+    .mockResolvedValue(thread);
+  Object.assign(host.client, { createThread });
+  const { container, drafts, root } = await mount(host, workId);
+  await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(workspaceId), "Research this page");
+  const included = BrowserPageContentPartSchema.parse({
+    type: "browser-page",
+    sessionId: base.browserSessions[0]!.id,
+    tabId: base.browserSessions[0]!.tabs[0]!.id,
+    title: "Research page",
+    url: "https://example.com",
+  });
+  const draw = () => (
+    <NewTaskPane
+      autoFocus={false}
+      deploymentId={deploymentId}
+      hostClient={host.client}
+      onStarted={() => false}
+      page={included}
+      underHeader={false}
+      workspaceId={workspaceId}
+    />
+  );
+  await act(async () => root.render(draw()));
+  await press(container, "Send message");
+  expect(createThread).toHaveBeenCalledTimes(1);
+  const held = drafts.readPending(deploymentId, userId, newTaskDraftKey(workspaceId))!;
+  expect(held).not.toBeNull();
+  await act(async () => root.render(<div />));
+  await act(async () => root.render(draw()));
+  expect(createThread).toHaveBeenCalledTimes(1);
+  await press(container, "Send again");
+  expect(createThread).toHaveBeenCalledTimes(2);
+  expect(createThread.mock.calls[1]).toEqual(createThread.mock.calls[0]);
+  expect(host.dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "thread.sendMessage",
+      idempotencyKey: held.idempotencyKey,
+      content: expect.arrayContaining([included]),
+    }),
+  );
 });

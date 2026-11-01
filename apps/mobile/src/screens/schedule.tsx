@@ -39,6 +39,7 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { useAppForeground } from "../ui/foreground.js";
 import { AppText, Notice, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -92,7 +93,7 @@ function ScheduleForHost(props: {
       </Screen>
     );
   }
-  return <ScheduleView key={reader} {...props} />;
+  return <ScheduleView key={`${reader}:${props.triggerId}`} {...props} />;
 }
 
 const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
@@ -110,7 +111,9 @@ function ScheduleView(props: {
   const navigation = useNavigation();
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
-  const state = useSchedule(hostClient, triggerId, useIsFocused());
+  const focused = useIsFocused();
+  const foreground = useAppForeground();
+  const state = useSchedule(hostClient, triggerId, focused && foreground);
   const detail = useShownSchedule(state);
   const blocked = useHostSelector(hostClient, selectChangeBlocked);
   const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);

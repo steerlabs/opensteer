@@ -4,11 +4,13 @@ import {
   surfaceDestination,
   type HostSnapshot,
 } from "@opensteer/client/host";
+import { createId } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
 import { afterAll, describe, expect, it } from "vitest";
 import { actingFor } from "../browser/agent-surface.js";
 import {
   aroundGlanceSelector,
+  aroundFrom,
   aroundLabel,
   aroundPlaces,
   sameAroundGlance,
@@ -87,6 +89,40 @@ describe("around a conversation", () => {
     const chat = glance({ ...source, threadAutomations: {} }, home)!;
     expect(chat.family?.automations).toBe(0);
     expect(aroundLabel(chat)).not.toContain("schedule");
+  });
+
+  it("links a reused worker to its current Assignment parent, never its original or a hidden parent", () => {
+    const worker = titled("Book a table for Friday");
+    const parent = titled("Switch Slack to Opensteer");
+    const assignment = Object.values(source.assignments).find((a) => a.workerThread.id === worker)!;
+    const reused = {
+      ...assignment,
+      id: createId("delegation"),
+      createdAt: "2099-01-01T00:00:00.000Z",
+      parentThreadId: parent as typeof assignment.parentThreadId,
+    };
+    const snapshot = {
+      ...source,
+      assignments: {
+        [assignment.id]: { ...assignment, status: "completed" as const },
+        [reused.id]: reused,
+      },
+    };
+    expect(aroundFrom(snapshot, worker)).toEqual({
+      threadId: parent,
+      title: "Switch Slack to Opensteer",
+    });
+    const hidden = { ...reused, parentThreadId: "hidden-parent" as typeof reused.parentThreadId };
+    expect(aroundFrom({ ...snapshot, assignments: { [hidden.id]: hidden } }, worker)).toBeNull();
+  });
+
+  it("pluralizes place and earlier-task counts without announcing zero sections", () => {
+    const empty = { places: 0, placesWorking: 0, placeGlyph: null, from: null, family: null };
+    expect(aroundLabel(empty)).toBe("");
+    expect(aroundLabel({ ...empty, places: 2, placesWorking: 1 })).toBe("2 places open, 1 working");
+    const family = { marks: [], running: 0, needsYou: false, automations: 0, earlier: 1 };
+    expect(aroundLabel({ ...empty, family })).toBe("1 earlier task");
+    expect(aroundLabel({ ...empty, family: { ...family, earlier: 2 } })).toBe("2 earlier tasks");
   });
 
   // Failure: a streamed token publishes a snapshot that reads as a new glance.

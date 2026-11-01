@@ -87,11 +87,11 @@ function actingWithoutIdentity(
   if (destination.kind === "browser") {
     const session = snapshot.browserSessions.find(({ id }) => id === destination.sessionId);
     if (session?.state !== "ready" || session.acting !== true) return false;
-    const tabs = session.tabCatalog?.tabs ?? [];
+    const tabs = session.tabCatalog?.tabs ?? session.tabs;
     return (
-      tabs.length <= 1 &&
+      tabs.length === 1 &&
       tabs.every((tab) => tab.id === destination.tabId) &&
-      !tabs.some((tab) => tab.occupants.some(({ acting }) => acting))
+      !session.tabCatalog?.tabs.some((tab) => tab.occupants.some(({ acting }) => acting))
     );
   }
   if (destination.source?.kind === "owner-view") return false;
@@ -138,12 +138,13 @@ export function placeAgentsWords(
       : null;
   if (agents.length === 1) {
     const agent = agents[0]!;
-    const detail = placeAgentState(agent);
+    const detail = !agent.acting && value.unnamedActing ? "Agent working" : placeAgentState(agent);
     return { detail, label: `${agent.title}, ${detail.toLowerCase()}`, title: agent.title };
   }
   const working = agents.filter(({ acting }) => acting).length;
   const title = `${agents.length} agents`;
-  const detail = working === 0 ? "Idle" : `${working} working`;
+  const detail =
+    working === 0 ? (value.unnamedActing ? "Agent working" : "Idle") : `${working} working`;
   return { detail, label: `${title}, ${detail.toLowerCase()}`, title };
 }
 

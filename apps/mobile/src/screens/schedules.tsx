@@ -27,6 +27,7 @@ import {
 import { useSidebarMenu } from "../navigation-header.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { ChatOrb } from "../ui/chat-orb.js";
+import { useAppForeground } from "../ui/foreground.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -146,7 +147,9 @@ function ScheduleList(props: {
   const navigation = useNavigation();
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
-  const state = useSchedules(hostClient, undefined, useIsFocused());
+  const focused = useIsFocused();
+  const foreground = useAppForeground();
+  const state = useSchedules(hostClient, undefined, focused && foreground);
   const items = useShownSchedule(state);
   const sections = useMemo(() => (items === null ? [] : scheduleSections(items)), [items]);
   const [refreshing, setRefreshing] = useState(false);

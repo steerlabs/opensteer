@@ -93,6 +93,19 @@ describe("place agents", () => {
     });
   });
 
+  it("does not say idle when an unseen agent works beside a visible idle occupant", () => {
+    const value = placeAgents(
+      place([occupant("thread-trip"), occupant("thread-private", { acting: true })]),
+      source(),
+    );
+    expect(value.agents.map(({ threadId }) => threadId)).toEqual(["thread-trip"]);
+    expect(placeAgentsWords(value)).toEqual({
+      title: "Tokyo trip",
+      detail: "Agent working",
+      label: "Tokyo trip, agent working",
+    });
+  });
+
   it("says an older Host's browser acts without naming anyone, only for its one tab", () => {
     const browser = (tabs: { id: string; occupants: PlaceOccupant[] }[]) =>
       source({
@@ -120,6 +133,21 @@ describe("place agents", () => {
         browser([{ id: "tab-a", occupants: [occupant("thread-trip", { acting: true })] }]),
       ).unnamedActing,
     ).toBe(false);
+  });
+
+  it("does not assign session-wide acting to legacy tabs in a multi-tab browser", () => {
+    const legacy = source({
+      browserSessions: [
+        {
+          id: "browser-a",
+          state: "ready",
+          acting: true,
+          tabs: [{ id: "tab-a" }, { id: "tab-b" }],
+        },
+      ] as unknown as PlaceAgentSource["browserSessions"],
+    });
+    expect(placeAgents(place([]), legacy).unnamedActing).toBe(false);
+    expect(placeAgents(place([], { ...tab, tabId: "tab-b" }), legacy).unnamedActing).toBe(false);
   });
 
   it("says a task session acts on an app without an actor, and never for the person's own view", () => {

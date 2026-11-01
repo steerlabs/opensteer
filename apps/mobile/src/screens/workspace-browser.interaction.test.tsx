@@ -44,6 +44,7 @@ const state = vi.hoisted(() => ({
   regions: [] as import("react-native-reserved-regions").ReservedRegion[],
   regionsReady: true,
   keyboard: false,
+  fontScale: 1,
   conversationMounts: 0,
   pageMounts: 0,
 }));
@@ -184,7 +185,7 @@ vi.mock("react-native", () => ({
     />
   ),
   StyleSheet: { create: (styles: object) => styles, flatten, hairlineWidth: 1 },
-  useWindowDimensions: () => ({ fontScale: 1, height: 844, width: 390 }),
+  useWindowDimensions: () => ({ fontScale: state.fontScale, height: 844, width: 390 }),
   View: ({
     children,
     accessibilityLabel,
@@ -403,6 +404,7 @@ afterEach(() => {
   state.regions = [];
   state.regionsReady = true;
   state.keyboard = false;
+  state.fontScale = 1;
   state.conversationMounts = 0;
   state.pageMounts = 0;
 });
@@ -1339,6 +1341,59 @@ describe("the page's bar", () => {
     });
   });
 
+  it("updates the menu by identity when acting moves, and removes a departing agent", () => {
+    const { container, render } = openPage([
+      { acting: true, threadId: "thread-trip" },
+      { threadId: "thread-agent" },
+    ]);
+    const pill = element(container, "2 agents, 1 working")!;
+    expect(pill.querySelector("button")?.textContent).toContain("Tokyo trip");
+    state.snapshot = withAgents([
+      occupied(sessionId, [
+        { threadId: "thread-trip" },
+        { acting: true, threadId: "thread-agent" },
+      ]),
+    ]);
+    render();
+    expect(pill.querySelector("button")?.textContent).toContain("Compare hotels");
+    press(pill, "Tokyo trip · Idle");
+    expect(state.dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        params: { deploymentId: "deployment-a", threadId: "thread-trip" },
+      }),
+    );
+    state.snapshot = withAgents([occupied(sessionId, [])]);
+    render();
+    expect(element(container, "Tokyo trip, idle")).toBeNull();
+    expect(element(container, "2 agents, 1 working")).toBeNull();
+    expect(element(container, "Ask")).not.toBeNull();
+  });
+
+  it("pushes an agent deeper in the stack and renders an old grid route without choosing a tab", () => {
+    const { container } = openPage([{ threadId: "thread-trip" }]);
+    state.routes = [
+      { name: "Thread", params: { threadId: "thread-trip" } },
+      { name: "Thread", params: { threadId: "thread-agent" } },
+      { name: "WorkspaceBrowser" },
+    ];
+    press(container, "Tokyo trip, idle");
+    expect(state.goBack).not.toHaveBeenCalled();
+    expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "PUSH" }));
+    const legacy = setup({ threadId: "thread-trip" });
+    expect(legacy.container.textContent).toContain("This tab isn’t available");
+    expect(legacy.container.querySelector('[data-testid="page-bar"]')).toBeNull();
+  });
+
+  it("hides Ask in Chat before Chat exists, including offline", () => {
+    const { container, render } = openPage([]);
+    state.snapshot = { ...state.snapshot!, homeThreadId: null, network: "offline" };
+    render();
+    const ask = element(container, "Ask")!;
+    expect(ask.textContent).not.toContain("Ask in Chat");
+    press(ask, "New task");
+    expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: "NewTask" }));
+  });
+
   it("names nobody in an empty tab, and leaves Ask", () => {
     const { container } = openPage([]);
     expect(container.querySelector('[data-testid="page-bar"]')).not.toBeNull();
@@ -1382,6 +1437,25 @@ describe("the page's bar", () => {
       type: "PUSH",
     });
   });
+
+  it.each([false, true])(
+    "Ask on a native surface includes no invented web page (phone: %s)",
+    (phone) => {
+      const opened = setup({
+        machineId: "mac-a",
+        computerSessionId: "computer-a",
+        ...(phone ? { phone: true } : { appKey: "notes" }),
+      });
+      state.snapshot = withAgents([]);
+      opened.render();
+      press(element(opened.container, "Ask")!, "New task");
+      expect(state.dispatch).toHaveBeenCalledWith({
+        name: "NewTask",
+        type: "PUSH",
+        params: { deploymentId: "deployment-a", workspaceId: source.id },
+      });
+    },
+  );
 
   it("shows the same page whichever way it was reached", () => {
     const occupants = [{ acting: true, threadId: "thread-trip" }];
@@ -1461,6 +1535,25 @@ describe("a page beside its agent's thread", () => {
     expect(state.pageMounts).toBe(1);
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
+  });
+
+  it("uses hysteresis at the pair boundary and collapses for large text without remounting the page", () => {
+    state.pair = { height: 1000, width: 744 };
+    const { container, render } = openPage();
+    expect(arrangement(container)).toBe("side");
+    state.pair = { height: 1000, width: 700 };
+    render();
+    expect(arrangement(container)).toBe("side");
+    state.fontScale = 2;
+    render();
+    expect(arrangement(container)).toBe("stacked");
+    state.fontScale = 1;
+    render();
+    expect(arrangement(container)).toBe("stacked");
+    state.pair = { height: 1000, width: 744 };
+    render();
+    expect(arrangement(container)).toBe("side");
+    expect(state.pageMounts).toBe(1);
   });
 
   it("chooses whose thread is beside the page from the pill's menu", () => {

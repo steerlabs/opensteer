@@ -78,7 +78,7 @@ export const AgentPill = memo(function AgentPill(props: {
   const words = placeAgentsWords(agents);
   if (words === null) return null;
   const list = agents.agents;
-  const working = list.some(({ acting }) => acting) || (list.length === 0 && agents.unnamedActing);
+  const working = list.some(({ acting }) => acting) || agents.unnamedActing;
   const face = (chevron: "chevron.down" | "chevron.right" | null) => (
     <View style={styles.pill}>
       {list.length === 0 ? <ActingDot grouped size={8} /> : <AgentMarks agents={list} />}

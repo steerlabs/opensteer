@@ -32,6 +32,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const harness = vi.hoisted(() => ({
   dispatch: vi.fn(),
   focused: true,
+  foreground: true,
   host: null as unknown as HostClient,
   routes: [] as { name: string; params?: object }[],
   setOptions: vi.fn(),
@@ -120,6 +121,7 @@ vi.mock("@react-navigation/native", () => ({
     setOptions: harness.setOptions,
   }),
 }));
+vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => harness.foreground }));
 vi.mock("../navigation-header.js", () => ({ useSidebarMenu: () => undefined }));
 vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => <p>No Host</p>,
@@ -175,6 +177,7 @@ afterEach(() => {
   harness.dispatch.mockReset();
   harness.setOptions.mockReset();
   harness.focused = true;
+  harness.foreground = true;
   harness.routes = [];
 });
 
@@ -296,6 +299,23 @@ describe("Schedules", () => {
     expect(button(screen, /^Morning email summary\./).getAttribute("aria-label")).toMatch(/Next /);
   });
 
+  it("says when the Host's 100-row answer may be truncated", async () => {
+    const f = host();
+    const seed = (await f.summaries())[0]!;
+    f.list.mockResolvedValue({
+      ok: true,
+      data: {
+        triggers: Array.from({ length: 100 }, (_, index) => ({
+          ...seed,
+          id: createId("trigger"),
+          name: `Schedule ${index}`,
+        })),
+      },
+    });
+    const screen = listScreen();
+    await shown(screen, "Showing the first 100 schedules.", "the cap warning was missing");
+  });
+
   it("opens the schedule a row names", async () => {
     const f = host();
     const screen = listScreen();
@@ -351,12 +371,42 @@ describe("Schedules", () => {
     expect(screen.textContent).toContain("Morning email summary");
   });
 
+  it("reads neither list nor detail while the app is backgrounded", async () => {
+    const f = host();
+    const summary = (await f.summaries())[0]!;
+    harness.foreground = false;
+    listScreen();
+    detailScreen(summary.id);
+    expect(f.list).not.toHaveBeenCalled();
+    expect(f.get).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous reader's list immediately while the next reader's answer waits", async () => {
+    const f = host();
+    const screen = listScreen();
+    await shown(screen, "Morning email summary", "first reader never loaded");
+    let finish!: (answer: Awaited<ReturnType<typeof f.list>>) => void;
+    f.list.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    f.emit({ user: { ...f.snapshot().user!, id: createId("user") } });
+    expect(screen.textContent).not.toContain("Morning email summary");
+    await act(async () => finish({ ok: true, data: { triggers: [] } }));
+    await shown(screen, "No schedules yet", "second reader's empty list never appeared");
+  });
+
   it("reads nothing while another screen covers it", async () => {
     const f = host();
     harness.focused = false;
+    const summary = (await f.summaries())[0]!;
     const screen = listScreen();
+    detailScreen(summary.id);
     expect(f.list).not.toHaveBeenCalled();
     expect(screen.textContent).not.toContain("No schedules yet");
+    expect(f.get).not.toHaveBeenCalled();
   });
 });
 
@@ -366,6 +416,30 @@ describe("One schedule", () => {
     if (summary === undefined) throw new Error(`No seeded schedule ${name}.`);
     return summary;
   }
+
+  it.each([
+    ["running", "Watching"],
+    ["starting", "Starting"],
+    ["backoff", "Restarting after it stopped"],
+    ["expired", "Waiting for its computer"],
+    ["stopped", "Stopped"],
+  ] as const)("describes a watch observed as %s", async (observed, words) => {
+    const f = host();
+    const summary = await named(f, "Inbox watcher");
+    const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
+    if (wire.activation === null) throw new Error("Watch fixture lacks activation");
+    f.get.mockResolvedValue({
+      ok: true,
+      data: {
+        ...wire,
+        trigger: { ...wire.trigger, status: "active", pauseReason: null },
+        activation: { ...wire.activation, observed },
+      },
+    });
+    const screen = detailScreen(summary.id);
+    await shown(screen, words, "watch state was missing");
+    expect(screen.textContent).toContain("Watching continuously");
+  });
 
   it("titles itself and opens the task it runs in", async () => {
     const f = host();
@@ -380,6 +454,31 @@ describe("One schedule", () => {
         type: "PUSH",
       },
     ]);
+  });
+
+  it("does not show the previous schedule while a replacement route waits for the Host", async () => {
+    const f = host();
+    const first = await named(f, "Nightly typecheck");
+    const next = await named(f, "GitHub deploys");
+    const screen = detailScreen(first.id);
+    await shown(screen, "Active", "first schedule never loaded");
+    let finish!: (answer: Awaited<ReturnType<typeof f.get>>) => void;
+    f.get.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    act(() =>
+      roots
+        .at(-1)!
+        .render(<ScheduleScreen route={{ params: { deploymentId, triggerId: next.id } }} />),
+    );
+    expect(screen.textContent).not.toContain("Runs in");
+    expect(screen.querySelector('[aria-label="Pause"]')).toBeNull();
+    const data = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: next.id }));
+    await act(async () => finish({ ok: true, data }));
+    await shown(screen, "When its webhook is called", "replacement schedule never loaded");
   });
 
   it("goes back to its thread rather than opening a second copy", async () => {
@@ -462,12 +561,29 @@ describe("One schedule", () => {
     const controls = () => screen.querySelectorAll("button[aria-label]").length;
     const before = controls();
 
+    let confirm!: (answer: Awaited<ReturnType<typeof f.get>>) => void;
+    f.get.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          confirm = resolve;
+        }),
+    );
     let release = holdNextDispatch(f);
     press(button(screen, "Pause"));
     expect(button(screen, "Pause").getAttribute("aria-busy")).toBe("true");
     expect(button(screen, "Run now").disabled).toBe(true);
+    press(button(screen, "Pause"));
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
     expect(screen.textContent).not.toContain("Resume");
     release();
+    await vi.waitFor(
+      () => expect(f.get, "confirmation read never started").toHaveBeenCalledTimes(2),
+      { timeout: 1000 },
+    );
+    expect(button(screen, "Pause").getAttribute("aria-busy")).toBe("true");
+    expect(screen.textContent).not.toContain("Resume");
+    const confirmed = await f.mock.rpc["triggers.get"]({ triggerId: summary.id });
+    await act(async () => confirm(confirmed));
     await vi.waitFor(() => expect(button(screen, "Resume"), "never paused").toBeDefined(), {
       timeout: 2000,
     });
@@ -505,6 +621,20 @@ describe("One schedule", () => {
     expect(controls()).toBe(before + 1);
   });
 
+  it("drops a deleted schedule without claiming this Host lacks schedules", async () => {
+    const f = host();
+    const summary = await named(f, "Nightly typecheck");
+    const screen = detailScreen(summary.id);
+    await shown(screen, "Active", "the detail never loaded");
+    f.get.mockRejectedValue(
+      new HostClientRequestError({ code: "not_found", status: 404, message: "Trigger not found" }),
+    );
+    f.emit({ triggerRevision: 1 });
+    await shown(screen, "Trigger not found", "deleted detail was never removed");
+    expect(screen.textContent).not.toContain("Update Opensteer");
+    expect(screen.querySelector('[aria-label="Pause"]')).toBeNull();
+  });
+
   it("says why a change failed and leaves the schedule as the Host has it", async () => {
     const f = host();
     const summary = await named(f, "Nightly typecheck");
@@ -529,5 +659,10 @@ describe("One schedule", () => {
     expect(button(screen, "Run now").disabled).toBe(true);
     press(button(screen, "Run now"));
     expect(f.dispatch).not.toHaveBeenCalled();
+    f.emit({ connection: "connected" });
+    await vi.waitFor(
+      () => expect(button(screen, "Pause").disabled, "reconnect never enabled changes").toBe(false),
+      { timeout: 2000 },
+    );
   });
 });

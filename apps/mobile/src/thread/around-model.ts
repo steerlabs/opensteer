@@ -7,6 +7,8 @@ import {
   surfaceDestination,
   taskFamilyGlance,
   threadRequester,
+  requesterLink,
+  workerAssignment,
   type ConversationSurfaceSource,
   type HostSnapshot,
   type RequesterLink,
@@ -21,7 +23,7 @@ import { sameDestination } from "../browser/surface-route.js";
  * What is around a conversation: the places it and the work it handed out
  * hold open now (`conversationSurfaces`), the tasks it handed out and the
  * automations anchored to it (`taskFamily`), and, for work someone handed it,
- * the conversation it works for (`threadRequester`). Nothing here invents a
+ * the conversation its current Assignment works for. Nothing here invents a
  * relation the Host did not record.
  */
 
@@ -100,7 +102,12 @@ export function aroundFrom(
   snapshot: Parameters<typeof threadRequester>[0] & Pick<HostSnapshot, "homeThreadId">,
   threadId: string,
 ): RequesterLink | null {
-  return snapshot.homeThreadId === threadId ? null : threadRequester(snapshot, threadId);
+  if (snapshot.homeThreadId === threadId) return null;
+  const assignment = workerAssignment(snapshot.assignments, threadId);
+  if (assignment === null) return threadRequester(snapshot, threadId);
+  return assignment.parentThreadId === threadId
+    ? null
+    : requesterLink(snapshot, assignment.parentThreadId);
 }
 
 export function sameRequesterLink(

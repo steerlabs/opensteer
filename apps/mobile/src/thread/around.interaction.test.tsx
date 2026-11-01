@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
+import { headerFontScaleLimit } from "../theme.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 
 /*
@@ -35,13 +36,18 @@ vi.mock("react-native", () => {
   type Props = {
     readonly children?: ReactNode;
     readonly accessibilityLabel?: string;
+    readonly accessibilityHint?: string;
     readonly accessibilityRole?: string;
     readonly onPress?: () => void;
   };
   return {
     Platform: { OS: "ios" },
     Pressable: (props: Props) => (
-      <button aria-label={props.accessibilityLabel} onClick={props.onPress}>
+      <button
+        aria-label={props.accessibilityLabel}
+        title={props.accessibilityHint}
+        onClick={props.onPress}
+      >
         {props.children}
       </button>
     ),
@@ -78,7 +84,13 @@ vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("../ui/primitives.js", () => ({
-  AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
+  AppText: ({
+    children,
+    maxFontSizeMultiplier,
+  }: {
+    readonly children?: ReactNode;
+    readonly maxFontSizeMultiplier?: number;
+  }) => <span data-font-limit={maxFontSizeMultiplier}>{children}</span>,
   Notice: ({ title }: { readonly title: string }) => <p>{title}</p>,
 }));
 vi.mock("../ui/symbol.js", () => ({
@@ -242,6 +254,12 @@ describe("the conversation's bar", () => {
     expect(button.getAttribute("aria-label")).toBe(
       `${places.length} places open, ${working} working; 1 task running, one needs you; ${automations} schedules`,
     );
+    expect(button.title).toBe("Shows the places, tasks and schedules around this conversation");
+    expect(
+      [...button.querySelectorAll("span")]
+        .filter((node) => /^\d+$/.test(node.textContent ?? ""))
+        .every((node) => Number(node.getAttribute("data-font-limit")) === headerFontScaleLimit),
+    ).toBe(true);
     // A mixed set of places shows the general symbol; the running task its own mark.
     expect(button.querySelector('[data-symbol="rectangle.on.rectangle"]')).not.toBeNull();
     expect(button.querySelectorAll("[data-task-icon]")).toHaveLength(1);
@@ -289,6 +307,47 @@ describe("the conversation's bar", () => {
     expect(writes()).toBe(before + 1);
   });
 
+  it("adds and removes the header control as schedules and tasks appear and vanish", async () => {
+    const w = await world();
+    const threadId = w.titled("Review PortableFS integration");
+    const original = w.snapshot();
+    const empty = { ...original, browserSessions: [], assignments: {}, threadAutomations: {} };
+    w.move(empty);
+    const { ios, android } = bar(w.client, threadId);
+    expect(ios()).toEqual([]);
+    const schedule = original.threadAutomations[threadId]![0]!;
+    w.move({ ...empty, threadAutomations: { [threadId]: [schedule] } });
+    expect(control(android())?.getAttribute("aria-label")).toBe("1 schedule");
+    w.move({
+      ...empty,
+      threadAutomations: { [threadId]: [schedule, { ...schedule, id: "second" }] },
+    });
+    expect(control(android())?.getAttribute("aria-label")).toBe("2 schedules");
+    const seed = Object.values(original.assignments)[0]!;
+    const assignment = { ...seed, parentThreadId: threadId as typeof seed.parentThreadId };
+    w.move({ ...empty, assignments: { [assignment.id]: assignment } });
+    expect(control(android())?.getAttribute("aria-label")).toMatch(/^1 task running/);
+    w.move(empty);
+    expect(ios()).toEqual([]);
+    expect(control(android())).toBeNull();
+  });
+
+  it("adds and removes a places-only control as live places appear and close", async () => {
+    const w = await world();
+    const original = w.snapshot();
+    const home = original.homeThreadId!;
+    const live = { ...original, assignments: {}, threadAutomations: {} };
+    const empty = { ...live, browserSessions: [], machines: [] };
+    w.move(empty);
+    const { ios, android } = bar(w.client, home);
+    expect(ios()).toEqual([]);
+    w.move(live);
+    expect(aroundPlaces(live, home).length).toBeGreaterThan(0);
+    expect(control(android())?.getAttribute("aria-label")).toContain("place");
+    w.move(empty);
+    expect(ios()).toEqual([]);
+  });
+
   it("keeps working on a Host without automations, showing places and tasks only", async () => {
     const w = await world({ automations: "absent" });
     const home = w.snapshot().homeThreadId!;
@@ -308,6 +367,14 @@ describe("Around this thread", () => {
     const home = w.snapshot().homeThreadId!;
     const places = aroundPlaces(w.snapshot(), home);
     const automations = w.snapshot().threadAutomations[home]!.length;
+    harness.routes = [
+      { name: "Home", params: { deploymentId } },
+      {
+        name: "WorkspaceBrowser",
+        params: { deploymentId, scope: "workspace", sessionId: "page", tabId: "beside" },
+      },
+      { name: "ThreadAround", params: { deploymentId, threadId: home } },
+    ];
     const container = sheet(home);
     expect(sections(container)).toEqual([
       `Places · ${places.length}`,

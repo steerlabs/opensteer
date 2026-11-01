@@ -281,7 +281,7 @@ export class ScheduleResource<Wire, Data> {
       this.#wire = undefined;
       const unavailable =
         error instanceof HostClientRequestError &&
-        (error.status === 404 ||
+        ((error.status === 404 && !this.detail) ||
           error.status === 405 ||
           error.status === 501 ||
           error.code === "unsupported");
