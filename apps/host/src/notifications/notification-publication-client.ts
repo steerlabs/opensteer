@@ -108,10 +108,28 @@ export class NotificationPublicationClient {
     });
     const url = new URL("/v1/host/notifications", exactOrigin(target.controlApiOrigin));
     const authorization = `Bearer ${hostCredential(target.hostCredential)}`;
+    const result = await this.#post(url, authorization, request, input.signal);
+    if (result.status !== "rejected") return result;
+    if (request.previews) {
+      // An Account released before sealed previews rejects the field; the
+      // generic alert still reaches the phone.
+      const { previews: _previews, ...generic } = request;
+      const fallback = await this.#post(url, authorization, generic, input.signal);
+      if (fallback.status !== "rejected") return fallback;
+    }
+    return { status: "failed", reason: "Notification publication API returned HTTP 400" };
+  }
+
+  async #post(
+    url: URL,
+    authorization: string,
+    request: HostNotificationPublication,
+    abort: AbortSignal,
+  ): Promise<NotificationPublicationResult | { readonly status: "rejected" }> {
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), 15_000);
     timer.unref();
-    const signal = AbortSignal.any([input.signal, timeout.signal]);
+    const signal = AbortSignal.any([abort, timeout.signal]);
     try {
       let response: Response;
       try {
@@ -127,11 +145,12 @@ export class NotificationPublicationClient {
           signal,
         });
       } catch {
-        input.signal.throwIfAborted();
+        abort.throwIfAborted();
         return { status: "retry", reason: "Notification publication API request failed" };
       }
       if (!response.ok) {
         if (await pushNotConfigured(response, signal)) return { status: "push-not-configured" };
+        if (response.status === 400) return { status: "rejected" };
         return {
           status: response.status === 429 || response.status >= 500 ? "retry" : "failed",
           reason: `Notification publication API returned HTTP ${response.status}`,
@@ -144,7 +163,7 @@ export class NotificationPublicationClient {
         if (acknowledged.notificationId !== request.notificationId)
           throw new Error("Mismatched notification");
       } catch (error) {
-        input.signal.throwIfAborted();
+        abort.throwIfAborted();
         if (timeout.signal.aborted)
           return { status: "retry", reason: "Notification publication API request timed out" };
         if (error instanceof TypeError)

@@ -142,6 +142,46 @@ describe("NotificationPublicationClient", () => {
     ).toBe(false);
   });
 
+  it("falls back to the generic alert when an Account without previews rejects them", async () => {
+    const published = entry();
+    const bodies: Record<string, unknown>[] = [];
+    const client = new NotificationPublicationClient({
+      deploymentId,
+      hostInstanceId,
+      target: async () => target,
+      previews: {
+        keys: async () => [
+          {
+            accountId,
+            installationId: "preview-installation-a",
+            keyId: randomBytes(16).toString("base64url"),
+            key: randomBytes(32).toString("base64url"),
+          },
+        ],
+      },
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        // The Account before sealed previews parsed publications strictly.
+        return "previews" in body
+          ? new Response("", { status: 400 })
+          : acknowledgement(published.id);
+      },
+    });
+    await expect(
+      client.publish({
+        entry: published,
+        recipientAccountIds: [accountId],
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual({ status: "published" });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).not.toHaveProperty("previews");
+    expect(bodies[1]).toEqual(
+      Object.fromEntries(Object.entries(bodies[0]!).filter(([key]) => key !== "previews")),
+    );
+  });
+
   it("posts identifiers and the audience to the Account, and nothing else", async () => {
     const published = entry({
       kind: "reply-published",
