@@ -17,37 +17,33 @@ import type { FakeIphoneApps } from "./fake-bridge.js";
  * the screens' words and the order of what a tap sends; they do not prove
  * Swift, iOS prompts or a real Host.
  *
- * Failure cases, written before the screens:
- * - adding offers itself on a Host without iPhone apps, names nothing of what
- *   is shared, or sends the person nowhere useful when the Host refuses;
- * - an app is turned on, or widened, without its consent sheet naming what
- *   agents can do, that it goes to the AI service, and that iOS asks next;
- * - iOS is asked before Allow is tapped, or Cancel still sends something;
+ * Failure cases:
+ * - adding offers itself on a Host without iPhone apps, doesn't list what Add
+ *   turns on, or sends the person nowhere useful when the Host refuses;
+ * - iOS is asked, or anything is sent or signed, before Add or a switch is
+ *   tapped; Add turns on an app that was switched off, or asks iOS about two
+ *   apps at once;
+ * - an app iOS refuses is turned on, or stops the rest of Add's apps;
  * - a request shows on its own more than once, or cannot be answered later;
- * - Opensteer access and iPhone Settings are merged into one "permission";
- * - choosing a level in the sheet sends, prompts or signs anything before the
- *   one explicit review is confirmed, or closing the sheet keeps the draft;
- * - an app reads as "on" (green) while iPhone Settings blocks it or the iPhone
- *   is not connected, or a fresh iOS refusal still turns it on;
- * - turning off promises to undo what agents already received or saved;
+ * - Opensteer access and iPhone Settings are merged into one state;
+ * - an app reads as on while iPhone Settings blocks it or the iPhone is not
+ *   connected, or a fresh iOS refusal still turns it on;
+ * - lowering or turning off signs anything, or needs the iPhone;
  * - another device's view of the iPhone offers to turn an app on or widen it,
  *   loses the way to decline a waiting request, or cannot lower or turn off an
  *   app while a wider request waits or the iPhone is offline;
  * - Remove leaves the iPhone sharing, or forgets to tell the Host.
  *
- * Location and Photos, written before their rows:
- * - either offers Can read and change, or a review that doesn't say, before
- *   iOS asks, that Allow Once ends, that Precise Location may be off, or that
- *   iPhone's Photos prompt is broader than the read-only details agents get;
+ * Location and Photos:
+ * - either offers Can read and change;
  * - an older Host without the definition, or an older iPhone build without
- *   the app, shows a row that opens a review or asks iOS, or shows no reason;
+ *   the app, shows a switch that can be turned on or asks iOS, or no reason;
  * - a denied Location sends the Host anything;
  * - an approximate Location, or limited Photos, reads as anything but on
  *   with that limit named, or Choose photos is missing or reads closing the
  *   picker as a refusal;
  * - a temporary Location permission that ended still reads as on, or asks
- *   iOS without a tap;
- * - another device can turn either on, or loses decline, lower or turn off.
+ *   iOS without a tap.
  */
 
 const harness = vi.hoisted(() => ({
@@ -235,6 +231,44 @@ vi.mock("../ui/primitives.js", () => ({
   ),
   SectionLabel: ({ children }: { children: string }) => <h2>{children}</h2>,
   StatusDot: ({ tone }: { tone: string }) => <i data-tone={tone} />,
+  Toggle: (props: {
+    accessibilityLabel: string;
+    disabled?: boolean;
+    onChange: (value: boolean) => void;
+    value: boolean;
+  }) => (
+    <input
+      aria-label={props.accessibilityLabel}
+      checked={props.value}
+      disabled={props.disabled}
+      onChange={(event) => props.onChange(event.target.checked)}
+      role="switch"
+      type="checkbox"
+    />
+  ),
+}));
+vi.mock("../thread/composer-menu.js", () => ({
+  NativeMenu: (props: {
+    accessibilityLabel: string;
+    children?: ReactNode;
+    disabledReason?: string | null;
+    options: readonly { id: string; label: string; onPress: () => void; selected?: boolean }[];
+    title?: string;
+  }) => (
+    <div aria-label={props.accessibilityLabel}>
+      {props.children}
+      {props.options.map((option) => (
+        <button
+          aria-checked={option.selected === true}
+          aria-label={`${props.title ?? ""}: ${option.label}`}
+          disabled={props.disabledReason != null}
+          key={option.id}
+          onClick={option.onPress}
+          role="menuitemradio"
+        />
+      ))}
+    </div>
+  ),
 }));
 
 const { IphoneAppsController } = await import("./controller.js");
@@ -262,7 +296,7 @@ afterEach(() => {
 });
 
 describe("Add this iPhone", () => {
-  it("says what is shared, then adds the iPhone and hands back its computer", async () => {
+  it("lists what Add turns on, then adds the iPhone and asks iOS about each app in turn", async () => {
     const phone = iphone();
     const onAdded = vi.fn();
     await mount(
@@ -277,38 +311,120 @@ describe("Add this iPhone", () => {
     );
 
     expect(text()).toContain(
-      "Agents working in Opensteer on Mac mini can use the apps you turn on here, while Opensteer is open on this iPhone. Nothing is shared until you turn an app on.",
+      "Agents in Opensteer on Mac mini can use the apps you turn on, while Opensteer is open on this iPhone.",
     );
     expect(input("Name").value).toBe("Alex's iPhone");
-    expect(text()).toContain("This is how it's listed on Computers.");
-    expect(text()).toContain("Apps you can share");
-    expect(text()).toContain("See events, and add or change them if you allow it");
-    expect(text()).toContain("Find people. Agents can't change contacts.");
-    expect(text()).toContain("See reminders, and add or change them if you allow it");
-    expect(text()).toContain("See your current location, precise or approximate");
-    expect(text()).toContain("See photo and album details only");
     expect(text()).toContain(
-      "Available apps depend on the Opensteer versions on this iPhone and your Deployment.",
+      "What agents see goes to Opensteer on Mac mini and the AI service the task uses. Tasks in Main can use these apps; a specialist needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.",
     );
-    expect(text()).toContain(
-      "Agents can't use anything else on this iPhone: not its other apps, files, messages or screen.",
-    );
+    // Everything but Photos starts on, at its widest.
+    expect(switches()).toEqual([
+      "Share Calendar: on",
+      "Share Contacts: on",
+      "Share Reminders: on",
+      "Share Location: on",
+      "Share Photos: off",
+    ]);
+    expect(rowLabels()).toEqual([
+      "Calendar, Can read and change",
+      "Contacts, Find people. Agents can't change contacts.",
+      "Reminders, Can read and change",
+      "Location, Get the current location. No history or tracking.",
+      "Photos, See photo details, never the photos",
+    ]);
+    expect(button("Add & share 4 apps")).toBeDefined();
+
+    // Switching and choosing a level are drafts: nothing is asked or sent.
+    await toggle("Share Location");
+    await choose("Calendar", "Can read");
+    expect(rowLabels()[0]).toBe("Calendar, Can read");
+    expect(phone.fake.device.calls).toEqual([]);
 
     await type(input("Name"), "Work iPhone");
-    await click(button("Add Work iPhone"));
+    await click(button("Add & share 3 apps"));
 
     await vi.waitFor(() => expect(onAdded).toHaveBeenCalledOnce());
     const runnerId = phone.fake.device.runnerId();
     expect(onAdded).toHaveBeenCalledWith(runnerId);
-    const listed = phone.host.getSnapshot().machines.find(({ id }) => id === runnerId);
-    expect(listed).toMatchObject({
+    expect(phone.host.getSnapshot().machines.find(({ id }) => id === runnerId)).toMatchObject({
       device: { form: "phone", platform: "ios" },
       name: "Work iPhone",
       status: "online",
     });
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
+    // One app at a time, each asked of iOS and signed before the next begins.
+    await vi.waitFor(() => expect(phone.controller.getState().queued).toEqual([]));
+    await vi.waitFor(() =>
+      expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
+        "requestPermission:apple-calendar",
+        expect.stringMatching(/^answerApproval:.+:allow:apple-calendar:read$/u),
+        "requestPermission:apple-contacts",
+        expect.stringMatching(/^answerApproval:.+:allow:apple-contacts:read$/u),
+        "requestPermission:apple-reminders",
+        expect.stringMatching(/^answerApproval:.+:allow:apple-reminders:read-write$/u),
+      ]),
     );
+  });
+
+  it("goes on past an app iOS refuses, which stays off and says how to allow it", async () => {
+    const phone = iphone();
+    phone.fake.device.answerPermissionWith("apple-contacts", "denied");
+    const onAdded = vi.fn();
+    await mount(
+      <AddIphoneForm
+        controller={phone.controller}
+        deploymentId={deploymentId}
+        hostClient={phone.host}
+        iphoneAppsAvailable
+        onAdded={onAdded}
+        opensteer={opensteer}
+      />,
+    );
+    await toggle("Share Location");
+    await toggle("Share Reminders");
+    await click(button("Add & share 2 apps"));
+    await vi.waitFor(() => expect(onAdded).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
+        "requestPermission:apple-calendar",
+        expect.stringMatching(/^answerApproval:.+:allow:apple-calendar:read-write$/u),
+        "requestPermission:apple-contacts",
+      ]),
+    );
+    await vi.waitFor(() => expect(phone.controller.getState().queued).toEqual([]));
+
+    for (const root of roots.splice(0)) act(() => root.unmount());
+    await mount(<ThisIphone phone={phone} />);
+    await vi.waitFor(() =>
+      expect(rowLabels().slice(0, 2)).toEqual([
+        "Calendar, Can read and change",
+        "Contacts, Off in iPhone Settings",
+      ]),
+    );
+    await click(button("Open iPhone Settings for Contacts"));
+    expect(harness.openSettings).toHaveBeenCalledOnce();
+  });
+
+  it("adds the iPhone alone when every app is switched off", async () => {
+    const phone = iphone();
+    const onAdded = vi.fn();
+    await mount(
+      <AddIphoneForm
+        controller={phone.controller}
+        deploymentId={deploymentId}
+        hostClient={phone.host}
+        iphoneAppsAvailable
+        onAdded={onAdded}
+        opensteer={opensteer}
+      />,
+    );
+    for (const app of ["Calendar", "Contacts", "Reminders", "Location"]) {
+      await toggle(`Share ${app}`);
+    }
+    await click(button("Add Alex's iPhone"));
+
+    await vi.waitFor(() => expect(onAdded).toHaveBeenCalledOnce());
+    expect(phone.controller.getState().queued).toEqual([]);
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
   });
 
   it("offers nothing to add on an Opensteer that cannot take an iPhone yet", async () => {
@@ -325,7 +441,7 @@ describe("Add this iPhone", () => {
     );
 
     expect(text()).toContain("Update Opensteer on Mac mini to add this iPhone.");
-    expect(maybeButton("Add Alex's iPhone")).toBeNull();
+    expect(maybeButton("Add & share 4 apps")).toBeNull();
     expect(phone.fake.device.calls).toEqual([]);
   });
 
@@ -353,129 +469,70 @@ describe("Add this iPhone", () => {
       />,
     );
 
-    await click(button("Add Alex's iPhone"));
+    await click(button("Add & share 4 apps"));
 
     await vi.waitFor(() =>
       expect(text()).toContain(
         "Turn on remote access on Opensteer on Mac mini first, then try again.",
       ),
     );
-    expect(button("Add Alex's iPhone").disabled).toBe(false);
+    expect(button("Add & share 4 apps").disabled).toBe(false);
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
   });
 });
 
 describe("This iPhone's apps", () => {
-  it("turns Calendar on only after one reviewed commit, and asks iOS only then", async () => {
+  it("turns Calendar on with its switch, and asks iOS only then", async () => {
     const phone = await addedIphone();
     const dispatch = vi.spyOn(phone.host, "dispatch");
     await mount(<ThisIphone phone={phone} />);
 
     expect(text()).toContain("Online · Agents can use its apps while Opensteer is open");
     expect(rowLabels()).toEqual([
-      "Calendar, Off",
-      "Contacts, Off",
-      "Reminders, Off",
-      "Location, Off",
-      "Photos, Off",
+      "Calendar, See events, and add, change or delete them",
+      "Contacts, Find people. Agents can't change contacts.",
+      "Reminders, See reminders, and add, change, complete or delete them",
+      "Location, Get the current location. No history or tracking.",
+      "Photos, See photo details, never the photos",
     ]);
-
-    await click(button("Calendar, Off"));
-    expect(text()).toContain("Agent access");
-    expect(text()).toContain("iPhone Settings");
-    expect(text()).toContain("Not asked yet");
-    expect(radios()).toEqual([
-      "Can read: unchecked",
-      "Can read and change: unchecked",
-      "Off, current access: checked",
-    ]);
-
-    // Choosing is a draft: nothing is sent, prompted or signed.
-    await click(radio("Can read and change"));
-    expect(radios()).toEqual([
-      "Can read: unchecked",
-      "Can read and change: checked",
-      "Off, current access: unchecked",
+    expect(switches()).toEqual([
+      "Calendar: off",
+      "Contacts: off",
+      "Reminders: off",
+      "Location: off",
+      "Photos: off",
     ]);
     expect(dispatch).not.toHaveBeenCalled();
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
-    );
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
 
-    await click(button("Review"));
-    expect(text()).toContain("Let agents see and change Calendar?");
-    expect(text()).toContain(
-      "Agents working in Opensteer on Mac mini can see your calendars and events, and add, change or delete events on this iPhone while Opensteer is open.",
-    );
-    expect(text()).toContain(
-      "This lasts until you change it, not only for one task. Tasks in Main can use it; a specialist can use it only once you allow that specialist.",
-    );
-    expect(text()).toContain(
-      "What agents see is sent to Opensteer on Mac mini and to the AI service the task uses.",
-    );
-    expect(text()).toContain("iPhone will ask you next whether Opensteer can use Calendar.");
-    expect(dispatch).not.toHaveBeenCalled();
+    await toggle("Calendar");
 
-    await click(button("Allow"));
-
-    await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, On · Can read and change"));
-    expect(
-      phone.fake.device.calls.filter((call) => !call.startsWith("prepare") && call !== "enroll"),
-    ).toEqual([
+    await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, Can read and change"));
+    expect(switches()[0]).toBe("Calendar: on");
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
       "requestPermission:apple-calendar",
       "answerApproval:" + phone.lastRequestId() + ":allow:apple-calendar:read-write",
     ]);
   });
 
-  it("sends nothing when the sheet is closed with a draft, and forgets the draft", async () => {
-    const phone = await addedIphone();
-    const dispatch = vi.spyOn(phone.host, "dispatch");
-    await mount(<ThisIphone phone={phone} />);
-
-    await click(button("Contacts, Off"));
-    expect(radios()).toEqual(["Can read: unchecked", "Off, current access: checked"]);
-    await click(radio("Can read"));
-    await click(button("Review"));
-    expect(text()).toContain("Let agents find people in Contacts?");
-    await click(button("Back"));
-    await click(button("Close Contacts"));
-
-    await click(button("Contacts, Off"));
-    expect(radios()).toEqual(["Can read: unchecked", "Off, current access: checked"]);
-    expect(maybeButton("Review")).toBeNull();
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
-    );
-  });
-
-  it("turns nothing on when iOS says no, and says that iPhone Settings stopped it", async () => {
+  it("turns nothing on when iOS says no, and offers iPhone Settings instead", async () => {
     const phone = await addedIphone();
     const dispatch = vi.spyOn(phone.host, "dispatch");
     phone.fake.device.answerPermissionWith("apple-reminders", "denied");
     await mount(<ThisIphone phone={phone} />);
 
-    await click(button("Reminders, Off"));
-    await click(radio("Can read"));
-    await click(button("Review"));
-    await click(button("Allow"));
+    await toggle("Reminders");
 
-    await vi.waitFor(() =>
-      expect(text()).toContain(
-        "iPhone Settings doesn't let Opensteer use Reminders, so it wasn't turned on.",
-      ),
-    );
-    expect(rowLabels()[2]).toBe("Reminders, Off");
+    await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, Off in iPhone Settings"));
+    // Said once, by the row, rather than again under it.
+    expect(text()).not.toContain("so it wasn't turned on");
     expect(dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "integration.computer.setup.request" }),
     );
     expect(phone.fake.device.calls).not.toContainEqual(expect.stringMatching(/^answerApproval/u));
-
-    // Already refused: review offers Settings, never Allow.
-    await click(button("Reminders, Off"));
-    await click(radio("Can read"));
-    await click(button("Review"));
-    expect(maybeButton("Allow")).toBeNull();
-    await click(button("Open Settings"));
+    // Switching it on could only fail, so the row offers the fix instead.
+    expect(switches()).not.toContain("Reminders: off");
+    await click(button("Open iPhone Settings for Reminders"));
     expect(harness.openSettings).toHaveBeenCalledOnce();
   });
 
@@ -488,16 +545,14 @@ describe("This iPhone's apps", () => {
     await mount(<ThisIphone phone={phone} />);
 
     await vi.waitFor(() =>
-      expect(rowLabels()).toEqual([
-        "Calendar, Blocked · Can read · Not allowed in iPhone Settings",
-        "Contacts, On · Can read · Only contacts you chose",
-        "Reminders, Off",
-        "Location, Off",
-        "Photos, Off",
+      expect(rowLabels().slice(0, 2)).toEqual([
+        "Calendar, Can read · Not allowed in iPhone Settings",
+        "Contacts, Can read · Only contacts you chose",
       ]),
     );
-    // The first dot is the iPhone's own status line.
-    expect(tones().slice(1)).toEqual(["amber", "green", "muted", "muted", "muted"]);
+    // The first dot is the iPhone's own status line; only Calendar asks for attention.
+    expect(tones()).toEqual(["green", "amber"]);
+    expect(switches().slice(0, 2)).toEqual(["Calendar: on", "Contacts: on"]);
     expect(text()).toContain("Allow Calendar in iPhone Settings");
     await click(button("Open Settings"));
     expect(harness.openSettings).toHaveBeenCalledOnce();
@@ -505,40 +560,32 @@ describe("This iPhone's apps", () => {
     // Closing the picker is not a refusal: the row reads iOS again.
     await click(button("Choose contacts"));
     expect(phone.fake.device.calls.at(-1)).toBe("chooseContacts");
-    expect(rowLabels()[1]).toBe("Contacts, On · Can read · Only contacts you chose");
+    expect(rowLabels()[1]).toBe("Contacts, Can read · Only contacts you chose");
 
     // Not connected: nothing reads as on, and the access is still shown.
     act(() => phone.fake.device.raise("host-unreachable"));
     await settle();
     expect(rowLabels()[1]).toBe("Contacts, Paused · Can read");
-    expect(tones()[2]).toBe("muted");
   });
 
-  it("lowers and turns off after review, saying what stays, without signing anything", async () => {
+  it("lowers from the level menu and turns off with the switch, signing nothing", async () => {
     const phone = await addedIphone();
     await turnOn(phone, "apple-calendar", "read-write");
     await mount(<ThisIphone phone={phone} />);
+    await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, Can read and change"));
     const calls = phone.fake.device.calls.length;
 
-    await click(button("Calendar, On · Can read and change"));
-    await click(radio("Can read"));
-    await click(button("Review"));
-    expect(text()).toContain("Lower Calendar to Can read?");
-    expect(text()).toContain("Agents will no longer add, change or delete events.");
-    await click(button("Lower access"));
-    await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, On · Can read"));
+    expect(levels("Calendar")).toEqual(["Can read", "Can read and change: current"]);
+    // An app with one level has no menu.
+    expect(levels("Contacts")).toEqual([]);
+    await choose("Calendar", "Can read");
+    await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, Can read"));
 
-    await click(button("Calendar, On · Can read"));
-    await click(radio("Off"));
-    await click(button("Review"));
-    expect(text()).toContain("Turn off Calendar?");
-    expect(text()).toContain("Turning this off removes agents' access in every Workspace.");
-    expect(text()).toContain(
-      "What agents already received, and changes they already saved, stay as they are.",
+    await toggle("Calendar");
+    await vi.waitFor(() =>
+      expect(rowLabels()[0]).toBe("Calendar, See events, and add, change or delete them"),
     );
-    await click(button("Turn off"));
-    await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, Off"));
-
+    expect(switches()[0]).toBe("Calendar: off");
     expect(harness.alerts).toEqual([]);
     expect(phone.fake.device.calls.slice(calls)).toEqual([]);
   });
@@ -568,23 +615,21 @@ describe("This iPhone's apps", () => {
       }),
     });
 
-    await click(button("Reminders, On · Can read"));
-    await click(radio("Can read and change"));
-    await click(button("Review"));
-    await click(button("Allow"));
+    await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, Can read"));
+    await choose("Reminders", "Can read and change");
 
     await vi.waitFor(() =>
-      expect(rowLabels()[2]).toBe("Reminders, On · Can read · Change not verified"),
+      expect(rowLabels()[2]).toBe("Reminders, Can read · Change not verified"),
     );
     expect(text()).toContain(
       "Opensteer may or may not have Can read and change for Reminders. Checking reads it again; nothing is asked twice.",
     );
-    // While unverified it can still be lowered or turned off, but not asked for again.
-    await click(button("Reminders, On · Can read · Change not verified"));
-    expect(radios()).toEqual(["Can read, current access: checked", "Off: unchecked"]);
+    // While unverified it can still be turned off, but not asked for again.
+    expect(levels("Reminders")).toEqual([]);
+    expect(switchFor("Reminders").disabled).toBe(false);
     lost = false;
     await click(button("Check status"));
-    await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, On · Can read"));
+    await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, Can read"));
     expect(text()).toContain(
       "That request is no longer waiting. Review the current access before trying again.",
     );
@@ -627,46 +672,23 @@ describe("This iPhone's apps", () => {
 });
 
 describe("Location and Photos on this iPhone", () => {
-  it("offers only Can read or Off, and says what each limits before iOS asks", async () => {
+  it("turns each on read only, naming what limits it", async () => {
     const phone = await addedIphone();
     const dispatch = vi.spyOn(phone.host, "dispatch");
     phone.fake.device.setLocationAccuracy("approximate");
     phone.fake.device.answerPermissionWith("iphone-photos", "limited");
     await mount(<ThisIphone phone={phone} />);
-    expect(rowLabels().slice(3)).toEqual(["Location, Off", "Photos, Off"]);
-
-    await click(button("Location, Off"));
-    expect(radios()).toEqual(["Can read: unchecked", "Off, current access: checked"]);
-    expect(text()).toContain("Not asked yet");
-    await click(radio("Can read"));
-    await click(button("Review"));
-    expect(text()).toContain("Let agents use Location?");
-    expect(text()).toContain(
-      "Agents working in Opensteer on Mac mini can get your current location, one reading at a time with its accuracy, on this iPhone while Opensteer is open.",
-    );
-    expect(text()).toContain(
-      "If you allow it only once, that ends a while after you leave Opensteer, and agents can't get your location until you allow it here again. With Precise Location off, agents get an approximate area.",
-    );
-    expect(text()).toContain("iPhone will ask you next whether Opensteer can use Location.");
+    expect(levels("Location")).toEqual([]);
     expect(dispatch).not.toHaveBeenCalled();
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
-    );
-    await click(button("Allow"));
-    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, On · Can read · Approximate"));
-    expect(tones()[4]).toBe("green");
 
-    await click(button("Photos, Off"));
-    expect(radios()).toEqual(["Can read metadata: unchecked", "Off, current access: checked"]);
-    await click(radio("Can read metadata"));
-    await click(button("Review"));
-    expect(text()).toContain("Let agents see details in Photos?");
-    expect(text()).toContain(
-      "iPhone asks about your whole photo library. Agents get only read-only details, never the photos themselves or where they were taken. To send a photo, attach it in a chat.",
-    );
-    await click(button("Allow"));
+    await toggle("Location");
+    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, Can read · Approximate"));
+    // Read only: no level menu, even once on.
+    expect(levels("Location")).toEqual([]);
+
+    await toggle("Photos");
     await vi.waitFor(() =>
-      expect(rowLabels()[4]).toBe("Photos, On · Can read metadata · Only photos you chose"),
+      expect(rowLabels()[4]).toBe("Photos, Can read metadata · Only photos you chose"),
     );
     expect(text()).toContain(
       "Agents see details only of the photos you chose, and none until you choose some.",
@@ -675,7 +697,7 @@ describe("Location and Photos on this iPhone", () => {
     // Closing the picker is not a refusal: the row reads iOS again.
     await click(button("Choose photos"));
     expect(phone.fake.device.calls.at(-1)).toBe("choosePhotos");
-    expect(rowLabels()[4]).toBe("Photos, On · Can read metadata · Only photos you chose");
+    expect(rowLabels()[4]).toBe("Photos, Can read metadata · Only photos you chose");
     expect(
       phone.fake.device.calls.filter((call) => !call.startsWith("prepare") && call !== "enroll"),
     ).toEqual([
@@ -694,18 +716,14 @@ describe("Location and Photos on this iPhone", () => {
 
     await vi.waitFor(() =>
       expect(rowLabels().slice(3)).toEqual([
-        "Location, Not available · Opensteer on Mac mini doesn't offer it yet",
-        "Photos, Not available · Opensteer on Mac mini doesn't offer it yet",
+        "Location, Opensteer on Mac mini doesn't offer it yet",
+        "Photos, Opensteer on Mac mini doesn't offer it yet",
       ]),
     );
-    expect(
-      button("Location, Not available · Opensteer on Mac mini doesn't offer it yet").disabled,
-    ).toBe(true);
-    expect(rowLabels()[0]).toBe("Calendar, Off");
+    expect(switchFor("Location").disabled).toBe(true);
+    expect(switchFor("Calendar").disabled).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
-    );
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
   });
 
   it("shows apps an older iPhone build lacks as needing an update here, and asks nothing", async () => {
@@ -716,11 +734,11 @@ describe("Location and Photos on this iPhone", () => {
 
     await vi.waitFor(() =>
       expect(rowLabels().slice(3)).toEqual([
-        "Location, Not available · Update Opensteer on this iPhone",
-        "Photos, Not available · Update Opensteer on this iPhone",
+        "Location, Update Opensteer on this iPhone",
+        "Photos, Update Opensteer on this iPhone",
       ]),
     );
-    expect(button("Photos, Not available · Update Opensteer on this iPhone").disabled).toBe(true);
+    expect(switchFor("Photos").disabled).toBe(true);
     expect(phone.fake.device.calls).not.toContainEqual(
       expect.stringMatching(/^(requestPermission|choosePhotos)/u),
     );
@@ -732,17 +750,9 @@ describe("Location and Photos on this iPhone", () => {
     phone.fake.device.answerPermissionWith("iphone-location", "denied");
     await mount(<ThisIphone phone={phone} />);
 
-    await click(button("Location, Off"));
-    await click(radio("Can read"));
-    await click(button("Review"));
-    await click(button("Allow"));
+    await toggle("Location");
 
-    await vi.waitFor(() =>
-      expect(text()).toContain(
-        "iPhone Settings doesn't let Opensteer use Location, so it wasn't turned on.",
-      ),
-    );
-    expect(rowLabels()[3]).toBe("Location, Off");
+    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, Off in iPhone Settings"));
     expect(dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "integration.computer.setup.request" }),
     );
@@ -752,20 +762,20 @@ describe("Location and Photos on this iPhone", () => {
     const phone = await addedIphone();
     await turnOn(phone, "iphone-location", "read");
     await mount(<ThisIphone phone={phone} />);
-    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, On · Can read"));
+    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, Can read"));
     const calls = phone.fake.device.calls.length;
 
     act(() => phone.fake.device.setPermission("iphone-location", "not-determined"));
     await settle();
-    expect(rowLabels()[3]).toBe("Location, Blocked · Can read · iPhone hasn't asked yet");
-    expect(tones()[4]).toBe("amber");
+    expect(rowLabels()[3]).toBe("Location, Can read · iPhone hasn't asked yet");
+    expect(tones()).toEqual(["green", "amber"]);
     expect(text()).toContain(
       "iPhone will ask you whether Opensteer can use Location. If you allowed it only once, that has ended.",
     );
     expect(phone.fake.device.calls.slice(calls)).toEqual([]);
 
     await click(button("Continue"));
-    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, On · Can read"));
+    await vi.waitFor(() => expect(rowLabels()[3]).toBe("Location, Can read"));
     expect(phone.fake.device.calls.slice(calls)).toEqual(["requestPermission:iphone-location"]);
   });
 
@@ -778,11 +788,9 @@ describe("Location and Photos on this iPhone", () => {
     expect(text()).toContain(
       "iPhone asks about your whole photo library. Agents get only read-only details, never the photos themselves or where they were taken. To send a photo, attach it in a chat.",
     );
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
-    );
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
     await click(button("Allow"));
-    await vi.waitFor(() => expect(rowLabels()[4]).toBe("Photos, On · Can read metadata"));
+    await vi.waitFor(() => expect(rowLabels()[4]).toBe("Photos, Can read metadata"));
     expect(phone.fake.device.calls.slice(-2)).toEqual([
       "requestPermission:iphone-photos",
       `answerApproval:${phone.lastRequestId()}:allow:iphone-photos:read`,
@@ -802,12 +810,8 @@ describe("Location and Photos on this iPhone", () => {
         "Photos, Off · Waiting for approval on Alex's iPhone",
       ]),
     );
-    expect(maybeButton("Photos, Off · Waiting for approval on Alex's iPhone")?.disabled).toBe(true);
-    await click(button("Location, On · Can read"));
-    expect(radios()).toEqual(["Can read, current access: checked", "Off: unchecked"]);
-    await click(radio("Off"));
-    await click(button("Review"));
-    await click(button("Turn off"));
+    expect(switchFor("Photos").disabled).toBe(true);
+    await toggle("Location");
     await vi.waitFor(() =>
       expect(rowLabels()[2]).toBe("Location, Off · Turn it on in Opensteer on Alex's iPhone"),
     );
@@ -833,9 +837,7 @@ describe("A request waiting on this iPhone", () => {
     expect(section(opensteer)?.textContent).toContain(
       "What agents see is sent to Opensteer on Mac mini and to the AI service the task uses.",
     );
-    expect(phone.fake.device.calls).not.toContainEqual(
-      expect.stringMatching(/^requestPermission/u),
-    );
+    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
     await click(button(`Close ${opensteer}`));
     expect(section(opensteer)).toBeNull();
 
@@ -851,7 +853,7 @@ describe("A request waiting on this iPhone", () => {
     expect(text()).toContain("Waiting for you");
     expect(text()).toContain("Let agents see Reminders?");
     await click(button("Allow"));
-    await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, On · Can read"));
+    await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, Can read"));
     expect(phone.fake.device.calls.slice(-2)).toEqual([
       "requestPermission:apple-reminders",
       `answerApproval:${phone.lastRequestId()}:allow:apple-reminders:read`,
@@ -903,20 +905,14 @@ describe("An iPhone seen from another device", () => {
         "Reminders, Off · Waiting for approval on Alex's iPhone",
       ]),
     );
-    expect(maybeButton("Contacts, Off · Turn it on in Opensteer on Alex's iPhone")?.disabled).toBe(
-      true,
-    );
+    expect(switchFor("Contacts").disabled).toBe(true);
+    expect(switchFor("Calendar").disabled).toBe(false);
 
-    await click(button("Calendar, On · Can read and change"));
-    expect(radios()).toEqual([
-      "Can read: unchecked",
-      "Can read and change, current access: checked",
-      "Off: unchecked",
-    ]);
-    await click(radio("Can read"));
-    await click(button("Review"));
-    await click(button("Lower access"));
+    expect(levels("Calendar")).toEqual(["Can read", "Can read and change: current"]);
+    await choose("Calendar", "Can read");
     await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, On · Can read"));
+    // From here, less is all there is: with nothing below Can read, no menu.
+    expect(levels("Calendar")).toEqual([]);
 
     await click(button("Decline Reminders"));
     await vi.waitFor(() =>
@@ -937,21 +933,10 @@ describe("An iPhone seen from another device", () => {
         "Reminders, Paused · Can read · Alex's iPhone is offline · More access waiting for approval",
       ]),
     );
-    expect(tones()).toEqual(["muted"]);
     expect(maybeButton("Decline Reminders")?.disabled).toBe(false);
+    expect(switchFor("Reminders").disabled).toBe(false);
 
-    await click(
-      button(
-        "Reminders, Paused · Can read · Alex's iPhone is offline · More access waiting for approval",
-      ),
-    );
-    expect(radios()).toEqual(["Can read, current access: checked", "Off: unchecked"]);
-    await click(radio("Off"));
-    await click(button("Review"));
-    expect(text()).toContain(
-      "What agents already received, and changes they already saved, stay as they are.",
-    );
-    await click(button("Turn off"));
+    await toggle("Reminders");
     // Off is off; a request still waiting at the Host stays the iPhone's to answer.
     const waiting = async () =>
       (await phone.host.rpc["integration.computer.setup.list"]({})).ok &&
@@ -1184,34 +1169,63 @@ function text(): string {
   return document.body.textContent ?? "";
 }
 
-/** Each app row, as its accessible label reads: its name, then its line. */
+/** Each app row, as a screen reader hears it: its name, then its line. */
 function rowLabels(): readonly string[] {
-  return [...document.querySelectorAll<HTMLButtonElement>("button[aria-label]")]
+  return [...document.querySelectorAll<HTMLElement>("[aria-label]")]
     .map((row) => row.getAttribute("aria-label") ?? "")
     .filter((label) => /^(Calendar|Contacts|Reminders|Location|Photos), /u.test(label));
 }
 
-/** Each row's status colour, in order. */
+/** The status dots on screen, in order: the iPhone's own, then any row asking for attention. */
 function tones(): readonly string[] {
   return [...document.querySelectorAll<HTMLElement>("i[data-tone]")].map(
     (dot) => dot.dataset.tone ?? "",
   );
 }
 
-/** The access levels a sheet offers, as a screen reader hears each and whether it is chosen. */
-function radios(): readonly string[] {
-  return [...document.querySelectorAll<HTMLButtonElement>('button[role="radio"]')].map(
-    (choice) =>
-      `${choice.getAttribute("aria-label") ?? ""}: ${choice.getAttribute("aria-checked") === "true" ? "checked" : "unchecked"}`,
+/** Each switch, as a screen reader names it, and whether it is on. */
+function switches(): readonly string[] {
+  return [...document.querySelectorAll<HTMLInputElement>('input[role="switch"]')].map(
+    (control) => `${control.getAttribute("aria-label") ?? ""}: ${control.checked ? "on" : "off"}`,
   );
 }
 
-function radio(level: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll<HTMLButtonElement>('button[role="radio"]')].find(
-    (choice) => (choice.getAttribute("aria-label") ?? "").split(", ")[0] === level,
+function switchFor(label: string): HTMLInputElement {
+  const found = document.querySelector<HTMLInputElement>(
+    `input[role="switch"][aria-label="${CSS.escape(label)}"]`,
   );
-  if (found === undefined) throw new Error(`Missing access level: ${level}\n${text()}`);
+  if (found === null) throw new Error(`Missing switch: ${label}\n${text()}`);
   return found;
+}
+
+async function toggle(label: string): Promise<void> {
+  const control = switchFor(label);
+  if (control.disabled) throw new Error(`Switch is disabled: ${label}`);
+  await click(control);
+}
+
+/** The levels an app's menu offers, with the current one marked. */
+function levels(app: string): readonly string[] {
+  return [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      `button[role="menuitemradio"][aria-label^="${CSS.escape(`${app} access: `)}"]`,
+    ),
+  ].map((option) => {
+    const label = (option.getAttribute("aria-label") ?? "").slice(`${app} access: `.length);
+    return option.getAttribute("aria-checked") === "true" ? `${label}: current` : label;
+  });
+}
+
+async function choose(app: string, level: string): Promise<void> {
+  const option = document.querySelector<HTMLButtonElement>(
+    `button[role="menuitemradio"][aria-label="${CSS.escape(`${app} access: ${level}`)}"]`,
+  );
+  if (option === null) throw new Error(`Missing level ${level} for ${app}\n${text()}`);
+  await click(option);
+}
+
+function isPermissionOrAnswer(call: string): boolean {
+  return call.startsWith("requestPermission:") || call.startsWith("answerApproval:");
 }
 
 function section(label: string): HTMLElement | null {

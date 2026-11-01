@@ -7,10 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsFormProps } from "./settings-form.types.js";
 
 /*
- * How the phone's Browser settings could hide or misdirect Passwords:
- * - the Passwords row is missing beside Chrome, or shows with no Deployment open;
- * - its line does not say where passwords are kept;
- * - tapping it does nothing, or opens Chrome.
+ * How the phone's Settings could misdirect or clutter:
+ * - the current Deployment row doesn't open the switcher, or something else
+ *   switches deployments;
+ * - a sign-in page is missing while a Deployment is open, shows with none
+ *   open, or opens the wrong page; Passwords doesn't say where they're kept;
+ * - a build without an Account service shows Account or notification rows
+ *   that can do nothing.
  */
 
 vi.mock("react-native", () => ({
@@ -30,7 +33,13 @@ vi.mock("react-native", () => ({
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  View: ({
+    accessibilityLabel,
+    children,
+  }: {
+    accessibilityLabel?: string;
+    children?: ReactNode;
+  }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
 vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
 vi.mock("../threads/deployment-mark.js", () => ({ DeploymentMarkView: () => null }));
@@ -60,43 +69,61 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe("Settings → Browser on a phone", () => {
-  it("lists Passwords beside Chrome, says where they are kept, and opens it", async () => {
-    const onChromeAction = vi.fn();
+describe("Settings on a phone", () => {
+  it("opens the deployment switcher from the current deployment's row", async () => {
+    const onDeploymentAction = vi.fn();
+    await render({ onDeploymentAction });
+    await act(async () => buttonLabelled("Mac mini, Connected. Switch")?.click());
+    expect(onDeploymentAction).toHaveBeenCalledOnce();
+  });
+
+  it("lists each sign-in page, says where Passwords are kept, and opens each", async () => {
+    const signIns = { onBrowserProfiles: vi.fn(), onChrome: vi.fn(), onConnectedApps: vi.fn() };
     const onPasswordsAction = vi.fn();
-    const onBrowserProfilesAction = vi.fn();
-    await render({ onChromeAction, onPasswordsAction, onBrowserProfilesAction });
-    const rows = [...document.querySelectorAll("button[aria-label]")].map((row) =>
-      row.getAttribute("aria-label"),
-    );
-    expect(rows).toEqual([
+    await render({ onPasswordsAction, signIns });
+    expect(document.body.textContent).toContain("Sign-ins");
+    expect(labels().slice(1)).toEqual([
+      "Connected apps, Gmail, GitHub and the other accounts agents use",
       "Chrome, Your Chrome and the sites agents can sign in to",
       "Browser profiles, Separate browsers with their own sign-ins",
       "Passwords, Kept on Mac mini",
     ]);
-    await act(async () => {
-      document
-        .querySelector<HTMLButtonElement>('[aria-label="Passwords, Kept on Mac mini"]')
-        ?.click();
-    });
+    await act(async () => buttonLabelled("Passwords, Kept on Mac mini")?.click());
     expect(onPasswordsAction).toHaveBeenCalledOnce();
-    expect(onChromeAction).not.toHaveBeenCalled();
+    expect(signIns.onChrome).not.toHaveBeenCalled();
     await act(async () =>
-      document
-        .querySelector<HTMLButtonElement>(
-          '[aria-label="Browser profiles, Separate browsers with their own sign-ins"]',
-        )
-        ?.click(),
+      buttonLabelled("Browser profiles, Separate browsers with their own sign-ins")?.click(),
     );
-    expect(onBrowserProfilesAction).toHaveBeenCalledOnce();
+    expect(signIns.onBrowserProfiles).toHaveBeenCalledOnce();
+    await act(async () =>
+      buttonLabelled("Chrome, Your Chrome and the sites agents can sign in to")?.click(),
+    );
+    expect(signIns.onChrome).toHaveBeenCalledOnce();
   });
 
-  it("shows no Browser settings while no Deployment is open", async () => {
-    await render({ onChromeAction: undefined, passwords: null });
-    expect(document.body.textContent).not.toContain("Browser");
+  it("shows no sign-ins while no Deployment is open", async () => {
+    await render({ passwords: null, signIns: null });
+    expect(document.body.textContent).not.toContain("Sign-ins");
     expect(document.body.textContent).not.toContain("Passwords");
   });
+
+  it("shows no Account or notifications in a build without an Account service", async () => {
+    await render({ account: null, notifications: null });
+    expect(document.body.textContent).not.toContain("Opensteer Account");
+    expect(document.body.textContent).not.toContain("Notifications");
+    expect(document.body.textContent).toContain("Version");
+  });
 });
+
+function labels(): readonly (string | null)[] {
+  return [...document.querySelectorAll("[aria-label]")].map((row) =>
+    row.getAttribute("aria-label"),
+  );
+}
+
+function buttonLabelled(label: string): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>(`button[aria-label="${CSS.escape(label)}"]`);
+}
 
 async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
   const props: SettingsFormProps = {
@@ -104,24 +131,22 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
     accountError: null,
     agents: [],
     computers: [],
-    computersFooter: "",
     deployment: {
-      action: { disabled: false, kind: "switch-deployment", label: "Switch deployment" },
+      action: { disabled: false, kind: "switch-deployment", label: "Switch" },
       mark: null,
-      status: "Ready",
+      status: "Connected",
       title: "Mac mini",
     },
     notificationError: null,
     notifications: {
       action: null,
-      detail: "Notifications are on.",
+      detail: null,
       disabled: false,
       footer: "",
       preferences: null,
     },
     onAccountAction: vi.fn(),
     onAgentMuteChange: vi.fn(),
-    onChromeAction: vi.fn(),
     onComputerAction: vi.fn(),
     onDeploymentAction: vi.fn(),
     onNotificationAction: vi.fn(),
@@ -133,6 +158,7 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
       facts: [],
       title: "Passwords",
     },
+    signIns: { onBrowserProfiles: vi.fn(), onChrome: vi.fn(), onConnectedApps: vi.fn() },
     storageError: null,
     version: "1.0.0",
     ...overrides,

@@ -45,6 +45,11 @@ export class IphoneAppsController {
   readonly #answering = new Set<string>();
   /** Access being added from this iPhone, beside (never instead of) the access it has. */
   readonly #changes = new Map<IphoneAppId, IphoneAppChange>();
+  /** How the last change from here settled for an app, when it didn't turn on. */
+  readonly #failures = new Map<IphoneAppId, IphoneAllowFailure>();
+  /** Apps chosen with Add still waiting their turn, in order. */
+  #queued: readonly IphoneAppId[] = [];
+  #sharing = false;
   readonly #detachBridge: () => void;
 
   #adding: { readonly deploymentId: string; readonly outcome: Promise<IphoneAddOutcome> } | null =
@@ -173,7 +178,45 @@ export class IphoneAppsController {
   }
 
   /**
-   * Turns an app on or widens it, after the person reviewed it on screen.
+   * Turns on the apps chosen with Add, one at a time, so iOS asks about one
+   * app at a time and each request is signed on its own. Add listed every app
+   * and level it turns on, so its tap is their review. An app that doesn't
+   * turn on keeps why for its row, and the rest go on; stopping the iPhone or
+   * opening another Deployment ends the run.
+   */
+  async share(input: {
+    readonly apps: readonly { readonly access: IntegrationAccess; readonly app: IphoneAppId }[];
+    readonly hostClient: HostClient;
+  }): Promise<void> {
+    if (this.#sharing) return;
+    this.#sharing = true;
+    const fence = this.#fence();
+    this.#queued = input.apps.map(({ app }) => app);
+    this.#publish();
+    try {
+      for (const { access, app } of input.apps) {
+        if (!fence.current()) return;
+        this.#queued = this.#queued.filter((queued) => queued !== app);
+        this.#publish();
+        await this.allow({ access, app, hostClient: input.hostClient }).catch((error: unknown) => {
+          if (!fence.current()) return;
+          this.#failures.set(app, {
+            kind: "not-allowed",
+            message: error instanceof Error ? error.message : "It wasn't turned on. Try again.",
+          });
+        });
+      }
+    } finally {
+      // Only one run is ever under way, so what is left of its queue is its own.
+      this.#sharing = false;
+      this.#queued = [];
+      this.#publish();
+    }
+  }
+
+  /**
+   * Turns an app on or widens it, from a person's tap: its switch, its level,
+   * or Add.
    *
    * Both sides must offer the app before iOS is asked anything: this build
    * reports its permission, and the Host's catalog lists its definition (an
@@ -188,6 +231,16 @@ export class IphoneAppsController {
    * stays `unknown` beside the current access until `check` reads them.
    */
   async allow(input: {
+    readonly access: IntegrationAccess;
+    readonly app: IphoneAppId;
+    readonly hostClient: HostClient;
+  }): Promise<IphoneAllowOutcome> {
+    if (this.#changes.has(input.app)) return { kind: "busy" };
+    this.#failures.delete(input.app);
+    return this.#remember(input.app, await this.#allow(input));
+  }
+
+  async #allow(input: {
     readonly access: IntegrationAccess;
     readonly app: IphoneAppId;
     readonly hostClient: HostClient;
@@ -267,16 +320,20 @@ export class IphoneAppsController {
     if (change?.phase !== "unknown") return { kind: "busy" };
     const runnerId = this.#runnerFor(input.hostClient);
     const fence = this.#fence();
+    this.#failures.delete(input.app);
     try {
-      return await this.#reconcile({
-        access: change.access,
-        app: input.app,
-        fence,
-        hostClient: input.hostClient,
-        requestId: change.requestId,
-        resign: true,
-        runnerId,
-      });
+      return this.#remember(
+        input.app,
+        await this.#reconcile({
+          access: change.access,
+          app: input.app,
+          fence,
+          hostClient: input.hostClient,
+          requestId: change.requestId,
+          resign: true,
+          runnerId,
+        }),
+      );
     } finally {
       this.#settleChange(input.app, fence);
     }
@@ -300,6 +357,8 @@ export class IphoneAppsController {
     if (listed === undefined || this.#answering.has(input.setupRequestId)) return noLongerWaiting;
     this.#answering.add(input.setupRequestId);
     this.#markShown(listed);
+    // A request answered here supersedes why its app last didn't turn on.
+    this.#failures.delete(listed.definitionId);
     this.#publish();
     try {
       if (input.decision === "allow") {
@@ -674,6 +733,25 @@ export class IphoneAppsController {
     }
   }
 
+  /** Keeps why a change didn't turn its app on, for that app's row, unless the change was cut off. */
+  #remember(app: IphoneAppId, outcome: IphoneAllowOutcome): IphoneAllowOutcome {
+    switch (outcome.kind) {
+      case "blocked":
+      case "not-allowed":
+      case "not-offered":
+      case "waiting":
+        this.#failures.set(app, outcome);
+        this.#publish();
+        break;
+      case "allowed":
+      case "busy":
+      case "superseded":
+      case "unknown":
+        break;
+    }
+    return outcome;
+  }
+
   #setChange(app: IphoneAppId, change: IphoneAppChange): void {
     this.#changes.set(app, change);
     this.#publish();
@@ -696,6 +774,8 @@ export class IphoneAppsController {
     this.#generation += 1;
     this.#adding = null;
     this.#changes.clear();
+    this.#failures.clear();
+    this.#queued = [];
     this.#approvalKey = "idle";
     const ids = this.#bridge.disconnect();
     for (const wake of this.#wakers) wake();
@@ -910,6 +990,8 @@ export class IphoneAppsController {
       removedFrom: this.#removedFrom,
       snapshot,
       changes: Object.fromEntries(this.#changes),
+      failures: Object.fromEntries(this.#failures),
+      queued: this.#queued,
     };
   }
 }
@@ -951,6 +1033,10 @@ export interface IphoneAppsState {
   readonly snapshot: IphoneAppsSnapshot;
   /** Access being added to an app from here; the app keeps its current access meanwhile. */
   readonly changes: Readonly<Partial<Record<IphoneAppId, IphoneAppChange>>>;
+  /** Why the last change from here didn't turn an app on, until the next one. */
+  readonly failures: Readonly<Partial<Record<IphoneAppId, IphoneAllowFailure>>>;
+  /** Apps chosen with Add still waiting their turn. */
+  readonly queued: readonly IphoneAppId[];
 }
 
 /**
@@ -963,6 +1049,12 @@ export interface IphoneAppChange {
   /** The Host's request, once known: reconciling reads back exactly this one. */
   readonly requestId: string | null;
 }
+
+/** An outcome that leaves its app without the access asked for, and says why on its row. */
+export type IphoneAllowFailure = Extract<
+  IphoneAllowOutcome,
+  { readonly kind: "blocked" | "not-allowed" | "not-offered" | "waiting" }
+>;
 
 export type IphoneAllowOutcome =
   | { readonly kind: "allowed" }

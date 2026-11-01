@@ -237,8 +237,11 @@ revocation follows while credentials remain; failure cannot undo the local stop.
 Every add, approval and registration is fenced across awaits. Enrollment requires
 Host support and cannot move a phone held by another Deployment.
 
-Only a reviewed tap may prompt or sign; selecting an access level is still a draft.
-Read iOS permission back before requesting or signing. Calendar add-only is
+Only a person's tap may prompt or sign: an app's switch or level, a request's
+Allow, or Add. Add lists every app and level it turns on, so its tap is their
+review; it turns them on one at a time, so iOS asks about one app at once, each
+request is signed alone, and a refusal skips only that app. Switches on the add
+screen are a draft until Add. Read iOS permission back before requesting or signing. Calendar add-only is
 insufficient; limited Contacts/Photos are sufficient, and picker dismissal is not
 refusal. Sign only the exact currently listed request, app and access.
 

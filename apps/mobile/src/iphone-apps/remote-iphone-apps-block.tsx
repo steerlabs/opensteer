@@ -1,6 +1,5 @@
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
-  computerAppAccessLabel,
   computerAppPermissionNotice,
   computerAppRows,
   iphoneAppStatus,
@@ -12,15 +11,16 @@ import { useState, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { FailureText, useBlockActions } from "../computers/block-actions.js";
 import { color, space } from "../theme.js";
-import { AppText, Notice, RowGroup, SecondaryButton, SectionLabel } from "../ui/primitives.js";
-import { IphoneAccessSheet, IphoneAppRow } from "./app-row.js";
 import {
-  iphoneAccessChoices,
-  iphoneNarrowingReview,
-  isIphoneAppId,
-  type IphoneAccessChoice,
-  type IphoneTone,
-} from "./model.js";
+  AppText,
+  Notice,
+  RowGroup,
+  SecondaryButton,
+  SectionLabel,
+  Toggle,
+} from "../ui/primitives.js";
+import { IphoneAppRow } from "./app-row.js";
+import { iphoneLevels, isIphoneAppId, type IphoneTone } from "./model.js";
 
 /**
  * Another device's iPhone, from this phone. New or wider access is approved
@@ -40,7 +40,8 @@ export function RemoteIphoneAppsBlock(props: {
 }): ReactNode {
   const { hostClient, machine } = props;
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
-  const [open, setOpen] = useState<string | null>(null);
+  // The app being turned off, whose switch shows off until the Host's answer lands.
+  const [turningOff, setTurningOff] = useState<string | null>(null);
   if (machine.ownership === "other") {
     return (
       <AppText role="secondary" tone="muted">
@@ -56,44 +57,48 @@ export function RemoteIphoneAppsBlock(props: {
     );
   }
   const requests = props.data.setupRequests;
-  const rows = computerAppRows({ ...props.data, machine }).map((row) => {
+  const rows = computerAppRows({ ...props.data, machine }).flatMap((row) => {
+    const app = row.definition.id;
+    if (!isIphoneAppId(app)) return [];
     const request =
       requests.find(
-        ({ definitionId, runnerId }) =>
-          runnerId === machine.id && definitionId === row.definition.id,
+        ({ definitionId, runnerId }) => runnerId === machine.id && definitionId === app,
       ) ?? null;
-    return {
-      request,
-      row,
-      status: iphoneAppStatus({ machineName: machine.name, request, row }),
-    };
+    return [
+      { app, request, row, status: iphoneAppStatus({ machineName: machine.name, request, row }) },
+    ];
   });
-  const opened = rows.find(({ row }) => row.definition.id === open) ?? null;
   const disabled = !props.canRespond || busy !== null;
+  const disabledReason = !props.canRespond
+    ? "Opensteer can't be reached right now."
+    : busy !== null
+      ? "Wait for the current change to finish."
+      : null;
 
-  const commit = (row: ComputerAppRow, choice: IphoneAccessChoice): void => {
-    setOpen(null);
-    if (choice.action === "lower") {
-      run(row.definition.id, async () => {
-        const result = await hostClient.dispatch({
-          idempotencyKey: mutationIdempotencyKey(`iphone-app:${row.definition.id}`),
-          input: {
-            access: "read",
-            app: null,
-            definitionId: row.definition.id,
-            kind: "app",
-            runnerId: machine.id,
-          },
-          type: "integration.computer.setup.set",
-        });
-        if (result.type !== "integration.computer.setup.set") {
-          throw new Error(`${row.definition.name} did not change.`);
-        }
+  const lower = (row: ComputerAppRow): void => {
+    setTurningOff(null);
+    run(row.definition.id, async () => {
+      const result = await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`iphone-app:${row.definition.id}`),
+        input: {
+          access: "read",
+          app: null,
+          definitionId: row.definition.id,
+          kind: "app",
+          runnerId: machine.id,
+        },
+        type: "integration.computer.setup.set",
       });
-      return;
-    }
-    if (choice.action !== "turn-off" || row.connectionId === null) return;
+      if (result.type !== "integration.computer.setup.set") {
+        throw new Error(`${row.definition.name} did not change.`);
+      }
+    });
+  };
+
+  const turnOff = (row: ComputerAppRow): void => {
     const connectionId = row.connectionId;
+    if (connectionId === null) return;
+    setTurningOff(row.definition.id);
     run(row.definition.id, async () => {
       const result = await hostClient.dispatch({
         connectionId,
@@ -102,6 +107,19 @@ export function RemoteIphoneAppsBlock(props: {
       });
       if (result.type !== "integration.disconnect") {
         throw new Error(`${row.definition.name} is still on.`);
+      }
+    });
+  };
+
+  const decline = (row: ComputerAppRow, requestId: string): void => {
+    run(`decline:${row.definition.id}`, async () => {
+      const result = await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`iphone-app-decline:${row.definition.id}`),
+        requestId,
+        type: "integration.computer.setup.cancel",
+      });
+      if (result.type !== "integration.computer.setup.cancel") {
+        throw new Error("The request is still waiting.");
       }
     });
   };
@@ -115,120 +133,80 @@ export function RemoteIphoneAppsBlock(props: {
         </AppText>
       ) : (
         <RowGroup>
-          {rows.map(({ request, row, status }) => {
-            const notice =
-              row.access === null || row.state.kind === "off"
-                ? null
-                : computerAppPermissionNotice({
-                    appName: row.definition.name,
-                    machineName: machine.name,
-                    platform: "ios",
-                    state: row.state,
-                  });
+          {rows.map(({ app, request, row, status }) => {
+            const on = row.access !== null && row.state.kind !== "off";
+            const notice = !on
+              ? null
+              : computerAppPermissionNotice({
+                  appName: row.definition.name,
+                  machineName: machine.name,
+                  platform: "ios",
+                  state: row.state,
+                });
             return (
               <IphoneAppRow
-                disabled={disabled || row.access === null}
-                key={row.definition.id}
+                app={app}
+                disabledReason={disabledReason}
+                key={app}
+                levels={
+                  row.access === null
+                    ? []
+                    : iphoneLevels({
+                        app,
+                        current: row.access,
+                        definition: row.definition,
+                        here: false,
+                      })
+                }
                 line={status.text}
                 name={row.definition.name}
-                onPress={() => setOpen(row.definition.id)}
+                onLevel={() => lower(row)}
                 tone={toneOf(status.tone)}
-                {...(request === null
-                  ? {}
-                  : {
-                      trailing: (
-                        <SecondaryButton
-                          accessibilityLabel={`Decline ${row.definition.name}`}
-                          busy={busy === `decline:${row.definition.id}`}
-                          compact
-                          disabled={disabled}
-                          label="Decline"
-                          onPress={() =>
-                            run(`decline:${row.definition.id}`, async () => {
-                              const result = await hostClient.dispatch({
-                                idempotencyKey: mutationIdempotencyKey(
-                                  `iphone-app-decline:${row.definition.id}`,
-                                ),
-                                requestId: request.id,
-                                type: "integration.computer.setup.cancel",
-                              });
-                              if (result.type !== "integration.computer.setup.cancel") {
-                                throw new Error("The request is still waiting.");
-                              }
-                            })
-                          }
-                        />
-                      ),
-                    })}
+                trailing={
+                  <Toggle
+                    accessibilityHint={
+                      on ? status.text : `Only ${machine.name} can turn ${row.definition.name} on.`
+                    }
+                    accessibilityLabel={row.definition.name}
+                    disabled={disabled || row.access === null}
+                    onChange={(value) => {
+                      if (!value) turnOff(row);
+                    }}
+                    value={row.access !== null && !(busy === app && turningOff === app)}
+                  />
+                }
               >
+                {request === null ? null : (
+                  <View style={styles.request}>
+                    <AppText role="caption" style={styles.requestText} tone="muted">
+                      {`A task asked for ${row.definition.name}. Only ${machine.name} can allow it.`}
+                    </AppText>
+                    <SecondaryButton
+                      accessibilityLabel={`Decline ${row.definition.name}`}
+                      busy={busy === `decline:${app}`}
+                      compact
+                      disabled={disabled}
+                      label="Decline"
+                      onPress={() => decline(row, request.id)}
+                    />
+                  </View>
+                )}
                 {notice === null ? null : (
                   <View style={styles.notice}>
                     <Notice detail={notice.detail} title={notice.title} tone="neutral" />
                   </View>
                 )}
-                <FailureText
-                  detail={
-                    failureFor(row.definition.id) ?? failureFor(`decline:${row.definition.id}`)
-                  }
-                />
+                <FailureText detail={failureFor(app) ?? failureFor(`decline:${app}`)} />
               </IphoneAppRow>
             );
           })}
         </RowGroup>
       )}
-      {opened === null || !isIphoneAppId(opened.row.definition.id) ? null : (
-        <IphoneAccessSheet
-          busy={busy !== null}
-          choices={iphoneAccessChoices({
-            app: opened.row.definition.id,
-            current: opened.row.access,
-            definition: opened.row.definition,
-            here: false,
-          })}
-          facts={{
-            access:
-              opened.row.access === null
-                ? "Off"
-                : computerAppAccessLabel(opened.row.presentation, opened.row.access),
-            permission: remotePermission(opened.row, machine.name),
-          }}
-          name={opened.row.definition.name}
-          onClose={() => setOpen(null)}
-          onCommit={(choice) => commit(opened.row, choice)}
-          onOpenSettings={null}
-          review={(choice) =>
-            isIphoneAppId(opened.row.definition.id)
-              ? iphoneNarrowingReview({
-                  app: opened.row.definition.id,
-                  choice,
-                  name: opened.row.definition.name,
-                })
-              : null
-          }
-          summary={{
-            text: `Only ${machine.name} can turn ${opened.row.definition.name} on or give it more access. You can lower it or turn it off from here, even while ${machine.name} is offline.`,
-            tone: toneOf(opened.status.tone),
-          }}
-        />
-      )}
+      <AppText role="caption" tone="muted">
+        {`Only ${machine.name} can turn apps on or give them more access. You can lower or turn them off here, even while it's offline.`}
+      </AppText>
     </View>
   );
-}
-
-/** What iPhone Settings lets Opensteer do, as far as another device can know it. */
-function remotePermission(row: ComputerAppRow, machineName: string): string {
-  switch (row.readState.kind) {
-    case "ready":
-      return "Allowed";
-    case "permission-required":
-      return "Not allowed";
-    case "offline":
-      return `Unknown while ${machineName} is offline`;
-    case "checking":
-      return "Checking…";
-    case "unavailable":
-      return "Unknown";
-  }
 }
 
 function toneOf(tone: "attention" | "idle" | "on"): IphoneTone {
@@ -238,5 +216,13 @@ function toneOf(tone: "attention" | "idle" | "on"): IphoneTone {
 const styles = StyleSheet.create({
   loading: { alignItems: "center", paddingVertical: space[24] },
   notice: { paddingBottom: space[12], paddingHorizontal: space[16] },
+  request: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[12],
+    paddingBottom: space[12],
+    paddingHorizontal: space[16],
+  },
+  requestText: { flex: 1 },
   section: { gap: space[8] },
 });

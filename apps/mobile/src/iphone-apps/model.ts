@@ -1,6 +1,5 @@
 import {
   computerAppAccessLabel,
-  computerAppTurnOffConsequence,
   type IntegrationAccess,
   type IntegrationDefinitionSummaryView,
 } from "@opensteer/client/integrations";
@@ -191,22 +190,31 @@ export function opensteerOn(deploymentName: string): string {
  * ------------------------------------------------------------------------- */
 
 export function addIphoneIntro(opensteer: string): string {
-  return `Agents working in ${opensteer} can use the apps you turn on here, while Opensteer is open on this iPhone. Nothing is shared until you turn an app on.`;
+  return `Agents in ${opensteer} can use the apps you turn on, while Opensteer is open on this iPhone.`;
 }
 
 export const addIphoneNameHint = "This is how it's listed on Computers.";
-export const addIphoneAppsHeading = "Apps you can share";
-export const addIphoneApps: readonly { readonly detail: string; readonly id: IphoneAppId }[] = [
-  { detail: "See events, and add or change them if you allow it", id: "apple-calendar" },
-  { detail: "Find people. Agents can't change contacts.", id: "apple-contacts" },
-  { detail: "See reminders, and add or change them if you allow it", id: "apple-reminders" },
-  { detail: "See your current location, precise or approximate", id: "iphone-location" },
-  { detail: "See photo and album details only", id: "iphone-photos" },
-];
-export const addIphoneAvailability =
-  "Available apps depend on the Opensteer versions on this iPhone and your Deployment.";
-export const addIphoneNothingElse =
-  "Agents can't use anything else on this iPhone: not its other apps, files, messages or screen.";
+
+/**
+ * Said under the apps Add will turn on, because the tap on Add is the one
+ * review they get: where what agents see goes, who can use it, and that
+ * nothing else on the iPhone is reachable.
+ */
+export function addIphoneFootnote(opensteer: string): string {
+  return `What agents see goes to ${opensteer} and the AI service the task uses. Tasks in Main can use these apps; a specialist needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.`;
+}
+
+/** Add's label says how many apps it turns on, since switching them is only a draft until then. */
+export function addIphoneButton(name: string, apps: number): string {
+  const iphone = name === "" ? "this iPhone" : name;
+  if (apps === 0) return `Add ${iphone}`;
+  return `Add & share ${apps} ${apps === 1 ? "app" : "apps"}`;
+}
+
+/** The apps Add turns on unless the person switches them off: all but Photos, at their widest. */
+export function addIphoneDraft(app: IphoneAppId): IntegrationAccess | null {
+  return app === "iphone-photos" ? null : iphoneDefaultAccess(app, null);
+}
 
 export function addIphoneNeedsUpdate(opensteer: string): string {
   return `Update ${opensteer} to add this iPhone.`;
@@ -314,27 +322,31 @@ export type IphoneRemedy =
  */
 export type IphoneEffect = "blocked" | "off" | "on" | "paused" | "unavailable";
 
+/**
+ * The control at the end of an app's row. A switch is on while agents have the
+ * app or it is being turned on; it can't change while a change is under way.
+ * An app iPhone Settings refuses offers Settings instead, since switching it
+ * on could only fail.
+ */
+export type IphoneRowControl =
+  | { readonly kind: "switch"; readonly on: boolean; readonly changeable: boolean }
+  | { readonly kind: "settings" };
+
 export interface IphoneAppRowView {
   readonly app: IphoneAppId;
   readonly name: string;
   /** The access agents have now, as Opensteer holds it, or null while the app is off. */
   readonly access: IntegrationAccess | null;
-  readonly accessLabel: string;
   /** Access being added from here, beside the current access, and its label. */
   readonly change: IphoneAppChange | null;
   readonly changeLabel: string | null;
+  readonly control: IphoneRowControl;
   readonly effect: IphoneEffect;
-  /** False when nothing can be changed from its sheet: it is off and can't be turned on here. */
-  readonly opens: boolean;
   /** Whether more access can be asked for here, which needs both the Host and this build. */
   readonly offered: boolean;
-  /** The row's line: the effect first, then the access, then what limits it. */
+  /** The row's second line: what limits it when something does, else what agents can do. */
   readonly line: string;
-  /** What iPhone Settings lets Opensteer do, in its own words. */
-  readonly permissionLabel: string;
   readonly remedy: IphoneRemedy | null;
-  /** One sentence for the top of the app's sheet. */
-  readonly summary: string;
   readonly tone: IphoneTone;
 }
 
@@ -354,25 +366,32 @@ export function iphoneAppRow(input: {
   readonly opensteer: string;
   /** What iOS lets Opensteer do, or null when this build doesn't offer the app. */
   readonly permission: IphonePermission | null;
+  /** Waiting its turn behind another app being turned on from Add. */
+  readonly queued: boolean;
 }): IphoneAppRowView {
   const traits = iphoneAppTraits[input.app];
   const name = input.definition?.name ?? traits.name;
-  const accessLabel = input.access === null ? "Off" : levelLabel(input.definition, input.access);
+  const accessLabel =
+    input.access === null ? "Off" : iphoneLevelLabel(input.definition, input.access);
   const offered = input.definition !== null && input.permission !== null;
+  const settling = input.change !== null && input.change.phase !== "unknown";
+  // Less access needs only the Host, so an app that is on can always be
+  // turned off; more needs this iPhone, so nothing is turned on mid-change.
+  const control: IphoneRowControl = {
+    changeable:
+      input.access !== null ? !settling : offered && input.change === null && !input.queued,
+    kind: "switch",
+    on: input.access !== null || settling || input.queued,
+  };
   const base = {
     access: input.access,
-    accessLabel,
     app: input.app,
     change: input.change,
-    changeLabel: input.change === null ? null : levelLabel(input.definition, input.change.access),
+    changeLabel:
+      input.change === null ? null : iphoneLevelLabel(input.definition, input.change.access),
+    control,
     name,
     offered,
-    // Off and not offered: there is nothing to change.
-    opens: offered || input.access !== null,
-    permissionLabel:
-      input.permission === null
-        ? "Not in this version of Opensteer"
-        : iphonePermissionLabel(input.app, input.permission, input.locationAccuracy),
   };
   if (!offered) {
     // The iPhone's build is said first: it is the one fixed on this phone.
@@ -383,38 +402,60 @@ export function iphoneAppRow(input: {
     return {
       ...base,
       effect: "unavailable",
-      line:
-        input.access === null ? `Not available · ${why}` : `Unavailable · ${accessLabel} · ${why}`,
+      line: input.access === null ? why : `${accessLabel} · ${why}`,
       remedy: null,
-      summary:
-        input.permission === null
-          ? `This version of Opensteer on this iPhone doesn't offer ${name}. Update it to use ${name}.`
-          : `${input.opensteer} doesn't offer ${name} yet. Update it to use ${name} here.`,
       tone: input.access === null ? "muted" : "amber",
     };
   }
   const permission = input.permission;
-  const changing =
+  const progress =
     input.change === null
-      ? null
+      ? input.queued
+        ? "Up next"
+        : null
       : input.change.phase === "unknown"
         ? "Change not verified"
-        : input.access === null
-          ? "Turning on…"
-          : `Adding ${lowerFirst(levelLabel(input.definition, input.change.access))}…`;
-  const withChange = (line: string) => (changing === null ? line : `${line} · ${changing}`);
+        : input.change.phase === "asking-iphone"
+          ? "Waiting for iPhone…"
+          : input.access === null
+            ? "Turning on…"
+            : `Adding ${lowerFirst(iphoneLevelLabel(input.definition, input.change.access))}…`;
+  const withProgress = (line: string) => (progress === null ? line : `${line} · ${progress}`);
+  const readiness_ = readiness(input.app, permission);
   if (input.access === null) {
+    if (progress !== null) {
+      return { ...base, effect: "off", line: progress, remedy: null, tone: "muted" };
+    }
+    // Switching on could only fail here, so the row says why and offers the fix.
+    if (readiness_ === "restricted") {
+      return {
+        ...base,
+        control: { changeable: false, kind: "switch", on: false },
+        effect: "off",
+        line: "Blocked by Screen Time",
+        remedy: null,
+        tone: "muted",
+      };
+    }
+    if (readiness_ === "off" && !(input.app === "apple-calendar" && permission === "write-only")) {
+      return {
+        ...base,
+        control: { kind: "settings" },
+        effect: "off",
+        line: "Off in iPhone Settings",
+        remedy: null,
+        tone: "amber",
+      };
+    }
     return {
       ...base,
       effect: "off",
-      line: changing === "Change not verified" ? "Off · Change not verified" : (changing ?? "Off"),
+      line: actionsFor(input.app, iphoneDefaultAccess(input.app, input.definition)).summary,
       remedy: null,
-      summary: `Agents can't use ${name}.`,
       tone: "muted",
     };
   }
   const restricted = `Screen Time or a device policy keeps Opensteer from using ${name} on this iPhone.`;
-  const readiness_ = readiness(input.app, permission);
   // iPhone Settings is said first when it blocks, because only it can be fixed here.
   if (readiness_ !== "ready" && readiness_ !== "limited") {
     const why =
@@ -426,7 +467,7 @@ export function iphoneAppRow(input: {
     return {
       ...base,
       effect: "blocked",
-      line: withChange(`Blocked · ${accessLabel} · ${why}`),
+      line: withProgress(`${accessLabel} · ${why}`),
       remedy:
         readiness_ === "restricted"
           ? { detail: restricted, kind: "restricted" }
@@ -440,11 +481,10 @@ export function iphoneAppRow(input: {
                 title: `Allow ${name} on this iPhone`,
               }
             : {
-                detail: `Agents ${lowerFirst(accessLabel)} ${name}, but iPhone Settings doesn't let Opensteer use it, so agents can't use it now. In Settings, allow ${traits.settings} for Opensteer.`,
+                detail: `iPhone Settings doesn't let Opensteer use ${name}, so agents can't use it now. In Settings, allow ${traits.settings} for Opensteer.`,
                 kind: "settings",
                 title: `Allow ${name} in iPhone Settings`,
               },
-      summary: `iPhone Settings doesn't let Opensteer use ${name}, so agents can't use it now.`,
       tone: "amber",
     };
   }
@@ -452,9 +492,8 @@ export function iphoneAppRow(input: {
     return {
       ...base,
       effect: "paused",
-      line: withChange(`Paused · ${accessLabel}`),
+      line: withProgress(`Paused · ${accessLabel}`),
       remedy: null,
-      summary: `Agents can use ${name} again once this iPhone is connected with Opensteer open.`,
       tone: "muted",
     };
   }
@@ -464,14 +503,9 @@ export function iphoneAppRow(input: {
   return {
     ...base,
     effect: "on",
-    line: withChange(`On · ${accessLabel}${limit === null ? "" : ` · ${limit}`}`),
+    line: withProgress(`${accessLabel}${limit === null ? "" : ` · ${limit}`}`),
     remedy:
       limited === null ? null : { choose: limited.choose, detail: limited.detail, kind: "limited" },
-    summary:
-      limited?.summary ??
-      (approximate
-        ? "Agents can get an approximate location now. Precise Location is off in iPhone Settings."
-        : `Agents can use ${name} now.`),
     tone: "green",
   };
 }
@@ -525,50 +559,52 @@ function readiness(
   }
 }
 
-export interface IphoneAccessChoice {
-  readonly access: IntegrationAccess | null;
-  /** What committing it does from here, or that it is the current access. */
-  readonly action: "allow" | "current" | "lower" | "turn-off";
-  /** What it lets agents do, for the screen reader's hint and the row's second line. */
-  readonly detail: string;
+/** One access level in an app's menu, and what choosing it does from here. */
+export interface IphoneLevel {
+  readonly access: IntegrationAccess;
+  readonly action: "allow" | "current" | "lower";
   readonly label: string;
 }
 
+/** The access levels an app offers, in order, honouring a read-only app whatever its definition says. */
+function levelsOf(
+  app: IphoneAppId,
+  definition: IntegrationDefinitionSummaryView | null,
+): readonly IntegrationAccess[] {
+  const levels = (definition?.computerApp?.accessLevels ?? ["read", "read-write"]).filter(
+    (access) => access === "read" || iphoneAppTraits[app].readWrite !== null,
+  );
+  return levels.length === 0 ? ["read"] : levels;
+}
+
+/** The access an app is turned on with: the widest it offers, chosen down from its menu. */
+export function iphoneDefaultAccess(
+  app: IphoneAppId,
+  definition: IntegrationDefinitionSummaryView | null,
+): IntegrationAccess {
+  const levels = levelsOf(app, definition);
+  return levels[levels.length - 1] ?? "read";
+}
+
 /**
- * The access levels for one app, as radio choices. Choosing one is only a
- * draft; `iphoneReview` says what committing it does. On this iPhone every
- * level is offered; elsewhere only the current one and less, since new or
- * wider access is approved on the iPhone that holds the data.
+ * The levels an app's menu offers, or none when there is nothing else to choose. On this
+ * iPhone every level is offered; elsewhere only the current one and less,
+ * since new or wider access is approved on the iPhone that holds the data.
  */
-export function iphoneAccessChoices(input: {
+export function iphoneLevels(input: {
   readonly app: IphoneAppId;
-  readonly current: IntegrationAccess | null;
+  readonly current: IntegrationAccess;
   readonly definition: IntegrationDefinitionSummaryView | null;
   readonly here: boolean;
-}): readonly IphoneAccessChoice[] {
-  // A read-only app never offers more, whatever a definition says.
-  const levels = (input.definition?.computerApp?.accessLevels ?? ["read"]).filter(
-    (access) => access === "read" || iphoneAppTraits[input.app].readWrite !== null,
-  );
-  const choices: IphoneAccessChoice[] = [];
-  for (const access of [...levels, null] as const) {
+}): readonly IphoneLevel[] {
+  const levels = levelsOf(input.app, input.definition).flatMap((access): IphoneLevel[] => {
     const action =
-      access === input.current
-        ? "current"
-        : access === null
-          ? "turn-off"
-          : rank(access) < rank(input.current)
-            ? "lower"
-            : "allow";
-    if (!input.here && action === "allow") continue;
-    choices.push({
-      access,
-      action,
-      detail: access === null ? "Agents can't use it" : actionsFor(input.app, access).summary,
-      label: access === null ? "Off" : levelLabel(input.definition, access),
-    });
-  }
-  return choices;
+      access === input.current ? "current" : rank(access) < rank(input.current) ? "lower" : "allow";
+    if (!input.here && action === "allow") return [];
+    return [{ access, action, label: iphoneLevelLabel(input.definition, access) }];
+  });
+  // A menu holding only the current level offers nothing to choose.
+  return levels.length < 2 ? [] : levels;
 }
 
 /** What one access lets agents do with one app. */
@@ -582,128 +618,12 @@ function rank(access: IntegrationAccess | null): number {
   return access === null ? 0 : access === "read" ? 1 : 2;
 }
 
-/** Why access lasts beyond the task that asked, in the Workspaces' own terms. */
-export const iphoneDurableScope =
-  "This lasts until you change it, not only for one task. Tasks in Main can use it; a specialist can use it only once you allow that specialist.";
-
-/** Revocation stops new use; it cannot reach back. */
-export const iphoneNothingUndone =
-  "What agents already received, and changes they already saved, stay as they are.";
-
-export type IphoneReview =
-  | {
-      readonly kind: "allow";
-      readonly body: string;
-      readonly disclosure: string;
-      /** What limits what agents get, said before iOS asks. */
-      readonly caveat: string | null;
-      /** The access agents keep while this is approved, when they have some. */
-      readonly keeps: string | null;
-      /** Said when iOS will ask next, so its prompt is expected. */
-      readonly note: string | null;
-      readonly scope: string;
-      readonly title: string;
-    }
-  | {
-      /** iPhone Settings already refuses: the review offers Settings, never Allow. */
-      readonly kind: "blocked";
-      readonly body: string;
-      readonly title: string;
-    }
-  | {
-      readonly kind: "lower" | "turn-off";
-      readonly body: string;
-      readonly confirm: string;
-      readonly undone: string;
-      readonly title: string;
-    };
-
-/** The one review a draft gets before anything is sent. */
-export function iphoneReview(input: {
-  readonly app: IphoneAppId;
-  readonly choice: IphoneAccessChoice;
-  readonly current: IntegrationAccess | null;
-  readonly definition: IntegrationDefinitionSummaryView | null;
-  readonly name: string;
-  readonly opensteer: string;
-  /** Null when this build doesn't offer the app, which then has nothing to allow. */
-  readonly permission: IphonePermission | null;
-}): IphoneReview | null {
-  const { app, name } = input;
-  switch (input.choice.action) {
-    case "current":
-      return null;
-    case "turn-off":
-    case "lower":
-      return iphoneNarrowingReview({ app, choice: input.choice, name });
-    case "allow": {
-      if (input.permission === null) return null;
-      const access = input.choice.access ?? "read";
-      if (input.permission === "denied" || input.permission === "restricted") {
-        return {
-          body:
-            input.permission === "restricted"
-              ? `Screen Time or a device policy keeps Opensteer from using ${name}, so agents can't be given it.`
-              : `iPhone Settings doesn't let Opensteer use ${name}. Allow it there first; nothing is turned on until then.`,
-          kind: "blocked",
-          title: `${name} is off in iPhone Settings`,
-        };
-      }
-      const traits = iphoneAppTraits[app];
-      const title = `Let agents ${access === "read-write" ? traits.verb.readWrite : traits.verb.read} ${name}?`;
-      const asks =
-        input.permission === "not-determined" ||
-        (app === "apple-calendar" && input.permission === "write-only");
-      return {
-        body: `Agents working in ${input.opensteer} can ${actionsFor(app, access).phrase} on this iPhone while Opensteer is open.`,
-        caveat: traits.caveat,
-        disclosure: iphoneDisclosure(input.opensteer),
-        keeps:
-          input.current === null
-            ? null
-            : `Agents keep ${lowerFirst(levelLabel(input.definition, input.current))} until this is approved.`,
-        kind: "allow",
-        note: asks ? `iPhone will ask you next whether Opensteer can use ${name}.` : null,
-        scope: iphoneDurableScope,
-        title,
-      };
-    }
-  }
+/** What an app shares at an access, for a row whose switch is off or a draft. */
+export function iphoneAppSummary(app: IphoneAppId, access: IntegrationAccess): string {
+  return actionsFor(app, access).summary;
 }
 
-/**
- * The review for less access, which needs only the Host: the same words on
- * this iPhone and on any other device, including while the iPhone is away.
- */
-export function iphoneNarrowingReview(input: {
-  readonly app: IphoneAppId;
-  readonly choice: IphoneAccessChoice;
-  readonly name: string;
-}): Extract<IphoneReview, { readonly kind: "lower" | "turn-off" }> | null {
-  switch (input.choice.action) {
-    case "turn-off":
-      return {
-        body: computerAppTurnOffConsequence,
-        confirm: "Turn off",
-        kind: "turn-off",
-        title: `Turn off ${input.name}?`,
-        undone: iphoneNothingUndone,
-      };
-    case "lower":
-      return {
-        body: `Agents will no longer ${iphoneAppTraits[input.app].writes ?? "change it"}.`,
-        confirm: "Lower access",
-        kind: "lower",
-        title: `Lower ${input.name} to ${input.choice.label}?`,
-        undone: iphoneNothingUndone,
-      };
-    case "allow":
-    case "current":
-      return null;
-  }
-}
-
-/** The row's words after a reviewed change settled without the access it asked for. */
+/** The row's words after a change settled without the access it asked for. */
 export function iphoneAllowFailure(
   outcome: IphoneAllowOutcome,
   name: string,
@@ -806,7 +726,8 @@ export const iphoneApprovalKeyFailure = "This iPhone couldn't finish setting up 
 
 /* ------------------------------------------------------------------------- */
 
-function levelLabel(
+/** An access level's name, as the Host's definition words it when there is one. */
+export function iphoneLevelLabel(
   definition: IntegrationDefinitionSummaryView | null,
   access: IntegrationAccess,
 ): string {

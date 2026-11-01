@@ -338,10 +338,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     };
     return {
       close,
-      onAddDeployment: () => {
-        leave();
-        navigation.dispatch(StackActions.push("AddDeployment"));
-      },
       onChat: () => show("Home"),
       onOpenPlace: (destination: WorkspaceSurfaceDestination) => {
         leave();
@@ -389,12 +385,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         navigation.dispatch(StackActions.push("Settings"));
       },
       onSpecialists: () => show("Specialists"),
-      onSwitchDeployment: () => {
-        leave();
-        navigation.dispatch(StackActions.push("DeploymentSwitcher"));
-      },
       onTabs: () => show("Tabs"),
-      onLeave: leave,
     };
   }, [close, leave, props.navigation]);
 
