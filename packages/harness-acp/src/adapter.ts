@@ -1,3 +1,4 @@
+import { isRecord } from "@opensteer/shared/isRecord";
 import {
   OpensteerError,
   createId,
@@ -971,8 +972,4 @@ function invalidRequestResponse(): OpensteerError {
     code: "bad_request",
     message: "Response does not match the pending ACP Request",
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,3 +1,4 @@
+import { isRecord } from "@opensteer/shared/isRecord";
 import * as acpV1 from "@agentclientprotocol/sdk/unstable";
 import * as acpV2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import { OpensteerError } from "@opensteer/core";
@@ -690,10 +691,6 @@ function v2State(
 
 function objectOrEmpty(value: unknown): Readonly<Record<string, unknown>> {
   return isRecord(value) ? value : {};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isElicitationValue(value: unknown): value is string | number | boolean | string[] {

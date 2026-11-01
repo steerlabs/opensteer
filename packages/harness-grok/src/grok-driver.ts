@@ -1,3 +1,4 @@
+import { isRecord } from "@opensteer/shared/isRecord";
 import {
   HarnessIdSchema,
   OpensteerError,
@@ -1084,10 +1085,6 @@ export async function inspectGrokUsage(
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function rememberGrokEfforts(

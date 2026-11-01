@@ -198,21 +198,23 @@ describe("engineGroups", () => {
           },
         ],
       },
-      ...["opencode", "pi", "cursor"].map((driverKind): HarnessDriverSummary => ({
-        accessModes: ["approval-required", "auto-accept-edits", "full-access"],
-        driverKind,
-        readiness: "runtime-check",
-        sources: [
-          {
-            fields: [],
-            kind: "gateway",
-            label: driverKind,
-            quota: "none",
-            sourceId: driverKind,
-            stateKinds: ["isolated"],
-          },
-        ],
-      })),
+      ...["grok", "antigravity", "muse", "opencode", "pi", "cursor"].map(
+        (driverKind): HarnessDriverSummary => ({
+          accessModes: ["approval-required", "auto-accept-edits", "full-access"],
+          driverKind,
+          readiness: "runtime-check",
+          sources: [
+            {
+              fields: [],
+              kind: "gateway",
+              label: driverKind,
+              quota: "none",
+              sourceId: driverKind,
+              stateKinds: ["isolated"],
+            },
+          ],
+        }),
+      ),
       // A driver kind the product no longer ships, still reported by the Runner.
       { driverKind: "legacy-engine", readiness: "unavailable", reason: "Not installed" },
     ],
