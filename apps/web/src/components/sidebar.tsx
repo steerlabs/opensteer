@@ -69,7 +69,7 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
-import { SideSplit, useTasksShare } from "./workspace/side-split.js";
+import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import {
   TabFilter,
@@ -128,7 +128,19 @@ export function Sidebar({
   const places = usePlaceList(hostClient);
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const [filter, setFilter] = useState<TabFilterValue>(allTabs);
-  useEffect(() => setFilter(allTabs), [hostClient]);
+  const [heldTabsHeight, setHeldTabsHeight] = useState<number | null>(null);
+  useEffect(() => {
+    setFilter(allTabs);
+    setHeldTabsHeight(null);
+  }, [hostClient]);
+  const tabsSection = useRef<HTMLElement | null>(null);
+  // A filter draws fewer rows in the box all of them took, so the line between Tasks and Tabs stays put.
+  const filterTabs = (next: TabFilterValue) => {
+    if (!tabFilterActive(next)) setHeldTabsHeight(null);
+    else if (!tabFilterActive(filter) && tabsSection.current)
+      setHeldTabsHeight(fullHeightOf(tabsSection.current));
+    setFilter(next);
+  };
   const shownPlaceKey =
     workspace.selection.kind === "place"
       ? destinationPlaceKey(workspace.selection.destination)
@@ -531,13 +543,14 @@ export function Sidebar({
         <section
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
-          style={sectionFloor(filteredPlaces.length)}
+          ref={tabsSection}
+          style={{ ...sectionFloor(places.length), maxHeight: heldTabsHeight ?? undefined }}
         >
           <div className="side-head">
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
               Tabs
             </h2>
-            <TabFilter onChange={setFilter} places={places} value={filter} />
+            <TabFilter onChange={filterTabs} places={places} value={filter} />
             {places.length > 0 ? (
               <button
                 aria-label="New tab"

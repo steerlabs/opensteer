@@ -1109,6 +1109,46 @@ try {
   });
 
   await check(
+    "a tab filter draws fewer rows in the same box, the line where it stood",
+    async () => {
+      const filtering = await openWorld();
+      const { page } = filtering;
+      try {
+        const before = await layout(page);
+        await page.getByRole("button", { name: "Filter tabs", exact: true }).click();
+        await page.getByRole("menuitemradio", { name: "Tabs with agents" }).click();
+        await page.getByRole("button", { name: "Filter tabs: Tabs with agents" }).waitFor();
+        await settle(page);
+        const filtered = await layout(page);
+        await shot(page, "08b-tabs-with-agents.png");
+        await page.getByRole("button", { name: "Clear tab filter" }).click();
+        await page.getByRole("button", { name: "Filter tabs", exact: true }).waitFor();
+        await settle(page);
+        const cleared = await layout(page);
+        const split = (state: Layout) => [state.tasksHeight, state.tabsHeight, state.line!.y];
+        const same = (state: Layout) =>
+          split(state).every((value, index) => Math.abs(value - split(before)[index]!) < 0.5);
+        expectThat(
+          { tasks: before.tasks, tabs: [before.tabs, filtered.tabs] },
+          before.tasks.overflows && before.tabs.overflows && !filtered.tabs.overflows,
+          "this check needs both lists longer than their room, and the filter to leave Tabs room to spare",
+        );
+        expectThat(
+          { before: split(before), filtered: split(filtered), cleared: split(cleared) },
+          same(filtered) && same(cleared),
+          "the tab filter moved the split",
+        );
+        noParts(filtered, "filtered");
+        noParts(cleared, "the filter cleared");
+        expectThat({ errors: filtering.errors }, filtering.errors.length === 0, "page errors");
+        return { before: split(before), filtered: split(filtered), rows: filtered.tabs.whole };
+      } finally {
+        await filtering.context.close();
+      }
+    },
+  );
+
+  await check(
     "a section that needs less than its share keeps every row, and the other takes all the rest",
     async () => {
       const roomy = await openWorld({ world: "stress", height: 1700 });
