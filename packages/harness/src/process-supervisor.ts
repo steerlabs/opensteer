@@ -95,14 +95,24 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
     });
   });
 
+  let childClosed = false;
+  const closed = new Promise<void>((resolve) => {
+    child.once("close", () => {
+      childClosed = true;
+      resolve();
+    });
+  });
   let termination: Promise<void> | undefined;
   const terminate = (graceMs = 5_000): Promise<void> => {
     if (termination) return termination;
-    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    if (childClosed) return Promise.resolve();
+    if (supervisor && (child.exitCode !== null || child.signalCode !== null))
+      return Promise.resolve();
     if (controlError) return Promise.reject(controlError);
     termination ??= terminateProcessTree(
       child,
       exited,
+      closed,
       graceMs,
       lifespan,
       control && "write" in control ? (control as Writable) : undefined,
@@ -188,6 +198,7 @@ async function* boundedReadable(
 async function terminateProcessTree(
   child: ChildProcess,
   exited: Promise<unknown>,
+  closed: Promise<void>,
   graceMs: number,
   lifespan: RootLifespan,
   control?: Pick<Writable, "write">,
@@ -208,15 +219,18 @@ async function terminateProcessTree(
     await terminateWindowsTree(child, exited, graceMs, lifespan);
     return;
   }
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  // detached creates a process group on macOS and Linux. Its leader can exit
+  // while descendants still own the pipes; wait for close, not just exit.
   signalTree(child, "SIGTERM");
-  const graceful = await Promise.race([
-    exited.then(() => true),
-    delay(Math.max(graceMs, 0)).then(() => false),
-  ]);
-  if (graceful) return;
+  if (graceMs > 0) {
+    const graceful = await Promise.race([
+      closed.then(() => true),
+      delay(graceMs).then(() => false),
+    ]);
+    if (graceful) return;
+  }
   signalTree(child, "SIGKILL");
-  await Promise.race([exited, delay(2_000)]);
+  await Promise.race([closed, delay(2_000)]);
 }
 
 /**
@@ -292,7 +306,8 @@ async function windowsDescendants(root: number, lifespan: RootLifespan): Promise
 }
 
 function signalTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid) return;
+  if (platform() === "win32" && (child.exitCode !== null || child.signalCode !== null)) return;
   try {
     if (platform() === "win32") {
       const arguments_ = ["/pid", String(child.pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])];

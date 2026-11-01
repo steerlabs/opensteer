@@ -5,8 +5,7 @@ import {
   accessModeConflict,
   placementForSelection,
   accountGettingReady,
-  composerExecutionSelection,
-  lastExecutionSelection,
+  chatExecutionSelection,
   preparingPlacement,
   runsChosenExecution,
   type ExecutionSelection,
@@ -85,33 +84,29 @@ export function HomeIntro({
     clearHomeHandoff();
   }, [clearHomeHandoff, homeHandoff]);
   const [chosen, setChosen] = useState<ExecutionSelection | null>(null);
-  const remembered = useMemo(
-    () => lastExecutionSelection(executionPreferences),
-    [executionPreferences],
-  );
   const runnable = useMemo(
     () => placements.filter((placement) => placement.available),
     [placements],
   );
-
-  // One runnable account is shown and used; several, with nothing expressed,
-  // is a question — picking one of them here would hide who pays for it.
-  const onlyRunnable = runnable.length === 1 ? (runnable[0] ?? null) : null;
+  const existing = useMemo(() => {
+    const home = snapshot.threads.find(({ id }) => id === snapshot.homeThreadId);
+    return home
+      ? {
+          environmentId: home.environmentId,
+          harnessInstanceId: home.harnessInstanceId,
+          modelSelection: home.modelSelection,
+        }
+      : null;
+  }, [snapshot.homeThreadId, snapshot.threads]);
   const selection = useMemo(
-    () =>
-      composerExecutionSelection({
-        chosen,
-        defaultPlacement: onlyRunnable,
-        placements,
-        remembered,
-      }),
-    [chosen, onlyRunnable, placements, remembered],
+    () => chatExecutionSelection({ chosen, existing, placements }),
+    [chosen, existing, placements],
   );
   // A choice that no longer runs stays named. Replacing it with another
   // account would quietly move the work — and the bill — somewhere else.
   const blocked = useMemo(
-    () => (selection === null ? (chosen ?? remembered) : null),
-    [chosen, remembered, selection],
+    () => (selection === null ? (chosen ?? existing) : null),
+    [chosen, existing, selection],
   );
   const selectedPlacement = useMemo(
     () => (selection ? placementForSelection(placements, selection) : null),
@@ -290,7 +285,6 @@ export function HomeIntro({
                   blocked={blocked}
                   onApply={(next) => {
                     setChosen(next);
-                    rememberExecution({ selection: next });
                   }}
                   onAuthenticate={openHarnessAuthentication ?? undefined}
                   placements={placements}

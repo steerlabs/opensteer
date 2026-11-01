@@ -267,6 +267,10 @@ export class HarnessAuthenticationCoordinator {
     return this.#liveAttempts(environmentId).length > 0;
   }
 
+  hasPendingAttemptForDriver(environmentId: EnvironmentId, driverKind: HarnessId): boolean {
+    return this.#liveAttempts(environmentId).some((attempt) => attempt.driverKind === driverKind);
+  }
+
   #deleteAttempt(attempt: HarnessAuthenticationAttempt): void {
     const key = this.#key(attempt.environmentId, attempt.harnessInstanceId);
     if (this.#attempts.get(key) === attempt) this.#attempts.delete(key);

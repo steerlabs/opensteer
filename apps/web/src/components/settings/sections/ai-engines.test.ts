@@ -18,8 +18,23 @@ import {
   createdHarnessSignInAction,
   endpointAccountName,
   engineGroups,
+  installationUpdateLabel,
   nextAccountName,
 } from "./ai-engines.js";
+
+describe("installed engine update states", () => {
+  it.each([
+    ["available", "Update available"],
+    ["current", "Up to date"],
+    ["manual", "Update on computer"],
+    ["unknown", "Update status unavailable"],
+    ["updating", "Updating…"],
+    ["succeeded", "Updated"],
+    ["failed", "Update failed"],
+  ] as const)("renders %s explicitly", (state, label) => {
+    expect(installationUpdateLabel(state)).toBe(label);
+  });
+});
 
 function placement(
   availability: ThreadPlacementOption["availability"],
@@ -198,21 +213,23 @@ describe("engineGroups", () => {
           },
         ],
       },
-      ...["opencode", "pi", "cursor"].map((driverKind): HarnessDriverSummary => ({
-        accessModes: ["approval-required", "auto-accept-edits", "full-access"],
-        driverKind,
-        readiness: "runtime-check",
-        sources: [
-          {
-            fields: [],
-            kind: "gateway",
-            label: driverKind,
-            quota: "none",
-            sourceId: driverKind,
-            stateKinds: ["isolated"],
-          },
-        ],
-      })),
+      ...["grok", "antigravity", "muse", "opencode", "pi", "cursor"].map(
+        (driverKind): HarnessDriverSummary => ({
+          accessModes: ["approval-required", "auto-accept-edits", "full-access"],
+          driverKind,
+          readiness: "runtime-check",
+          sources: [
+            {
+              fields: [],
+              kind: "gateway",
+              label: driverKind,
+              quota: "none",
+              sourceId: driverKind,
+              stateKinds: ["isolated"],
+            },
+          ],
+        }),
+      ),
       // A driver kind the product no longer ships, still reported by the Runner.
       { driverKind: "legacy-engine", readiness: "unavailable", reason: "Not installed" },
     ],

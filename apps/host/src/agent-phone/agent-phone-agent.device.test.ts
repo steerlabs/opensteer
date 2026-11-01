@@ -208,7 +208,10 @@ describe.skipIf(requestedEngine === undefined)(
         },
         harnesses: createHarnessRegistry(
           parseAgentExecutionConfig(process.env).harnessExecutables,
-          { nodeExecutable: process.execPath },
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+          },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         publicOrigin,

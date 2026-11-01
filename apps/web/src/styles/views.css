@@ -1190,6 +1190,25 @@ label.machine-access__grant-head {
   font-size: var(--text-md);
 }
 
+.settings-engine__update-state {
+  color: var(--ember);
+  font-size: var(--text-sm);
+  margin-left: auto;
+}
+
+.settings-engine__update-detail {
+  margin: 0;
+  padding: var(--space-10) var(--space-16);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.settings-engine__update + .settings-engine__add,
+.settings-engine__update-state + .settings-engine__add {
+  margin-left: 0;
+}
+
 .settings-engine__add {
   margin-left: auto;
 }

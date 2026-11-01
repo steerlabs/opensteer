@@ -3,6 +3,7 @@ import { harnessCatalog } from "@opensteer/core";
 import { HarnessRegistry, findExecutableOnPath } from "@opensteer/harness";
 import type { AgentExecutionConfig } from "../app-config.js";
 import { harnessDriverFactories, type HarnessDriverRuntime } from "./harness-drivers.js";
+import { installedEngineUpdateFacts } from "./installed-engine-updates.js";
 
 /**
  * The Runner composes exactly one registry. It is passed to the runtime
@@ -20,7 +21,12 @@ export function createHarnessRegistry(
   const registry = new HarnessRegistry();
   for (const entry of harnessCatalog) {
     const factory = harnessDriverFactories[entry.kind];
-    const installed = "installed" in entry ? entry.installed : undefined;
+    const installed =
+      entry.runtime.shape === "installed"
+        ? entry.runtime
+        : "installed" in entry
+          ? entry.installed
+          : undefined;
     registry.registerDriver(
       factory.create(executables[entry.kind], runtime),
       {
@@ -36,6 +42,11 @@ export function createHarnessRegistry(
           entry.kind === "claude"
             ? claudeInstallGuidance
             : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}, or add an Opensteer-managed ${entry.label} account.`,
+        scope: entry.runtime.shape === "installed" ? "all" : "ambient",
+        update: {
+          ...installedEngineUpdateFacts[entry.kind as keyof typeof installedEngineUpdateFacts],
+          minimumVersion: installed.minimumVersion,
+        },
       },
     );
   }

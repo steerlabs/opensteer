@@ -70,7 +70,10 @@ describe.each(timeoutHarnessKinds)("autonomous sign-in MCP timeout: %s", (driver
           runTimeoutMs: 180_000,
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { nodeExecutable: process.execPath },
+            {
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           harnessInstance: {

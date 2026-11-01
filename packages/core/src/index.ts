@@ -2,6 +2,7 @@ export * from "./collections.js";
 export * from "./computer-app.js";
 export * from "./attachments.js";
 export * from "./browser-sources.js";
+export * from "./chat-models.js";
 export * from "./deep-links.js";
 export * from "./errors.js";
 export * from "./events.js";

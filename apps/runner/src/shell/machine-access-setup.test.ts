@@ -113,6 +113,15 @@ describe("machine access eligibility", () => {
       ["linux", "codex", "full-access", true],
       ["win32", "claude", "full-access", false],
       ["win32", "codex", "full-access", false],
+      // Grok's command sandbox has not been qualified against the relay, so
+      // every cell remains denied until a real measurement proves otherwise.
+      ["darwin", "grok", "approval-required", false],
+      ["darwin", "grok", "auto", false],
+      ["darwin", "grok", "full-access", false],
+      ["linux", "grok", "approval-required", false],
+      ["linux", "grok", "auto", false],
+      ["linux", "grok", "full-access", false],
+      ["win32", "grok", "full-access", false],
       // OpenCode, Pi and Cursor have no command sandbox of their own and run
       // only on native-user Runners, so a model-run command reaches the relay
       // in every mode. The darwin rows were measured 2026-09-17; the linux rows
@@ -131,6 +140,24 @@ describe("machine access eligibility", () => {
       ["darwin", "cursor", "full-access", true],
       ["linux", "cursor", "full-access", true],
       ["win32", "cursor", "full-access", false],
+      ["darwin", "grok", "approval-required", false],
+      ["darwin", "grok", "full-access", false],
+      ["linux", "grok", "approval-required", false],
+      ["linux", "grok", "full-access", false],
+      ["win32", "grok", "approval-required", false],
+      ["win32", "grok", "full-access", false],
+      ["darwin", "antigravity", "approval-required", false],
+      ["darwin", "antigravity", "full-access", false],
+      ["linux", "antigravity", "approval-required", false],
+      ["linux", "antigravity", "full-access", false],
+      ["win32", "antigravity", "approval-required", false],
+      ["win32", "antigravity", "full-access", false],
+      ["darwin", "muse", "approval-required", false],
+      ["darwin", "muse", "full-access", false],
+      ["linux", "muse", "approval-required", false],
+      ["linux", "muse", "full-access", false],
+      ["win32", "muse", "approval-required", false],
+      ["win32", "muse", "full-access", false],
     ];
     for (const [platform, driverKind, accessMode, reachable] of matrix) {
       expect({

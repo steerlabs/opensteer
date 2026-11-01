@@ -1,24 +1,26 @@
-import { execFile } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdir, writeFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
+  RequestPresentationSchema,
+  harnessCatalog,
   provisionalThreadTitle,
   defaultTaskSymbol,
+  requestOptionDeclines,
+  shipsHarnessRuntimeBytes,
   taskSymbolNames,
-  shippedHarnessCatalogEntry,
-  shippedHarnessKinds,
   type Attachment,
+  type HarnessKind,
   type ModelSelection,
+  type ThreadAccessMode,
   type WorkspaceId,
 } from "@opensteer/core";
 import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import {
   attachmentReference,
@@ -34,78 +36,144 @@ import {
 } from "./engine-qualification.test-support.js";
 
 /*
- * Qualifies the engines this tree ships — the exact pinned binaries a Runner
- * launches — through a whole deployment: the Host admits a model the engine
- * itself listed, dispatches a Run, and the Runner drives the real engine
- * against the Host's real tool servers. Each engine answers, continues its own
- * conversation, and takes an option value from its own catalog.
+ * Qualifies every engine in the catalog through a whole deployment: the Host
+ * admits a model the engine itself listed, dispatches a Run, and the Runner
+ * drives the real engine against the Host's real tool servers. Each engine
+ * answers, continues its own conversation, and takes an option value from its
+ * own catalog.
  *
  * Nothing here is scripted, so it runs only on demand (`pnpm test:engines`),
  * against the accounts the machine's engines are already signed in to. An
- * engine bump is not qualified until this passes for every shipped engine.
+ * engine bump is not qualified until this passes for every catalog engine.
  *
  * An account on the machine's own sign-in runs the person's own CLI for an
  * engine that declares one, so each such engine is qualified twice: `shipped`
- * puts the engine this tree ships first on PATH, which is what an update must
- * prove, and `installed` runs the CLI this computer actually has.
+ * puts the engine this tree ships first on PATH, `installed` runs the CLI this
+ * computer actually has, and `downloaded` lets the driver prepare its pinned
+ * release in the Runner's temporary runtime cache.
  */
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+let runtimeCacheDirectory: string | undefined;
+
+beforeAll(async () => {
+  runtimeCacheDirectory = await mkdtemp(join(tmpdir(), "opensteer-engine-runtime-"));
+});
+
+afterAll(async () => {
+  if (runtimeCacheDirectory) await rm(runtimeCacheDirectory, { force: true, recursive: true });
+  runtimeCacheDirectory = undefined;
+});
 
 /**
- * Each engine is qualified on its first-party source. Given the source's key
+ * Each engine is qualified on a first-party source. Given the source's key
  * in this process's environment, a private account is signed in with it
  * through the setup commands Settings sends — a Runner never hands its own
  * environment's keys to an engine. Without one, the account is the engine's
  * own sign-in on this machine (`CODEX_HOME`, Claude Code's login, Pi's home).
- * OpenCode's Zen gateway serves free models with no credential at all.
+ * Antigravity uses a private Gemini API-key account because its profile is
+ * isolated and the test Runner is disposable. OpenCode's Zen gateway serves
+ * free models with no credential at all.
  */
-const shippedEngines: readonly Omit<QualifiedEngine, "executable" | "label">[] = [
-  {
-    apiKey: { methodId: "codex-api-key", variable: "OPENAI_API_KEY" },
-    driverKind: "codex",
-    sourceId: "openai",
-    stateKind: "ambient",
+type QualificationAccount = Omit<QualifiedEngine, "executable" | "label">;
+
+const qualificationAccounts = {
+  antigravity: {
+    apiKey: { methodId: "gemini-api-key", variable: "GEMINI_API_KEY" },
+    driverKind: "antigravity",
+    signInGuidance: "Set GEMINI_API_KEY to a dedicated spending-limited Gemini API key.",
+    sourceId: "google-gemini-api-key",
+    stateKind: "isolated",
   },
-  {
+  claude: {
     apiKey: { methodId: "claude-api-key", variable: "ANTHROPIC_API_KEY" },
     driverKind: "claude",
     sourceId: "anthropic",
     stateKind: "ambient",
   },
-  { driverKind: "opencode", sourceId: "opencode", stateKind: "isolated" },
-  {
+  codex: {
+    apiKey: { methodId: "codex-api-key", variable: "OPENAI_API_KEY" },
+    driverKind: "codex",
+    sourceId: "openai",
+    stateKind: "ambient",
+  },
+  cursor: {
+    driverKind: "cursor",
+    sourceId: "cursor",
+    stateKind: "ambient",
+  },
+  grok: {
+    driverKind: "grok",
+    signInGuidance: "Sign in with `grok login --device-auth`.",
+    sourceId: "xai",
+    stateKind: "ambient",
+  },
+  muse: {
+    driverKind: "muse",
+    signInGuidance: "Sign in with `muse login`.",
+    sourceId: "meta",
+    stateKind: "ambient",
+  },
+  opencode: { driverKind: "opencode", sourceId: "opencode", stateKind: "isolated" },
+  pi: {
     apiKey: { methodId: "pi-api-key", variable: "OPENAI_API_KEY" },
     driverKind: "pi",
     sourceId: "openai",
     stateKind: "ambient",
   },
-];
+} as const satisfies Record<HarnessKind, QualificationAccount>;
 
-const qualifiedEngines: readonly QualifiedEngine[] = [
-  ...shippedEngines
-    .filter((engine) => shippedHarnessKinds.some((kind) => kind === engine.driverKind))
-    .map((engine) => ({
-      ...engine,
-      executable: "shipped" as const,
-      label: `shipped ${shippedHarnessCatalogEntry(engine.driverKind).label}`,
-    })),
-  ...shippedEngines
-    .filter((engine) => installedCommand(engine.driverKind) && engine.stateKind === "ambient")
-    .map((engine) => ({
-      ...engine,
-      executable: "installed" as const,
-      label: `installed ${shippedHarnessCatalogEntry(engine.driverKind).label}`,
-    })),
-];
+const qualifiedEngines: readonly QualifiedEngine[] = harnessCatalog.flatMap((entry) => {
+  const account = qualificationAccounts[entry.kind];
+  const engines: QualifiedEngine[] = [];
+  if (shipsHarnessRuntimeBytes(entry)) {
+    engines.push({ ...account, executable: "shipped", label: `shipped ${entry.label}` });
+  }
+  if (entry.runtime.shape === "downloaded") {
+    engines.push({ ...account, executable: "downloaded", label: `downloaded ${entry.label}` });
+  }
+  if (installedCommand(entry.kind)) {
+    engines.push({ ...account, executable: "installed", label: `installed ${entry.label}` });
+  }
+  return engines;
+});
+
+const newEngineKinds = new Set<HarnessKind>(["antigravity", "grok", "muse"]);
+const expectedAccessModes = {
+  antigravity: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+  grok: ["approval-required", "auto", "full-access"],
+  muse: ["approval-required", "full-access"],
+} as const satisfies Partial<Record<HarnessKind, readonly ThreadAccessMode[]>>;
 
 describe("engine qualification", () => {
-  it("covers every engine this tree ships", () => {
-    expect(
-      qualifiedEngines
-        .filter((engine) => engine.executable === "shipped")
-        .map((engine) => engine.driverKind),
-    ).toEqual(shippedHarnessKinds);
+  it("derives every runtime qualification from the complete engine catalog", () => {
+    expect(Object.keys(qualificationAccounts).toSorted()).toEqual(
+      harnessCatalog.map((entry) => entry.kind).toSorted(),
+    );
+    expect(qualifiedEngines.map((engine) => engine.label)).toEqual(
+      harnessCatalog.flatMap((entry) => [
+        ...(shipsHarnessRuntimeBytes(entry) ? [`shipped ${entry.label}`] : []),
+        ...(entry.runtime.shape === "downloaded" ? [`downloaded ${entry.label}`] : []),
+        ...(installedCommand(entry.kind) ? [`installed ${entry.label}`] : []),
+      ]),
+    );
+  });
+
+  it("qualifies the access modes each new engine declares", async () => {
+    const harnesses = createHarnessRegistry(
+      parseAgentExecutionConfig(process.env).harnessExecutables,
+      {
+        nodeExecutable: process.execPath,
+        runtimeCacheDirectory: join(tmpdir(), "opensteer-unused-runtime-cache"),
+      },
+    );
+    try {
+      for (const [kind, modes] of Object.entries(expectedAccessModes)) {
+        expect(harnesses.driverAccessModes(HarnessIdSchema.parse(kind))).toEqual(modes);
+      }
+    } finally {
+      await harnesses.close();
+    }
   });
 
   describe.each(qualifiedEngines)("$label", (engine) => {
@@ -131,13 +199,14 @@ describe("engine qualification", () => {
         command &&
         !findExecutableOnPath(command, process.env.PATH)
       ) {
-        throw new Error(
-          `Install ${command} on this computer to qualify it, or run -t "shipped ${shippedHarnessCatalogEntry(engine.driverKind).label}"`,
-        );
+        throw new Error(`Install ${command} on this computer to qualify ${engine.label}.`);
       }
       const harnesses = createHarnessRegistry(
         parseAgentExecutionConfig(process.env).harnessExecutables,
-        { nodeExecutable: process.execPath },
+        {
+          nodeExecutable: process.execPath,
+          runtimeCacheDirectory: runtimeCacheDirectory!,
+        },
       );
       stack = await startVerticalStack({
         catalogTimeoutMs: 180_000,
@@ -146,6 +215,8 @@ describe("engine qualification", () => {
         harnesses,
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 300_000,
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
       });
       const active = stack;
       const native =
@@ -416,14 +487,13 @@ describe("engine qualification", () => {
         command &&
         !findExecutableOnPath(command, process.env.PATH)
       ) {
-        throw new Error(
-          `Install ${command} on this computer to qualify it, or run -t "shipped ${shippedHarnessCatalogEntry(engine.driverKind).label}"`,
-        );
+        throw new Error(`Install ${command} on this computer to qualify ${engine.label}.`);
       }
       const harnesses = createHarnessRegistry(
         parseAgentExecutionConfig(process.env).harnessExecutables,
         {
           nodeExecutable: process.execPath,
+          runtimeCacheDirectory: runtimeCacheDirectory!,
         },
       );
       stack = await startVerticalStack({
@@ -433,12 +503,19 @@ describe("engine qualification", () => {
         harnesses,
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 300_000,
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
       });
 
       // The engine names its own default; nothing in Opensteer picks one.
       const defaults = stack.catalog.models.filter((model) => model.isDefault);
       expect(defaults).toHaveLength(1);
       const model = defaults[0]!;
+      if (newEngineKinds.has(engine.driverKind)) {
+        expect(model.options).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: "effort", type: "select" })]),
+        );
+      }
       const workspace = await stack.createWorkspace(`${engine.label} qualification`);
       const threadId = await stack.createThread({
         modelSelection: ModelSelectionSchema.parse({
@@ -457,6 +534,20 @@ describe("engine qualification", () => {
         workspaceId: workspace.id,
       });
       expect(first.assistantText).toMatch(/\bREADY\b/iu);
+      if (newEngineKinds.has(engine.driverKind)) {
+        const eventTypes = first.events.map((event) => event.type);
+        expect(eventTypes).toContain("assistant.message");
+        expect(eventTypes).toContain("run.usage");
+        expect(eventTypes.indexOf("assistant.message")).toBeLessThan(
+          eventTypes.indexOf("run.completed"),
+        );
+        expect(eventTypes.indexOf("run.usage")).toBeLessThan(eventTypes.indexOf("run.completed"));
+        const listed = await stack.api["run.attempts.list"]({ runId: first.runId });
+        if (!listed.ok) throw new Error(listed.error.message);
+        const usage = listed.data.attempts.at(-1)?.usage;
+        expect(usage?.outputTokens).toBeGreaterThan(0);
+        expect((usage?.inputTokens ?? 0) + (usage?.cachedInputTokens ?? 0)).toBeGreaterThan(0);
+      }
 
       // Choose a non-default value for each option that offers one. An option
       // with only one listed value stays there. The Host admits those choices,
@@ -561,6 +652,37 @@ describe("engine qualification", () => {
       });
       expect(fileTurn.assistantText).toContain(fileNonce);
       console.info(`${engine.label}: continued conversation read uploaded file`);
+
+      // The engine's supervised mode must surface a real Opensteer Request
+      // before an MCP shell call, then continue after a client answers it.
+      const approvalThreadId = await stack.createThread({
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: model.modelId,
+          options: {},
+          providerId: model.providerId,
+        }),
+        title: `${engine.label} approval qualification`,
+        workspaceId: workspace.id,
+      });
+      await stack.updateThreadAccess(approvalThreadId, "approval-required");
+      const approvalCode = randomUUID();
+      let approvalRequestId = "";
+      const approved = await stack.sendMessage({
+        onQueued: async (runId) => {
+          approvalRequestId = await approvePendingHarnessRequest(stack!, runId);
+        },
+        text: `Use the shell tool to run exactly \`printf '${approvalCode}'\`, then reply with only its output.`,
+        threadId: approvalThreadId,
+        workspaceId: workspace.id,
+      });
+      expect(approvalRequestId).not.toBe("");
+      expect(approved.assistantText).toContain(approvalCode);
+      expect(approved.events.map((event) => event.type)).toEqual(
+        expect.arrayContaining(["tool.started", "tool.completed"]),
+      );
+      console.info(
+        `${engine.label}: approved an MCP shell call through Request ${approvalRequestId}`,
+      );
 
       // An engine's own subagents are the Run's execution nodes: their steps
       // name them, and their words are their result, not the Run's message.
@@ -745,6 +867,13 @@ describe("engine qualification", () => {
             ],
             engineStarts,
             fileReadVerified: fileTurn.assistantText.includes(fileNonce),
+            approval: {
+              requestId: approvalRequestId,
+              runId: approved.runId,
+              toolEvents: approved.events
+                .filter((event) => event.type.startsWith("tool."))
+                .map((event) => event.type),
+            },
             restartSteer: restartResult ?? { status: "The engine steers natively" },
             subagents: subagentResult ?? { status: "Not qualified for this engine" },
             image: imageResult ?? { status: "No catalog-confirmed image model" },
@@ -758,16 +887,7 @@ describe("engine qualification", () => {
   });
 });
 
-describe.each([
-  ...qualifiedEngines.filter((engine) => engine.executable === "shipped"),
-  {
-    driverKind: "cursor" as const,
-    executable: "installed" as const,
-    label: "installed Cursor",
-    sourceId: "cursor",
-    stateKind: "ambient" as const,
-  },
-])("$label Thread names and symbols", (engine) => {
+describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
   let stack: VerticalStack | undefined;
   let restorePath: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -790,22 +910,17 @@ describe.each([
     try {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
       if (engine.executable === "shipped") restorePath = await shippedEnginesFirstOnPath();
-      const engineVersion =
-        engine.driverKind === "cursor"
-          ? (await promisify(execFile)("agent", ["--version"])).stdout.trim()
-          : await qualifiedVersion(engine);
+      const engineVersion = await qualifiedVersion(engine);
       evidence.engineVersion = engineVersion;
       stack = await startVerticalStack({
         catalogTimeoutMs: 180_000,
         databaseUrl,
-        harnessInstance:
-          engine.driverKind === "cursor"
-            ? { config: {}, driverKind: "cursor", sourceId: "cursor", stateKind: "ambient" }
-            : qualificationAccount(engine),
+        harnessInstance: qualificationAccount(engine),
         harnesses: createHarnessRegistry(
           parseAgentExecutionConfig(process.env).harnessExecutables,
           {
             nodeExecutable: process.execPath,
+            runtimeCacheDirectory: runtimeCacheDirectory!,
           },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
@@ -814,6 +929,8 @@ describe.each([
           info: (message, fields) => console.info(message, fields),
           error: (message, fields) => console.error(message, fields),
         },
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
       });
       const active = stack;
       // The name is under test, not the Run: a fast model keeps the Run short,
@@ -855,7 +972,10 @@ describe.each([
       evidence.generatedIcon = stored.icon;
       const scratchEntries = (
         await readdir(active.runnerDataDirectory, { recursive: true })
-      ).filter((name) => name.split(/[\\/]/u).some((part) => part.startsWith("title-")));
+      ).filter((name) =>
+        // Shared naming scratch is `title-*`; an engine's own is `<engine>-title-*`.
+        name.split(/[\\/]/u).some((part) => /^(?:[a-z]+-)?title-/u.test(part)),
+      );
       evidence.scratchEntries = scratchEntries;
       expect(scratchEntries).toEqual([]);
       expect(stored.title).not.toBe(seed);
@@ -932,7 +1052,7 @@ describe.each([
     } catch (error) {
       const blocked =
         error instanceof Error &&
-        /authentication|required.*sign|sign in|quota|usage.limit|not installed|ENOENT|credentials|not configured|not signed|not ready/iu.test(
+        /authentication|required.*sign|sign in|quota|harness[_ -]?usage[_ -]?limit|usage[ _-]?limit|not installed|ENOENT|credentials|not configured|not signed|not ready/iu.test(
           error.message,
         );
       await writeFile(
@@ -985,6 +1105,7 @@ describe("live Home handoff between native engines", () => {
       harnessInstance: qualificationAccount(codex),
       harnesses: createHarnessRegistry(parseAgentExecutionConfig(process.env).harnessExecutables, {
         nodeExecutable: process.execPath,
+        runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
       }),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 300_000,
@@ -1355,6 +1476,62 @@ async function deepWordImage(word: string): Promise<Buffer> {
     .toColourspace("rgb16")
     .png()
     .toBuffer();
+}
+
+function qualificationFailure(engine: QualifiedEngine, error: unknown): Error {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  if (
+    engine.signInGuidance &&
+    /authentication-required|not authenticated|not logged in|not signed in|sign in/iu.test(
+      failure.message,
+    )
+  ) {
+    return new Error(
+      `${engine.label} is not signed in. ${engine.signInGuidance} Then rerun \`pnpm test:engines -- -t '${engine.label}'\`.`,
+      { cause: failure },
+    );
+  }
+  return failure;
+}
+
+/** Answers one engine approval exactly as a connected client does. */
+async function approvePendingHarnessRequest(active: VerticalStack, runId: string): Promise<string> {
+  let pending:
+    | {
+        readonly id: string;
+        readonly kind: string;
+        readonly presentation: unknown;
+      }
+    | undefined;
+  await vi.waitFor(
+    async () => {
+      pending = await active.host.store.database
+        .selectFrom("requests")
+        .select(["id", "kind", "presentation"])
+        .where("originatingRunId", "=", runId as never)
+        .where("status", "=", "pending")
+        .executeTakeFirst();
+      expect(pending, "The supervised engine did not open an approval Request").toBeDefined();
+    },
+    { interval: 250, timeout: 180_000 },
+  );
+  if (!pending) throw new Error("The supervised engine did not open an approval Request");
+  expect(pending.kind).toBe("harness.approval");
+  const presentation = RequestPresentationSchema.parse(pending.presentation);
+  if (presentation.kind !== "choice") {
+    throw new Error(`The engine approval used ${presentation.kind}, not a choice`);
+  }
+  const allow = presentation.options.find((option) => !requestOptionDeclines(option));
+  if (!allow) throw new Error("The engine approval offered no allow choice");
+  const key = `qualification-approval-${randomUUID()}`;
+  const answered = await active.api["commands.dispatch"]({
+    idempotencyKey: key,
+    requestId: pending.id,
+    response: { kind: "choice", optionId: allow.id },
+    type: "request.respond",
+  });
+  if (!answered.ok) throw new Error(answered.error.message);
+  return pending.id;
 }
 
 async function waitForRunStatus(

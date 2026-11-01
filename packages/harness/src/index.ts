@@ -8,6 +8,7 @@ export * from "./event-stream.js";
 export * from "./input-projection.js";
 export * from "./initial-context.js";
 export * from "./installed-engine.js";
+export * from "./engine-installation.js";
 export * from "./native-images.js";
 export * from "./labels.js";
 export * from "./model-servers.js";

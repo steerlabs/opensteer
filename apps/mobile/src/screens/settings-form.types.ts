@@ -21,6 +21,16 @@ export interface AgentNotificationRow {
   readonly workspaceId: string;
 }
 
+export interface EngineUpdateRow {
+  readonly detail: string;
+  readonly driverKind: string;
+  readonly environmentId: string;
+  readonly key: string;
+  readonly name: string;
+  readonly updateEnabled: boolean;
+  readonly updating: boolean;
+}
+
 /** The open Deployment's sign-in pages, which belong to it. */
 export interface SignInsSettingsActions {
   readonly onBrowserProfiles: () => void;
@@ -32,6 +42,7 @@ export interface SettingsFormActionHandlers {
   readonly onAccountAction: () => void;
   readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;
+  readonly onEngineUpdate?: ((environmentId: string, driverKind: string) => void) | undefined;
   readonly onNotificationAction: () => void;
   readonly onPasswordsAction: () => void;
   readonly onPreferenceChange: (kind: "approvals" | "run-outcomes", enabled: boolean) => void;
@@ -47,6 +58,7 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   /** Where the open Opensteer runs and its computers; empty while none is open. */
   readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;
+  readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
   readonly notificationError: string | null;
   /** Null in a build without an Account service, which nothing can notify. */
   readonly notifications: NotificationSettingsModel | null;

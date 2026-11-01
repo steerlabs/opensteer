@@ -932,8 +932,8 @@ async function signMachOArtifacts(
   );
   const inheritsRunnerSandbox = (artifactPath: string): boolean =>
     harnessCatalog.some((entry) => {
+      if (!shipsHarnessRuntimeBytes(entry)) return false;
       const { runtime } = entry;
-      if (runtime.shape === "installed") return false;
       return runtime.shape === "file"
         ? artifactPath === runtime.path
         : artifactPath.startsWith(`${runtime.treeRoot}/`);

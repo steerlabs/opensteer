@@ -20,15 +20,20 @@ describe("harness catalog", () => {
     for (const line of imports) expect(line).toMatch(/^\s*import type\b/u);
   });
 
-  it("separates the engines whose bytes a distribution ships from the one it does not", () => {
-    // Cursor's CLI has no established redistribution grant, so the person
-    // installs it: nothing here stages, version-asserts or names its bytes.
+  it("separates shipped, downloaded, and person-installed runtimes", () => {
+    // These CLIs have no established redistribution grant, so the person
+    // installs them: nothing here stages, version-asserts or names their bytes.
     expect(shippedHarnessKinds).toEqual(["codex", "opencode", "pi"]);
     expect(
       harnessCatalog
         .filter((entry) => entry.runtime.shape === "installed")
         .map((entry) => entry.kind),
-    ).toEqual(["claude", "cursor"]);
+    ).toEqual(["claude", "grok", "muse", "cursor"]);
+    expect(
+      harnessCatalog
+        .filter((entry) => entry.runtime.shape === "downloaded")
+        .map((entry) => entry.kind),
+    ).toEqual(["antigravity"]);
     expect(shippedHarnessKindRecord((kind) => kind.length)).toEqual({
       codex: 5,
       opencode: 8,
@@ -58,6 +63,19 @@ describe("harness catalog", () => {
       minimumVersion: "2026.09.10",
       shape: "installed",
     });
+    expect(harnessCatalogEntry("grok")?.runtime).toEqual({
+      command: "grok",
+      installUrl: "https://x.ai/cli",
+      minimumVersion: "1.0.70",
+      shape: "installed",
+    });
+    expect(harnessCatalogEntry("muse")?.runtime).toEqual({
+      command: "muse",
+      installUrl: "https://dev.meta.ai/docs/muse-code",
+      minimumVersion: "1.4.14",
+      shape: "installed",
+    });
+    expect(harnessCatalogEntry("antigravity")?.runtime).toEqual({ shape: "downloaded" });
   });
 
   it("keeps a staged tree's executable inside the directory that travels with it", () => {
@@ -80,14 +98,15 @@ describe("harness catalog", () => {
     }
   });
 
-  it("refuses to state a version for an engine the person installs", () => {
-    // Cursor's CLI self-updates and nothing here pins it, so a caller that
-    // asks is asking about bytes this tree never ships.
-    expect(() => harnessRuntimeExpectedVersion("cursor")).toThrow(
-      "Harness cursor is installed by the person, so nothing pins its version",
-    );
-    expect(() => harnessRuntimeVersion("cursor")).toThrow(
-      "Harness cursor is installed by the person, so nothing pins its version",
-    );
-  });
+  it.each(["cursor", "grok", "muse", "antigravity"] as const)(
+    "refuses to state a distribution version for the unshipped %s engine",
+    (kind) => {
+      expect(() => harnessRuntimeExpectedVersion(kind)).toThrow(
+        `Harness ${kind} has no runtime bytes in the Opensteer distribution`,
+      );
+      expect(() => harnessRuntimeVersion(kind)).toThrow(
+        `Harness ${kind} has no runtime bytes in the Opensteer distribution`,
+      );
+    },
+  );
 });

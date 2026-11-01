@@ -1,5 +1,7 @@
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
+  canonicalModelReference,
+  chatModelPreferences,
   harnessDisplayRank,
   modelLabLabels,
   type ModelSelection,
@@ -12,7 +14,11 @@ import {
   type UsageModelScope,
 } from "./connection-usage.js";
 import type { ExecutionSelection } from "./execution-preferences.js";
-import { selectionForModel, type ThreadPlacementOption } from "./thread-placement.js";
+import {
+  selectionForModel,
+  selectionForModelEffort,
+  type ThreadPlacementOption,
+} from "./thread-placement.js";
 
 /**
  * The composer's picker reads the way a choice is stored: an engine, one of its
@@ -379,6 +385,48 @@ export function composerExecutionSelection(options: {
   const decision = options.chosen ?? options.remembered ?? null;
   if (decision) return resolveExecutionSelection(decision, options.placements);
   return options.defaultPlacement ? executionSelectionForPlacement(options.defaultPlacement) : null;
+}
+
+/** The highest-ranked Chat model that any currently runnable placement serves. */
+export function rankedChatExecutionSelection(
+  placements: readonly ThreadPlacementOption[],
+): ExecutionSelection | null {
+  for (const preferred of chatModelPreferences) {
+    for (const placement of placements) {
+      if (!placement.available) continue;
+      const model = placement.models.find((candidate) => {
+        const reference = canonicalModelReference(candidate.modelId, candidate.providerId);
+        return (
+          reference.providerId === preferred.providerId && reference.modelId === preferred.modelId
+        );
+      });
+      if (!model) continue;
+      return {
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection: selectionForModelEffort(model, preferred.effort),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Chat's one selection rule on every surface. A choice made in this visit and
+ * an existing Chat's saved route are decisions, so an unavailable one blocks
+ * instead of falling through. Only a genuinely new Chat takes the ranked default.
+ */
+export function chatExecutionSelection(options: {
+  readonly chosen: ExecutionSelection | null;
+  readonly existing: ExecutionSelection | null;
+  readonly placements: readonly ThreadPlacementOption[];
+}): ExecutionSelection | null {
+  const decision = options.chosen ?? options.existing;
+  if (decision) return resolveExecutionSelection(decision, options.placements);
+  const ranked = rankedChatExecutionSelection(options.placements);
+  if (ranked) return ranked;
+  const runnable = options.placements.filter(({ available }) => available);
+  return runnable.length === 1 ? executionSelectionForPlacement(runnable[0]!) : null;
 }
 
 /** Everything about a Thread that decides what sending into it will do. */

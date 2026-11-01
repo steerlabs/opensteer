@@ -35,12 +35,13 @@ import {
 import type { ComputerViewService } from "./computer-use/computer-view-service.js";
 
 import type { PlaceContextService } from "./computer-use/place-context-service.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AttachmentIdSchema, type AgentEvent, isPlaceContentPart } from "@opensteer/core";
 import { Readable } from "node:stream";
 import websocket from "@fastify/websocket";
 import {
   BrowserProfileIdSchema,
+  CommandIdSchema,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   OpensteerError,
@@ -152,6 +153,7 @@ import {
 } from "@opensteer/orchestration";
 import {
   BrowserSessionIdSchema,
+  CorrelationIdSchema,
   ClientToHostMessageSchema,
   RunnerToHostMessageSchema,
   RunnerWireProofSchema,
@@ -336,6 +338,14 @@ const maxBrowserRelayQueuedBytes = 2 * maxBrowserRelayFrameBytes;
 // page budget is a guard against an unbounded loop rather than a real limit.
 const runnerOwnershipPageSize = 100;
 const maxRunnerOwnershipPages = 50;
+
+function harnessUpdateCommandId(...parts: string[]) {
+  const digest = createHash("sha256").update(parts.join("\0")).digest("hex");
+  const variant = ["8", "9", "a", "b"][Number.parseInt(digest[16] ?? "0", 16) % 4] ?? "8";
+  return CommandIdSchema.parse(
+    `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+  );
+}
 
 const HarnessAuthenticationParamsSchema = z.strictObject({
   environmentId: EnvironmentIdSchema,
@@ -2342,6 +2352,85 @@ export async function createHostServer(
         harnessCatalogReconciliations.schedule(environment.id);
         return { harness: harnessView(harness), type: command.type };
       }
+      case "harness.update": {
+        const environment = await admitHarnessManagement(session, command.environmentId);
+        const runner = dependencies.runners.identityForEnvironment(environment.id);
+        if (!runner) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Reconnect this work location before updating its AI engine",
+            retryable: true,
+          });
+        }
+        const advertised = runner.modules.agents?.harnessDrivers.find(
+          (driver) => driver.driverKind === command.driverKind,
+        );
+        const installation = advertised?.installation;
+        if (!installation) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This Runner does not support installed AI engine updates",
+          });
+        }
+        if (installation.update === "manual") {
+          throw new OpensteerError({
+            code: "conflict",
+            message:
+              installation.detail ?? "Update this AI engine with the tool that installed it.",
+          });
+        }
+        const harnesses = await dependencies.store.listHarnessInstances({
+          environmentIds: [environment.id],
+        });
+        for (const harness of harnesses) {
+          if (
+            harness.driverKind !== command.driverKind ||
+            (installation.scope === "ambient" && harness.stateKind !== "ambient")
+          )
+            continue;
+          await assertHarnessIsIdle(environment.id, harness.id, "updating it");
+        }
+        if (
+          harnessAuthenticationCoordinator.hasPendingAttemptForDriver(
+            environment.id,
+            command.driverKind,
+          )
+        ) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This AI engine is signing in. Finish or cancel sign-in before updating.",
+            retryable: true,
+          });
+        }
+        const commandId = harnessUpdateCommandId(
+          userId,
+          environment.id,
+          command.driverKind,
+          command.idempotencyKey,
+        );
+        await dependencies.runners.dispatch(
+          {
+            commandId: CommandIdSchema.parse(commandId),
+            correlationId: CorrelationIdSchema.parse(commandId),
+            driverKind: command.driverKind,
+            environmentId: environment.id,
+            type: "harness.update",
+          },
+          AbortSignal.timeout(30_000),
+        );
+        const current = dependencies.runners
+          .identityForEnvironment(environment.id)
+          ?.modules.agents?.harnessDrivers.find(
+            (driver) => driver.driverKind === command.driverKind,
+          )?.installation;
+        return {
+          installation:
+            current?.update === "updating"
+              ? current
+              : { ...installation, update: "updating" as const },
+          type: command.type,
+        };
+      }
       case "harness.model.configure": {
         const environment = await admitHarnessManagement(session, command.environmentId);
         const current = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
@@ -3161,6 +3250,7 @@ export function advertisedCapabilities(
     "snapshot-messages-omit-v1",
     "history-turns-v1",
     "shared-task-done-v1",
+    "harness-update-v1",
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",

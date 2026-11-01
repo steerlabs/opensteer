@@ -1251,6 +1251,7 @@ export class HttpHostClient {
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
+      harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
@@ -3030,14 +3031,18 @@ export class HttpHostClient {
           item.id === thread.workspaceId ? { ...item, homeThreadId: thread.id } : item,
         ),
       });
-    await this.#rememberQuietly({
-      accessMode: input.accessMode,
-      selection: {
-        environmentId: input.environmentId,
-        harnessInstanceId: input.harnessInstanceId,
-        modelSelection: input.modelSelection,
-      },
-    });
+    await this.#rememberQuietly(
+      input.home
+        ? { accessMode: input.accessMode }
+        : {
+            accessMode: input.accessMode,
+            selection: {
+              environmentId: input.environmentId,
+              harnessInstanceId: input.harnessInstanceId,
+              modelSelection: input.modelSelection,
+            },
+          },
+    );
     return thread;
   }
 
@@ -3180,13 +3185,15 @@ export class HttpHostClient {
       this.#snapshot.environments,
       this.#snapshot.harnesses,
     );
-    await this.#rememberQuietly({
-      selection: {
-        environmentId: thread.environmentId,
-        harnessInstanceId: selection.harnessInstanceId,
-        modelSelection: selection.modelSelection,
-      },
-    });
+    if (thread.id !== this.#snapshot.homeThreadId) {
+      await this.#rememberQuietly({
+        selection: {
+          environmentId: thread.environmentId,
+          harnessInstanceId: selection.harnessInstanceId,
+          modelSelection: selection.modelSelection,
+        },
+      });
+    }
     return this.#snapshot.threads.find(({ id }) => id === threadId) ?? updated;
   }
 
@@ -3796,6 +3803,7 @@ export class HttpHostClient {
       threadRenameAvailable: capabilities.includes("thread-titles-v1"),
       taskMarksAvailable: capabilities.includes("task-marks-v1"),
       sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
+      harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
       workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
@@ -6018,6 +6026,7 @@ export class HttpHostClient {
       threadRenameAvailable: this.#capabilities?.includes("thread-titles-v1") === true,
       taskMarksAvailable: this.#capabilities?.includes("task-marks-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
+      harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
@@ -6392,6 +6401,7 @@ function emptySnapshot(): HostSnapshot {
     threadRenameAvailable: false,
     taskMarksAvailable: false,
     sharedTaskDoneAvailable: false,
+    harnessUpdateAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
     threadAutomations: {},

@@ -10,7 +10,7 @@ import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
 import sharp from "sharp";
 import { z } from "zod";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachmentReference,
   startVerticalStack,
@@ -511,14 +511,6 @@ async function stackCatalog(stack: VerticalStack) {
   return catalog;
 }
 
-async function waitFor(check: () => Promise<boolean>, timeoutMs = 60_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await check())) {
-    if (Date.now() > deadline) throw new Error("Timed out waiting for the account");
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-}
-
 const wireEngines = [
   { driverKind: "opencode", methodId: "opencode-api-key" },
   { driverKind: "pi", methodId: "pi-api-key" },
@@ -554,7 +546,10 @@ qualification("local endpoint qualification", () => {
           },
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { nodeExecutable: process.execPath },
+            {
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 30_000,
@@ -600,11 +595,13 @@ qualification("local endpoint qualification", () => {
           },
         });
         expect(interrupted.events.map((event) => event.type)).toContain("run.interrupted");
-        for (let attempt = 0; attempt < 50; attempt++) {
-          const snapshot = await stack.host.store.workspaceSnapshot(workspace.id);
-          if (snapshot.threads.find((thread) => thread.id === threadId)?.status === "idle") break;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
+        await vi.waitFor(
+          async () => {
+            const snapshot = await stack!.host.store.workspaceSnapshot(workspace.id);
+            expect(snapshot.threads.find((thread) => thread.id === threadId)?.status).toBe("idle");
+          },
+          { interval: 100, timeout: 5_000 },
+        );
         await stack.resumeThreadInputQueue(threadId);
         const resumed = await stack.sendMessage({
           text: "Continue after the interrupted turn and reply WIRE_ONLY_READY.",
@@ -681,7 +678,10 @@ qualification("local endpoint qualification", () => {
       const fixture = await startVisionWireFixture();
       const harnesses = createHarnessRegistry(
         parseAgentExecutionConfig(process.env).harnessExecutables,
-        { nodeExecutable: process.execPath },
+        {
+          nodeExecutable: process.execPath,
+          runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+        },
       );
       const evidence: Record<string, unknown> = {
         engine: engine.driverKind,
@@ -820,7 +820,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 180_000,
@@ -914,7 +917,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 180_000,
@@ -1040,7 +1046,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 120_000,
@@ -1111,7 +1120,10 @@ qualification("local endpoint qualification", () => {
           },
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { nodeExecutable: process.execPath },
+            {
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 30_000,
@@ -1237,7 +1249,11 @@ qualification("local endpoint qualification", () => {
           },
           harnesses: createHarnessRegistry(
             parseAgentExecutionConfig(process.env).harnessExecutables,
-            { modelServerHome: home, nodeExecutable: process.execPath },
+            {
+              modelServerHome: home,
+              nodeExecutable: process.execPath,
+              runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+            },
           ),
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           modelServerHome: home,
@@ -1328,7 +1344,12 @@ qualification("local endpoint qualification", () => {
           type: "harness.authentication.begin",
         });
         if (!begun.ok) throw new Error(begun.error.message);
-        await waitFor(async () => (await stackCatalog(stack!)).status === "ready");
+        await vi.waitFor(
+          async () => {
+            expect((await stackCatalog(stack!)).status).toBe("ready");
+          },
+          { interval: 250, timeout: 60_000 },
+        );
         const afterRotation = await stack.sendMessage({
           text: "Reply with SERVER_KEY_READY again.",
           threadId,
@@ -1420,7 +1441,10 @@ qualification("local endpoint qualification", () => {
             },
             harnesses: createHarnessRegistry(
               parseAgentExecutionConfig(process.env).harnessExecutables,
-              { nodeExecutable: process.execPath },
+              {
+                nodeExecutable: process.execPath,
+                runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
+              },
             ),
             harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 300_000,
@@ -1589,29 +1613,31 @@ qualification("local endpoint qualification", () => {
 });
 
 async function waitForRunning(active: VerticalStack, runId: string): Promise<void> {
-  for (const deadline = Date.now() + 120_000; Date.now() < deadline;) {
-    const run = await active.host.store.database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", runId as never)
-      .executeTakeFirstOrThrow();
-    if (run.status !== "queued" && run.status !== "starting") return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error("The Run did not start");
+  await vi.waitFor(
+    async () => {
+      const run = await active.host.store.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", runId as never)
+        .executeTakeFirstOrThrow();
+      expect(["queued", "starting"], "The Run did not start").not.toContain(run.status);
+    },
+    { interval: 20, timeout: 120_000 },
+  );
 }
 
 async function waitForRunEnd(active: VerticalStack, runId: string): Promise<void> {
-  for (const deadline = Date.now() + 180_000; Date.now() < deadline;) {
-    const run = await active.host.store.database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", runId as never)
-      .executeTakeFirstOrThrow();
-    if (run.status === "completed") return;
-    if (run.status === "failed" || run.status === "interrupted")
-      throw new Error(`The Run ended ${run.status}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("The Run did not end");
+  const status = await vi.waitFor(
+    async () => {
+      const run = await active.host.store.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", runId as never)
+        .executeTakeFirstOrThrow();
+      expect(["completed", "failed", "interrupted"], "The Run did not end").toContain(run.status);
+      return run.status;
+    },
+    { interval: 100, timeout: 180_000 },
+  );
+  if (status !== "completed") throw new Error(`The Run ended ${status}`);
 }

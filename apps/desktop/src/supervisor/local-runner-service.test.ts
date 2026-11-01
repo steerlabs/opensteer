@@ -10,6 +10,7 @@ import {
   DeploymentIdSchema,
   harnessCatalog,
   harnessExecutableEnvironmentVariable,
+  shipsHarnessRuntimeBytes,
   shippedHarnessKindRecord,
   shippedHarnessKinds,
   type DeploymentId,
@@ -284,7 +285,7 @@ describe("LocalRunnerService", () => {
     // the person installs themselves is named by nothing here.
     for (const entry of harnessCatalog) {
       expect(child.environment[harnessExecutableEnvironmentVariable(entry.kind)]).toBe(
-        entry.runtime.shape === "installed" ? undefined : path.join(directory, entry.kind),
+        shipsHarnessRuntimeBytes(entry) ? path.join(directory, entry.kind) : undefined,
       );
     }
     await expect(running.service.enrolledRunners()).resolves.toEqual([

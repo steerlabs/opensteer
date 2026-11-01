@@ -69,6 +69,7 @@ describe("live Home task", () => {
       harnessInstance: { config: {}, driverKind, sourceId, stateKind: "ambient" },
       harnesses: createHarnessRegistry(parseAgentExecutionConfig(process.env).harnessExecutables, {
         nodeExecutable: process.execPath,
+        runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
       }),
       harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 600_000,

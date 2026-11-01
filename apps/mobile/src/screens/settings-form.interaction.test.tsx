@@ -124,6 +124,33 @@ describe("Settings on a phone", () => {
   });
 });
 
+describe("Settings → AI services on a phone", () => {
+  it("shows update state and invokes the engine update", async () => {
+    const onEngineUpdate = vi.fn();
+    await render({
+      engineUpdates: [
+        {
+          detail: "Update available · 0.166.0",
+          driverKind: "codex",
+          environmentId: "env_1",
+          key: "env_1:codex",
+          name: "Codex",
+          updateEnabled: true,
+          updating: false,
+        },
+      ],
+      onEngineUpdate,
+    });
+    expect(document.body.textContent).toContain("AI services");
+    expect(document.body.textContent).toContain("Update available · 0.166.0");
+    const update = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Update",
+    );
+    await act(async () => update?.click());
+    expect(onEngineUpdate).toHaveBeenCalledWith("env_1", "codex");
+  });
+});
+
 function labels(): readonly (string | null)[] {
   return [...document.querySelectorAll("[aria-label]")].map((row) =>
     row.getAttribute("aria-label"),

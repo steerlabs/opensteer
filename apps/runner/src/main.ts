@@ -389,6 +389,7 @@ async function startAgentsRunner(input: {
     environmentId,
     harnesses: createHarnessRegistry(execution.harnessExecutables, {
       nodeExecutable: config.nodeExecutable,
+      runtimeCacheDirectory: resolve(config.dataDirectory, "runtime-cache"),
     }),
     harnessRuntimeBoundary,
     ...(harnessSandbox ? { harnessSandbox } : {}),

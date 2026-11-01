@@ -33,6 +33,7 @@ import {
   ShellSessionIdSchema,
   type HarnessAuthenticationState,
   type HarnessInstanceCatalog,
+  type RunnerHarnessDriver,
 } from "@opensteer/protocol";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import {
@@ -43,6 +44,11 @@ import {
 } from "@opensteer/workspace-portablefs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
+
+type StringDriverKind<T> = T extends { readonly driverKind: unknown }
+  ? Omit<T, "driverKind"> & { readonly driverKind: string }
+  : never;
+type TestRunnerHarnessDriver = StringDriverKind<RunnerHarnessDriver>;
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
   hostServerTestDependencies,
@@ -379,6 +385,7 @@ describe("Host signing keys", () => {
           "snapshot-messages-omit-v1",
           "history-turns-v1",
           "shared-task-done-v1",
+          "harness-update-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
@@ -442,6 +449,7 @@ describe("Host signing keys", () => {
           "snapshot-messages-omit-v1",
           "history-turns-v1",
           "shared-task-done-v1",
+          "harness-update-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
@@ -2556,23 +2564,7 @@ describe("durable harness catalogs", () => {
     readonly environmentKind: "main" | "local" | "managed";
     readonly inspectHarnesses?: () => Promise<readonly unknown[]>;
     readonly reconcileHarnesses?: () => Promise<readonly HarnessInstanceCatalog[]>;
-    readonly harnessDrivers?: readonly {
-      readonly accessModes: readonly ThreadAccessMode[];
-      readonly driverKind: string;
-      readonly readiness: "configured";
-      readonly sources: readonly {
-        readonly fields: readonly {
-          readonly id: string;
-          readonly kind: "text" | "url";
-          readonly label: string;
-        }[];
-        readonly kind: "first-party" | "compatible-endpoint" | "cloud-identity" | "gateway";
-        readonly label: string;
-        readonly quota: "none" | "windows";
-        readonly sourceId: string;
-        readonly stateKinds: readonly ("ambient" | "isolated")[];
-      }[];
-    }[];
+    readonly harnessDrivers?: readonly TestRunnerHarnessDriver[];
     /** Defaults to the Deployment administrator the older cases assume. */
     readonly instanceRole?: "administrator" | "user";
     /** A managed Runner outside this person's listing is not disclosed. */
@@ -2656,6 +2648,13 @@ describe("durable harness catalogs", () => {
       async ({ catalogs }: { readonly catalogs: readonly HarnessInstanceCatalog[] }) => catalogs,
     );
     const reconcileHarnesses = vi.fn(options.reconcileHarnesses ?? (async () => []));
+    const dispatch = vi.fn(
+      async (_command: { readonly commandId: string }, _signal: AbortSignal) => ({
+        commandId: createId("command"),
+        correlationId: "harness-update",
+        type: "runner.command-accepted" as const,
+      }),
+    );
     const runners = {
       canRunHarness: () => options.connected,
       // A Runner that is away has declared nothing, which is not the same as
@@ -2673,6 +2672,7 @@ describe("durable harness catalogs", () => {
               },
             }
           : undefined,
+      dispatch,
       inspectHarnesses,
       isAvailable: () => options.connected,
       manageHarnessAuthentication,
@@ -2836,6 +2836,7 @@ describe("durable harness catalogs", () => {
       updateThreadAccessMode,
       updateThreadExecutionSelection,
       discardHarnessCatalog,
+      dispatch,
       inspectHarnesses,
       listHarnessCatalogs,
       manageHarnessAuthentication,
@@ -3496,6 +3497,83 @@ describe("durable harness catalogs", () => {
       );
     } finally {
       await app.close();
+    }
+  });
+
+  it("dispatches an installed-engine update and refuses it while an affected Run is active", async () => {
+    const driver: TestRunnerHarnessDriver = {
+      accessModes: ["full-access"],
+      driverKind: "native",
+      installation: {
+        latestVersion: "2.0.0",
+        scope: "all",
+        update: "available",
+        version: "1.0.0",
+      },
+      readiness: "configured",
+      sources: [
+        {
+          fields: [],
+          kind: "first-party",
+          label: "Native",
+          quota: "none",
+          sourceId: "native",
+          stateKinds: ["ambient", "isolated"],
+        },
+      ],
+    };
+    const idle = harnessCatalogServer({
+      connected: true,
+      environmentKind: "local",
+      harnessDrivers: [driver],
+      runnerOwner: ownerId,
+    });
+    const idleApp = await idle.server;
+    try {
+      const response = await injectRpcRequest(idleApp, "commands.dispatch", {
+        driverKind: "native",
+        environmentId,
+        idempotencyKey: "update-native",
+        type: "harness.update",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(idle.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ driverKind: "native", type: "harness.update" }),
+        expect.any(AbortSignal),
+      );
+      const repeated = await injectRpcRequest(idleApp, "commands.dispatch", {
+        driverKind: "native",
+        environmentId,
+        idempotencyKey: "update-native",
+        type: "harness.update",
+      });
+      expect(repeated.statusCode).toBe(200);
+      expect(idle.dispatch.mock.calls[1]?.[0].commandId).toBe(
+        idle.dispatch.mock.calls[0]?.[0].commandId,
+      );
+    } finally {
+      await idleApp.close();
+    }
+
+    const busy = harnessCatalogServer({
+      activeRun: true,
+      connected: true,
+      environmentKind: "local",
+      harnessDrivers: [driver],
+      runnerOwner: ownerId,
+    });
+    const busyApp = await busy.server;
+    try {
+      const response = await injectRpcRequest(busyApp, "commands.dispatch", {
+        driverKind: "native",
+        environmentId,
+        idempotencyKey: "update-busy-native",
+        type: "harness.update",
+      });
+      expect(response.statusCode).toBe(409);
+      expect(busy.dispatch).not.toHaveBeenCalled();
+    } finally {
+      await busyApp.close();
     }
   });
 

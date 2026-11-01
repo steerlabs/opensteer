@@ -51,9 +51,11 @@ import {
   threadTitleCleanupMs,
   parseGeneratedThreadName,
   type HarnessDurableEvent,
+  type EngineUpdatePlan,
   type HarnessLiveEvent,
   type HarnessInstanceDefinition,
   type HarnessRegistry,
+  spawnSupervised,
   type HarnessProcessLaunchWrapper,
   type HarnessRuntimeBoundary,
   type HarnessSession,
@@ -68,6 +70,7 @@ import {
   type ProtocolError,
   type HostToRunnerMessage,
   type HarnessAuthenticationState,
+  type HarnessInstallation,
   type HarnessInstanceCatalog,
   type ModelServer,
   type RunnerHarnessDriver,
@@ -194,11 +197,17 @@ type HarnessAuthenticationResponse = Pick<
 
 interface HarnessAuthenticationEntry {
   readonly connectionSlot?: string;
+  /** Settles only after provider startup or a pending sign-in has ended. */
+  readonly completion?: Promise<void>;
   readonly driverKind: HarnessAuthenticationResponse["driverKind"];
   /** Epoch milliseconds after which this interaction may no longer be replayed. */
   readonly expiresAt: number;
   readonly methodId?: string;
   readonly state: HarnessAuthenticationState;
+  /** Holds the stop reservation while cancellation is active or awaiting an explicit retry. */
+  readonly stopping?: Promise<void>;
+  /** The reserved stop attempt ended without proving the process gone and may be retried. */
+  readonly stoppingFailed?: boolean;
   readonly cancel?: () => Promise<void>;
   readonly submit?: (value: string) => Promise<void>;
 }
@@ -309,6 +318,14 @@ const executionStopGraceMs = 3_000;
 const uncontainedRetryMs = 5_000;
 /** Matches the Host coordinator's hard attempt lifetime so neither side outlives the other. */
 const harnessAuthenticationLifetimeMs = 15 * 60_000;
+/**
+ * An updater holds the engine's maintenance reservation, refusing its Runs and
+ * sign-ins, until it ends. Long enough for Homebrew to refresh itself and then
+ * download a few hundred megabytes on a slow home link; ending a healthy
+ * install midway can leave the engine broken.
+ */
+const engineUpdateDeadlineMs = 15 * 60_000;
+const engineUpdateOutputGraceMs = 1_000;
 const requestCancellationReserveBytes = 2_048;
 const toolDeltaOmissionMarker = "\n… additional live output omitted; final tool output follows …\n";
 const toolDeltaContentMaxBytes = toolOutputTextMaxBytes - utf8ByteLength(toolDeltaOmissionMarker);
@@ -333,6 +350,15 @@ export class RunnerRuntime {
   readonly #harnessAuthenticationStartupsByInstance = new Map<string, Promise<void>>();
   readonly #harnessAuthentications = new Map<string, HarnessAuthenticationEntry>();
   readonly #harnessMaintenance = new Set<HarnessInstanceId>();
+  readonly #driverMaintenance = new Set<HarnessId>();
+  readonly #driverInstallationFacts = new Map<HarnessId, HarnessInstallation>();
+  readonly #driverInstallationInspections = new Map<HarnessId, Promise<void>>();
+  readonly #driverInstallationOperations = new Map<HarnessId, HarnessInstallation>();
+  readonly #pendingDriverInstallationAdvertisements = new Map<HarnessId, HarnessInstallation>();
+  readonly #pendingHarnessCatalogInvalidations = new Set<HarnessInstanceId>();
+  readonly #installationQueues = new Map<string, Promise<void>>();
+  readonly #installationLifetime = new AbortController();
+  readonly #installationTasks = new Set<Promise<void>>();
   readonly #integrationSkills: typeof materializeIntegrationSkills;
   readonly #harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly #ledger = new CommandLedger();
@@ -506,10 +532,18 @@ export class RunnerRuntime {
     return [...this.#triggerPrograms.keys()];
   }
 
-  harnessDrivers(): readonly RunnerHarnessDriver[] {
+  async harnessDrivers(): Promise<readonly RunnerHarnessDriver[]> {
     return this.#harnesses.listDrivers().map(({ kind, readiness }) => {
+      this.#refreshDriverInstallation(kind);
+      const installation =
+        this.#driverInstallationOperations.get(kind) ?? this.#driverInstallationFacts.get(kind);
       if (readiness.status === "unavailable") {
-        return { driverKind: kind, readiness: "unavailable", reason: readiness.reason };
+        return {
+          driverKind: kind,
+          ...(installation ? { installation } : {}),
+          readiness: "unavailable" as const,
+          reason: readiness.reason,
+        };
       }
       const capabilities = this.#harnesses.driverCapabilities(kind);
       const nativeImages = capabilities?.messageAttachments?.nativeImages;
@@ -519,6 +553,7 @@ export class RunnerRuntime {
         // would leave the engine unable to run any Thread at all.
         accessModes: [...(this.#harnesses.driverAccessModes(kind) ?? [])],
         driverKind: kind,
+        ...(installation ? { installation } : {}),
         mcpImageContent: capabilities?.mcpImageContent ?? false,
         ...(this.#canDeliverMessageAttachments(kind)
           ? {
@@ -548,6 +583,71 @@ export class RunnerRuntime {
         })),
       };
     });
+  }
+
+  #refreshDriverInstallation(kind: HarnessId): void {
+    if (this.#driverInstallationInspections.has(kind)) return;
+    const inspection = this.#harnesses
+      .driverInstallation(kind)
+      .then(async (resolved) => {
+        if (!resolved) return;
+        const previous = this.#driverInstallationFacts.get(kind);
+        this.#driverInstallationFacts.set(kind, resolved.descriptor);
+        if (
+          this.#driverInstallationOperations.has(kind) ||
+          JSON.stringify(previous) === JSON.stringify(resolved.descriptor)
+        )
+          return;
+        await this.#publishDriverInstallation(kind, resolved.descriptor);
+      })
+      .catch(() => undefined)
+      .finally(() => this.#driverInstallationInspections.delete(kind));
+    this.#driverInstallationInspections.set(kind, inspection);
+  }
+
+  async #publishDriverInstallation(
+    driverKind: HarnessId,
+    installation: HarnessInstallation,
+    fallback?: RunnerMessageSink,
+  ): Promise<void> {
+    this.#pendingDriverInstallationAdvertisements.set(driverKind, installation);
+    const connection = this.#connection ?? fallback;
+    if (!connection) return;
+    await connection.send({ driverKind, installation, type: "runner.harness-installation" });
+    if (this.#pendingDriverInstallationAdvertisements.get(driverKind) === installation) {
+      this.#pendingDriverInstallationAdvertisements.delete(driverKind);
+    }
+  }
+
+  async #publishDriverInstallationOutcome(
+    driverKind: HarnessId,
+    outcome: HarnessInstallation,
+    fallback?: RunnerMessageSink,
+  ): Promise<void> {
+    try {
+      await this.#publishDriverInstallation(driverKind, outcome, fallback);
+    } catch {
+      return;
+    }
+    if (this.#driverInstallationOperations.get(driverKind) !== outcome) return;
+    this.#driverInstallationOperations.delete(driverKind);
+    if (outcome.update !== "succeeded") return;
+    const current = this.#driverInstallationFacts.get(driverKind);
+    if (current)
+      await this.#publishDriverInstallation(driverKind, current, fallback).catch(() => undefined);
+  }
+
+  async #publishPendingHarnessCatalogInvalidations(fallback?: RunnerMessageSink): Promise<void> {
+    const connection = this.#connection ?? fallback;
+    if (!connection) return;
+    for (const harnessInstanceId of this.#pendingHarnessCatalogInvalidations) {
+      try {
+        await connection.send({ harnessInstanceId, type: "runner.harness-catalog-invalidated" });
+        this.#pendingHarnessCatalogInvalidations.delete(harnessInstanceId);
+      } catch {
+        // The next connection replays every invalidation not confirmed sent.
+      }
+    }
   }
 
   #canDeliverMessageAttachments(driverKind: HarnessId): boolean {
@@ -874,6 +974,13 @@ export class RunnerRuntime {
 
     const { harness } = request;
     const existing = this.#harnessAuthentications.get(harness.id);
+    if (this.#driverAuthenticationIsStopping(harness.driverKind)) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This AI engine sign-in is still stopping",
+        retryable: true,
+      });
+    }
     if (existing && existing.expiresAt > Date.now()) {
       if (existing.driverKind !== harness.driverKind) {
         throw new OpensteerError({
@@ -903,6 +1010,16 @@ export class RunnerRuntime {
         retryable: true,
       });
     }
+    if (
+      this.#driverMaintenance.has(harness.driverKind) &&
+      this.#harnesses.installationAffects(harness.driverKind, harness.stateKind)
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This AI engine is updating; wait before signing in",
+        retryable: true,
+      });
+    }
     const priorStartup = this.#harnessAuthenticationStartupsByInstance.get(harness.id);
     const startup = new AbortController();
     const startupSignal = AbortSignal.any([
@@ -910,8 +1027,13 @@ export class RunnerRuntime {
       signal,
       startup.signal,
     ]);
+    let finishAuthenticationProcess!: () => void;
+    const authenticationCompletion = new Promise<void>((resolvePromise) => {
+      finishAuthenticationProcess = resolvePromise;
+    });
     const startingEntry: HarnessAuthenticationEntry = {
       cancel: async () => startup.abort(new Error("AI engine sign-in canceled")),
+      completion: authenticationCompletion,
       ...(request.connectionSlot ? { connectionSlot: request.connectionSlot } : {}),
       driverKind: harness.driverKind,
       expiresAt: Date.now() + harnessAuthenticationLifetimeMs,
@@ -923,13 +1045,19 @@ export class RunnerRuntime {
       try {
         await existing?.cancel?.().catch(() => undefined);
         await priorStartup;
-        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) return;
+        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) {
+          finishAuthenticationProcess();
+          return;
+        }
         if (startupSignal.aborted) throw startupSignal.reason;
         await mkdir(this.#privateStateDirectory, { mode: 0o700, recursive: true });
         await setPrivateDirectoryMode(this.#privateStateDirectory);
         const options = await this.#providerStateOptions(harness.driverKind);
         const { providerState } = await prepareHarnessProviderState(harness, options);
-        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) return;
+        if (this.#harnessAuthentications.get(harness.id) !== startingEntry) {
+          finishAuthenticationProcess();
+          return;
+        }
         if (startupSignal.aborted) throw startupSignal.reason;
         const started = await this.#harnesses.authenticateDefinition(
           harness,
@@ -943,13 +1071,22 @@ export class RunnerRuntime {
             methodId: request.methodId,
           },
         );
+        if (started.status === "pending") {
+          void started.result.then(finishAuthenticationProcess, finishAuthenticationProcess);
+        } else {
+          finishAuthenticationProcess();
+        }
         if (startupSignal.aborted) {
           this.#failAuthentication(harness.id, startingEntry, startupSignal.reason);
-          if (started.status === "pending") await started.cancel().catch(() => undefined);
+          if (started.status === "pending") {
+            await started.cancel().then(finishAuthenticationProcess, () => undefined);
+          }
           return;
         }
         if (this.#harnessAuthentications.get(harness.id) !== startingEntry) {
-          if (started.status === "pending") await started.cancel().catch(() => undefined);
+          if (started.status === "pending") {
+            await started.cancel().then(finishAuthenticationProcess, () => undefined);
+          }
           return;
         }
         const expiresAt = Date.now() + harnessAuthenticationLifetimeMs;
@@ -965,6 +1102,7 @@ export class RunnerRuntime {
         }
         const entry: HarnessAuthenticationEntry = {
           cancel: started.cancel,
+          completion: authenticationCompletion,
           ...(request.connectionSlot ? { connectionSlot: request.connectionSlot } : {}),
           driverKind: harness.driverKind,
           expiresAt,
@@ -983,6 +1121,7 @@ export class RunnerRuntime {
           (error) => this.#failAuthentication(harness.id, entry, error),
         );
       } catch (error) {
+        finishAuthenticationProcess();
         this.#failAuthentication(harness.id, startingEntry, error);
       }
     })();
@@ -1043,31 +1182,129 @@ export class RunnerRuntime {
   ): Promise<HarnessAuthenticationEntry | undefined> {
     const existing = this.#harnessAuthentications.get(harnessInstanceId);
     if (!existing) return undefined;
+    if (existing.stopping) return existing;
     if (existing.expiresAt > Date.now()) return existing;
     await this.#discardAuthentication(harnessInstanceId);
     return undefined;
   }
 
-  /** Cancels and forgets one interaction, leaving no entry behind to replay. */
+  /** Cancels one interaction and forgets it only once its process is gone. */
   async #discardAuthentication(harnessInstanceId: string, awaitStartup = false): Promise<void> {
     const existing = this.#harnessAuthentications.get(harnessInstanceId);
-    this.#harnessAuthentications.delete(harnessInstanceId);
-    const cancellation = existing?.cancel?.().catch(() => undefined);
     const startup = this.#harnessAuthenticationStartupsByInstance.get(harnessInstanceId);
+    if (!existing) {
+      if (awaitStartup && startup) {
+        await withTimeout(startup, runtimeTaskStopWaitMs, {
+          timeoutError: () =>
+            new OpensteerError({
+              code: "conflict",
+              message: "AI engine sign-in did not stop before the maintenance deadline",
+              retryable: true,
+            }),
+        });
+      }
+      return;
+    }
+    if (existing.stopping && !existing.stoppingFailed) {
+      if (!awaitStartup) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Opensteer is still stopping the sign-in; try again",
+          retryable: true,
+        });
+      }
+      await withTimeout(existing.stopping, runtimeTaskStopWaitMs, {
+        timeoutError: () =>
+          new OpensteerError({
+            code: "conflict",
+            message: "AI engine sign-in did not stop before the maintenance deadline",
+            retryable: true,
+          }),
+      });
+      return;
+    }
+
+    const cancel = existing.cancel;
+    const cancellation = cancel ? Promise.resolve().then(cancel) : undefined;
+    if (!cancellation && !existing.completion && !startup) {
+      this.#harnessAuthentications.delete(harnessInstanceId);
+      return;
+    }
+    const cancellationProof = cancellation;
+    const stopping = startup
+      ? Promise.all(
+          [startup, existing.completion, cancellationProof].filter(
+            (task): task is Promise<void> => task !== undefined,
+          ),
+        ).then(() => undefined)
+      : existing.completion
+        ? Promise.race(
+            [existing.completion, cancellationProof].filter(
+              (task): task is Promise<void> => task !== undefined,
+            ),
+          )
+        : (cancellationProof ?? Promise.resolve());
+    const stoppingEntry: HarnessAuthenticationEntry = {
+      ...existing,
+      stopping,
+      stoppingFailed: false,
+    };
+    this.#harnessAuthentications.set(harnessInstanceId, stoppingEntry);
+    void stopping.then(
+      () => {
+        if (this.#harnessAuthentications.get(harnessInstanceId) === stoppingEntry) {
+          this.#harnessAuthentications.delete(harnessInstanceId);
+        }
+      },
+      () => {
+        if (this.#harnessAuthentications.get(harnessInstanceId) === stoppingEntry) {
+          const failedEntry: HarnessAuthenticationEntry = {
+            ...existing,
+            stopping: Promise.resolve(),
+            stoppingFailed: true,
+          };
+          this.#harnessAuthentications.set(harnessInstanceId, failedEntry);
+          void existing.completion?.then(() => {
+            if (this.#harnessAuthentications.get(harnessInstanceId) === failedEntry) {
+              this.#harnessAuthentications.delete(harnessInstanceId);
+            }
+          });
+        }
+      },
+    );
+
     if (!awaitStartup) {
       await cancellation;
       return;
     }
-    const stopping = [cancellation, startup].filter(
-      (task): task is Promise<void> => task !== undefined,
-    );
-    if (!(await settlesWithin(stopping, runtimeTaskStopWaitMs))) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "AI engine sign-in did not stop before the maintenance deadline",
-        retryable: true,
-      });
+    const shutdown = startup
+      ? Promise.all(
+          [startup, existing.completion, cancellation].filter(
+            (task): task is Promise<void> => task !== undefined,
+          ),
+        ).then(() => undefined)
+      : existing.completion
+        ? Promise.race(
+            [existing.completion, cancellation].filter(
+              (task): task is Promise<void> => task !== undefined,
+            ),
+          )
+        : (cancellation ?? Promise.resolve());
+    await withTimeout(shutdown, runtimeTaskStopWaitMs, {
+      timeoutError: () =>
+        new OpensteerError({
+          code: "conflict",
+          message: "AI engine sign-in did not stop before the maintenance deadline",
+          retryable: true,
+        }),
+    });
+  }
+
+  #driverAuthenticationIsStopping(driverKind: HarnessId): boolean {
+    for (const authentication of this.#harnessAuthentications.values()) {
+      if (authentication.driverKind === driverKind && authentication.stopping) return true;
     }
+    return false;
   }
 
   handleCommand(command: RunnerCommand, sink: RunnerMessageSink): Promise<CommandDecision> {
@@ -1095,8 +1332,213 @@ export class RunnerRuntime {
           return this.#mountWorkspace(command);
         case "workspace.detach":
           return this.#detachWorkspace(command);
+        case "harness.update":
+          return this.#startHarnessUpdate(command.driverKind, sink);
       }
     });
+  }
+
+  async #startHarnessUpdate(
+    driverKind: HarnessId,
+    sink: RunnerMessageSink,
+  ): Promise<CommandDecision> {
+    if (this.#harnessRuntimeBoundary.kind !== "native-user") {
+      return reject(
+        "forbidden",
+        "Installed AI engines can only be updated on a person's computer",
+        false,
+      );
+    }
+    if (this.#driverMaintenance.has(driverKind)) {
+      return reject("conflict", "This AI engine is already updating", true);
+    }
+    this.#driverMaintenance.add(driverKind);
+    let admitted = false;
+    try {
+      for (const active of this.#runs.values()) {
+        if (
+          active.command.context.harness.driverKind === driverKind &&
+          this.#harnesses.installationAffects(driverKind, active.command.context.harness.stateKind)
+        ) {
+          return reject(
+            "conflict",
+            "This AI engine is in use. End its active run before updating.",
+            true,
+          );
+        }
+      }
+      for (const [harnessInstanceId, authentication] of this.#harnessAuthentications) {
+        const definition = this.#harnesses.state(
+          harnessInstanceId as HarnessInstanceId,
+        )?.definition;
+        if (
+          definition?.driverKind !== driverKind ||
+          !this.#harnesses.installationAffects(driverKind, definition.stateKind)
+        )
+          continue;
+        if (authentication.stopping && !authentication.stoppingFailed)
+          return reject(
+            "conflict",
+            "Opensteer couldn't stop the sign-in in progress; try again",
+            true,
+          );
+        if (authentication.expiresAt <= Date.now()) {
+          try {
+            await this.#discardAuthentication(harnessInstanceId, true);
+          } catch {
+            return reject(
+              "conflict",
+              "Opensteer couldn't stop the sign-in in progress; try again",
+              true,
+            );
+          }
+          continue;
+        }
+        if (
+          authentication.state.status === "not-started" ||
+          authentication.state.status === "pending"
+        )
+          return reject(
+            "conflict",
+            "This AI engine is signing in. Finish or cancel sign-in before updating.",
+            true,
+          );
+      }
+      const resolved = await this.#harnesses.driverInstallation(driverKind).catch(() => undefined);
+      if (!resolved) return reject("not_found", "This installed AI engine is not available", false);
+      if (!resolved.plan) {
+        return reject(
+          "conflict",
+          resolved.descriptor.detail ?? "Update this AI engine with the tool that installed it.",
+          false,
+        );
+      }
+      this.#driverInstallationFacts.set(driverKind, resolved.descriptor);
+      const updating: HarnessInstallation = { ...resolved.descriptor, update: "updating" };
+      this.#driverInstallationOperations.set(driverKind, updating);
+      try {
+        await this.#publishDriverInstallation(driverKind, updating, sink);
+      } catch (error) {
+        this.#driverInstallationOperations.delete(driverKind);
+        this.#pendingDriverInstallationAdvertisements.set(driverKind, resolved.descriptor);
+        throw error;
+      }
+      const task = this.#performHarnessUpdate(driverKind, resolved.plan, resolved.descriptor, sink);
+      this.#installationTasks.add(task);
+      void task.finally(() => this.#installationTasks.delete(task));
+      admitted = true;
+      return { status: "accepted" };
+    } finally {
+      if (!admitted) this.#driverMaintenance.delete(driverKind);
+    }
+  }
+
+  async #performHarnessUpdate(
+    driverKind: HarnessId,
+    plan: EngineUpdatePlan,
+    previous: HarnessInstallation,
+    sink: RunnerMessageSink,
+  ): Promise<void> {
+    let outcome: HarnessInstallation;
+    try {
+      await this.#warm.evict((engine) => {
+        const definition = this.#harnesses.state(engine.harnessInstanceId)?.definition;
+        return (
+          definition?.driverKind === driverKind &&
+          this.#harnesses.installationAffects(driverKind, definition.stateKind)
+        );
+      });
+      const prior = this.#installationQueues.get(plan.serializationKey) ?? Promise.resolve();
+      const operation = prior.then(async () => {
+        const child = spawnSupervised({
+          args: plan.args,
+          cwd: process.cwd(),
+          environment: plan.environment,
+          executable: plan.executable,
+          maxOutputBytes: 16 * 1_024,
+          signal: this.#installationLifetime.signal,
+        });
+        let expired = false;
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        let outputGrace: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<undefined>((resolve) => {
+          deadline = setTimeout(() => {
+            expired = true;
+            resolve(undefined);
+          }, engineUpdateDeadlineMs);
+        });
+        const output = Promise.all([
+          collectProcessOutput(child.stdout),
+          collectProcessOutput(child.stderr),
+        ]);
+        void output.catch(() => undefined);
+        try {
+          const exit = await Promise.race([child.exited, timedOut]);
+          if (exit) {
+            await Promise.race([
+              output,
+              timedOut,
+              new Promise<void>((resolve) => {
+                outputGrace = setTimeout(resolve, engineUpdateOutputGraceMs);
+              }),
+            ]);
+          }
+          if (expired || !exit) throw new Error("The update didn't finish in time.");
+          if (exit.code !== 0) {
+            throw new Error(`Updater exited with code ${exit.code ?? "unknown"}`);
+          }
+        } finally {
+          clearTimeout(deadline);
+          clearTimeout(outputGrace);
+          try {
+            await child.terminate(0).catch((error: unknown) => {
+              if (!expired) throw error;
+            });
+          } finally {
+            // An orphan can keep inherited pipes open even after its parent exits.
+            child.child.stdout.destroy();
+            child.child.stderr.destroy();
+            await output.catch(() => undefined);
+          }
+        }
+      });
+      this.#installationQueues.set(
+        plan.serializationKey,
+        operation.catch(() => undefined),
+      );
+      const failure = await operation.then(
+        () => undefined,
+        (error: unknown) => ({ error }),
+      );
+      // A failed or ended updater may still have replaced some of the engine's files.
+      const affected = await this.#harnesses.invalidateDriver(driverKind);
+      for (const harnessInstanceId of affected) {
+        this.#pendingHarnessCatalogInvalidations.add(harnessInstanceId);
+      }
+      if (failure) throw failure.error;
+      const refreshed = await this.#harnesses.driverInstallation(driverKind);
+      const succeeded: HarnessInstallation = {
+        ...(refreshed?.descriptor ?? previous),
+        detail: "Update finished.",
+        update: "succeeded",
+      };
+      const current = refreshed?.descriptor ?? previous;
+      this.#driverInstallationFacts.set(driverKind, current);
+      outcome = succeeded;
+    } catch (error) {
+      outcome = {
+        ...previous,
+        detail: safeMessage(error, safeMessageOptions).slice(0, 2_000),
+        update: "failed",
+      };
+    } finally {
+      this.#driverInstallationOperations.set(driverKind, outcome!);
+      await Promise.allSettled([
+        this.#publishDriverInstallationOutcome(driverKind, outcome!, sink),
+        this.#publishPendingHarnessCatalogInvalidations(sink),
+      ]);
+      this.#driverMaintenance.delete(driverKind);
+    }
   }
 
   /**
@@ -1241,6 +1683,18 @@ export class RunnerRuntime {
     }
     if (revoked.length > 0) this.revokeRuns(revoked);
     await Promise.all(resumed);
+    for (const [driverKind, installation] of this.#pendingDriverInstallationAdvertisements) {
+      const operation = this.#driverInstallationOperations.get(driverKind);
+      if (
+        operation === installation &&
+        (installation.update === "failed" || installation.update === "succeeded")
+      ) {
+        await this.#publishDriverInstallationOutcome(driverKind, installation, sink);
+      } else {
+        await this.#publishDriverInstallation(driverKind, installation, sink);
+      }
+    }
+    await this.#publishPendingHarnessCatalogInvalidations(sink);
   }
 
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
@@ -1406,6 +1860,7 @@ export class RunnerRuntime {
     this.#stopLeaseWatchdog?.();
     this.#stopLeaseWatchdog = undefined;
     this.#harnessAuthenticationLifetime.abort(new Error("Runner is shutting down"));
+    this.#installationLifetime.abort(new Error("Runner is shutting down"));
     for (const active of this.#runs.values()) {
       active.shutdown = true;
       this.#endLocalAccess(active);
@@ -1422,6 +1877,8 @@ export class RunnerRuntime {
     ]);
     await this.#watchSupervisor.close();
     await settlesWithin([...this.#harnessAuthenticationStartups], runtimeTaskStopWaitMs);
+    await settlesWithin([...this.#installationTasks], runtimeTaskStopWaitMs);
+    await settlesWithin([...this.#driverInstallationInspections.values()], runtimeTaskStopWaitMs);
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
     await this.#workspaceMountRegistry?.detachAll();
@@ -1439,6 +1896,18 @@ export class RunnerRuntime {
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
+    }
+    if (this.#driverAuthenticationIsStopping(command.context.harness.driverKind)) {
+      return reject("conflict", "AI engine sign-in is still stopping", true);
+    }
+    if (
+      this.#driverMaintenance.has(command.context.harness.driverKind) &&
+      this.#harnesses.installationAffects(
+        command.context.harness.driverKind,
+        command.context.harness.stateKind,
+      )
+    ) {
+      return reject("conflict", "AI engine update is in progress", true);
     }
     const previous = this.#runs.get(command.context.runId);
     if (previous) {
@@ -3268,4 +3737,10 @@ async function settlesWithin(tasks: readonly Promise<void>[], timeoutMs: number)
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function collectProcessOutput(chunks: AsyncIterable<Buffer>): Promise<string> {
+  const values: Buffer[] = [];
+  for await (const chunk of chunks) values.push(chunk);
+  return Buffer.concat(values).toString("utf8");
 }

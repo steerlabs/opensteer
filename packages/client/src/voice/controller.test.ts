@@ -228,7 +228,7 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
-  it("uses the remembered AI independently of the voice account", async () => {
+  it("does not use the remembered task AI for a new Chat", async () => {
     const f = setup({ home: "absent" });
     const snapshot = f.host.getSnapshot();
     const placement = threadPlacementOptions(snapshot.environments, snapshot.harnesses).find(
@@ -248,20 +248,11 @@ describe("VoiceController", () => {
         ],
       },
     });
-    const createHome = vi
-      .spyOn(f.host, "createHome")
-      .mockRejectedValue(new Error("stop before send"));
+    const createHome = vi.spyOn(f.host, "createHome");
     await f.controller.start();
-    f.emit({ type: "heard", turnId: "ask", text: "Help me" });
-    await settle();
-    expect(createHome).toHaveBeenCalledWith(
-      expect.objectContaining({
-        environmentId: placement.environmentId,
-        harnessInstanceId: placement.harnessInstanceId,
-        modelSelection: placement.modelSelection,
-        accessMode: "approval-required",
-      }),
-    );
+    expect(f.controller.getSnapshot().notice?.kind).toBe("choose-ai");
+    expect(f.provider.open).not.toHaveBeenCalled();
+    expect(createHome).not.toHaveBeenCalled();
     f.dispose();
   });
 

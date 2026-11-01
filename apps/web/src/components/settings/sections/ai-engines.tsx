@@ -5,6 +5,7 @@ import type {
   HarnessAuthKind,
   HarnessObservedConnection,
   HarnessSourceDescriptor,
+  HarnessInstallation,
   HostApiCommandInput,
 } from "@opensteer/protocol";
 import {
@@ -60,6 +61,7 @@ export function AiEnginesSection() {
         onAuthenticate={openHarnessAuthentication}
         onError={(message) => toast.error(message)}
         placements={placements}
+        updatesAvailable={snapshot.harnessUpdateAvailable === true}
       />
     </>
   );
@@ -194,6 +196,7 @@ interface EngineGroup {
   readonly addable: boolean;
   readonly driverKind: string;
   readonly engineName: string;
+  readonly installation: HarnessInstallation | null;
   readonly profiles: readonly HarnessSummary[];
   /** The sources a new, private account here may be added for. */
   readonly sources: readonly HarnessSourceDescriptor[];
@@ -203,6 +206,25 @@ interface EngineGroup {
    * instance. Null when the Runner advertises the engine as usable.
    */
   readonly unavailableReason: string | null;
+}
+
+export function installationUpdateLabel(update: HarnessInstallation["update"]): string {
+  switch (update) {
+    case "available":
+      return "Update available";
+    case "current":
+      return "Up to date";
+    case "manual":
+      return "Update on computer";
+    case "unknown":
+      return "Update status unavailable";
+    case "updating":
+      return "Updating…";
+    case "succeeded":
+      return "Updated";
+    case "failed":
+      return "Update failed";
+  }
 }
 
 /**
@@ -218,7 +240,7 @@ export function engineGroups(
 ): EngineGroup[] {
   const kinds = new Set<string>();
   for (const driver of environment.harnessDrivers) {
-    if (driver.readiness !== "unavailable") kinds.add(driver.driverKind);
+    if (driver.readiness !== "unavailable" || driver.installation) kinds.add(driver.driverKind);
   }
   for (const profile of profiles) kinds.add(profile.driverKind);
   const canAddAccounts =
@@ -244,6 +266,7 @@ export function engineGroups(
         addable: canAddAccounts && sources.length > 0,
         driverKind,
         engineName: harnessDriverLabel(driverKind),
+        installation: advertised?.installation ?? null,
         sources,
         // The default first, as the picker lists it; the rest keep the Host's
         // creation order so a rename never moves an account.
@@ -309,6 +332,7 @@ export function AiEngineSettings({
   onAuthenticate,
   onError,
   placements,
+  updatesAvailable = false,
 }: {
   readonly client: HostClient;
   readonly environments: readonly EnvironmentSummary[];
@@ -316,6 +340,7 @@ export function AiEngineSettings({
   readonly onAuthenticate: ((placement: ThreadPlacementOption) => void) | null;
   readonly onError: (message: string) => void;
   readonly placements: readonly ThreadPlacementOption[];
+  readonly updatesAvailable?: boolean;
 }) {
   // A link from the composer names the work location it was about, so the
   // page opens on that one rather than on whichever sorts first.
@@ -546,6 +571,22 @@ export function AiEngineSettings({
       return;
     }
     setAdding(engine);
+  };
+
+  const updateEngine = (engine: EngineGroup) => {
+    if (!environment || pending || !engine.installation) return;
+    run(`update:${engine.driverKind}`, async () => {
+      const result = await client.dispatch({
+        driverKind: engine.driverKind,
+        environmentId: environment.id,
+        idempotencyKey: mutationIdempotencyKey(
+          `harness-update:${environment.id}:${engine.driverKind}`,
+        ),
+        type: "harness.update",
+      });
+      if (result.type !== "harness.update") throw new Error("AI engine update command mismatch.");
+      await client.refresh();
+    });
   };
 
   const signOut = (profile: HarnessSummary, catalog: HarnessCatalog | undefined) => {
@@ -933,6 +974,25 @@ export function AiEngineSettings({
                     ? "1 account"
                     : `${engine.profiles.length} accounts`}
                 </span>
+                {engine.installation ? (
+                  <span className="settings-engine__update-state" role="status">
+                    {installationUpdateLabel(engine.installation.update)}
+                  </span>
+                ) : null}
+                {updatesAvailable &&
+                engine.installation &&
+                (engine.installation.update === "available" ||
+                  engine.installation.update === "unknown" ||
+                  engine.installation.update === "failed") ? (
+                  <button
+                    className="btn btn--small btn--ghost settings-engine__update"
+                    disabled={pending !== null}
+                    onClick={() => updateEngine(engine)}
+                    type="button"
+                  >
+                    {pending === `update:${engine.driverKind}` ? "Updating…" : "Update"}
+                  </button>
+                ) : null}
                 {engine.addable ? (
                   <button
                     className="btn btn--small settings-engine__add"
@@ -944,6 +1004,19 @@ export function AiEngineSettings({
                   </button>
                 ) : null}
               </header>
+              {engine.installation &&
+              (engine.installation.update === "failed" ||
+                engine.installation.update === "manual") ? (
+                <p className="settings-engine__update-detail" role="status">
+                  {engine.installation.detail ??
+                    (engine.installation.update === "manual"
+                      ? "Update this engine on its computer."
+                      : "The update did not finish.")}
+                  {engine.installation.manualCommand
+                    ? ` Run ${engine.installation.manualCommand}.`
+                    : ""}
+                </p>
+              ) : null}
               {engine.profiles.map((profile) =>
                 renderAccount(profile, engine.engineName, engine.unavailableReason),
               )}

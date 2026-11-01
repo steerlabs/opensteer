@@ -45,6 +45,32 @@ function createClient(): MockHostClient {
   return new MockHostClient({ latencyMs: 0, now: () => fixedNow });
 }
 
+it("implements installed-engine update commands in the mock", async () => {
+  const client = createClient();
+  try {
+    const environment = client.getSnapshot().environments[0];
+    if (!environment) throw new Error("Mock environment missing");
+    const result = await client.dispatch({
+      driverKind: "codex",
+      environmentId: environment.id,
+      idempotencyKey: "update-codex",
+      type: "harness.update",
+    });
+    expect(result).toMatchObject({
+      installation: { update: "succeeded", version: "0.163.0" },
+      type: "harness.update",
+    });
+    expect(
+      client
+        .getSnapshot()
+        .environments[0]?.harnessDrivers.find((driver) => driver.driverKind === "codex")
+        ?.installation?.update,
+    ).toBe("succeeded");
+  } finally {
+    client.dispose();
+  }
+});
+
 /**
  * The tuple a composer resolves before starting a Thread. `createThread` fills
  * nothing in, so every test names where work runs, on which account and model.
@@ -364,12 +390,39 @@ describe("MockHostClient", () => {
         .map((request) => request.presentation.title),
     ).toContain("Send the launch email");
 
-    const home = await client.createHome(threadInput(client, workspaceId));
+    await client.createThread(threadInput(client, workspaceId));
+    const taskDefault = structuredClone(client.getSnapshot().executionPreferences.history);
+    const homeInput = threadInput(client, workspaceId);
+    const home = await client.createHome({
+      ...homeInput,
+      modelSelection: ModelSelectionSchema.parse({
+        ...homeInput.modelSelection,
+        options: { effort: "high" },
+      }),
+    });
     expect(client.getSnapshot().homeThreadId).toBe(home.id);
     expect(
       client.getSnapshot().workspaces.find((workspace) => workspace.id === workspaceId)
         ?.homeThreadId,
     ).toBe(home.id);
+    expect(client.getSnapshot().executionPreferences.history).toEqual(taskDefault);
+
+    await client.updateThreadExecution(home.id, {
+      harnessInstanceId: home.harnessInstanceId,
+      modelSelection: ModelSelectionSchema.parse({
+        ...home.modelSelection,
+        options: { effort: "low" },
+      }),
+    });
+    expect(client.getSnapshot().executionPreferences.history).toEqual(taskDefault);
+    const chatSelection = client
+      .getSnapshot()
+      .threads.find(({ id }) => id === home.id)?.modelSelection;
+
+    await client.createThread(threadInput(client, workspaceId));
+    expect(client.getSnapshot().threads.find(({ id }) => id === home.id)?.modelSelection).toEqual(
+      chatSelection,
+    );
   });
 
   it("rebinds a withdrawn queued attachment to a resend in the same Thread", async () => {

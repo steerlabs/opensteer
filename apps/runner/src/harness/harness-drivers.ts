@@ -1,5 +1,6 @@
 import type { HarnessKind } from "@opensteer/core";
 import type { HarnessDriver } from "@opensteer/harness";
+import { AntigravityHarnessDriver } from "@opensteer/harness-antigravity";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -7,6 +8,8 @@ import {
 } from "@opensteer/harness-claude";
 import { CodexHarnessDriver, packagedCodexExecutable } from "@opensteer/harness-codex";
 import { CursorHarnessDriver, installedCursorExecutable } from "@opensteer/harness-cursor";
+import { GrokHarnessDriver, installedGrokExecutable } from "@opensteer/harness-grok";
+import { MuseHarnessDriver, installedMuseExecutable } from "@opensteer/harness-muse";
 import { OpencodeHarnessDriver, packagedOpencodeExecutable } from "@opensteer/harness-opencode";
 import { PiHarnessDriver, packagedPiExecutable } from "@opensteer/harness-pi";
 
@@ -22,6 +25,12 @@ export interface HarnessDriverRuntime {
    * hosts the Runner, and Electron is not a Node interpreter.
    */
   readonly nodeExecutable: string;
+  /**
+   * Writable storage owned by this Runner installation. Downloaded engines
+   * publish immutable verified releases here; distributions never package it,
+   * and drivers never search the person's PATH for it.
+   */
+  readonly runtimeCacheDirectory: string;
   /**
    * Where model server apps keep their own settings — the person's home on
    * their own computer. Tests point it at a temporary home.
@@ -39,7 +48,14 @@ export interface HarnessDriverFactory {
    * the driver package knows it, so it is declared beside the factory rather
    * than restated in the configuration.
    */
-  readonly defaultExecutable: () => string;
+  readonly defaultExecutable?: () => string;
+}
+
+/** The distribution or installed-CLI executable for a non-downloaded engine. */
+export function defaultHarnessExecutable(kind: HarnessKind): string {
+  const executable = harnessDriverFactories[kind].defaultExecutable?.();
+  if (!executable) throw new Error(`${kind} has no distribution executable`);
+  return executable;
 }
 
 /**
@@ -48,6 +64,13 @@ export interface HarnessDriverFactory {
  * this side a compile error rather than a kind that silently never registers.
  */
 export const harnessDriverFactories: Record<HarnessKind, HarnessDriverFactory> = {
+  antigravity: {
+    create: (_executable, runtime) =>
+      new AntigravityHarnessDriver({
+        nodeExecutable: runtime.nodeExecutable,
+        runtimeCacheDirectory: runtime.runtimeCacheDirectory,
+      }),
+  },
   claude: {
     create: (executable, runtime) =>
       new ClaudeHarnessDriver({
@@ -68,6 +91,14 @@ export const harnessDriverFactories: Record<HarnessKind, HarnessDriverFactory> =
     create: (executable, runtime) =>
       new CursorHarnessDriver({ executable, nodeExecutable: runtime.nodeExecutable }),
     defaultExecutable: installedCursorExecutable,
+  },
+  grok: {
+    create: (executable) => new GrokHarnessDriver({ executable }),
+    defaultExecutable: installedGrokExecutable,
+  },
+  muse: {
+    create: (executable) => new MuseHarnessDriver({ executable }),
+    defaultExecutable: installedMuseExecutable,
   },
   opencode: {
     create: (executable, runtime) =>

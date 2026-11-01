@@ -218,12 +218,14 @@ export type HarnessDriverSummary =
       /** The Thread access modes this engine can enforce; the Host refuses the rest. */
       accessModes: ThreadAccessMode[];
       driverKind: string;
+      installation?: import("@opensteer/protocol").HarnessInstallation | undefined;
       note?: string | undefined;
       readiness: "configured" | "runtime-check";
       sources: HarnessSourceDescriptor[];
     }
   | {
       driverKind: string;
+      installation?: import("@opensteer/protocol").HarnessInstallation | undefined;
       readiness: "unavailable";
       reason: string;
     };
@@ -852,6 +854,8 @@ export interface HostSnapshot {
   /** The Host serves `task-marks-v1`: task icons and specialist colours can be chosen. */
   taskMarksAvailable: boolean;
   sharedTaskDoneAvailable?: boolean;
+  /** The Host accepts installed-engine update commands. */
+  harnessUpdateAvailable?: boolean;
   workspaceTabReopenAvailable?: boolean;
   /** The Host serves `browser-profile-manage-v1`: a person can rename and delete profiles. */
   browserProfileManageAvailable?: boolean;

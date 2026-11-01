@@ -1,7 +1,9 @@
+import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   ignoreForeignTestRequest,
   probeTestServer,
 } from "@opensteer/shared/test-support/serverProbes";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import {
@@ -1289,6 +1291,1166 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("refuses an installed-engine update while an affected Run is active", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-busy-test");
+    const driver = {
+      ...catalogDriver(driverKind),
+      create: async ({ instanceId }: { readonly instanceId: HarnessInstanceId }) => ({
+        capabilities: fakeHarnessCapabilities,
+        accessModes: fakeHarnessAccessModes,
+        sources: fakeHarnessSources,
+        close: async () => undefined,
+        instanceId,
+        resumeSession: async () => new BlockingHarnessSession(),
+        startSession: async () => new BlockingHarnessSession(),
+      }),
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/bin/true",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          native: { executableBasename: "true", updateArgs: ["--version"] },
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    try {
+      await reconcile(registry, execute);
+      await runtime.handleCommand(execute, sink);
+      await waitUntil(() => hasEvent(messages, "run.started"));
+      const updateId = createId("command");
+      await expect(
+        runtime.handleCommand(
+          RunnerCommandSchema.parse({
+            commandId: updateId,
+            correlationId: CorrelationIdSchema.parse(updateId),
+            driverKind,
+            environmentId,
+            type: "harness.update",
+          }),
+          sink,
+        ),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+    } finally {
+      const interruptId = createId("command");
+      await runtime.handleCommand(
+        RunnerCommandSchema.parse({
+          commandId: interruptId,
+          correlationId: CorrelationIdSchema.parse(interruptId),
+          environmentId,
+          runId: execute.context.runId,
+          threadId: execute.context.threadId,
+          type: "run.interrupt",
+        }),
+        sink,
+      );
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      await runtime.close();
+    }
+  });
+
+  it("advertises installation inspection after connect without awaiting a slow probe", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-inspection-background-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const inspection = deferred<Awaited<ReturnType<HarnessRegistry["driverInstallation"]>>>();
+    vi.spyOn(registry, "driverInstallation").mockImplementation(() => inspection.promise);
+    const runtime = configuredRuntime({ environmentId: createId("environment"), registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+
+    try {
+      await expect(runtime.harnessDrivers()).resolves.toMatchObject([
+        { driverKind, readiness: "configured" },
+      ]);
+      await runtime.attach(
+        { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
+        sink,
+      );
+      inspection.resolve({
+        descriptor: {
+          latestVersion: "2.0.0",
+          scope: "all",
+          update: "available",
+          version: "1.0.0",
+        },
+      });
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            message.installation.latestVersion === "2.0.0",
+        ),
+      );
+    } finally {
+      inspection.resolve(undefined);
+      await runtime.close();
+    }
+  });
+
+  it("reserves an installed engine before resolving it and releases rejected reservations", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-reservation-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    await reconcile(registry, execute);
+    const inspectionStarted = deferred<void>();
+    const inspection = deferred<Awaited<ReturnType<HarnessRegistry["driverInstallation"]>>>();
+    vi.spyOn(registry, "driverInstallation").mockImplementation(() => {
+      inspectionStarted.resolve(undefined);
+      return inspection.promise;
+    });
+    const sink: RunnerMessageSink = { send: async () => undefined };
+    const firstUpdate = runtime.handleCommand(updateCommand(environmentId, driverKind), sink);
+
+    try {
+      await inspectionStarted.promise;
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      await expect(runtime.handleCommand(execute, sink)).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      await expect(
+        runtime.handleHarnessAuthentication({
+          action: "start",
+          harness: { ...execute.context.harness, id: execute.context.harnessInstanceId },
+          methodId: "default",
+        }),
+      ).rejects.toMatchObject({ code: "conflict", retryable: true });
+
+      inspection.resolve(undefined);
+      await expect(firstUpdate).resolves.toMatchObject({
+        error: { code: "not_found", retryable: false },
+        status: "rejected",
+      });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({ error: { code: "not_found" }, status: "rejected" });
+    } finally {
+      inspection.resolve(undefined);
+      await firstUpdate.catch(() => undefined);
+      await runtime.close();
+    }
+  });
+
+  it("allows an installed-engine update after sign-in has finished", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-update-auth-"));
+    const executable = join(root, "test-engine");
+    await writeFile(
+      executable,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "1.0.0"; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const driverKind = HarnessIdSchema.parse("installed-update-finished-auth-test");
+    const authenticated = deferred<void>();
+    const driver = {
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        authenticated.resolve(undefined);
+        return { status: "ready" as const };
+      },
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => executable,
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          native: { executableBasename: "test-engine", updateArgs: ["update"] },
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const harness = { ...execute.context.harness, id: execute.context.harnessInstanceId };
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    await reconcile(registry, execute);
+
+    try {
+      await runtime.handleHarnessAuthentication({ action: "start", harness, methodId: "default" });
+      await authenticated.promise;
+      await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+      await expect(
+        runtime.handleHarnessAuthentication({
+          action: "read",
+          driverKind,
+          harnessInstanceId: harness.id,
+        }),
+      ).resolves.toMatchObject({ state: { status: "ready" } });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            message.installation.update === "succeeded",
+        ),
+      );
+    } finally {
+      await runtime.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("stops an expired sign-in before updating its installed engine", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-expired-auth-test");
+    const authenticationStarted = deferred<void>();
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    const cancel = vi.fn(async () => {
+      const child = authenticationProcess;
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill();
+      await once(child, "exit");
+    });
+    const driver = {
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        authenticationStarted.resolve(undefined);
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code" as const,
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: new Promise<never>(() => undefined),
+          status: "pending" as const,
+        };
+      },
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    vi.spyOn(registry, "driverInstallation").mockImplementation(async () => ({
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all",
+        update: "available",
+        version: "1.0.0",
+      },
+      plan: {
+        args: [
+          "-e",
+          "const pid = Number(process.argv[1]); try { process.kill(pid, 0); process.exit(2); } catch {}",
+          String(authenticationProcess?.pid),
+        ],
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:expired-auth-update",
+      },
+    }));
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const harness = { ...execute.context.harness, id: execute.context.harnessInstanceId };
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    await reconcile(registry, execute);
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await authenticationStarted.promise;
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "pending" } });
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
+
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            (message.installation.update === "succeeded" ||
+              message.installation.update === "failed"),
+        ),
+      );
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).not.toBeNull();
+      expect(
+        messages.find(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            (message.installation.update === "succeeded" ||
+              message.installation.update === "failed"),
+        ),
+      ).toMatchObject({ installation: { update: "succeeded" } });
+    } finally {
+      vi.useRealTimers();
+      await cancel();
+      await runtime.close();
+    }
+  });
+
+  it("refuses an installed-engine update when its expired sign-in cannot stop", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-auth-stop-failure-test");
+    const authenticationStarted = deferred<void>();
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    const cancel = vi.fn(async () => {
+      throw new Error("sign-in process did not stop");
+    });
+    const driver = {
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        authenticationStarted.resolve(undefined);
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code" as const,
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: once(child, "exit").then(
+            () => ({ detail: "Sign-in stopped", status: "failed" }) as const,
+          ),
+          status: "pending" as const,
+        };
+      },
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const inspectInstallation = vi
+      .spyOn(registry, "driverInstallation")
+      .mockResolvedValue(undefined);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const harness = { ...execute.context.harness, id: execute.context.harnessInstanceId };
+    const sink: RunnerMessageSink = { send: async () => undefined };
+    await reconcile(registry, execute);
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await authenticationStarted.promise;
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "pending" } });
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
+
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({
+        error: {
+          code: "conflict",
+          message: "Opensteer couldn't stop the sign-in in progress; try again",
+          retryable: true,
+        },
+        status: "rejected",
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).toBeNull();
+      await expect(
+        runtime.handleHarnessAuthentication({
+          action: "read",
+          driverKind,
+          harnessInstanceId: harness.id,
+        }),
+      ).resolves.toMatchObject({ state: { status: "pending" } });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      expect(cancel).toHaveBeenCalledTimes(2);
+      expect(inspectInstallation).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      const child = authenticationProcess;
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, "exit");
+      }
+      await runtime.close();
+    }
+  });
+
+  it("keeps an expired sign-in reserved after update shutdown times out", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-auth-stop-timeout-test");
+    const authenticationStarted = deferred<void>();
+    const allowShutdown = deferred<void>();
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    const cancel = vi.fn(async () => {
+      await allowShutdown.promise;
+      const child = authenticationProcess;
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill();
+      await once(child, "exit");
+    });
+    const driver = {
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        authenticationStarted.resolve(undefined);
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code" as const,
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: once(child, "exit").then(
+            () => ({ detail: "Sign-in stopped", status: "failed" }) as const,
+          ),
+          status: "pending" as const,
+        };
+      },
+    };
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    vi.spyOn(registry, "driverInstallation").mockImplementation(async () => ({
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all",
+        update: "available",
+        version: "1.0.0",
+      },
+      plan: {
+        args: [
+          "-e",
+          "const pid = Number(process.argv[1]); try { process.kill(pid, 0); process.exit(2); } catch {}",
+          String(authenticationProcess?.pid),
+        ],
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:timed-out-auth-update",
+      },
+    }));
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    const harness = { ...execute.context.harness, id: execute.context.harnessInstanceId };
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    await reconcile(registry, execute);
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await authenticationStarted.promise;
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "pending" } });
+      });
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
+
+      const firstUpdate = runtime.handleCommand(updateCommand(environmentId, driverKind), sink);
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(firstUpdate).resolves.toMatchObject({
+        error: {
+          code: "conflict",
+          message: "Opensteer couldn't stop the sign-in in progress; try again",
+          retryable: true,
+        },
+        status: "rejected",
+      });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({
+        error: { code: "conflict", retryable: true },
+        status: "rejected",
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).toBeNull();
+
+      vi.useRealTimers();
+      allowShutdown.resolve(undefined);
+      const child = authenticationProcess;
+      if (!child) throw new Error("Authentication process did not start");
+      if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { status: "not-started" } });
+      });
+
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            message.installation.update === "succeeded",
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+      allowShutdown.resolve(undefined);
+      await cancel().catch(() => undefined);
+      await runtime.close();
+    }
+  });
+
+  it("does not replay updating when its initial advertisement was refused", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-admission-status-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    vi.spyOn(registry, "driverInstallation").mockResolvedValue({
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all",
+        update: "available",
+        version: "1.0.0",
+      },
+      plan: {
+        args: ["-e", ""],
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:admission-status",
+      },
+    });
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const disconnectedSink: RunnerMessageSink = {
+      send: async () => {
+        throw new Error("connection lost");
+      },
+    };
+    const reconnected: RunnerOperationalReport[] = [];
+
+    try {
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), disconnectedSink),
+      ).resolves.toMatchObject({ error: { code: "internal" }, status: "rejected" });
+      await runtime.connectionLost(disconnectedSink);
+      await runtime.attach(
+        { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
+        { send: async (message) => void reconnected.push(message) },
+      );
+      expect(
+        reconnected.flatMap((message) =>
+          message.type === "runner.harness-installation" ? [message.installation.update] : [],
+        ),
+      ).toEqual(["available"]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("replays a failed installed-engine update after reconnect", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-failure-replay-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    vi.spyOn(registry, "driverInstallation").mockResolvedValue({
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all",
+        update: "available",
+        version: "1.0.0",
+      },
+      plan: {
+        args: ["-e", "process.exit(7)"],
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:failure-replay",
+      },
+    });
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const failureAttempted = deferred<void>();
+    const disconnectedSink: RunnerMessageSink = {
+      send: async (message) => {
+        if (
+          message.type === "runner.harness-installation" &&
+          message.installation.update === "failed"
+        ) {
+          failureAttempted.resolve(undefined);
+          throw new Error("connection lost");
+        }
+      },
+    };
+    const reconnected: RunnerOperationalReport[] = [];
+
+    try {
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), disconnectedSink),
+      ).resolves.toEqual({ status: "accepted" });
+      await failureAttempted.promise;
+      await runtime.connectionLost(disconnectedSink);
+      await runtime.attach(
+        { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
+        { send: async (message) => void reconnected.push(message) },
+      );
+      expect(reconnected).toContainEqual(
+        expect.objectContaining({
+          installation: expect.objectContaining({ update: "failed" }),
+          type: "runner.harness-installation",
+        }),
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it.each(["running", "orphaned", "successful"] as const)(
+    "releases updater maintenance with %s processes holding output open",
+    async (scenario) => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-engine-update-deadline-"));
+      const pidFile = join(root, "updater.pid");
+      const parentPidFile = join(root, "parent.pid");
+      const driverKind = HarnessIdSchema.parse("installed-update-deadline-test");
+      const driver = catalogDriver(driverKind);
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const descriptor = {
+        latestVersion: "2.0.0",
+        scope: "all" as const,
+        update: "available" as const,
+        version: "1.0.0",
+      };
+      vi.spyOn(registry, "driverInstallation")
+        .mockResolvedValueOnce({
+          descriptor,
+          plan: {
+            args: [
+              "-e",
+              scenario === "running"
+                ? "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30);"
+                : `
+                  const { spawn } = require('node:child_process');
+                  const { writeFileSync } = require('node:fs');
+                  writeFileSync(process.argv[2], String(process.pid));
+                  spawn(process.execPath, ['-e', ${JSON.stringify("process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30);")}, process.argv[1]], { stdio: 'inherit' }).unref();
+                  process.exit(0);
+                `,
+              pidFile,
+              parentPidFile,
+            ],
+            environment: {},
+            executable: process.execPath,
+            serializationKey: "test:update-deadline",
+          },
+        })
+        .mockResolvedValue({
+          descriptor,
+          plan: {
+            args: ["-e", ""],
+            environment: {},
+            executable: process.execPath,
+            serializationKey: "test:update-deadline",
+          },
+        });
+      const invalidateDriver = vi.spyOn(registry, "invalidateDriver");
+      const environmentId = createId("environment");
+      const runtime = configuredRuntime({ environmentId, registry });
+      const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+      const statuses = () =>
+        messages.flatMap((message) =>
+          message.type === "runner.harness-installation" ? [message.installation] : [],
+        );
+      let updaterPid: number | undefined;
+      let updaterEnded = false;
+
+      try {
+        vi.stubEnv(processSupervisorExecutableVariable, undefined);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await expect(
+          runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+        ).resolves.toEqual({ status: "accepted" });
+        updaterPid = await vi.waitFor(
+          async () => {
+            const pid = Number(await readFile(pidFile, "utf8"));
+            if (!Number.isInteger(pid) || pid <= 0) throw new Error("The updater never started");
+            return pid;
+          },
+          { timeout: 2_000 },
+        );
+
+        if (scenario !== "running") {
+          const parentPid = Number(await readFile(parentPidFile, "utf8"));
+          await vi.waitFor(
+            () =>
+              expect(() => process.kill(parentPid, 0), "The updater parent did not exit").toThrow(
+                expect.objectContaining({ code: "ESRCH" }),
+              ),
+            { timeout: 2_000 },
+          );
+        }
+        expect(() => process.kill(updaterPid!, 0)).not.toThrow();
+        expect(statuses().map(({ update }) => update)).toEqual(["updating"]);
+        await expect(
+          runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+        ).resolves.toMatchObject({ error: { code: "conflict" }, status: "rejected" });
+
+        if (scenario === "successful") await vi.advanceTimersByTimeAsync(1_000);
+        else vi.advanceTimersByTime(15 * 60_000);
+        await vi.waitFor(
+          () =>
+            expect(statuses(), "The updater did not publish its terminal status").toContainEqual(
+              expect.objectContaining(
+                scenario === "successful"
+                  ? { detail: "Update finished.", update: "succeeded" }
+                  : {
+                      detail: "The update didn't finish in time.",
+                      update: "failed",
+                      version: "1.0.0",
+                    },
+              ),
+            ),
+          { timeout: 2_000 },
+        );
+        await vi.waitFor(
+          () =>
+            expect(
+              () => process.kill(updaterPid!, 0),
+              "The updater descendant survived cleanup",
+            ).toThrow(expect.objectContaining({ code: "ESRCH" })),
+          { timeout: 2_000 },
+        );
+        updaterEnded = true;
+        expect(invalidateDriver).toHaveBeenCalledWith(driverKind);
+        await vi.waitFor(
+          async () =>
+            expect(
+              await runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+              "The updater did not release engine maintenance",
+            ).toEqual({ status: "accepted" }),
+          { timeout: 2_000 },
+        );
+        vi.useRealTimers();
+        await vi.waitFor(
+          () =>
+            expect(
+              statuses().map(({ update }) => update),
+              "A new updater did not finish after maintenance was released",
+            ).toEqual([
+              "updating",
+              ...(scenario === "successful" ? ["succeeded", "available"] : ["failed"]),
+              "updating",
+              "succeeded",
+              "available",
+            ]),
+          { timeout: 2_000 },
+        );
+      } finally {
+        vi.useRealTimers();
+        if (updaterPid !== undefined && !updaterEnded) {
+          try {
+            process.kill(updaterPid, "SIGKILL");
+          } catch {
+            // Already ended by the Runner.
+          }
+        }
+        await runtime.close();
+        vi.unstubAllEnvs();
+        await rm(root, { force: true, recursive: true });
+      }
+    },
+  );
+
+  it("replays successful update status and catalog invalidation after reconnect", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-success-replay-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/test/engine",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const initial = {
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all" as const,
+        update: "available" as const,
+        version: "1.0.0",
+      },
+      plan: {
+        args: ["-e", ""],
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:success-replay",
+      },
+    };
+    const current = {
+      descriptor: { ...initial.descriptor, update: "current" as const, version: "2.0.0" },
+      plan: initial.plan,
+    };
+    vi.spyOn(registry, "driverInstallation")
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(current);
+    const invalidateDriver = vi.spyOn(registry, "invalidateDriver");
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const execute = executeCommand(environmentId, driverKind);
+    await reconcile(registry, execute);
+    const successAttempted = deferred<void>();
+    const disconnectedSink: RunnerMessageSink = {
+      send: async (message) => {
+        if (
+          message.type === "runner.harness-installation" &&
+          message.installation.update === "updating"
+        )
+          return;
+        if (
+          message.type === "runner.harness-installation" &&
+          message.installation.update === "succeeded"
+        )
+          successAttempted.resolve(undefined);
+        throw new Error("connection lost");
+      },
+    };
+    const reconnected: RunnerOperationalReport[] = [];
+
+    try {
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), disconnectedSink),
+      ).resolves.toEqual({ status: "accepted" });
+      await successAttempted.promise;
+      await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+      await runtime.connectionLost(disconnectedSink);
+      await runtime.attach(
+        { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
+        { send: async (message) => void reconnected.push(message) },
+      );
+      expect(invalidateDriver).toHaveBeenCalledWith(driverKind);
+      expect(reconnected).toContainEqual(
+        expect.objectContaining({
+          installation: expect.objectContaining({ update: "succeeded" }),
+          type: "runner.harness-installation",
+        }),
+      );
+      expect(reconnected).toContainEqual({
+        harnessInstanceId: execute.context.harnessInstanceId,
+        type: "runner.harness-catalog-invalidated",
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("publishes shared updating and terminal status for a supervised update", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-update-"));
+    const executable = join(root, "test-engine");
+    await writeFile(
+      executable,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "1.0.0"; exit 0; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const driverKind = HarnessIdSchema.parse("installed-update-status-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => executable,
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          native: { executableBasename: "test-engine", updateArgs: ["update"] },
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const updateId = createId("command");
+    try {
+      await expect(
+        runtime.handleCommand(
+          RunnerCommandSchema.parse({
+            commandId: updateId,
+            correlationId: CorrelationIdSchema.parse(updateId),
+            driverKind,
+            environmentId,
+            type: "harness.update",
+          }),
+          sink,
+        ),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() =>
+        messages.some(
+          (message) =>
+            message.type === "runner.harness-installation" &&
+            message.installation.update === "succeeded",
+        ),
+      );
+      expect(
+        messages.flatMap((message) =>
+          message.type === "runner.harness-installation" ? [message.installation.update] : [],
+        ),
+      ).toEqual(["updating", "succeeded", "unknown"]);
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      await waitUntil(
+        () =>
+          messages.filter(
+            (message) =>
+              message.type === "runner.harness-installation" &&
+              message.installation.update === "succeeded",
+          ).length === 2,
+      );
+    } finally {
+      await runtime.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("replaces a successful update status with a later installation inspection", async () => {
+    const driverKind = HarnessIdSchema.parse("installed-update-refresh-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      driver,
+      { status: "configured" },
+      {
+        create: () => driver,
+        locate: () => "/bin/true",
+        missing: "Engine missing",
+        scope: "all",
+        update: {
+          executableName: "Test engine",
+          minimumVersion: "1.0.0",
+          version: { args: ["--version"], pattern: /(\d+\.\d+\.\d+)/ },
+        },
+      },
+    );
+    const initial = {
+      descriptor: {
+        latestVersion: "2.0.0",
+        scope: "all" as const,
+        update: "available" as const,
+        version: "1.0.0",
+      },
+      plan: {
+        args: ["-e", ""] as const,
+        environment: {},
+        executable: process.execPath,
+        serializationKey: "test:update-refresh",
+      },
+    };
+    const current = {
+      descriptor: { ...initial.descriptor, update: "current" as const, version: "2.0.0" },
+      plan: initial.plan,
+    };
+    const newer = {
+      descriptor: {
+        ...current.descriptor,
+        latestVersion: "3.0.0",
+        update: "available" as const,
+      },
+      plan: initial.plan,
+    };
+    vi.spyOn(registry, "driverInstallation")
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(current)
+      .mockResolvedValue(newer);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const currentAdvertised = deferred<void>();
+    const newerAdvertised = deferred<void>();
+    const sink: RunnerMessageSink = {
+      send: async (message) => {
+        messages.push(message);
+        if (message.type !== "runner.harness-installation") return;
+        if (message.installation.update === "current") currentAdvertised.resolve(undefined);
+        if (message.installation.latestVersion === "3.0.0") newerAdvertised.resolve(undefined);
+      },
+    };
+
+    try {
+      await runtime.attach(
+        { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
+        sink,
+      );
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      await currentAdvertised.promise;
+      await runtime.harnessDrivers();
+      await newerAdvertised.promise;
+      await expect(runtime.harnessDrivers()).resolves.toMatchObject([
+        {
+          driverKind,
+          installation: { latestVersion: "3.0.0", update: "available" },
+        },
+      ]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("gives an ambient and an isolated Run of one driver the same store identity", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-run-provider-state-"));
     const stateRoot = join(temporaryRoot, "private");
@@ -1496,6 +2658,91 @@ describe("RunnerRuntime", () => {
       await vi.waitFor(() => expect(starts).toBe(4));
     } finally {
       vi.useRealTimers();
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("returns immediately while sign-in cancellation is in progress and retries after it fails", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-retry-"));
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("authentication-cancel-retry-test");
+    let authenticationProcess: ReturnType<typeof spawn> | undefined;
+    let rejectFirstCancel!: () => void;
+    const firstCancelMayFail = new Promise<void>((_, reject) => {
+      rejectFirstCancel = () => reject(new Error("provider cancellation failed"));
+    });
+    const cancel = vi.fn(async () => {
+      if (cancel.mock.calls.length === 1) return await firstCancelMayFail;
+      const child = authenticationProcess;
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill();
+      await once(child, "exit");
+    });
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
+          stdio: "ignore",
+        });
+        authenticationProcess = child;
+        await once(child, "spawn");
+        return {
+          cancel,
+          challenge: {
+            kind: "device-code",
+            userCode: "OPEN-STEER",
+            verificationUrl: "https://example.test/device",
+          },
+          result: once(child, "exit").then(
+            () => ({ detail: "Sign-in stopped", status: "failed" }) as const,
+          ),
+          status: "pending",
+        };
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      privateStateDirectory: join(temporaryRoot, "private"),
+      registry,
+    });
+    const harness = harnessDefinition(driverKind, "Cancellation retry", 1);
+    const cancellation = {
+      action: "cancel" as const,
+      driverKind,
+      harnessInstanceId: harness.id,
+    };
+
+    try {
+      await runtime.handleHarnessAuthentication({
+        action: "start",
+        harness,
+        methodId: "device-code",
+      });
+      await vi.waitFor(() => expect(authenticationProcess?.pid).toBeTypeOf("number"));
+
+      const first = runtime.handleHarnessAuthentication(cancellation);
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+      await expect(runtime.handleHarnessAuthentication(cancellation)).rejects.toMatchObject({
+        code: "conflict",
+        message: "Opensteer is still stopping the sign-in; try again",
+        retryable: true,
+      });
+
+      rejectFirstCancel();
+      await expect(first).rejects.toThrow("provider cancellation failed");
+      await expect(runtime.handleHarnessAuthentication(cancellation)).resolves.toMatchObject({
+        state: { status: "not-started" },
+      });
+      expect(cancel).toHaveBeenCalledTimes(2);
+      expect(authenticationProcess?.exitCode ?? authenticationProcess?.signalCode).not.toBeNull();
+    } finally {
+      rejectFirstCancel();
+      const child = authenticationProcess;
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, "exit");
+      }
       await runtime.close();
       await rm(temporaryRoot, { force: true, recursive: true });
     }
@@ -4413,6 +5660,20 @@ function isolatedExecuteCommand(
   }) as Extract<RunnerCommand, { readonly type: "run.execute" }>;
 }
 
+function updateCommand(
+  environmentId: RunnerCommand["environmentId"],
+  driverKind: ReturnType<typeof HarnessIdSchema.parse>,
+): Extract<RunnerCommand, { readonly type: "harness.update" }> {
+  const commandId = createId("command");
+  return RunnerCommandSchema.parse({
+    commandId,
+    correlationId: CorrelationIdSchema.parse(commandId),
+    driverKind,
+    environmentId,
+    type: "harness.update",
+  }) as Extract<RunnerCommand, { readonly type: "harness.update" }>;
+}
+
 function resumedExecuteCommand(
   command: Extract<RunnerCommand, { readonly type: "run.execute" }>,
   providerSessionReference: string,
@@ -4645,6 +5906,6 @@ function deferred<Value>(): {
 }
 import { mkdtempSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

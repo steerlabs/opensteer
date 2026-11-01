@@ -1247,6 +1247,25 @@ describe("HttpHostClient authentication and onboarding", () => {
         { environmentId: localEnvironmentId, harnessInstanceId: codexHarnessId, modelSelection },
       ],
     });
+
+    bodies.length = 0;
+    await client.createHome({
+      accessMode: "full-access",
+      environmentId: localEnvironmentId,
+      harnessInstanceId: codexHarnessId,
+      modelSelection,
+      workspaceId: workspace.id,
+    });
+    expect(bodies).toEqual([
+      expect.objectContaining({ home: true, type: "thread.create" }),
+      expect.not.objectContaining({
+        selection: expect.anything(),
+      }),
+    ]);
+    expect(bodies[1]).toMatchObject({
+      accessMode: "full-access",
+      type: "execution.preferences.remember",
+    });
     client.dispose();
   });
 
@@ -1390,6 +1409,73 @@ describe("HttpHostClient authentication and onboarding", () => {
       modelSelection: thread.modelSelection,
     });
     expect(client.getSnapshot().executionPreferences.history).toHaveLength(1);
+    client.dispose();
+  });
+
+  it("keeps Chat model changes out of the task execution history", async () => {
+    const workspace = makeWorkspace("Chat history isolation");
+    const home = makeThread(workspace.id);
+    const task = makeThread(workspace.id);
+    workspace.homeThreadId = home.id;
+    const otherHarnessId = createId("harnessInstance");
+    const bodies: Array<Record<string, unknown>> = [];
+    const sockets: FakeSocket[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+        threadId?: string;
+        selection?: ExecutionSelection;
+      };
+      bodies.push(body);
+      if (body.type === "execution.preferences.remember") {
+        return json({
+          preferences: { accessMode: "auto", history: body.selection ? [body.selection] : [] },
+        });
+      }
+      return json({
+        thread: {
+          ...(body.threadId === home.id ? home : task),
+          harnessInstanceId: otherHarnessId,
+        },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    await client.load();
+    sockets[0]!.open();
+    sockets[0]!.receive({
+      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [home, task] },
+      type: "host.snapshot",
+    });
+    await client.updateThreadExecution(home.id, {
+      harnessInstanceId: otherHarnessId,
+      modelSelection: home.modelSelection,
+    });
+    expect(bodies.map(({ type }) => type)).toEqual(["thread.execution.update"]);
+    expect(client.getSnapshot().executionPreferences.history).toEqual([]);
+
+    await client.updateThreadExecution(task.id, {
+      harnessInstanceId: otherHarnessId,
+      modelSelection: task.modelSelection,
+    });
+    expect(bodies.map(({ type }) => type)).toEqual([
+      "thread.execution.update",
+      "thread.execution.update",
+      "execution.preferences.remember",
+    ]);
+    expect(client.getSnapshot().executionPreferences.history[0]).toMatchObject({
+      environmentId: task.environmentId,
+      harnessInstanceId: otherHarnessId,
+    });
     client.dispose();
   });
 

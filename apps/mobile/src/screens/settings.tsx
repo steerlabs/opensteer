@@ -1,6 +1,8 @@
 import Constants from "expo-constants";
 import { useNavigation } from "@react-navigation/native";
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import { harnessDriverLabel } from "@opensteer/core";
+import { mutationIdempotencyKey } from "@opensteer/client/host";
 import {
   useCallback,
   useMemo,
@@ -24,6 +26,7 @@ import {
   accountSettingsModel,
   computersSettingsRows,
   deploymentSettingsModel,
+  engineInstallationUpdateModel,
   notificationSettingsModel,
   passwordsSettingsModel,
   signOutAccountInOrder,
@@ -46,6 +49,11 @@ export function SettingsScreen(): ReactNode {
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const [notificationWorking, setNotificationWorking] = useState(false);
   const [passwordsShown, setPasswordsShown] = useState(false);
+  const [engineUpdatePending, setEngineUpdatePending] = useState<string | null>(null);
+  const [engineUpdateError, setEngineUpdateError] = useState<{
+    detail: string;
+    key: string;
+  } | null>(null);
   const accountInFlight = useRef(false);
   const notificationInFlight = useRef(false);
 
@@ -135,6 +143,22 @@ export function SettingsScreen(): ReactNode {
   );
   const deploymentModel = deploymentSettingsModel(selectedRow);
   const notificationModel = notificationSettingsModel(registrationState, notificationWorking);
+  const engineUpdates = useMemo(() => {
+    if (snapshot === null) return [];
+    return snapshot.engineInstallations.map(({ driverKind, environmentId, installation }) => {
+      const key = `${environmentId}:${driverKind}`;
+      const model = engineInstallationUpdateModel(installation, key === engineUpdatePending);
+      return {
+        detail: engineUpdateError?.key === key ? engineUpdateError.detail : model.detail,
+        driverKind,
+        environmentId,
+        key,
+        name: harnessDriverLabel(driverKind),
+        updateEnabled: snapshot.harnessUpdateAvailable && model.updateEnabled,
+        updating: model.updating,
+      };
+    });
+  }, [engineUpdateError, engineUpdatePending, snapshot]);
 
   const runAccount = useCallback((operation: () => Promise<void>, fallback: string) => {
     if (accountInFlight.current) return;
@@ -235,6 +259,7 @@ export function SettingsScreen(): ReactNode {
         agents={agents}
         computers={computers}
         deployment={deploymentModel}
+        engineUpdates={engineUpdates}
         notificationError={notificationError}
         notifications={notificationModel}
         onAccountAction={onAccountAction}
@@ -262,6 +287,28 @@ export function SettingsScreen(): ReactNode {
           });
         }}
         onDeploymentAction={() => navigation.navigate("DeploymentSwitcher")}
+        onEngineUpdate={(environmentId, driverKind) => {
+          const hostClient = selection.hostClient;
+          if (!hostClient || engineUpdatePending) return;
+          const key = `${environmentId}:${driverKind}`;
+          setEngineUpdatePending(key);
+          setEngineUpdateError(null);
+          void hostClient
+            .dispatch({
+              driverKind,
+              environmentId,
+              idempotencyKey: mutationIdempotencyKey(`harness-update:${key}`),
+              type: "harness.update",
+            })
+            .then(() => hostClient.refresh())
+            .catch((error: unknown) =>
+              setEngineUpdateError({
+                detail: operationDetail(error, "Update failed. Try again."),
+                key: `${environmentId}:${driverKind}`,
+              }),
+            )
+            .finally(() => setEngineUpdatePending(null));
+        }}
         onNotificationAction={onNotificationAction}
         onPasswordsAction={() => setPasswordsShown(true)}
         onPreferenceChange={onPreferenceChange}
@@ -291,8 +338,19 @@ export function SettingsScreen(): ReactNode {
 }
 
 /** What Settings shows of the open Deployment's Host. */
+/** One engine's installation on one computer, as its Update row needs it. */
+interface EngineInstallationRow {
+  readonly driverKind: string;
+  readonly environmentId: string;
+  readonly installation: NonNullable<
+    HostSnapshot["environments"][number]["harnessDrivers"][number]["installation"]
+  >;
+}
+
 interface SettingsHost {
   readonly deploymentShape: HostSnapshot["deploymentShape"];
+  readonly engineInstallations: readonly EngineInstallationRow[];
+  readonly harnessUpdateAvailable: boolean;
   readonly hostConnected: boolean;
   readonly identityConfig: HostSnapshot["identityConfig"];
   readonly iphoneAppsAvailable: boolean;
@@ -316,8 +374,31 @@ function useSettingsHost(hostClient: HostClient | null): SettingsHost | null {
   const read = useCallback((): SettingsHost | null => {
     if (hostClient === null) return null;
     const snapshot = hostClient.getSnapshot();
+    const previous = cached.current;
+    const installations = snapshot.environments.flatMap((environment) =>
+      environment.harnessDrivers.flatMap((driver) =>
+        driver.installation
+          ? [
+              {
+                driverKind: driver.driverKind,
+                environmentId: environment.id,
+                installation: driver.installation,
+              },
+            ]
+          : [],
+      ),
+    );
+    // Environments change on every catalog refresh; keep the rows' identity
+    // while nothing an Update row shows has moved.
+    const engineInstallations =
+      previous !== null &&
+      JSON.stringify(previous.engineInstallations) === JSON.stringify(installations)
+        ? previous.engineInstallations
+        : installations;
     const next: SettingsHost = {
       deploymentShape: snapshot.deploymentShape,
+      engineInstallations,
+      harnessUpdateAvailable: snapshot.harnessUpdateAvailable === true,
       hostConnected: canRespondToRequests(snapshot),
       identityConfig: snapshot.identityConfig,
       iphoneAppsAvailable: snapshot.iphoneAppsAvailable,
@@ -326,7 +407,6 @@ function useSettingsHost(hostClient: HostClient | null): SettingsHost | null {
       notificationMutes: snapshot.notificationMutes,
       workspaces: snapshot.workspaces,
     };
-    const previous = cached.current;
     if (
       previous !== null &&
       (Object.keys(next) as (keyof SettingsHost)[]).every((key) => previous[key] === next[key])

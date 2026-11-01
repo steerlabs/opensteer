@@ -92,7 +92,10 @@ describe("real-engine computer use", () => {
         harnessInstance: { config: {}, driverKind: engine, sourceId, stateKind: "ambient" },
         harnesses: createHarnessRegistry(
           parseAgentExecutionConfig(process.env).harnessExecutables,
-          { nodeExecutable: process.execPath },
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: path.join(tmpdir(), "opensteer-test-runtime-cache"),
+          },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         personal: {
