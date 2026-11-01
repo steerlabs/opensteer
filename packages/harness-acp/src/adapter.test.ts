@@ -176,10 +176,14 @@ describe("ACP lifecycle", () => {
     const fixture = await setup("usage-process-exit");
     const session = await fixture.adapter.startSession(fixture.context);
     const observed = observe(session.events);
+    const processFailed = expect(observed.done).rejects.toMatchObject({
+      code: "harness_error",
+      message: expect.stringContaining("ACP process exited"),
+    });
     await session.execute(fixture.turn("lose process"));
     await expectTerminal(observed.events, "run.failed");
     expectUsageBeforeTerminal(observed.events, "run.failed");
-    await observed.done.catch(() => undefined);
+    await processFailed;
     await session.stop();
     await fixture.adapter.close();
   });

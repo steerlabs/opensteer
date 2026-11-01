@@ -325,6 +325,7 @@ const harnessAuthenticationLifetimeMs = 15 * 60_000;
  * install midway can leave the engine broken.
  */
 const engineUpdateDeadlineMs = 15 * 60_000;
+const engineUpdateOutputGraceMs = 1_000;
 const requestCancellationReserveBytes = 2_048;
 const toolDeltaOmissionMarker = "\n… additional live output omitted; final tool output follows …\n";
 const toolDeltaContentMaxBytes = toolOutputTextMaxBytes - utf8ByteLength(toolDeltaOmissionMarker);
@@ -1457,26 +1458,48 @@ export class RunnerRuntime {
           maxOutputBytes: 16 * 1_024,
           signal: this.#installationLifetime.signal,
         });
-        let expired: Promise<void> | undefined;
-        const deadline = setTimeout(() => {
-          expired = child.terminate().catch(() => undefined);
-        }, engineUpdateDeadlineMs);
-        const stdout = collectProcessOutput(child.stdout);
-        const stderr = collectProcessOutput(child.stderr);
-        let exit: Awaited<typeof child.exited>;
+        let expired = false;
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        let outputGrace: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<undefined>((resolve) => {
+          deadline = setTimeout(() => {
+            expired = true;
+            resolve(undefined);
+          }, engineUpdateDeadlineMs);
+        });
+        const output = Promise.all([
+          collectProcessOutput(child.stdout),
+          collectProcessOutput(child.stderr),
+        ]);
+        void output.catch(() => undefined);
         try {
-          exit = await child.exited;
-          await stdout;
-          await stderr;
+          const exit = await Promise.race([child.exited, timedOut]);
+          if (exit) {
+            await Promise.race([
+              output,
+              timedOut,
+              new Promise<void>((resolve) => {
+                outputGrace = setTimeout(resolve, engineUpdateOutputGraceMs);
+              }),
+            ]);
+          }
+          if (expired || !exit) throw new Error("The update didn't finish in time.");
+          if (exit.code !== 0) {
+            throw new Error(`Updater exited with code ${exit.code ?? "unknown"}`);
+          }
         } finally {
           clearTimeout(deadline);
-        }
-        if (expired) {
-          await expired;
-          throw new Error("The update didn't finish in time.");
-        }
-        if (exit.code !== 0) {
-          throw new Error(`Updater exited with code ${exit.code ?? "unknown"}`);
+          clearTimeout(outputGrace);
+          try {
+            await child.terminate(0).catch((error: unknown) => {
+              if (!expired) throw error;
+            });
+          } finally {
+            // An orphan can keep inherited pipes open even after its parent exits.
+            child.child.stdout.destroy();
+            child.child.stderr.destroy();
+            await output.catch(() => undefined);
+          }
         }
       });
       this.#installationQueues.set(
