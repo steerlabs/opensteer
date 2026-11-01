@@ -16,6 +16,8 @@ pnpm test:engines -- -t 'shipped Codex'
 
 Replace `Codex` with the suite's engine label. Also run the `installed <label>` selection for engines declaring an installed runtime. Use dedicated spending-limited OPENAI_API_KEY/ANTHROPIC_API_KEY credentials or existing machine sign-ins; shipped qualification puts shipped bytes first on PATH. Missing sign-in or quota blocks qualification. Inspect emitted JSON artifacts under OPENSTEER_ENGINE_E2E_OUTPUT or the printed directory. Do not call skipped qualification passed.
 
+Antigravity is downloaded rather than shipped or found on `PATH`. A pin bump must update and re-verify every platform's archive size, SHA-256 and complete member manifest in its driver, then run the `downloaded Antigravity` qualification against a temporary Runner runtime cache.
+
 For a new model, first check the account's real engine catalog. Update its engine when required; never hardcode a model the engine cannot describe. Check native ID routing, context/output limits and options in affected driver tests. Review protocol and sandbox changes, including Codex's approved feature list. Reconnect the Runner to refresh accounts after release.
 
 For a running local oMLX server, qualify a model that fits that computer:
