@@ -196,7 +196,7 @@ vi.mock("../ui/screen.js", () => ({
 }));
 import { SpecialistScreen } from "../screens/specialist.js";
 import { NewSpecialistScreen } from "../screens/new-specialist.js";
-import { TaskRowView } from "./task-row.js";
+import { TaskRowState, TaskRowView } from "./task-row.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { SpecialistMarkPicker } from "../ui/mark-picker.js";
 import { IconChoices } from "../ui/mark-choices.js";
@@ -273,6 +273,13 @@ it("keeps subject, state, unread, time, quiet styling and long-press actions ind
     );
     expect(view.querySelector("[data-spinner]") !== null).toBe(tone === "working");
   }
+  // A seen, finished task with no time to show keeps no state column beside its title.
+  const state = (unread: boolean) =>
+    render(
+      <TaskRowState row={{ ...original, tone: "finished", unread }} shelf="open" time={null} />,
+    ).childElementCount;
+  expect(state(false)).toBe(0);
+  expect(state(true)).toBe(1);
   // The mark reads quietly once settled and seen or put in Done, as on the
   // web; needing someone or having failed stays loud even in Done.
   const markQuiet = () =>

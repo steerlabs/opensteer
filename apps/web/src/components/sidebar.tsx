@@ -1220,12 +1220,7 @@ const TabRowItem = memo(function TabRowItem({
         placeTitle={place.title}
         size={16}
       />
-      {place.closable ? (
-        <CloseTabButton fallback={fallbackRef} place={place} />
-      ) : (
-        // Every row keeps the close column, so the marks stand in one column.
-        <span aria-hidden className="side-tab__close-slot" />
-      )}
+      {place.closable ? <CloseTabButton fallback={fallbackRef} place={place} /> : null}
       {menuAt && mainRef.current ? (
         browserTab ? (
           <TabMenu

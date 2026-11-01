@@ -141,31 +141,39 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   );
 }, sameTaskRowProps);
 
-/** State retains its own words and slot; unread is never used as task identity. */
+/**
+ * State in its own words; unread is never used as task identity. A task with
+ * nothing to say draws nothing, so its title keeps the row's width.
+ */
 export function TaskRowState(props: Pick<TaskRowProps, "row" | "shelf" | "time">): ReactNode {
   const { row, shelf, time } = props;
   const reducedMotion = useReducedMotion();
+  const tone =
+    row.tone === "needs-you" ? (
+      <NeedsYouTag />
+    ) : row.tone === "working" ? (
+      reducedMotion ? (
+        <Symbol name="circle.dotted" size={16} tint={color.ember} />
+      ) : (
+        <ActivityIndicator color={color.ember} size="small" style={styles.spinner} />
+      )
+    ) : row.tone === "failed" ? (
+      <AppText role="caption" tone="danger">
+        Couldn't finish
+      </AppText>
+    ) : row.tone === "waiting" ? (
+      <AppText role="caption" tone="muted">
+        Waiting
+      </AppText>
+    ) : null;
+  const when =
+    time !== null && (row.tone === "finished" || shelf === "done") ? <Time text={time} /> : null;
+  if (tone === null && !row.unread && when === null) return null;
   return (
     <View style={styles.state}>
-      {row.tone === "needs-you" ? (
-        <NeedsYouTag />
-      ) : row.tone === "working" ? (
-        reducedMotion ? (
-          <Symbol name="circle.dotted" size={16} tint={color.ember} />
-        ) : (
-          <ActivityIndicator color={color.ember} size="small" style={styles.spinner} />
-        )
-      ) : row.tone === "failed" ? (
-        <AppText role="caption" tone="danger">
-          Couldn't finish
-        </AppText>
-      ) : row.tone === "waiting" ? (
-        <AppText role="caption" tone="muted">
-          Waiting
-        </AppText>
-      ) : null}
+      {tone}
       {row.unread ? <UnreadDot /> : null}
-      {time !== null && (row.tone === "finished" || shelf === "done") ? <Time text={time} /> : null}
+      {when}
     </View>
   );
 }

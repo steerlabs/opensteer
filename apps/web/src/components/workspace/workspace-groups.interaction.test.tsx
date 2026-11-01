@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
 import { act } from "react";
 
 import { describe, expect, it, vi, type MockInstance } from "vitest";
@@ -513,6 +514,21 @@ describe("personal browser tab groups", () => {
 });
 
 describe("task marks", () => {
+  it("leaves no trailing state column on a finished, read task and fades task text", async () => {
+    await mount("/");
+    const style = document.createElement("style");
+    style.textContent = ["tokens", "workspace"]
+      .map((name) => readFileSync(`apps/web/src/styles/${name}.css`, "utf8"))
+      .join("\n");
+    document.body.append(style);
+    const state = element(".side-task--finished .task-state:empty");
+    expect(getComputedStyle(state).display).toBe("none");
+    for (const text of document.querySelectorAll(".side-task__title, .side-task__ask")) {
+      expect(getComputedStyle(text).textOverflow).not.toBe("ellipsis");
+      expect(getComputedStyle(text).maskImage).toContain("linear-gradient");
+    }
+  });
+
   const flights = "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912";
   const travel = "wsp_00000000-0000-4000-8000-000000000800";
   async function press(target: Element, key: string) {
