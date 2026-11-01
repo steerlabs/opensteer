@@ -1,3 +1,4 @@
+import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
@@ -3225,6 +3226,7 @@ function mockThread(thread: ThreadSummary): Thread {
     accessMode: thread.accessMode,
     capabilityProfileId: "workspace",
     continuationIdentity: thread.continuationIdentity,
+    askedAt: thread.askedAt,
     createdAt: thread.createdAt,
     createdBy: mockUserId,
     environmentId: thread.environmentId,
@@ -4752,6 +4754,7 @@ class MockHostState {
                   {
                     ...thread,
                     ...result.thread,
+                    askedAt: result.thread.askedAt ?? result.thread.createdAt,
                     icon: result.thread.icon ?? null,
                     color: result.thread.color ?? null,
                   },
@@ -5729,6 +5732,12 @@ class MockHostState {
     });
     const active = this.activeRuns.get(threadId);
     if (active?.id === expectedRunId) active.steered.push(item.body);
+    this.snapshot = {
+      ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === threadId ? { ...thread, askedAt: this.now().toISOString() } : thread,
+      ),
+    };
     this.update(
       this.withInputQueue(
         {
@@ -8667,6 +8676,7 @@ class MockHostState {
       accessMode,
       continuationIdentity: null,
       providerSessionId: createId("providerSession"),
+      askedAt: timestamp,
       createdAt: timestamp,
       environmentId: placement.environmentId,
       harnessInstanceId: placement.harnessInstanceId,
@@ -8956,7 +8966,7 @@ class MockHostState {
           {
             ...this.snapshot,
             threads: this.snapshot.threads.map((item) =>
-              item.id === thread.id ? { ...item, updatedAt: timestamp } : item,
+              item.id === thread.id ? { ...item, askedAt: timestamp, updatedAt: timestamp } : item,
             ),
             transcripts: {
               ...this.snapshot.transcripts,
@@ -8979,7 +8989,7 @@ class MockHostState {
         pending,
       ]);
     }
-    const updated: ThreadSummary = { ...thread, updatedAt: timestamp };
+    const updated: ThreadSummary = { ...thread, askedAt: timestamp, updatedAt: timestamp };
     this.update(
       this.withInputQueue(
         {
@@ -9192,6 +9202,7 @@ class MockHostState {
     );
     const worker: ThreadSummary = {
       ...parent,
+      askedAt: createdAt,
       createdAt,
       id: this.nextId("thread"),
       inputQueuePaused: false,
@@ -10693,11 +10704,7 @@ class MockHostState {
     if (!this.snapshot.user) return null;
     const entries = this.snapshot.threads
       .filter((thread) => thread.listed && thread.status !== "archived")
-      .sort((left, right) =>
-        left.updatedAt === right.updatedAt
-          ? right.id.localeCompare(left.id)
-          : right.updatedAt.localeCompare(left.updatedAt),
-      )
+      .sort(compareTaskOrder)
       .map((thread): TaskEntry => {
         const transcript = this.snapshot.transcripts[thread.id] ?? [];
         const reply = transcript.findLast(
@@ -11081,12 +11088,13 @@ function withoutInitialHome(snapshot: HostSnapshot): HostSnapshot {
 }
 
 function withMockThreadMarks(
-  threads: readonly (Omit<ThreadSummary, "icon" | "color" | "doneAt"> & {
+  threads: readonly (Omit<ThreadSummary, "icon" | "color" | "doneAt" | "askedAt"> & {
     readonly doneAt?: string | null;
   })[],
 ): ThreadSummary[] {
   return threads.map((thread, index) => ({
     ...thread,
+    askedAt: thread.createdAt,
     doneAt: thread.doneAt ?? null,
     icon: thread.role === "conversation" ? null : mockGeneratedTaskIcon(thread.title),
     color: markColorAllocationOrder[index % markColorAllocationOrder.length]!,

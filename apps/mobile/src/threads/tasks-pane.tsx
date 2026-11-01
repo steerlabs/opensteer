@@ -1,3 +1,5 @@
+import Animated from "react-native-reanimated";
+import { move } from "../ui/motion.js";
 import {
   canRespondToRequests,
   describeHostConnection,
@@ -15,7 +17,6 @@ import { useHostSnapshot } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
   ActivityIndicator,
-  FlatList,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -251,7 +252,8 @@ export function TasksPane(props: {
   );
 
   return (
-    <FlatList
+    <Animated.FlatList
+      itemLayoutAnimation={move}
       // Rows carry their own inset, so the list's gutter is where their mark
       // column begins rather than where their words do.
       contentContainerStyle={[

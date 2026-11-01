@@ -3295,6 +3295,7 @@ describe("HttpHostClient durable realtime", () => {
     const current = client.getSnapshot().threads.find(({ id }) => id === thread.id);
     expect(current?.status).toBe("idle");
     expect(current?.accessMode).toBe("full-access");
+    expect(current?.askedAt).toBe(thread.createdAt);
     client.dispose();
   });
 

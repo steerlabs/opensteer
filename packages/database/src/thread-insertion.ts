@@ -17,7 +17,7 @@ type ThreadParents = {
 };
 type ThreadValues = Omit<
   InsertObject<DatabaseSchema, "threads">,
-  keyof ThreadParents | "titleSource" | "color"
+  keyof ThreadParents | "titleSource" | "color" | "createdAt" | "askedAt"
 > & {
   readonly titleSource: ThreadTitleSource;
 };
@@ -69,9 +69,16 @@ export async function prepareThreadInsertion(
       .orderBy("id", "desc")
       .limit(6)
       .execute();
+    const createdAt = new Date();
     return transaction
       .insertInto("threads")
-      .values({ ...values, ...parents, color: nextMarkColor(recent.map((row) => row.color)) })
+      .values({
+        ...values,
+        ...parents,
+        createdAt,
+        askedAt: createdAt,
+        color: nextMarkColor(recent.map((row) => row.color)),
+      })
       .returningAll()
       .executeTakeFirstOrThrow();
   };

@@ -441,6 +441,7 @@ vi.mock("../ui/motion.js", () => ({
   duration: { enter: 0, exit: 0 },
   enter: undefined,
   exit: undefined,
+  move: undefined,
 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: (props: Children) => <main>{props.children}</main>,

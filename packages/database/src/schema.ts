@@ -771,6 +771,7 @@ interface SecurityEffectTable {
 }
 
 export interface ThreadTable {
+  askedAt: Timestamp;
   doneAt: Generated<Date | null>;
   pendingRequestCount: Generated<number>;
   projectedInputQueuePaused: Generated<boolean>;

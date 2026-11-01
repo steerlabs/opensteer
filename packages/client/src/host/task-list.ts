@@ -8,7 +8,7 @@ import {
 } from "@opensteer/core";
 import type { HostSnapshot, TaskEntry, TaskListState, ThreadSummary } from "./client.js";
 import { threadStartHold } from "./thread-activity.js";
-import { mergeTaskEntries } from "./task-entries.js";
+import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 import { isThreadUnread } from "./thread-read-state.js";
@@ -58,20 +58,18 @@ export interface TaskRow {
   readonly stopped: boolean;
   readonly done: boolean;
   readonly canBeDone: boolean;
-  readonly createdAt: string;
-  readonly updatedAt: string;
+  readonly askedAt: string;
 }
 
 export interface WorkspaceTaskList {
   /**
    * Work under way: tasks waiting on the reader first, then the ones working
-   * or waiting on someone else, each newest first. A row moves only when what
-   * it is doing changes.
+   * or waiting on someone else, each newest asked first.
    */
   readonly working: readonly TaskRow[];
-  /** Stopped open tasks and unread Done tasks, most recently changed first. */
+  /** Stopped tasks and unread or currently open Done tasks, newest asked first. */
   readonly ready: readonly TaskRow[];
-  /** Shared Done tasks the reader has seen, most recently changed first. */
+  /** Shared Done tasks the reader has seen and closed, newest asked first. */
   readonly done: readonly TaskRow[];
   /** How many tasks are working right now. */
   readonly running: number;
@@ -115,9 +113,20 @@ export function sameTaskListSource(previous: TaskListSource, next: TaskListSourc
   return taskListSourceKeys.every((key) => previous[key] === next[key]);
 }
 
+export interface TaskListOptions {
+  /** The task this screen shows. */
+  readonly openThreadId?: string | null | undefined;
+  /**
+   * The list this screen last drew. An unread Done task waits in Ready, and
+   * reading it would move it to Done under the reader who just opened it, so
+   * while it is open it stays where that list showed it.
+   */
+  readonly previous?: Pick<WorkspaceTaskList, "ready"> | null | undefined;
+}
+
 /** The reader's tasks across every Workspace, with their Chat apart. */
-export function taskList(snapshot: TaskListSource): TaskList {
-  return arrange(snapshot, snapshot.tasks, snapshot.activeTasks);
+export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
+  return arrange(snapshot, snapshot.tasks, snapshot.activeTasks, options);
 }
 
 /**
@@ -127,11 +136,13 @@ export function taskList(snapshot: TaskListSource): TaskList {
 export function workspaceTaskList(
   snapshot: TaskListSource,
   workspaceId: string,
+  options: TaskListOptions = {},
 ): WorkspaceTaskList {
   const { chat: _chat, ...list } = arrange(
     snapshot,
     snapshot.workspaceTasks[workspaceId] ?? null,
     snapshot.activeTasks.filter(({ thread }) => thread.workspaceId === workspaceId),
+    options,
   );
   return list;
 }
@@ -227,6 +238,7 @@ function arrange(
   snapshot: TaskListSource,
   tasks: TaskListState | null,
   activeTasks: readonly TaskEntry[],
+  options: TaskListOptions,
 ): TaskList {
   const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks).filter(
     ({ thread }) => thread.listed || thread.id === snapshot.homeThreadId,
@@ -236,18 +248,27 @@ function arrange(
   const working: TaskRow[] = [];
   const ready: TaskRow[] = [];
   const done: TaskRow[] = [];
+  const { openThreadId, previous } = options;
+  const holdOpen =
+    openThreadId != null &&
+    previous?.ready.some(({ threadId, done }) => done && threadId === openThreadId) === true;
   for (const entry of entries) {
     const row = rowOf(snapshot, entry, asks.get(entry.thread.id) ?? []);
     if (entry.thread.id === snapshot.homeThreadId) chat = row;
-    else if (row.done) (row.unread ? ready : done).push(row);
+    else if (row.done)
+      (row.unread || (holdOpen && row.threadId === openThreadId) ? ready : done).push(row);
     else if (row.stopped) ready.push(row);
     else working.push(row);
   }
   // `sort` mutates the fresh arrays above, which Hermes needs because it
   // lacks the change-by-copy array methods.
-  working.sort(attentionThenNewest);
-  ready.sort(latestChange);
-  done.sort(latestChange);
+  working.sort(
+    (left, right) =>
+      Number(right.tone === "needs-you") - Number(left.tone === "needs-you") ||
+      newestAsked(left, right),
+  );
+  ready.sort(newestAsked);
+  done.sort(newestAsked);
   return {
     chat,
     working,
@@ -258,15 +279,11 @@ function arrange(
   };
 }
 
-/** A question for the reader comes before everything else under way; new work arrives on top. */
-function attentionThenNewest(left: TaskRow, right: TaskRow): number {
-  const asks = Number(right.tone === "needs-you") - Number(left.tone === "needs-you");
-  return asks || right.createdAt.localeCompare(left.createdAt);
-}
-
-/** The most recently changed first, so the times a list shows read in order. */
-function latestChange(left: TaskRow, right: TaskRow): number {
-  return right.updatedAt.localeCompare(left.updatedAt);
+function newestAsked(left: TaskRow, right: TaskRow): number {
+  return compareTaskOrder(
+    { askedAt: left.askedAt, id: left.threadId },
+    { askedAt: right.askedAt, id: right.threadId },
+  );
 }
 
 /**
@@ -327,8 +344,7 @@ function rowOf(
       tone === "finished" ||
       tone === "failed" ||
       (tone === "waiting" && thread.inputQueuePaused && thread.status !== "waiting"),
-    createdAt: thread.createdAt,
-    updatedAt: thread.updatedAt,
+    askedAt: thread.askedAt,
   };
 }
 
@@ -391,12 +407,12 @@ function taskLine(
 }
 
 /**
- * How long ago a task finished or failed, as of `now`; a task still under way
+ * How long ago a person asked for work, as of `now`; a task still under way
  * shows no time. A list reads it as it draws rather than a row keeping it, so
  * a row that has not changed still ages.
  */
 export function taskTime(row: TaskRow, now: number): string | null {
-  return row.stopped ? formatRelativeTime(row.updatedAt, new Date(now)) : null;
+  return row.stopped ? formatRelativeTime(row.askedAt, new Date(now)) : null;
 }
 
 /**
@@ -449,8 +465,7 @@ export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
     left.stopped === right.stopped &&
     left.done === right.done &&
     left.canBeDone === right.canBeDone &&
-    left.createdAt === right.createdAt &&
-    left.updatedAt === right.updatedAt
+    left.askedAt === right.askedAt
   );
 }
 

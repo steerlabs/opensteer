@@ -130,6 +130,7 @@ const releasedMigrationNames = [
   "0120_notification_preview_keys",
   "0121_native_browser_profiles",
   "0122_thread_event_history",
+  "0123_thread_asked_at",
 ];
 
 describe("migration names", () => {

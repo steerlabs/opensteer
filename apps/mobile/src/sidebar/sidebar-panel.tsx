@@ -1,3 +1,5 @@
+import Animated from "react-native-reanimated";
+import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
@@ -107,13 +109,29 @@ interface SidebarModel {
   readonly taskWorkspaceId: string | null;
 }
 
-function sidebarModel(snapshot: HostSnapshot): SidebarModel {
+function sidebarModel(
+  snapshot: HostSnapshot,
+  openThreadId: string | null,
+  previous: Pick<TaskList, "ready"> | null,
+): SidebarModel {
   const main = mainWorkspace(snapshot);
   return {
-    list: taskList(snapshot),
+    list: taskList(snapshot, {
+      openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
+      previous,
+    }),
     loaded: snapshot.tasks !== null,
     taskWorkspaceId: main?.status === "ready" ? main.id : null,
   };
+}
+
+/**
+ * The shelves the sidebar last drew, kept by the shell: the drawer and the
+ * docked column are separate panels, and a closed one reads nothing, yet a task
+ * opened from one must keep its shelf in whichever shows next.
+ */
+export interface ShelfMemory {
+  list: Pick<TaskList, "ready"> | null;
 }
 
 /**
@@ -124,10 +142,16 @@ function sidebarModel(snapshot: HostSnapshot): SidebarModel {
  * changes, so a streamed token leaves the sidebar alone; each opening starts
  * afresh, including shared Done changes and this reader’s unread state.
  */
-function useSidebarModel(hostClient: HostClient | null): SidebarModel | null {
-  const cached = useRef<{ readonly model: SidebarModel; readonly snapshot: HostSnapshot } | null>(
-    null,
-  );
+function useSidebarModel(
+  hostClient: HostClient | null,
+  openThreadId: string | null,
+  shelves: ShelfMemory,
+): SidebarModel | null {
+  const cached = useRef<{
+    readonly model: SidebarModel;
+    readonly snapshot: HostSnapshot;
+    readonly openThreadId: string | null;
+  } | null>(null);
   const subscribe = useCallback(
     (listener: () => void) => hostClient?.subscribe(listener) ?? (() => undefined),
     [hostClient],
@@ -141,16 +165,18 @@ function useSidebarModel(hostClient: HostClient | null): SidebarModel | null {
     const current = cached.current;
     if (
       current !== null &&
+      current.openThreadId === openThreadId &&
       sameTaskListSource(current.snapshot, snapshot) &&
       current.snapshot.workspaces === snapshot.workspaces &&
       current.snapshot.homeWorkspaceId === snapshot.homeWorkspaceId
     ) {
       return current.model;
     }
-    const model = sidebarModel(snapshot);
-    cached.current = { model, snapshot };
+    const model = sidebarModel(snapshot, openThreadId, shelves.list);
+    cached.current = { model, snapshot, openThreadId };
+    shelves.list = model.list;
     return model;
-  }, [hostClient]);
+  }, [hostClient, openThreadId, shelves]);
   return useSyncExternalStore(subscribe, read, read);
 }
 
@@ -216,10 +242,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly docked: boolean;
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
+  readonly shelves: ShelfMemory;
   /** The tab, app or phone in front, marked as the one open. */
   readonly selectedPlace: WorkspaceSurfaceDestination | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
+  /** The task whose conversation is on screen; opening it never moves its row. */
+  readonly openThreadId: string | null;
   readonly visible: boolean;
 }): ReactNode {
   const insets = useContentInsets();
@@ -235,7 +264,11 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   // rebuild every row on every streamed update for a list nobody can see.
   // Opening reads the current snapshot in the same render that shows it.
   const savedTasks = useSavedSurface(visible ? deploymentId : null, "tasks");
-  const model = useSidebarModel(visible && savedTasks.source !== "saved" ? hostClient : null);
+  const model = useSidebarModel(
+    visible && savedTasks.source !== "saved" ? hostClient : null,
+    props.openThreadId,
+    props.shelves,
+  );
   const switcher = useSwitcherModel(deploymentId);
   const [doneOpen, toggleDone] = useDoneShelf();
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -319,15 +352,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const now = Date.now();
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf) =>
     tasks.map((task) => (
-      <TaskRowView
-        key={task.threadId}
-        onOpen={openTask}
-        onSetDone={moveTask}
-        row={task}
-        selected={task.threadId === selectedRow.threadId}
-        shelf={shelf}
-        time={taskTime(task, now)}
-      />
+      <Animated.View key={task.threadId} layout={move}>
+        <TaskRowView
+          onOpen={openTask}
+          onSetDone={moveTask}
+          row={task}
+          selected={task.threadId === selectedRow.threadId}
+          shelf={shelf}
+          time={taskTime(task, now)}
+        />
+      </Animated.View>
     ));
 
   return (
@@ -434,58 +468,65 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             </AppText>
           </View>
         ) : (
-          <>
-            {model.list.working.length === 0 ? null : (
-              <>
-                <GroupHead count={model.list.working.length} title="Working" />
-                {taskRows(model.list.working, "open")}
-              </>
-            )}
-            {model.list.ready.length === 0 ? null : (
-              <>
-                <GroupHead title="Ready" />
-                {taskRows(model.list.ready, "open")}
-              </>
-            )}
-            {model.list.working.length === 0 && model.list.ready.length === 0 ? (
-              <AppText role="caption" style={styles.empty} tone="muted">
+          // One keyed run of rows across every shelf, so a task changing shelves
+          // keeps its view and slides to its new place instead of reappearing.
+          [
+            ...[
+              { rows: model.list.working, title: "Working" },
+              { rows: model.list.ready, title: "Ready" },
+            ].flatMap((group) =>
+              group.rows.length === 0
+                ? []
+                : [
+                    <GroupHead
+                      key={`group:${group.title}`}
+                      title={group.title}
+                      {...(group.title === "Working" ? { count: group.rows.length } : {})}
+                    />,
+                    ...taskRows(group.rows, "open"),
+                  ],
+            ),
+            model.list.working.length === 0 && model.list.ready.length === 0 ? (
+              <AppText key="caught-up" role="caption" style={styles.empty} tone="muted">
                 You’re all caught up.
               </AppText>
-            ) : null}
-          </>
-        )}
-
-        {model === null || model.list.done.length === 0 ? null : (
-          <>
-            <Pressable
-              accessibilityLabel={`Done, ${model.list.done.length} ${
-                model.list.done.length === 1 ? "task" : "tasks"
-              }`}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: doneOpen }}
-              onPress={toggleDone}
-              style={({ pressed }) => [styles.shelf, pressed && styles.pressed]}
-            >
-              <View style={styles.shelfMark}>
-                <Symbol
-                  name={doneOpen ? "chevron.down" : "chevron.right"}
-                  size={12}
-                  tint={color.muted}
-                />
-              </View>
-              <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondary" tone="muted">
-                Done
-              </AppText>
-              <AppText
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                role="caption"
-                style={styles.count}
+            ) : null,
+            model.list.done.length === 0 ? null : (
+              <Pressable
+                accessibilityLabel={`Done, ${model.list.done.length} ${
+                  model.list.done.length === 1 ? "task" : "tasks"
+                }`}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: doneOpen }}
+                key="done-shelf"
+                onPress={toggleDone}
+                style={({ pressed }) => [styles.shelf, pressed && styles.pressed]}
               >
-                {String(model.list.done.length)}
-              </AppText>
-            </Pressable>
-            {doneOpen ? taskRows(model.list.done, "done") : null}
-          </>
+                <View style={styles.shelfMark}>
+                  <Symbol
+                    name={doneOpen ? "chevron.down" : "chevron.right"}
+                    size={12}
+                    tint={color.muted}
+                  />
+                </View>
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  role="secondary"
+                  tone="muted"
+                >
+                  Done
+                </AppText>
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  role="caption"
+                  style={styles.count}
+                >
+                  {String(model.list.done.length)}
+                </AppText>
+              </Pressable>
+            ),
+            ...(doneOpen ? taskRows(model.list.done, "done") : []),
+          ]
         )}
 
         {model === null || !model.list.hasMore ? null : (
