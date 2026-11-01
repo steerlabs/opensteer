@@ -75,6 +75,18 @@
   height: 14px;
 }
 
+.transcript__earlier-label {
+  display: grid;
+}
+
+.transcript__earlier-label > span {
+  grid-area: 1 / 1;
+}
+
+.transcript__earlier-label > [aria-hidden="true"] {
+  visibility: hidden;
+}
+
 .turn {
   display: flex;
   flex-direction: column;

@@ -52,6 +52,7 @@ import { filterThreads } from "./thread-list-model.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
+import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
 import { projectSavedHome, type SavedViewReadiness } from "./saved-host-view.js";
 
 const now = "2026-08-09T20:00:00.000Z";
@@ -2606,6 +2607,275 @@ describe("HttpHostClient durable realtime", () => {
       client.dispose();
     },
   );
+
+  describe("earlier visible history", () => {
+    async function setupHistory(
+      options: {
+        role?: "conversation" | "work";
+        turnPages?: boolean;
+        steps?: boolean;
+        exhausted?: boolean;
+        stuck?: boolean;
+        holdSecond?: boolean;
+      } = {},
+    ) {
+      const workspace = makeWorkspace();
+      const thread = { ...makeThread(workspace.id), role: options.role ?? "conversation" };
+      const recent = { ...makeMessage(thread.id, "input", "Recent"), runId: null };
+      const earlier = makeMessage(thread.id, "input", "Earlier question");
+      const reply = {
+        ...makeMessage(thread.id, "assistant", "Earlier reply"),
+        runId: earlier.runId,
+      };
+      const silentRun = createId("run");
+      const startedBy = { cause: "task-return", kind: "platform" as const };
+      const silent = [
+        agentEvent(workspace.id, thread.id, silentRun, "4", "run.started", {
+          status: "running",
+          startedBy,
+        }),
+        agentEvent(workspace.id, thread.id, silentRun, "5", "run.completed", {
+          status: "completed",
+          replyMessageId: null,
+        }),
+      ];
+      const visible = [
+        agentEvent(workspace.id, thread.id, earlier.runId, "1", "message.created", {
+          input: makeThreadInput(earlier),
+          message: earlier,
+        }),
+        agentEvent(workspace.id, thread.id, earlier.runId, "2", "message.created", {
+          input: null,
+          message: reply,
+        }),
+        agentEvent(workspace.id, thread.id, earlier.runId, "3", "run.completed", {
+          status: "completed",
+          replyMessageId: reply.id,
+        }),
+      ];
+      const secondAsked = Promise.withResolvers<void>();
+      const secondAnswer = Promise.withResolvers<void>();
+      const requests: Record<string, unknown>[] = [];
+      let viewerId = ownerId;
+      const socket = new FakeSocket();
+      const client = createHttpHostClient({
+        capabilities: options.turnPages === false ? [] : ["history-turns-v1"],
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          if (url.pathname !== "/v1/rpc/thread.events.list") {
+            const boot = bootstrap([workspace]);
+            return json({ ...boot, user: { ...boot.user, id: viewerId } });
+          }
+          requests.push(rpcPayload(url, init));
+          const first = requests.length === 1;
+          if (!first && options.holdSecond) {
+            secondAsked.resolve();
+            await secondAnswer.promise;
+          }
+          const events = first
+            ? options.steps
+              ? [
+                  agentEvent(workspace.id, thread.id, silentRun, "4", "reasoning.completed", {
+                    blockId: "older-step",
+                    text: "Older work without a reply",
+                  }),
+                ]
+              : silent
+            : options.exhausted
+              ? []
+              : visible;
+          return json({
+            thread,
+            threadId: thread.id,
+            events,
+            window: {
+              byteCount: 256,
+              itemCount: events.length,
+              totalItems: 6,
+              threadId: thread.id,
+              hasMore: first || options.holdSecond === true,
+              nextBefore: first
+                ? options.stuck
+                  ? "recent"
+                  : "silent"
+                : options.holdSecond
+                  ? "oldest"
+                  : null,
+            },
+          });
+        },
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: {
+          ...workspaceSnapshot(workspace, "6"),
+          threads: [thread],
+          messages: [recent],
+          messageWindows: [
+            {
+              byteCount: 256,
+              hasMore: true,
+              itemCount: 1,
+              nextBefore: "recent",
+              totalItems: 6,
+              threadId: thread.id,
+            },
+          ],
+        },
+      });
+      return {
+        client,
+        requests,
+        thread,
+        secondAsked,
+        secondAnswer,
+        changeViewer: async () => {
+          viewerId = createId("user");
+          await client.refresh();
+        },
+        replaceWindow: (nextBefore: string) =>
+          socket.receive({
+            type: "host.snapshot",
+            snapshot: {
+              ...workspaceSnapshot(workspace, "7"),
+              threads: [thread],
+              messages: [recent],
+              messageWindows: [
+                {
+                  byteCount: 256,
+                  hasMore: true,
+                  itemCount: 1,
+                  nextBefore,
+                  totalItems: 6,
+                  threadId: thread.id,
+                },
+              ],
+            },
+          }),
+        removeThread: () =>
+          socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "7") }),
+      };
+    }
+
+    it.each([
+      [true, false],
+      [false, false],
+      [true, true],
+      [false, true],
+    ])(
+      "reads past an invisible Chat page in one call (turn pages %s, only steps %s)",
+      async (turnPages, steps) => {
+        const { client, requests, thread } = await setupHistory({ turnPages, steps });
+        try {
+          await client.loadEarlierTranscript(thread.id);
+          expect(requests.map((request) => request.before)).toEqual(["recent", "silent"]);
+          const rows = conversationRows(
+            groupTranscriptEntries(
+              visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null, {
+                conversation: true,
+              }),
+            ),
+            { live: false, atComputer: () => false },
+          );
+          expect(
+            rows.map(({ group }) =>
+              group.kind === "turn"
+                ? group.turn.reply?.body
+                : group.kind === "message"
+                  ? group.entry.body
+                  : null,
+            ),
+          ).toEqual(["Earlier question", "Earlier reply", "Recent"]);
+        } finally {
+          client.dispose();
+        }
+      },
+    );
+
+    it("exhausts an entirely invisible remainder", async () => {
+      const { client, requests, thread } = await setupHistory({ exhausted: true });
+      try {
+        await client.loadEarlierTranscript(thread.id);
+        expect(requests).toHaveLength(2);
+        expect(client.getSnapshot().transcriptWindows[thread.id]?.hasMore).toBe(false);
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("stops at the first added work trace", async () => {
+      const { client, requests, thread } = await setupHistory({ role: "work" });
+      try {
+        await client.loadEarlierTranscript(thread.id);
+        expect(requests).toHaveLength(1);
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("rejects a continuation cursor that does not advance", async () => {
+      const { client, thread } = await setupHistory({ stuck: true });
+      try {
+        await expect(client.loadEarlierTranscript(thread.id)).rejects.toThrow(
+          "continuation cursor",
+        );
+      } finally {
+        client.dispose();
+      }
+    });
+
+    it("uses the current cursor if a snapshot replaces the window during a read", async () => {
+      const { client, requests, thread, secondAsked, secondAnswer, replaceWindow } =
+        await setupHistory({ holdSecond: true });
+      try {
+        const loading = client.loadEarlierTranscript(thread.id);
+        await withTimeout(secondAsked.promise, 1000, {
+          timeoutError: () => new Error("The continuation was never requested."),
+        });
+        replaceWindow("replacement");
+        secondAnswer.resolve();
+        await loading;
+        expect(requests.map(({ before }) => before)).toEqual(["recent", "silent", "replacement"]);
+      } finally {
+        secondAnswer.resolve();
+        client.dispose();
+      }
+    });
+
+    it.each(["dispose", "viewer", "thread"] as const)(
+      "stops a pending page after %s changes",
+      async (change) => {
+        const { client, requests, thread, secondAsked, secondAnswer, changeViewer, removeThread } =
+          await setupHistory({ holdSecond: true });
+        try {
+          const loading = client.loadEarlierTranscript(thread.id);
+          const concurrent = client.loadEarlierTranscript(thread.id);
+          await withTimeout(secondAsked.promise, 1000, {
+            timeoutError: () => new Error("The invisible page never requested its continuation."),
+          });
+          expect(client.getSnapshot().transcriptWindows[thread.id]?.nextBefore).toBe("silent");
+          expect(
+            client.getSnapshot().transcripts[thread.id]?.some((entry) => entry.kind === "run"),
+          ).toBe(true);
+          if (change === "dispose") client.dispose();
+          else if (change === "viewer") await changeViewer();
+          else removeThread();
+          const before = client.getSnapshot().transcripts[thread.id];
+          secondAnswer.resolve();
+          await Promise.all([loading, concurrent]);
+          expect(requests).toHaveLength(2);
+          expect(client.getSnapshot().transcripts[thread.id]).toBe(before);
+        } finally {
+          secondAnswer.resolve();
+          client.dispose();
+        }
+      },
+    );
+  });
 
   /*
    * History is read over HTTP while the realtime channel keeps delivering. A

@@ -1,4 +1,5 @@
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
+import { earliestShownTranscriptEntry } from "./transcript-projection.js";
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
 import type { BootstrapReason } from "@opensteer/shared/bootstrapDiagnostics";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
@@ -5467,50 +5468,75 @@ export class HttpHostClient {
   }
 
   async #loadEarlierTranscript(threadId: string): Promise<void> {
-    const thread = this.#snapshot.threads.find((item) => item.id === threadId);
-    const currentWindow = this.#snapshot.transcriptWindows[threadId];
-    if (!thread || currentWindow?.hasMore === false) return;
-    const page = unwrapRpcResult(
-      await this.rpc["thread.events.list"]({
-        ...(currentWindow?.nextBefore ? { before: currentWindow.nextBefore } : {}),
-        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
-        threadId,
-      }),
-    );
-    if (page.threadId !== threadId) throw new Error("Thread event page mismatch.");
-    for (const event of page.events) this.#threadState.record(event);
-    const current = this.#snapshot.threads.find(({ id }) => id === threadId);
-    const summary = this.#threadState.reconcile(
-      toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-      page.readState.asOfSequence,
-      current,
-    );
-    const olderEntries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
-    const currentEntries = this.#snapshot.transcripts[threadId] ?? [];
-    this.#update({
-      ...this.#snapshot,
-      threads: this.#snapshot.threads.map((thread) =>
-        thread.id === threadId
-          ? {
-              ...thread,
-              title: summary.title,
-              status: summary.status,
-              inputQueuePaused: summary.inputQueuePaused,
-              pendingRequests: summary.pendingRequests,
-              updatedAt: summary.updatedAt,
-            }
-          : thread,
-      ),
-      assignments: withAssignmentsFrom(this.#snapshot.assignments, page.events),
-      transcripts: {
-        ...this.#snapshot.transcripts,
-        [threadId]: mergeTranscriptSegments(olderEntries, currentEntries),
-      },
-      transcriptWindows: {
-        ...this.#snapshot.transcriptWindows,
-        [threadId]: page.window,
-      },
-    });
+    const generation = this.#viewerGeneration;
+    const userId = this.#snapshot.user?.id;
+    const earliest = () => {
+      const thread = this.#snapshot.threads.find((item) => item.id === threadId);
+      return thread
+        ? earliestShownTranscriptEntry(this.#snapshot.transcripts[threadId] ?? [], {
+            thread,
+            inputQueue: this.#snapshot.inputQueues[threadId] ?? null,
+            assignments: this.#snapshot.assignments,
+            waitingRequests: this.#snapshot.waitingRequests,
+          })
+        : null;
+    };
+    const initial = earliest();
+    while (this.#viewerStillCurrent(generation, userId)) {
+      const thread = this.#snapshot.threads.find((item) => item.id === threadId);
+      const currentWindow = this.#snapshot.transcriptWindows[threadId];
+      if (!thread || currentWindow?.hasMore === false) return;
+      const before = currentWindow?.nextBefore;
+      const page = unwrapRpcResult(
+        await this.rpc["thread.events.list"]({
+          ...(before ? { before } : {}),
+          ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
+          threadId,
+        }),
+      );
+      if (!this.#viewerStillCurrent(generation, userId)) return;
+      if (!this.#snapshot.threads.some((item) => item.id === threadId)) return;
+      if (page.threadId !== threadId || page.thread.id !== threadId)
+        throw new Error("Thread event page mismatch.");
+      // A reconnect hydration may have replaced the window during this read.
+      if (this.#snapshot.transcriptWindows[threadId]?.nextBefore !== before) continue;
+      for (const event of page.events) this.#threadState.record(event);
+      const current = this.#snapshot.threads.find(({ id }) => id === threadId);
+      const summary = this.#threadState.reconcile(
+        toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+        page.readState.asOfSequence,
+        current,
+      );
+      const olderEntries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
+      const currentEntries = this.#snapshot.transcripts[threadId] ?? [];
+      this.#update({
+        ...this.#snapshot,
+        threads: this.#snapshot.threads.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                title: summary.title,
+                status: summary.status,
+                inputQueuePaused: summary.inputQueuePaused,
+                pendingRequests: summary.pendingRequests,
+                updatedAt: summary.updatedAt,
+              }
+            : thread,
+        ),
+        assignments: withAssignmentsFrom(this.#snapshot.assignments, page.events),
+        transcripts: {
+          ...this.#snapshot.transcripts,
+          [threadId]: mergeTranscriptSegments(olderEntries, currentEntries),
+        },
+        transcriptWindows: {
+          ...this.#snapshot.transcriptWindows,
+          [threadId]: page.window,
+        },
+      });
+      if (page.window.hasMore && (!page.window.nextBefore || page.window.nextBefore === before))
+        throw new Error("Thread event page is missing its continuation cursor.");
+      if (!page.window.hasMore || earliest() !== initial) return;
+    }
   }
 
   async #loadRequests(threadId: string): Promise<void> {

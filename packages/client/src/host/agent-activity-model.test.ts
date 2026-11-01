@@ -45,6 +45,7 @@ import {
   type Turn,
 } from "./agent-activity-model.js";
 import { threadActivityIndicator } from "./thread-activity.js";
+import { earliestShownTranscriptEntry } from "./transcript-projection.js";
 import { visibleTranscript } from "./transcript.js";
 import {
   mockComputerUseSlack,
@@ -1909,6 +1910,19 @@ describe("quiet Chat", () => {
   const startedBy = { kind: "platform" as const, cause: "assignment-result" };
   const rows = (entries: TranscriptEntry[], atComputer = false) =>
     conversationRows(groupTranscriptEntries(entries), { live: true, atComputer: () => atComputer });
+  it("keeps the same first reply when an older page prepends steps inside its turn", () => {
+    const reply = message();
+    const completed = run({ replyMessageId: reply.id });
+    const step = tool();
+    const before = [completed, reply];
+    const after = [completed, step, reply];
+    const thread = { id: "chat", inputQueuePaused: false, role: "conversation" as const };
+    expect(earliestShownTranscriptEntry(before, { thread })).toBe(reply.id);
+    expect(earliestShownTranscriptEntry(after, { thread })).toBe(reply.id);
+    expect(earliestShownTranscriptEntry(after, { thread: { ...thread, role: "work" } })).toBe(
+      step.id,
+    );
+  });
   it("hides a returning task's silent turn, including typing and failures", () => {
     for (const status of ["running", "completed", "failed", "interrupted"] as const) {
       const entry = run({ startedBy, status });

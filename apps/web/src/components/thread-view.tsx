@@ -149,6 +149,8 @@ interface ThreadViewProps {
   workspace: WorkspaceSummary;
 }
 
+const transcriptReadingRows = "[data-message-id], .work, .trace-step, .trace-thought, .task-line";
+
 /** Where each conversation was left, by deployment, user and Thread. */
 const readingPositions = new Map<
   string,
@@ -197,6 +199,16 @@ function ThreadView({
   const seenSequenceRef = useRef<string | null>(null);
   const [pendingUpdates, setPendingUpdates] = useState(0);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const earlierAnchor = useRef<{
+    readonly scroller: HTMLElement;
+    readonly element: HTMLElement | null;
+    readonly top: number;
+    readonly rows: ReadonlySet<HTMLElement>;
+    readonly button: HTMLElement | null;
+    readonly focused: boolean;
+  } | null>(null);
+  const earlierMotion = useRef<Animation | null>(null);
+  useEffect(() => () => earlierMotion.current?.cancel(), []);
   // True while the reader is held in a window loaded around an older update.
   // The live conversation is not being shown, so the foot of what is on screen
   // is not the conversation's tail and nothing here may claim it is.
@@ -473,24 +485,81 @@ function ThreadView({
     scroller.scrollTop = scroller.scrollHeight;
   };
 
-  const loadEarlier = async () => {
+  // Restore before paint on every page, including pages that only add Activity.
+  useLayoutEffect(() => {
+    const held = earlierAnchor.current;
+    if (!held) return;
+    const { scroller, top } = held;
+    const element = held.element?.isConnected
+      ? held.element
+      : held.element?.dataset.messageId
+        ? scroller.querySelector<HTMLElement>(
+            `[data-message-id="${CSS.escape(held.element.dataset.messageId)}"]`,
+          )
+        : null;
+    if (element?.isConnected) scroller.scrollTop += element.getBoundingClientRect().top - top;
     if (loadingEarlier) return;
+    earlierAnchor.current = null;
+    const rows = [...scroller.querySelectorAll<HTMLElement>(transcriptReadingRows)];
+    const newestEarlier = rows.findLast(
+      (row) =>
+        !held.rows.has(row) &&
+        (element === null ||
+          Boolean(row.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)),
+    );
+    if (held.focused && !held.button?.isConnected && document.activeElement === document.body) {
+      const target = newestEarlier ?? element ?? scroller;
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    }
+    if (!newestEarlier) return;
+    const from = scroller.scrollTop;
+    scroller.scrollTop = Math.max(
+      0,
+      from -
+        Math.min(scroller.clientHeight * 0.6, newestEarlier.getBoundingClientRect().height + 16),
+    );
+    const distance = scroller.scrollTop - from;
+    const transcript = scroller.querySelector<HTMLElement>(".transcript");
+    if (!transcript || !distance || window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+      return;
+    // Compensate the scroll with a brief slide in the app's existing motion.
+    const style = getComputedStyle(transcript);
+    earlierMotion.current =
+      transcript.animate?.(
+        [{ transform: `translateY(${distance}px)` }, { transform: "translateY(0)" }],
+        {
+          duration: Number.parseFloat(style.getPropertyValue("--duration-med")) || 220,
+          easing: style.getPropertyValue("--ease-out").trim() || "ease-out",
+        },
+      ) ?? null;
+  }, [conversation, loadingEarlier]);
+
+  const loadEarlier = async () => {
+    if (earlierAnchor.current) return;
     const scroller = currentScroller();
     const top = scroller?.getBoundingClientRect().top ?? 0;
     const anchor = scroller
-      ? [...scroller.querySelectorAll<HTMLElement>("[data-message-id]")].find(
+      ? [...scroller.querySelectorAll<HTMLElement>(transcriptReadingRows)].find(
           (element) => element.getBoundingClientRect().bottom > top,
         )
       : undefined;
-    const anchorTop = anchor?.getBoundingClientRect().top;
+    const button = scroller?.querySelector<HTMLElement>(".transcript__load-earlier") ?? null;
+    earlierMotion.current?.cancel();
+    if (scroller)
+      earlierAnchor.current = {
+        scroller,
+        element: anchor ?? null,
+        top: anchor?.getBoundingClientRect().top ?? top,
+        rows: new Set(scroller.querySelectorAll<HTMLElement>(transcriptReadingRows)),
+        button,
+        focused: button !== null && document.activeElement === button,
+      };
+    followsTailRef.current = false;
+    setAtTail(false);
     setLoadingEarlier(true);
     try {
       await hostClient.loadEarlierTranscript(thread.id);
-      requestAnimationFrame(() => {
-        if (scroller && anchor?.isConnected && anchorTop !== undefined && !followsTailRef.current) {
-          scroller.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
-        }
-      });
     } catch (error) {
       reportActionError(error);
     } finally {
@@ -878,21 +947,30 @@ function ThreadView({
 
       <div className="thread__body" onScroll={handleScroll} ref={bodyRef}>
         <div className="thread__conversation">
-          <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef}>
+          <div className="transcript-scroll" onScroll={handleScroll} ref={scrollRef} tabIndex={-1}>
             <div
               aria-live="polite"
               className={conversational ? "transcript transcript--conversation" : "transcript"}
               role="log"
             >
-              {canLoadEarlier ? (
+              {canLoadEarlier || loadingEarlier ? (
                 <button
                   className="btn btn--small transcript__load-earlier"
                   disabled={loadingEarlier}
+                  aria-busy={loadingEarlier}
+                  aria-label={loadingEarlier ? "Loading earlier messages" : "Earlier messages"}
                   onClick={() => void loadEarlier()}
                   type="button"
                 >
-                  <Icon name="arrow-up" />
-                  {loadingEarlier ? "Loading…" : "Earlier messages"}
+                  {loadingEarlier ? (
+                    <span aria-hidden="true" className="spinner" />
+                  ) : (
+                    <Icon name="arrow-up" />
+                  )}
+                  <span className="transcript__earlier-label">
+                    <span aria-hidden={loadingEarlier}>Earlier messages</span>
+                    {loadingEarlier ? <span>Loading…</span> : null}
+                  </span>
                 </button>
               ) : null}
               {conversation.length === 0 && historyState === undefined ? (
