@@ -106,14 +106,16 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
       vi.spyOn(DisplayViewerBitrate.prototype, "stall").mockImplementation(function (
         this: DisplayViewerBitrate,
         now,
-        observedQueueMs = 0,
+        observedQueueMs,
+        sentAt,
       ) {
         const before = this.cap;
-        stall.call(this, now, observedQueueMs);
+        stall.call(this, now, observedQueueMs, sentAt);
         bitrateSamples.push({
           controller: controller(this),
           now,
           observedQueueMs,
+          sentAt,
           stall: true,
           before,
           cap: this.cap,

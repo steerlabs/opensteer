@@ -9,15 +9,17 @@ export class DisplayViewerBitrate {
   #delivered = maximumBitrate;
   #lastFlow: number | null = null;
   #healthySince: number | null = null;
-  #queuedSince: number | null = null;
+  #queue: { since: number; observedAt: number } | null = null;
   #reducedAt = -Infinity;
 
-  stall(now: number, observedQueueMs = 0): void {
+  stall(now: number, observedQueueMs: number, sentAt: number): void {
+    if (observedQueueMs < 150) return;
     this.#healthySince = null;
-    // A join burst or one delayed decode is not sustained congestion.
-    // The delivery has already spent its excess age waiting in the queue.
-    this.#queuedSince = Math.min(this.#queuedSince ?? now, now - observedQueueMs);
-    if (now - this.#queuedSince < 500) return;
+    // Count time already queued, but require a delivery sent after the first
+    // excess observation. One receiver pause and its late ACK burst cannot confirm it.
+    this.#queue ??= { since: now - observedQueueMs, observedAt: now };
+    this.#queue.since = Math.min(this.#queue.since, now - observedQueueMs);
+    if (sentAt <= this.#queue.observedAt || now - this.#queue.since < 500) return;
     if (now - this.#reducedAt < 2_000) return;
     const elapsed = now - (this.#sampleAt ?? now);
     // A sample boundary must not discard the preceding measured flow rate.
@@ -30,20 +32,19 @@ export class DisplayViewerBitrate {
   }
 
   ack(now: number, bytes: number, delay: number, minimumDelay: number): void {
-    // A new burst cannot turn an idle interval into evidence of spare capacity.
-    if (this.#lastFlow === null || now - this.#lastFlow > 500) {
+    // Queued ACK gaps must retain measured flow; a new idle burst cannot prove capacity.
+    if (this.#lastFlow === null || (now - this.#lastFlow > 500 && this.#queue === null)) {
       this.#sampleAt = now;
       this.#bytes = 0;
       this.#delivered = maximumBitrate;
       this.#healthySince = now;
-      this.#queuedSince = null;
     }
     this.#lastFlow = now;
     this.#bytes += bytes;
     if (delay - minimumDelay >= 150) {
-      this.stall(now, delay - minimumDelay);
+      this.stall(now, delay - minimumDelay, now - delay);
     } else {
-      this.#queuedSince = null;
+      this.#queue = null;
       this.#healthySince ??= now;
     }
     const elapsed = now - (this.#sampleAt ?? now);

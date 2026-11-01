@@ -3061,7 +3061,54 @@ it("does not create a phone producer when owner input authorization finishes aft
 });
 
 describe("viewer-driven phone bitrate", () => {
-  it("counts the oldest delivery's existing queue age toward sustained credit pressure", async () => {
+  it.each([650, 1_200])(
+    "does not cap a %i ms receiver pause through credit age, sweep or the late ACK burst",
+    async (pause) => {
+      const f = await fixture(true, { displayProfile: true });
+      const viewer = await f.viewer(false, false, true);
+      const phone = await f.phone();
+      await f.state();
+      const uncapped = () =>
+        expect(
+          f.sent
+            .filter((m) => m.type === "host.integrations.display.demand")
+            .every((m) => m.maxBitrate === null),
+        ).toBe(true);
+      for (let sequence = 1; sequence <= 8; sequence++) {
+        phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(1_000)));
+        await viewer.received(() => viewer.media().length === sequence);
+        if (sequence <= 5) {
+          f.advance(100);
+          viewer.send({ type: "display.ack", sequence });
+          await viewer.roundTrip();
+        } else if (sequence < 8) f.advance(100);
+      }
+      f.advance(200);
+      phone.socket.send(f.frame(9));
+      await phone.received(() => phone.json().length === 9);
+      uncapped();
+      f.advance(200);
+      f.hub.sweep();
+      uncapped();
+      f.advance(pause - 600);
+      f.hub.sweep();
+      uncapped();
+      for (const sequence of [6, 7, 8]) {
+        viewer.send({ type: "display.ack", sequence });
+        await viewer.roundTrip();
+        uncapped();
+      }
+      phone.socket.send(f.frame(10, true));
+      await viewer.received(() => viewer.media().at(-1)?.header.sequence === 10);
+      f.advance(100);
+      viewer.send({ type: "display.ack", sequence: 10 });
+      await viewer.roundTrip();
+      f.hub.sweep();
+      uncapped();
+    },
+  );
+
+  it("counts existing queue age when a later keyframe confirms sustained credit pressure", async () => {
     const f = await fixture(true, { displayProfile: true });
     const viewer = await f.viewer(false, false, true);
     const phone = await f.phone();
@@ -3080,6 +3127,17 @@ describe("viewer-driven phone bitrate", () => {
     const demands = () => f.sent.filter((m) => m.type === "host.integrations.display.demand");
     expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
     f.advance(1);
+    f.hub.sweep();
+    expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
+    viewer.send({ type: "display.ack", sequence: 6 });
+    await viewer.roundTrip();
+    expect(demands().every((m) => m.maxBitrate === null)).toBe(true);
+    f.advance(1);
+    phone.socket.send(f.frame(8, true));
+    await viewer.received(() => viewer.media().at(-1)?.header.sequence === 8);
+    f.advance(599);
+    phone.socket.send(f.frame(9));
+    await phone.received(() => phone.json().length === 9);
     f.hub.sweep();
     expect(demands().at(-1)?.maxBitrate).not.toBeNull();
     expect(demands().at(-1)?.maxBitrate).toBeLessThanOrEqual(1_000_000);
@@ -3190,12 +3248,13 @@ describe("viewer-driven phone bitrate", () => {
     const updates: { at: number; cap: number | null }[] = [];
     let observedDemands = 0;
     for (let sequence = 1; sequence <= 70; sequence++) {
-      phone.socket.send(f.frame(sequence, sequence === 1, 1, new Uint8Array(8_000)));
+      phone.socket.send(f.frame(sequence, sequence % 10 === 1, 1, new Uint8Array(8_000)));
       await phone.received(() => phone.json().length === sequence);
       f.advance(100);
       fast.send({ type: "display.ack", sequence });
       legacy.send({ type: "display.ack", sequence });
-      if (sequence <= 5 || sequence % 5 === 0) slow.send({ type: "display.ack", sequence });
+      if (sequence <= 5) slow.send({ type: "display.ack", sequence });
+      else if (sequence > 11) slow.send({ type: "display.ack", sequence: sequence - 6 });
       await fast.roundTrip();
       await slow.roundTrip();
       f.hub.sweep();

@@ -1334,7 +1334,7 @@ export class DisplayStreamHub {
     const queued = oldest
       ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
       : 0;
-    viewer.bitrate.stall(now, queued);
+    viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
     this.#bitrate(stream);
   }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {
