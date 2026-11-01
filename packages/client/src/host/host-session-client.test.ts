@@ -2983,6 +2983,23 @@ describe("HttpHostClient durable realtime", () => {
       },
     );
 
+    it("keeps scanning an observed Thread when another Thread becomes active", async () => {
+      const f = await setupHistory({ shown: "observed", holdSecond: true, longScan: true });
+      try {
+        const loading = f.client.loadEarlierTranscript(f.thread.id);
+        await withTimeout(f.secondAsked.promise, 1000, {
+          timeoutError: () => new Error("The second page was never requested."),
+        });
+        f.client.activateThread(createId("thread"));
+        f.secondAnswer.resolve();
+        await loading;
+        expect(f.requests.length).toBeGreaterThan(2);
+      } finally {
+        f.secondAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
     it("exhausts an entirely invisible remainder", async () => {
       const { client, requests, thread } = await setupHistory({ exhausted: true });
       try {

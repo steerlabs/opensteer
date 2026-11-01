@@ -1809,7 +1809,7 @@ export class HttpHostClient {
     const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
     for (const [id, scan] of this.#messagePageLoads) {
-      if (id !== threadId) scan.retired = true;
+      if (!this.#showsThread(id)) scan.retired = true;
     }
     this.#ensureInputQueue(threadId);
     this.#ensureAssignments(threadId);
