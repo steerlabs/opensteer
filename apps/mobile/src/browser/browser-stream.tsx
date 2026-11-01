@@ -1,3 +1,4 @@
+import { useBrowserPresentationWait } from "@opensteer/client/react";
 import type {
   BrowserCommand,
   BrowserFrameStore,
@@ -48,6 +49,8 @@ export interface BrowserStreamProps {
   readonly active: boolean;
   readonly hostClient: Pick<
     HostClient,
+    | "browserPresentationDeadline"
+    | "markBrowserPagePresented"
     | "acceptBrowserWatchFrame"
     | "browserFrames"
     | "browserWatchFrames"
@@ -106,7 +109,7 @@ const emptySlots: FrameSlots = { decoding: null, displayed: null };
  * while there is no picture to show.
  */
 export function BrowserStream({
-  active,
+  active: requestedActive,
   hostClient,
   label,
   onPageSize,
@@ -122,6 +125,17 @@ export function BrowserStream({
   // Asking again takes the feed anew: a fresh subscription, fresh pictures.
   const [attempt, setAttempt] = useState(0);
   const ready = session.state === "ready";
+  const {
+    error: presentationError,
+    presented: presentationPresented,
+    retry: retryPresentation,
+  } = useBrowserPresentationWait(
+    hostClient,
+    session.id,
+    tabId ?? "",
+    requestedActive && ready && interactive,
+  );
+  const active = requestedActive && !presentationError;
   const frames = interactive ? hostClient.browserFrames : hostClient.browserWatchFrames;
   // Fixed for the binary's lifetime, so one presenter owns this view's receipts.
   const [Picture] = useState(nativePictureView);
@@ -271,6 +285,9 @@ export function BrowserStream({
     ? picture.drawn && { source: picture.drawn }
     : displayedSlot;
   const decoding = visible && !native ? slots.decoding : null;
+  useEffect(() => {
+    if (displayed !== null) presentationPresented();
+  }, [displayed, presentationPresented]);
   const size = useRef({ width: 0, height: 0 });
   const origin = useRef({ x: 0, y: 0 });
   const [stageSize, setStageSize] = useState(size.current);
@@ -468,8 +485,10 @@ export function BrowserStream({
     if (shownWidth !== null && shownHeight !== null)
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
-  if (!active) return null;
-  const words = displayed === null ? streamLabel(session.state, feedState, feedError) : null;
+  if (!requestedActive) return null;
+  const words =
+    presentationError ??
+    (displayed === null ? streamLabel(session.state, feedState, feedError) : null);
 
   return (
     <View
@@ -571,12 +590,15 @@ export function BrowserStream({
           <Text numberOfLines={3} style={styles.label}>
             {words}
           </Text>
-          {feedError !== null ? (
+          {feedError !== null || presentationError !== null ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Try again"
               accessibilityHint="Reconnects this page"
-              onPress={() => setAttempt((current) => current + 1)}
+              onPress={() => {
+                retryPresentation();
+                setAttempt((current) => current + 1);
+              }}
               style={styles.retry}
             >
               <Text style={styles.retryLabel}>Try again</Text>

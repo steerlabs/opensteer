@@ -1,3 +1,4 @@
+import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { BrowserTabOpenResult } from "@opensteer/protocol";
 import {
@@ -48,6 +49,12 @@ interface PendingBrowserTabPorts {
 
 /** Presentation only: an unknown submission can be replayed, never replaced implicitly. */
 export class PendingBrowserTabs {
+  readonly #presentations = new Map<string, number>();
+  readonly presentationDeadline = (sessionId: string, tabId: string): number | null =>
+    this.#presentations.get(JSON.stringify([sessionId, tabId])) ?? null;
+  readonly markPresented = (sessionId: string, tabId: string): void => {
+    this.#presentations.delete(JSON.stringify([sessionId, tabId]));
+  };
   readonly #opens = new Map<string, Opening>();
   readonly #completed = new Set<string>();
   #rows: readonly PendingBrowserTab[] = [];
@@ -114,7 +121,7 @@ export class PendingBrowserTabs {
       dismissed: previous?.dismissed ?? false,
       cancellation: new AbortController(),
       transportCancellation: new AbortController(),
-      expiresAt: Date.now() + 25_000,
+      expiresAt: Date.now() + browserOpeningTimeoutMs,
     };
     // Install the handle before publishing: a synchronous subscriber may join it.
     opening.handle = handle;
@@ -178,6 +185,9 @@ export class PendingBrowserTabs {
       opening.state = "opened";
       if (this.#opens.get(key) !== opening) throw new Error("This opening was replaced.");
       this.#requireCurrent(generation);
+      this.#presentations.set(JSON.stringify([result.sessionId, result.tabId]), opening.expiresAt);
+      if (this.#presentations.size > 100)
+        this.#presentations.delete(this.#presentations.keys().next().value!);
       this.#remove(key);
       this.#completed.add(key);
       if (this.#completed.size > 100) {
@@ -264,6 +274,7 @@ export class PendingBrowserTabs {
     }
     this.#opens.clear();
     this.#completed.clear();
+    this.#presentations.clear();
     this.#rows = [];
   }
 

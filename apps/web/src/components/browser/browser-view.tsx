@@ -1,3 +1,4 @@
+import { useBrowserPresentationWait } from "@opensteer/client/react";
 import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
 import { NativeAgentCursors } from "./native-agent-cursors.js";
 import {
@@ -198,6 +199,11 @@ export function PlaceBrowserView({
   // Held while the page is hidden as well: the client pauses its picture then and
   // keeps the last one, so showing the page again shows the tab at once.
   const watchable = sessionReady && tabListed;
+  const {
+    error: presentationError,
+    presented: presentationPresented,
+    retry: retryPresentation,
+  } = useBrowserPresentationWait(hostClient, sessionId, tabId, visible && watchable);
   useLayoutEffect(() => {
     if (!watchable) {
       retained.current?.release();
@@ -282,7 +288,7 @@ export function PlaceBrowserView({
   const passkey = useSyncExternalStore(subscribePasskeys, readPasskeys, readPasskeys);
 
   const handoff =
-    !watchable || mode.error || viewer.error || retentionError
+    !watchable || mode.error || viewer.error || retentionError || presentationError
       ? "terminal"
       : viewer.admitted || viewer.status === "live"
         ? "admitted"
@@ -291,13 +297,20 @@ export function PlaceBrowserView({
     if (handoff !== "pending") for (const release of retired.current.splice(0)) release();
   }, [sessionId, tabId, handoff]);
   const nativePresentation = useNativeBrowserPresentation({
-    active: mode.mode !== "streamed" && watchable && !mode.error,
+    active: mode.mode !== "streamed" && watchable && !mode.error && !presentationError,
     handoff,
     admissionId: viewer.admissionId,
     sessionId,
     surfaceId: tabId,
     stageRef,
   });
+  useEffect(() => {
+    if (
+      nativePresentation.placement?.sessionId === sessionId &&
+      nativePresentation.placement.surfaceId === tabId
+    )
+      presentationPresented();
+  }, [nativePresentation.placement, presentationPresented, sessionId, tabId]);
   const nativeTarget = nativePresentation.target;
   const focusPage = () => (native ? nativePresentation.focusPage() : keyboardRef.current?.focus());
   const live = sessionReady && tabListed && viewer.status === "live";
@@ -386,9 +399,10 @@ export function PlaceBrowserView({
   );
   const acceptFrame = useCallback(
     (frame: BrowserFrameView) => {
-      setPaintedTab(`${sessionId}:${tabId}`);
       const token = frame.header.watchToken;
       if (token) hostClient.acceptBrowserWatchFrame(sessionId, token, tabId);
+      if (!presentationPresented()) return;
+      setPaintedTab(`${sessionId}:${tabId}`);
       if (!takeKeyboard.current) return;
       takeKeyboard.current = false;
       // After the presented picture has rendered, when the page can take keys.
@@ -397,7 +411,7 @@ export function PlaceBrowserView({
         if (active === null || active === document.body) keyboardRef.current?.focus();
       });
     },
-    [hostClient, sessionId, tabId],
+    [hostClient, sessionId, tabId, presentationPresented],
   );
   const performAction: BrowserActionRunner = async (action) => {
     setActionError(null);
@@ -619,7 +633,11 @@ export function PlaceBrowserView({
         : placeEnded(
             session,
             tabListed,
-            viewer.error ?? retentionError ?? mode.error ?? nativePresentation.error,
+            presentationError ??
+              viewer.error ??
+              retentionError ??
+              mode.error ??
+              nativePresentation.error,
           );
   const placement = nativePresentation.placement;
   const geometry = nativeBrowserGeometry(placement);
@@ -792,6 +810,11 @@ export function PlaceBrowserView({
             <div className="place-state" role="status">
               <p className="place-state__title">{ended.title}</p>
               {ended.detail ? <p className="place-state__detail">{ended.detail}</p> : null}
+              {presentationError ? (
+                <button className="btn" onClick={retryPresentation} type="button">
+                  Retry viewing
+                </button>
+              ) : null}
               {activationError && !lastingReason ? (
                 <button className="btn" onClick={onRetry} type="button">
                   Try again

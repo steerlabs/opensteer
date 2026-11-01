@@ -59,3 +59,4 @@ export * from "./saved-host-view.js";
 export * from "./browser-passkeys.js";
 
 export * from "./browser-address.js";
+export * from "./browser-presentation-wait.js";

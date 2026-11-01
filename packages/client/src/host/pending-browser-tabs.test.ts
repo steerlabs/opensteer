@@ -157,3 +157,35 @@ it("turns an uncertain retry into a confirmed failure when the Host replays term
     pending.dispose();
   }
 });
+
+it("carries the original action deadline through the pending-to-presenter handoff", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const session = client.getSnapshot().browserSessions.find((row) => row.state === "ready")!;
+    const opened = await client.openBrowserTab(session.id);
+    const response = Promise.withResolvers<typeof opened>();
+    vi.useFakeTimers();
+    const started = Date.now();
+    const pending = new PendingBrowserTabs({
+      admitted: () => true,
+      open: () => response.promise,
+      close: vi.fn(),
+      changed: vi.fn(),
+    });
+    try {
+      const opening = pending.begin({ sessionId: session.id });
+      await vi.advanceTimersByTimeAsync(24_000);
+      response.resolve(opened);
+      await opening.result;
+      expect(pending.rows).toEqual([]);
+      expect(pending.presentationDeadline(opened.sessionId, opened.tabId)).toBe(started + 25_000);
+      pending.clear();
+      expect(pending.presentationDeadline(opened.sessionId, opened.tabId)).toBeNull();
+    } finally {
+      pending.dispose();
+      vi.useRealTimers();
+    }
+  } finally {
+    client.dispose();
+  }
+});

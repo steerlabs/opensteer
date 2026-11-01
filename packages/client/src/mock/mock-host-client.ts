@@ -3897,6 +3897,8 @@ export class MockHostClient implements HostClient {
       this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
   });
   readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
+  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
+  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   readonly openBrowserTab = async (
     target: string | BrowserTabOpenInput,

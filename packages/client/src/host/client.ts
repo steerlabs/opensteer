@@ -1207,6 +1207,8 @@ export interface HostClient {
   latestPlaceOfThread(threadId: string): ThreadPlace | null;
   subscribeLatestPlace(threadId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
+  browserPresentationDeadline?(sessionId: string, tabId: string): number | null;
+  markBrowserPagePresented?(sessionId: string, tabId: string): void;
   beginBrowserTabOpen(
     target: string | BrowserTabOpenInput,
     options?: BrowserTabOpenOptions,

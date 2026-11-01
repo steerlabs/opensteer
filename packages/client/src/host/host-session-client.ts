@@ -771,6 +771,8 @@ export class HttpHostClient {
       this.browserPreferences.lastBrowsingChoice = target.identity;
     return this.#pendingBrowserTabs.begin(target, options);
   };
+  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
+  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
     // Authenticated RPC callers need not load a workspace's presentation first.
