@@ -896,7 +896,17 @@ it.each([
           return current.tree.some((line) => line.label === "Record a tap") ? current : undefined;
         },
         15_000,
-      );
+      ).catch(async (error: unknown) => {
+        await json("fixture-observation-timeout.json", {
+          accessibility: await phone.shell("dumpsys accessibility"),
+          windows: await phone.shell("dumpsys window"),
+          observation: transcript.at(-1),
+          screenshotErrors: await phone.shell(
+            "logcat -d -s AccessibilityService AccessibilityInteractionClient AccessibilityManagerService",
+          ),
+        });
+        throw error;
+      });
     }
     async function sessionId() {
       const active = await sessions();
