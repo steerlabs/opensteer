@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useLocation } from "react-router";
-import { listedRowThreadId, taskList, type HostClient } from "@opensteer/client/host";
+import { taskList, type HostClient } from "@opensteer/client/host";
 import { placeList } from "@opensteer/client/host";
 import { actionErrorMessage, fromLivePage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
@@ -139,20 +139,18 @@ export function useWorkspaceShortcuts({
       }
       // ⌥⌘↑ / ⌥⌘↓ — the previous or next task; the place stays.
       if (command && event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        const list = taskList(snapshot);
+        const order = [
+          ...(list.chat ? [list.chat.threadId] : []),
+          ...list.working.map((row) => row.threadId),
+          ...list.ready.map((row) => row.threadId),
+        ];
         const open =
           pathname === "/"
             ? snapshot.homeThreadId
             : pathname.startsWith("/threads/")
               ? decodeURIComponent(pathname.slice("/threads/".length))
               : null;
-        const list = taskList(snapshot, {
-          openThreadId: open === null ? null : listedRowThreadId(snapshot, open),
-        });
-        const order = [
-          ...(list.chat ? [list.chat.threadId] : []),
-          ...list.working.map((row) => row.threadId),
-          ...list.ready.map((row) => row.threadId),
-        ];
         const at = open ? order.indexOf(open) : -1;
         const next = order[at + (event.key === "ArrowUp" ? -1 : 1)];
         if (next === undefined) return;

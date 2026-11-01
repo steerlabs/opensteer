@@ -1,4 +1,4 @@
-import { FadeIn, FadeInDown, FadeOut } from "react-native-reanimated";
+import { FadeIn, FadeInDown, FadeOut, LinearTransition } from "react-native-reanimated";
 
 /**
  * The app's motion, named once.
@@ -24,3 +24,10 @@ export const enter = FadeInDown.duration(duration.enter);
 export const appear = FadeIn.duration(duration.enter);
 
 export const exit = FadeOut.duration(duration.exit);
+
+/**
+ * Something with a place goes to a new one, such as a task a person just asked
+ * for something rising to the top. It never runs when the thing first mounts,
+ * so a list that loads appears at once.
+ */
+export const move = LinearTransition.duration(duration.enter);

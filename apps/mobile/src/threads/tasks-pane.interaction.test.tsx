@@ -7,7 +7,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 vi.mock("react-native-reanimated", async () => ({
   default: { FlatList: (await import("react-native")).FlatList },
 }));
-vi.mock("./task-motion.js", () => ({ taskSlide: {} }));
+vi.mock("../ui/motion.js", () => ({ move: undefined }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 vi.mock("@opensteer/client/react", () => ({
   useHostSnapshot: (client: { getSnapshot: () => unknown }) => ({

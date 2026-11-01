@@ -1,5 +1,5 @@
 import Animated from "react-native-reanimated";
-import { taskSlide } from "../threads/task-motion.js";
+import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
@@ -112,7 +112,7 @@ interface SidebarModel {
 function sidebarModel(
   snapshot: HostSnapshot,
   openThreadId: string | null,
-  previous: Pick<TaskList, "done"> | null,
+  previous: Pick<TaskList, "ready"> | null,
 ): SidebarModel {
   const main = mainWorkspace(snapshot);
   return {
@@ -131,7 +131,7 @@ function sidebarModel(
  * opened from one must keep its shelf in whichever shows next.
  */
 export interface ShelfMemory {
-  list: Pick<TaskList, "done"> | null;
+  list: Pick<TaskList, "ready"> | null;
 }
 
 /**
@@ -352,7 +352,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const now = Date.now();
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf) =>
     tasks.map((task) => (
-      <Animated.View key={task.threadId} layout={taskSlide}>
+      <Animated.View key={task.threadId} layout={move}>
         <TaskRowView
           onOpen={openTask}
           onSetDone={moveTask}

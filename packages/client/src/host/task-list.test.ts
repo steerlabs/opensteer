@@ -227,25 +227,29 @@ describe("taskList", () => {
     expect(titles(unread.ready)).toEqual(["Still open", "Shared Done"]);
     expect(unread.done).toEqual([]);
     expect(unread.ready[1]).toMatchObject({ done: true, canBeDone: true });
-    const open = taskList(snapshot([old, done]), { openThreadId: done.thread.id });
-    expect(titles(open.ready)).toEqual(["Still open", "Shared Done"]);
-    expect(open.done).toEqual([]);
     const read = taskList(snapshot([old, done]));
     expect(titles(read.ready)).toEqual(["Still open"]);
     expect(titles(read.done)).toEqual(["Shared Done"]);
+    // Opened from Ready while unread, reading it does not move it while it is open.
+    const opened = taskList(snapshot([old, done]), {
+      openThreadId: done.thread.id,
+      previous: unread,
+    });
+    expect(titles(opened.ready)).toEqual(["Still open", "Shared Done"]);
+    expect(opened.done).toEqual([]);
     // Opened from the Done shelf, it is already where it belongs and stays there.
     const fromShelf = taskList(snapshot([old, done]), {
       openThreadId: done.thread.id,
       previous: read,
     });
-    expect(titles(fromShelf.ready)).toEqual(["Still open"]);
     expect(titles(fromShelf.done)).toEqual(["Shared Done"]);
-    // Opened from Ready while unread, reading it keeps it there.
-    const fromReady = taskList(snapshot([old, done]), {
+    // Marked Done by the reader while open, it goes to Done as they asked.
+    const markedOpen = taskList(snapshot([old, completed]));
+    const marked = taskList(snapshot([old, done]), {
       openThreadId: done.thread.id,
-      previous: unread,
+      previous: markedOpen,
     });
-    expect(titles(fromReady.ready)).toEqual(["Still open", "Shared Done"]);
+    expect(titles(marked.done)).toEqual(["Shared Done"]);
   });
 
   it("keeps Chat apart from every group, and counts as running only what works now", () => {

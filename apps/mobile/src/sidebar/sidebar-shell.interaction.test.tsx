@@ -79,8 +79,7 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("react-native-reanimated", () => ({
   default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
 }));
-vi.mock("../threads/task-motion.js", () => ({ taskSlide: {} }));
-vi.mock("../ui/motion.js", () => ({ appear: {}, exit: {} }));
+vi.mock("../ui/motion.js", () => ({ appear: {}, exit: {}, move: undefined }));
 vi.mock("react-native-reserved-regions", () => ({
   ReservedRegionsProvider: (props: {
     children?: ReactNode;
@@ -552,9 +551,9 @@ describe("the shell around what the system reserves", () => {
     const { render } = await mount();
     const drawerScroll = lastPanel().scroll;
     drawerScroll.offset = 480;
-    // A Done task opened from the Done shelf keeps that shelf through a fold.
+    // An unread Done task opened from Ready keeps its place through a fold.
     const shelves = lastPanel().shelves;
-    const drawn = { done: [{ threadId: "thread-a" }] };
+    const drawn = { ready: [{ threadId: "thread-a", done: true }] };
     shelves.list = drawn;
     harness.bounds = { height: 1133, width: 744 };
     await render();
