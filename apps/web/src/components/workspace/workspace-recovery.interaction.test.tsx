@@ -268,10 +268,15 @@ describe("the review's findings", () => {
       viewfinderKey = `${sessionId}:${tabId}`;
       return viewfinderKey;
     }, 1);
-    await click(element('.conv-header [aria-label="Close conversation"]'));
+    // The docked head holds no controls of its own; the computer's bar puts the
+    // conversation away and brings it back from the same spot.
+    expect(document.querySelector(".conv-header__actions")).toBeNull();
+    await click(element(".place .chat-toggle"));
     await leaseBecomes(() => viewfinderKey, 0);
-    await click(element(".chat-btn"));
+    expect(document.querySelector(".place .chat-toggle")).toBeNull();
+    await click(element(".place .chat-btn"));
     await leaseBecomes(() => viewfinderKey, 1);
+    expect(element(".place .chat-toggle").getAttribute("aria-expanded")).toBe("true");
   });
 
   it("7 · the phone browser's menu offers Fit when the page is another size", async () => {

@@ -44,8 +44,10 @@
 
 /* Start, ended and scope notices: the message alone. */
 
-/* A page's or app's own actions, behind one ⋯. */
-.surface-menu.icon-btn {
+/* A page's or app's own actions, behind one ⋯, and the way to put the
+   conversation beside it away, last in the same row. */
+.surface-menu.icon-btn,
+.chat-toggle.icon-btn {
   flex: none;
   width: var(--control-height);
   min-width: var(--control-height);
@@ -56,7 +58,8 @@
   color: var(--muted);
 }
 
-.surface-menu.icon-btn > svg {
+.surface-menu.icon-btn > svg,
+.chat-toggle.icon-btn > svg {
   width: 16px;
   height: 16px;
   color: inherit;
@@ -177,7 +180,8 @@
     height: var(--touch-target);
   }
 
-  .surface-menu {
+  .surface-menu,
+  .chat-toggle {
     min-height: var(--touch-target);
   }
 }

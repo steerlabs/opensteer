@@ -83,12 +83,18 @@ try {
   /** A fresh copy of the app on `route`, with the reply on screen and its document tagged. */
   const open = async (route: string, replyText: string) => {
     // Choose Talk before reloading: restoration runs after the transcript
-    // appears. Use the chrome control because a live page can own the keyboard.
+    // appears. Use the chrome control because a live page can own the keyboard:
+    // a phone's sheet has Hide computer, and a docked chat has Expand under its name.
     if (
       page.url().startsWith(`${origin}/`) &&
       (await page.locator(".workspace--work").isVisible())
     ) {
-      await page.getByRole("button", { name: /^(?:Expand chat|Hide computer)$/u }).click();
+      const hide = page.getByRole("button", { name: "Hide computer" });
+      if (await hide.isVisible()) await hide.click();
+      else {
+        await page.locator(".workspace--work .conv-header__menu").click();
+        await page.getByRole("button", { name: "Expand chat" }).click();
+      }
       await page.locator(".workspace--talk").waitFor();
     }
     await page.goto(`${origin}${route}`);

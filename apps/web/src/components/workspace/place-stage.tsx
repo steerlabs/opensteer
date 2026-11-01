@@ -44,7 +44,7 @@ export const PlaceStage = memo(function PlaceStage({
   readonly hostConnected: boolean;
   readonly onReportError: (error: unknown) => void;
 }) {
-  const { dock, drawer, nav, phone, selection } = useWorkspace();
+  const { drawer, nav, phone, selection } = useWorkspace();
   const toolbarRef = useToastToolbar();
   const places = usePlaceList(hostClient);
   const directory = useTaskDirectory(hostClient);
@@ -158,7 +158,7 @@ export const PlaceStage = memo(function PlaceStage({
   );
 
   const leading = drawer ? <DrawerButton /> : <SidebarRestoreButton />;
-  const trailing = !dock.open && !phone ? <ChatButton directory={directory} /> : null;
+  const trailing = phone ? null : <ChatToggle directory={directory} />;
   const openMark = useCallback(
     (threadId: string) => {
       if (place) nav.showPlaceWithConversation(place.destination, nav.threadPath(threadId));
@@ -258,9 +258,16 @@ export const PlaceStage = memo(function PlaceStage({
           trailing={trailing}
         />
       ) : destination.computerSessionId === undefined ? (
-        <div className="place-state" role="status">
-          This view is not available in this client.
-        </div>
+        <>
+          <div className="surface-row">
+            {leading}
+            <span className="launcher__spacer" />
+            {trailing}
+          </div>
+          <div className="place-state" role="status">
+            This view is not available in this client.
+          </div>
+        </>
       ) : (
         <ComputerWatchView
           app={place?.icon.kind === "app" ? place.icon.app : null}
@@ -345,10 +352,31 @@ export function DrawerButton() {
   );
 }
 
-/** The conversation, put away: its mark and name, a press from coming back. */
-function ChatButton({ directory }: { readonly directory: TaskDirectory }) {
+/**
+ * The conversation beside the computer is put away and brought back from one
+ * spot at the end of the computer's bar: a quiet panel button while it is
+ * open, and its mark and name, a press from coming back, while it is away.
+ */
+function ChatToggle({ directory }: { readonly directory: TaskDirectory }) {
   const { dock } = useWorkspace();
   const { pathname } = useLocation();
+  if (dock.open)
+    return (
+      <button
+        aria-controls="workspace-conversation"
+        aria-expanded
+        aria-label="Hide the conversation"
+        className="icon-btn chat-toggle"
+        onClick={() => {
+          dock.close();
+          requestAnimationFrame(() => document.querySelector<HTMLElement>(".chat-btn")?.focus());
+        }}
+        title="Hide the conversation"
+        type="button"
+      >
+        <Icon name="panel" />
+      </button>
+    );
   const threadId =
     pathname === "/"
       ? directory.homeThreadId
@@ -361,6 +389,8 @@ function ChatButton({ directory }: { readonly directory: TaskDirectory }) {
   const title = home ? CHAT_THREAD_TITLE : (row?.title ?? "Conversation");
   return (
     <button
+      aria-controls="workspace-conversation"
+      aria-expanded={false}
       aria-label={`Show the conversation: ${title}`}
       className="chat-btn"
       onClick={() => {

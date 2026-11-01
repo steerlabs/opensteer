@@ -31,18 +31,20 @@ import { TaskFamilyButton } from "./task-family.js";
 import { sameTaskFamilyGlance, taskFamilyGlance } from "@opensteer/client/host";
 import { TaskBadge, TaskMark, ChatOrb, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
-import { destinationPlaceKey } from "./navigation.js";
+import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
 import { homeThreadKind, useTaskDirectory } from "./task-directory.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
- * The conversation's head: the way back to the conversation it works for, its
- * mark, which also shows how the task is doing, its name and the menu under
- * it, why it is not plainly working when that is known, and the
- * conversation's own controls. Docked beside the computer, the name gets the
- * width: the dock keeps only Expand and Close, and Find joins the name's menu,
- * where ⌘F still reaches it.
+ * The conversation's head: one bar of a fixed height holding its mark, which
+ * also shows how the task is doing, its name and the menu under it, why it is
+ * not plainly working when that is known, its tasks, and its own controls. The
+ * way back to the conversation it works for is a quiet row above the bar, so
+ * the head grows by that row instead of crowding the name. Docked beside the
+ * computer the name gets the width: the computer's bar holds the way to put
+ * the conversation away, and Expand and Find join the name's menu, where ⌘.
+ * and ⌘F still reach them.
  */
 export function ConversationHeader({
   cause,
@@ -60,7 +62,7 @@ export function ConversationHeader({
   readonly title: string;
   readonly titleRef?: React.Ref<HTMLHeadingElement>;
 }) {
-  const { dock, drawer, nav, phone, work } = useWorkspace();
+  const { drawer, nav, phone, work } = useWorkspace();
   const directory = useTaskDirectory(hostClient);
   const homeKind = homeThreadKind(threadId, directory.snapshot);
   const home = homeKind === "main";
@@ -78,17 +80,6 @@ export function ConversationHeader({
     (snapshot) => homeThreadKind(threadId, snapshot) === null && snapshot.threadRenameAvailable,
   );
   const menuRef = useRef<HTMLButtonElement | null>(null);
-  const toggleComputer = () => {
-    if (work) {
-      nav.hideComputer();
-      return;
-    }
-    const keys = new Set(placeList(hostClient.getSnapshot()).map((place) => place.key));
-    nav.showComputer((destination) => {
-      const key = destinationPlaceKey(destination);
-      return key !== null && keys.has(key);
-    });
-  };
   const docked = work && !phone;
   const tone = !home && row ? row.tone : null;
   const selectRequester = useCallback(
@@ -104,25 +95,102 @@ export function ConversationHeader({
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
   const menu = !home || docked;
   return (
-    <header className={requester || family ? "conv-header conv-header--trail" : "conv-header"}>
-      {requester || family ? (
+    <header className="conv-header">
+      {requester ? (
         <nav aria-label="Task lineage" className="conv-header__trail">
-          {requester ? (
-            <AreaLink
-              aria-label={`Back to ${requester.title}`}
-              className="conv-header__back"
-              title={requester.title}
-              to={nav.threadPath(requester.threadId)}
+          <AreaLink
+            aria-label={`Back to ${requester.title}`}
+            className="conv-header__back"
+            title={requester.title}
+            to={nav.threadPath(requester.threadId)}
+          >
+            <Icon name="arrow-left" />
+            {requester.threadId === directory.homeThreadId ? (
+              <ChatOrb size={16} />
+            ) : (
+              <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
+            )}
+            <span className="conv-header__back-title">{requester.title}</span>
+          </AreaLink>
+        </nav>
+      ) : null}
+      <div className="conv-header__bar">
+        {/* In Work the place's own bar carries the way back to the sidebar. */}
+        {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
+        <span className="conv-header__mark">
+          {home ? (
+            <ChatOrb size={20} />
+          ) : homeKind === "specialized" && specialist ? (
+            <WorkspaceOrb
+              icon={specialist.icon}
+              name={specialist.name}
+              color={specialist.color}
+              size="small"
+            />
+          ) : (
+            <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
+          )}
+          {tone === "working" ? <WorkingRing /> : tone ? <TaskBadge state={tone} /> : null}
+        </span>
+        <div className="conv-header__text">
+          <h1 className="conv-header__title" ref={titleRef} tabIndex={-1}>
+            {editing && canRename ? (
+              <ThreadTitleEditor
+                key={threadId}
+                hostClient={hostClient}
+                threadId={threadId}
+                title={title}
+                onClose={() => {
+                  setEditing(false);
+                  requestAnimationFrame(() => menuRef.current?.focus());
+                }}
+              />
+            ) : menu ? (
+              <button
+                aria-expanded={menuOpen}
+                aria-haspopup="dialog"
+                aria-label={`${title}${tone ? `, ${taskStateWords(tone)}` : ""}`}
+                className="conv-header__menu"
+                onClick={() => setMenuOpen((value) => !value)}
+                ref={menuRef}
+                title={title}
+                type="button"
+              >
+                <span className="conv-header__name">{title}</span>
+                <Icon className="conv-header__chevron" name="chevron-down" />
+              </button>
+            ) : (
+              <span className="conv-header__name conv-header__name--static" title={title}>
+                {title}
+              </span>
+            )}
+          </h1>
+          {(cause ?? (row?.tone === "failed" ? row.line : null)) ? (
+            <p
+              className="conv-header__cause"
+              ref={(node) => {
+                if (node) node.title = node.textContent ?? "";
+              }}
             >
-              <Icon name="arrow-left" />
-              {requester.threadId === directory.homeThreadId ? (
-                <ChatOrb size={16} />
-              ) : (
-                <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
-              )}
-              <span className="conv-header__back-title">{requester.title}</span>
-            </AreaLink>
+              {cause ?? (row?.tone === "failed" ? row.line : null)}
+            </p>
           ) : null}
+        </div>
+        {specialist && homeKind === null ? (
+          <span className="conv-header__specialist">
+            <WorkspaceOrb
+              icon={specialist.icon}
+              name={specialist.name}
+              size="tiny"
+              color={specialist.color}
+            />
+            <span>{specialist.name}</span>
+          </span>
+        ) : null}
+        <div className="conv-header__end">
+          {/* Only a state that asks something of the reader is said in words; the
+              mark shows the rest. */}
+          {tone === "needs-you" ? <span className="conv-header__state">Needs you</span> : null}
           {family ? (
             <TaskFamilyButton
               key={threadId}
@@ -131,132 +199,31 @@ export function ConversationHeader({
               glance={family}
             />
           ) : null}
-        </nav>
-      ) : null}
-      {/* In Work the place's own bar carries the way back to the sidebar. */}
-      {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
-      <span className="conv-header__mark">
-        {home ? (
-          <ChatOrb size={20} />
-        ) : homeKind === "specialized" && specialist ? (
-          <WorkspaceOrb
-            icon={specialist.icon}
-            name={specialist.name}
-            color={specialist.color}
-            size="small"
-          />
-        ) : (
-          <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
-        )}
-        {tone === "working" ? <WorkingRing /> : tone ? <TaskBadge state={tone} /> : null}
-      </span>
-      <div className="conv-header__text">
-        <h1 className="conv-header__title" ref={titleRef} tabIndex={-1}>
-          {editing && canRename ? (
-            <ThreadTitleEditor
-              key={threadId}
-              hostClient={hostClient}
-              threadId={threadId}
-              title={title}
-              onClose={() => {
-                setEditing(false);
-                requestAnimationFrame(() => menuRef.current?.focus());
-              }}
-            />
-          ) : menu ? (
-            <button
-              aria-expanded={menuOpen}
-              aria-haspopup="dialog"
-              aria-label={`${title}${tone ? `, ${taskStateWords(tone)}` : ""}`}
-              className="conv-header__menu"
-              onClick={() => setMenuOpen((value) => !value)}
-              ref={menuRef}
-              title={title}
-              type="button"
-            >
-              <span className="conv-header__name">{title}</span>
-              <Icon className="conv-header__chevron" name="chevron-down" />
-            </button>
-          ) : (
-            <span className="conv-header__name conv-header__name--static" title={title}>
-              {title}
-            </span>
+          {docked ? null : (
+            <div className="conv-header__actions">
+              {phone ? null : (
+                <button
+                  aria-label="Show computer"
+                  className="icon-btn"
+                  onClick={() => showComputer(hostClient, nav)}
+                  title="Show computer · ⌘."
+                  type="button"
+                >
+                  <Icon name="desktop" />
+                </button>
+              )}
+              <button
+                aria-label="Find in conversation"
+                className="icon-btn"
+                onClick={onFind}
+                title="Find in conversation · ⌘F"
+                type="button"
+              >
+                <Icon name="search" />
+              </button>
+            </div>
           )}
-        </h1>
-        {(cause ?? (row?.tone === "failed" ? row.line : null)) ? (
-          <p
-            className="conv-header__cause"
-            ref={(node) => {
-              if (node) node.title = node.textContent ?? "";
-            }}
-          >
-            {cause ?? (row?.tone === "failed" ? row.line : null)}
-          </p>
-        ) : null}
-      </div>
-      {specialist && homeKind === null ? (
-        <span className="conv-header__specialist">
-          <WorkspaceOrb
-            icon={specialist.icon}
-            name={specialist.name}
-            size="tiny"
-            color={specialist.color}
-          />
-          <span>{specialist.name}</span>
-        </span>
-      ) : null}
-      {/* Only a state that asks something of the reader is said in words; the
-          mark shows the rest. */}
-      {tone === "needs-you" ? <span className="conv-header__state">Needs you</span> : null}
-      <div className="conv-header__actions">
-        {phone ? null : docked ? (
-          <button
-            aria-label="Expand chat"
-            className="icon-btn"
-            onClick={toggleComputer}
-            title="Expand chat · ⌘."
-            type="button"
-          >
-            <Icon name="expand" />
-          </button>
-        ) : (
-          <button
-            aria-label="Show computer"
-            className="icon-btn"
-            onClick={toggleComputer}
-            title="Show computer · ⌘."
-            type="button"
-          >
-            <Icon name="desktop" />
-          </button>
-        )}
-        {docked ? null : (
-          <button
-            aria-label="Find in conversation"
-            className="icon-btn"
-            onClick={onFind}
-            title="Find in conversation · ⌘F"
-            type="button"
-          >
-            <Icon name="search" />
-          </button>
-        )}
-        {docked ? (
-          <button
-            aria-label="Close conversation"
-            className="icon-btn"
-            onClick={() => {
-              dock.close();
-              requestAnimationFrame(() =>
-                document.querySelector<HTMLElement>(".chat-btn")?.focus(),
-              );
-            }}
-            title="Close · Esc"
-            type="button"
-          >
-            <Icon name="close" />
-          </button>
-        ) : null}
+        </div>
       </div>
       {changingIcon && menuRef.current && canChangeIcon ? (
         <TaskIconEditor
@@ -299,11 +266,18 @@ export function ConversationHeader({
           }
           anchor={menuRef.current}
           label={title}
-          onFind={
+          view={
             docked
-              ? () => {
-                  setMenuOpen(false);
-                  onFind();
+              ? {
+                  expand: () => {
+                    setMenuOpen(false);
+                    nav.hideComputer();
+                    focusAfterExpand();
+                  },
+                  find: () => {
+                    setMenuOpen(false);
+                    onFind();
+                  },
                 }
               : null
           }
@@ -484,15 +458,15 @@ function ConversationMenu({
   anchor,
   label,
   onClose,
-  onFind,
+  view,
 }: {
   /** The open task's own actions, last; told when one asks first. */
   readonly actions: ((asking: (on: boolean) => void) => ReactNode) | null;
   readonly anchor: HTMLElement;
   readonly label: string;
   readonly onClose: () => void;
-  /** Given where the header has no room for Find: it is offered here instead. */
-  readonly onFind: (() => void) | null;
+  /** Docked beside the computer, the header keeps only the name, so the view's own actions are here. */
+  readonly view: { readonly expand: () => void; readonly find: (() => void) | null } | null;
 }) {
   const [asking, setAsking] = useState(false);
   return (
@@ -504,26 +478,29 @@ function ConversationMenu({
       role="dialog"
     >
       <div className="conversation-menu">
-        {asking ? null : (
-          <>
-            {onFind ? (
-              <div
-                aria-label="This conversation"
-                className="conversation-menu__actions"
-                role="group"
-              >
-                <button className="picker__row" onClick={onFind} type="button">
-                  <span className="picker__glyph">
-                    <Icon name="search" />
-                  </span>
-                  <span className="picker__label">Find in conversation</span>
-                  <kbd aria-hidden className="kbd">
-                    ⌘F
-                  </kbd>
-                </button>
-              </div>
+        {asking || !view ? null : (
+          <div aria-label="This conversation" className="conversation-menu__actions" role="group">
+            <button className="picker__row" onClick={view.expand} type="button">
+              <span className="picker__glyph">
+                <Icon name="expand" />
+              </span>
+              <span className="picker__label">Expand chat</span>
+              <kbd aria-hidden className="kbd">
+                ⌘.
+              </kbd>
+            </button>
+            {view.find ? (
+              <button className="picker__row" onClick={view.find} type="button">
+                <span className="picker__glyph">
+                  <Icon name="search" />
+                </span>
+                <span className="picker__label">Find in conversation</span>
+                <kbd aria-hidden className="kbd">
+                  ⌘F
+                </kbd>
+              </button>
             ) : null}
-          </>
+          </div>
         )}
         {actions ? actions(setAsking) : null}
       </div>
@@ -558,44 +535,95 @@ export function AreaHeader({
 }: {
   readonly hostClient: HostClient;
   readonly mark?: ReactNode;
-  readonly title: ReactNode;
+  readonly title: string;
 }) {
   const { drawer, nav, phone, work } = useWorkspace();
-  const toggleComputer = () => {
-    if (work) {
-      nav.hideComputer();
-      return;
-    }
-    const keys = new Set(placeList(hostClient.getSnapshot()).map((place) => place.key));
-    nav.showComputer((destination) => {
-      const key = destinationPlaceKey(destination);
-      return key !== null && keys.has(key);
-    });
-  };
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLButtonElement | null>(null);
+  // Docked, its name opens the menu a conversation's does, so Expand is found
+  // in one place beside the computer.
+  const docked = work && !phone;
   return (
     <header className="conv-header conv-header--area">
-      {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
-      {mark ? <span className="conv-header__mark">{mark}</span> : null}
-      <div className="conv-header__text">
-        <h1 className="conv-header__title">
-          <span className="conv-header__name conv-header__name--static">{title}</span>
-        </h1>
-      </div>
-      <div className="conv-header__actions">
-        {phone ? null : (
-          <button
-            aria-label={work ? "Expand" : "Show computer"}
-            className="icon-btn"
-            onClick={toggleComputer}
-            title={work ? "Expand · ⌘." : "Show computer · ⌘."}
-            type="button"
-          >
-            <Icon name={work ? "expand" : "desktop"} />
-          </button>
+      <div className="conv-header__bar">
+        {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
+        {mark ? <span className="conv-header__mark">{mark}</span> : null}
+        <div className="conv-header__text">
+          <h1 className="conv-header__title" tabIndex={-1}>
+            {docked ? (
+              <button
+                aria-expanded={menuOpen}
+                aria-haspopup="dialog"
+                className="conv-header__menu"
+                onClick={() => setMenuOpen((value) => !value)}
+                ref={menuRef}
+                type="button"
+              >
+                <span className="conv-header__name">{title}</span>
+                <Icon className="conv-header__chevron" name="chevron-down" />
+              </button>
+            ) : (
+              <span className="conv-header__name conv-header__name--static">{title}</span>
+            )}
+          </h1>
+        </div>
+        {work || phone ? null : (
+          <div className="conv-header__end">
+            <div className="conv-header__actions">
+              <button
+                aria-label="Show computer"
+                className="icon-btn"
+                onClick={() => showComputer(hostClient, nav)}
+                title="Show computer · ⌘."
+                type="button"
+              >
+                <Icon name="desktop" />
+              </button>
+            </div>
+          </div>
         )}
       </div>
+      {docked && menuOpen && menuRef.current ? (
+        <ConversationMenu
+          actions={null}
+          anchor={menuRef.current}
+          label={title}
+          onClose={() => setMenuOpen(false)}
+          view={{
+            expand: () => {
+              setMenuOpen(false);
+              nav.hideComputer();
+              focusAfterExpand();
+            },
+            find: null,
+          }}
+        />
+      ) : null}
     </header>
   );
+}
+
+/**
+ * Expanding can take away the menu's own button (Chat and a page name it only
+ * while docked), so focus goes where the reader carries on: the composer, or
+ * else the page's name.
+ */
+function focusAfterExpand() {
+  requestAnimationFrame(() =>
+    (
+      document.querySelector<HTMLElement>("[data-composer-input]") ??
+      document.querySelector<HTMLElement>(".workspace__conversation .conv-header__title")
+    )?.focus(),
+  );
+}
+
+/** Brings the computer back beside the conversation, at a place that still exists. */
+function showComputer(hostClient: HostClient, nav: WorkspaceNavigation) {
+  const keys = new Set(placeList(hostClient.getSnapshot()).map((place) => place.key));
+  nav.showComputer((destination) => {
+    const key = destinationPlaceKey(destination);
+    return key !== null && keys.has(key);
+  });
 }
 
 /** The neutral subject while a task has not started yet. */
