@@ -9,7 +9,6 @@ import { ErrorNotice, OnboardingCard } from "./components/onboarding-card.js";
 import { BrandMark } from "./components/brand.js";
 import { AppShell } from "./components/app-shell.js";
 import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "./components/home-view.js";
-import { TasksPage } from "./components/workspace/tasks-page.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { SpecialistsPage } from "./components/specialists-page.js";
 import { ThreadRoute } from "./components/thread-view.js";
@@ -442,7 +441,6 @@ export function App({
             <Route index element={<HomeRoute />} />
             <Route path="new" element={<NewTaskRoute />} />
             <Route path="threads/:threadId" element={<ThreadRoute />} />
-            <Route path="tasks" element={<TasksPage />} />
             <Route path="live" element={<LiveRedirect />} />
             <Route path="specialists" element={<SpecialistsPage />} />
             <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />

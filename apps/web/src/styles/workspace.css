@@ -966,6 +966,16 @@ button.side-needs:hover {
   font: 800 10.5px/1 var(--font-sans);
 }
 
+.side-done__main {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.side-done__count {
+  margin-left: auto;
+}
+
 .side-task.has-ask .side-task__main {
   align-items: flex-start;
 }
@@ -2318,30 +2328,6 @@ button.start-apps__row--away:focus-visible {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
-}
-
-/* ---- Tasks page ---- */
-
-.tasks-page__body {
-  width: min(100%, var(--transcript-max-width));
-  margin: 0 auto;
-  padding: var(--space-16) var(--space-20) var(--space-40);
-  overflow-y: auto;
-}
-
-.tasks-page__search {
-  width: 100%;
-  margin-bottom: var(--space-12);
-}
-
-.tasks-page__empty {
-  padding: var(--space-16) var(--space-10);
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.tasks-page__more {
-  margin-top: var(--space-12);
 }
 
 .task-row__link .task-mark {

@@ -190,20 +190,32 @@ try {
       await page.keyboard.press("Escape");
       return { ...observed, edit };
     });
-    await page.goto(`${web.origin}/tasks`);
-    await page.locator(".task-row").first().waitFor();
+    await page.goto(`${web.origin}/`);
+    await page.locator(".side-task[data-thread-id]").first().waitFor();
+    await page.evaluate(async () => {
+      const client = Reflect.get(window, "opensteerMock") as MockHostClient;
+      const snapshot = client.getSnapshot();
+      const task = snapshot.threads.find(
+        (thread) =>
+          thread.listed && thread.id !== snapshot.homeThreadId && thread.status === "idle",
+      )!;
+      const unread = snapshot.threadReadStates[task.id]?.unreadSequence;
+      if (unread) await client.markThreadRead(task.id, unread);
+      await client.setTaskDone(task.id, true);
+    });
+    await page.getByRole("button", { name: /^Done, \d+ tasks?$/u }).click();
+    await page.locator(".side-done ~ .side-task").first().waitFor();
     await check(`${density}x · quiet settled rows retain exceptional failure`, async () => {
-      const observed = await page.locator(".task-row").evaluateAll((rows) =>
+      const observed = await page.locator(".side-task[data-thread-id]").evaluateAll((rows) =>
         rows.map((row) => ({
           classes: row.className,
+          done: row.matches(".side-done ~ .side-task"),
           state: row.querySelector(".task-state")?.getAttribute("data-state"),
           quiet: row.querySelector(".task-mark")?.classList.contains("task-mark--quiet"),
           title: row.textContent,
         })),
       );
-      const quiet = observed.filter(
-        (row) => row.classes.includes("task-row--done") && row.state === "finished",
-      );
+      const quiet = observed.filter((row) => row.done && row.state === "finished");
       expectThat(
         { rows: observed },
         quiet.length > 0 &&
