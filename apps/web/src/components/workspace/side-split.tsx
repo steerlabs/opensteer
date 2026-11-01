@@ -256,8 +256,10 @@ function floorOf(section: HTMLElement): number {
   return parseFloat(getComputedStyle(section).minHeight) || 0;
 }
 
-/** The section's height with every row in view. */
-function fullHeightOf(section: HTMLElement): number {
+/** The section's height with every row in view, or what a tab filter holds Tabs to. */
+export function fullHeightOf(section: HTMLElement): number {
+  const held = parseFloat(section.style.maxHeight);
+  if (!Number.isNaN(held)) return held;
   const box = section.getBoundingClientRect();
   const list = section.querySelector<HTMLElement>(".side-list");
   if (!list) return box.height;
