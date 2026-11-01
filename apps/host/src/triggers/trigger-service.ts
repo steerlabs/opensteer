@@ -185,8 +185,10 @@ export class TriggerService {
     triggerId: TriggerId,
     payload: unknown,
     actorThreadId: ThreadId | null,
+    idempotencyKey?: string,
   ) {
     const occurrence = await this.#store.enqueueManual({
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       ownerId,
       payload,
       triggerId,

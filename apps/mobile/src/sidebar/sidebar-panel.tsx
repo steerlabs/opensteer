@@ -39,7 +39,6 @@ import {
   View,
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
-import { sameDestination } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
@@ -237,8 +236,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
   readonly shelves: ShelfMemory;
-  /** The tab, app or phone in front, marked as the one open. */
-  readonly selectedPlace: WorkspaceSurfaceDestination | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
   /** The task whose conversation is on screen; opening it never moves its row. */
@@ -526,11 +523,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           {hostClient === null || model === null ? (
             <GroupHead title="Tabs" />
           ) : (
-            <SidebarTabs
-              hostClient={hostClient}
-              onOpen={actions.onOpenPlace}
-              selected={props.selectedPlace}
-            />
+            <SidebarTabs hostClient={hostClient} onOpen={actions.onOpenPlace} />
           )}
           <DestinationRow
             current={destination === "Tabs"}
@@ -605,27 +598,13 @@ const sidebarTabLimit = 5;
 const SidebarTabs = memo(function SidebarTabs(props: {
   readonly hostClient: HostClient;
   readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
-  readonly selected: WorkspaceSurfaceDestination | null;
 }): ReactNode {
   const places = usePlaceList(props.hostClient);
-  const { selected } = props;
-  const shown = useMemo(() => {
-    const first = places.slice(0, sidebarTabLimit);
-    if (selected === null || first.some((place) => sameDestination(place.destination, selected)))
-      return first;
-    const open = places.find((place) => sameDestination(place.destination, selected));
-    return open === undefined ? first : [...first, open];
-  }, [places, selected]);
   return (
     <>
       <GroupHead count={places.length} title="Tabs" />
-      {shown.map((place) => (
-        <PlaceRow
-          key={place.key}
-          onOpen={props.onOpen}
-          place={place}
-          selected={selected !== null && sameDestination(place.destination, selected)}
-        />
+      {places.slice(0, sidebarTabLimit).map((place) => (
+        <PlaceRow key={place.key} onOpen={props.onOpen} place={place} />
       ))}
     </>
   );
@@ -646,9 +625,8 @@ const placeKind: Record<PlaceItem["kind"], string> = {
 const PlaceRow = memo(function PlaceRow(props: {
   readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
   readonly place: PlaceItem;
-  readonly selected: boolean;
 }): ReactNode {
-  const { onOpen, place, selected } = props;
+  const { onOpen, place } = props;
   const acting = place.occupants.some((occupant) => occupant.acting);
   const unavailable = place.availability === "unavailable";
   const where =
@@ -666,7 +644,7 @@ const PlaceRow = memo(function PlaceRow(props: {
     <DestinationRow
       accessibilityLabel={label}
       accessory={acting ? <ActingDot grouped /> : null}
-      current={selected}
+      current={false}
       detail={where}
       icon={placeGlyph[place.kind]}
       label={place.title}

@@ -24,7 +24,7 @@ import {
  * - a width hovering on a threshold flips the arrangement every frame;
  * - an interior occlusion sits over controls nobody moved out of its way;
  * - right-to-left puts the sidebar or page on the trailing side of a fold;
- * - a page in front takes the docked sidebar away, so switching means going back;
+ * - a page in front keeps the docked sidebar, so it and its Thread make three panes;
  * - a keyboard under tabletop leaves the conversation no room to type in;
  * - a division no pane is split at is ignored, so a single pane, a hidden
  *   sidebar drawer or large text puts content across a fold, or under an occluding one;
@@ -61,7 +61,7 @@ function shell(overrides: Partial<ShellInput>) {
     ready: true,
     regions: [],
     rtl: false,
-    aroundFolds: false,
+    page: false,
     ...overrides,
   });
 }
@@ -175,14 +175,16 @@ describe("the shell's sidebar", () => {
     );
   });
 
-  it("stays docked beside a page and its conversation", () => {
-    const column = { gap: 0, mode: "column", width: 320 };
-    expect(shell({ aroundFolds: true, bounds: { height: 1133, width: 744 } }).sidebar).toEqual(
-      column,
-    );
-    expect(shell({ aroundFolds: true, bounds: { height: 744, width: 1133 } }).sidebar).toEqual(
-      column,
-    );
+  it("gives a page in front the sidebar's room, however much there is", () => {
+    for (const bounds of [
+      { height: 1133, width: 744 },
+      { height: 900, width: 1200 },
+    ]) {
+      const result = shell({ bounds, page: true });
+      expect(result.sidebar).toEqual(drawer);
+      expect(result.sidebarRect).toBeNull();
+      expect(result.content).toEqual({ ...bounds, x: 0, y: 0 });
+    }
   });
 
   it("puts the column on the leading side of a fold in right-to-left", () => {
@@ -295,6 +297,7 @@ describe("every reserved division, whichever arrangement is chosen", () => {
     expect(result.sidebar).toEqual(drawer);
     expect(result.content).toEqual({ height: 900, width: 350, x: 0, y: 0 });
     expect(arrange({ bounds: surface, regions: [hinge] })).toEqual({
+      alone: { height: 900, width: 350, x: 0, y: 0 },
       pair: { mode: "stacked" },
       region: { height: 900, width: 350, x: 0, y: 0 },
     });
@@ -329,8 +332,18 @@ describe("every reserved division, whichever arrangement is chosen", () => {
   it("keeps side-by-side panes off a horizontal fold too short for tabletop", () => {
     const low = division(0, 700, 900, 20);
     expect(arrange({ bounds: { height: 900, width: 900 }, regions: [low] })).toEqual({
+      alone: { height: 700, width: 900, x: 0, y: 0 },
       pair: { gap: 0, mode: "side", pageWidth: 540 },
       region: { height: 700, width: 900, x: 0, y: 0 },
+    });
+  });
+
+  it("keeps a page with nothing beside it off the hinge a pair would be split at", () => {
+    const occluding = division(480, 0, 20, 900, true);
+    expect(arrange({ bounds: { height: 900, width: 1000 }, regions: [occluding] })).toEqual({
+      alone: { height: 900, width: 500, x: 500, y: 0 },
+      pair: { gap: 20, mode: "side", pageWidth: 480 },
+      region: { height: 900, width: 1000, x: 0, y: 0 },
     });
   });
 
@@ -340,6 +353,7 @@ describe("every reserved division, whichever arrangement is chosen", () => {
     expect(
       arrange({ bounds: { height: 900, width: 1000 }, regions: [vertical, horizontal] }),
     ).toEqual({
+      alone: { height: 460, width: 500, x: 500, y: 440 },
       pair: { gap: 20, mode: "tabletop", pageHeight: 420 },
       region: { height: 900, width: 500, x: 500, y: 0 },
     });
@@ -383,7 +397,7 @@ describe("the shell and the page pair together", () => {
     }));
 
   function watch(bounds: { height: number; width: number }, regions: ReservedRegion[]) {
-    const outer = shell({ aroundFolds: true, bounds, regions });
+    const outer = shell({ bounds, page: true, regions });
     const inner = arrange({
       bounds: { height: outer.content.height, width: outer.content.width },
       regions: seenFrom(outer.content, regions),
@@ -396,28 +410,20 @@ describe("the shell and the page pair together", () => {
     expect(outer.sidebar).toEqual(drawer);
     expect(outer.content).toEqual({ height: 900, width: 900, x: 0, y: 0 });
     expect(inner).toEqual({
+      alone: { height: 460, width: 900, x: 0, y: 440 },
       pair: { gap: 20, mode: "tabletop", pageHeight: 420 },
       region: { height: 900, width: 900, x: 0, y: 0 },
     });
   });
 
-  it("keeps the sidebar on a vertical fold's leading side, and the page and its conversation on the other", () => {
+  it("splits a page and its conversation at a vertical fold the sidebar would have docked at", () => {
     const { inner, outer } = watch({ height: 900, width: 1000 }, [division(480, 0, 20, 900)]);
-    expect(outer.sidebar).toEqual({ gap: 20, mode: "column", width: 480 });
-    expect(outer.content).toEqual({ height: 900, width: 500, x: 500, y: 0 });
+    expect(outer.sidebar).toEqual(drawer);
+    expect(outer.content).toEqual({ height: 900, width: 1000, x: 0, y: 0 });
     expect(inner).toEqual({
-      pair: { mode: "stacked" },
-      region: { height: 900, width: 500, x: 0, y: 0 },
-    });
-  });
-
-  it("lets a page beside the docked sidebar use a horizontal fold for tabletop", () => {
-    const { inner, outer } = watch({ height: 1000, width: 1000 }, [division(0, 400, 1000, 20)]);
-    expect(outer.sidebarRect).toEqual({ height: 580, width: 320, x: 0, y: 420 });
-    expect(outer.content).toEqual({ height: 1000, width: 680, x: 320, y: 0 });
-    expect(inner).toEqual({
-      pair: { gap: 20, mode: "tabletop", pageHeight: 400 },
-      region: { height: 1000, width: 680, x: 0, y: 0 },
+      alone: { height: 900, width: 500, x: 500, y: 0 },
+      pair: { gap: 20, mode: "side", pageWidth: 480 },
+      region: { height: 900, width: 1000, x: 0, y: 0 },
     });
   });
 
@@ -425,6 +431,7 @@ describe("the shell and the page pair together", () => {
     const hinge = division(350, 0, 20, 900, true);
     const { inner } = watch({ height: 900, width: 720 }, [hinge]);
     expect(inner).toEqual({
+      alone: { height: 900, width: 350, x: 0, y: 0 },
       pair: { mode: "stacked" },
       region: { height: 900, width: 350, x: 0, y: 0 },
     });

@@ -889,10 +889,9 @@ function PagePair(
     previous.current = derived.pair;
   });
   const paired = derived.pair.mode !== "stacked";
-  // Room for two with nothing to put beside the page: the page takes it all.
-  const pair: PagePairArrangement =
-    paired && companion !== null ? derived.pair : { mode: "stacked" };
-  const region = paired && companion === null ? wholeOf(bounds) : derived.region;
+  // Nothing to put beside the page: it takes the most room it has off the folds.
+  const pair: PagePairArrangement = companion !== null ? derived.pair : { mode: "stacked" };
+  const region = companion !== null ? derived.region : derived.alone;
   // Once beside the page, the companion stays mounted through a window too
   // narrow for two, as the page does, so its draft, stream and scroll are
   // there when the pair returns. Out of view it is inert: unseen, untouchable,
@@ -1007,10 +1006,6 @@ function PagePair(
       )}
     </View>
   );
-}
-
-function wholeOf(bounds: Size): Rect {
-  return { height: bounds.height, width: bounds.width, x: 0, y: 0 };
 }
 
 /** What the pair's reserved regions ask of each pane's edges, in its own place. */

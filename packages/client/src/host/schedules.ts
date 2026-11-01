@@ -337,11 +337,12 @@ export class SchedulesClient {
     }
     return resource;
   }
-  /** Retain the key after an unknown outcome. A retry cannot admit a second run. */
+  /** Coalesce taps in flight; a later Run now tap is a new, explicit request. */
   act(
     triggerId: string,
     action: "pause" | "resume" | "run",
     idempotencyKey?: string,
+    payload?: unknown,
   ): Promise<ScheduleDetail> {
     if (!scheduleOnline(this.client.getSnapshot()))
       return Promise.reject(new Error("Connect to the Host to change schedules."));
@@ -355,7 +356,12 @@ export class SchedulesClient {
     const pending = (async () => {
       await this.client.dispatch(
         action === "run"
-          ? { type: "trigger.run", triggerId, idempotencyKey: key }
+          ? {
+              type: "trigger.run",
+              triggerId,
+              idempotencyKey: key,
+              ...(payload === undefined ? {} : { payload }),
+            }
           : {
               type: "trigger.status.set",
               triggerId,
@@ -376,7 +382,19 @@ export class SchedulesClient {
         throw new Error("Unable to confirm the schedule from the Host.");
       this.#keys.delete(identity);
       return state.data;
-    })().finally(() => this.#actions.delete(identity));
+    })()
+      .catch(async (error: unknown) => {
+        if (action !== "run") throw error;
+        // Older Hosts ignore the run key. Never resend to resolve uncertainty.
+        this.#keys.delete(identity);
+        if (this.client.getSnapshot().user?.id === userId) {
+          await this.detail(triggerId)
+            .refresh()
+            .catch(() => undefined);
+        }
+        throw new Error("Couldn't confirm the run started — check Recent runs", { cause: error });
+      })
+      .finally(() => this.#actions.delete(identity));
     this.#actions.set(identity, pending);
     return pending;
   }

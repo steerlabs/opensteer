@@ -191,6 +191,9 @@ function ScheduleView(props: {
           <RefreshControl onRefresh={pull} refreshing={refreshing} tintColor={color.muted} />
         }
       >
+        {detail === null && failure !== null ? (
+          <Notice title="Schedule action" detail={failure} tone="danger" />
+        ) : null}
         {detail === null ? (
           state.status === "loading" ? (
             <View accessibilityLabel="Loading schedule" style={styles.loading}>
@@ -352,7 +355,7 @@ function ScheduleBody(props: {
           )}
           {props.failure === null ? null : (
             <AppText
-              accessibilityLabel={`Not changed. ${props.failure}`}
+              accessibilityLabel={`Schedule action. ${props.failure}`}
               role="caption"
               tone="danger"
             >

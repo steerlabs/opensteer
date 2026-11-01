@@ -621,6 +621,43 @@ describe("One schedule", () => {
     expect(controls()).toBe(before + 1);
   });
 
+  it("shows recent runs and an honest warning when the run answer is lost", async () => {
+    const f = host();
+    const summary = await named(f, "Nightly typecheck");
+    const screen = detailScreen(summary.id);
+    await shown(screen, "Active", "the schedule never loaded");
+    const before = screen.querySelectorAll("button[aria-label]").length;
+    f.dispatch.mockImplementationOnce(async (command) => {
+      await f.mock.dispatch(command);
+      throw new Error("Lost answer");
+    });
+    press(button(screen, "Run now"));
+    await shown(
+      screen,
+      "Couldn't confirm the run started — check Recent runs",
+      "run uncertainty was never shown",
+    );
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    expect(screen.querySelectorAll("button[aria-label]").length).toBe(before + 1);
+    expect(button(screen, "Run now").disabled).toBe(false);
+  });
+
+  it("keeps the unknown run warning visible when confirmation reads also fail", async () => {
+    const f = host();
+    const summary = await named(f, "Nightly typecheck");
+    const screen = detailScreen(summary.id);
+    await shown(screen, "Active", "the schedule never loaded");
+    f.dispatch.mockRejectedValueOnce(new Error("Lost answer"));
+    f.get.mockRejectedValue(new Error("Unable to read runs"));
+    press(button(screen, "Run now"));
+    await shown(
+      screen,
+      "Couldn't confirm the run started — check Recent runs",
+      "run uncertainty was never shown",
+    );
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("drops a deleted schedule without claiming this Host lacks schedules", async () => {
     const f = host();
     const summary = await named(f, "Nightly typecheck");

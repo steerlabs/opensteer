@@ -264,6 +264,31 @@ describe("schedules", () => {
     await store.act(summary.id, "pause");
     expect(f.dispatch.mock.calls[1]![0]).toMatchObject({ idempotencyKey: key });
   });
+  it.each(["dispatch", "confirmation"])(
+    "reports an unknown run after a lost %s without resending",
+    async (failure) => {
+      const f = fixture();
+      const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
+      const store = schedulesClient(f.client);
+      if (failure === "dispatch") {
+        f.dispatch.mockImplementationOnce(async (command) => {
+          await f.mock.dispatch(command);
+          throw new Error("Lost answer");
+        });
+      } else f.get.mockRejectedValueOnce(new Error("Lost confirmation"));
+      await expect(store.act(summary.id, "run")).rejects.toThrow(
+        "Couldn't confirm the run started — check Recent runs",
+      );
+      expect(f.dispatch).toHaveBeenCalledTimes(1);
+      expect(store.detail(summary.id).getSnapshot().status).toBe("ready");
+      const first = f.dispatch.mock.calls[0]![0];
+      await store.act(summary.id, "run");
+      expect(f.dispatch).toHaveBeenCalledTimes(2);
+      expect(f.dispatch.mock.calls[1]![0]).not.toMatchObject({
+        idempotencyKey: "idempotencyKey" in first ? first.idempotencyKey : null,
+      });
+    },
+  );
   it("refreshes visible detail on run lifecycle changes and fences reads on sign-out", async () => {
     const f = fixture();
     const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;

@@ -252,11 +252,11 @@ export type SidebarArrangement =
 
 export interface ShellInput {
   /**
-   * The screen in front arranges a page and its conversation around the folds
-   * itself, so its pane spans the ones the sidebar leaves rather than keeping
-   * to one side of them.
+   * A page is in front. It takes the sidebar's side, for itself and its
+   * occupant's Thread, and arranges the two around the folds itself, so it is
+   * handed the whole surface: never three panes.
    */
-  readonly aroundFolds: boolean;
+  readonly page: boolean;
   /** The shell's own measured surface, in its provider's points. */
   readonly bounds: Size;
   readonly fontScale: number;
@@ -282,14 +282,13 @@ export interface ShellArrangement {
 
 /**
  * The shell's arrangement: the sidebar docked as a column beside the stack
- * wherever the surface has room for both, whatever the stack shows, or a
- * drawer over it, and exactly where each is drawn. It depends on geometry
- * alone, so the sidebar is never taken away by what is in front. Until the
- * surface is measured the drawer stays: a column drawn before a fold is known
- * could straddle it. Whatever is chosen stays off every fold: a single pane
- * takes the largest span the folds leave, not the whole surface — except a
- * page with its conversation, whose pair surface keeps itself off the folds it
- * cannot use and is handed the ones it can.
+ * wherever the surface has room for both, or a drawer over it, and exactly
+ * where each is drawn. Room alone decides, except that a page in front takes
+ * the sidebar's side. Until the surface is measured the drawer stays: a column
+ * drawn before a fold is known could straddle it. Whatever is chosen stays off
+ * every fold: a single pane takes the largest span the folds leave, not the
+ * whole surface — except a page, whose pair surface keeps itself off the folds
+ * it cannot use and is handed the ones it can.
  */
 export function deriveShell(input: ShellInput): ShellArrangement {
   const { bounds, fontScale, insets, previous, rtl } = input;
@@ -314,24 +313,23 @@ export function deriveShell(input: ShellInput): ShellArrangement {
     ),
     false,
   );
-  const columns = shellColumns();
-  const sidebarRect = columns.sidebar === null ? null : rectOf(columns.sidebar, band);
-  // A page with its conversation arranges itself around the folds — tabletop
-  // at a horizontal one, side by side at a vertical one — in its own surface,
-  // which must contain them to see them. The shell hands it every fold the
-  // sidebar does not keep it from: beside a column, its whole height.
-  const content = !input.aroundFolds
-    ? rectOf(columns.content, band)
-    : columns.sidebar === null
+  // A page arranges itself and its occupant's Thread around the folds —
+  // tabletop at a horizontal one, side by side at a vertical one — in its own
+  // surface, which must contain them to see them.
+  const columns = input.page ? null : shellColumns();
+  const sidebarRect =
+    columns === null || columns.sidebar === null ? null : rectOf(columns.sidebar, band);
+  const content =
+    columns === null
       ? { height: bounds.height, width: bounds.width, x: 0, y: 0 }
-      : rectOf(columns.content, { end: bounds.height, start: 0 });
+      : rectOf(columns.content, band);
   const leading = rtl ? xs[xs.length - 1]! : xs[0]!;
   return {
     content,
     contentClearance: occlusionClearance(content, regions.occlusions),
     leadingRoom: rtl ? bounds.width - leading.start : leading.end,
     sidebar:
-      columns.sidebar === null
+      columns === null || columns.sidebar === null
         ? { mode: "drawer" }
         : {
             gap: between(columns.sidebar, columns.content),
@@ -396,14 +394,16 @@ export interface PairInput {
  * it is never inferred from the shape of the window.
  */
 export function derivePagePair(input: PairInput): {
+  /** Where the page goes with nothing beside it: off every fold, on the largest span. */
+  readonly alone: Rect;
   readonly pair: PagePair;
   readonly region: Rect;
 } {
   const { bounds, fontScale, insets, previous, rtl } = input;
   const whole = { height: bounds.height, width: bounds.width, x: 0, y: 0 };
-  if (!usable(bounds)) return { pair: previous, region: whole };
+  if (!usable(bounds)) return { alone: whole, pair: previous, region: whole };
   const stacked = { mode: "stacked" } as const;
-  if (!input.ready) return { pair: stacked, region: whole };
+  if (!input.ready) return { alone: whole, pair: stacked, region: whole };
   const regions = surfaceRegions(bounds, input.regions);
   const xs = freeSpans(
     bounds.width,
@@ -414,6 +414,8 @@ export function derivePagePair(input: PairInput): {
     regions.horizontal.map((rect) => ({ end: rect.y + rect.height, start: rect.y })),
   );
   const conversation = scaled(conversationWidth, fontScale);
+  const tall = longest(ys, false);
+  const alone = rectOf(longest(xs, rtl), tall);
 
   if (ys.length > 1) {
     const needed =
@@ -429,6 +431,7 @@ export function derivePagePair(input: PairInput): {
     if (fold !== null) {
       const across = longest(xs, rtl);
       return {
+        alone,
         pair: {
           gap: between(fold.leading, fold.trailing),
           mode: "tabletop",
@@ -439,8 +442,7 @@ export function derivePagePair(input: PairInput): {
     }
   }
 
-  const tall = longest(ys, false);
-  const stackedRegion = { pair: stacked, region: rectOf(longest(xs, rtl), tall) };
+  const stackedRegion = { alone, pair: stacked, region: alone };
   if (length(tall) < pairMinimumHeight) return stackedRegion;
   const entering = previous.mode !== "side";
   const conversationNeeded = conversation + (entering ? hysteresis : 0);
@@ -456,6 +458,7 @@ export function derivePagePair(input: PairInput): {
     const start = Math.min(split.leading.start, split.trailing.start);
     const end = Math.max(split.leading.end, split.trailing.end);
     return {
+      alone,
       pair: {
         gap: between(split.leading, split.trailing),
         mode: "side",
@@ -472,6 +475,7 @@ export function derivePagePair(input: PairInput): {
     scaled(conversationMaximumWidth, fontScale),
   );
   return {
+    alone,
     pair: { gap: 0, mode: "side", pageWidth: Math.round(length(span) - conversationShare) },
     region: rectOf(span, tall),
   };

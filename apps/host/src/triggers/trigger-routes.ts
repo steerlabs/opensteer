@@ -96,7 +96,13 @@ export async function handleTriggerCommand(
       };
     case "trigger.run":
       return {
-        occurrence: await triggers.run(ownerId, command.triggerId, command.payload, null),
+        occurrence: await triggers.run(
+          ownerId,
+          command.triggerId,
+          command.payload,
+          null,
+          command.idempotencyKey,
+        ),
         type: command.type,
       };
     case "trigger.cancel":

@@ -1796,6 +1796,24 @@ describe("a page and its agent's thread around what the system reserves", () => 
     });
   });
 
+  it("keeps a page with nobody beside it to one side of a hinge the pair would be split at", () => {
+    state.pair = { height: 900, width: 1000 };
+    state.regions = [
+      { frame: { height: 900, width: 20, x: 480, y: 0 }, kind: "division", occludesContent: true },
+    ];
+    const opened = setup({ sessionId: "browser-child", tabId: "page-1" });
+    state.snapshot = withAgents([occupied("browser-child", [])]);
+    opened.render();
+    expect(opened.container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
+    // Room for two at the hinge, but alone the page takes the larger side of it whole.
+    expect(styleOf(opened.container, '[data-testid="pair-side"]')).toMatchObject({
+      paddingBottom: 0,
+      paddingEnd: 0,
+      paddingStart: 500,
+      paddingTop: 0,
+    });
+  });
+
   it("clears an obstruction from where the conversation is while tabletop gives way to the keyboard", () => {
     state.pair = { height: 900, width: 900 };
     state.regions = [

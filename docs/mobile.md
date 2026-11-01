@@ -84,7 +84,8 @@ also makes Chat unread. Mark only published content actually shown at latest.
 Layout changes preserve drafts, scroll, streams and navigation. Use measured pane
 geometry, reserved folds and text size, not device names; cancel a pointer gesture
 if its target geometry changes. Room alone decides whether the sidebar docks,
-but a page and Thread pair uses both panes without a sidebar: never three panes.
+except that a page in front takes its side, for itself and its occupant's
+Thread, however the page was reached: never three panes.
 Sources: `apps/mobile/src/layout.ts`, `src/sidebar` and
 `src/screens/workspace-browser*`.
 

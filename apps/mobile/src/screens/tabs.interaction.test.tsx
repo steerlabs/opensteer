@@ -1951,7 +1951,7 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
 });
 
 describe("J8: one sidebar switches between tasks and tabs", () => {
-  it("docks beside a tab chosen from it, switches straight to a task and back, and keeps the page through a fold", async () => {
+  it("gives a tab chosen from it the sidebar's room, switches straight to a task and back, and keeps the page through a fold", async () => {
     harness.frame = { height: 1133, width: 744 };
     harness.pair = { height: 1133, width: 424 };
     const w = await world();
@@ -1970,19 +1970,20 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
     if (roadmap === undefined || dinner === undefined) throw new Error("Too few live tabs.");
     const later = places.slice(5).find((place) => place.kind === "browser")!;
     const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
+    const sidebarColumn = () => w.container.querySelector('[data-testid="sidebar-column"]');
 
-    // The tab, exactly, beside the sidebar; nothing else comes with it.
+    // The tab, exactly, in the sidebar's room: never three panes.
     await press(row(dockedSidebar(w), roadmap.title));
     expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
       ["Home", { deploymentId }],
       ["WorkspaceBrowser", aloneRoute(roadmap)],
     ]);
     expect(front(w).querySelector("[data-page]")).not.toBeNull();
-    expect(front(w).querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    expect(row(dockedSidebar(w), roadmap.title).getAttribute("aria-selected")).toBe("true");
-    expect(row(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("false");
+    expect(sidebarColumn()).toBeNull();
 
-    // Straight to a task, and straight to another tab: each in place of the last.
+    // Back to Chat docks the sidebar again; a task, then another tab, each in place of the last.
+    await act(async () => w.stack.navigation(w.stack.top.key).goBack());
+    expect(w.stack.routes[0]!.key).toBe(home.key);
     await press(row(dockedSidebar(w), "Switch Slack to Opensteer"));
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Thread"]);
     expect(w.stack.top.params).toMatchObject({ threadId: taskA });
@@ -1992,34 +1993,29 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
       ["WorkspaceBrowser", aloneRoute(dinner)],
     ]);
     expect(w.stack.routes[0]!.key).toBe(home.key);
-    expect(row(dockedSidebar(w), dinner.title).getAttribute("aria-selected")).toBe("true");
+    expect(sidebarColumn()).toBeNull();
 
-    // Folded to the cover screen: the same page, in front, with the sidebar a drawer.
+    // Folded to the cover screen and back: the same page, never remounted.
     const pages = [...harness.pageMounts];
     harness.frame = { height: 748, width: 344 };
     await w.render();
-    expect(w.container.querySelector('[data-testid="sidebar-column"]')).toBeNull();
     expect(w.stack.top.params).toEqual(aloneRoute(dinner));
     expect(harness.pageMounts).toEqual(pages);
     expect(front(w).querySelector("[data-page]")).not.toBeNull();
-    expect(front(w).querySelector('[data-testid="conversation-slot"]')).toBeNull();
-
-    // The overview is still there, as the group's last row.
     harness.frame = { height: 1133, width: 744 };
     await w.render();
+    expect(harness.pageMounts).toEqual(pages);
+    expect(sidebarColumn()).toBeNull();
+
+    // The overview is still there, as the group's last row, and opens a tab past the few listed.
+    await act(async () => w.stack.navigation(w.stack.top.key).goBack());
     await press(control(dockedSidebar(w), "All tabs"));
     expect(w.stack.routes.map(({ name, params }) => [name, params])).toEqual([
       ["Home", { deploymentId }],
       ["Tabs", { deploymentId }],
     ]);
-    // A tab past the few listed, opened from there, is listed while it is open.
-    const listed = (title: string) =>
-      buttons(dockedSidebar(w)).some((button) =>
-        button.getAttribute("aria-label")?.startsWith(`${title}, `),
-      );
-    expect(listed(later.title)).toBe(false);
     await press(row(front(w), later.title));
-    expect(row(dockedSidebar(w), later.title).getAttribute("aria-selected")).toBe("true");
+    expect(w.stack.top.params).toEqual(aloneRoute(later));
     expect(w.calls.creates).toEqual([]);
     w.record("J8 docked switching");
   });

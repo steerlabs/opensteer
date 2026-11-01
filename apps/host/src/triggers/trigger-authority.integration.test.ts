@@ -956,16 +956,19 @@ integration.sequential("Trigger authority through real Host services and Postgre
             context,
           );
         }
-        await handleTriggerCommand(
-          triggers,
-          {
-            idempotencyKey: randomUUID(),
-            payload: { route: true },
-            triggerId: created.trigger.id,
-            type: "trigger.run",
-          },
-          context,
-        );
+        const runCommand = {
+          idempotencyKey: randomUUID(),
+          payload: { route: true },
+          triggerId: created.trigger.id,
+          type: "trigger.run" as const,
+        };
+        const [firstRun, retriedRun] = await Promise.all([
+          handleTriggerCommand(triggers, runCommand, context),
+          handleTriggerCommand(triggers, runCommand, context),
+        ]);
+        expect(retriedRun).toEqual(firstRun);
+        const runDetail = await triggers.get(f.ownerId, created.trigger.id, 25, { kind: "user" });
+        expect(runDetail.occurrences).toHaveLength(1);
         await handleTriggerCommand(
           triggers,
           { idempotencyKey: randomUUID(), triggerId: created.trigger.id, type: "trigger.cancel" },

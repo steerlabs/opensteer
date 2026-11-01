@@ -4,6 +4,7 @@ import {
   HostClientRequestError,
   conversationName,
   mutationIdempotencyKey,
+  schedulesClient,
   unwrapRpcResult,
   type HostClient,
   type HostSnapshot,
@@ -243,13 +244,17 @@ function AutomationView({
 
   const runNow = () =>
     act(async () => {
-      await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`trigger-run:${trigger.id}`),
-        payload: { requestedFrom: "web" },
-        triggerId: trigger.id,
-        type: "trigger.run",
-      });
-      await refresh();
+      const schedules = schedulesClient(client);
+      try {
+        const confirmed = await schedules.act(trigger.id, "run", undefined, {
+          requestedFrom: "web",
+        });
+        onChanged(confirmed.definition);
+      } catch (error) {
+        const state = schedules.detail(trigger.id).getSnapshot();
+        if (state.status === "ready") onChanged(state.data.definition);
+        throw error;
+      }
       return "Running now";
     });
 
