@@ -10,6 +10,7 @@ import {
   type HarnessEvent,
   type HarnessRunInput,
   type HarnessSessionContext,
+  type SupervisedProcess,
 } from "@opensteer/harness";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -76,6 +77,60 @@ describe("ACP lifecycle", () => {
     await observed.done;
     expect(observed.events.map((event) => event.type)).toContain("run.failed");
     expect(observed.events.map((event) => event.type)).not.toContain("run.completed");
+    await fixture.adapter.close();
+  });
+
+  it("publishes observed usage once before successful completion", async () => {
+    const fixture = await setup("usage-success");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("succeed"));
+    await expectTerminal(observed.events, "run.completed");
+    expectUsageBeforeTerminal(observed.events, "run.completed");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
+  it("publishes observed usage once before a rejected prompt fails", async () => {
+    const fixture = await setup("usage-prompt-error");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("fail"));
+    await expectTerminal(observed.events, "run.failed");
+    expectUsageBeforeTerminal(observed.events, "run.failed");
+    await session.stop();
+    await observed.done;
+    await fixture.adapter.close();
+  });
+
+  it("publishes observed usage once before an unexpected process exit fails", async () => {
+    const fixture = await setup("usage-process-exit");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    await session.execute(fixture.turn("lose process"));
+    await expectTerminal(observed.events, "run.failed");
+    expectUsageBeforeTerminal(observed.events, "run.failed");
+    await observed.done.catch(() => undefined);
+    await session.stop();
+    await fixture.adapter.close();
+  });
+
+  it("publishes observed usage once before cancel-and-kill interruption", async () => {
+    const fixture = await setup("usage-interruption");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    const controller = new AbortController();
+    const execution = session.execute(fixture.turn("stop", controller.signal));
+    await vi.waitFor(() => {
+      expect(observed.events.some((event) => event.type === "run.started")).toBe(true);
+    });
+    controller.abort(new Error("person stopped the Run"));
+    await execution;
+    await expectTerminal(observed.events, "run.interrupted");
+    expectUsageBeforeTerminal(observed.events, "run.interrupted");
+    await session.stop();
+    await observed.done;
     await fixture.adapter.close();
   });
 
@@ -185,7 +240,15 @@ describe("ACP boundaries", () => {
   });
 });
 
-type Scenario = "background" | "permission" | "prompt-error" | "replay";
+type Scenario =
+  | "background"
+  | "permission"
+  | "prompt-error"
+  | "replay"
+  | "usage-interruption"
+  | "usage-process-exit"
+  | "usage-prompt-error"
+  | "usage-success";
 
 async function setup(scenario: Scenario) {
   const directory = await temporaryDirectory();
@@ -254,9 +317,17 @@ async function setup(scenario: Scenario) {
     },
   };
   let handlers: AcpProtocolHandlers | undefined;
-  const createClient = (input: { readonly handlers: AcpProtocolHandlers }): AcpProtocolClient => {
+  const createClient = (input: {
+    readonly handlers: AcpProtocolHandlers;
+    readonly process: SupervisedProcess;
+  }): AcpProtocolClient => {
     handlers = input.handlers;
-    return fakeClient(scenario, input.handlers, (choice) => selectedPermissions.push(choice));
+    return fakeClient(
+      scenario,
+      input.handlers,
+      (choice) => selectedPermissions.push(choice),
+      input.process,
+    );
   };
   const adapter = new AcpHarnessAdapter(instanceId, options, {
     createClient: createClient as typeof import("./protocol.js").createAcpProtocolClient,
@@ -303,7 +374,7 @@ async function setup(scenario: Scenario) {
     adapter,
     context,
     selectedPermissions,
-    turn(text: string): HarnessRunInput {
+    turn(text: string, signal = new AbortController().signal): HarnessRunInput {
       return {
         context: {
           assignment: null,
@@ -328,7 +399,7 @@ async function setup(scenario: Scenario) {
         reports: { messages: [], omittedCount: 0, throughSequence: null },
         requestedBy: createId("user"),
         runId: createId("run"),
-        signal: new AbortController().signal,
+        signal,
       };
     },
   };
@@ -338,6 +409,7 @@ function fakeClient(
   scenario: Scenario,
   handlers: AcpProtocolHandlers,
   selected: (choice: string) => void,
+  process: SupervisedProcess,
 ): AcpProtocolClient {
   return {
     authenticate: async () => undefined,
@@ -353,6 +425,23 @@ function fakeClient(
     }),
     newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
     prompt: async () => {
+      if (scenario.startsWith("usage-")) {
+        handlers.update("new-session", {
+          sessionUpdate: "usage_update",
+          usage: { inputTokens: 11, outputTokens: 7, thoughtTokens: 3 },
+        });
+        if (scenario === "usage-prompt-error") throw new Error("prompt RPC failed");
+        if (scenario === "usage-process-exit") {
+          await process.terminate();
+          await process.exited;
+          throw new Error("ACP process exited");
+        }
+        if (scenario === "usage-interruption") {
+          await process.exited;
+          throw new Error("ACP process exited");
+        }
+        return { stopReason: "end_turn" };
+      }
       if (scenario === "background") {
         handlers.update("new-session", { sessionUpdate: "child-started" });
         return { stopReason: "end_turn" };
@@ -404,6 +493,30 @@ function observe(events: AsyncIterable<HarnessEvent>) {
     for await (const event of events) collected.push(event);
   })();
   return { done, events: collected };
+}
+
+function expectUsageBeforeTerminal(
+  events: readonly HarnessEvent[],
+  terminal: "run.completed" | "run.failed" | "run.interrupted",
+): void {
+  const usage = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === "run.usage");
+  expect(usage).toHaveLength(1);
+  expect(usage[0]?.event).toMatchObject({
+    data: { inputTokens: 11, outputTokens: 7, reasoningTokens: 3 },
+    type: "run.usage",
+  });
+  expect(usage[0]?.index).toBeLessThan(events.findIndex((event) => event.type === terminal));
+}
+
+async function expectTerminal(
+  events: readonly HarnessEvent[],
+  terminal: "run.completed" | "run.failed" | "run.interrupted",
+): Promise<void> {
+  await vi.waitFor(() => {
+    expect(events.some((event) => event.type === terminal)).toBe(true);
+  });
 }
 
 async function temporaryDirectory(): Promise<string> {

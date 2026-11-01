@@ -1,5 +1,5 @@
-import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
-import { access, writeFile } from "node:fs/promises";
+import { ensurePrivateDirectory, setFileMode } from "@opensteer/shared/privateFiles";
+import { access, copyFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import type { HarnessProviderState } from "@opensteer/harness";
@@ -136,4 +136,44 @@ export async function prepareAntigravityLaunch(input: {
       tokenPath: join(acpDirectory, "acp_token.json"),
     },
   };
+}
+
+export async function prepareAntigravityTitleLaunch(
+  input: Parameters<typeof prepareAntigravityLaunch>[0] & { readonly directory: string },
+): Promise<AntigravityLaunch> {
+  const profileDirectory = join(input.directory, "home");
+  const launch = await prepareAntigravityLaunch({
+    ...input,
+    baseEnvironment: {
+      ...input.baseEnvironment,
+      CLOUDSDK_CONFIG: join(input.directory, "gcloud"),
+      HOME: input.directory,
+      XDG_CONFIG_HOME: join(input.directory, "config"),
+      XDG_DATA_HOME: join(input.directory, "data"),
+    },
+    providerState: {
+      ...input.providerState,
+      privateStateRoot: input.directory,
+      providerHomeDirectory: profileDirectory,
+      store: { directory: profileDirectory, id: input.providerState.store.id },
+    },
+  });
+  const authenticationFile =
+    input.authMethod === "oauth-personal"
+      ? "acp_token.json"
+      : input.authMethod === "oauth-business"
+        ? "acp_business_token.json"
+        : undefined;
+  if (authenticationFile && input.providerState.providerHomeDirectory) {
+    try {
+      await copyFile(
+        join(input.providerState.providerHomeDirectory, "antigravity-acp", authenticationFile),
+        join(launch.profile.acpDirectory, authenticationFile),
+      );
+      await setFileMode(join(launch.profile.acpDirectory, authenticationFile), 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return launch;
 }
