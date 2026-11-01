@@ -465,7 +465,7 @@ function ConversationMenu({
   readonly label: string;
   readonly onClose: () => void;
   /** Docked beside the computer, the header keeps only the name, so the view's own actions are here. */
-  readonly view: { readonly expand: () => void; readonly find: () => void } | null;
+  readonly view: { readonly expand: () => void; readonly find: (() => void) | null } | null;
 }) {
   const [asking, setAsking] = useState(false);
   return (
@@ -488,15 +488,17 @@ function ConversationMenu({
                 ⌘.
               </kbd>
             </button>
-            <button className="picker__row" onClick={view.find} type="button">
-              <span className="picker__glyph">
-                <Icon name="search" />
-              </span>
-              <span className="picker__label">Find in conversation</span>
-              <kbd aria-hidden className="kbd">
-                ⌘F
-              </kbd>
-            </button>
+            {view.find ? (
+              <button className="picker__row" onClick={view.find} type="button">
+                <span className="picker__glyph">
+                  <Icon name="search" />
+                </span>
+                <span className="picker__label">Find in conversation</span>
+                <kbd aria-hidden className="kbd">
+                  ⌘F
+                </kbd>
+              </button>
+            ) : null}
           </div>
         )}
         {actions ? actions(setAsking) : null}
@@ -532,9 +534,14 @@ export function AreaHeader({
 }: {
   readonly hostClient: HostClient;
   readonly mark?: ReactNode;
-  readonly title: ReactNode;
+  readonly title: string;
 }) {
   const { drawer, nav, phone, work } = useWorkspace();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLButtonElement | null>(null);
+  // Docked, its name opens the menu a conversation's does, so Expand is found
+  // in one place beside the computer.
+  const docked = work && !phone;
   return (
     <header className="conv-header conv-header--area">
       <div className="conv-header__bar">
@@ -542,10 +549,23 @@ export function AreaHeader({
         {mark ? <span className="conv-header__mark">{mark}</span> : null}
         <div className="conv-header__text">
           <h1 className="conv-header__title">
-            <span className="conv-header__name conv-header__name--static">{title}</span>
+            {docked ? (
+              <button
+                aria-expanded={menuOpen}
+                aria-haspopup="dialog"
+                className="conv-header__menu"
+                onClick={() => setMenuOpen((value) => !value)}
+                ref={menuRef}
+                type="button"
+              >
+                <span className="conv-header__name">{title}</span>
+                <Icon className="conv-header__chevron" name="chevron-down" />
+              </button>
+            ) : (
+              <span className="conv-header__name conv-header__name--static">{title}</span>
+            )}
           </h1>
         </div>
-        {/* Beside the computer the place's bar holds the way to put this away. */}
         {work || phone ? null : (
           <div className="conv-header__end">
             <div className="conv-header__actions">
@@ -562,6 +582,21 @@ export function AreaHeader({
           </div>
         )}
       </div>
+      {docked && menuOpen && menuRef.current ? (
+        <ConversationMenu
+          actions={null}
+          anchor={menuRef.current}
+          label={title}
+          onClose={() => setMenuOpen(false)}
+          view={{
+            expand: () => {
+              setMenuOpen(false);
+              nav.hideComputer();
+            },
+            find: null,
+          }}
+        />
+      ) : null}
     </header>
   );
 }

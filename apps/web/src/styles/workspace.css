@@ -144,6 +144,10 @@
   background: var(--surface-elevated);
 }
 
+.place > .place-state {
+  flex: 1;
+}
+
 .place-state__title {
   color: var(--text-soft);
   font-size: var(--text-xl);

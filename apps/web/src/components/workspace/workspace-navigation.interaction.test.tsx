@@ -417,6 +417,19 @@ describe("the conversation survives layout changes", () => {
     expect(element("[data-composer-input]")).toBe(field);
     expect(field.value).toBe("Keep this");
   });
+
+  it("a docked page without a conversation still expands from its name", async () => {
+    await mount((source) => `/tasks${tabSearch(pageTab(source))}`);
+    expect(document.querySelector(".conv-header--area .conv-header__actions")).toBeNull();
+    await click(element(".conv-header--area .conv-header__menu"));
+    const expand = [
+      ...document.querySelectorAll<HTMLButtonElement>(".popover--conversation-menu button"),
+    ].find((button) => button.textContent?.startsWith("Expand chat"));
+    expect(expand).toBeDefined();
+    await click(expand!);
+    expect(document.querySelector(".place")).toBeNull();
+    expect(element(".conv-header--area .conv-header__name").textContent).toBe("Tasks");
+  });
 });
 
 describe("breakpoints change layout, never the conversation", () => {

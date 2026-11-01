@@ -258,9 +258,16 @@ export const PlaceStage = memo(function PlaceStage({
           trailing={trailing}
         />
       ) : destination.computerSessionId === undefined ? (
-        <div className="place-state" role="status">
-          This view is not available in this client.
-        </div>
+        <>
+          <div className="surface-row">
+            {leading}
+            <span className="launcher__spacer" />
+            {trailing}
+          </div>
+          <div className="place-state" role="status">
+            This view is not available in this client.
+          </div>
+        </>
       ) : (
         <ComputerWatchView
           app={place?.icon.kind === "app" ? place.icon.app : null}
