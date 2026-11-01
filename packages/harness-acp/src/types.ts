@@ -54,6 +54,8 @@ export interface AcpSessionPolicy {
         readonly modelCategory: "model";
         readonly effortCategory: "thought_level";
         readonly effortOptionId: string;
+        /** Suffixes older sessions encoded onto a currently offered model id. */
+        readonly legacyModelSuffixes?: readonly string[];
       };
 }
 
