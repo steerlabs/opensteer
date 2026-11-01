@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
+import { setFileMode } from "@opensteer/shared/privateFiles";
 import {
-  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -157,7 +157,7 @@ async function inspectExtractedRelease(
     if (!details.isFile() || details.isSymbolicLink() || details.size !== member.sizeBytes) {
       throw new Error(`The Antigravity archive member ${member.name} is invalid`);
     }
-    await chmod(join(directory, member.name), 0o755);
+    await setFileMode(join(directory, member.name), 0o755);
   }
 }
 

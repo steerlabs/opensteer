@@ -5,6 +5,7 @@ import {
   ModelProviderIdSchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 import { HarnessRegistry } from "./registry.js";
@@ -490,7 +491,9 @@ describe("HarnessRegistry instance reconciliation", () => {
       retryable: true,
     });
     finish();
-    await prepared;
+    await withTimeout(prepared, 2_000, {
+      timeoutError: () => new Error("Timed out completing harness preparation"),
+    });
     await nextTask();
     await expect(registry.adapter(definition.id)).resolves.toMatchObject({
       instanceId: definition.id,

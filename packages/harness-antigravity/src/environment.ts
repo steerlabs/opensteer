@@ -1,4 +1,5 @@
-import { access, chmod, mkdir, writeFile } from "node:fs/promises";
+import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
+import { access, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import type { HarnessProviderState } from "@opensteer/harness";
@@ -84,11 +85,8 @@ export async function prepareAntigravityLaunch(input: {
   }
   const geminiHome = resolve(input.providerState.providerHomeDirectory);
   const acpDirectory = join(geminiHome, "antigravity-acp");
-  await mkdir(acpDirectory, { mode: 0o700, recursive: true });
-  if (process.platform !== "win32") {
-    await chmod(geminiHome, 0o700);
-    await chmod(acpDirectory, 0o700);
-  }
+  await ensurePrivateDirectory(geminiHome, "Antigravity profile must be a real directory");
+  await ensurePrivateDirectory(acpDirectory, "Antigravity state must be a real directory");
   const gcp = {
     ...(input.config.gcpProject ? { project: input.config.gcpProject } : {}),
     ...(input.config.gcpLocation ? { location: input.config.gcpLocation } : {}),

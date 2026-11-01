@@ -888,10 +888,12 @@ class AntigravityAdapter implements HarnessAdapter {
     );
     let sessionId: string | undefined;
     let cleanupError: unknown;
+    let result: string | undefined;
+    let resultError: unknown;
     try {
       const base = await this.#launch({ ...context, workspacePath: scratch });
       const launch: HarnessProcessLaunch = context.wrapProcessLaunch({ ...base, cwd: scratch });
-      const result = await generateContainedAcpTitle({
+      const generated = await generateContainedAcpTitle({
         authenticationMethod: this.#authMethod,
         clientInfo: { name: "zed", version: "0.0.0" },
         initializeDeadlineMs,
@@ -912,23 +914,27 @@ class AntigravityAdapter implements HarnessAdapter {
         signal: input.signal,
         transformStdout: (stdout) => transformAntigravityStdout(stdout),
       });
-      return result.text;
-    } finally {
-      try {
-        await removeTemporaryAntigravitySession({
-          cwd: scratch,
-          profileDirectory: context.providerState.providerHomeDirectory!,
-          sessionId,
-        });
-        if ((await readdir(scratch)).length > 0) {
-          cleanupError = new Error("Antigravity wrote files while naming the Thread");
-        }
-      } catch (error) {
-        cleanupError = error;
-      }
-      await rm(scratch, { force: true, recursive: true });
-      if (cleanupError) throw cleanupError;
+      result = generated.text;
+    } catch (error) {
+      resultError = error;
     }
+    try {
+      await removeTemporaryAntigravitySession({
+        cwd: scratch,
+        profileDirectory: context.providerState.providerHomeDirectory!,
+        sessionId,
+      });
+      if ((await readdir(scratch)).length > 0) {
+        cleanupError = new Error("Antigravity wrote files while naming the Thread");
+      }
+    } catch (error) {
+      cleanupError = error;
+    }
+    await rm(scratch, { force: true, recursive: true });
+    if (resultError) throw resultError;
+    if (cleanupError) throw cleanupError;
+    if (result === undefined) throw new Error("Antigravity did not return a Thread title");
+    return result;
   }
 }
 
