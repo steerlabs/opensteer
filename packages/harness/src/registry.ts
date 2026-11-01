@@ -536,10 +536,12 @@ export class HarnessRegistry {
       });
     }
     const state = this.#definitionState(definition);
-    this.#instances.set(definition.id, { definition: state.definition, state });
-    return state;
+    const entry = { definition: state.definition, state };
+    this.#instances.set(definition.id, entry);
+    return this.#currentState(entry);
   }
 
+  /** What the definition itself allows, independent of what is installed right now. */
   #definitionState(definition: HarnessInstanceDefinition): HarnessInstanceState {
     const registered = this.#drivers.get(definition.driverKind);
     if (!registered) {
@@ -549,23 +551,31 @@ export class HarnessRegistry {
         status: "unavailable",
       };
     }
-    const readiness = this.#availability(registered).readiness;
-    const parsed = registered.driver.configSchema.safeParse(definition.config);
-    const normalized = parsed.success ? { ...definition, config: parsed.data } : definition;
-    if (readiness.status === "unavailable") {
-      return {
-        definition: normalized,
-        reason: readiness.reason,
-        status: "unavailable",
-      };
+    if (registered.readiness.status === "unavailable") {
+      return { definition, reason: registered.readiness.reason, status: "unavailable" };
     }
+    const parsed = registered.driver.configSchema.safeParse(definition.config);
     return parsed.success
-      ? { definition: normalized, status: "available" }
+      ? { definition: { ...definition, config: parsed.data }, status: "available" }
       : {
           definition,
           reason: parsed.error.issues.map((issue) => issue.message).join("; "),
           status: "unavailable",
         };
+  }
+
+  /**
+   * An instance's state as of now. A person's CLI can be removed or restored at
+   * any moment, so installation is read on every use instead of being stored
+   * with the instance, where it would outlive the install it described.
+   */
+  #currentState(entry: RegistryEntry): HarnessInstanceState {
+    if (entry.state.status === "unavailable") return entry.state;
+    const registered = this.#drivers.get(entry.definition.driverKind);
+    const readiness = registered && this.#availability(registered).readiness;
+    return readiness?.status === "unavailable"
+      ? { definition: entry.state.definition, reason: readiness.reason, status: "unavailable" }
+      : entry.state;
   }
 
   /**
@@ -602,8 +612,11 @@ export class HarnessRegistry {
       }
       const nextDefinition = { ...existing.state.definition, name: candidate.name };
       existing.definition = nextDefinition;
-      existing.state = this.#definitionState(nextDefinition);
-      return existing.state;
+      existing.state =
+        existing.state.status === "available"
+          ? { definition: nextDefinition, status: "available" }
+          : { definition: nextDefinition, reason: existing.state.reason, status: "unavailable" };
+      return this.#currentState(existing);
     }
 
     // The doomed entry leaves the lookup table before its adapter is awaited,
@@ -670,11 +683,12 @@ export class HarnessRegistry {
   }
 
   listInstances(): readonly HarnessInstanceState[] {
-    return [...this.#instances.values()].map((entry) => entry.state);
+    return [...this.#instances.values()].map((entry) => this.#currentState(entry));
   }
 
   state(instanceId: HarnessInstanceId): HarnessInstanceState | undefined {
-    return this.#instances.get(instanceId)?.state;
+    const entry = this.#instances.get(instanceId);
+    return entry && this.#currentState(entry);
   }
 
   adapter(instanceId: HarnessInstanceId): Promise<HarnessAdapter> {
@@ -689,8 +703,9 @@ export class HarnessRegistry {
         message: `Harness instance ${instanceId} is not configured`,
       });
     }
-    if (entry.state.status === "unavailable") {
-      throw new OpensteerError({ code: "harness_error", message: entry.state.reason });
+    const state = this.#currentState(entry);
+    if (state.status === "unavailable") {
+      throw new OpensteerError({ code: "harness_error", message: state.reason });
     }
     if (entry.adapterPromise) return entry.adapterPromise;
     const registered = this.#drivers.get(entry.definition.driverKind);

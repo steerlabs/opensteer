@@ -879,7 +879,7 @@ describe("HarnessRegistry installed engines", () => {
       expect(registry.driverSources(driverKind)).toEqual(sources);
       expect(registry.driverAccessModes(driverKind)).toEqual(shipped.accessModes);
       expect(registry.driverCapabilities(driverKind)).toEqual(shipped.capabilities);
-      await registry.reconcileInstances([ambient]);
+      // Installing the CLI needs no reconciliation: availability is read live.
       expect(registry.state(ambient.id)).toEqual({ definition: configured, status: "available" });
       await expect(
         inspect(registry, ambient, undefined, ambientProviderState),
@@ -895,8 +895,8 @@ describe("HarnessRegistry installed engines", () => {
       });
       await expect(registry.adapter(ambient.id)).rejects.toMatchObject({ message: missing });
 
+      // Reconciled while the CLI was missing, then restored: nothing stale remains.
       installed = "/home/person/bin/engine";
-      await registry.reconcileInstances([ambient]);
       expect(registry.listInstances()).toEqual([{ definition: configured, status: "available" }]);
       await expect(
         inspect(registry, ambient, undefined, ambientProviderState),
