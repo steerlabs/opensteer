@@ -2044,6 +2044,123 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("ends an updater that never finishes and frees the engine for new work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-update-deadline-"));
+    const pidFile = join(root, "updater.pid");
+    const driverKind = HarnessIdSchema.parse("installed-update-deadline-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const descriptor = {
+      latestVersion: "2.0.0",
+      scope: "all" as const,
+      update: "available" as const,
+      version: "1.0.0",
+    };
+    vi.spyOn(registry, "driverInstallation")
+      .mockResolvedValueOnce({
+        descriptor,
+        plan: {
+          args: [
+            "-e",
+            "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30);",
+            pidFile,
+          ],
+          environment: {},
+          executable: process.execPath,
+          serializationKey: "test:update-deadline",
+        },
+      })
+      .mockResolvedValue({
+        descriptor,
+        plan: {
+          args: ["-e", ""],
+          environment: {},
+          executable: process.execPath,
+          serializationKey: "test:update-deadline",
+        },
+      });
+    const invalidateDriver = vi.spyOn(registry, "invalidateDriver");
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const statuses = () =>
+      messages.flatMap((message) =>
+        message.type === "runner.harness-installation" ? [message.installation] : [],
+      );
+    let updaterPid: number | undefined;
+    let updaterEnded = false;
+
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      updaterPid = await vi.waitFor(
+        async () => {
+          const pid = Number(await readFile(pidFile, "utf8"));
+          if (!Number.isInteger(pid) || pid <= 0) throw new Error("The updater never started");
+          return pid;
+        },
+        { timeout: 2_000 },
+      );
+
+      await vi.advanceTimersByTimeAsync(15 * 60_000 - 1);
+      expect(() => process.kill(updaterPid!, 0)).not.toThrow();
+      expect(statuses().map(({ update }) => update)).toEqual(["updating"]);
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({ error: { code: "conflict" }, status: "rejected" });
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(
+        () =>
+          expect(statuses().at(-1)).toMatchObject({
+            detail: "The update didn't finish in time.",
+            update: "failed",
+            version: "1.0.0",
+          }),
+        { timeout: 2_000 },
+      );
+      expect(() => process.kill(updaterPid!, 0)).toThrow(
+        expect.objectContaining({ code: "ESRCH" }),
+      );
+      updaterEnded = true;
+      expect(invalidateDriver).toHaveBeenCalledWith(driverKind);
+      await vi.waitFor(
+        async () =>
+          expect(
+            await runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+          ).toEqual({ status: "accepted" }),
+        { timeout: 2_000 },
+      );
+      vi.useRealTimers();
+      await vi.waitFor(
+        () =>
+          expect(statuses().map(({ update }) => update)).toEqual([
+            "updating",
+            "failed",
+            "updating",
+            "succeeded",
+            "available",
+          ]),
+        { timeout: 2_000 },
+      );
+    } finally {
+      vi.useRealTimers();
+      if (updaterPid !== undefined && !updaterEnded) {
+        try {
+          process.kill(updaterPid, "SIGKILL");
+        } catch {
+          // Already ended by the Runner.
+        }
+      }
+      await runtime.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("replays successful update status and catalog invalidation after reconnect", async () => {
     const driverKind = HarnessIdSchema.parse("installed-update-success-replay-test");
     const driver = catalogDriver(driverKind);
@@ -5748,6 +5865,6 @@ function deferred<Value>(): {
 }
 import { mkdtempSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

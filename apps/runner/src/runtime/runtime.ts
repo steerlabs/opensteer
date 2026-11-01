@@ -318,6 +318,13 @@ const executionStopGraceMs = 3_000;
 const uncontainedRetryMs = 5_000;
 /** Matches the Host coordinator's hard attempt lifetime so neither side outlives the other. */
 const harnessAuthenticationLifetimeMs = 15 * 60_000;
+/**
+ * An updater holds the engine's maintenance reservation, refusing its Runs and
+ * sign-ins, until it ends. Long enough for Homebrew to refresh itself and then
+ * download a few hundred megabytes on a slow home link; ending a healthy
+ * install midway can leave the engine broken.
+ */
+const engineUpdateDeadlineMs = 15 * 60_000;
 const requestCancellationReserveBytes = 2_048;
 const toolDeltaOmissionMarker = "\n… additional live output omitted; final tool output follows …\n";
 const toolDeltaContentMaxBytes = toolOutputTextMaxBytes - utf8ByteLength(toolDeltaOmissionMarker);
@@ -1450,11 +1457,24 @@ export class RunnerRuntime {
           maxOutputBytes: 16 * 1_024,
           signal: this.#installationLifetime.signal,
         });
+        let expired: Promise<void> | undefined;
+        const deadline = setTimeout(() => {
+          expired = child.terminate().catch(() => undefined);
+        }, engineUpdateDeadlineMs);
         const stdout = collectProcessOutput(child.stdout);
         const stderr = collectProcessOutput(child.stderr);
-        const exit = await child.exited;
-        await stdout;
-        await stderr;
+        let exit: Awaited<typeof child.exited>;
+        try {
+          exit = await child.exited;
+          await stdout;
+          await stderr;
+        } finally {
+          clearTimeout(deadline);
+        }
+        if (expired) {
+          await expired;
+          throw new Error("The update didn't finish in time.");
+        }
         if (exit.code !== 0) {
           throw new Error(`Updater exited with code ${exit.code ?? "unknown"}`);
         }
@@ -1463,11 +1483,16 @@ export class RunnerRuntime {
         plan.serializationKey,
         operation.catch(() => undefined),
       );
-      await operation;
+      const failure = await operation.then(
+        () => undefined,
+        (error: unknown) => ({ error }),
+      );
+      // A failed or ended updater may still have replaced some of the engine's files.
       const affected = await this.#harnesses.invalidateDriver(driverKind);
       for (const harnessInstanceId of affected) {
         this.#pendingHarnessCatalogInvalidations.add(harnessInstanceId);
       }
+      if (failure) throw failure.error;
       const refreshed = await this.#harnesses.driverInstallation(driverKind);
       const succeeded: HarnessInstallation = {
         ...(refreshed?.descriptor ?? previous),

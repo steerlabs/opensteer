@@ -59,23 +59,9 @@ describe("EngineInstallationResolver", () => {
       npmPrefix: "brew/Cellar/node/24.0.0",
     },
   ])("detects $name", async ({ path, expected, managers, npmPrefix }) => {
-    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-installation-"));
-    roots.push(root);
-    const executable = join(root, path);
-    await mkdir(join(executable, ".."), { recursive: true });
-    await writeFile(executable, "binary");
-    await chmod(executable, 0o755);
-    const bin = join(root, "bin");
-    await mkdir(bin);
-    for (const manager of managers) {
-      const managerPath =
-        manager === "brew" ? join(root, "brew", "bin", "brew") : join(bin, manager);
-      await mkdir(join(managerPath, ".."), { recursive: true });
-      await writeFile(managerPath, "#!/bin/sh\n");
-      await chmod(managerPath, 0o755);
-    }
+    const { executable, root, PATH } = await installedCodex(path, managers);
     const resolver = new EngineInstallationResolver({
-      environment: { PATH: `${bin}:${join(root, "brew", "bin")}` },
+      environment: { PATH },
       run: async (_command, args) => {
         if (args[0] === "--version") return result("codex-cli 0.160.0");
         if (args[0] === "prefix") return result(join(root, npmPrefix ?? "npm-prefix"));
@@ -93,6 +79,71 @@ describe("EngineInstallationResolver", () => {
       version: "0.160.0",
     });
   });
+
+  it.each([
+    {
+      name: "npm latest check times out",
+      path: "npm-prefix/lib/node_modules/@openai/codex/bin/codex",
+      managers: ["npm"],
+      latest: "view",
+      failure: "timeout",
+      expected: ["install", "--global", "@openai/codex@latest"],
+    },
+    {
+      name: "npm latest check fails",
+      path: "npm-prefix/lib/node_modules/@openai/codex/bin/codex",
+      managers: ["npm"],
+      latest: "view",
+      failure: "error",
+      expected: ["install", "--global", "@openai/codex@latest"],
+    },
+    {
+      name: "Homebrew latest check fails",
+      path: "brew/Caskroom/codex/0.160.0/bin/codex",
+      managers: ["brew"],
+      latest: "info",
+      failure: "error",
+      expected: ["upgrade", "--cask", "codex"],
+    },
+    {
+      name: "native updater's latest check fails",
+      path: ".codex/packages/standalone/releases/0.160.0/bin/codex",
+      managers: ["npm"],
+      latest: "view",
+      failure: "error",
+      expected: ["update"],
+    },
+  ] as const)(
+    "keeps the update action when the $name",
+    async ({ path, managers, latest, failure, expected }) => {
+      const { executable, root, PATH } = await installedCodex(path, managers);
+      const resolver = new EngineInstallationResolver({
+        environment: { PATH },
+        inspectionTimeoutMs: 20,
+        run: async (_command, args, _environment, signal) => {
+          if (args[0] === latest) {
+            if (failure === "error") throw new Error("registry unreachable");
+            return new Promise((_resolve, reject) =>
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+            );
+          }
+          if (args[0] === "--version") return result("codex-cli 0.160.0");
+          if (args[0] === "prefix") return result(join(root, "npm-prefix"));
+          if (args[0] === "--prefix") return result(join(root, "brew"));
+          return result("");
+        },
+      });
+
+      const resolved = await resolver.resolve(executable, codex, "ambient");
+
+      expect(resolved.plan?.args).toEqual(expected);
+      expect(resolved.descriptor).toMatchObject({
+        latestVersion: null,
+        update: "unknown",
+        version: "0.160.0",
+      });
+    },
+  );
 
   it("leaves mise ownership manual instead of inventing a command", async () => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-engine-installation-"));
@@ -312,6 +363,24 @@ describe("latest version parsing", () => {
     expect(compareRevisionVersions("1.2.3-R10", "1.2.3")).toBe(0);
   });
 });
+
+async function installedCodex(path: string, managers: readonly string[]) {
+  const root = await mkdtemp(join(tmpdir(), "opensteer-engine-installation-"));
+  roots.push(root);
+  const executable = join(root, path);
+  await mkdir(join(executable, ".."), { recursive: true });
+  await writeFile(executable, "binary");
+  await chmod(executable, 0o755);
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  for (const manager of managers) {
+    const managerPath = manager === "brew" ? join(root, "brew", "bin", "brew") : join(bin, manager);
+    await mkdir(join(managerPath, ".."), { recursive: true });
+    await writeFile(managerPath, "#!/bin/sh\n");
+    await chmod(managerPath, 0o755);
+  }
+  return { executable, root, PATH: `${bin}:${join(root, "brew", "bin")}` };
+}
 
 function result(stdout: string) {
   return { code: 0, stderr: "", stdout };

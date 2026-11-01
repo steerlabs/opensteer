@@ -129,7 +129,8 @@ export class EngineInstallationResolver {
     const executable = await realpath(visibleExecutable).catch(() => visibleExecutable);
     const version = await this.#readVersion(executable, facts);
     const ownership = await this.#ownership(visibleExecutable, executable, facts);
-    const latestVersion = await this.#latest(ownership, facts);
+    // The latest release is optional: without it the person can still run the updater.
+    const latestVersion = await this.#latest(ownership, facts).catch(() => null);
     const belowMinimum = !meetsMinimumVersion(version, facts.minimumVersion);
     const hasNewer = latestVersion
       ? (facts.comparison === "revision" ? compareRevisionVersions : compareVersions)(
@@ -351,14 +352,8 @@ export class EngineInstallationResolver {
         (requested ? facts.latest.channels[requested] : undefined) ??
         facts.latest.channels[facts.latest.defaultChannel];
       if (!channel) return null;
-      try {
-        const manifest = await this.#fetchInspection(
-          facts.latest.url.replace("{channel}", channel),
-        );
-        return readStringField(manifest, facts.latest.versionField);
-      } catch {
-        return null;
-      }
+      const manifest = await this.#fetchInspection(facts.latest.url.replace("{channel}", channel));
+      return readStringField(manifest, facts.latest.versionField);
     }
     if (!facts.packageName) return null;
     const npm = findExecutableOnPath("npm", this.#environment.PATH);
