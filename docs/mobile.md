@@ -63,9 +63,11 @@ New-task creation and its first message keep their keys across navigation and lo
 answers. Leaving an unsent task creates nothing. See `apps/mobile/src/thread/first-message.tsx`
 and the draft stores under `apps/mobile/src/thread`.
 
-Never read ownerless legacy drafts into a signed-in user's draft. Migration of a
-saved approval-plus-send drops the decision and preserves the unsent message,
-files and quote. Sending does not answer a Request. Offline drafts are editable;
+Ask puts its page on the destination draft for the current reader, never in a
+route: routes carry no reader identity and outlive sign-out, so a stale route's
+page is ignored. Never read ownerless legacy drafts into a signed-in user's
+draft. Migration of a saved approval-plus-send drops the decision and preserves
+the unsent message, files and quote. Sending does not answer a Request. Offline drafts are editable;
 approvals require a live authenticated Host because replaying a stale decision
 is unsafe. Only Host state resolves a Request, not local command admission.
 
@@ -75,8 +77,9 @@ send waiting for an AI choice may proceed only from the Host-confirmed choice of
 that picker visit; dismissal cancels it. See `apps/mobile/src/thread/thread-mutation-registry.ts`
 and [Agent orchestration](agent-orchestration.md) for queue authority.
 
-Keep Chat mounted across task navigation and adaptive layouts. A hidden mounted
-Chat neither claims the active Thread nor marks content read; an overlaid sidebar
+Keep Chat mounted across task navigation and adaptive layouts, and a page's
+companion Thread through a window too narrow for two. A hidden mounted pane
+neither claims the active Thread nor marks content read; an overlaid sidebar
 also makes Chat unread. Mark only published content actually shown at latest.
 Layout changes preserve drafts, scroll, streams and navigation. Use measured pane
 geometry, reserved folds and text size, not device names; cancel a pointer gesture

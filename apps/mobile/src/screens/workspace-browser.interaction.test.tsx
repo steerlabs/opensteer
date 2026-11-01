@@ -9,8 +9,15 @@ import {
   type HostSnapshot,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
+import { BrowserPageContentPartSchema } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
+import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import type { SurfacesRoute } from "../browser/surface-route.js";
+import {
+  createThreadDraftStore,
+  newTaskDraftKey,
+  type ThreadDraftStore,
+} from "../client/thread-drafts.js";
 import { WorkspaceBrowserScreen } from "./workspace-browser.js";
 
 /*
@@ -47,6 +54,9 @@ const state = vi.hoisted(() => ({
   fontScale: 1,
   conversationMounts: 0,
   pageMounts: 0,
+  /** Every claim of the active Thread a pane beside the page made. */
+  conversationClaims: [] as string[],
+  drafts: null as ThreadDraftStore | null,
 }));
 
 vi.mock("@react-navigation/native", () => ({
@@ -87,6 +97,7 @@ vi.mock("@opensteer/client/react", async () => ({
   },
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
+  useMobileClient: () => ({ drafts: state.drafts }),
   useMobileState: () => ({
     selection: { deploymentId: state.deploymentId, hostClient: state.hostClient },
   }),
@@ -99,17 +110,26 @@ vi.mock("react-native", () => ({
   AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
   I18nManager: { isRTL: false },
   KeyboardAvoidingView: ({
+    accessibilityElementsHidden,
     children,
     enabled,
+    importantForAccessibility,
+    pointerEvents,
     style,
     testID,
   }: {
+    accessibilityElementsHidden?: boolean;
     children?: ReactNode;
     enabled?: boolean;
+    importantForAccessibility?: string;
+    pointerEvents?: string;
     style?: unknown;
     testID?: string;
   }) => (
     <div
+      aria-hidden={accessibilityElementsHidden === true || undefined}
+      data-a11y={importantForAccessibility}
+      data-pointer-events={pointerEvents}
       data-avoids={enabled !== false}
       data-style={JSON.stringify(flatten(style))}
       data-testid={testID}
@@ -334,7 +354,7 @@ vi.mock("../computers/mac-app-view.js", () => ({
 }));
 vi.mock("../thread/thread-pane.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
-  const { useContentInsets } =
+  const { useContentInsets, usePaneInView } =
     await vi.importActual<typeof import("../ui/pane.js")>("../ui/pane.js");
   return {
     ThreadPane: (props: {
@@ -343,14 +363,23 @@ vi.mock("../thread/thread-pane.js", async () => {
       withPage?: { page: { title: string } | null };
     }) => {
       const insets = useContentInsets();
+      const inView = usePaneInView();
       const { onHeader, threadId } = props;
       React.useEffect(() => {
         state.conversationMounts += 1;
       }, []);
+      // As the real pane claims: only while its pane is in view.
+      React.useEffect(() => {
+        if (inView) state.conversationClaims.push(threadId);
+      }, [inView, threadId]);
       // The bar's words for the Thread: here, its id.
       React.useEffect(() => onHeader?.({ title: threadId }), [onHeader, threadId]);
       return (
-        <section data-insets={JSON.stringify(insets)} data-testid="beside-thread">
+        <section
+          data-in-view={inView}
+          data-insets={JSON.stringify(insets)}
+          data-testid="beside-thread"
+        >
           {`Thread ${props.threadId} beside`}
           {props.withPage?.page ? ` with ${props.withPage.page.title}` : ""}
         </section>
@@ -359,12 +388,9 @@ vi.mock("../thread/thread-pane.js", async () => {
   };
 });
 vi.mock("./new-task.js", () => ({
-  NewTaskPane: (props: {
-    page: { title: string } | null;
-    onStarted: (threadId: string) => boolean;
-  }) => (
+  NewTaskPane: (props: { onStarted: (threadId: string) => boolean }) => (
     <section>
-      {`New task beside${props.page ? ` with ${props.page.title}` : ""}`}
+      New task beside
       <button onClick={() => props.onStarted("thread-started")}>Start the task</button>
     </section>
   ),
@@ -407,6 +433,8 @@ afterEach(() => {
   state.fontScale = 1;
   state.conversationMounts = 0;
   state.pageMounts = 0;
+  state.conversationClaims = [];
+  state.drafts = null;
 });
 
 const source = { id: "workspace-parent", name: "Parent" } as WorkspaceSummary;
@@ -475,6 +503,12 @@ function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
+  state.hostClient.getSnapshot ??= () => state.snapshot;
+  state.drafts ??= createThreadDraftStore({
+    filePath: "/private/drafts.json",
+    now: () => new Date("2026-10-13T00:00:00.000Z"),
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
   state.hostClient.browserViewerState = () => liveFeed;
   state.hostClient.browserFrames = { subscribe: () => () => undefined };
   state.snapshot = options.snapshot ?? snapshot([]);
@@ -1413,7 +1447,7 @@ describe("the page's bar", () => {
     expect(container.querySelector('button[aria-label="Agent working"]')).toBeNull();
   });
 
-  it("asks in Chat or a new task with the page included", () => {
+  it("asks in Chat or a new task with the page on that draft, this reader's alone, never in the route", () => {
     const { container } = openPage([]);
     const ask = element(container, "Ask")!;
     expect(ask.dataset["menuTitle"]).toBe("Ask about this page");
@@ -1424,23 +1458,30 @@ describe("the page's bar", () => {
       type: "browser-page",
       url: "https://example.com",
     };
+    const drafts = state.drafts!;
+    const taskDraft = newTaskDraftKey(source.id);
     press(ask, "Ask in Chat");
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "Home",
-      params: { deploymentId: "deployment-a", page },
+      params: { deploymentId: "deployment-a" },
       type: "POP_TO",
     });
+    expect(drafts.readDraft("deployment-a", "user-a", "thread-home")?.page).toEqual(page);
     press(ask, "New task");
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "NewTask",
-      params: { deploymentId: "deployment-a", page, workspaceId: source.id },
+      params: { deploymentId: "deployment-a", workspaceId: source.id },
       type: "PUSH",
     });
+    expect(drafts.readDraft("deployment-a", "user-a", taskDraft)?.page).toEqual(page);
+    // Whoever signs in next on this Deployment has drafts of their own.
+    expect(drafts.readDraft("deployment-a", "user-b", "thread-home")).toBeNull();
+    expect(drafts.readDraft("deployment-a", "user-b", taskDraft)).toBeNull();
   });
 
   it.each([false, true])(
     "Ask on a native surface includes no invented web page (phone: %s)",
-    (phone) => {
+    async (phone) => {
       const opened = setup({
         machineId: "mac-a",
         computerSessionId: "computer-a",
@@ -1448,12 +1489,24 @@ describe("the page's bar", () => {
       });
       state.snapshot = withAgents([]);
       opened.render();
+      const draftKey = newTaskDraftKey(source.id);
+      // A page an earlier Ask left on the draft does not stand for this one.
+      const earlier = BrowserPageContentPartSchema.parse({
+        sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
+        tabId: "page-1",
+        title: "Earlier page",
+        type: "browser-page",
+        url: "https://example.com",
+      });
+      await act(() => state.drafts!.writeDraftPage("deployment-a", "user-a", draftKey, earlier));
+      expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
       press(element(opened.container, "Ask")!, "New task");
       expect(state.dispatch).toHaveBeenCalledWith({
         name: "NewTask",
         type: "PUSH",
         params: { deploymentId: "deployment-a", workspaceId: source.id },
       });
+      expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)).toBeNull();
     },
   );
 
@@ -1507,10 +1560,12 @@ describe("a page beside its agent's thread", () => {
   const second = (container: HTMLElement) =>
     container.querySelector('[data-testid="conversation-slot"]')?.textContent ?? null;
 
-  it("keeps the page mounted, with the agent's thread beside it only where two fit", () => {
+  it("keeps the page mounted, and the agent's thread once beside it, shown only where two fit", () => {
     const { container, render } = openPage();
     expect(arrangement(container)).toBe("stacked");
+    // A phone that has never had room for two never draws the thread.
     expect(second(container)).toBeNull();
+    expect(state.conversationMounts).toBe(0);
 
     state.pair = { height: 1000, width: 744 };
     render();
@@ -1529,8 +1584,33 @@ describe("a page beside its agent's thread", () => {
     state.regions = [];
     render();
     expect(arrangement(container)).toBe("stacked");
-    expect(second(container)).toBeNull();
+    // Too narrow for two, the thread stays mounted out of view, and inert.
+    const hidden = container.querySelector<HTMLElement>('[data-testid="conversation-slot"]')!;
+    expect(hidden.getAttribute("aria-hidden")).toBe("true");
+    expect(hidden.dataset["a11y"]).toBe("no-hide-descendants");
+    expect(hidden.dataset["pointerEvents"]).toBe("none");
+    expect(hidden.dataset["avoids"]).toBe("false");
+    expect(JSON.parse(hidden.dataset["style"]!)).toMatchObject({
+      opacity: 0,
+      position: "absolute",
+    });
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="beside-thread"]')?.dataset["inView"],
+    ).toBe("false");
+    const claims = state.conversationClaims.length;
 
+    state.pair = { height: 1000, width: 744 };
+    render();
+    expect(arrangement(container)).toBe("side");
+    expect(second(container)).toContain("Thread thread-agent beside");
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="beside-thread"]')?.dataset["inView"],
+    ).toBe("true");
+    expect(slot(container, "conversation").style).not.toHaveProperty("opacity");
+    // Out of view it claimed nothing; back in view it claims its Thread again.
+    expect(state.conversationClaims.slice(claims)).toEqual(["thread-agent"]);
+
+    // Its draft, stream and scroll were never lost: it was never mounted again.
     expect(state.conversationMounts).toBe(1);
     expect(state.pageMounts).toBe(1);
     expect(state.dispatch).not.toHaveBeenCalled();
@@ -1595,8 +1675,14 @@ describe("a page beside its agent's thread", () => {
 
     press(element(container, "Ask")!, "Ask in Chat");
     expect(second(container)).toContain("Thread thread-home beside with Page");
+    expect(state.drafts!.readDraft("deployment-a", "user-a", "thread-home")?.page?.title).toBe(
+      "Page",
+    );
     press(element(container, "Ask")!, "New task");
-    expect(second(container)).toContain("New task beside with Page");
+    expect(second(container)).toContain("New task beside");
+    expect(
+      state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(source.id))?.page?.title,
+    ).toBe("Page");
     press(container, "Start the task");
     expect(second(container)).toContain("Thread thread-started beside with Page");
     expect(state.dispatch).not.toHaveBeenCalled();

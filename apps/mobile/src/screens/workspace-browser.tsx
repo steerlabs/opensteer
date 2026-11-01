@@ -60,6 +60,7 @@ import {
   type SurfacesRoute,
 } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/site-label.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
 import { MacAppView } from "../computers/mac-app-view.js";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import {
@@ -76,7 +77,7 @@ import {
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { InsetView, Pane } from "../ui/pane.js";
-import { useMobileState } from "../ui/mobile-client-context.js";
+import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -234,6 +235,7 @@ function Focused(props: {
   const { deploymentId } = route;
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
+  const drafts = useMobileClient().drafts;
   const [page, setPage] = useState<BrowserPageContentPart | null>(null);
   const [typing, setTyping] = useState(false);
   // The beside Thread's name as its own bar would say it, kept with whose it
@@ -276,8 +278,8 @@ function Focused(props: {
   );
 
   const shownPage = destination.kind === "browser" ? page : null;
-  const latest = useRef({ homeThreadId, shownPage, snapshot });
-  latest.current = { homeThreadId, shownPage, snapshot };
+  const latest = useRef({ homeThreadId, shownPage });
+  latest.current = { homeThreadId, shownPage };
 
   /**
    * An agent's Thread, as its own screen. The screen directly under this one
@@ -305,28 +307,48 @@ function Focused(props: {
     [deploymentId, navigation],
   );
   const showBeside = useCallback((threadId: string) => setChosen({ kind: "thread", threadId }), []);
-  /** Ask, on a phone: that composer's own screen, with the page included. */
+  /**
+   * Ask's page goes on the draft it is for — Chat's, or the new task's — and
+   * is this reader's, so it is shown, removed and sent from that draft like
+   * the words with it, and survives leaving it unsent. A page Ask cannot name,
+   * such as a Mac app's, takes any earlier one off rather than leaving it to
+   * stand for what was asked about. Answers whether there is such a draft.
+   */
+  const putPageOnDraft = useCallback(
+    (target: AskTarget): boolean => {
+      const { homeThreadId: home, shownPage: included } = latest.current;
+      const current = hostClient.getSnapshot();
+      const userId = current.user?.id;
+      const workspaceId = mainWorkspace(current)?.id;
+      const draftKey =
+        target === "chat" ? home : workspaceId === undefined ? null : newTaskDraftKey(workspaceId);
+      if (userId === undefined || draftKey === null) return false;
+      void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
+      return true;
+    },
+    [deploymentId, drafts, hostClient],
+  );
+  /** Ask, on a phone: that composer's own screen, with the page on its draft. */
   const askAway = useCallback(
     (target: AskTarget) => {
-      const { homeThreadId: home, shownPage: included, snapshot: current } = latest.current;
-      const withPage = included === null ? {} : { page: included };
-      if (target === "chat") {
-        if (home === null) return;
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId, ...withPage }));
-        return;
-      }
-      const workspaceId = mainWorkspace(current)?.id;
-      if (workspaceId === undefined) return;
-      navigation.dispatch(StackActions.push("NewTask", { deploymentId, workspaceId, ...withPage }));
+      if (!putPageOnDraft(target)) return;
+      const workspaceId = mainWorkspace(hostClient.getSnapshot())?.id;
+      if (target === "chat") navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
+      else if (workspaceId !== undefined)
+        navigation.dispatch(StackActions.push("NewTask", { deploymentId, workspaceId }));
     },
-    [deploymentId, navigation],
+    [deploymentId, hostClient, navigation, putPageOnDraft],
   );
-  /** Ask, where a pair fits: the composer opens beside the page, which it includes. */
-  const askBeside = useCallback((target: AskTarget) => {
-    const home = latest.current.homeThreadId;
-    if (target === "task") setChosen({ kind: "task" });
-    else if (home !== null) setChosen({ kind: "thread", threadId: home });
-  }, []);
+  /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
+  const askBeside = useCallback(
+    (target: AskTarget) => {
+      if (!putPageOnDraft(target)) return;
+      const home = latest.current.homeThreadId;
+      if (target === "task") setChosen({ kind: "task" });
+      else if (home !== null) setChosen({ kind: "thread", threadId: home });
+    },
+    [putPageOnDraft],
+  );
   const closeCompanion = useCallback(() => setChosen(null), []);
   const onStarted = useCallback(
     (threadId: string) => {
@@ -406,7 +428,6 @@ function Focused(props: {
           hostClient={hostClient}
           key="new-task"
           onStarted={onStarted}
-          page={shownPage}
           underHeader={false}
           workspaceId={mainWorkspaceId}
         />
@@ -872,6 +893,20 @@ function PagePair(
   const pair: PagePairArrangement =
     paired && companion !== null ? derived.pair : { mode: "stacked" };
   const region = paired && companion === null ? wholeOf(bounds) : derived.region;
+  // Once beside the page, the companion stays mounted through a window too
+  // narrow for two, as the page does, so its draft, stream and scroll are
+  // there when the pair returns. Out of view it is inert: unseen, untouchable,
+  // unreachable by a screen reader, and — told by its pane — claiming nothing
+  // and marking nothing read. It keeps the size it had beside the page, so
+  // nothing in it is measured afresh. A phone that never pairs never draws it.
+  const beside = pair.mode !== "stacked";
+  const kept = useRef(false);
+  kept.current = companion !== null && (beside || kept.current);
+  const besideSize = useRef<Size | null>(null);
+  const onCompanionLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height, width } = event.nativeEvent.layout;
+    besideSize.current = { height, width };
+  }, []);
 
   // Tabletop, with the second pane's composer typing under the fold.
   const yielding = pair.mode === "tabletop" && keyboard && !typing;
@@ -927,29 +962,40 @@ function PagePair(
           </InsetView>
         </Pane>
       </KeyboardAvoidingView>
-      {pair.mode === "stacked" || companion === null ? null : (
+      {companion === null || !kept.current ? null : (
         <>
           <View
             style={
-              pair.mode === "side" ? { width: pair.gap } : yielding ? null : { height: pair.gap }
+              pair.mode === "side"
+                ? { width: pair.gap }
+                : pair.mode === "stacked" || yielding
+                  ? null
+                  : { height: pair.gap }
             }
           />
           <KeyboardAvoidingView
+            accessibilityElementsHidden={!beside}
             behavior={behavior}
-            enabled={!typing}
+            enabled={beside && !typing}
+            importantForAccessibility={beside ? "auto" : "no-hide-descendants"}
             keyboardVerticalOffset={props.keyboardVerticalOffset}
+            onLayout={onCompanionLayout}
+            pointerEvents={beside ? "auto" : "none"}
             style={
               pair.mode === "side"
                 ? styles.besidePage
-                : yielding
-                  ? styles.underKeyboard
-                  : styles.belowFold
+                : pair.mode === "stacked"
+                  ? [styles.outOfView, besideSize.current]
+                  : yielding
+                    ? styles.underKeyboard
+                    : styles.belowFold
             }
             testID="conversation-slot"
           >
             <Pane
               clearance={conversationClearance}
               geometry={`${geometry}:conversation`}
+              hidden={!beside}
               style={styles.fill}
             >
               <CompanionName onClose={companion.onClose} title={companion.title} />
@@ -1101,6 +1147,8 @@ const styles = StyleSheet.create({
   },
   fill: { flex: 1 },
   hidden: { display: "none" },
+  // Laid out, so its native views and scroll position stay, but not drawn.
+  outOfView: { left: 0, opacity: 0, position: "absolute", top: 0 },
   // Alone, the page has the whole surface but the bar under it. It has no
   // floor: with the keyboard up on a short screen, a floor is what pushes the
   // page's own address field under the keyboard.

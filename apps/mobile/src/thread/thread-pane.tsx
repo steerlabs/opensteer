@@ -70,7 +70,7 @@ import { useKeyboardVisible } from "../ui/keyboard.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { useContentInsets } from "../ui/pane.js";
+import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { TaskScopeContext, ThreadMark, type TaskScope } from "./task-line.js";
 import {
@@ -215,11 +215,6 @@ interface ThreadPaneProps {
    * screen. The page is what the composer includes with the next message.
    */
   readonly withPage?: PageCompanion | undefined;
-  /**
-   * A page Ask handed to this conversation's own screen, for the composer to
-   * include with the next message unless the person removes it.
-   */
-  readonly askedPage?: BrowserPageContentPart | null;
   readonly threadId: string;
 }
 
@@ -390,22 +385,25 @@ function ThreadPaneForUser(
   );
   const deploymentId = props.deploymentId;
   const { hostClient, onHeader, threadId } = props;
+  const inView = usePaneInView();
   useFocusEffect(
     useCallback(() => {
-      // The Host holds one active Thread. Chat stays mounted under every task
-      // and a tablet shows a task beside the list, so the pane in front of the
-      // reader claims it as it comes into view, not merely as it mounts.
+      // The Host holds one active Thread. Chat stays mounted under every task,
+      // a tablet shows a task beside the list and a narrow window keeps a
+      // page's companion out of view, so the pane in front of the reader claims
+      // it as it comes into view, not merely as it mounts.
+      if (!inView) return;
       hostClient.activateThread(threadId);
       return notifications.enterThread({ deploymentId, threadId });
-    }, [deploymentId, hostClient, notifications, threadId]),
+    }, [deploymentId, hostClient, inView, notifications, threadId]),
   );
   // Whether this conversation is the screen in front of the reader. Read
   // markers and alert suppression both depend on it: a pane under another
-  // screen sees nothing, including on the render it first mounts on. The
-  // sidebar covers the screen without blurring the route under it, so it
-  // counts as looking away too.
+  // screen, or kept out of view in its own, sees nothing, including on the
+  // render it first mounts on. The sidebar covers the screen without blurring
+  // the route under it, so it counts as looking away too.
   const sidebarVisible = useSidebarVisible();
-  const focused = useIsFocused() && !sidebarVisible;
+  const focused = useIsFocused() && !sidebarVisible && inView;
   // What an arriving alert has to know before it interrupts: an alert about
   // the conversation in front of the reader, at its latest activity, is telling
   // them what they are already watching.
@@ -1373,7 +1371,7 @@ function ThreadPaneForUser(
                 }
                 modelOptions={thread.modelSelection.options}
                 mutationGate={mutationGate}
-                page={companion === null ? (props.askedPage ?? null) : companion.page}
+                page={companion?.page ?? null}
                 onChangeModel={(conversation) =>
                   navigation.navigate("ThreadSettings", {
                     ...(conversation ? { conversation: true } : {}),

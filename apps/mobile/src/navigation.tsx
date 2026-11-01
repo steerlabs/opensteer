@@ -1,4 +1,4 @@
-import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
+import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { createStaticNavigation, DarkTheme, type Theme } from "@react-navigation/native";
 import {
@@ -401,8 +401,6 @@ type OpensteerRootParamList = {
     readonly deploymentId: string;
     /** An exact update in Chat to open at, from a link, a notification or Find. */
     readonly messageId?: string | undefined;
-    /** A page Ask handed over, included with Chat's next message unless removed. */
-    readonly page?: BrowserPageContentPart | undefined;
     /**
      * An update from a task to answer in Chat. It is already in Chat's saved
      * draft; this hands it to the composer that is on screen, then clears.
@@ -411,12 +409,7 @@ type OpensteerRootParamList = {
     readonly requestId?: string | undefined;
   };
   readonly NewSpecialist: { readonly deploymentId: string };
-  readonly NewTask: {
-    readonly deploymentId: string;
-    /** A page Ask handed over, included with the first message unless removed. */
-    readonly page?: BrowserPageContentPart | undefined;
-    readonly workspaceId: string;
-  };
+  readonly NewTask: { readonly deploymentId: string; readonly workspaceId: string };
   readonly NewThread: {
     readonly deploymentId: string;
     /** Set when the choice is for Chat's first message rather than a new task's. */

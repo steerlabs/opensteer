@@ -22,6 +22,7 @@ import {
   createId,
   RunIdSchema,
   ThreadIdSchema,
+  ThreadReadStateSchema,
   WorkspaceIdSchema,
   type Request,
   type ThreadInputQueue,
@@ -30,7 +31,11 @@ import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/proto
 import { act, useState, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-drafts.js";
+import {
+  createThreadDraftStore,
+  newTaskDraftKey,
+  type ThreadDraftStore,
+} from "../client/thread-drafts.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/controls.js";
 
@@ -66,12 +71,16 @@ const harness = vi.hoisted(() => ({
   paneRenders: 0,
   headerWrites: 0,
   focused: true,
+  /** Whether the pane is drawn, or kept mounted out of view in its screen. */
+  inView: true,
   drafts: null as ThreadDraftStore | null,
   activeHost: null as HostClient | null,
   focusCleanups: new Set<() => void>(),
   select: null as
     null | ((event: { nativeEvent: { selection: { start: number; end: number } } }) => void),
   navigate: vi.fn(),
+  /** The composer's field letting go of the keyboard. */
+  blur: vi.fn(),
   dispatch: vi.fn(),
   setParams: vi.fn(),
   scrollToIndex: vi.fn(),
@@ -199,6 +208,7 @@ vi.mock("react-native", async () => {
     }) => {
       harness.select = props.onSelectionChange ?? null;
       React.useImperativeHandle(props.ref, () => ({
+        blur: harness.blur,
         focus: () => undefined,
         setSelection: (start: number, end: number) =>
           selectionCalls.push({ text: props.value, start, end }),
@@ -396,6 +406,7 @@ vi.mock("../screens/deployment-gate.js", () => ({
 vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => harness.insets,
   usePaneGeometry: () => "",
+  usePaneInView: () => harness.inView,
 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
@@ -607,9 +618,11 @@ afterEach(() => {
   harness.drafts = null;
   harness.activeHost = null;
   harness.focused = true;
+  harness.inView = true;
   harness.dismissModal = null;
   harness.handles.clear();
   harness.navigate.mockReset();
+  harness.blur.mockReset();
   harness.dispatch.mockReset();
   harness.setParams.mockReset();
   harness.scrollToIndex.mockReset();
@@ -1035,7 +1048,8 @@ async function mount(
     /** Draws the screen's native bar over the pane, as the Thread screen does. */
     readonly header?: boolean;
     readonly withPage?: import("./thread-pane.js").PageCompanion;
-    readonly askedPage?: import("@opensteer/core").BrowserPageContentPart;
+    /** A page Ask put on this reader's draft for the Thread. */
+    readonly draftPage?: import("@opensteer/core").BrowserPageContentPart;
   } = {},
 ) {
   const drafts = createThreadDraftStore({
@@ -1044,6 +1058,8 @@ async function mount(
     privateFiles: options.files ?? new MemoryPrivateFilesystem(),
   });
   await drafts.load();
+  if (options.draftPage !== undefined)
+    await drafts.writeDraftPage(deploymentId, userId, threadId, options.draftPage);
   harness.drafts = drafts;
   const container = document.createElement("div");
   document.body.append(container);
@@ -1059,7 +1075,6 @@ async function mount(
       onHeader={onHeader}
       onOpenThread={() => undefined}
       withPage={options.withPage}
-      askedPage={options.askedPage ?? null}
       requestId={options.requestId ?? null}
       threadId={threadId}
     />
@@ -1179,7 +1194,7 @@ describe("a conversation with a page", () => {
     );
   });
 
-  it("Home clears its page route param only when a new message is on its way", async () => {
+  it("never shows Chat another reader's Ask page, nor one a route still carries", async () => {
     const { HomeScreen } = await import("../screens/home.js");
     const host = fakeHost(
       snapshotFor({ entries: [said("Hello", null)], run: null, threadId: chatId }),
@@ -1187,15 +1202,39 @@ describe("a conversation with a page", () => {
     const { container, drafts, root } = await mount(host, chatId);
     harness.activeHost = host.client;
     const included = page();
-    await act(async () =>
-      root.render(<HomeScreen route={{ params: { deploymentId, page: included } }} />),
+    // The reader before asked about this page, left it unsent and signed out.
+    await drafts.writeDraftPage(deploymentId, "usr_previous-reader", chatId, included);
+    // Their Chat screen, still in the stack, is what this reader signs in to.
+    const route = { params: { deploymentId, page: included } } as unknown as Parameters<
+      typeof HomeScreen
+    >[0]["route"];
+    await act(async () => root.render(<HomeScreen route={route} />));
+    await settle();
+    expect(text(container)).toContain("Hello");
+    expect(text(container)).not.toContain("Research page");
+    await type(container, "Message", "Something of my own");
+    await press(container, "Send message");
+    expect(host.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "thread.sendMessage",
+        content: expect.not.arrayContaining([included]),
+      }),
     );
+  });
+
+  it("sends Chat the page Ask put on this reader's draft, and lets it go with the message", async () => {
+    const { HomeScreen } = await import("../screens/home.js");
+    const host = fakeHost(
+      snapshotFor({ entries: [said("Hello", null)], run: null, threadId: chatId }),
+    );
+    const included = page();
+    const { container, drafts, root } = await mount(host, chatId, { draftPage: included });
+    harness.activeHost = host.client;
+    await act(async () => root.render(<HomeScreen route={{ params: { deploymentId } }} />));
     expect(text(container)).toContain("Research page");
-    expect(harness.setParams).not.toHaveBeenCalledWith({ page: undefined });
     await type(container, "Message", "Explain this page");
     expect(host.dispatch).not.toHaveBeenCalled();
     await press(container, "Send message");
-    expect(harness.setParams).toHaveBeenCalledWith({ page: undefined });
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "thread.sendMessage",
@@ -1203,16 +1242,75 @@ describe("a conversation with a page", () => {
       }),
     );
     expect(drafts.readPending(deploymentId, userId, chatId)).toBeNull();
+    expect(drafts.readDraft(deploymentId, userId, chatId)).toBeNull();
+    expect(text(container)).not.toContain("Research page");
+  });
+
+  it("kept out of view beside a page, claims nothing, marks nothing read, and keeps its draft and choices", async () => {
+    const included = page();
+    const readState = ThreadReadStateSchema.parse({
+      asOfSequence: "1",
+      readSequence: null,
+      threadId: workId,
+      unreadSequence: null,
+    });
+    const host = fakeHost({
+      ...snapshotFor({ entries: [said("First reply", null)], run: null, threadId: workId }),
+      threadReadStates: { [workId]: readState },
+    });
+    const activate = vi.mocked(host.client.activateThread);
+    const markRead = vi.mocked(host.client.markThreadRead);
+    const { container, root, pane } = await mount(host, workId, { withPage: { page: included } });
+    expect(activate).toHaveBeenCalledWith(workId);
+    expect(markRead).toHaveBeenCalled();
+    await press(container, "Remove page");
+    await type(container, "Message", "Half a thought");
+
+    // The window narrows: the pane stays mounted, out of view.
+    activate.mockClear();
+    markRead.mockClear();
+    harness.inView = false;
+    await act(async () => root.render(pane(() => undefined)));
+    expect(harness.blur).toHaveBeenCalled();
+    host.move({
+      ...snapshotFor({
+        entries: [said("First reply", null), said("Arrived out of view", null)],
+        run: null,
+        threadId: workId,
+      }),
+      threadReadStates: { [workId]: readState },
+    });
+    await settle();
+    expect(activate).not.toHaveBeenCalled();
+    expect(markRead).not.toHaveBeenCalled();
+
+    // Room for two again: it claims its Thread and reads what it now shows.
+    harness.inView = true;
+    await act(async () => root.render(pane(() => undefined)));
+    await settle();
+    expect(activate).toHaveBeenCalledWith(workId);
+    expect(markRead).toHaveBeenCalled();
+    expect(text(container)).toContain("Arrived out of view");
+    expect(text(container)).not.toContain("Research page");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Half a thought");
   });
 
   it("leaving Ask without sending sends nothing, and an ended page remains the reference sent", async () => {
     const included = page();
+    const files = new MemoryPrivateFilesystem();
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
-    const first = await mount(host, workId, { askedPage: included });
+    const first = await mount(host, workId, { draftPage: included, files });
     await type(first.container, "Message", "Explain this");
     await act(async () => first.root.render(<div />));
     expect(host.dispatch).not.toHaveBeenCalled();
-    const second = await mount(host, workId, { askedPage: included });
+    // Coming back, after a restart even, the words and the page are both still there.
+    const second = await mount(host, workId, { files });
+    expect(text(second.container)).toContain("Research page");
+    expect(
+      second.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Explain this");
     host.move({ ...host.client.getSnapshot(), browserSessions: [] });
     await type(second.container, "Message", "Explain the page I saw");
     await press(second.container, "Send message");
@@ -1230,7 +1328,7 @@ describe("a conversation with a page", () => {
       ...snapshotFor({ entries: [], run: null, threadId: workId }),
       network: "offline",
     });
-    const { container } = await mount(host, workId, { askedPage: included });
+    const { container } = await mount(host, workId, { draftPage: included });
     await type(container, "Message", "Keep this question");
     expect(text(container)).toContain("Research page");
     expect(
@@ -1239,12 +1337,16 @@ describe("a conversation with a page", () => {
     expect(host.dispatch).not.toHaveBeenCalled();
   });
 
-  it("includes a page Ask handed to its own screen until the person removes it", async () => {
+  it("includes a page Ask handed to its own screen until the person removes it, for good", async () => {
     const included = page();
+    const files = new MemoryPrivateFilesystem();
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
-    const { container } = await mount(host, workId, { askedPage: included });
-    expect(text(container)).toContain("Research page");
-    await press(container, "Remove page");
+    const first = await mount(host, workId, { draftPage: included, files });
+    expect(text(first.container)).toContain("Research page");
+    await press(first.container, "Remove page");
+    expect(text(first.container)).not.toContain("Research page");
+    await act(async () => first.root.render(<div />));
+    const { container } = await mount(host, workId, { files });
     expect(text(container)).not.toContain("Research page");
     await type(container, "Message", "Nothing attached");
     await press(container, "Send message");
@@ -3549,7 +3651,6 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
     title: "Research page",
     url: "https://example.com",
   });
-  const { newTaskDraftKey } = await import("./first-message.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
   const createThread = vi.fn(async () => thread);
@@ -3562,6 +3663,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   await drafts.load();
   const draftKey = newTaskDraftKey(workspaceId);
   await drafts.writeDraft(deploymentId, userId, draftKey, "Research this question");
+  await drafts.writeDraftPage(deploymentId, userId, draftKey, page);
   harness.drafts = drafts;
   harness.activeHost = host.client;
   const container = document.createElement("div");
@@ -3587,7 +3689,6 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
         deploymentId={deploymentId}
         hostClient={host.client}
         onStarted={onStarted}
-        page={page}
         underHeader={false}
         workspaceId={workspaceId}
       />,
@@ -3628,7 +3729,6 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
 
 it("keeps New task creation and message keys when Ask is left after a lost creation answer", async () => {
   const { NewTaskPane } = await import("../screens/new-task.js");
-  const { newTaskDraftKey } = await import("./first-message.js");
   const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
   const thread = host.client.getSnapshot().threads.find(({ id }) => id === workId)!;
   const createThread = vi
@@ -3645,13 +3745,13 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
     title: "Research page",
     url: "https://example.com",
   });
+  await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey(workspaceId), included);
   const draw = () => (
     <NewTaskPane
       autoFocus={false}
       deploymentId={deploymentId}
       hostClient={host.client}
       onStarted={() => false}
-      page={included}
       underHeader={false}
       workspaceId={workspaceId}
     />
@@ -3674,4 +3774,82 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
       content: expect.arrayContaining([included]),
     }),
   );
+});
+
+describe("a new task Ask started", () => {
+  const included = () =>
+    BrowserPageContentPartSchema.parse({
+      type: "browser-page",
+      sessionId: base.browserSessions[0]!.id,
+      tabId: base.browserSessions[0]!.tabs[0]!.id,
+      title: "Research page",
+      url: "https://example.com",
+    });
+
+  async function open(files: MemoryPrivateFilesystem, route?: object) {
+    const { NewTaskScreen } = await import("../screens/new-task.js");
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    const drafts = createThreadDraftStore({
+      filePath: "/private/new-task.json",
+      now: () => new Date(at),
+      privateFiles: files,
+    });
+    await drafts.load();
+    harness.drafts = drafts;
+    harness.activeHost = host.client;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const params = (route ?? { deploymentId, workspaceId }) as Parameters<
+      typeof NewTaskScreen
+    >[0]["route"]["params"];
+    await act(async () => root.render(<NewTaskScreen route={{ params }} />));
+    await settle();
+    return { container, drafts, root };
+  }
+  const field = (container: HTMLElement) =>
+    container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value;
+
+  it("keeps the words and the page when it is left unsent and opened again", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const first = await open(files);
+    await act(() =>
+      first.drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey(workspaceId), included()),
+    );
+    await type(first.container, "Message", "Compare these");
+    expect(text(first.container)).toContain("Research page");
+    await act(async () => first.root.render(<div />));
+
+    const again = await open(files);
+    expect(field(again.container)).toBe("Compare these");
+    expect(text(again.container)).toContain("Research page");
+    await press(again.container, "Remove page");
+    await act(async () => again.root.render(<div />));
+
+    // Removed, it stays removed; the words stay.
+    const third = await open(files);
+    expect(field(third.container)).toBe("Compare these");
+    expect(text(third.container)).not.toContain("Research page");
+  });
+
+  it("never shows another reader's Ask page, nor one a route still carries", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const page = included();
+    const seeded = createThreadDraftStore({
+      filePath: "/private/new-task.json",
+      now: () => new Date(at),
+      privateFiles: files,
+    });
+    // The reader before asked about this page and signed out without sending.
+    await seeded.writeDraftPage(
+      deploymentId,
+      "usr_previous-reader",
+      newTaskDraftKey(workspaceId),
+      page,
+    );
+    const { container } = await open(files, { deploymentId, page, workspaceId });
+    expect(text(container)).toContain("What should this task take care of?");
+    expect(text(container)).not.toContain("Research page");
+  });
 });

@@ -1,5 +1,6 @@
 import type { HostClient } from "@opensteer/client/host";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import { BrowserPageContentPartSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { sendPendingMessage } from "../thread/send-pending-message.js";
 import { createThreadDraftStore } from "./thread-drafts.js";
@@ -10,6 +11,13 @@ const userId = "usr_0192f4a1-aaaa-4000-8000-00000000000a";
 const otherUserId = "usr_0192f4a1-bbbb-4000-8000-00000000000b";
 const threadId = "thr_0192f4a1-2222-4000-8000-000000000002";
 const otherThreadId = "thr_0192f4a1-3333-4000-8000-000000000003";
+const page = BrowserPageContentPartSchema.parse({
+  sessionId: "bsn_0192f4a1-6666-4000-8000-000000000006",
+  tabId: "tab-1",
+  title: "Flights to Tokyo",
+  type: "browser-page",
+  url: "https://example.com/flights",
+});
 
 /** A device that can be made to refuse writes, the way a full one does. */
 class FlakyFilesystem extends MemoryPrivateFilesystem {
@@ -57,6 +65,7 @@ describe("createThreadDraftStore", () => {
     const { drafts } = open();
     await drafts.load();
     await drafts.writeDraft(deploymentId, userId, otherThreadId, "private draft");
+    await drafts.writeDraftPage(deploymentId, userId, otherThreadId, page);
     await drafts.claimPending(deploymentId, userId, threadId, {
       idempotencyKey: "message:private",
       text: "private message",
@@ -65,6 +74,39 @@ describe("createThreadDraftStore", () => {
 
     expect(drafts.readDraft(deploymentId, otherUserId, otherThreadId)).toBeNull();
     expect(drafts.readPending(deploymentId, otherUserId, threadId)).toBeNull();
+  });
+
+  it("keeps the page Ask put on a draft through edits and a restart, until it is removed or sent", async () => {
+    const { drafts, privateFiles } = open();
+    await drafts.load();
+    const written = drafts.writeDraftPage(deploymentId, userId, threadId, page);
+    expect(drafts.readDraft(deploymentId, userId, threadId)?.page).toEqual(page);
+    await written;
+    await drafts.writeDraft(deploymentId, userId, threadId, "Which is cheapest?");
+    await drafts.writeDraftQuote(deploymentId, userId, threadId, null);
+    await drafts.writeDraftAttachments(deploymentId, userId, threadId, []);
+
+    const relaunched = open(privateFiles).drafts;
+    await relaunched.load();
+    expect(relaunched.readDraft(deploymentId, userId, threadId)).toMatchObject({
+      page,
+      text: "Which is cheapest?",
+    });
+    // The words go; a page alone is still a draft.
+    await relaunched.writeDraft(deploymentId, userId, threadId, "");
+    expect(relaunched.readDraft(deploymentId, userId, threadId)?.page).toEqual(page);
+    await relaunched.writeDraftPage(deploymentId, userId, threadId, null);
+    expect(relaunched.readDraft(deploymentId, userId, threadId)).toBeNull();
+
+    await relaunched.writeDraftPage(deploymentId, userId, threadId, page);
+    await relaunched.claimPending(deploymentId, userId, threadId, {
+      browserPage: page,
+      idempotencyKey: "message:page",
+      text: "Which is cheapest?",
+      threadId,
+    });
+    expect(relaunched.readDraft(deploymentId, userId, threadId)).toBeNull();
+    expect(relaunched.readPending(deploymentId, userId, threadId)?.browserPage).toEqual(page);
   });
 
   it("brings back the exact command a killed app was sending, key and all", async () => {

@@ -1,4 +1,4 @@
-import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
+import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { mainWorkspace, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -28,8 +28,6 @@ import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly messageId?: string | undefined;
-  /** A page Ask handed over, for Chat's next message to include. */
-  readonly page?: BrowserPageContentPart | undefined;
   readonly quote?: ThreadDraftQuote | undefined;
   readonly requestId?: string | undefined;
 }>;
@@ -232,7 +230,7 @@ function HomeConversation(props: {
   const navigation = useNavigation();
   const drafts = useMobileClient().drafts;
   const { deploymentId, homeThreadId, hostClient, mainWorkspaceId, onShowing, userId } = props;
-  const { messageId, page, quote, requestId } = props.params;
+  const { messageId, quote, requestId } = props.params;
   // A first message written before Home existed is still owed a decision: the
   // Home that exists may be one another device started on a different AI. The
   // intro is where it is named and sent — a message handed over, or words, a
@@ -258,18 +256,6 @@ function HomeConversation(props: {
     () => navigation.setParams({ messageId: undefined }),
     [navigation],
   );
-  // A page Ask handed over rides with the next message this person sends here,
-  // and is let go once one is on its way; leaving sends nothing. A message
-  // already owed when it arrived is not that message.
-  useEffect(() => {
-    if (page === undefined || threadId === null) return;
-    const owed = () => drafts.readPending(deploymentId, userId, threadId)?.idempotencyKey ?? null;
-    const before = owed();
-    return drafts.subscribe(() => {
-      const now = owed();
-      if (now !== null && now !== before) navigation.setParams({ page: undefined });
-    });
-  }, [deploymentId, drafts, navigation, page, threadId, userId]);
   const openThread = useCallback(
     (id: string) =>
       navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id })),
@@ -292,7 +278,6 @@ function HomeConversation(props: {
   if (threadId === null) return null;
   return (
     <ThreadPane
-      askedPage={page ?? null}
       deploymentId={deploymentId}
       hostClient={hostClient}
       key={`${deploymentId}:${threadId}`}

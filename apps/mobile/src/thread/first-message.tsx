@@ -45,7 +45,7 @@ import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "
 import { ComposerAction } from "../ui/composer-action.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
-import { useContentInsets } from "../ui/pane.js";
+import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { ComposerPills } from "./composer-pills.js";
@@ -77,11 +77,6 @@ import {
 
 /** Chat's one Home, or a new task. */
 export type FirstMessageTarget = "home" | "task";
-
-/** The draft key a new task's first message is written under, one per Workspace. */
-export function newTaskDraftKey(workspaceId: string): string {
-  return `new-task:${workspaceId}`;
-}
 
 /** Which AI a first message would start its Thread on. */
 export interface FirstMessageExecution {
@@ -452,7 +447,14 @@ export function FirstMessageComposer(props: {
 
   // Only the outcome of the picker opened by this Send may finish it. A later
   // preference update, including one from another screen or device, cannot.
-  const focused = useIsFocused();
+  const inView = usePaneInView();
+  const focused = useIsFocused() && inView;
+  // Out of view, the field lets go of the keyboard: nothing is typed where it
+  // cannot be seen.
+  const { inputRef } = props;
+  useEffect(() => {
+    if (!inView) inputRef.current?.blur();
+  }, [inView, inputRef]);
   const pickerAttempt = useRef<string | null>(null);
   const readySelection = useRef<ExecutionSelection | null>(null);
   const attemptedContent = useRef<string | null>(null);

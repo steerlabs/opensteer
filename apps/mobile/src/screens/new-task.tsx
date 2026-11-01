@@ -32,7 +32,7 @@ import {
   type TextInputInstance,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import type { PendingCommand } from "../client/thread-drafts.js";
+import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
 import { color } from "../theme.js";
 import {
@@ -51,10 +51,8 @@ import {
   FirstMessageHeld,
   FirstMessageInvitation,
   handOverFirstMessage,
-  newTaskDraftKey,
 } from "../thread/first-message.js";
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
-import { pageIdentity } from "../browser/surface-route.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { Notice } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -63,8 +61,6 @@ import { useThreadHeader } from "./thread-header.js";
 
 export type NewTaskScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
-  /** A page Ask handed over, included with the first message unless removed. */
-  readonly page?: BrowserPageContentPart | undefined;
   /** Main for a task from Tasks; a specialist's own Workspace from its page. */
   readonly workspaceId: string;
 }>;
@@ -93,7 +89,7 @@ const examples = [
 export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
-  const { deploymentId, page, workspaceId } = props.route.params;
+  const { deploymentId, workspaceId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   useThreadHeader({
     deploymentId,
@@ -128,7 +124,6 @@ export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
         hostClient={hostClient}
         key={`${deploymentId}:${workspaceId}`}
         onStarted={onStarted}
-        page={page ?? null}
         underHeader
         workspaceId={workspaceId}
       />
@@ -153,8 +148,6 @@ export function NewTaskPane(props: {
    * it, whose composer then sends the first message.
    */
   readonly onStarted: (threadId: string) => boolean;
-  /** The page Ask started this from, included with the first message unless removed. */
-  readonly page?: BrowserPageContentPart | null;
   /** Set where a transparent navigation bar lies over the top of the pane. */
   readonly underHeader: boolean;
   readonly workspaceId: string;
@@ -175,7 +168,6 @@ function NewTask(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly onStarted: (threadId: string) => boolean;
-  readonly page?: BrowserPageContentPart | null;
   readonly underHeader: boolean;
   readonly userId: string;
   readonly workspaceId: string;
@@ -210,12 +202,8 @@ function NewTask(props: {
     [],
   );
   const staged = useDraftAttachments({ client: hostClient, draftKey, drafts, files, workspaceId });
-  // Taken off this message, the page stays off for as long as it is the page
-  // offered; another page is offered afresh.
-  const offered = props.page ?? null;
-  const offeredKey = offered === null ? null : pageIdentity(offered);
-  const [removedPage, setRemovedPage] = useState<string | null>(null);
-  const includedPage = offered !== null && offeredKey !== removedPage ? offered : null;
+  // The page Ask put on this draft, kept with the words until it is sent or removed.
+  const includedPage = draft?.page ?? null;
 
   const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
   const execution = useMemo(
@@ -236,6 +224,12 @@ function NewTask(props: {
     void drafts.writeDraft(deploymentId, userId, draftKey, next).then(
       () => setDraftFailure(null),
       () => setDraftFailure("This draft could not be saved on this phone."),
+    );
+  };
+  const changePage = (next: BrowserPageContentPart | null): void => {
+    void drafts.writeDraftPage(deploymentId, userId, draftKey, next).then(
+      () => setDraftFailure(null),
+      () => setDraftFailure("This page could not be saved on this phone."),
     );
   };
 
@@ -355,6 +349,7 @@ function NewTask(props: {
             (cleared) => {
               if (!cleared) return;
               changeText(refused.text);
+              if (refused.browserPage !== undefined) changePage(refused.browserPage);
               staged.restore(
                 (refused.attachments ?? []).map((part, index) => ({
                   localUri: refused.localUris?.[index] ?? null,
@@ -408,11 +403,7 @@ function NewTask(props: {
       }
       onRemoveQuote={noop}
       onSend={(selection) => void send(null, selection)}
-      page={
-        includedPage === null
-          ? null
-          : { onRemove: () => setRemovedPage(offeredKey), part: includedPage }
-      }
+      page={includedPage === null ? null : { onRemove: () => changePage(null), part: includedPage }}
       placeholder="Describe the task…"
       usageScope={{ deploymentId, userId }}
       quote={null}
