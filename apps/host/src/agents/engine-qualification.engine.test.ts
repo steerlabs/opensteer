@@ -972,7 +972,10 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       evidence.generatedIcon = stored.icon;
       const scratchEntries = (
         await readdir(active.runnerDataDirectory, { recursive: true })
-      ).filter((name) => name.split(/[\\/]/u).some((part) => part.startsWith("title-")));
+      ).filter((name) =>
+        // Shared naming scratch is `title-*`; an engine's own is `<engine>-title-*`.
+        name.split(/[\\/]/u).some((part) => /^(?:[a-z]+-)?title-/u.test(part)),
+      );
       evidence.scratchEntries = scratchEntries;
       expect(scratchEntries).toEqual([]);
       expect(stored.title).not.toBe(seed);
