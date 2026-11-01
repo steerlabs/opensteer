@@ -865,13 +865,20 @@ describe("BrowserService", () => {
       await service.readHistory(ownerId, profile.id);
       if (path === "agent-start") expect(recordVisit).not.toHaveBeenCalled();
       else
-        expect(recordVisit).toHaveBeenCalledExactlyOnceWith({
-          profileId: profile.id,
-          ownerId,
-          url: "https://www.amazon.com/",
-          title: "Amazon",
-          typed: path === "tab-open",
-        });
+        await vi.waitFor(
+          () =>
+            expect(
+              recordVisit,
+              "Initial browser commit was not recorded",
+            ).toHaveBeenCalledExactlyOnceWith({
+              profileId: profile.id,
+              ownerId,
+              url: "https://www.amazon.com/",
+              title: "Amazon",
+              typed: path === "tab-open",
+            }),
+          { timeout: 1_000 },
+        );
     },
   );
 
