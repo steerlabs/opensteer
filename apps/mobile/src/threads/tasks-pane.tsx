@@ -1,5 +1,5 @@
 import Animated from "react-native-reanimated";
-import { useTaskMotion } from "./task-motion.js";
+import { taskSlide } from "./task-motion.js";
 import {
   canRespondToRequests,
   describeHostConnection,
@@ -255,10 +255,9 @@ export function TasksPane(props: {
     [moveTask, onOpenTask, signIn],
   );
 
-  const motion = useTaskMotion(rows.map((row) => row.key));
   return (
     <Animated.FlatList
-      {...(motion ? { itemLayoutAnimation: motion } : {})}
+      itemLayoutAnimation={taskSlide}
       // Rows carry their own inset, so the list's gutter is where their mark
       // column begins rather than where their words do.
       contentContainerStyle={[

@@ -113,11 +113,15 @@ export function sameTaskListSource(previous: TaskListSource, next: TaskListSourc
   return taskListSourceKeys.every((key) => previous[key] === next[key]);
 }
 
-/** The reader's tasks across every Workspace, with their Chat apart. */
 export interface TaskListOptions {
+  /**
+   * The task this screen shows. Opening a task must not move it, so a Done one
+   * stays where it was until the reader has read it and left it.
+   */
   readonly openThreadId?: string | null | undefined;
 }
 
+/** The reader's tasks across every Workspace, with their Chat apart. */
 export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
   return arrange(snapshot, snapshot.tasks, snapshot.activeTasks, options);
 }

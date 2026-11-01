@@ -1,5 +1,5 @@
 import Animated from "react-native-reanimated";
-import { useTaskMotion } from "../threads/task-motion.js";
+import { taskSlide } from "../threads/task-motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
@@ -330,19 +330,9 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   }, [hostClient, model, selectedThreadId]);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
-  const motion = useTaskMotion(
-    list
-      ? [...list.working, ...list.ready, ...(doneOpen ? list.done : [])].map((row) => row.threadId)
-      : [],
-    list
-      ? [list.working, list.ready, doneOpen ? list.done : []]
-          .map((rows) => rows.map((row) => row.threadId).join(","))
-          .join(";")
-      : "",
-  );
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf) =>
     tasks.map((task) => (
-      <Animated.View key={task.threadId} {...(motion ? { layout: motion } : {})}>
+      <Animated.View key={task.threadId} layout={taskSlide}>
         <TaskRowView
           onOpen={openTask}
           onSetDone={moveTask}

@@ -44,7 +44,7 @@ export class VoiceContextLinks {
       "Back: opensteer://back",
       "Tasks:",
     ];
-    const tasks = taskList(snapshot, { openThreadId: view?.threadId });
+    const tasks = taskList(snapshot);
     for (const task of [...tasks.working, ...tasks.ready, ...tasks.done].slice(0, 25))
       lines.push(
         `${label(task.title)} | ${task.done ? "done" : task.tone} | opensteer://thread/${encodeURIComponent(task.threadId)}`,

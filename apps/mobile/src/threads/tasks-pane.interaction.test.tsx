@@ -4,16 +4,10 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 
-vi.mock("react-native-reanimated", async () => {
-  const native = await import("react-native");
-  const transition = { duration: () => transition, easing: () => transition };
-  return {
-    default: { FlatList: native.FlatList },
-    LinearTransition: transition,
-    Easing: { out: (value: unknown) => value, cubic: (value: number) => value },
-    useReducedMotion: () => true,
-  };
-});
+vi.mock("react-native-reanimated", async () => ({
+  default: { FlatList: (await import("react-native")).FlatList },
+}));
+vi.mock("./task-motion.js", () => ({ taskSlide: {} }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 vi.mock("@opensteer/client/react", () => ({
   useHostSnapshot: (client: { getSnapshot: () => unknown }) => ({
