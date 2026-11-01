@@ -80,7 +80,7 @@ function serve() {
   const lines = createInterface({ input: process.stdin });
   let sessionId = "019a1111-1111-7111-8111-111111111111";
   let turnId = "019a2222-2222-7222-8222-222222222222";
-  lines.on("line", async (line) => {
+  const handle = async (line) => {
     const message = JSON.parse(line);
     await record({ message });
     if (!("id" in message)) return;
@@ -368,6 +368,11 @@ function serve() {
       return;
     }
     response(id, { commandId: params.commandId, status: "accepted" });
+  };
+  // One line at a time, in order, as a real stdio peer reads them.
+  let pending = Promise.resolve();
+  lines.on("line", (line) => {
+    pending = pending.then(() => handle(line));
   });
 
   function finishTurn() {
