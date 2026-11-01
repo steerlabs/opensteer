@@ -5,8 +5,10 @@ import {
   type HarnessInstanceId,
 } from "@opensteer/core";
 import { AcpHarnessAdapter, type AcpSessionConfigOption } from "@opensteer/harness-acp";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   nativeUserHarnessRuntimeBoundary,
+  spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
   type HarnessSessionContext,
@@ -130,6 +132,11 @@ type TurnScenario =
   | "credits-stderr-first"
   | "credits-stdout-first"
   | "foreign-session"
+  | "exit-partial"
+  | "exit-error-echo"
+  | "exit-foreign-echo"
+  | "exit-distinct-reply"
+  | "block-across-start"
   | "late-block"
   | "long-reply"
   | "rate-limit"
@@ -140,6 +147,65 @@ type TurnScenario =
   | "unauthorized";
 
 describe("Antigravity in-turn provider failures", () => {
+  it.each([
+    ["exit-partial", "Partial reply", "harness_error"],
+    ["exit-error-echo", "", harnessUsageLimitFailureCode],
+    ["exit-foreign-echo", "Your prepayment credits are depleted.", "harness_error"],
+    ["exit-distinct-reply", "Partial reply", harnessUsageLimitFailureCode],
+  ] as const)("settles held assistant text before failure on %s", async (scenario, reply, code) => {
+    const fixture = await setupTurn(scenario);
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    const streamEnded = observed.done.catch(() => undefined);
+    try {
+      await session.execute(fixture.turn("Reply then exit"));
+      await withTimeout(streamEnded, 1_000, {
+        timeoutError: () => new Error("ACP event stream did not close after the agent exited"),
+      });
+
+      expect(observed.events.map((event) => event.type)).toEqual([
+        "run.started",
+        ...(reply ? ["assistant.delta", "assistant.delta", "assistant.message"] : []),
+        "run.failed",
+      ]);
+      expectAssistantDeltas(observed.events).toBe(reply);
+      expectAssistantMessages(observed.events).toEqual(reply ? [reply] : []);
+      expect(observed.events.at(-1)).toMatchObject({ data: { code }, type: "run.failed" });
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("classifies a block whose diagnostics precede the prompt and whose closing marker follows it", async () => {
+    const fixture = await setupTurn("block-across-start");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observed = observe(session.events);
+    try {
+      await vi.waitFor(
+        () => {
+          expect(fixture.stderr, "Agent did not emit pre-prompt diagnostics").toContain(
+            "System step error (HTTP 402)",
+          );
+        },
+        { timeout: 1_000 },
+      );
+      await session.execute(fixture.turn("Close pending diagnostics"));
+      await expectTerminal(observed.events, "run.failed");
+      expect(observed.events.at(-1)).toMatchObject({
+        data: {
+          code: harnessUsageLimitFailureCode,
+          message: expect.stringContaining("prepayment credits are depleted"),
+        },
+        type: "run.failed",
+      });
+      expectAssistantDeltas(observed.events).toBe("");
+      expectAssistantMessages(observed.events).toEqual([]);
+    } finally {
+      await fixture.adapter.close();
+      await observed.done;
+    }
+  });
+
   it.each(["credits-stderr-first", "credits-stdout-first"] as const)(
     "fails depleted credits with %s delivery and drops the error reply",
     async (scenario) => {
@@ -317,6 +383,15 @@ describe("Antigravity in-turn provider failures", () => {
     const fixture = await setupTurn("late-block");
     const session = await fixture.adapter.startSession(fixture.context);
     const observed = observe(session.events);
+    await vi.waitFor(
+      () => {
+        expect(
+          fixture.stderr,
+          "Agent did not close its old error block before the prompt",
+        ).toContain("Antigravity SDK error processing prompt for session");
+      },
+      { timeout: 1_000 },
+    );
     await session.execute(fixture.turn("Turn after old diagnostics"));
     await vi.waitFor(() => {
       expect(observed.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
@@ -340,53 +415,66 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
   const fixture = fileURLToPath(
     new URL("./test-fixtures/fake-antigravity-acp.mjs", import.meta.url),
   );
-  const adapter = new AcpHarnessAdapter(instanceId, {
-    capabilities: {
-      approvals: true,
-      attachments: true,
-      interruption: true,
-      mcpImageContent: true,
-      resume: true,
-      steering: false,
-      toolCalls: true,
-      userInput: true,
-    },
-    engineLabel: "Antigravity",
-    hooks: {
-      classifyError: classifyAntigravityAcpError,
-      holdAssistant: {
-        deadlineMs,
-        maxCharacters: 2_048,
-        settle: settleAntigravityHeldAssistant,
+  let stderr = "";
+  const adapter = new AcpHarnessAdapter(
+    instanceId,
+    {
+      capabilities: {
+        approvals: true,
+        attachments: true,
+        interruption: true,
+        mcpImageContent: true,
+        resume: true,
+        steering: false,
+        toolCalls: true,
+        userInput: true,
       },
-      normalizeUpdate: normalizeAntigravityUpdate,
-      permissionChoices: () => [],
-    },
-    launch: () => ({
-      args: [fixture, scenario],
-      cwd: dirname(fixture),
-      environment,
-      executable: process.execPath,
-    }),
-    maxEventBytes: 1_000_000,
-    maxEventItems: 1_000,
-    policy: {
-      accessModeIds: {
-        "approval-required": "default",
-        "auto-accept-edits": "auto_edit",
-        auto: "default",
-        "full-access": "yolo",
+      engineLabel: "Antigravity",
+      hooks: {
+        classifyError: classifyAntigravityAcpError,
+        holdAssistant: {
+          deadlineMs,
+          maxCharacters: 2_048,
+          settle: settleAntigravityHeldAssistant,
+        },
+        normalizeUpdate: normalizeAntigravityUpdate,
+        permissionChoices: () => [],
       },
-      cancel: { behavior: "wait-for-prompt" },
-      clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
-      clientInfo: { name: "zed", version: "0.0.0" },
-      eagerAuthentication: false,
-      initializeDeadlineMs: 1_000,
-      model: { type: "set-model" },
-      protocolVersion: 1,
-      resume: { method: "resume", suppressReplay: false },
+      launch: () => ({
+        args: [fixture, scenario],
+        cwd: dirname(fixture),
+        environment,
+        executable: process.execPath,
+      }),
+      maxEventBytes: 1_000_000,
+      maxEventItems: 1_000,
+      policy: {
+        accessModeIds: {
+          "approval-required": "default",
+          "auto-accept-edits": "auto_edit",
+          auto: "default",
+          "full-access": "yolo",
+        },
+        cancel: { behavior: "wait-for-prompt" },
+        clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
+        clientInfo: { name: "zed", version: "0.0.0" },
+        eagerAuthentication: false,
+        initializeDeadlineMs: 1_000,
+        model: { type: "set-model" },
+        protocolVersion: 1,
+        resume: { method: "resume", suppressReplay: false },
+      },
     },
-  });
+    {
+      spawn: (launch) => {
+        const process = spawnSupervised(launch);
+        process.child.stderr.on("data", (chunk: Buffer | string) => {
+          stderr += chunk.toString();
+        });
+        return process;
+      },
+    },
+  );
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: { capabilityProfileId: "main", token: "agent-token", url: "https://host/mcp" },
@@ -426,6 +514,9 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
   return {
     adapter,
     context,
+    get stderr() {
+      return stderr;
+    },
     turn(text: string): HarnessRunInput {
       return {
         context: {

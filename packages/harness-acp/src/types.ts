@@ -128,12 +128,14 @@ export type AcpErrorContext =
   | {
       readonly operation: "prompt";
       readonly providerSessionReference: string;
+      readonly stderrBeforePrompt?: string;
       readonly stderrTail: string;
     };
 
 export interface AcpHeldAssistantContext {
   readonly assistantText: string;
   readonly providerSessionReference: string;
+  readonly stderrBeforePrompt?: string;
   readonly stderrTail: string;
 }
 
