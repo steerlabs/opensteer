@@ -53,6 +53,7 @@ export interface AcpMcpServer {
 export interface AcpSessionEnvironment {
   readonly additionalDirectories: readonly string[];
   readonly cwd: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
   readonly mcpServers: readonly AcpMcpServer[];
 }
 
@@ -480,6 +481,7 @@ function v1Capabilities(capabilities: AcpClientCapabilities): acpV1.ClientCapabi
 
 function v1Environment(environment: AcpSessionEnvironment): acpV1.NewSessionRequest {
   return {
+    ...(environment.metadata ? { _meta: { ...environment.metadata } } : {}),
     cwd: environment.cwd,
     additionalDirectories: [...environment.additionalDirectories],
     mcpServers: environment.mcpServers.map((server) => ({
@@ -491,6 +493,7 @@ function v1Environment(environment: AcpSessionEnvironment): acpV1.NewSessionRequ
 
 function v2Environment(environment: AcpSessionEnvironment): acpV2.NewSessionRequest {
   return {
+    ...(environment.metadata ? { _meta: { ...environment.metadata } } : {}),
     cwd: environment.cwd,
     additionalDirectories: [...environment.additionalDirectories],
     mcpServers: environment.mcpServers.map((server) => ({

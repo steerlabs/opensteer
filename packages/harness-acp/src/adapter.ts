@@ -567,7 +567,6 @@ class AcpHarnessSession implements HarnessSession {
     for (const [blockId, text] of active.reasoning) {
       if (text) this.#publish({ data: { blockId, text }, type: "reasoning.completed" });
     }
-    if (active.usage) this.#publish({ data: active.usage, type: "run.usage" });
   }
 
   async #interruptActive(active: ActiveTurn): Promise<void> {
@@ -587,7 +586,8 @@ class AcpHarnessSession implements HarnessSession {
       }
     }
     if (this.#options.policy.cancel.behavior === "cancel-and-kill") {
-      await this.#process.terminate();
+      this.#expectedProcessExit = true;
+      await this.#process.terminate(0);
       this.#finish(active, "interrupted");
     }
   }
@@ -681,6 +681,7 @@ class AcpHarnessSession implements HarnessSession {
     if (!this.#publisher.claimTerminal(active)) return;
     active.nodes.endAll(status === "completed" ? "completed" : "interrupted");
     this.#cancelPending("run-ended");
+    this.#publishUsage(active);
     this.#publish(runEndedEvent(status));
     active.completion.resolve();
   }
@@ -689,8 +690,13 @@ class AcpHarnessSession implements HarnessSession {
     if (!this.#publisher.claimTerminal(active)) return;
     active.nodes.endAll("failed");
     this.#cancelPending("run-ended");
+    this.#publishUsage(active);
     this.#publish(runFailedEvent(acpFailure(error)));
     active.completion.resolve();
+  }
+
+  #publishUsage(active: ActiveTurn): void {
+    if (active.usage) this.#publish({ data: active.usage, type: "run.usage" });
   }
 
   #cancelPending(reason: "run-ended" | "source-closed" | "process-lost"): void {

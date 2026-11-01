@@ -71,6 +71,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       modeId: "default",
       prompt: "Name only this input",
       protocolVersion: 1,
+      sessionMetadata: { antigravity: { enabledTools: [] } },
       signal: new AbortController().signal,
     });
 
@@ -89,7 +90,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       },
     });
     expect(rows[2]).toEqual({
-      session: { additionalDirectories: [], cwd: directory, mcpServers: [] },
+      session: {
+        _meta: { antigravity: { enabledTools: [] } },
+        additionalDirectories: [],
+        cwd: directory,
+        mcpServers: [],
+      },
     });
     expect(() => process.kill((rows[0]?.pid as number) ?? 0, 0)).toThrow();
   });

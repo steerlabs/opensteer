@@ -59,7 +59,7 @@ import {
   type AntigravityAuthMethod,
   type AntigravityHarnessConfig,
 } from "./config.js";
-import { prepareAntigravityLaunch } from "./environment.js";
+import { prepareAntigravityLaunch, prepareAntigravityTitleLaunch } from "./environment.js";
 import {
   forwardAntigravityCallback,
   parseAntigravityAuthorizationUrl,
@@ -886,13 +886,21 @@ class AntigravityAdapter implements HarnessAdapter {
     const scratch = await mkdtemp(
       join(context.providerState.privateStateRoot, "antigravity-title-"),
     );
-    let sessionId: string | undefined;
-    let cleanupError: unknown;
-    let result: string | undefined;
-    let resultError: unknown;
     try {
-      const base = await this.#launch({ ...context, workspacePath: scratch });
-      const launch: HarnessProcessLaunch = context.wrapProcessLaunch({ ...base, cwd: scratch });
+      const workspace = join(scratch, "workspace");
+      await mkdir(workspace, { mode: 0o700 });
+      const apiKey = await apiKeyFile(context.providerState).read();
+      const base = await prepareAntigravityTitleLaunch({
+        ...(apiKey ? { apiKey } : {}),
+        authMethod: this.#authMethod,
+        baseEnvironment: context.environment,
+        config: this.#config,
+        directory: scratch,
+        nodeExecutable: this.#options.nodeExecutable,
+        providerState: context.providerState,
+        runtime: this.#runtime,
+      });
+      const launch: HarnessProcessLaunch = context.wrapProcessLaunch({ ...base, cwd: workspace });
       const generated = await generateContainedAcpTitle({
         authenticationMethod: this.#authMethod,
         clientInfo: { name: "zed", version: "0.0.0" },
@@ -900,41 +908,26 @@ class AntigravityAdapter implements HarnessAdapter {
         launch,
         modeId: "default",
         onSessionId: (value) => {
-          sessionId = value;
           this.#assertSessionReference(value);
         },
         prompt: [
           "Name this Thread from only the input below.",
-          "Do not use tools, files, commands, skills, hooks, MCP servers, or outside instructions.",
           "Return only a short title.",
           "",
           input.prompt,
         ].join("\n"),
         protocolVersion: this.#runtime.protocolVersion,
+        sessionMetadata: { antigravity: { enabledTools: [] } },
         signal: input.signal,
         transformStdout: (stdout) => transformAntigravityStdout(stdout),
       });
-      result = generated.text;
-    } catch (error) {
-      resultError = error;
-    }
-    try {
-      await removeTemporaryAntigravitySession({
-        cwd: scratch,
-        profileDirectory: context.providerState.providerHomeDirectory!,
-        sessionId,
-      });
-      if ((await readdir(scratch)).length > 0) {
-        cleanupError = new Error("Antigravity wrote files while naming the Thread");
+      if ((await readdir(workspace)).length > 0) {
+        throw new Error("Antigravity wrote workspace files while naming the Thread");
       }
-    } catch (error) {
-      cleanupError = error;
+      return generated.text;
+    } finally {
+      await rm(scratch, { force: true, recursive: true });
     }
-    await rm(scratch, { force: true, recursive: true });
-    if (resultError) throw resultError;
-    if (cleanupError) throw cleanupError;
-    if (result === undefined) throw new Error("Antigravity did not return a Thread title");
-    return result;
   }
 }
 

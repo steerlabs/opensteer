@@ -20,6 +20,7 @@ export async function generateContainedAcpTitle(input: {
   readonly onSessionId?: (sessionId: string) => void;
   readonly prompt: string;
   readonly protocolVersion: AcpProtocolVersion;
+  readonly sessionMetadata?: Readonly<Record<string, unknown>>;
   readonly signal: AbortSignal;
   readonly transformStdout?: (stdout: AsyncIterable<Buffer>) => AsyncIterable<Buffer>;
 }): Promise<{ readonly sessionId: string; readonly text: string }> {
@@ -85,7 +86,12 @@ export async function generateContainedAcpTitle(input: {
       await client.authenticate(input.authenticationMethod, lifetime.signal);
     }
     const session = await client.newSession(
-      { additionalDirectories: [], cwd: input.launch.cwd, mcpServers: [] },
+      {
+        additionalDirectories: [],
+        cwd: input.launch.cwd,
+        ...(input.sessionMetadata ? { metadata: input.sessionMetadata } : {}),
+        mcpServers: [],
+      },
       lifetime.signal,
     );
     sessionId = session.sessionId;
