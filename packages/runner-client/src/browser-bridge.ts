@@ -1,43 +1,39 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { readBoundedText } from "@opensteer/shared/boundedJson";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
   BrowserAttachPublicKeysSchema,
-  createBrowserBridgeAttachedSchema,
-  BrowserEngineSchema,
-  HeldLocalProfileSchema,
-  type LocalProfileBinding,
   BrowserClientMessageSchema,
+  BrowserEngineSchema,
   BrowserServerMessageSchema,
+  createBrowserBridgeAttachedSchema,
+  HeldLocalProfileSchema,
   serializeJsonFrame,
   type BrowserAttachPublicKey,
+  type BrowserBridgeAttached,
   type BrowserClientMessage,
   type BrowserServerMessage,
-  type BrowserBridgeAttached,
+  type LocalProfileBinding,
 } from "@opensteer/protocol";
 import {
   validateBrowserRuntimeFrame,
   type BrowserChannelId,
   type BrowserRuntimeHealth,
-  type BrowserRelayNegotiation,
 } from "@opensteer/protocol/browser-relay";
+import { readBoundedText } from "@opensteer/shared/boundedJson";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 
 const maxBrowserRelayChannels = 32;
 
 const LocalHealthSchema = z.object({
+  wireVersion: z.number().int().optional(),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
-  localProfiles: z.literal(1).optional().catch(undefined),
-  profilePrepare: z.literal(1).optional().catch(undefined),
-  profilePrepareInstanceId: z.uuid().optional().catch(undefined),
   localProfileStorage: z
     .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
     .optional()
     .catch(undefined),
-  initialNavigationVersion: z.literal(1).optional().catch(undefined),
 });
 
 export interface BrowserChannelSink {
@@ -79,14 +75,8 @@ export class LocalBrowserRuntimeBridge {
   setPasskeysEnabled(enabled: boolean): void {
     this.#passkeys = enabled;
   }
-  #negotiation: BrowserRelayNegotiation = {};
-  setNegotiation(negotiation: BrowserRelayNegotiation): void {
-    this.#negotiation = negotiation;
-  }
 
   async localProfileInventory() {
-    if (this.#negotiation.localProfiles !== 1)
-      throw new BrowserRelayError("Local profiles were not negotiated.");
     return z
       .strictObject({
         storage: z.strictObject({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema }),
@@ -98,8 +88,6 @@ export class LocalBrowserRuntimeBridge {
     binding: LocalProfileBinding,
     deletionId: string,
   ): Promise<"pending-restart" | "deleted"> {
-    if (this.#negotiation.localProfiles !== 1)
-      throw new BrowserRelayError("Local profiles were not negotiated.");
     return z
       .strictObject({ state: z.enum(["pending-restart", "deleted"]) })
       .parse(await this.#maintenance("/v1/local-profiles/delete", { binding, deletionId })).state;
@@ -111,7 +99,6 @@ export class LocalBrowserRuntimeBridge {
       signal: AbortSignal.timeout(120_000),
       headers: {
         "x-opensteer-browser-bridge-token": this.#bridgeToken,
-        "x-opensteer-browser-local-profiles": "1",
         ...(input ? { "content-type": "application/json" } : {}),
       },
       ...(input ? { body: JSON.stringify(input) } : {}),
@@ -187,19 +174,12 @@ export class LocalBrowserRuntimeBridge {
   async capabilities() {
     const health = await this.#readHealth();
     return {
-      ...(health.localProfiles === 1 && health.localProfileStorage
+      wireVersion: health.wireVersion,
+      ...(health.localProfileStorage
         ? {
-            localProfiles: 1 as const,
             localProfileStorage: health.localProfileStorage,
-            ...(health.profilePrepare === 1 && health.profilePrepareInstanceId
-              ? {
-                  profilePrepare: 1 as const,
-                  profilePrepareInstanceId: health.profilePrepareInstanceId,
-                }
-              : {}),
           }
         : {}),
-      ...(health.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 as const } : {}),
     };
   }
 
@@ -229,13 +209,7 @@ export class LocalBrowserRuntimeBridge {
     channelId: BrowserChannelId,
     attachTicket: string,
     sink: BrowserChannelSink,
-    preparation = false,
-  ): Promise<BrowserBridgeAttached & { retained?: boolean }> {
-    if (
-      preparation &&
-      (this.#negotiation.profilePrepare !== 1 || this.#negotiation.localProfiles !== 1)
-    )
-      throw new BrowserRelayError("Profile preparation was not negotiated.");
+  ): Promise<BrowserBridgeAttached> {
     if (this.#channels.has(channelId)) {
       throw new BrowserRelayError("The browser relay channel already exists.");
     }
@@ -252,18 +226,11 @@ export class LocalBrowserRuntimeBridge {
     if (!attachKeysHeader) {
       throw new BrowserRelayError("The Host has not provided browser attach keys.");
     }
-    const url = new URL(preparation ? "/v1/browser/prepare" : "/v1/browser", this.#url);
+    const url = new URL("/v1/browser", this.#url);
     url.protocol = "ws:";
     const socket = new WebSocket(url, {
       followRedirects: false,
       headers: {
-        ...(preparation ? { "x-opensteer-browser-profile-prepare": "1" } : {}),
-        ...(this.#negotiation.localProfiles === 1
-          ? { "x-opensteer-browser-local-profiles": "1" }
-          : {}),
-        ...(this.#negotiation.initialNavigationVersion === 1
-          ? { "x-opensteer-browser-initial-navigation": "1" }
-          : {}),
         ...(this.#passkeys ? { "x-opensteer-browser-passkeys": "1" } : {}),
         authorization: `Bearer ${attachTicket}`,
         "x-opensteer-browser-attach-keys": attachKeysHeader,
@@ -274,12 +241,10 @@ export class LocalBrowserRuntimeBridge {
     });
     this.#channels.set(channelId, { socket });
     let attached = false;
-    const readiness = Promise.withResolvers<BrowserBridgeAttached & { retained?: boolean }>();
+    const readiness = Promise.withResolvers<BrowserBridgeAttached>();
     // Observe rejection even if the transport fails before waitForOpen returns.
     void readiness.promise.catch(() => undefined);
-    const negotiated = this.#negotiation;
-    const needsReadiness =
-      negotiated.localProfiles === 1 || negotiated.initialNavigationVersion === 1;
+
     socket.on("message", (raw, isBinary) => {
       try {
         const frame = normalizeRawData(raw);
@@ -288,22 +253,7 @@ export class LocalBrowserRuntimeBridge {
           sink.onFrame(channelId, frame);
         } else {
           const value: unknown = JSON.parse(frame.toString("utf8"));
-          const prepared = preparation
-            ? z
-                .strictObject({
-                  type: z.literal("browser.profile.prepared"),
-                  retained: z.boolean(),
-                })
-                .safeParse(value)
-            : undefined;
-          if (prepared?.success) {
-            readiness.resolve({ type: "browser.attached", retained: prepared.data.retained });
-            return;
-          }
-          const ready =
-            needsReadiness && !preparation
-              ? createBrowserBridgeAttachedSchema(negotiated).safeParse(value)
-              : undefined;
+          const ready = createBrowserBridgeAttachedSchema().safeParse(value);
           if (ready?.success) {
             readiness.resolve(ready.data);
             return;
@@ -336,11 +286,9 @@ export class LocalBrowserRuntimeBridge {
     });
     try {
       await waitForOpen(socket, 5_000);
-      const result = needsReadiness
-        ? await withTimeout(readiness.promise, 120_000, {
-            timeoutError: () => new BrowserRelayError("Browser runtime readiness timed out."),
-          })
-        : { type: "browser.attached" as const };
+      const result = await withTimeout(readiness.promise, 20_000, {
+        timeoutError: () => new BrowserRelayError("Browser runtime readiness timed out."),
+      });
       attached = true;
       return result;
     } catch (error) {

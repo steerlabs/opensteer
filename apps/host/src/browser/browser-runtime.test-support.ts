@@ -1,4 +1,3 @@
-import { createPublicKey, randomUUID, verify } from "node:crypto";
 import { createId } from "@opensteer/core";
 import {
   BrowserAttachTicketClaimsSchema,
@@ -16,16 +15,13 @@ import {
   type HostToBrowserRelayMessage,
 } from "@opensteer/protocol/browser-relay";
 import { createRunnerAuxiliarySignature } from "@opensteer/runner-auth";
-import {
-  connectPrimary,
-  closed,
-  type PrimaryConnection,
-} from "../runtime/machine-access.test-support.js";
+import { createPublicKey, randomUUID, verify } from "node:crypto";
 import WebSocket from "ws";
 import {
-  ReleasedBrowserAttachTicketClaimsSchema,
-  ReleasedHostToBrowserRelayMessageSchema,
-} from "./released-browser-protocol.test-support.js";
+  closed,
+  connectPrimary,
+  type PrimaryConnection,
+} from "../runtime/machine-access.test-support.js";
 
 /**
  * One enrolled computer whose only module is a browser.
@@ -76,7 +72,15 @@ export async function startBrowserRuntime(
     capabilities: [],
     modules: {
       browser: {
-        profileSnapshotVersion: 2,
+        wireVersion: 1,
+        ...(!options.runtimeUrl
+          ? {
+              localProfileStorage: {
+                storageInstanceId: "20000000-0000-4000-8000-000000000001",
+                engine: "chromium",
+              },
+            }
+          : {}),
         ...(options.editing ? { editing: 1, targetControl: 1 } : {}),
         ...(options.navigation ? { navigationVersion: 1 } : {}),
         ...(options.navigationAttribution ? { navigationAttributionVersion: 1 } : {}),
@@ -160,9 +164,7 @@ export async function startBrowserRuntime(
 
   auxiliary.on("message", (raw, isBinary) => {
     if (isBinary) return;
-    const schema = options.agentReady
-      ? HostToBrowserRelayMessageSchema
-      : ReleasedHostToBrowserRelayMessageSchema;
+    const schema = HostToBrowserRelayMessageSchema;
     const parsed = schema.safeParse(JSON.parse(raw.toString()));
     if (!parsed.success) {
       protocolErrors.push(parsed.error.message);
@@ -182,6 +184,11 @@ export async function startBrowserRuntime(
           requestId: message.requestId,
           type: "capability.accepted",
         });
+        return;
+      }
+      case "browser.profile.delete": {
+        // A native profile is erased on its computer; this one keeps no files.
+        send({ ...message, type: "browser.profile.delete.result", state: "deleted" });
         return;
       }
       case "browser.health.request": {
@@ -208,12 +215,6 @@ export async function startBrowserRuntime(
           options.agentReady === true,
         );
         sessionChannels.set(latestClaims.sessionId, message.channelId);
-        send({
-          capability: message.capability,
-          channelId: message.channelId,
-          requestId: message.requestId,
-          type: "browser.attached",
-        });
         if (options.runtimeUrl) {
           const engine = new WebSocket(options.runtimeUrl, {
             headers: { authorization: `Bearer ${message.attachTicket}` },
@@ -236,17 +237,43 @@ export async function startBrowserRuntime(
                 ),
                 { binary: true },
               );
-            } else
-              send({
-                capability: message.capability,
-                channelId: message.channelId,
-                type: "browser.server-message",
-                message: JSON.parse(raw.toString()),
-              });
+            } else {
+              const event = JSON.parse(raw.toString()) as Record<string, unknown>;
+              if (event.type === "browser.attached")
+                send({
+                  capability: message.capability,
+                  channelId: message.channelId,
+                  requestId: message.requestId,
+                  type: "browser.attached",
+                  ...(event.initialPage ? { initialPage: event.initialPage } : {}),
+                });
+              else
+                send({
+                  capability: message.capability,
+                  channelId: message.channelId,
+                  type: "browser.server-message",
+                  message: event,
+                });
+            }
           });
           engine.on("error", (error) => protocolErrors.push(String(error)));
           return;
         }
+        send({
+          capability: message.capability,
+          channelId: message.channelId,
+          requestId: message.requestId,
+          type: "browser.attached",
+          ...(latestClaims.initialNavigation
+            ? {
+                initialPage: {
+                  operationKey: latestClaims.initialNavigation.operationKey,
+                  surfaceId: "page-integration",
+                  navigation: latestClaims.initialNavigation.url ? "submitted" : "blank",
+                },
+              }
+            : {}),
+        });
         send({
           capability: message.capability,
           channelId: message.channelId,
@@ -312,6 +339,15 @@ export async function startBrowserRuntime(
         return;
     }
   });
+
+  if (!options.runtimeUrl && !options.primary)
+    send({
+      type: "browser.profile.inventory",
+      storageInstanceId: "20000000-0000-4000-8000-000000000001",
+      engine: "chromium",
+      profiles: [],
+      complete: true,
+    });
 
   return {
     runnerId,
@@ -382,7 +418,7 @@ export function nextJson(socket: WebSocket, type: string): Promise<Record<string
   });
 }
 
-function verifyAttachTicket(token: string, publicKeyPem: string, keyId: string, current: boolean) {
+function verifyAttachTicket(token: string, publicKeyPem: string, keyId: string, _current: boolean) {
   const [headerSegment, payloadSegment, signatureSegment] = token.split(".");
   if (!headerSegment || !payloadSegment || !signatureSegment) throw new Error("Malformed ticket.");
   const header = JSON.parse(Buffer.from(headerSegment, "base64url").toString()) as {
@@ -407,7 +443,7 @@ function verifyAttachTicket(token: string, publicKeyPem: string, keyId: string, 
   ) {
     throw new Error("Invalid ticket signature.");
   }
-  return (
-    current ? BrowserAttachTicketClaimsSchema : ReleasedBrowserAttachTicketClaimsSchema
-  ).parse(JSON.parse(Buffer.from(payloadSegment, "base64url").toString()));
+  return BrowserAttachTicketClaimsSchema.parse(
+    JSON.parse(Buffer.from(payloadSegment, "base64url").toString()),
+  );
 }

@@ -15,53 +15,52 @@
 import { execFileSync } from "node:child_process";
 import { createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 import { once } from "node:events";
-import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { RealtimeHub } from "../packages/orchestration/src/index.js";
-import { pauseAfterLock } from "../packages/database/src/lock-race.test-support.js";
-import { createHttpHostApiClient } from "../packages/client/src/host/host-api-client.js";
-import {
-  createDatabase,
-  BrowserTabGroupStore,
-  WorkspaceTabStore,
-} from "../packages/database/src/index.js";
-import { SurfaceLedger } from "../packages/browser-runtime-core/src/browser/surface-ledger.js";
-import { BrowserTabGroupService } from "../apps/host/src/browser/browser-tab-group-service.js";
-import {
-  ModelSelectionSchema,
-  createId,
-  resolveBrowserTabOrder,
-} from "../packages/core/src/index.js";
-import type { CoreCommand } from "../apps/host/src/server/host-api-handlers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-} from "../packages/harness/src/index.js";
-import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
-import {
-  BrowserRuntime,
-  BrowserRuntimeServer,
-  Ed25519AttachTicketVerifier,
-  HttpBrowserProfileStateClient,
-  defaultAttachTicketReplayLedgerPath,
-  sessionFilesRoot,
-} from "../packages/browser-runtime-core/src/index.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   startVerticalStack,
   type VerticalStack,
 } from "../apps/host/src/agents/vertical-stack.test-support.js";
+import { BrowserTabGroupService } from "../apps/host/src/browser/browser-tab-group-service.js";
+import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
+import type { CoreCommand } from "../apps/host/src/server/host-api-handlers.js";
+import { SurfaceLedger } from "../packages/browser-runtime-core/src/browser/surface-ledger.js";
+import {
+  BrowserRuntime,
+  BrowserRuntimeServer,
+  Ed25519AttachTicketVerifier,
+  defaultAttachTicketReplayLedgerPath,
+  sessionFilesRoot,
+} from "../packages/browser-runtime-core/src/index.js";
+import { createHttpHostApiClient } from "../packages/client/src/host/host-api-client.js";
+import {
+  ModelSelectionSchema,
+  createId,
+  resolveBrowserTabOrder,
+} from "../packages/core/src/index.js";
+import {
+  BrowserTabGroupStore,
+  WorkspaceTabStore,
+  createDatabase,
+} from "../packages/database/src/index.js";
+import { pauseAfterLock } from "../packages/database/src/lock-race.test-support.js";
+import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
+import {
+  HarnessRegistry,
+  isolatedServiceHarnessRuntimeBoundary,
+} from "../packages/harness/src/index.js";
+import { RealtimeHub } from "../packages/orchestration/src/index.js";
 import {
   BrowserServerMessageSchema,
+  BrowserSurfaceIdSchema,
+  BrowserTabLayoutSchema,
   BrowserTabReadResultSchema,
   BrowserTabWriteResultSchema,
-  BrowserTabLayoutSchema,
-  BrowserSurfaceIdSchema,
 } from "../packages/protocol/src/index.js";
 
 const executablePath = [
@@ -109,14 +108,13 @@ async function deployment() {
   const keys = new Map<string, KeyObject>();
   const bridgeToken = randomBytes(32).toString("base64url");
   const runtime = new BrowserRuntime({
+    localProfiles: { root },
     runtimeId: "tab-groups-e2e",
-    checkpointIntervalMs: 1000,
     launcher: new PlaywrightChromiumLauncher({
       chromiumSandbox: false,
       executablePath: executablePath!,
       headless: true,
     }),
-    profileStateClient: new HttpBrowserProfileStateClient(),
     sessionFilesRoot: sessionFilesRoot(root),
     ticketVerifier: await Ed25519AttachTicketVerifier.create({
       replayLedgerPath: defaultAttachTicketReplayLedgerPath(root),
@@ -728,8 +726,6 @@ integration("personal tab groups through a real deployment", () => {
     expect(
       await stack.host.browser.applySiteCookies(third.sessionId, "https://example.test", [cookie]),
     ).toBe("applied");
-    const beforeCookies = (await stack.host.browser.exportSessionState(owner.id, third.sessionId))
-      .cookies;
     const beforeCatalog = await stack.host.browser.readTabCatalog(owner.id, first.sessionId);
     const grouped = await command(stack, {
       type: "workspace.tabs.group",
@@ -738,9 +734,6 @@ integration("personal tab groups through a real deployment", () => {
       idempotencyKey: randomUUID(),
     });
     if (grouped.type !== "workspace.tabs.group") throw new Error("Wrong grouping result");
-    expect(
-      (await stack.host.browser.exportSessionState(owner.id, third.sessionId)).cookies,
-    ).toEqual(beforeCookies);
     expect(
       (await stack.host.browser.readTabCatalog(owner.id, first.sessionId)).tabs.map((t) => t.id),
     ).toEqual(beforeCatalog.tabs.map((t) => t.id));
@@ -992,8 +985,6 @@ integration("agent organization and durable ownership", () => {
         origin: "workspace",
         runtimeId: session.runtimeId,
         placementKey: `seed-${index}`,
-        leaseGeneration: 1,
-        leaseTokenHash: null,
       });
       const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
       seedIds.push(tabId);
@@ -1013,7 +1004,7 @@ integration("agent organization and durable ownership", () => {
       await new WorkspaceTabStore(db).suspend(id);
       await db
         .updateTable("browserSessions")
-        .set({ state: "closed", profileLeaseExpiresAt: new Date() })
+        .set({ state: "closed" })
         .where("id", "=", id)
         .execute();
     }
@@ -1718,7 +1709,6 @@ integration("tab group deletion and response bounds", () => {
           tabGroupId: id,
           state: "closed",
           createdAt: new Date(original.createdAt.getTime() + index + 1),
-          profileLeaseExpiresAt: new Date(),
         })
         .execute();
       await db
@@ -1778,7 +1768,6 @@ integration("tab group deletion and response bounds", () => {
           id: lineageId,
           tabGroupId: lineageId,
           state: "closed",
-          profileLeaseExpiresAt: new Date(),
         })
         .execute();
       const groupId = BrowserTabGroupIdSchema.parse(`btg_${randomUUID()}`);

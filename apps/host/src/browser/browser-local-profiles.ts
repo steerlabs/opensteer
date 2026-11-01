@@ -1,4 +1,3 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   OpensteerError,
   type BrowserProfileId,
@@ -7,36 +6,32 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
+import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import type {
   BrowserAttachTicketIdentity,
   BrowserProfileStorage,
-  CompleteProfileInitialization,
-  FrozenProfileSeed,
   LocalProfileBinding,
 } from "@opensteer/protocol";
 import type { LocalProfileInventory } from "@opensteer/protocol/browser-relay";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
-import type { BrowserProfileVault } from "./profile-vault.js";
+import { randomUUID } from "node:crypto";
 import type { BrowserRuntimeTarget } from "./browser-service.js";
 
 export type BrowserLocalProfileRepository = Pick<
   OpensteerStore,
   | "getBrowserProfileStorage"
-  | "reserveBrowserProfileInitialization"
-  | "readBrowserProfileInitialization"
-  | "completeBrowserProfileInitialization"
+  | "bindBrowserProfile"
+  | "acknowledgeBrowserProfileReady"
   | "reconcileBrowserProfileInventory"
   | "listBrowserProfileErasureJobs"
   | "listPendingBrowserProfileDeletions"
   | "acknowledgeBrowserProfileDeletion"
 >;
 
-/** Native authority is independent of the legacy session lease and checkpoint lifecycle. */
+/** Metadata and deletion obligations; the owning engine alone keeps browser state. */
 export class BrowserLocalProfiles {
   readonly options: {
     deploymentId: DeploymentId;
     repository: BrowserLocalProfileRepository;
-    vault: BrowserProfileVault;
     baseUrl: URL;
     beforeProfileOpen?: () => void;
     onReconciled?: (profileId: BrowserProfileId) => Promise<void>;
@@ -44,7 +39,6 @@ export class BrowserLocalProfiles {
   constructor(options: BrowserLocalProfiles["options"]) {
     this.options = options;
   }
-
   storage(profileId: BrowserProfileId) {
     return this.options.repository.getBrowserProfileStorage(profileId);
   }
@@ -57,125 +51,61 @@ export class BrowserLocalProfiles {
   acknowledgeDeletion(input: Parameters<OpensteerStore["acknowledgeBrowserProfileDeletion"]>[0]) {
     return this.options.repository.acknowledgeBrowserProfileDeletion(input);
   }
+  acknowledgeReady(binding: LocalProfileBinding) {
+    return this.options.repository.acknowledgeBrowserProfileReady(binding);
+  }
 
   async identity(
     profileId: BrowserProfileId,
     runnerId: RunnerId,
     target: BrowserRuntimeTarget,
-  ): Promise<Extract<BrowserAttachTicketIdentity, { kind: "profile-local" }> | null> {
+  ): Promise<Extract<BrowserAttachTicketIdentity, { kind: "profile-local" }>> {
     this.options.beforeProfileOpen?.();
+    if (!target.localProfileStorage) refuse("Update this computer to open browser profiles.");
     let storage = await this.storage(profileId);
-    if (!target.localProfileStorage) {
-      if (storage.kind !== "vault") refuse("Update this computer to open this profile.");
-      return null;
-    }
-    if (storage.kind === "vault") {
-      const loaded = await this.options.vault.load(profileId);
-      const seed = this.options.vault.frozenSeed(loaded);
-      const binding: LocalProfileBinding = {
+    if (storage.kind === "unbound")
+      storage = await this.options.repository.bindBrowserProfile({
         version: 1,
         deploymentId: this.options.deploymentId,
         profileId,
         runnerId,
         ...target.localProfileStorage,
         bindingId: randomUUID(),
-      };
-      storage = await this.reserve(binding, seed, true);
-    }
-    if (storage.kind === "vault") throw new Error("Profile conversion was not reserved");
+      });
+    if (storage.kind !== "local")
+      throw new Error("Native browser profile binding was not recorded");
     this.validatePlacement(storage, runnerId, target);
-    if (storage.kind === "local") return { kind: "profile-local", binding: storage.binding };
-    await this.reserve(storage.binding, storage.seed);
-    await this.options.repository.readBrowserProfileInitialization({
-      profileId,
-      tokenHash: hashToken(this.options.vault.initializationToken(storage.binding, storage.seed)),
-    });
     return {
       kind: "profile-local",
       binding: storage.binding,
-      initialization: {
-        seed: storage.seed,
-        initializationUrl: new URL(
-          `/v1/browser-profile-initialization/${profileId}`,
-          this.options.baseUrl,
-        ).toString(),
-        initializationToken: this.options.vault.initializationToken(storage.binding, storage.seed),
-      },
+      initialized: storage.initialized,
+      readyUrl: new URL(`/v1/browser-profiles/${profileId}/ready`, this.options.baseUrl).toString(),
     };
   }
-
   validatePlacement(
-    storage: Exclude<BrowserProfileStorage, { kind: "vault" }>,
+    storage: Extract<BrowserProfileStorage, { kind: "local" }>,
     runnerId: RunnerId,
     target: BrowserRuntimeTarget,
-  ) {
+  ): void {
     if (storage.binding.runnerId !== runnerId)
-      refuse("This profile belongs to another computer. Open it on its owning computer.");
+      refuse("This profile belongs to its owning computer.");
     if (!target.localProfileStorage) refuse("Update this computer to open this profile.");
     if (target.localProfileStorage.storageInstanceId !== storage.binding.storageInstanceId)
-      refuse(
-        "This computer's profile storage changed. Restore the original browser profile storage instance.",
-      );
+      refuse("This computer's profile storage changed. Restore the original storage instance.");
     if (target.localProfileStorage.engine !== storage.binding.engine)
-      refuse(
-        "This profile belongs to a different browser engine. Open it with its original engine.",
-      );
+      refuse("Open this profile with its original browser engine.");
   }
-
-  private reserve(
-    binding: LocalProfileBinding,
-    seed: FrozenProfileSeed,
-    adoptExistingBinding = false,
-  ) {
-    const token = this.options.vault.initializationToken(binding, seed);
-    return this.options.repository.reserveBrowserProfileInitialization({
-      binding,
-      seed,
-      adoptExistingBinding,
-      tokenHash: hashToken(token),
-      expiresAt: new Date(Date.now() + 5 * 60_000),
-    });
-  }
-
-  async seed(profileId: BrowserProfileId, token: string) {
-    const stored = await this.options.repository.readBrowserProfileInitialization({
-      profileId,
-      tokenHash: hashToken(token),
-    });
-    const snapshot = this.options.vault.openFrozenRevision(profileId, stored.revision ?? null);
-    const seed = this.options.vault.frozenSeed({ revision: stored.seed.revision, snapshot });
-    if (seed.digest !== stored.seed.digest)
-      refuse("The frozen profile seed does not match. Restore the original recovery artifact.");
-    return { binding: stored.binding, seed: stored.seed, snapshot };
-  }
-
-  async complete(profileId: BrowserProfileId, token: string, input: CompleteProfileInitialization) {
-    if (
-      input.binding.deploymentId !== this.options.deploymentId ||
-      input.binding.profileId !== profileId ||
-      !equalToken(token, this.options.vault.initializationToken(input.binding, input.seed))
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Profile initialization authorization is invalid.",
-      });
-    const result = await this.options.repository.completeBrowserProfileInitialization({
-      ...input,
-      tokenHash: hashToken(token),
-    });
-    if (result.kind !== "local") throw new Error("Profile initialization did not complete");
-    return { state: "local" as const, binding: result.binding };
-  }
-
-  async reconcileInventory(stream: RunnerAuxiliaryStream, inventory: LocalProfileInventory) {
+  async reconcileInventory(
+    stream: RunnerAuxiliaryStream,
+    inventory: LocalProfileInventory,
+  ): Promise<void> {
     const advertised = stream.identity.modules.browser;
     if (
-      advertised?.localProfiles !== 1 ||
-      !advertised.localProfileStorage ||
+      !advertised?.localProfileStorage ||
       advertised.localProfileStorage.engine !== inventory.engine ||
       advertised.localProfileStorage.storageInstanceId !== inventory.storageInstanceId
     )
-      refuse("The browser inventory does not match this computer's advertised storage instance.");
+      refuse("The browser inventory does not match this computer's storage instance.");
     const seen = new Set<string>();
     for (const claim of inventory.profiles) {
       const binding = claim.binding;
@@ -192,15 +122,6 @@ export class BrowserLocalProfiles {
       await this.options.onReconciled?.(binding.profileId);
     }
   }
-}
-
-export function hashToken(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
-function equalToken(left: string, right: string): boolean {
-  const a = Buffer.from(left),
-    b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
 }
 function refuse(message: string): never {
   throw new OpensteerError({ code: "conflict", message });

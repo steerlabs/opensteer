@@ -1,23 +1,24 @@
-import { randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { createServer, type IncomingMessage } from "node:http";
-import type { BrowserCookie } from "@opensteer/browser-profile/snapshot";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
+import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { browserCookieIdentity } from "@opensteer/browser-profile/source-state";
 import {
   BrowserSessionIdSchema,
+  LocalProfileBindingSchema,
   type BrowserAttachTicketClaims,
   type BrowserClientMessage,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, type IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { z } from "zod";
 import type { BrowserLauncher } from "../browser/backend.js";
 import { BrowserRuntime, type BrowserAttachment } from "../runtime.js";
-import {
-  FakeProfileStateClient,
-  FakeSink,
-  FakeTicketVerifier,
-  testSessionFilesRoot,
-  validClaims,
-} from "./fakes.js";
+import { FakeSink, FakeTicketVerifier, testSessionFilesRoot, validClaims } from "./fakes.js";
 
 /**
  * One end-to-end live sign-in scenario shared by every real engine: the
@@ -27,7 +28,7 @@ import {
  * (keeping the port) so the HTTP fixture can observe what the browser sends.
  */
 export interface StateImportScenarioReport {
-  readonly checkpoint: readonly string[];
+  readonly persisted: readonly string[];
   readonly concurrentWinner: "first" | "second";
   readonly engine: string;
   readonly fixtureCookieHeader: string;
@@ -220,6 +221,7 @@ const httpSignIn: BrowserCookie[] = [
 export async function runStateImportScenario(options: {
   readonly engine: string;
   readonly launcher: BrowserLauncher;
+  readonly nativeRoot?: string;
 }): Promise<StateImportScenarioReport> {
   const requests: Array<{ cookie: string; host: string; path: string }> = [];
   const fixture = createServer((request: IncomingMessage, response) => {
@@ -240,8 +242,12 @@ export async function runStateImportScenario(options: {
   if (!address || typeof address === "string") throw new Error("Fixture address missing.");
   const origin = `http://app.example.test:${address.port}`;
 
-  const profileState = new FakeProfileStateClient();
-  profileState.snapshot = { cookies: [...outOfScope, ...staleInScope], origins: [] };
+  const root = options.nativeRoot ?? (await mkdtemp(path.join(tmpdir(), "state-import-")));
+  let browser: import("../browser/backend.js").LaunchedBrowser | undefined;
+  const launcher: BrowserLauncher = {
+    ...(options.launcher.localProfiles ? { localProfiles: options.launcher.localProfiles } : {}),
+    launch: async (request, signal) => (browser = await options.launcher.launch(request, signal)),
+  };
   const verifier = new FakeTicketVerifier();
   const sessionIds = {
     first: "bsn_00000000-0000-4000-8000-00000000a001",
@@ -249,10 +255,33 @@ export async function runStateImportScenario(options: {
     viewer: "bsn_00000000-0000-4000-8000-00000000a003",
   } as const;
   type SessionName = keyof typeof sessionIds;
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: "runtime_test",
+    localProfiles: { root },
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+    acknowledgeProfileReady: async () => {},
+  });
+  await runtime.prepare();
+  const binding = LocalProfileBindingSchema.parse({
+    version: 1,
+    deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+    runnerId: "rnr_00000000-0000-4000-8000-000000000001",
+    profileId: "bpr_00000000-0000-4000-8000-000000000001",
+    bindingId: "00000000-0000-4000-8000-000000000001",
+    ...runtime.localProfileStorage!,
+  });
   for (const [token, sessionId] of Object.entries(sessionIds)) {
-    const claims = validClaims({ sessionId: BrowserSessionIdSchema.parse(sessionId) });
-    // The attach-ticket schema admits only full control today; the controller
-    // still refuses anything else, so the viewer is modelled directly.
+    const claims = validClaims({
+      sessionId: BrowserSessionIdSchema.parse(sessionId),
+      identity: {
+        kind: "profile-local",
+        binding,
+        initialized: false,
+        readyUrl: "https://host.test/ready",
+      },
+    });
     verifier.setClaims(
       token,
       token === "viewer"
@@ -260,15 +289,14 @@ export async function runStateImportScenario(options: {
         : claims,
     );
   }
-  const runtime = new BrowserRuntime({
-    launcher: options.launcher,
-    profileStateClient: profileState,
-    runtimeId: "runtime_test",
-    sessionFilesRoot: testSessionFilesRoot(),
-    ticketVerifier: verifier,
-  });
   let order = 0;
   const receivedAt = new Map<string, number>();
+  const titleWaiters = new Map<string, PromiseWithResolvers<void>>();
+  const titleReady = (title: string) => {
+    const ready = Promise.withResolvers<void>();
+    titleWaiters.set(title, ready);
+    return ready.promise;
+  };
   const sessions = new Map<SessionName, { attachment: BrowserAttachment; sink: FakeSink }>();
   const session = (name: SessionName) => {
     const found = sessions.get(name);
@@ -279,9 +307,14 @@ export async function runStateImportScenario(options: {
     for (const name of ["first", "second", "viewer"] as const) {
       const sink = new FakeSink();
       sink.sendServerImplementation = async (message) => {
+        if (message.type === "browser.surfaces.changed")
+          for (const surface of message.surfaces) titleWaiters.get(surface.title)?.resolve();
         if (message.type === "state.import.result") receivedAt.set(message.operationId, ++order);
       };
-      sessions.set(name, { attachment: await runtime.attach(name, sink), sink });
+      sessions.set(name, {
+        attachment: await runtime.attach(name, sink, {}),
+        sink,
+      });
     }
     const jars: Record<string, readonly string[]> = {};
     const send = (name: SessionName, message: BrowserClientMessage) =>
@@ -299,18 +332,21 @@ export async function runStateImportScenario(options: {
           message.type === "state.import.result" && message.operationId === operationId,
       );
     };
-    const exportJar = async (name: SessionName): Promise<BrowserCookie[]> => {
-      const before = session(name).sink.messages.length;
-      await send(name, { type: "state.export" });
-      const exported = await awaitMessage(
-        session(name).sink,
-        (message): message is Extract<BrowserServerMessage, { type: "state.exported" }> =>
-          message.type === "state.exported",
-        before,
-      );
-      return exported.snapshot.cookies;
+    const exportJar = async (_name: SessionName): Promise<BrowserCookie[]> => {
+      if (!browser) throw new Error("Native browser was not launched");
+      const cdp = await browser.context.pages()[0]!.cdp();
+      const result = await cdp.send("Network.getAllCookies");
+      return z
+        .object({ cookies: z.array(z.unknown()) })
+        .parse(result)
+        .cookies.map(browserCookieFromCdp);
     };
-
+    if (!browser) throw new Error("Native browser was not launched");
+    await (
+      await browser.context.pages()[0]!.cdp()
+    ).send("Network.setCookies", {
+      cookies: [...outOfScope, ...staleInScope].map(browserCookieToCdp),
+    });
     assertJar("restored", await exportJar("first"), [...outOfScope, ...staleInScope]);
 
     const refused = await importState("viewer", "https://example.com", signIn("viewer"));
@@ -373,8 +409,11 @@ export async function runStateImportScenario(options: {
       ...(concurrentWinner === "first" ? alternateSignIn : signIn("two")),
     ]);
 
+    const anon = titleReady("/anon");
     await send("first", { type: "navigation.go", url: `${origin}/anon` });
-    await waitFor(async () => (await exportJar("first")).some(({ name }) => name === "tracker"));
+    await withTimeout(anon, 10000, {
+      timeoutError: () => new Error("Anonymous page did not load"),
+    });
     const httpApplied = await importState("second", "http://example.test", httpSignIn);
     if (httpApplied.error !== null)
       throw new Error(`http import failed: ${JSON.stringify(httpApplied)}`);
@@ -384,32 +423,25 @@ export async function runStateImportScenario(options: {
       ...httpSignIn,
     ];
     jars.http = assertJar("http", await exportJar("first"), signedInJar);
+    const checked = titleReady("/check");
     await send("first", { type: "navigation.go", url: `${origin}/check` });
-    await waitFor(async () => requests.some(({ path }) => path === "/check"));
-    // Playwright's page close can stall on a navigation that has not
-    // committed, so the checkpointing detach below waits for the page.
-    await waitFor(async () =>
-      session("first").sink.messages.some(
-        (message) =>
-          message.type === "browser.surfaces.changed" &&
-          message.surfaces.some((surface) => surface.title === "/check"),
-      ),
-    );
+    await withTimeout(checked, 10000, {
+      timeoutError: () => new Error("Signed-in page did not load"),
+    });
     const fixtureCookieHeader = requests.find(({ path }) => path === "/check")?.cookie ?? "";
     const sent = fixtureCookieHeader.split(/;\s*/u).sort();
     if (JSON.stringify(sent) !== JSON.stringify(["account=a1", "session=signed-in"])) {
       throw new Error(`fixture received ${JSON.stringify(fixtureCookieHeader)}`);
     }
 
+    const persisted = assertJar("persisted", await exportJar("first"), signedInJar);
     for (const { attachment } of sessions.values()) await attachment.close();
-    const committed = profileState.commits.at(-1)?.snapshot;
-    if (!committed) throw new Error("The profile host did not checkpoint on close.");
-    const checkpoint = assertJar("checkpoint", committed.cookies, signedInJar);
-    return { checkpoint, concurrentWinner, engine: options.engine, fixtureCookieHeader, jars };
+    return { persisted, concurrentWinner, engine: options.engine, fixtureCookieHeader, jars };
   } finally {
     await runtime.shutdown().catch(() => undefined);
     fixture.close();
     fixture.closeAllConnections();
+    if (!options.nativeRoot) await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -440,19 +472,7 @@ async function awaitMessage<Message extends BrowserServerMessage>(
   predicate: (message: BrowserServerMessage) => message is Message,
   from = 0,
 ): Promise<Message> {
-  let found: Message | undefined;
-  await waitFor(async () => {
-    found = sink.messages.slice(from).find(predicate);
-    return found !== undefined;
-  });
+  const found = sink.messages.slice(from).find(predicate);
   if (!found) throw new Error("Expected browser message was not received.");
   return found;
-}
-
-async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error("Timed out waiting for browser state.");
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
 }

@@ -1,4 +1,3 @@
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { HarnessIdSchema, ThreadAccessModeSchema, createId } from "@opensteer/core";
 import {
   type RunnerAuxiliaryChallenge,
@@ -6,8 +5,9 @@ import {
   type RunnerDescriptor,
   type RunnerEnrollmentCredential,
 } from "@opensteer/protocol";
-import { describe, expect, it } from "vitest";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { describe, expect, it } from "vitest";
 import { createRunnerAuxiliarySignature, verifyRunnerAuxiliarySignature } from "./auxiliary.js";
 import {
   createRunnerAuthenticationSignature,
@@ -121,7 +121,7 @@ describe("Runner identity proofs", () => {
           ...input.descriptor,
           modules: {
             ...input.descriptor.modules,
-            browser: { profileSnapshotVersion: 2, runtimeId: "smuggled" },
+            browser: { wireVersion: 2, runtimeId: "smuggled" },
           },
         },
         signature,
@@ -133,7 +133,7 @@ describe("Runner identity proofs", () => {
     const pair = generateKeyPairSync("ed25519");
     const browserOnly: RunnerDescriptor = {
       ...descriptor(),
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "chromium-a" } },
+      modules: { browser: { wireVersion: 2, runtimeId: "chromium-a" } },
     };
     const input = { challenge: challenge(), descriptor: browserOnly };
     const signature = createRunnerAuthenticationSignature(pair.privateKey, input);
@@ -143,7 +143,7 @@ describe("Runner identity proofs", () => {
         ...input,
         descriptor: {
           ...browserOnly,
-          modules: { browser: { profileSnapshotVersion: 2, runtimeId: "chromium-b" } },
+          modules: { browser: { wireVersion: 2, runtimeId: "chromium-b" } },
         },
         signature,
       }),

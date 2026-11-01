@@ -1,8 +1,8 @@
+import { RuntimeModeSchema, type RuntimeMode } from "@opensteer/core";
+import { validateRunnerTransport } from "@opensteer/runner-client";
 import { requiredEnvironmentValue as required } from "@opensteer/shared/envParsing";
 import { createPublicKey, type KeyObject } from "node:crypto";
 import path from "node:path";
-import { RuntimeModeSchema, type RuntimeMode } from "@opensteer/core";
-import { validateRunnerTransport } from "@opensteer/runner-client";
 import { chromium } from "playwright-core";
 
 export const browserRuntimeEnvironmentKeys = {
@@ -32,20 +32,17 @@ export interface BrowserRuntimeConfig {
         readonly mode: RuntimeMode;
       }
     | undefined;
-  checkpointIntervalMs: number;
-  checkpointRetryMs: number;
   chromiumSandbox: boolean;
   deploymentMode: RuntimeMode;
   bridgeToken: string | undefined;
   executablePath: string;
   headless: boolean;
   host: string;
-  idleProfileHostTimeoutMs: number;
   maxProfileHosts: number;
   maxSessionsPerProfile: number;
   port: number;
   profileRoot: string;
-  profileStateTrustedHttpOrigin?: string;
+  profileReadyTrustedHttpOrigin?: string;
   proxyUrl: string | undefined;
   publicKeys: ReadonlyMap<string, KeyObject>;
   runtimeId: string;
@@ -103,8 +100,8 @@ export function readBrowserRuntimeConfig(
     false,
   );
   const proxyUrl = browserProxyUrl(environment[browserRuntimeEnvironmentKeys.proxyUrl]);
-  const profileStateTrustedHttpOrigin = trustedHttpOrigin(
-    environment.OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL,
+  const profileReadyTrustedHttpOrigin = trustedHttpOrigin(
+    environment.OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL,
   );
   const hosted = relay !== undefined;
   if (hosted && deploymentMode === "production" && !chromiumSandbox) {
@@ -124,20 +121,6 @@ export function readBrowserRuntimeConfig(
     });
   }
   return {
-    checkpointIntervalMs: integerValue(
-      environment.OPENSTEER_BROWSER_CHECKPOINT_INTERVAL_MS,
-      120_000,
-      1_000,
-      3_600_000,
-      "OPENSTEER_BROWSER_CHECKPOINT_INTERVAL_MS",
-    ),
-    checkpointRetryMs: integerValue(
-      environment.OPENSTEER_BROWSER_CHECKPOINT_RETRY_MS,
-      30_000,
-      1_000,
-      600_000,
-      "OPENSTEER_BROWSER_CHECKPOINT_RETRY_MS",
-    ),
     chromiumSandbox,
     deploymentMode,
     bridgeToken,
@@ -145,13 +128,6 @@ export function readBrowserRuntimeConfig(
     executablePath,
     headless: booleanValue(environment.OPENSTEER_BROWSER_HEADLESS, true),
     host: environment.OPENSTEER_BROWSER_HOST?.trim() || "127.0.0.1",
-    idleProfileHostTimeoutMs: integerValue(
-      environment.OPENSTEER_BROWSER_IDLE_PROFILE_HOST_TIMEOUT_MS,
-      30_000,
-      0,
-      600_000,
-      "OPENSTEER_BROWSER_IDLE_PROFILE_HOST_TIMEOUT_MS",
-    ),
     maxProfileHosts: integerValue(
       environment.OPENSTEER_BROWSER_MAX_PROFILE_HOSTS,
       8,
@@ -168,7 +144,7 @@ export function readBrowserRuntimeConfig(
     ),
     port: portValue(environment.OPENSTEER_BROWSER_PORT),
     profileRoot,
-    ...(profileStateTrustedHttpOrigin ? { profileStateTrustedHttpOrigin } : {}),
+    ...(profileReadyTrustedHttpOrigin ? { profileReadyTrustedHttpOrigin } : {}),
     proxyUrl,
     publicKeys,
     runtimeId,
@@ -188,7 +164,7 @@ function trustedHttpOrigin(value: string | undefined): string | undefined {
     url.hash
   ) {
     throw new Error(
-      "OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL must be an uncredentialed HTTP origin.",
+      "OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL must be an uncredentialed HTTP origin.",
     );
   }
   return url.origin;

@@ -119,7 +119,11 @@ Phone data loss and consumed-ticket upgrade failures close viewers with retryabl
 
 ## Compatibility
 
-Compatibility targets the previous **public** release, not pre-launch builds.
+The native-only browser cutover deliberately uses Host API epoch 49. There are no
+users requiring the removed Vault, preparation or Guest-save behavior. Prior
+epochs receive the existing discovery/RPC/subscription update refusal.
+
+After that boundary, compatibility targets the previous **public** release.
 [The previous-release journey](../apps/host/src/agents/previous-release-compat.integration.test.ts)
 uses the frozen public client; move its baseline on public release and fetch that
 commit in shallow CI checkouts.
@@ -155,34 +159,18 @@ capabilities and never use them to gate mandatory behavior.
   Older Hosts, runtimes and viewers keep the absent policy. See
   [Passkeys](browser-sessions.md#passkeys).
 
-Native browser profiles and runtime-submitted first navigation are independent,
-additive negotiations; neither bumps the Host API epoch. The Host advertises
-`browser-local-profiles-v1` and `browser-initial-navigation-v1`. The runtime offers
-`modules.browser.localProfiles: 1` with its durable storage identity and engine,
-and independently `initialNavigationVersion: 1`; the auxiliary welcome must
-acknowledge each version before extended maintenance/readiness frames are sent.
-See the [Runner contract](../packages/protocol/src/runner.ts) and
-[welcome](../packages/protocol/src/runner-auxiliary.ts).
+Browser execution uses one current runtime wire contract. The descriptor retains
+an older runtime's identity so the Host can show a clear update refusal while its
+other modules remain available. There is no snapshot-version admission or legacy
+first-navigation path. Native storage facts and initial page readiness are
+mandatory semantics of the current browser contract, not independent opt-ins.
 
-Native execution requires complete authenticated inventory on the current browser
-auxiliary stream before admission, including deletion tombstones. Partial,
-interrupted or unreadable inventory is never an empty inventory or permission to
-execute. Claims reconcile existing ownership forward; they cannot replace a
-binding, downgrade local authority or reconstruct missing grants. Personal also
-requires Main's reconciliation before issuing named-profile tickets elsewhere.
-
-| Pair                   | Constraint                                                                                                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Old client → new Host  | Accept existing strict requests and return ordinary tab/session results and error envelopes. Storage selection stays internal.                                                                         |
-| New client → old Host  | Keep requests unchanged; pending tabs work locally without a new deletion-status read. Completion retains the old Host's latency.                                                                      |
-| Old runtime → new Host | Unconverted profiles use exact legacy tickets and snapshots. Initializing/local profiles refuse before ticket issuance: “Update this computer to open this profile.” Never supply their recovery seed. |
-| New runtime → old Host | Without welcome negotiation, use legacy behavior only for unconverted profiles. A local marker refuses a legacy ticket; never make a disposable copy from the old seed.                                |
-| New runtime → new Host | Convert once on the bound storage instance and engine, then issue native tickets without a snapshot endpoint or lease. Wrong storage/engine refuses opening; it never authorizes reassignment.         |
-
-Frozen readers must retain the released ticket/welcome/relay shapes; importing
-current identity schemas into the baseline can hide a compatibility break. See
-the [released browser fixture](../apps/host/src/browser/released-browser-protocol.test-support.ts)
-and [DB restore constraints](releases.md#personal-database-snapshots).
+The owning browser stream must reconcile a complete authenticated inventory before
+native execution, including deletion tombstones. Partial, interrupted or unreadable
+inventory never authorizes execution. Claims cannot replace a binding, downgrade
+native authority or recreate grants. An initialized profile whose native store is
+missing refuses opening. Existing local bindings survive the forward migration
+without file conversion. See [browser storage](browser-sessions.md#native-storage).
 
 [Saved-login compatibility](passwords.md#runtime-and-compatibility) separately
 negotiates integrations `passwordSignIn: 1` for the Personal vault authority and
@@ -243,10 +231,10 @@ as absent; agent Workspace views omit marks to preserve baseline strict readers.
 Icon requests stay inside the title gate and are never sent to title-only Runners.
 Reports retain the Run binding fence; empty reports do nothing.
 
-`browser-profile-create-v1` selects the current catalog. Older Runners retain
-legacy profile tools under their original permissions; never expose those aliases
-to current full-access engines. `environment-list-v1` independently selects split
-Environment/Workspace discovery and skill-based Trigger descriptions/schemas.
+The browser catalog creates empty profiles before sign-in. The Guest-save tool
+and its permission are removed; historical Requests remain readable and inert.
+`environment-list-v1` independently selects split Environment/Workspace discovery
+and skill-based Trigger descriptions/schemas.
 Select each gate once per MCP session from stored advertisements, preserving the
 inventory through reconnect/restart. Engines use release-local inventories and
 are stopped/reaped on Runner upgrade; no persisted Run catalog pin is needed.

@@ -1,12 +1,12 @@
-import { createId } from "@opensteer/core";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
+import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
+  RunnerCommandSchema,
   RunnerDescriptorSchema,
   RunnerHarnessDriverSchema,
   RunnerHarnessDriverViewSchema,
   RunnerWireProofSchema,
-  RunnerCommandSchema,
 } from "./runner.js";
 
 const source = {
@@ -137,7 +137,7 @@ describe("the owning Runner descriptor reader", () => {
     const wire = descriptor();
     const browser = {
       runtimeId: "browser",
-      profileSnapshotVersion: 1,
+      wireVersion: 1,
       stateImport: true,
       targetControl: 1,
     };
@@ -147,58 +147,26 @@ describe("the owning Runner descriptor reader", () => {
     ).toEqual(browser);
   });
 
-  it("negotiates local storage and initial navigation independently without losing other modules", () => {
+  it("keeps exact native storage and browser wire version without legacy feature gates", () => {
     const wire = descriptor();
-    const storage = {
-      storageInstanceId: "11111111-1111-4111-8111-111111111111",
-      engine: "electron",
+    const browser = {
+      runtimeId: "browser",
+      wireVersion: 1,
+      localProfileStorage: {
+        storageInstanceId: "11111111-1111-4111-8111-111111111111",
+        engine: "electron",
+      },
     };
-    const parse = (additions: Record<string, unknown>) =>
-      RunnerDescriptorSchema.parse({
-        ...wire,
-        modules: {
-          ...wire.modules,
-          browser: { runtimeId: "browser", stateImport: true, ...additions },
-        },
-      });
     expect(
-      parse({
-        localProfiles: 1,
-        localProfileStorage: { ...storage, future: true },
-        initialNavigationVersion: 1,
-      }).modules.browser,
-    ).toEqual({
-      runtimeId: "browser",
-      stateImport: true,
-      localProfiles: 1,
-      localProfileStorage: storage,
-      initialNavigationVersion: 1,
-    });
-    for (const additions of [
-      { localProfiles: 2, localProfileStorage: storage },
-      { localProfiles: 1 },
-      { localProfiles: 1, localProfileStorage: { ...storage, engine: "future" } },
-      { localProfiles: 1, localProfileStorage: { ...storage, storageInstanceId: "boot" } },
-    ]) {
-      const parsed = parse({ ...additions, initialNavigationVersion: 1 });
-      expect(parsed.modules.browser).toEqual({
-        runtimeId: "browser",
-        stateImport: true,
-        initialNavigationVersion: 1,
-      });
-      expect(parsed.modules.agents?.environmentIds).toEqual(wire.modules.agents.environmentIds);
-      expect(parsed.modules.messaging?.capabilities).toHaveLength(1);
-    }
-    expect(
-      parse({ localProfiles: 1, localProfileStorage: storage, initialNavigationVersion: 2 }).modules
+      RunnerDescriptorSchema.parse({ ...wire, modules: { ...wire.modules, browser } }).modules
         .browser,
-    ).toEqual({
-      runtimeId: "browser",
-      stateImport: true,
-      localProfiles: 1,
-      localProfileStorage: storage,
-      initialNavigationVersion: undefined,
+    ).toEqual(browser);
+    const old = RunnerDescriptorSchema.parse({
+      ...wire,
+      modules: { ...wire.modules, browser: { runtimeId: "old" } },
     });
+    expect(old.modules.browser).toEqual({ runtimeId: "old" });
+    expect(old.modules.agents).toBeDefined();
   });
   it("accepts the computer tool and ignores unknown future Mac computer-use versions", () => {
     const wire = descriptor();

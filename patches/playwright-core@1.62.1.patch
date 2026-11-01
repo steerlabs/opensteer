@@ -1,43 +1,30 @@
 diff --git a/lib/coreBundle.js b/lib/coreBundle.js
-index d9041dd0f009072511a7d808dec83121ff29e127..2f798402cb5f555829843c70c85b7ea604a4bbcf 100644
 --- a/lib/coreBundle.js
 +++ b/lib/coreBundle.js
-@@ -51725,11 +51725,32 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
-             for (const origin of allOrigins) {
-               const frame = page.mainFrame();
-               await frame.gotoImpl(progress2, origin, {});
--              const restoreScript = `(() => {
-+              // Chromium acknowledges localStorage writes asynchronously. Keep the
-+              // temporary page alive until another document observes each write.
-+              const awaitLocalStorageWrites = mode === "initial" && this._browser.options.name === "chromium";
-+              const restoreScript = `(async () => {
-             const module = {};
-             ${source10}
-             const script = new (module.exports.StorageScript())(${this._browser.options.name === "firefox"});
--            return script.restore(${JSON.stringify(newOrigins.get(origin))});
-+            const state = ${JSON.stringify(newOrigins.get(origin))};
-+            if (!${awaitLocalStorageWrites} || !state?.localStorage?.length)
-+              return script.restore(state);
-+            const observer = document.createElement("iframe");
-+            const loaded = new Promise(resolve => observer.addEventListener("load", resolve, { once: true }));
-+            document.documentElement.appendChild(observer);
-+            await loaded;
-+            void observer.contentWindow.localStorage;
-+            const pending = new Map(state.localStorage.map(({ name, value }) => [name, value]));
-+            const acknowledged = new Promise(resolve => observer.contentWindow.addEventListener("storage", event => {
-+              if (pending.has(event.key) && pending.get(event.key) === event.newValue)
-+                pending.delete(event.key);
-+              if (!pending.size)
-+                resolve();
-+            }));
-+            return script.restore(state).then(async () => {
-+              await acknowledged;
-+              observer.remove();
-+            });
-           })()`;
-               await frame.evaluateExpression(progress2, restoreScript, { world: "utility" });
-             }
-@@ -56857,22 +56878,27 @@ var init_browserServerImpl = __esm({
+@@ -39481,8 +39481,9 @@
+             await browser._defaultContext.loadDefaultContext(progress2);
+           return browser;
+         } catch (error) {
+-          await progress2.race(browserProcess.close().catch(() => {
+-          }));
++          // Startup failure must reap its owned child before releasing native storage.
++          await browserProcess.kill().catch(() => {
++          });
+           throw error;
+         }
+       }
+@@ -39608,8 +39609,8 @@
+           }
+           return { browserProcess, artifactsDir: prepared.artifactsDir, userDataDir: prepared.userDataDir, transport, wsEndpoint };
+         } catch (error) {
+-          await progress2.race(closeOrKill(DEFAULT_PLAYWRIGHT_TIMEOUT).catch(() => {
+-          }));
++          await kill().catch(() => {
++          });
+           throw error;
+         }
+       }
+@@ -56857,22 +56858,27 @@
            rewriteErrorMessage(e, `${e.message} Failed to launch browser.${log2}`);
            throw e;
          }
@@ -81,7 +68,7 @@ index d9041dd0f009072511a7d808dec83121ff29e127..2f798402cb5f555829843c70c85b7ea6
        }
      };
    }
-@@ -62911,6 +62937,11 @@ var init_browserType2 = __esm({
+@@ -62911,6 +62917,11 @@
            return context3;
          });
          await this._instrumentation.runAfterCreateBrowserContext(context2);

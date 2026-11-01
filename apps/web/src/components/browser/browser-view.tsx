@@ -1,10 +1,17 @@
-import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
-import { NativeAgentCursors } from "./native-agent-cursors.js";
 import {
-  nativeBrowserGeometry,
-  useBrowserPresentationMode,
-  useNativeBrowserPresentation,
-} from "./native-browser-presentation.js";
+  browserSiteForUrl,
+  browserSiteLabel,
+  browserTabCloseImpact,
+  type BrowserCommand,
+  type BrowserFrameView,
+  type BrowserSessionSummary,
+  type BrowserTabSummary,
+  type HostClient,
+  type HostSnapshot,
+  type PlaceItem,
+} from "@opensteer/client/host";
+import { useBrowserPresentationWait, useHostSelector } from "@opensteer/client/react";
+import type { BrowserSurfaceId } from "@opensteer/core";
 import {
   useCallback,
   useEffect,
@@ -14,23 +21,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import {
-  browserSessionIdentity,
-  browserSiteForUrl,
-  browserSiteLabel,
-  browserTabCloseImpact,
-  mutationIdempotencyKey,
-  type BrowserCommand,
-  type BrowserFrameView,
-  type BrowserSessionSummary,
-  type BrowserTabSummary,
-  type HostClient,
-  type HostSnapshot,
-  type PlaceItem,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
 import { useNavigate } from "react-router";
-import type { BrowserSurfaceId } from "@opensteer/core";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
 import { Icon } from "../icon.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
@@ -40,15 +31,11 @@ import type { BrowserPresentation } from "../workspace/identity.js";
 import { PlaceMark } from "../workspace/place-mark.js";
 import { ProfileChip } from "../workspace/profile-chip.js";
 import { useTabCloseAsking, useTabCloser } from "../workspace/tab-closer.js";
+import { BrowserToolbar } from "./browser-chrome.js";
 import { useBrowserCommandKeys } from "./browser-command-keys.js";
 import { BrowserDownloads } from "./browser-downloads.js";
-import { BrowserToolbar } from "./browser-chrome.js";
 import { BrowserPageDialog } from "./browser-page-dialog.js";
-import {
-  SaveBrowserProfileDialog,
-  runBrowserAction,
-  type BrowserActionRunner,
-} from "./browser-profiles.js";
+import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
 import {
   BrowserSignInPopover,
   browserSignInLabel,
@@ -61,6 +48,12 @@ import {
   browserTargetViewport,
   type BrowserKeyboardHandle,
 } from "./browser-viewport.js";
+import { NativeAgentCursors } from "./native-agent-cursors.js";
+import {
+  nativeBrowserGeometry,
+  useBrowserPresentationMode,
+  useNativeBrowserPresentation,
+} from "./native-browser-presentation.js";
 
 /** What signing a page in with Chrome needs from the Deployment on screen. */
 export interface BrowserChromeSignIn {
@@ -68,8 +61,6 @@ export interface BrowserChromeSignIn {
   readonly environment: ChromeConnectEnvironment;
   readonly online: boolean;
 }
-
-type BrowserSheet = "save";
 
 interface BrowserReads {
   readonly session: BrowserSessionSummary | null;
@@ -149,18 +140,13 @@ export function PlaceBrowserView({
   );
   const reads = useHostSelector(hostClient, select, sameReads);
   const { session } = reads;
-  const currentSession = useRef(sessionId);
-  currentSession.current = sessionId;
   const toast = useToast();
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<BrowserSheet | null>(null);
   const navigate = useNavigate();
   const [signInOpen, setSignInOpen] = useState(false);
   const [menuButton, setMenuButton] = useState<HTMLButtonElement | null>(null);
   const closeTab = useTabCloser();
   const askingClose = useTabCloseAsking();
   const [keyboardOffered, setKeyboardOffered] = useState(false);
-  const [savedProfileName, setSavedProfileName] = useState<string | null>(null);
   const [fitAvailable, setFitAvailable] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<BrowserKeyboardHandle | null>(null);
@@ -198,6 +184,11 @@ export function PlaceBrowserView({
   // Held while the page is hidden as well: the client pauses its picture then and
   // keeps the last one, so showing the page again shows the tab at once.
   const watchable = sessionReady && tabListed;
+  const {
+    error: presentationError,
+    presented: presentationPresented,
+    retry: retryPresentation,
+  } = useBrowserPresentationWait(hostClient, sessionId, tabId, visible && watchable);
   useLayoutEffect(() => {
     if (!watchable) {
       retained.current?.release();
@@ -282,7 +273,7 @@ export function PlaceBrowserView({
   const passkey = useSyncExternalStore(subscribePasskeys, readPasskeys, readPasskeys);
 
   const handoff =
-    !watchable || mode.error || viewer.error || retentionError
+    !watchable || mode.error || viewer.error || retentionError || presentationError
       ? "terminal"
       : viewer.admitted || viewer.status === "live"
         ? "admitted"
@@ -291,13 +282,20 @@ export function PlaceBrowserView({
     if (handoff !== "pending") for (const release of retired.current.splice(0)) release();
   }, [sessionId, tabId, handoff]);
   const nativePresentation = useNativeBrowserPresentation({
-    active: mode.mode !== "streamed" && watchable && !mode.error,
+    active: mode.mode !== "streamed" && watchable && !mode.error && !presentationError,
     handoff,
     admissionId: viewer.admissionId,
     sessionId,
     surfaceId: tabId,
     stageRef,
   });
+  useEffect(() => {
+    if (
+      nativePresentation.placement?.sessionId === sessionId &&
+      nativePresentation.placement.surfaceId === tabId
+    )
+      presentationPresented();
+  }, [nativePresentation.placement, presentationPresented, sessionId, tabId]);
   const nativeTarget = nativePresentation.target;
   const focusPage = () => (native ? nativePresentation.focusPage() : keyboardRef.current?.focus());
   const live = sessionReady && tabListed && viewer.status === "live";
@@ -324,20 +322,14 @@ export function PlaceBrowserView({
   useEffect(() => {
     setFinding(false);
     setFindQuery("");
-    setActionError(null);
-    setSheet(null);
     setSignInOpen(false);
     setKeyboardOffered(false);
     setFitPreview(false);
     setDismissedError(null);
   }, [sessionId, tabId]);
-  useEffect(() => {
-    setSavedProfileName(null);
-  }, [sessionId]);
 
   useEffect(() => {
     if (!visible) {
-      setSheet(null);
       setSignInOpen(false);
     }
   }, [visible]);
@@ -386,9 +378,10 @@ export function PlaceBrowserView({
   );
   const acceptFrame = useCallback(
     (frame: BrowserFrameView) => {
-      setPaintedTab(`${sessionId}:${tabId}`);
       const token = frame.header.watchToken;
       if (token) hostClient.acceptBrowserWatchFrame(sessionId, token, tabId);
+      if (!presentationPresented()) return;
+      setPaintedTab(`${sessionId}:${tabId}`);
       if (!takeKeyboard.current) return;
       takeKeyboard.current = false;
       // After the presented picture has rendered, when the page can take keys.
@@ -397,14 +390,8 @@ export function PlaceBrowserView({
         if (active === null || active === document.body) keyboardRef.current?.focus();
       });
     },
-    [hostClient, sessionId, tabId],
+    [hostClient, sessionId, tabId, presentationPresented],
   );
-  const performAction: BrowserActionRunner = async (action) => {
-    setActionError(null);
-    return runBrowserAction(action, (error) => {
-      if (currentSession.current === sessionId) setActionError(error);
-    });
-  };
 
   const tab: BrowserTabSummary | undefined = dormant
     ? undefined
@@ -428,12 +415,11 @@ export function PlaceBrowserView({
   const site = url ? browserSiteForUrl(url) : null;
   const dialog = session?.dialog && session.dialog.surfaceId === tabId ? session.dialog : null;
   const signIn = chromeSignIn && signInOpen && site !== null && live ? chromeSignIn : null;
-  const blocked = sheet !== null || signIn !== null || askingClose;
+  const blocked = signIn !== null || askingClose;
   const pageReachable = live && !dialog;
   const workspace = reads.workspaces.find(
     (candidate) => candidate.id === (session?.workspaceId ?? reads.workspaceId),
   );
-  const identity = browserSessionIdentity(session?.profileId ?? null, reads.profiles);
   const pageFollowsView = tab?.sizedByAgent !== undefined;
   const loading = place?.loading === true;
   useBrowserCommandKeys({
@@ -480,10 +466,6 @@ export function PlaceBrowserView({
         ? { width: Math.round(rect.width), height: Math.round(rect.height) }
         : browserTargetViewport(rect ?? null, compact);
     if (size) send({ ...size, surfaceId: tabId, type: "viewport.set" });
-  };
-  const openSheet = (next: BrowserSheet) => {
-    setActionError(null);
-    setSheet(next);
   };
   const manageProfiles = () => void navigate("/settings/browser-profiles");
 
@@ -542,26 +524,6 @@ export function PlaceBrowserView({
               },
             ]
           : []),
-        ...(identity.fresh && !dormant
-          ? savedProfileName !== null
-            ? [
-                {
-                  detail: `Saved to “${savedProfileName}”`,
-                  disabled: true,
-                  icon: "check" as const,
-                  label: "Sign-ins saved",
-                },
-              ]
-            : [
-                {
-                  detail: "Keep what you signed in to for next time",
-                  disabled: !sessionReady,
-                  icon: "key" as const,
-                  label: "Save sign-ins as a profile…",
-                  onSelect: () => openSheet("save"),
-                },
-              ]
-          : []),
         {
           icon: "shield",
           label: "Profiles and agent access…",
@@ -583,33 +545,6 @@ export function PlaceBrowserView({
       ]
     : [];
 
-  const sheets = (
-    <>
-      {sheet === "save" && session ? (
-        <SaveBrowserProfileDialog
-          actionError={actionError}
-          onClose={() => setSheet(null)}
-          onSave={(name) =>
-            hostClient
-              .dispatch({
-                idempotencyKey: mutationIdempotencyKey(`browser-save:${sessionId}`),
-                input: { name },
-                sessionId,
-                type: "browser.session.profile.save",
-              })
-              .then(() => undefined)
-          }
-          onSaved={(name) => {
-            if (currentSession.current !== sessionId) return;
-            setSavedProfileName(name);
-            setSheet(null);
-          }}
-          performAction={performAction}
-        />
-      ) : null}
-    </>
-  );
-
   const ended = lastingReason
     ? { title: lastingReason, detail: null }
     : activationError
@@ -619,7 +554,11 @@ export function PlaceBrowserView({
         : placeEnded(
             session,
             tabListed,
-            viewer.error ?? retentionError ?? mode.error ?? nativePresentation.error,
+            presentationError ??
+              viewer.error ??
+              retentionError ??
+              mode.error ??
+              nativePresentation.error,
           );
   const placement = nativePresentation.placement;
   const geometry = nativeBrowserGeometry(placement);
@@ -641,8 +580,9 @@ export function PlaceBrowserView({
   const nativeFitAvailable =
     geometry && (geometry.fitAvailable || geometry.sized || tab?.sizedByAgent === true);
   const notice =
-    (sheet === null ? actionError : null) ??
-    (!ended && session?.error !== dismissedError ? session?.error : null);
+    (tab?.navigationFailed || catalogTab?.navigationFailed
+      ? "This page could not be loaded. Reload to try again."
+      : null) ?? (!ended && session?.error !== dismissedError ? session?.error : null);
   const blankPage = url === "" || url === "about:blank";
   return (
     <>
@@ -697,8 +637,7 @@ export function PlaceBrowserView({
                   className="icon-btn"
                   type="button"
                   onClick={() => {
-                    if (actionError) setActionError(null);
-                    else setDismissedError(session?.error ?? null);
+                    setDismissedError(session?.error ?? null);
                   }}
                 >
                   <Icon name="close" />
@@ -789,6 +728,11 @@ export function PlaceBrowserView({
             <div className="place-state" role="status">
               <p className="place-state__title">{ended.title}</p>
               {ended.detail ? <p className="place-state__detail">{ended.detail}</p> : null}
+              {presentationError ? (
+                <button className="btn" onClick={retryPresentation} type="button">
+                  Retry viewing
+                </button>
+              ) : null}
               {activationError && !lastingReason ? (
                 <button className="btn" onClick={onRetry} type="button">
                   Try again
@@ -902,7 +846,6 @@ export function PlaceBrowserView({
           workspaceName={workspace?.name ?? "this Workspace"}
         />
       ) : null}
-      {sheets}
     </>
   );
 }

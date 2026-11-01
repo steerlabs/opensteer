@@ -1,13 +1,19 @@
-import { setTimeout as delay } from "node:timers/promises";
+import { OpensteerError } from "@opensteer/core";
 import {
   CamelCasePlugin,
+  CompiledQuery,
   Kysely,
   PostgresDialect,
-  type Transaction,
   type IsolationLevel,
+  type Transaction,
 } from "kysely";
-import { OpensteerError } from "@opensteer/core";
+import { setTimeout as delay } from "node:timers/promises";
 import { Client, Pool, type PoolClient } from "pg";
+import {
+  databaseOperation,
+  databaseOperationOptions,
+  inDatabaseOperationTransaction,
+} from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
 
 interface DatabaseConnectionOptions {
@@ -47,6 +53,20 @@ export function createDatabase(
   const database = new Kysely<DatabaseSchema>({
     dialect: new PostgresDialect({
       controlClient: Client,
+      onCreateConnection: async (connection) => {
+        const execute = connection.executeQuery.bind(connection);
+        connection.executeQuery = async (query) => {
+          const operation = databaseOperation();
+          if (operation?.transaction) {
+            operation.signal.throwIfAborted();
+            // Set the remaining absolute budget before each statement. The server
+            // cancels lock waits before Kysely can enqueue a rollback over them.
+            const remaining = Math.max(1, Math.ceil(operation.expiresAt - Date.now()));
+            await execute(CompiledQuery.raw(`set local statement_timeout = ${remaining}`));
+          }
+          return execute(query);
+        };
+      },
       pool: {
         options: pool.options,
         async connect() {
@@ -159,8 +179,26 @@ export function withDatabaseTransaction<Schema, Result>(
   isolationLevel?: IsolationLevel,
   retryAdditional?: (error: unknown) => boolean,
 ): Promise<Result> {
-  return retryDatabaseTransaction(() => {
-    const builder = database.transaction();
-    return (isolationLevel ? builder.setIsolationLevel(isolationLevel) : builder).execute(action);
+  return retryDatabaseTransaction(async () => {
+    const operation = databaseOperation();
+    const options = databaseOperationOptions();
+    const run = (connection: Kysely<Schema>) => {
+      const builder = connection.transaction();
+      return (isolationLevel ? builder.setIsolationLevel(isolationLevel) : builder).execute(
+        (transaction) =>
+          inDatabaseOperationTransaction(async () => {
+            operation?.signal.throwIfAborted();
+            const result = await action(transaction);
+            operation?.signal.throwIfAborted();
+            return result;
+          }),
+      );
+    };
+    try {
+      return await (operation ? database.connection().execute(run, options) : run(database));
+    } catch (error) {
+      if (operation?.signal.aborted) throw operation.signal.reason;
+      throw error;
+    }
   }, retryAdditional);
 }

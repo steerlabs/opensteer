@@ -1,10 +1,4 @@
 import {
-  cloneTestDatabase,
-  ownTestDatabaseProducer,
-  recordTestDatabaseSetup,
-} from "./test-database.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import {
   createId,
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -16,9 +10,15 @@ import {
   type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { describe, expect, it as baseIt } from "vitest";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { it as baseIt, describe, expect } from "vitest";
 import { BrowserSourceStore } from "./browser-source-store.js";
 import { createDatabase } from "./connection.js";
+import {
+  cloneTestDatabase,
+  ownTestDatabaseProducer,
+  recordTestDatabaseSetup,
+} from "./test-database.test-support.js";
 
 import { OpensteerStore } from "./store.js";
 
@@ -220,8 +220,6 @@ integration.sequential("browser sign-in authority", () => {
     ) {
       const session = await store.createBrowserSession({
         id: createBrowserSessionId(),
-        leaseGeneration: 1,
-        leaseTokenHash: null,
         origin: "agent",
         placementKey: `runner:${run.runnerId}:browser`,
         profileId: null,

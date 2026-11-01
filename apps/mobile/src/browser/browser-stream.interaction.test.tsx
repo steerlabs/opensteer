@@ -297,6 +297,37 @@ describe.each(["image", "picture"] as const)(
       native.presenter = presenter;
     });
 
+    it("bounds pending frame and decode waits and retries the same page", async () => {
+      vi.useFakeTimers();
+      const { container, decode, emit, hostClient, render, send, viewerRelease } = setup();
+      const deadline = Date.now() + 1000;
+      hostClient.browserPresentationDeadline = () => deadline;
+      try {
+        render("synchronized");
+        if (presenter === "picture") emit();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        expect(container.textContent).toContain("could not be shown");
+        expect(viewerRelease).toHaveBeenCalled();
+        const retry = container.querySelector("button");
+        expect(retry).not.toBeNull();
+        act(() => retry!.click());
+        expect(container.textContent).not.toContain("could not be shown");
+        emit(surfaceId, { frameId: 2, watchToken: "00000000-0000-4000-8000-000000000002" });
+        await decode();
+        expect(container.querySelector("img")?.getAttribute("alt")).toBe("A page, example.com");
+        expect(hostClient.retainBrowserViewer).toHaveBeenLastCalledWith(
+          sessionId,
+          surfaceId,
+          expect.any(Object),
+        );
+        expect(send).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("matches raster detail to its pane without retaking the feed, and releases it on hide", async () => {
       const { demand, rasterDemand, decode, emit, hostClient, render, send } = setup();
       render("synchronized");
@@ -422,14 +453,18 @@ describe.each(["image", "picture"] as const)(
       emit();
       await decode();
       const first = touch(200, 300);
-      act(() => native.gestures?.onPanResponderGrant?.(first.event, first.gesture));
+      await act(async () => {
+        await native.gestures?.onPanResponderGrant?.(first.event, first.gesture);
+      });
       emit(surfaceId, {
         frameId: 2,
         geometryRevision: 8,
         watchToken: "00000000-0000-4000-8000-000000000002",
       });
       await decode();
-      act(() => native.gestures?.onPanResponderRelease?.(first.event, first.gesture));
+      await act(async () => {
+        await native.gestures?.onPanResponderRelease?.(first.event, first.gesture);
+      });
       expect(send).not.toHaveBeenCalled();
       const multi = {
         ...first.event,

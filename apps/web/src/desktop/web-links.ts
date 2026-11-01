@@ -27,7 +27,14 @@ export async function openDesktopWebLink(
     { url: link.url, idempotencyKey: `desktop-web-link:${link.id}` },
   );
   show({ kind: "pending-browser", idempotencyKey: opening.idempotencyKey });
-  const opened = await opening.result;
+  let opened;
+  try {
+    opened = await opening.result;
+  } catch (error) {
+    // Closing the opening is the person's answer to this link, not a failure.
+    if (error instanceof Error && error.name === "AbortError") return acknowledge(link.id);
+    throw error;
+  }
   show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
   await acknowledge(link.id);
 }

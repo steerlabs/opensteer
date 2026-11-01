@@ -1,27 +1,20 @@
-import { runShutdownStep, logShutdownError, type ShutdownLog } from "../app/desktop-shutdown.js";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
-import { delay } from "@opensteer/shared/delay";
-import { MutationQueue } from "@opensteer/shared/mutationQueue";
-import { nodeErrorCode } from "@opensteer/shared/nodeError";
-import { RestartPolicy } from "@opensteer/shared/restartPolicy";
+import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
 import {
-  ComputerAppSetupRequestSchema,
-  type ComputerAppSetupRequest,
-} from "@opensteer/integration-core";
-import { inspectRunnerIdentity } from "@opensteer/runner-client";
-import type { ComputerUseRunnerTargetResult } from "./local-runner-authority.js";
-import { randomBytes } from "node:crypto";
-import { createServer } from "node:net";
-import path from "node:path";
+  deploymentConnectionFromVerifiedEndpoints,
+  type DeploymentCatalogStore,
+} from "@opensteer/client/connections";
 import {
   createId,
   harnessCatalog,
   harnessExecutableEnvironmentVariable,
-  shipsHarnessRuntimeBytes,
   HostKeyFingerprintSchema,
+  shipsHarnessRuntimeBytes,
   type EnvironmentId,
 } from "@opensteer/core";
+import {
+  ComputerAppSetupRequestSchema,
+  type ComputerAppSetupRequest,
+} from "@opensteer/integration-core";
 import {
   DesktopPersonalDeploymentStatusSchema,
   type DesktopPersonalComponentState,
@@ -29,20 +22,30 @@ import {
   type DesktopPersonalDeploymentStatus,
   type DesktopPersonalDeploymentStep,
 } from "@opensteer/protocol/desktop";
+import { inspectRunnerIdentity } from "@opensteer/runner-client";
+import { delay } from "@opensteer/shared/delay";
+import { MutationQueue } from "@opensteer/shared/mutationQueue";
+import { nodeErrorCode } from "@opensteer/shared/nodeError";
+import { RestartPolicy } from "@opensteer/shared/restartPolicy";
+import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomBytes } from "node:crypto";
+import { createServer } from "node:net";
+import path from "node:path";
+import { logShutdownError, runShutdownStep, type ShutdownLog } from "../app/desktop-shutdown.js";
 import {
-  PersonalOwnerClaimRequiredError,
-  PersonalHostAuthorityMismatchError,
-  type PersonalHostBootstrapResult,
-  type PersonalHostControlPort,
-} from "./personal-host-control.js";
+  PersonalRuntimeReleaseError,
+  readPersonalRuntimeRelease,
+  type VerifiedPersonalRuntimeRelease,
+} from "../releases/personal-runtime-release.js";
 import type {
   PersonalDeploymentCredentialPort,
   PersonalDeploymentSecrets,
 } from "../secrets/personal-deployment-credentials.js";
 import {
   defaultPersonalDeploymentName,
-  PersonalFilesystemError,
   PersonalDeploymentManifestSchema,
+  PersonalFilesystemError,
   PersonalRuntimeTransitionError,
   type PersonalDeploymentFilesystemPort,
   type PersonalDeploymentManifest,
@@ -50,34 +53,16 @@ import {
   type PersonalRuntimeIdentity,
 } from "../secrets/personal-deployment-store.js";
 import {
-  BoundedPersonalLog,
-  processSensitiveValues,
-  type PersonalChildProcess,
-  type PersonalProcessPort,
-  type PersonalProcessSpec,
-  type PersonalRuntimeComponent,
-} from "./personal-process-port.js";
-import {
-  PersonalRuntimeReleaseError,
-  readPersonalRuntimeRelease,
-  type VerifiedPersonalRuntimeRelease,
-} from "../releases/personal-runtime-release.js";
-import {
   ProtectedStateUnreadableError,
   ProtectedStorageUnavailableError,
 } from "../secrets/protected-json-file.js";
+import type { ComputerUseRunnerTargetResult } from "./local-runner-authority.js";
 import {
-  deploymentConnectionFromVerifiedEndpoints,
-  type DeploymentCatalogStore,
-} from "@opensteer/client/connections";
-import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
-import {
-  filterUserEnvironment,
-  FixedPersonalUserEnvironment,
-  NativePersonalUserEnvironment,
-  PersonalUserEnvironmentError,
-  type PersonalUserEnvironmentPort,
-} from "./personal-user-environment.js";
+  PersonalHostAuthorityMismatchError,
+  PersonalOwnerClaimRequiredError,
+  type PersonalHostBootstrapResult,
+  type PersonalHostControlPort,
+} from "./personal-host-control.js";
 import {
   PersonalHostRuntimeRecordSchema,
   type PersonalHostRuntimeRecord,
@@ -87,6 +72,21 @@ import type {
   PersonalLocalBrowserHandle,
   PersonalLocalRuntimePort,
 } from "./personal-local-runtime.js";
+import {
+  BoundedPersonalLog,
+  processSensitiveValues,
+  type PersonalChildProcess,
+  type PersonalProcessPort,
+  type PersonalProcessSpec,
+  type PersonalRuntimeComponent,
+} from "./personal-process-port.js";
+import {
+  filterUserEnvironment,
+  FixedPersonalUserEnvironment,
+  NativePersonalUserEnvironment,
+  PersonalUserEnvironmentError,
+  type PersonalUserEnvironmentPort,
+} from "./personal-user-environment.js";
 
 const defaultStartupTimeoutMs = 60_000;
 const defaultShutdownTimeoutMs = 5_000;
@@ -1672,7 +1672,6 @@ function hostSpec(
     environment: {
       LANG: "en_US.UTF-8",
       OPENSTEER_BIND_ADDRESS: "127.0.0.1",
-      OPENSTEER_BROWSER_PROFILE_KEY_PATH: paths.browserProfileKeyPath,
       OPENSTEER_CANONICAL_ORIGIN: origin,
       OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
       OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,

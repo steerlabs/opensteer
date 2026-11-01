@@ -1,36 +1,8 @@
-import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
-import { idleCpuPhase } from "./electron-idle-cpu-smoke.js";
-import { randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { mkdtempSync } from "node:fs";
-import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { WebSocket } from "ws";
-import {
-  app,
-  BaseWindow,
-  BrowserWindow,
-  nativeImage,
-  protocol,
-  screen,
-  session,
-  webContents,
-  type Debugger,
-} from "electron";
 import {
   browserFrameFits,
   defaultBrowserViewport,
   SessionCdpRouter,
 } from "@opensteer/browser-core";
-import {
-  BrowserAttachTicketClaimsSchema,
-  BrowserContextCandidateSchema,
-  BrowserServerMessageSchema,
-  BrowserSessionIdSchema,
-  type BrowserServerMessage,
-} from "@opensteer/protocol";
 import {
   BrowserController,
   BrowserRuntime,
@@ -43,16 +15,44 @@ import {
   type BrowserFrame,
   type BrowserLaunchRequest,
 } from "@opensteer/browser-runtime-core";
+import {
+  BrowserAttachTicketClaimsSchema,
+  BrowserContextCandidateSchema,
+  BrowserServerMessageSchema,
+  BrowserSessionIdSchema,
+  type BrowserServerMessage,
+} from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
-import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
+import {
+  app,
+  BaseWindow,
+  BrowserWindow,
+  nativeImage,
+  protocol,
+  screen,
+  session,
+  webContents,
+  type Debugger,
+} from "electron";
+import { randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { WebSocket } from "ws";
 import {
   desktopAppEntryUrl,
   installDesktopAppProtocol,
   registerDesktopAppScheme,
 } from "../src/app/app-protocol.js";
+import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { configureDesktopSession } from "../src/app/electron-window.js";
 import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
+import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
+import { idleCpuPhase } from "./electron-idle-cpu-smoke.js";
+import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -238,7 +238,7 @@ async function run(): Promise<void> {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002"),
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+    storage: { kind: "guest" },
   };
   const launcher = new ElectronBrowserLauncher({
     downloads: smokeDownloads,
@@ -449,6 +449,9 @@ async function run(): Promise<void> {
   const controller = new BrowserController({
     cdpRouter,
     claims: BrowserAttachTicketClaimsSchema.parse({
+      operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+      remainingBudgetMs: 18_000,
+      wireVersion: 1,
       access: "full-control",
       audience: "opensteer-browser-runtime",
       expiresAt: "2030-01-01T00:05:00.000Z",
@@ -459,7 +462,6 @@ async function run(): Promise<void> {
       sessionId: request.sessionId,
       subject: "electron-smoke",
     }),
-    exportSnapshot: () => first.exportSnapshot(),
     files: sessionFiles,
     replaceSiteCookies: (site, cookies, deadline) =>
       first.replaceSiteCookies(site, cookies, deadline),
@@ -1295,14 +1297,6 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
   const runtime = new BrowserRuntime({
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     launcher,
-    profileStateClient: {
-      load: async () => {
-        throw new Error("Fresh smoke session cannot load a profile.");
-      },
-      commit: async () => {
-        throw new Error("Fresh smoke session cannot save a profile.");
-      },
-    },
     runtimeId,
     sessionFilesRoot: path.join(smokeProfile, "transport-session-files"),
     ticketVerifier: {
@@ -1310,6 +1304,9 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
         if (ticket !== "electron-size-smoke-ticket") throw new Error("Unexpected smoke ticket.");
         const now = Date.now();
         return BrowserAttachTicketClaimsSchema.parse({
+          operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+          remainingBudgetMs: 18_000,
+          wireVersion: 1,
           access: "full-control",
           audience: "opensteer-browser-runtime",
           expiresAt: new Date(now + 300_000).toISOString(),
@@ -1574,7 +1571,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000009",
     sessionId,
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+    storage: { kind: "guest" },
   });
   // Every visible size and cast start any channel, or the launcher itself,
   // sends to this browser's pages, so the launcher's redraws and each tab's
@@ -1667,6 +1664,9 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   const controller = new BrowserController({
     cdpRouter,
     claims: BrowserAttachTicketClaimsSchema.parse({
+      operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+      remainingBudgetMs: 18_000,
+      wireVersion: 1,
       access: "full-control",
       audience: "opensteer-browser-runtime",
       expiresAt: "2030-01-01T00:05:00.000Z",
@@ -1677,7 +1677,6 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       sessionId,
       subject: "electron-smoke",
     }),
-    exportSnapshot: () => browser.exportSnapshot(),
     files,
     ledger,
     replaceSiteCookies: (site, cookies, deadline) =>
@@ -4390,7 +4389,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
       partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000019",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000019"),
-      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+      storage: { kind: "guest" },
     });
     const initial = isolated.context.pages()[0]!;
     const owned = new SurfaceLedger(isolated.context, { rootPages: [initial] });

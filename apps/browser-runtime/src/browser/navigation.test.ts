@@ -4,16 +4,15 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { expect, it } from "vitest";
 import { BrowserRuntime } from "@opensteer/browser-runtime-core";
 import {
-  FakeProfileStateClient,
   FakeSink,
   FakeTicketVerifier,
-  testSessionFilesRoot,
   freshClaims,
+  testSessionFilesRoot,
 } from "@opensteer/browser-runtime-core/test-support";
 import { BrowserSurfaceSchema, type BrowserSurface } from "@opensteer/protocol/browser";
+import { expect, it } from "vitest";
 import {
   TestChromiumLauncher,
   cleanup,
@@ -58,7 +57,6 @@ it.each([false, true])(
         chromiumSandbox: false,
         headless: true,
       }),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: claims.runtimeId,
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(claims),

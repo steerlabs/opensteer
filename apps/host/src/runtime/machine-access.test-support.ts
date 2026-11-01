@@ -1,12 +1,4 @@
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import type { HostConfig } from "@opensteer/config";
 import {
   createId,
   PendingRequestSchema,
@@ -19,16 +11,17 @@ import {
   type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
-import type { HostConfig } from "@opensteer/config";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createDatabase, migrateToLatest, type OpensteerStore } from "@opensteer/database";
 import {
   cloneTestDatabase,
   failDatabaseContainment,
   ownTestDatabaseProducer,
 } from "@opensteer/database/test-support/database";
+import { hostApiVersion } from "@opensteer/deployment-authority";
+import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import {
   HarnessInstanceCatalogSchema,
+  hostApiVersionHeader,
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
   RunnerBootIdSchema,
@@ -45,9 +38,7 @@ import {
   type RunnerDescriptor,
   type RunnerModuleName,
   type RunnerProof,
-  hostApiVersionHeader,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   isMachineAccessRoutes,
   isMachineAccessSetup,
@@ -64,12 +55,21 @@ import {
   createRunnerAuxiliarySignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
+import { execFile, spawn } from "node:child_process";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import WebSocket from "ws";
-import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { createHostRuntime, type HostRuntime } from "./runtime.js";
+import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
 import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const executeFile = promisify(execFile);
 
@@ -162,7 +162,6 @@ async function truncateMachineAccessTables(
       credential_vault_canaries,
       browser_profile_grants,
       browser_sessions,
-      browser_profile_revisions,
       browser_profiles,
       credentials,
       workspace_events,
@@ -308,7 +307,6 @@ function personalMachineAccessHostConfig(
     acceptsExternalRunners: false,
     authSecret: "machine-access-personal-secret".padEnd(40, "x"),
     bindAddress: "127.0.0.1",
-    browserProfileKeyPath: undefined,
     browserRuntime: { attachKeyId: "host-browser-v1" },
     canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
     credentialKeyPath: undefined,
@@ -450,7 +448,6 @@ export function machineAccessHostConfig(
     acceptsExternalRunners: true,
     authSecret: "machine-access-auth-secret".padEnd(40, "x"),
     bindAddress: "127.0.0.1",
-    browserProfileKeyPath: undefined,
     browserRuntime: { attachKeyId: "host-browser-v1" },
     canonicalOrigin: publicOrigin,
     credentialKeyPath: undefined,

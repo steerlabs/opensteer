@@ -40,7 +40,6 @@ services:
       OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS: ${OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS:-false}
       OPENSTEER_BIND_ADDRESS: 0.0.0.0
       OPENSTEER_BROWSER_ATTACH_KEY_ID: host-v1
-      OPENSTEER_BROWSER_PROFILE_KEY_PATH: /run/secrets/browser_profile_key
       OPENSTEER_CREDENTIAL_KEY_PATH: /run/secrets/credential_key
       OPENSTEER_INITIAL_BROWSER_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/browser_runner_enrollment_token
       OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN_FILE: /run/secrets/messaging_runner_enrollment_token
@@ -90,7 +89,6 @@ services:
       - database
       - egress
     secrets:
-      - browser_profile_key
       - browser_runner_enrollment_token
       - messaging_runner_enrollment_token
       - credential_key
@@ -170,7 +168,7 @@ services:
       OPENSTEER_BROWSER_HOST: 127.0.0.1
       OPENSTEER_BROWSER_PORT: "4312"
       OPENSTEER_BROWSER_PROFILE_ROOT: /var/lib/opensteer/browser/profiles
-      OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL: http://host:4310
+      OPENSTEER_BROWSER_PROFILE_READY_INTERNAL_URL: http://host:4310
       OPENSTEER_BROWSER_PROXY_URL: http://browser-egress:4313
       OPENSTEER_BROWSER_RELAY_HOST_URL: https://gateway:8443
       OPENSTEER_BROWSER_RUNTIME_DATA_DIR: /var/lib/opensteer/browser/runner
@@ -329,8 +327,6 @@ networks:
 secrets:
   browser_bridge_token:
     file: ./secrets/browser_bridge_token
-  browser_profile_key:
-    file: ./secrets/browser_profile_key
   browser_runner_enrollment_token:
     file: ./secrets/browser_runner_enrollment_token
   credential_key:

@@ -1,29 +1,29 @@
-import { ownChild } from "../agents/owned-child.test-support.js";
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { once } from "node:events";
-import { fork, type ChildProcess } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { z } from "zod";
 import type { HostConfig } from "@opensteer/config";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   BrowserServerMessageSchema,
-  type BrowserServerMessage,
-  type BrowserClientMessage,
   decodeBrowserFrameEnvelope,
   hostApiVersionHeader,
+  type BrowserClientMessage,
+  type BrowserServerMessage,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { sql } from "kysely";
-import WebSocket from "ws";
+import { fork, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+import WebSocket from "ws";
+import { z } from "zod";
+import { ownChild } from "../agents/owned-child.test-support.js";
 import { startPortableFsManagerFake as startPortableFsController } from "../runtime/portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
@@ -50,7 +50,6 @@ integration("Host and Chromium editing contract", () => {
         credential_vault_canaries,
         browser_profile_grants,
         browser_sessions,
-        browser_profile_revisions,
         browser_profiles,
         credentials,
         workspace_events,
@@ -111,7 +110,6 @@ integration("Host and Chromium editing contract", () => {
       bindAddress: "127.0.0.1",
       canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
       browserRuntime: { attachKeyId: "host-integration" },
-      browserProfileKeyPath: undefined,
       credentialKeyPath: undefined,
       databaseUrl: databaseUrl ?? "postgres://unconfigured",
       dataDirectory,

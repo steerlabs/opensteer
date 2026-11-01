@@ -50,12 +50,19 @@ export async function createPrivateFileAtomically(path: string, content: string)
  * content, never a partial write, and the directory sync makes the rename
  * survive a crash.
  */
-export async function replacePrivateFileAtomically(path: string, content: string): Promise<void> {
+export async function replacePrivateFileAtomically(
+  path: string,
+  content: string,
+  assertCurrent?: () => void,
+): Promise<void> {
   const temporary = await writePrivateTemporaryFile(path, content);
   try {
-    await rename(temporary, path);
-    await setPrivateFileMode(path);
-    await syncDirectory(dirname(path));
+    await serializePrivateFileCommit(path, async () => {
+      assertCurrent?.();
+      await rename(temporary, path);
+      await setPrivateFileMode(path);
+      await syncDirectory(dirname(path));
+    });
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;
@@ -115,4 +122,21 @@ async function writePrivateTemporaryFile(path: string, content: string): Promise
     await handle.close();
   }
   return temporary;
+}
+
+const privateFileCommits = new Map<string, Promise<unknown>>();
+/** Serialize only publication, including an already-issued rename, across replacement owners. */
+export function serializePrivateFileCommit<T>(
+  path: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const result = (privateFileCommits.get(path) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(operation);
+  privateFileCommits.set(path, result);
+  const release = () => {
+    if (privateFileCommits.get(path) === result) privateFileCommits.delete(path);
+  };
+  void result.then(release, release);
+  return result;
 }

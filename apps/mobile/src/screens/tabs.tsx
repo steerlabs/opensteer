@@ -124,9 +124,6 @@ function TabsForReader(props: {
   const placements = useHostSelector(hostClient, selectPlacements);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const offline = useHostSelector(hostClient, selectConnection);
-  useEffect(() => {
-    if (props.active && offline === null) hostClient.prepareBrowserProfile();
-  }, [hostClient, props.active, offline]);
   const [agents, setAgents] = useState(false);
   const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
   useAgentsFilter(agents, agents || withAgents.length > 0, setAgents);

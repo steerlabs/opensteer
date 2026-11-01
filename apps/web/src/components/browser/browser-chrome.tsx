@@ -1,3 +1,4 @@
+import { browserAddressParts } from "@opensteer/client/host";
 import {
   startPageIndex,
   webSearchUrl,
@@ -237,7 +238,7 @@ function BrowserAddress({
     },
     onFocusPage: () => onNavigated?.(),
   });
-  const parts = !controller.focused && !controller.dirty ? addressParts(pageValue) : null;
+  const parts = !controller.focused && !controller.dirty ? browserAddressParts(pageValue) : null;
   const lastFocusedTab = useRef<string | null>(null);
   useEffect(() => {
     if (disabled || !tabId || lastFocusedTab.current === tabId) return;
@@ -272,12 +273,7 @@ function BrowserAddress({
           placeholder="Search or enter address"
           ref={inputRef}
         />
-        {parts ? (
-          <span aria-hidden className="browser-address__display">
-            <span className="browser-address__host">{parts.host}</span>
-            <span className="browser-address__rest">{parts.rest}</span>
-          </span>
-        ) : null}
+        {parts ? <BrowserAddressDisplay url={url} hidden /> : null}
       </span>
       {controller.dirty && !controller.submitting && controller.value !== pageValue ? (
         <button
@@ -292,24 +288,6 @@ function BrowserAddress({
       <OmniboxResults controller={controller} hostClient={omnibox.hostClient} anchor={anchor} />
     </form>
   );
-}
-
-/** A web address as a person reads it: the site, without `www.`, then everything after it. */
-function addressParts(url: string): { readonly host: string; readonly rest: string } | null {
-  if (!/^https?:\/\//i.test(url)) return null;
-  try {
-    const parsed = new URL(url);
-    const rest = `${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}${parsed.hash}`;
-    let readable = rest;
-    try {
-      readable = decodeURI(rest);
-    } catch {
-      // An address that does not decode is shown as it is.
-    }
-    return { host: parsed.host.replace(/^www\./i, ""), rest: readable };
-  } catch {
-    return null;
-  }
 }
 
 export interface BrowserFindControls {
@@ -375,5 +353,27 @@ function BrowserFind({ controls }: { readonly controls: BrowserFindControls }) {
         <Icon name="close" />
       </button>
     </form>
+  );
+}
+
+export function BrowserAddressDisplay({
+  url,
+  hidden = false,
+}: {
+  readonly url: string;
+  readonly hidden?: boolean;
+}) {
+  const parts = browserAddressParts(url);
+  return (
+    <span
+      aria-hidden={hidden || undefined}
+      aria-label={hidden ? undefined : url}
+      className="browser-address__display"
+    >
+      <span className="browser-address__host">
+        {parts?.host ?? (url === "about:blank" ? "New tab" : url)}
+      </span>
+      <span className="browser-address__rest">{parts?.rest ?? ""}</span>
+    </span>
   );
 }

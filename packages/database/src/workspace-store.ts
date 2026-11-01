@@ -1,52 +1,53 @@
-import { withDatabaseTransaction } from "./connection.js";
-import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
 import {
-  type WorkspaceBacking,
+  type AgentEvent,
+  createId,
+  type EnvironmentId,
+  IsoDateTimeSchema,
   type MarkColor,
   MarkColorSchema,
   nextMarkColor,
-  type WorkspaceCapacityPolicy,
-  type UserId,
-  type WorkspaceIconName,
-  type WorkspaceId,
-  type WorkspaceKind,
-  type Workspace,
   nonTerminalRunStatuses,
   OpensteerError,
-  createId,
-  type AgentEvent,
+  type UserId,
+  type Workspace,
+  type WorkspaceBacking,
+  type WorkspaceCapacityPolicy,
+  type WorkspaceIconName,
+  type WorkspaceId,
   WorkspaceIdSchema,
+  type WorkspaceKind,
   WorkspaceSchema,
-  type EnvironmentId,
-  IsoDateTimeSchema,
 } from "@opensteer/core";
-import { type ExpressionBuilder, type Kysely, sql } from "kysely";
-import { type DatabaseSchema } from "./schema.js";
-import {
-  workspaceFromRow,
-  lockCommandIdempotency,
-  findCommandByIdempotency,
-  idempotencyConflict,
-  jsonValue,
-  principalIdForUser,
-  boundedLimit,
-  boundedWindowLimit,
-  boundedWindowBytes,
-  decodeWindowCursor,
-  encodeWindowCursor,
-  safeCount,
-  safeGeneration,
-} from "./store-primitives.js";
-import { isDeepStrictEqual } from "node:util";
-import { cancelPending } from "./request-cancellation.js";
-import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
-import { NotificationStateStore } from "./notification-state.js";
 import {
   type WorkspaceCatalogPage,
   workspacePageMaxItems,
   workspaceViewFromWorkspace,
 } from "@opensteer/protocol";
+import { type ExpressionBuilder, type Kysely, sql } from "kysely";
+import { isDeepStrictEqual } from "node:util";
+import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
+import { withDatabaseTransaction } from "./connection.js";
 import { boundedSerializedPrefix } from "./message-window.js";
+import { NotificationStateStore } from "./notification-state.js";
+import { databaseOperationOptions } from "./operation-budget.js";
+import { cancelPending } from "./request-cancellation.js";
+import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
+import { type DatabaseSchema } from "./schema.js";
+import {
+  boundedLimit,
+  boundedWindowBytes,
+  boundedWindowLimit,
+  decodeWindowCursor,
+  encodeWindowCursor,
+  findCommandByIdempotency,
+  idempotencyConflict,
+  jsonValue,
+  lockCommandIdempotency,
+  principalIdForUser,
+  safeCount,
+  safeGeneration,
+  workspaceFromRow,
+} from "./store-primitives.js";
 
 export interface CreateWorkspaceInput {
   readonly backing: WorkspaceBacking;
@@ -172,7 +173,7 @@ export async function createWorkspace(
         .selectFrom("workspaces")
         .selectAll()
         .where("id", "=", workspaceId)
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       const requestChanged = stored.request
         ? !isDeepStrictEqual(stored.request, canonicalWorkspaceCreateRequest(input))
         : !isDeepStrictEqual(row.capacityPolicy, input.capacityPolicy) ||
@@ -195,13 +196,13 @@ export async function createWorkspace(
       .select("id")
       .where("id", "=", input.createdBy)
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     const currentMain = await transaction
       .selectFrom("workspaces")
       .select("id")
       .where("createdBy", "=", input.createdBy)
       .where("kind", "=", "main")
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     const kind = input.kind ?? (currentMain ? "specialized" : "main");
     if (kind === "main" && currentMain) {
       throw new OpensteerError({
@@ -218,7 +219,7 @@ export async function createWorkspace(
           .orderBy("createdAt", "desc")
           .orderBy("id", "desc")
           .limit(6)
-          .execute();
+          .execute(databaseOperationOptions());
     const row = await transaction
       .insertInto("workspaces")
       .values({
@@ -233,7 +234,7 @@ export async function createWorkspace(
         status: input.status ?? "provisioning",
       })
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("workspaceMemberships")
       .values({
@@ -249,7 +250,7 @@ export async function createWorkspace(
         userId: input.createdBy,
         workspaceId: id,
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("securityAudit")
       .values({
@@ -263,7 +264,7 @@ export async function createWorkspace(
         targetType: "workspace",
         workspaceId: id,
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
     await transaction
       .insertInto("commands")
@@ -286,7 +287,7 @@ export async function createWorkspace(
         threadId: null,
         type: "workspace.create",
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return workspaceFromRow(row);
   });
 }
@@ -329,14 +330,14 @@ export async function setWorkspaceIcon(
       .selectAll()
       .where("id", "=", input.workspaceId)
       .forNoKeyUpdate()
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     const membership = workspace
       ? await transaction
           .selectFrom("workspaceMemberships")
           .select(["role", "state"])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
-          .executeTakeFirst()
+          .executeTakeFirst(databaseOperationOptions())
       : undefined;
     if (!workspace || !membership || membership.state !== "active") {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
@@ -359,7 +360,7 @@ export async function setWorkspaceIcon(
       .set({ icon: input.icon, updatedAt: new Date() })
       .where("id", "=", input.workspaceId)
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("commands")
       .values({
@@ -377,7 +378,7 @@ export async function setWorkspaceIcon(
         threadId: null,
         type: "workspace.icon.set",
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return workspaceFromRow(row);
   });
 }
@@ -412,14 +413,14 @@ export async function setWorkspaceColor(
       .selectAll()
       .where("id", "=", input.workspaceId)
       .forNoKeyUpdate()
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     const membership = workspace
       ? await transaction
           .selectFrom("workspaceMemberships")
           .select(["role", "state"])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
-          .executeTakeFirst()
+          .executeTakeFirst(databaseOperationOptions())
       : undefined;
     if (!workspace || !membership || membership.state !== "active") {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
@@ -442,7 +443,7 @@ export async function setWorkspaceColor(
       .set({ color, updatedAt: new Date() })
       .where("id", "=", input.workspaceId)
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("commands")
       .values({
@@ -460,7 +461,7 @@ export async function setWorkspaceColor(
         threadId: null,
         type: "workspace.color.set",
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return workspaceFromRow(row);
   });
 }
@@ -494,7 +495,7 @@ export async function requestWorkspaceDeletion(
         .selectAll()
         .where("id", "=", input.workspaceId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (!workspace) {
         throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
       }
@@ -503,7 +504,7 @@ export async function requestWorkspaceDeletion(
         .select(["role", "state"])
         .where("workspaceId", "=", input.workspaceId)
         .where("userId", "=", input.requestedBy)
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (!membership || membership.state !== "active" || membership.role !== "owner") {
         throw new OpensteerError({
           code: "forbidden",
@@ -545,7 +546,7 @@ export async function requestWorkspaceDeletion(
         })
         .where("id", "=", input.workspaceId)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       const requestEvents = await cancelPending(transaction, {
         reason: "workspace-deleted",
         resolvedAt: requestedAt,
@@ -564,7 +565,7 @@ export async function requestWorkspaceDeletion(
           targetType: "workspace",
           workspaceId: input.workspaceId,
         })
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       return { requestEvents, workspace: workspaceFromRow(row) };
     },
   );
@@ -583,7 +584,7 @@ export async function recoverWorkspaceDeletion(
       .selectAll()
       .where("id", "=", input.workspaceId)
       .forNoKeyUpdate()
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
     }
@@ -592,7 +593,7 @@ export async function recoverWorkspaceDeletion(
       .select(["role", "state"])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.requestedBy)
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!membership || membership.state !== "active" || membership.role !== "owner") {
       throw new OpensteerError({
         code: "forbidden",
@@ -624,7 +625,7 @@ export async function recoverWorkspaceDeletion(
       })
       .where("id", "=", input.workspaceId)
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("securityAudit")
       .values({
@@ -638,7 +639,7 @@ export async function recoverWorkspaceDeletion(
         targetType: "workspace",
         workspaceId: input.workspaceId,
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return workspaceFromRow(row);
   });
 }
@@ -660,7 +661,10 @@ export async function listWorkspacesDuePurge(
     .where("status", "=", "deleting")
     .where("purgeAfter", "<=", input.now);
   if (input.after) query = query.where("id", ">", input.after);
-  const rows = await query.orderBy("id", "asc").limit(boundedLimit(input.limit, 500)).execute();
+  const rows = await query
+    .orderBy("id", "asc")
+    .limit(boundedLimit(input.limit, 500))
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }
 
@@ -674,7 +678,7 @@ export async function markWorkspaceDeleted(
       .selectAll()
       .where("id", "=", input.workspaceId)
       .forNoKeyUpdate()
-      .executeTakeFirst();
+      .executeTakeFirst(databaseOperationOptions());
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
     }
@@ -698,7 +702,7 @@ export async function markWorkspaceDeleted(
       .orderBy("workspaceTabs.id")
       // FOR UPDATE: Deletion removes the tabs and cascades their personal group memberships.
       .forUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
     if (tabIds.length) {
       await lockBrowserTabGroupMembersForTabs(
         transaction,
@@ -711,7 +715,7 @@ export async function markWorkspaceDeleted(
           "in",
           tabIds.map((tab) => tab.id),
         )
-        .execute();
+        .execute(databaseOperationOptions());
     }
     const deletedAt = new Date();
     const row = await transaction
@@ -720,7 +724,7 @@ export async function markWorkspaceDeleted(
       .where("id", "=", input.workspaceId)
       .where("status", "=", "deleting")
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     await transaction
       .insertInto("securityAudit")
       .values({
@@ -734,7 +738,7 @@ export async function markWorkspaceDeleted(
         targetType: "workspace",
         workspaceId: input.workspaceId,
       })
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow(databaseOperationOptions());
     return workspaceFromRow(row);
   });
 }
@@ -746,7 +750,7 @@ export async function listWorkspaces(
     .selectFrom("workspaces")
     .selectAll()
     .orderBy("workspaces.updatedAt", "desc")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }
 
@@ -767,7 +771,7 @@ export async function findMainWorkspaceForOwner(
     .where("createdBy", "=", ownerId)
     .where("kind", "=", "main")
     .orderBy("createdAt", "asc")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ? workspaceFromRow(row) : undefined;
 }
 
@@ -810,7 +814,7 @@ export async function workspacePageForOwner(
           .orderBy("updatedAt", "desc")
           .orderBy("id", "desc")
           .limit(maxItems + 1)
-          .execute(),
+          .execute(databaseOperationOptions()),
         transaction
           .selectFrom("workspaces")
           .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
@@ -818,7 +822,7 @@ export async function workspacePageForOwner(
           .where("workspaceMemberships.userId", "=", input.ownerId)
           .where("workspaceMemberships.state", "=", "active")
           .where("workspaces.status", "!=", "deleted")
-          .executeTakeFirstOrThrow(),
+          .executeTakeFirstOrThrow(databaseOperationOptions()),
       ]);
       const window = boundedSerializedPrefix(
         rows
@@ -869,7 +873,7 @@ export async function listWorkspacesForOwner(
     .where("workspaces.status", "!=", "deleted")
     .orderBy("updatedAt", "desc")
     .limit(boundedLimit(limit, 1_000))
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }
 
@@ -881,7 +885,7 @@ export async function getWorkspace(
     .selectFrom("workspaces")
     .selectAll()
     .where("workspaces.id", "=", workspaceId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ? workspaceFromRow(row) : null;
 }
 
@@ -900,7 +904,7 @@ export async function noteWorkspaceActivity(
     // NOT NULL with a default, so GREATEST never sees a NULL operand.
     .set({ lastActivityAt: sql<Date>`greatest(last_activity_at, ${at}::timestamptz)` })
     .where("id", "=", workspaceId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 /**
@@ -930,7 +934,7 @@ export async function listArchiveEligibleWorkspaces(
   const rows = await query
     .orderBy("workspaces.id", "asc")
     .limit(boundedLimit(input.limit, 500))
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }
 
@@ -946,7 +950,7 @@ export async function getWorkspaceForOwner(
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", ownerId)
     .where("workspaceMemberships.state", "=", "active")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row ? workspaceFromRow(row) : null;
 }
 
@@ -967,7 +971,7 @@ export async function admitWorkspaceFiles(
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", userId)
     .where("workspaceMemberships.state", "=", "active")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!row) return null;
   if (row.status === "deleted") return null;
   if (row.status === "deleting") {
@@ -1004,7 +1008,7 @@ export async function setWorkspaceStorageState(
     .where("id", "=", input.workspaceId)
     .where("status", "not in", ["deleting", "deleted"])
     .returningAll()
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!row) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
   return workspaceFromRow(row);
 }
@@ -1054,7 +1058,7 @@ export async function setWorkspaceProvisioningResult(
       ]),
     )
     .returningAll()
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (row) return workspaceFromRow(row);
   const existing = await getWorkspace(database, input.workspaceId);
   if (!existing) {
@@ -1131,7 +1135,7 @@ export async function claimPortableFsWorkspaceForArchive(
     )
     .where(workspaceHasNoLiveExecution)
     .returningAll()
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!row) {
     throw new OpensteerError({
       code: "conflict",
@@ -1157,7 +1161,7 @@ export async function assertCurrentPortableFsWorkspaceBacking(
     .where(sql<boolean>`backing ->> 'kind' = 'portablefs'`)
     .where(sql<boolean>`backing ->> 'volumeId' = ${input.volumeId}`)
     .where(sql<boolean>`(backing ->> 'generation')::numeric = ${input.generation}`)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!row) {
     throw new OpensteerError({
       code: "forbidden",
@@ -1175,7 +1179,7 @@ export async function hasWorkspaceMountHistory(
     .select("id")
     .where("workspaceId", "=", workspaceId)
     .limit(1)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row !== undefined;
 }
 
@@ -1194,7 +1198,7 @@ export async function countLiveThreadsByEnvironment(
     .where("environmentId", "in", environmentIds)
     .where("status", "!=", "archived")
     .groupBy("environmentId")
-    .execute();
+    .execute(databaseOperationOptions());
   return new Map(rows.map((row) => [row.environmentId, Number(row.count)]));
 }
 
@@ -1218,7 +1222,7 @@ export async function listLocalWorkspacesForEnvironments(
     .orderBy("createdAt", "asc")
     .orderBy("id", "asc")
     .limit(boundedLimit(limit, 1_000))
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }
 
@@ -1244,7 +1248,11 @@ export async function listWorkspacesByStatus(
       ]),
     );
   }
-  const rows = await query.orderBy("createdAt", "asc").orderBy("id", "asc").limit(limit).execute();
+  const rows = await query
+    .orderBy("createdAt", "asc")
+    .orderBy("id", "asc")
+    .limit(limit)
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }
 
@@ -1274,6 +1282,10 @@ export async function listPortableFsWorkspacesByServiceMismatch(
       ]),
     );
   }
-  const rows = await query.orderBy("createdAt", "asc").orderBy("id", "asc").limit(limit).execute();
+  const rows = await query
+    .orderBy("createdAt", "asc")
+    .orderBy("id", "asc")
+    .limit(limit)
+    .execute(databaseOperationOptions());
   return rows.map(workspaceFromRow);
 }

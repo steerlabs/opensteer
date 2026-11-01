@@ -1,3 +1,10 @@
+import { BrowserRuntime, stageFileMethod } from "@opensteer/browser-runtime-core";
+import {
+  FakeSink,
+  FakeTicketVerifier,
+  validClaims,
+} from "@opensteer/browser-runtime-core/test-support";
+import type { BrowserServerMessage } from "@opensteer/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -6,20 +13,11 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { BrowserServerMessage } from "@opensteer/protocol";
-import { BrowserRuntime, stageFileMethod } from "@opensteer/browser-runtime-core";
-import {
-  FakeProfileStateClient,
-  FakeSink,
-  FakeTicketVerifier,
-  validClaims,
-} from "@opensteer/browser-runtime-core/test-support";
-import { delay } from "@opensteer/shared/delay";
 import {
   TestChromiumLauncher as PlaywrightChromiumLauncher,
-  findChromium,
   browserTestSignal,
   cleanup,
+  findChromium,
   waitForBrowserState,
   withBrowserTestSignal,
 } from "./browser-test-lifecycle.js";
@@ -50,17 +48,13 @@ describe("Browser Session files and profile saving in real Chromium", () => {
       const second = path.join(scratch, "receipt.pdf");
       await writeFile(photo, randomBytes(2_424_653));
       await writeFile(second, randomBytes(70_001));
-
-      const state = new FakeProfileStateClient();
       const claims = validClaims();
       const runtime = new BrowserRuntime({
-        checkpointIntervalMs: 1_000,
         launcher: new PlaywrightChromiumLauncher({
           chromiumSandbox: false,
           executablePath,
           headless: true,
         }),
-        profileStateClient: state,
         runtimeId: "runtime_test",
         sessionFilesRoot: filesRoot,
         ticketVerifier: new FakeTicketVerifier(claims),
@@ -228,22 +222,10 @@ describe("Browser Session files and profile saving in real Chromium", () => {
       expect(refusals["outside file"]).toMatch(/staged for this Browser Session/u);
       report.refusals = refusals;
 
-      // A profile in use saves changed state on the interval and skips unchanged state.
-      const commitsBefore = state.commits.length;
-      await evaluate(cdp, page, "document.cookie = 'listing=draft; max-age=3600; path=/'");
-      await waitFor(async () => state.commits.length > commitsBefore, 10_000);
-      const saved = state.commits.at(-1)?.snapshot;
-      expect(saved?.cookies.some((cookie) => cookie.name === "listing")).toBe(true);
-      const afterChange = state.commits.length;
-      await delay(2_500, browserTestSignal());
-      expect(state.commits.length).toBe(afterChange);
-      report.checkpoints = { afterChange, unchangedAfterTwoIntervals: state.commits.length };
-
-      // Ending the session removes its files and saves a final revision.
+      // Ending the session removes its files.
       await attachment.close();
       expect(existsSync(path.join(filesRoot, claims.sessionId))).toBe(false);
       expect(await readdir(filesRoot)).toEqual([]);
-      expect(state.commits.length).toBe(afterChange + 1);
 
       const reportPath = path.join(tmpdir(), `opensteer-session-files-e2e-${Date.now()}.json`);
       await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);

@@ -1151,6 +1151,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
         url: "https://pending.example/",
         idempotencyKey: "mobile-list",
       });
+      void opening.result.catch(() => undefined);
     });
     await press(control(front(w), "https://pending.example/"));
     expect(w.stack.top.params).toMatchObject({
@@ -1161,11 +1162,11 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     const close = vi.spyOn(w.host, "closeBrowserTab");
     await press(control(front(w), "Close tab"));
     expect(w.stack.top.name).toBe("Tabs");
+    await expect(opening.result).rejects.toMatchObject({ name: "AbortError" });
     await act(async () => {
       gate.resolve();
-      await opening.result;
     });
-    expect(close).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
     expect(w.stack.top.name).toBe("Tabs");
   });
 

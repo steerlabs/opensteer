@@ -26,10 +26,21 @@ type InventoryEntry = Awaited<
 >[number];
 
 describe("ContinuationService", () => {
+  it("settles historical Guest-save continuations without delivering agent instructions", async () => {
+    const request = fulfilledRequest("browser.profile.save");
+    const fixture = makeService([request]);
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).not.toHaveBeenCalled();
+    expect(fixture.recordContinuationAttempt).toHaveBeenCalledWith({
+      requestId: request.id,
+      status: "undeliverable",
+      reason: "Guest profile saving has been removed.",
+    });
+  });
   it("drains every durable kind through one outbox and one idempotency shape", async () => {
     const requests = [
       fulfilledRequest("browser.access"),
-      fulfilledRequest("browser.profile.save"),
       fulfilledRequest("integration.access"),
       fulfilledRequest("integration.install"),
     ];
@@ -45,7 +56,7 @@ describe("ContinuationService", () => {
     fixture.service.notify();
     await fixture.service.close();
 
-    expect(fixture.enqueueThreadInput).toHaveBeenCalledTimes(4);
+    expect(fixture.enqueueThreadInput).toHaveBeenCalledTimes(3);
     for (const request of requests) {
       expect(fixture.enqueueThreadInput).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -127,7 +138,7 @@ describe("ContinuationService", () => {
       code: "conflict",
       message: "Archived threads cannot run",
     });
-    const request = fulfilledRequest("browser.profile.save");
+    const request = fulfilledRequest("browser.access");
     const fixture = makeService([request], {
       enqueueThreadInput: vi.fn().mockRejectedValueOnce(failure),
     });
@@ -177,7 +188,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? String.raw`Request ${request.id} was fulfilled. Browser profile "Owner \"renamed\" work" (${profile.id}) is now available to this Workspace. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
-          : String.raw`Request ${request.id} was fulfilled. Browser Session browser-session-1's state was copied to the new browser profile "Owner \"renamed\" work" (${profile.id}). That session stays Guest: what happens there now is not saved to the profile. Open the profile with browser_session_open and profileId ${profile.id} for work that should persist, then continue the task.`,
+          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -189,7 +200,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`
-          : `Request ${request.id} was fulfilled. Browser Session browser-session-1's state was copied to a new browser profile, and that session stays Guest. browser_profile_list shows the new profile; open it with browser_session_open for work that should persist. Continue the task.`,
+          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -205,7 +216,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? `Request ${request.id} was declined by the user. Browser profiles this Workspace could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`
-          : `Request ${request.id} was declined by the user. Continue the task without saving this Browser Session as a profile and do not request it again unless the user asks.`,
+          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
       );
     },
   );

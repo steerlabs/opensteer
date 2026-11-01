@@ -1,11 +1,10 @@
+import type { RunnerId, RuntimeMode } from "@opensteer/core";
 import {
   RunnerAuxiliaryWelcomeSchema,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
   type RunnerBootId,
 } from "@opensteer/protocol";
-import type { RunnerId } from "@opensteer/core";
-import type { RuntimeMode } from "@opensteer/core";
 import type { KeyObject } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import { answerAuxiliaryChallenge, RunnerAuxiliaryFenceLedger } from "./auxiliary-connection.js";
@@ -165,11 +164,8 @@ export async function openRunnerAuxiliaryStream(options: {
   const stream: RunnerModuleStream = {
     ...(welcome.loginText === 1 ? { loginText: 1 } : {}),
     ...(welcome.passwordSignIn === 1 ? { passwordSignIn: 1 } : {}),
+    ...(welcome.browserWireVersion ? { browserWireVersion: welcome.browserWireVersion } : {}),
     ...(welcome.passkeys === 1 ? { passkeys: 1 } : {}),
-    ...(welcome.localProfiles === 1
-      ? { localProfiles: 1, ...(welcome.profilePrepare === 1 ? { profilePrepare: 1 } : {}) }
-      : {}),
-    ...(welcome.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
     browserAttachPublicKeys: welcome.browserAttachPublicKeys,
     fence: fence.fence,
     send: (frame, binary) => send(socket, frame, binary),

@@ -90,9 +90,6 @@ export function BrowserPage(props: {
       : undefined);
   const [problem, setProblem] = useState<string | null>(null);
   const [addressOpen, setAddressOpen] = useState(props.editAddress);
-  useEffect(() => {
-    if (addressOpen) hostClient.prepareBrowserProfile();
-  }, [addressOpen, hostClient]);
   // Null shows the page's own address; anything else is the person's, kept
   // until they go there or put it away.
   const [addressDraft, setAddressDraft] = useState<string | null>(null);
@@ -251,6 +248,11 @@ export function BrowserPage(props: {
     }
   };
 
+  const navigationProblem =
+    tab?.navigationFailed || catalogTab?.navigationFailed
+      ? "This page could not be loaded. Reload to try again."
+      : null;
+  const pageProblem = problem ?? navigationProblem;
   const site = tab ? pageSite(tab.url) : null;
   const title = tab ? browserTabTitle(tab) : "Page";
   const signInSite = session.state === "ready" && tab?.url ? browserSiteForUrl(tab.url) : null;
@@ -394,15 +396,23 @@ export function BrowserPage(props: {
           }}
           session={session}
         />
-        {problem === null && !refused && !feed.inputError && dialog === null && !passkey ? null : (
+        {pageProblem === null &&
+        !refused &&
+        !feed.inputError &&
+        dialog === null &&
+        !passkey ? null : (
           <View pointerEvents="box-none" style={styles.top}>
             {passkey ? (
               <View style={styles.card}>
                 <AppText role="secondary">{passkeyNotice}</AppText>
               </View>
             ) : null}
-            {problem !== null || refused ? (
-              <Notice detail={problem ?? refusedNotice} title="Page unavailable" tone="neutral" />
+            {pageProblem !== null || refused ? (
+              <Notice
+                detail={pageProblem ?? refusedNotice}
+                title="Page unavailable"
+                tone="neutral"
+              />
             ) : feed.inputError ? (
               // The page refused a touch or key, and says why; the next one clears it.
               <Notice detail={feed.inputError} title="That didn’t reach the page" tone="neutral" />

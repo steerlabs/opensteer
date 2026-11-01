@@ -1,11 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { afterEach, describe, expect, it } from "vitest";
-import { z } from "zod";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protocol";
+import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -13,10 +13,10 @@ import {
   startPersonalMachineAccessHost,
   waitForValue,
 } from "../runtime/machine-access.test-support.js";
-import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
-import { PasswordsJourneyEvidence } from "./passwords-evidence.test-support.js";
+import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 import { passwordFixture, startPasswordsAuthority } from "./passwords-authority.test-support.js";
+import { PasswordsJourneyEvidence } from "./passwords-evidence.test-support.js";
 
 const command =
   "pnpm test:integration apps/host/src/browser/browser-sign-in-tool.integration.test.ts apps/host/src/browser/browser-source-service.integration.test.ts";
@@ -74,7 +74,7 @@ export function passwordsAnywhereJourneys() {
                 ? {
                     browser: {
                       runtimeId: "browser-runtime-integration",
-                      profileSnapshotVersion: 2 as const,
+                      wireVersion: 1 as const,
                       cdpBoundary: 1 as const,
                       sharedControl: 1 as const,
                       signIn: { version: 3 as const },

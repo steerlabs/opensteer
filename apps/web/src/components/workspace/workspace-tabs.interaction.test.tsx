@@ -71,11 +71,9 @@ describe("workspace tab commands", () => {
     await click(element(`.side-tab[data-place-key="pending:${key}"] .side-tab__close`));
     expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
     expect(new URLSearchParams(history.at(-1)!.search).has("pendingBrowserTab")).toBe(false);
-    await act(async () => {
-      gate.resolve();
-      await completion;
-    });
-    expect(close).toHaveBeenCalledOnce();
+    await expect(completion).rejects.toMatchObject({ name: "AbortError" });
+    await act(async () => gate.resolve());
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce(), { timeout: 2_000 });
     expect(new URLSearchParams(history.at(-1)!.search).has("browserTab")).toBe(false);
   });
 

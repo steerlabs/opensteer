@@ -1,4 +1,3 @@
-import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import {
   CloudDeploymentOperationSchema,
   CreateCloudDeploymentRequestSchema,
@@ -16,6 +15,7 @@ import {
   verifyHostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
 import type { Kysely, Selectable } from "kysely";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { withCloudOperationLock } from "../database/advisory-locks.js";
 import type {
   CloudDeploymentOperationTable,
@@ -23,9 +23,9 @@ import type {
 } from "../database/schema.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { ControlPlaneError } from "../server/errors.js";
+import { cloudHostReady } from "./host-readiness.js";
 import { managedWorkloadLabel } from "./kubernetes-managed-deployment-resources.js";
 import { CloudMaterialCipher } from "./material.js";
-import { cloudHostReady } from "./host-readiness.js";
 
 export interface CloudDeploymentInput {
   readonly operationId: string;
@@ -189,7 +189,6 @@ export class CloudDeploymentLifecycle {
           "host-private.pem": keys.privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
           "host-public.pem": keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
           "credential.key": randomBytes(32).toString("base64url"),
-          "browser-profile.key": randomBytes(32).toString("base64url"),
           OPENSTEER_AUTH_SECRET: randomBytes(48).toString("base64url"),
           POSTGRES_PASSWORD: randomBytes(32).toString("base64url"),
           OPENSTEER_RUNNER_ENROLLMENT_TOKEN: runnerToken,

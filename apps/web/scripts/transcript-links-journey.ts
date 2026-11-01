@@ -358,7 +358,9 @@ try {
         .getByRole("alert")
         .filter({ hasText: "Which computer" })
         .waitFor({ timeout: 5_000 });
-      const refusedAddress = await page.locator(".browser-address").textContent();
+      const refusedAddress = await page
+        .locator(".browser-address .browser-address__display")
+        .getAttribute("aria-label");
       const consumed = await page.evaluate(() => history.state.usr);
       const chips = await page.getByRole("button", { name: /^Open on /u }).allTextContents();
       const refusalCount = (await mockTabs(page)).length;

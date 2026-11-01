@@ -1,13 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
-import path from "node:path";
-import { z } from "zod";
 import {
-  FrozenProfileSeedSchema,
   HeldLocalProfileSchema,
   LocalProfileBindingSchema,
   type BrowserEngine,
-  type FrozenProfileSeed,
   type HeldLocalProfile,
   type LocalProfileBinding,
 } from "@opensteer/protocol";
@@ -18,8 +12,12 @@ import {
   replacePrivateFileAtomically,
   securePrivateDirectory,
 } from "@opensteer/shared/atomicPrivateFile";
-import { ensurePrivateDirectory, syncDirectory } from "@opensteer/shared/privateFiles";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
+import { ensurePrivateDirectory, syncDirectory } from "@opensteer/shared/privateFiles";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm } from "node:fs/promises";
+import path from "node:path";
+import { z } from "zod";
 import { BrowserRuntimeError } from "./errors.js";
 
 const identitySchema = z.strictObject({ version: z.literal(1), storageInstanceId: z.uuid() });
@@ -27,13 +25,6 @@ const nativeSentinelSchema = z.strictObject({
   version: z.literal(1),
   binding: LocalProfileBindingSchema,
 });
-const markerSchema = z.strictObject({
-  version: z.literal(1),
-  phase: z.enum(["initializing", "ready"]),
-  binding: LocalProfileBindingSchema,
-  seed: FrozenProfileSeedSchema,
-});
-type Marker = z.infer<typeof markerSchema>;
 type Tombstone = Extract<HeldLocalProfile, { phase: "deleted" }>;
 // Root exclusivity across processes belongs to the caller. Logical runtimes may
 // restart while Electron's path-keyed Sessions still own their native stores.
@@ -45,16 +36,13 @@ export function sameLocalBinding(left: LocalProfileBinding, right: LocalProfileB
     (key) => left[key as keyof LocalProfileBinding] === right[key as keyof LocalProfileBinding],
   );
 }
-export function sameFrozenSeed(left: FrozenProfileSeed, right: FrozenProfileSeed): boolean {
-  return left.revision === right.revision && left.digest === right.digest;
-}
 function invalid(message = "The local browser profile storage is invalid."): BrowserRuntimeError {
   return new BrowserRuntimeError("conflict", message, { reason: "local-profile.storage-invalid" });
 }
 
 /** The one disk authority shared by Electron and Chromium; callers serialize each profile. */
 export class LocalProfileStore {
-  private readonly attempted = new Set<string>();
+  private readonly knownBindings = new Map<string, LocalProfileBinding>();
   private closed = false;
   readonly root: string;
   readonly storageInstanceId: string;
@@ -129,15 +117,6 @@ export class LocalProfileStore {
   private profile(binding: LocalProfileBinding): string {
     return path.dirname(this.directory(binding));
   }
-  private async marker(binding: LocalProfileBinding): Promise<Marker | undefined> {
-    const profile = this.profile(binding);
-    await realDirectoryIfPresent(path.join(this.root, "profiles"));
-    await realDirectoryIfPresent(profile);
-    const marker = await readJson(path.join(profile, "binding.v1.json"), markerSchema);
-    if (marker && !sameLocalBinding(marker.binding, binding))
-      throw invalid("The local browser profile binding does not match.");
-    return marker;
-  }
   async assertNotDeleted(binding: LocalProfileBinding): Promise<void> {
     this.validate(binding);
     await realDirectoryIfPresent(path.join(this.root, "tombstones"));
@@ -149,32 +128,52 @@ export class LocalProfileStore {
     )
       throw invalid("This browser profile has been deleted.");
   }
-  async hasProfile(profileId: string): Promise<boolean> {
-    // Legacy tickets must never reopen a disposable copy of native state, including
-    // corrupt/incomplete native state or a deletion restored out of the Host DB.
-    if (!/^bpr_[a-f0-9-]+$/iu.test(profileId)) throw invalid();
-    return (
-      (await realDirectoryIfPresent(path.join(this.root, "profiles", profileId))) ||
-      (await readJson(
-        path.join(this.root, "tombstones", `${profileId}.json`),
-        HeldLocalProfileSchema,
-      )) !== undefined
-    );
-  }
-  async inspect(
+  /** Publish only a never-created store, before an engine can own its final directory. */
+  async provision(
     binding: LocalProfileBinding,
-    seed?: FrozenProfileSeed,
-  ): Promise<Marker | undefined> {
+    initialized: boolean,
+    createFiles: (profileDirectory: string) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<string> {
+    signal.throwIfAborted();
     await this.assertNotDeleted(binding);
-    const marker = await this.marker(binding);
-    if (marker && seed && !sameFrozenSeed(marker.seed, seed))
-      throw invalid("The frozen browser profile seed does not match.");
-    return marker;
+    const directory = this.directory(binding);
+    if (await realDirectoryIfPresent(this.profile(binding))) return this.requireReady(binding);
+    if (initialized)
+      throw invalid(
+        "The established native browser profile data is missing. Restore its original storage.",
+      );
+    await ensurePrivateDirectory(path.join(this.root, ".opensteer-runtime"));
+    const staging = await mkdtemp(path.join(this.root, ".opensteer-runtime", "profile-"));
+    try {
+      await mkdir(path.join(staging, "native"), { mode: 0o700 });
+      signal.throwIfAborted();
+      await createFiles(staging);
+      signal.throwIfAborted();
+      await replacePrivateFileAtomically(
+        path.join(staging, "native", "opensteer.v1.json"),
+        JSON.stringify({ version: 1, binding }),
+      );
+      await ensurePrivateDirectory(path.join(this.root, "profiles"));
+      await this.assertNotDeleted(binding);
+      signal.throwIfAborted();
+      // Root exclusivity and the profile lane exclude another publisher. No engine
+      // has seen the staged path; an existing final store is never replaced.
+      if (await realDirectoryIfPresent(this.profile(binding)))
+        throw invalid("The native browser profile already exists.");
+      signal.throwIfAborted();
+      await rename(staging, this.profile(binding));
+      await syncDirectory(path.join(this.root, "profiles"));
+      return directory;
+    } finally {
+      await rm(staging, { recursive: true, force: true });
+    }
   }
   async requireReady(binding: LocalProfileBinding): Promise<string> {
-    const marker = await this.inspect(binding);
-    if (marker?.phase !== "ready")
-      throw invalid("The native browser profile is missing or has not finished initialization.");
+    await this.assertNotDeleted(binding);
+    const known = this.knownBindings.get(binding.profileId);
+    if (known && !sameLocalBinding(known, binding))
+      throw invalid("The native browser profile binding changed while this runtime owned it.");
     const directory = this.directory(binding);
     if (!(await realDirectoryIfPresent(directory)))
       throw invalid("The native browser profile data is missing.");
@@ -186,48 +185,8 @@ export class LocalProfileStore {
       throw invalid(
         "The native browser profile storage sentinel is missing or does not match. The profile was preserved.",
       );
+    this.knownBindings.set(binding.profileId, binding);
     return directory;
-  }
-  async initialize(binding: LocalProfileBinding, seed: FrozenProfileSeed): Promise<string> {
-    FrozenProfileSeedSchema.parse(seed);
-    const marker = await this.inspect(binding, seed);
-    if (marker?.phase === "ready")
-      throw invalid("A ready native browser profile must never be reimported.");
-    if (this.attempted.has(binding.profileId) || retainedDirectories.has(this.directory(binding)))
-      throw invalid("Profile initialization is fenced until this process exits.");
-    const profile = this.profile(binding);
-    await ensurePrivateDirectory(path.join(this.root, "profiles"));
-    await ensurePrivateDirectory(profile);
-    if (!marker && (await readdir(profile)).length)
-      throw invalid("The browser profile marker is missing over existing data.");
-    this.attempted.add(binding.profileId);
-    if (marker) await rm(this.directory(binding), { force: true, recursive: true });
-    await replacePrivateFileAtomically(
-      path.join(profile, "binding.v1.json"),
-      JSON.stringify({ version: 1, phase: "initializing", binding, seed }),
-    );
-    await mkdir(this.directory(binding), { mode: 0o700 });
-    await syncDirectory(profile);
-    return this.directory(binding);
-  }
-  async ready(binding: LocalProfileBinding, seed: FrozenProfileSeed): Promise<void> {
-    const marker = await this.inspect(binding, seed);
-    if (!marker) throw invalid();
-    if (!(await realDirectoryIfPresent(this.directory(binding)))) throw invalid();
-    if (marker.phase === "ready") {
-      await this.requireReady(binding);
-      return;
-    }
-    // Publish inside the engine's store before promoting its parent marker.
-    // Missing sentinels on this unreleased format are damage, never a migration.
-    await replacePrivateFileAtomically(
-      path.join(this.directory(binding), "opensteer.v1.json"),
-      JSON.stringify({ version: 1, binding }),
-    );
-    await replacePrivateFileAtomically(
-      path.join(this.profile(binding), "binding.v1.json"),
-      JSON.stringify({ ...marker, phase: "ready" }),
-    );
   }
   async tombstone(binding: LocalProfileBinding, deletionId: string): Promise<Tombstone> {
     this.validate(binding);
@@ -242,7 +201,6 @@ export class LocalProfileStore {
         throw invalid();
       return existing;
     }
-    await this.marker(binding);
     const claim = HeldLocalProfileSchema.parse({
       phase: "deleted",
       binding,
@@ -274,21 +232,15 @@ export class LocalProfileStore {
       if (claims.has(name)) continue;
       const directory = path.join(this.root, "profiles", name);
       if (!(await realDirectoryIfPresent(directory))) throw invalid();
-      const marker = await readJson(path.join(directory, "binding.v1.json"), markerSchema);
-      // A crash before marker creation can leave an empty directory; it is not a claim.
-      if (!marker) {
-        if (
-          (await readdir(directory)).some(
-            (name) => !profileSidecar(privateFileTemporaryTarget(name) ?? ""),
-          )
-        )
-          throw invalid();
-        continue;
-      }
-      this.validate(marker.binding);
-      if (marker.binding.profileId !== name) throw invalid();
-      if (marker.phase === "ready") await this.requireReady(marker.binding);
-      claims.set(name, { phase: marker.phase, binding: marker.binding, seed: marker.seed });
+      const sentinel = await readJson(
+        path.join(directory, "native", "opensteer.v1.json"),
+        nativeSentinelSchema,
+      );
+      if (!sentinel) throw invalid("The native browser profile sentinel is missing.");
+      this.validate(sentinel.binding);
+      if (sentinel.binding.profileId !== name) throw invalid();
+      await this.requireReady(sentinel.binding);
+      claims.set(name, { phase: "ready", binding: sentinel.binding });
     }
     return [...claims.values()];
   }

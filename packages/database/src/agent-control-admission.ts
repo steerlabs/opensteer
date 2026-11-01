@@ -26,7 +26,6 @@ export const agentControlActionLimits = {
   "browser.sign-in": 64,
   "browser.profile.create": 8,
   "browser.profile.list": 64,
-  "browser.profile.save": 8,
   "browser.session.close": 32,
   "browser.session.list": 128,
   "browser.tab.read": 128,
@@ -57,7 +56,6 @@ export type AgentControlAction =
   | "browser.sign-in"
   | "browser.profile.create"
   | "browser.profile.list"
-  | "browser.profile.save"
   | "browser.session.close"
   | "browser.session.list"
   | "browser.tab.read"
@@ -156,7 +154,6 @@ const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass
   "browser.sign-in": "browser.sign-in",
   "browser.profile.create": "browser.profile.create",
   "browser.profile.list": "browser.profile.list",
-  "browser.profile.save": "browser.profile.save",
   "browser.session.close": "browser.session.close",
   "browser.session.list": "browser.session.list",
   "browser.tab.read": "browser.tab.read",

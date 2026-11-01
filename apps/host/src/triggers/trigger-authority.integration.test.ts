@@ -1,9 +1,3 @@
-import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -43,6 +37,7 @@ import {
   type HostApiServerContext,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
+import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import {
   TriggerControlInputSchema,
   TriggerRevisionSchema,
@@ -52,6 +47,11 @@ import {
   type TriggerSource,
 } from "@opensteer/triggers";
 import { sql } from "kysely";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -59,10 +59,9 @@ import {
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "../agents/agent-control-service.js";
-import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import { HostCommandDispatcher } from "../agents/dispatcher.js";
-import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
+import { HostCommandDispatcher } from "../agents/dispatcher.js";
+import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import {
   TriggerControlService,
   type TriggerControlScope,
@@ -72,6 +71,7 @@ import { createTriggerRpcHandlers, handleTriggerCommand } from "./trigger-routes
 import { TriggerService } from "./trigger-service.js";
 import type { WatchControlScope, WatchControlTokenService } from "./watch-capability.js";
 import { WatchControlService } from "./watch-control-service.js";
+import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -178,13 +178,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
     machineFullDiskAccess: { request: unexpected },
     browser: {
       createProfile: unexpected,
-      profileSiteData: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
       openAgentSession: unexpected,
       requestAccess: unexpected,
-      requestSaveProfile: unexpected,
     },
     onWorkspaceEvent: vi.fn(),
     tokens,

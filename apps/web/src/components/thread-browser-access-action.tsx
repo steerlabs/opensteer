@@ -1,5 +1,3 @@
-import { useState } from "react";
-import type { Request } from "@opensteer/core";
 import {
   browserAccessAvailableLabel,
   browserAccessGrantable,
@@ -8,12 +6,13 @@ import {
   browserAccessInitialSelection,
   browserAccessResponse,
   browserAccessWarning,
-  browserProfileSavePrompt,
   mutationIdempotencyKey,
   type BrowserAccessSelection,
   type BrowserProfileSummary,
   type HostClient,
 } from "@opensteer/client/host";
+import type { Request } from "@opensteer/core";
+import { useState } from "react";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 
@@ -21,22 +20,14 @@ import { useShell } from "./app-shell.js";
  * Approval card for a durable browser access request. The agent's suggestion is
  * advisory: the profile inventory comes from the Host snapshot, never from
  * agent-authored content, and the owner can always choose another profile.
- * A `browser.profile.save` Request asks instead for a fresh session's signed-in
- * state to become a new profile; the owner confirms the name.
  */
 
-export type BrowserAccessView =
-  | {
-      readonly kind: "pending";
-      readonly profiles: readonly BrowserProfileSummary[];
-      readonly grantedProfileIds: readonly string[];
-      readonly workspaceName: string;
-    }
-  | {
-      readonly kind: "save";
-      readonly reason: string;
-      readonly workspaceName: string;
-    };
+export type BrowserAccessView = {
+  readonly kind: "pending";
+  readonly profiles: readonly BrowserProfileSummary[];
+  readonly grantedProfileIds: readonly string[];
+  readonly workspaceName: string;
+};
 
 /** No selection resolves the request as declined; a selection grants full control. */
 export async function resolveBrowserAccess(
@@ -70,18 +61,8 @@ export function ThreadBrowserRequestAction({
   const suggestion = request.payload.kind === "browser.access" ? request.payload.suggestion : null;
   const selection =
     chosen ??
-    (request.payload.kind === "browser.profile.save"
-      ? { kind: "save" as const }
-      : suggestion
-        ? browserAccessInitialSelection(suggestion, snapshot.browserProfiles)
-        : null);
-  const name =
-    renamed ??
-    (request.payload.kind === "browser.profile.save"
-      ? (request.payload.suggestedName ?? "")
-      : suggestion
-        ? browserAccessInitialName(suggestion)
-        : "");
+    (suggestion ? browserAccessInitialSelection(suggestion, snapshot.browserProfiles) : null);
+  const name = renamed ?? (suggestion ? browserAccessInitialName(suggestion) : "");
 
   const resolve = async (choice: BrowserAccessSelection | null) => {
     if (pending || disabled) return;
@@ -95,27 +76,17 @@ export function ThreadBrowserRequestAction({
     }
   };
 
-  if (
-    request.payload.kind !== "browser.access" &&
-    request.payload.kind !== "browser.profile.save"
-  ) {
+  if (request.payload.kind !== "browser.access") {
     return <ActionNote alert>This Browser Request is invalid.</ActionNote>;
   }
-  const view: BrowserAccessView =
-    request.payload.kind === "browser.profile.save"
-      ? {
-          kind: "save",
-          reason: request.payload.reason,
-          workspaceName: workspaceName(snapshot.workspaces, request.targetWorkspaceId),
-        }
-      : {
-          kind: "pending",
-          profiles: snapshot.browserProfiles,
-          grantedProfileIds: snapshot.browserProfileGrants
-            .filter((grant) => grant.workspaceId === request.targetWorkspaceId)
-            .map((grant) => grant.profileId),
-          workspaceName: workspaceName(snapshot.workspaces, request.targetWorkspaceId),
-        };
+  const view: BrowserAccessView = {
+    kind: "pending",
+    profiles: snapshot.browserProfiles,
+    grantedProfileIds: snapshot.browserProfileGrants
+      .filter((grant) => grant.workspaceId === request.targetWorkspaceId)
+      .map((grant) => grant.profileId),
+    workspaceName: workspaceName(snapshot.workspaces, request.targetWorkspaceId),
+  };
 
   return (
     <>
@@ -153,40 +124,6 @@ export function BrowserAccessBody({
   readonly selection: BrowserAccessSelection | null;
   readonly view: BrowserAccessView;
 }) {
-  if (view.kind === "save") {
-    return (
-      <>
-        <ActionNote>{browserProfileSavePrompt(view.workspaceName)}</ActionNote>
-        <ActionNote>{view.reason}</ActionNote>
-        <label className="action-field">
-          <span>Profile name</span>
-          <input
-            className="text-input browser-profile-name"
-            title={name}
-            disabled={pending}
-            maxLength={120}
-            onChange={(event) => onChangeName(event.target.value)}
-            placeholder="New browser profile"
-            value={name}
-          />
-        </label>
-        <div className="action-buttons">
-          <button className="btn" disabled={pending} onClick={onDecline} type="button">
-            Not now
-          </button>
-          <button
-            className="btn btn--primary"
-            disabled={pending || name.trim().length === 0}
-            onClick={onGrant}
-            type="button"
-          >
-            {pending ? "Saving…" : "Save profile"}
-          </button>
-        </div>
-      </>
-    );
-  }
-
   const grantable = browserAccessGrantable(selection, name, view.profiles);
   const alreadyGranted =
     selection?.kind === "existing" && view.grantedProfileIds.includes(selection.profileId);

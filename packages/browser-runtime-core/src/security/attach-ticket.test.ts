@@ -1,12 +1,8 @@
-import { LocalProfileBindingSchema } from "@opensteer/protocol";
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type {
-  BrowserAttachTicketClaims,
-  BrowserPreparationTicketClaims,
-} from "@opensteer/protocol";
+import type { BrowserAttachTicketClaims } from "@opensteer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { BrowserRuntimeError } from "../errors.js";
 import { validClaims } from "../test-support/fakes.js";
@@ -26,48 +22,6 @@ afterEach(async () => {
 });
 
 describe("Ed25519AttachTicketVerifier", () => {
-  it("rejects preparation tickets at attach and shares durable replay protection", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const { verifier } = await createVerifier({ resolvePublicKey: () => keys.publicKey });
-    const c = validClaims();
-    const identity = {
-      kind: "profile-local" as const,
-      binding: LocalProfileBindingSchema.parse({
-        version: 1,
-        engine: "chromium",
-        deploymentId: "dep_11111111-1111-4111-8111-111111111111",
-        profileId: "bpr_11111111-1111-4111-8111-111111111111",
-        runnerId: "rnr_11111111-1111-4111-8111-111111111111",
-        storageInstanceId: "11111111-1111-4111-8111-111111111111",
-        bindingId: "11111111-1111-4111-8111-111111111111",
-      }),
-    };
-    const signed = ticket(
-      {
-        audience: c.audience,
-        purpose: "profile-prepare",
-        identity,
-        runtimeId: c.runtimeId,
-        subject: c.subject,
-        issuedAt: c.issuedAt,
-        expiresAt: c.expiresAt,
-        nonce: c.nonce,
-      },
-      keys.privateKey,
-      { alg: "EdDSA", kid: "host-key-1", typ: "opensteer-browser-prepare+jwt" },
-    );
-    await expect(verifier.verify(signed, expectation())).rejects.toThrow(/header/);
-    await expect(verifier.verifyPreparation(signed, expectation())).resolves.toMatchObject({
-      purpose: "profile-prepare",
-      identity,
-    });
-    await expect(verifier.verifyPreparation(signed, expectation())).rejects.toThrow(
-      /already been used/,
-    );
-    await expect(
-      verifier.verifyPreparation(ticket(c, keys.privateKey), expectation()),
-    ).rejects.toThrow(/header/);
-  });
   it("verifies Host-signed claims for the expected runtime", async () => {
     const keys = generateKeyPairSync("ed25519");
     const { verifier } = await createVerifier({
@@ -426,7 +380,7 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 function ticket(
-  claims: BrowserAttachTicketClaims | BrowserPreparationTicketClaims,
+  claims: BrowserAttachTicketClaims,
   privateKey: KeyObject,
   header: Record<string, unknown> = {
     alg: "EdDSA",

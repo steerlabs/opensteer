@@ -23,25 +23,12 @@ import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
  * 6. Chromium's Log diagnostics reach the agent: a blocked CORS fetch quotes
  *    the response header the page's fetch never sees.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { app, WebContentsView, type WebContents } from "electron";
 import {
   agentCdpAllowlist,
   ExecutionContextInventory,
   SessionCdpRouter,
   type CdpParameters,
 } from "@opensteer/browser-core";
-import {
-  BrowserAttachTicketClaimsSchema,
-  BrowserSessionIdSchema,
-  type BrowserServerMessage,
-} from "@opensteer/protocol";
 import {
   BrowserController,
   HostSignIns,
@@ -52,6 +39,19 @@ import {
   type BrowserPage,
   type CdpSession,
 } from "@opensteer/browser-runtime-core";
+import {
+  BrowserAttachTicketClaimsSchema,
+  BrowserSessionIdSchema,
+  type BrowserServerMessage,
+} from "@opensteer/protocol";
+import { app, WebContentsView, type WebContents } from "electron";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 
 const smokeDownloads = smokeDesktopDownloads();
@@ -174,7 +174,7 @@ async function run(): Promise<void> {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000301",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000301"),
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+    storage: { kind: "guest" },
   } satisfies BrowserLaunchRequest;
   const launcher = new ElectronBrowserLauncher({
     downloads: smokeDownloads,
@@ -240,6 +240,9 @@ async function run(): Promise<void> {
   const controller = new BrowserController({
     cdpRouter: router,
     claims: BrowserAttachTicketClaimsSchema.parse({
+      operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+      remainingBudgetMs: 18_000,
+      wireVersion: 1,
       access: "full-control",
       audience: "opensteer-browser-runtime",
       expiresAt: "2030-01-01T00:05:00.000Z",
@@ -250,7 +253,6 @@ async function run(): Promise<void> {
       sessionId: request.sessionId,
       subject: "electron-boundary-smoke",
     }),
-    exportSnapshot: () => browser.exportSnapshot(),
     files,
     ledger,
     replaceSiteCookies: (site, cookies, deadline) =>

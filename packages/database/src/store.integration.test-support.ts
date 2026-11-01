@@ -1,4 +1,3 @@
-import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import {
   createChannelId,
   slackChannelProviderManifest,
@@ -8,25 +7,25 @@ import {
   type ChannelProviderManifest,
 } from "@opensteer/channel-core";
 import {
-  IntegrationDefinitionSchema,
-  integrationDefinitionSummary,
-} from "@opensteer/integration-core";
-import {
+  createId,
   HarnessIdSchema,
-  ThreadAccessModeSchema,
   ModelSelectionSchema,
   PendingRequestSchema,
   RunnerIdSchema,
+  ThreadAccessModeSchema,
   ThreadIdSchema,
-  createId,
-  type Workspace,
   type EnvironmentId,
   type HarnessInstanceId,
+  type RequestId,
   type RunId,
   type RunnerId,
-  type RequestId,
   type UserId,
+  type Workspace,
 } from "@opensteer/core";
+import {
+  IntegrationDefinitionSchema,
+  integrationDefinitionSummary,
+} from "@opensteer/integration-core";
 import {
   HarnessInstanceCatalogSchema,
   type PendingAgentEvent,
@@ -34,9 +33,9 @@ import {
   type RunnerModuleName,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { describe, expect, it } from "vitest";
+import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { appendFileSync } from "node:fs";
-import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
+import { describe, expect, it } from "vitest";
 import {
   ChannelIngressDeferredError,
   ChannelStore,
@@ -44,6 +43,7 @@ import {
   OpensteerStore,
   TriggerStore,
 } from "./index.js";
+import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
 
 export const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 
@@ -451,7 +451,7 @@ export async function createStoreFixture() {
         capabilities: [],
         modules: {
           browser: {
-            profileSnapshotVersion: 2,
+            wireVersion: 2,
             runtimeId: name.toLowerCase().replaceAll(" ", "-"),
           },
         },

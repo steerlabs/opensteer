@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import {
   AgentToolNameSchema,
-  legacyBrowserProfileSaveTool,
   legacyBrowserSignInTool,
 } from "../packages/agent-tools/src/catalog.js";
 import {
@@ -12,11 +11,7 @@ import {
 // Failure mode: a tool added to the catalog reaches a person's transcript as
 // its own name ("Browser tab write") with its first argument beside it.
 it("reads every Opensteer tool as what it did, never by its name", () => {
-  const names = [
-    ...AgentToolNameSchema.options,
-    legacyBrowserSignInTool.name,
-    legacyBrowserProfileSaveTool.name,
-  ];
+  const names = [...AgentToolNameSchema.options, legacyBrowserSignInTool.name];
   for (const name of names) {
     const presentation = toolPresentation({
       arguments: {},

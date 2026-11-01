@@ -1,16 +1,12 @@
 import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
-import type { PageSize } from "./surface-ledger.js";
-import type {
-  BrowserCookie,
-  BrowserProfileSnapshot,
-  BrowserOriginCaptureFailure,
-} from "@opensteer/browser-profile/snapshot";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import type {
   BrowserCaptureDescriptor,
   BrowserEngine,
   BrowserSessionId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
+import type { PageSize } from "./surface-ledger.js";
 
 export interface CdpSession extends CdpChannel {
   /** Keeps native compositing demanded across an atomic screencast restart. */
@@ -56,13 +52,8 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
-export interface BrowserPageNavigation {
-  /** Submits navigation synchronously and observes its completion/errors separately. */
-  submitNavigation(url: string): void;
-}
-
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
-export interface BrowserPage extends BrowserPageNavigation {
+export interface BrowserPage {
   readonly capture?: PageCapturePort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
@@ -120,22 +111,10 @@ export interface BrowserContext {
 export type BrowserPartitionKey = `profile:${string}` | `session:${string}`;
 
 export type BrowserLaunchStorage =
-  | { kind: "guest" }
-  | { kind: "legacy"; snapshot: BrowserProfileSnapshot }
-  | { kind: "local"; binding: LocalProfileBinding; directory: string };
-
-export interface NativeProfileConversionEngine {
-  importAndFlush(input: {
-    directory: string;
-    binding: LocalProfileBinding;
-    snapshot: BrowserProfileSnapshot;
-    signal: AbortSignal;
-  }): Promise<void>;
-}
+  { kind: "guest" } | { kind: "local"; binding: LocalProfileBinding; directory: string };
 
 export interface BrowserLaunchRequest {
-  /** Launch with no eager user page and keep network admission dormant. */
-  preparation?: boolean;
+  remainingBudgetMs?: number;
   authenticator?: import("../passkeys/authenticator.js").PasskeyAuthenticator;
   initialViewport: Viewport;
   partitionKey: BrowserPartitionKey;
@@ -183,19 +162,13 @@ export interface LaunchedBrowser {
   clipboard?: EngineClipboard;
   close(): Promise<void>;
   context: BrowserContext;
-  /** A partial capture reports rejected origins before returning usable state.
-   * Without an observer, a partial capture throws instead of claiming completeness. */
-  exportSnapshot(
-    onOriginFailure?: (failure: BrowserOriginCaptureFailure) => void,
-  ): Promise<BrowserProfileSnapshot>;
   offClose(listener: () => void): void;
   onClose(listener: () => void): void;
   /**
    * Makes the live context hold exactly `cookies` for `site`, in one cookie
    * write built by `siteCookieReplacementBatch`. Cookies outside the site's
    * scope are untouched. A local profile resolves only once the write, and any
-   * session cookies Opensteer keeps for it, are persisted; a legacy profile
-   * host persists the result at its checkpoint. Nothing is written once
+   * session cookies Opensteer keeps for it, are persisted. Nothing is written once
    * `deadline` has aborted.
    */
   replaceSiteCookies(
@@ -206,18 +179,8 @@ export interface LaunchedBrowser {
 }
 
 /** Engine support for profiles stored natively on this computer. */
-export interface LocalProfileEngine extends NativeProfileConversionEngine {
-  /**
-   * Conversion-only preparation closes its importer and never launches a host.
-   * Warm preparation requires page-free launch and separate ready/admit operations.
-   * Electron must await mirror restoration in ready(), leave the Session gate
-   * dormant (cancel requests, never queue them), and open it only on admit().
-   * Preserve synthetic conversion helpers; Network Service recovery must restore
-   * the previous prepared/admitted mode. A prepared launch never eagerly creates
-   * a user page. Revocation retires controllers and fences the retained Session
-   * without deleting its native storage.
-   */
-  readonly preparation?: 1 | "conversion";
+export interface LocalProfileEngine {
+  createFiles(directory: string, binding: LocalProfileBinding, signal: AbortSignal): Promise<void>;
   readonly engine: BrowserEngine;
   /**
    * Gives up the engine's hold on a local profile directory so it can be erased.

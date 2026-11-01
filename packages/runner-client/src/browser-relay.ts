@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   type BrowserBridgeAttached,
   type ProtocolError,
@@ -13,6 +12,7 @@ import {
   type BrowserChannelId,
   type HostToBrowserRelayMessage,
 } from "@opensteer/protocol/browser-relay";
+import { randomUUID } from "node:crypto";
 import {
   BrowserRelayError,
   LocalBrowserRuntimeBridge,
@@ -59,19 +59,21 @@ export class BrowserModuleRelay {
 
   async attach(stream: RunnerModuleStream): Promise<void> {
     this.#stream = stream;
-    this.#inventoryComplete = stream.localProfiles !== 1;
+    if (stream.browserWireVersion !== 1)
+      throw new BrowserRelayError("Update this Host to use the current browser runtime contract.");
+    const capabilities = await this.#bridge.capabilities();
+    if (capabilities.wireVersion !== 1)
+      throw new BrowserRelayError(
+        "Update the Browser Runtime on this computer. The current native browser contract is required.",
+      );
+    this.#inventoryComplete = !capabilities.localProfileStorage;
     this.#bridge.setPasskeysEnabled(stream.passkeys === 1);
-    this.#bridge.setNegotiation({
-      ...(stream.localProfiles === 1
-        ? { localProfiles: 1, ...(stream.profilePrepare === 1 ? { profilePrepare: 1 } : {}) }
-        : {}),
-      ...(stream.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
-    });
+
     if (!stream.browserAttachPublicKeys) {
       throw new BrowserRelayError("The Host did not provide Browser Runtime attach keys.");
     }
     this.#bridge.setAttachPublicKeys(stream.browserAttachPublicKeys);
-    if (stream.localProfiles === 1) {
+    if (capabilities.localProfileStorage) {
       const inventory = await this.#bridge.localProfileInventory();
       for (let offset = 0; offset < inventory.profiles.length || offset === 0; offset += 128) {
         if (this.#stream !== stream)
@@ -96,7 +98,6 @@ export class BrowserModuleRelay {
 
   detach(): void {
     this.#bridge.setPasskeysEnabled(false);
-    this.#bridge.setNegotiation({});
     this.#stream = undefined;
     this.#capability = undefined;
     this.#authority = Symbol();
@@ -109,7 +110,7 @@ export class BrowserModuleRelay {
     if (isBinary)
       throw new BrowserRelayError("The browser module stream expects JSON from the Host.");
     const stream = this.#requireStream();
-    const message = createHostToBrowserRelayMessageSchema(stream).parse(
+    const message = createHostToBrowserRelayMessageSchema().parse(
       JSON.parse(frame.toString("utf8")),
     );
     if (
@@ -145,11 +146,7 @@ export class BrowserModuleRelay {
     };
     // Process start/import never occupies the auxiliary stream's ordered input
     // dispatcher. Channel registration happens synchronously before the await.
-    if (
-      message.type === "browser.attach" ||
-      message.type === "browser.profile.prepare" ||
-      message.type === "browser.profile.delete"
-    ) {
+    if (message.type === "browser.attach" || message.type === "browser.profile.delete") {
       void handle().catch(() => undefined);
       return;
     }
@@ -210,7 +207,6 @@ export class BrowserModuleRelay {
           type: "browser.health",
         });
         return;
-      case "browser.profile.prepare":
       case "browser.attach": {
         if (!this.#inventoryComplete)
           throw new BrowserRelayError("Local browser profile inventory has not completed.");
@@ -233,13 +229,12 @@ export class BrowserModuleRelay {
         };
         this.#channels.set(message.channelId, channel);
         const authority = this.#authority;
-        let attached: BrowserBridgeAttached & { retained?: boolean };
+        let attached: BrowserBridgeAttached;
         try {
           attached = await this.#bridge.attach(
             message.channelId,
-            message.type === "browser.attach" ? message.attachTicket : message.preparationTicket,
+            message.attachTicket,
             this.#sink(channel),
-            message.type === "browser.profile.prepare",
           );
           if (
             this.#stream !== stream ||
@@ -261,15 +256,8 @@ export class BrowserModuleRelay {
           capability: message.capability,
           channelId: message.channelId,
           requestId: message.requestId,
-          type: message.type === "browser.attach" ? "browser.attached" : "browser.profile.prepared",
-          ...(message.type === "browser.profile.prepare"
-            ? { retained: attached.retained === true }
-            : {}),
-          ...(message.type === "browser.attach" &&
-          stream.initialNavigationVersion === 1 &&
-          attached.initialPage
-            ? { initialPage: attached.initialPage }
-            : {}),
+          type: "browser.attached",
+          ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
         });
         return;
       }

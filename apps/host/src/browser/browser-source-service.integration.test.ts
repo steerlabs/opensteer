@@ -1,14 +1,6 @@
-import { EventEmitter } from "node:events";
-import {
-  createHash,
-  generateKeyPairSync,
-  randomBytes,
-  randomUUID,
-  sign,
-  verify,
-} from "node:crypto";
-import { createServer, request as httpRequest } from "node:http";
-import { connect as connectTcp } from "node:net";
+import websocket from "@fastify/websocket";
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
+import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
 import {
   createId,
   HarnessIdSchema,
@@ -20,50 +12,56 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import {
+  BrowserSourceStore,
+  createDatabase,
+  migrateToLatest,
+  OpensteerStore,
+} from "@opensteer/database";
+import { takeTransactionConflicts } from "@opensteer/database/test-support/lock-order";
+import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
+import {
   browserSourceChallengeBytes,
   browserSourcePairChallengeBytes,
   browserSourceRouteChangedBytes,
 } from "@opensteer/deployment-authority";
-import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
-import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
-import type { BrowserCookie } from "@opensteer/browser-profile/snapshot";
-import {
-  browserSourceProtocolVersion,
-  type BrowserSourceStatus,
-} from "@opensteer/protocol/browser-sources";
 import type {
   BrowserClientMessage,
-  PasswordSignInAuthorityCommand,
-  PasswordSignInAuthorityResult,
-  PasswordSignInAuthorityEvent,
-  BrowserSessionId,
   LoginAuthorizationOutcome,
+  PasswordSignInAuthorityCommand,
+  PasswordSignInAuthorityEvent,
+  PasswordSignInAuthorityResult,
   PendingAgentEvent,
   RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
-  createDatabase,
-  migrateToLatest,
-  OpensteerStore,
-  BrowserSourceStore,
-} from "@opensteer/database";
-import { sql } from "kysely";
-import WebSocket, { WebSocketServer } from "ws";
+  browserSourceProtocolVersion,
+  type BrowserSourceStatus,
+} from "@opensteer/protocol/browser-sources";
 import Fastify from "fastify";
-import websocket from "@fastify/websocket";
+import { sql } from "kysely";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+  verify,
+} from "node:crypto";
+import { EventEmitter } from "node:events";
+import { createServer, request as httpRequest } from "node:http";
+import { connect as connectTcp } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserProfileVault } from "./profile-vault.js";
+import WebSocket, { WebSocketServer } from "ws";
+import { registerBrowserSourceWire } from "../server/browser-source-registration.js";
+import { normalizeHostError } from "../server/http-errors.js";
 import {
   BrowserService,
   type BrowserConsumerPeer,
   type BrowserRuntimeConnection,
 } from "./browser-service.js";
-import { BrowserAttachTicketSigner } from "./browser-ticket.js";
-import { takeTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import { BrowserSourceService } from "./browser-source-service.js";
+import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import { PasswordSignInService } from "./password-sign-in-service.js";
-import { registerBrowserSourceWire } from "../server/browser-source-registration.js";
-import { normalizeHostError } from "../server/http-errors.js";
 
 let reservedLoginRef = "lgn_" + "1".repeat(32);
 let reservedLoginExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
@@ -91,6 +89,7 @@ const integration = databaseUrl ? describe : describe.skip;
 class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnection {
   readyState: number = WebSocket.OPEN;
   readonly received: (BrowserClientMessage | PasswordSignInAuthorityCommand)[] = [];
+  readonly initialPage: BrowserRuntimeConnection["initialPage"];
   readonly passwordEvents = new EventEmitter();
   authorityConnected = true;
   hasPasswordAuthority = false;
@@ -108,7 +107,14 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
     super();
     const claims = JSON.parse(
       Buffer.from(ticket.split(".")[1] ?? "", "base64url").toString("utf8"),
-    ) as { sessionId: BrowserSessionId };
+    ) as import("@opensteer/protocol").BrowserAttachTicketClaims;
+    this.initialPage = claims.initialNavigation
+      ? {
+          operationKey: claims.initialNavigation.operationKey,
+          surfaceId: "page-1" as import("@opensteer/protocol").BrowserSurfaceId,
+          navigation: claims.initialNavigation.url ? "submitted" : "blank",
+        }
+      : undefined;
     queueMicrotask(() =>
       this.#reply({
         access: "full-control",
@@ -310,7 +316,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
   const store = new OpensteerStore(database);
   const sourceStore = new BrowserSourceStore(database);
-  const vault = new BrowserProfileVault({ key: randomBytes(32), repository: store });
   const hostKey = generateKeyPairSync("ed25519");
   let currentRoute: PersonalHostAccessRouteEnvelope | null = null;
   let routeFault: Error | null = null;
@@ -372,8 +377,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     connectTimeoutMs: 2_000,
     onSessionsChanged: () => {},
     onWorkspaceEvent: () => {},
-    profileStateBaseUrl: new URL(sourceOrigin),
-    profileVault: vault,
+    hostOrigin: new URL(sourceOrigin),
     repository: store,
     signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
     targetResolver: {
@@ -509,7 +513,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     service.close();
     passwords.close();
     await browser.close();
-    vault.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await database.destroy();
   });
@@ -2099,13 +2102,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         false,
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(attachment.handle(frame({ type: "state.export" }), false)).rejects.toMatchObject({
-      code: "forbidden",
-    });
     await attachment.handle(frame({ type: "navigation.reload" }), false);
     attachment.close();
     expect(connection.imports()).toHaveLength(2);
-    expect(connection.received.some(({ type }) => type === "state.export")).toBe(false);
+
     expect(connection.received.at(-1)).toEqual({ type: "navigation.reload" });
     await chrome.close();
   });

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-import { createId, type Deployment, type Workspace } from "@opensteer/core";
 import type { HostConfig } from "@opensteer/config";
+import { createId, type Deployment, type Workspace } from "@opensteer/core";
+import { describe, expect, it, vi } from "vitest";
 import {
   assertManagedDestructionConfig,
   destroyManagedDeploymentData,
@@ -166,7 +166,6 @@ function managedConfig(): HostConfig & { readonly account: NonNullable<HostConfi
     authSecret: "x".repeat(40),
     bindAddress: "0.0.0.0",
     browserRuntime: { attachKeyId: "host-browser-v1" },
-    browserProfileKeyPath: undefined,
     canonicalOrigin: new URL("https://managed.example.com"),
     credentialKeyPath: undefined,
     databaseUrl: "postgres://unused",

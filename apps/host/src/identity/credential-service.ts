@@ -1,15 +1,9 @@
-import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
-import { noFollowFlag } from "@opensteer/shared/privateFiles";
-import { isNodeError } from "@opensteer/shared/nodeError";
-import { randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { mkdir, open, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
 import {
   AesGcmCredentialVault,
   AesGcmSecretVault,
   StaticEncryptionKeyProvider,
 } from "@opensteer/access/host";
+import type { ChannelCredentialPurpose } from "@opensteer/channel-protocol";
 import {
   OpensteerError,
   createId,
@@ -17,9 +11,18 @@ import {
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import type { ChannelCredentialPurpose } from "@opensteer/channel-protocol";
 import type { OpensteerStore } from "@opensteer/database";
 import type { IntegrationConnectionId } from "@opensteer/integration-core";
+import { isNodeError } from "@opensteer/shared/nodeError";
+import {
+  noFollowFlag,
+  setPrivateDirectoryMode,
+  setPrivateFileMode,
+} from "@opensteer/shared/privateFiles";
+import { randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { mkdir, open, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 export async function loadOrCreateCredentialKey(options: {
   readonly dataDirectory: string;
@@ -29,18 +32,6 @@ export async function loadOrCreateCredentialKey(options: {
     dataDirectory: options.dataDirectory,
     fileName: "credential-v1.key",
     label: "Credential",
-    ...(options.keyPath ? { keyPath: options.keyPath } : {}),
-  });
-}
-
-export async function loadOrCreateBrowserProfileKey(options: {
-  readonly dataDirectory: string;
-  readonly keyPath?: string;
-}): Promise<Buffer> {
-  return loadOrCreateHostEncryptionKey({
-    dataDirectory: options.dataDirectory,
-    fileName: "browser-profile-v1.key",
-    label: "Browser profile",
     ...(options.keyPath ? { keyPath: options.keyPath } : {}),
   });
 }

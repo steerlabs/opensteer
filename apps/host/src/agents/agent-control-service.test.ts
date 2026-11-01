@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   createId,
   HarnessIdSchema,
@@ -17,19 +16,20 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  createBrowserSessionId,
   AgentControlRequestSchema,
+  createBrowserSessionId,
   HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
 } from "@opensteer/protocol";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import type { BrowserService } from "../browser/browser-service.js";
 import {
   AgentControlService,
   type AgentControlTokenService,
   type AgentTriggerManager,
   type AgentWorkspaceMountService,
 } from "./agent-control-service.js";
-import type { BrowserService } from "../browser/browser-service.js";
 
 const now = "2026-08-09T09:00:00.000Z";
 const ownerId = createId("user");
@@ -1120,93 +1120,6 @@ describe("AgentControlService", () => {
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
 
-  it("opens fresh Browser Sessions and brokers profile saves for Main and Workspace", async () => {
-    const sessionId = createBrowserSessionId();
-    const durableRequestId = createId("request");
-    const freshSummary = {
-      access: "full-control" as const,
-      activeAttachmentCount: 1,
-      attached: true,
-      createdAt: now,
-      id: sessionId,
-      origin: "agent" as const,
-      placement: { kind: "runner" as const, runnerId: createId("runner") },
-      profileId: null,
-      profileName: null,
-      runtimeId: "hosted-browser-1",
-      state: "ready" as const,
-      updatedAt: now,
-      workspaceId,
-    };
-    for (const capabilityProfileId of ["main", "workspace"] as const) {
-      const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-        capabilityProfileId,
-      });
-      const openAgentSession = vi.fn(async () => ({ session: freshSummary, wasExisting: false }));
-      const requestSaveProfile = vi.fn(async () => ({
-        kind: "browser.profile.save" as const,
-        replayed: false,
-        requestId: durableRequestId,
-        status: "pending" as const,
-      }));
-      const { claims, service } = makeService({
-        browser: { openAgentSession, requestSaveProfile },
-        capabilityProfileId,
-        commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-        messages: [],
-        threads: [current],
-      });
-
-      await expect(
-        service.handle("run-token", {
-          fresh: true,
-          requestId: crypto.randomUUID(),
-          type: "browser.session.open",
-        }),
-      ).resolves.toMatchObject({
-        session: { profileId: null, profileName: null },
-        type: "browser.session.open.result",
-      });
-      expect(openAgentSession).toHaveBeenCalledWith(
-        expect.objectContaining({ environmentId, fresh: true }),
-      );
-      expect(openAgentSession).not.toHaveBeenCalledWith(
-        expect.objectContaining({ profileId: expect.anything() }),
-      );
-
-      const saveRequestId = crypto.randomUUID();
-      await expect(
-        service.handle("run-token", {
-          reason: "Reuse this portal login next time",
-          requestId: saveRequestId,
-          sessionId,
-          suggestedName: "Client portal",
-          type: "browser.profile.save",
-        }),
-      ).resolves.toEqual({
-        result: {
-          kind: "browser.profile.save",
-          replayed: false,
-          requestId: durableRequestId,
-          status: "pending",
-        },
-        requestId: expect.any(String),
-        type: "browser.profile.save.result",
-      });
-      expect(requestSaveProfile).toHaveBeenCalledWith({
-        callId: saveRequestId,
-        originatingWorkspaceId: claims.workspaceId,
-        ownerId: claims.requestedBy,
-        reason: "Reuse this portal login next time",
-        runId: claims.runId,
-        sessionId,
-        suggestedName: "Client portal",
-        threadId: claims.threadId,
-        workspaceId: claims.workspaceId,
-      });
-    }
-  });
-
   it("carries a chosen browser machine through and refuses one this user cannot reach", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
       capabilityProfileId: "main",
@@ -1280,27 +1193,6 @@ describe("AgentControlService", () => {
         type: "browser.session.open",
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
-  });
-
-  it("keeps browser profile saves away from delegated and Trigger capability profiles", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Delegated", null, {
-      capabilityProfileId: "delegated",
-    });
-    const { service } = makeService({
-      capabilityProfileId: "delegated",
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [current],
-    });
-
-    await expect(
-      service.handle("run-token", {
-        reason: "Reuse this portal login next time",
-        requestId: crypto.randomUUID(),
-        sessionId: createBrowserSessionId(),
-        type: "browser.profile.save",
-      }),
-    ).rejects.toThrow("does not allow browser.profile.save");
   });
 
   it.each(["main", "workspace"] as const)(
@@ -1645,13 +1537,11 @@ function makeService(options: {
     Pick<
       BrowserService,
       | "createProfile"
-      | "profileSiteData"
       | "closeAgentSession"
       | "listAgentSessions"
       | "listGrantedProfiles"
       | "openAgentSession"
       | "requestAccess"
-      | "requestSaveProfile"
     >
   >;
   capabilityProfileId?: Thread["capabilityProfileId"];
@@ -2042,13 +1932,11 @@ function makeService(options: {
       machineFullDiskAccess: options.machineFullDiskAccess ?? { request: vi.fn() },
       browser: {
         createProfile: options.browser?.createProfile ?? unexpectedBrowserRequest,
-        profileSiteData: options.browser?.profileSiteData ?? unexpectedBrowserRequest,
         closeAgentSession: options.browser?.closeAgentSession ?? unexpectedBrowserRequest,
         listAgentSessions: options.browser?.listAgentSessions ?? unexpectedBrowserRequest,
         listGrantedProfiles: options.browser?.listGrantedProfiles ?? unexpectedBrowserRequest,
         openAgentSession: options.browser?.openAgentSession ?? unexpectedBrowserRequest,
         requestAccess: options.browser?.requestAccess ?? unexpectedBrowserRequest,
-        requestSaveProfile: options.browser?.requestSaveProfile ?? unexpectedBrowserRequest,
       },
       canRunHarness: (_environment, driverKind) =>
         options.unavailableHarnessId === undefined ||

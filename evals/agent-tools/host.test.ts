@@ -8,10 +8,10 @@ import { expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { startFakeHost } from "./host.js";
 
-it("returns a converted-profile update refusal as an MCP tool error after validation", async () => {
+it("returns a native runtime update refusal as an MCP tool error after validation", async () => {
   const testCase = parseCases(
     await readFile(new URL("./cases/browser.ndjson", import.meta.url), "utf8"),
-  ).find((testCase) => testCase.id === "converted-profile-update-refusal")!;
+  ).find((testCase) => testCase.id === "native-runtime-update-refusal")!;
   const host = await startFakeHost(testCase);
   const client = new Client({ name: "eval-profile-refusal", version: "1" });
   try {

@@ -1,21 +1,21 @@
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createId } from "@opensteer/core";
 import type { HostConfig } from "@opensteer/config";
+import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   BrowserServerMessageSchema,
   decodeBrowserFrameEnvelope,
   hostApiVersionHeader,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { sql } from "kysely";
-import WebSocket from "ws";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+import WebSocket from "ws";
 import { startPortableFsManagerFake as startPortableFsController } from "../runtime/portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
@@ -39,7 +39,6 @@ integration("Host browser broker vertical", () => {
         credential_vault_canaries,
         browser_profile_grants,
         browser_sessions,
-        browser_profile_revisions,
         browser_profiles,
         credentials,
         workspace_events,
@@ -81,7 +80,6 @@ integration("Host browser broker vertical", () => {
       bindAddress: "127.0.0.1",
       canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
       browserRuntime: { attachKeyId: "host-integration" },
-      browserProfileKeyPath: undefined,
       credentialKeyPath: undefined,
       databaseUrl: databaseUrl ?? "postgres://unconfigured",
       dataDirectory,
@@ -191,34 +189,6 @@ integration("Host browser broker vertical", () => {
       },
       { headers: sessionHeaders },
     );
-    const targets = await browserRuntime.nextCommand();
-    browserRuntime.sendServer({
-      type: "cdp.result",
-      requestId: targets.requestId,
-      result: { targetInfos: [{ targetId: "target-integration", type: "page" }] },
-    });
-    const attach = await browserRuntime.nextCommand();
-    browserRuntime.sendServer({
-      type: "cdp.result",
-      requestId: attach.requestId,
-      result: { sessionId: "cdp-integration" },
-    });
-    const navigation = await browserRuntime.nextCommand();
-    expect(navigation).toMatchObject({
-      type: "cdp.command",
-      command: {
-        method: "Page.navigate",
-        parameters: { url: "https://example.com/" },
-        sessionId: "cdp-integration",
-      },
-    });
-    browserRuntime.sendServer({
-      type: "cdp.result",
-      requestId: navigation.requestId,
-      result: { frameId: "frame-integration" },
-    });
-    const detach = await browserRuntime.nextCommand();
-    browserRuntime.sendServer({ type: "cdp.result", requestId: detach.requestId, result: {} });
     const started = await starting;
     if (started.type !== "browser.session.start") throw new Error("Session command mismatch.");
     expect(started.session).toMatchObject({
@@ -229,28 +199,8 @@ integration("Host browser broker vertical", () => {
     });
     expect(browserRuntime.connectionCount()).toBe(1);
     const profileClaims = browserRuntime.lastClaims();
-    if (profileClaims?.identity.kind !== "profile") {
-      throw new Error("Browser Runtime did not retain its profile attach claims.");
-    }
-    expect(profileClaims.navigationVersion).toBe(1);
-    const { profileLeaseToken, profileStateUrl } = profileClaims.identity;
-    const loadedProfile = await jsonFetch(profileStateUrl, {
-      headers: authorization(profileLeaseToken),
-    });
-    expect(loadedProfile).toEqual({ revision: 0, snapshot: { cookies: [], origins: [] } });
-    const committedProfile = await jsonFetch(profileStateUrl, {
-      body: JSON.stringify({
-        expectedRevision: 0,
-        snapshot: { cookies: [], origins: [] },
-      }),
-      headers: {
-        ...authorization(profileLeaseToken),
-        "content-type": "application/json",
-      },
-      method: "PUT",
-    });
-    expect(committedProfile).toMatchObject({ revision: 1 });
-
+    expect(profileClaims?.identity.kind).toBe("profile-local");
+    expect(profileClaims?.initialNavigation).toMatchObject({ url: "https://example.com/" });
     await expectUpgradeRejected(
       `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${started.session.id}/connect`,
       { cookie, origin: "http://evil.example" },
@@ -440,26 +390,6 @@ integration("Host browser broker vertical", () => {
     expect(freshSession.session).toMatchObject({ profileId: null, state: "ready" });
     expect(browserRuntime.lastClaims()?.identity).toEqual({ kind: "fresh" });
 
-    const saving = testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "browser-save-profile-1",
-        input: { name: "Saved login" },
-        sessionId: freshSession.session.id,
-        type: "browser.session.profile.save",
-      },
-      { headers: sessionHeaders },
-    );
-    await expect(browserRuntime.nextCommand()).resolves.toMatchObject({ type: "state.export" });
-    browserRuntime.sendServer({
-      snapshot: { cookies: [], origins: [] },
-      type: "state.exported",
-    });
-    await expect(saving).resolves.toMatchObject({
-      profile: { name: "Saved login", revision: 1 },
-    });
-
     const stopped = await testRpcRequest(
       origin,
       "commands.dispatch",
@@ -471,17 +401,6 @@ integration("Host browser broker vertical", () => {
       { headers: sessionHeaders },
     );
     expect(stopped.status).toBe(200);
-    expect(
-      await fetch(profileStateUrl, {
-        headers: authorization(profileLeaseToken),
-      }),
-    ).toMatchObject({ status: 200 });
-    expect(
-      await fetch(profileStateUrl, {
-        headers: authorization("wrong-profile-lease"),
-      }),
-    ).toMatchObject({ status: 403 });
-
     const revocationViewer = await openBrowserSocket(
       `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${freshSession.session.id}/connect?mode=watch`,
       { cookie, origin },
@@ -666,15 +585,4 @@ function browserFrame(frameId: number): Buffer {
   header.copy(frame, 4);
   image.copy(frame, 4 + header.byteLength);
   return frame;
-}
-
-async function jsonFetch(url: string, init?: RequestInit): Promise<any> {
-  const response = await fetch(url, init);
-  const body = (await response.json()) as any;
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
-  return body;
-}
-
-function authorization(token: string): Record<string, string> {
-  return { authorization: `Bearer ${token}` };
 }

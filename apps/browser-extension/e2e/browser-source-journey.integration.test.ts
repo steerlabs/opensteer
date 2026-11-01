@@ -31,41 +31,39 @@
  * The artifact directory (OPENSTEER_BROWSER_SOURCE_E2E_ARTIFACT_DIR) receives
  * `result.json` with each step's outcome and timing, and screenshots.
  */
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  createServer as createHttpsServer,
-  type Server as HttpsServer,
-  type ServerOptions,
-} from "node:https";
-import type { IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { sql } from "kysely";
-import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
-import WebSocket from "ws";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { HostConfig } from "../../../packages/config/src/index.js";
-import { createDatabase, migrateToLatest } from "../../../packages/database/src/index.js";
-import {
-  decodeBrowserFrameEnvelope,
   BrowserServerMessageSchema,
+  decodeBrowserFrameEnvelope,
   hostApiVersionHeader,
   personalWebBuildId,
   type BrowserSurface,
   type HostToRunnerMessage,
   type RunnerConnectionFence,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   AgentBrowserSignInResultSchema,
   opensteerChromeExtensionId,
 } from "@opensteer/protocol/browser-sources";
+import { sql } from "kysely";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { IncomingMessage } from "node:http";
+import {
+  createServer as createHttpsServer,
+  type Server as HttpsServer,
+  type ServerOptions,
+} from "node:https";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
+import type { HostConfig } from "../../../packages/config/src/index.js";
+import { createDatabase, migrateToLatest } from "../../../packages/database/src/index.js";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
-import { createHostRuntime, type HostRuntime } from "../../host/src/runtime/runtime.js";
-import { startPortableFsManagerFake } from "../../host/src/runtime/portablefs-manager.test-support.js";
 import {
   connectCallerMachine,
   enrollmentToken,
@@ -73,6 +71,8 @@ import {
   type CallerMachine,
   type MachineAccessHost,
 } from "../../host/src/runtime/machine-access.test-support.js";
+import { startPortableFsManagerFake } from "../../host/src/runtime/portablefs-manager.test-support.js";
+import { createHostRuntime, type HostRuntime } from "../../host/src/runtime/runtime.js";
 import { testRpcData } from "../../host/src/server/test-host-api-request.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
@@ -1009,7 +1009,6 @@ function hostConfig(input: {
     acceptsExternalRunners: true,
     authSecret: "chrome-sign-ins-e2e-auth-secret".padEnd(48, "x"),
     bindAddress: "127.0.0.1",
-    browserProfileKeyPath: undefined,
     browserRuntime: { attachKeyId: "chrome-sign-ins-e2e" },
     canonicalOrigin: origin,
     credentialKeyPath: undefined,

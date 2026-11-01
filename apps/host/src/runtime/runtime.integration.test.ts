@@ -1,32 +1,4 @@
-import { EventEmitter } from "node:events";
-import {
-  runnerReady,
-  type RunnerReadinessSnapshot,
-} from "../agents/runner-readiness.test-support.js";
-import { gate } from "@opensteer/shared/test-support/observation";
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { ManualClock } from "@opensteer/shared/test-support/clock";
-import {
-  advanceExecutionClock,
-  executionLeaseExpiresAt,
-} from "../agents/execution-clock.test-support.js";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  AgentEventSchema,
-  HarnessIdSchema,
-  ThreadAccessModeSchema,
-  ModelSelectionSchema,
-  WorkspaceIdSchema,
-  createId,
-  zeroSequence,
-  type MessageId,
-  type EnvironmentId,
-  type WorkspaceIconName,
-  EnvironmentIdSchema,
-} from "@opensteer/core";
+import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import type { HostConfig } from "@opensteer/config";
 import {
   ControlPlaneAccountIdSchema,
@@ -34,18 +6,35 @@ import {
   PublishHostAuthorityRequestSchema,
   personalHostAccessRouteEnvelopeSha256,
 } from "@opensteer/control-plane-protocol";
-import { slackChannelProviderManifest } from "@opensteer/channel-core";
+import {
+  AgentEventSchema,
+  EnvironmentIdSchema,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  ThreadAccessModeSchema,
+  WorkspaceIdSchema,
+  createId,
+  zeroSequence,
+  type EnvironmentId,
+  type MessageId,
+  type WorkspaceIconName,
+} from "@opensteer/core";
+import {
+  AccountDirectoryStore,
+  OpensteerStore,
+  createDatabase,
+  migrateToLatest,
+} from "@opensteer/database";
 import {
   HostDescriptorSchema,
   hostApiVersion,
   hostKeyFingerprint,
 } from "@opensteer/deployment-authority";
 import {
-  createBrowserSessionId,
-  PersonalHostAccessRouteEnvelopeSchema,
-  PersonalRemoteAccessStatusSchema,
   HarnessInstanceCatalogSchema,
   PendingAgentEventSchema,
+  PersonalHostAccessRouteEnvelopeSchema,
+  PersonalRemoteAccessStatusSchema,
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
   RunnerBootIdSchema,
@@ -53,12 +42,13 @@ import {
   RunnerDescriptorSchema,
   RunnerEnrollmentCredentialSchema,
   SessionExchangeResponseSchema,
+  createBrowserSessionId,
+  hostApiVersionHeader,
   sessionExchangePath,
   type HostToRunnerMessage,
   type RunnerAuxiliaryChallenge,
   type RunnerConnectionFence,
   type RunnerDescriptor,
-  hostApiVersionHeader,
 } from "@opensteer/protocol";
 import {
   canonicalRunnerPublicKeyPem,
@@ -68,23 +58,33 @@ import {
   hashRunnerEnrollmentToken,
   runnerPublicKeyFingerprint,
 } from "@opensteer/runner-auth";
-import { exportJWK, SignJWT } from "jose";
+import { ManualClock } from "@opensteer/shared/test-support/clock";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { gate } from "@opensteer/shared/test-support/observation";
+import { SignJWT, exportJWK } from "jose";
 import { sql } from "kysely";
-import WebSocket from "ws";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  AccountDirectoryStore,
-  createDatabase,
-  migrateToLatest,
-  OpensteerStore,
-} from "@opensteer/database";
-import { createHostRuntime, ensureDefaultHarnesses, type HostRuntime } from "./runtime.js";
-import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
+import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
+import {
+  advanceExecutionClock,
+  executionLeaseExpiresAt,
+} from "../agents/execution-clock.test-support.js";
+import {
+  runnerReady,
+  type RunnerReadinessSnapshot,
+} from "../agents/runner-readiness.test-support.js";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
-import { startPortableFsManagerFake as startPortableFsController } from "./portablefs-manager.test-support.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { connectLocalWorkspaceRunner } from "../workspace/runner-local-workspace.test-support.js";
+import { startPortableFsManagerFake as startPortableFsController } from "./portablefs-manager.test-support.js";
+import { createHostRuntime, ensureDefaultHarnesses, type HostRuntime } from "./runtime.js";
 
 const portableFsTestCsrPem = `-----BEGIN CERTIFICATE REQUEST-----
 MIGOMEICAQAwDzENMAsGA1UEAwwEdGVzdDAqMAUGAytlcAMhAAYGrSfAi57mfReG
@@ -166,7 +166,6 @@ integration("Host vertical slice", () => {
         credential_vault_canaries,
         browser_profile_grants,
         browser_sessions,
-        browser_profile_revisions,
         browser_profiles,
         credentials,
         workspace_events,
@@ -1999,8 +1998,6 @@ integration("Host vertical slice", () => {
     const selectedBrowserId = createBrowserSessionId();
     await runtime.store.createBrowserSession({
       id: selectedBrowserId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
       origin: "workspace",
       placementKey: `runner:${runnerId}:browser`,
       profileId: null,
@@ -2015,11 +2012,23 @@ integration("Host vertical slice", () => {
       name: "Stranger's bank",
       ownerId: stranger,
     });
+    await runtime.store.database
+      .updateTable("browserProfiles")
+      .set({
+        storageState: "local",
+        storageBindingVersion: 1,
+        storageDeploymentId: sql`(select id from deployments limit 1)`,
+        storageRunnerId: runnerId,
+        storageInstanceId: randomUUID(),
+        storageBindingId: randomUUID(),
+        storageEngine: "chromium",
+        initialized: true,
+      })
+      .where("id", "=", strangerProfile.id)
+      .execute();
     const hiddenBrowserId = createBrowserSessionId();
     await runtime.store.createBrowserSession({
       id: hiddenBrowserId,
-      leaseGeneration: 1,
-      leaseTokenHash: "stranger-lease",
       origin: "workspace",
       placementKey: `runner:${runnerId}:browser`,
       profileId: strangerProfile.id,
@@ -2842,8 +2851,6 @@ integration("Host vertical slice", () => {
     const browserSessionId = createBrowserSessionId();
     await seedStore.createBrowserSession({
       id: browserSessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
       origin: "agent",
       placementKey: `runner:${runnerId}:restart-runtime`,
       profileId: null,
@@ -2855,28 +2862,6 @@ integration("Host vertical slice", () => {
       from: ["starting"],
       sessionId: browserSessionId,
       state: "ready",
-    });
-    const profileSaveRequest = await seedStore.requests.create({
-      callId: "restart-runtime-browser-profile-save",
-      kind: "browser.profile.save",
-      mode: "durable",
-      originatingRunId: admittedRun.id,
-      originatingThreadId: thread.id,
-      originatingWorkspaceId: workspace.id,
-      payload: {
-        kind: "browser.profile.save",
-        reason: "Keep this signed-in browser state",
-        sessionId: browserSessionId,
-        suggestedName: "Restarted profile",
-      },
-      presentation: {
-        kind: "external",
-        subject: { id: browserSessionId, kind: "browser-session" },
-        title: "Save browser profile",
-      },
-      requestedBy: ownerId,
-      requiredActor: "requester",
-      targetWorkspaceId: workspace.id,
     });
     const { thread: idleThread } = await seedStore.createThread({
       createdBy: ownerId,
@@ -2959,21 +2944,6 @@ integration("Host vertical slice", () => {
         .where("id", "=", browserSessionId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ state: "failed" });
-    await expect(runtime.store.requests.get(profileSaveRequest.request.id)).resolves.toMatchObject({
-      cancellationReason: "resource-deleted",
-      status: "cancelled",
-    });
-    await expect(
-      runtime.store.database
-        .selectFrom("workspaceEvents")
-        .select(["data", "type"])
-        .where("type", "=", "request.cancelled")
-        .where("runId", "=", admittedRun.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({
-      data: { reason: "resource-deleted", requestId: profileSaveRequest.request.id },
-      type: "request.cancelled",
-    });
     // The browser session is gone with the Host that held it, but the Run is
     // not: it keeps its lease and continues when its Runner reattaches.
     await expect(
@@ -3444,7 +3414,7 @@ integration("Host vertical slice", () => {
     const descriptor = RunnerDescriptorSchema.parse({
       bootId,
       capabilities: [],
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "relay-browser" } },
+      modules: { browser: { wireVersion: 1, runtimeId: "relay-browser" } },
       name: "Browser computer",
       runnerId,
       runnerKind: "local",
@@ -5046,7 +5016,6 @@ function testHostConfig(
     bindAddress: "127.0.0.1",
     canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
     browserRuntime: { attachKeyId: "host-browser-v1" },
-    browserProfileKeyPath: undefined,
     credentialKeyPath: undefined,
     databaseUrl: databaseUrl ?? "postgres://unconfigured",
     dataDirectory: hostDataDirectory,

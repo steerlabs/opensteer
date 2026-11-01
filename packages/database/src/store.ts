@@ -1,164 +1,74 @@
-import * as browserProfileStorageStore from "./browser-profile-storage-store.js";
-import { BrowserHistoryStore } from "./browser-history-store.js";
+import { type BrowserProfileAccess } from "@opensteer/browser-profile/grant";
+import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
-  publishPersonNotification,
-  type PersonNotificationInput,
-  type PersonNotificationResult,
-} from "./person-notification-store.js";
-import * as taskDone from "./task-done.js";
-import { drainPendingThreadStates } from "./thread-status.js";
-import * as runnerStore from "./runner-store.js";
-import * as browserSessionStore from "./browser-session-store.js";
-import * as commandStore from "./command-store.js";
-import * as workspaceStore from "./workspace-store.js";
-import * as workspaceMembershipStore from "./workspace-membership-store.js";
-import * as threadStore from "./thread-store.js";
-import * as executionRecovery from "./execution-recovery.js";
-import * as harnessStore from "./harness-store.js";
-import * as environmentStore from "./environment-store.js";
-import * as credentialStore from "./credential-store.js";
-import * as executionStore from "./execution-store.js";
-import * as snapshotStore from "./snapshot-store.js";
-import * as workspaceMountStore from "./workspace-mount-store.js";
-import * as machineStore from "./machine-store.js";
-import * as runnerEventStore from "./runner-event-store.js";
-import * as deploymentStore from "./deployment-store.js";
-import * as computerUseStore from "./computer-use-store.js";
-import { type Kysely } from "kysely";
-import { type DatabaseSchema, type CommandRow, type PendingCommandRow } from "./schema.js";
-import type { Clock } from "@opensteer/shared/clock";
-import {
-  type WorkspaceMembershipChangeListener,
-  type WorkspaceMembershipRecord,
-  type WorkspaceMemberRecord,
-  type WorkspaceInvitationRecord,
-  type SecurityEffectRecord,
-} from "./workspace-membership-store.js";
-import { type ChannelLinks, threadPathLinks } from "./store-primitives.js";
-import { RequestStore } from "./request-store.js";
-import { NotificationStateStore } from "./notification-state.js";
-import {
-  type PlaceContentPart,
-  type Deployment,
-  type DeploymentId,
-  type HostInstanceId,
-  type DeploymentShape,
   createId,
-  type UserId,
-  type WorkspaceId,
-  type WorkspaceInvitationId,
   type AgentEvent,
-  type SecurityEffectId,
-  type EnvironmentId,
-  type RunnerId,
-  type RequestId,
-  type RunId,
-  type ThreadId,
+  type AssignmentId,
+  type AssignmentSummary,
+  type AssignmentView,
+  type BrowserProfileGrantId,
   type BrowserProfileId,
   type CredentialId,
-  type BrowserProfileGrantId,
-  type HarnessInstanceId,
-  type ExecutionPreferences,
+  type Deployment,
+  type DeploymentId,
+  type DeploymentShape,
+  type EnvironmentId,
   type ExecutionChoice,
-  type Workspace,
-  type WorkspaceIconName,
-  type WorkspaceBacking,
-  type Thread,
-  type AssignmentId,
-  type AssignmentView,
-  type AssignmentSummary,
+  type ExecutionNode,
+  type ExecutionPreferences,
+  type GrantId,
+  type HarnessInstanceId,
+  type HostInstanceId,
+  type IntegrationCallSubject,
+  type Message,
+  type MessageId,
+  type ModelSelection,
+  type PlaceContentPart,
   type ProviderContinuationIdentity,
   type ProviderSessionId,
-  type ModelSelection,
-  type ThreadAccessMode,
-  type ThreadInputQueue,
-  type MessageId,
-  type Message,
-  type ExecutionNode,
+  type RequestId,
   type Run,
   type RunAttempt,
-  type ThreadExecutionBinding,
-  type IntegrationCallSubject,
+  type RunId,
+  type RunnerId,
+  type SecurityEffectId,
   type Sequence,
-  type GrantId,
+  type Thread,
+  type ThreadAccessMode,
+  type ThreadExecutionBinding,
+  type ThreadId,
+  type ThreadInputQueue,
+  type UserId,
+  type Workspace,
+  type WorkspaceBacking,
+  type WorkspaceIconName,
+  type WorkspaceId,
+  type WorkspaceInvitationId,
 } from "@opensteer/core";
-import { listRunNodes } from "./execution-nodes.js";
-import { listRunAttempts } from "./run-attempts.js";
-import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import {
-  type RunnerAuthenticationRecord,
-  type RunnerInventoryRecord,
-  type PendingRunnerEnrollmentRecord,
-  type RunnerEnrollmentIssuanceRecord,
-  type RunnerConnectionRecord,
-} from "./runner-store.js";
-import {
+  type BrowserSessionId,
   type BrowserSessionOpenerRecord,
   type BrowserSessionUsageProjection,
   type BrowserTabOpenBinding,
-  type BrowserSessionId,
-  type MachineAccessPolicy,
-  type ShellSessionId,
-  type ShellCloseReason,
-  type ShellAuditEvent,
-  type ShellSessionSummary,
-  type RunnerModuleName,
-  type RunnerDescriptor,
-  type HostedBrowserSessionState,
-  type HarnessInstanceCatalog,
-  type WorkspaceCatalogPage,
   type DurableWindow,
+  type HarnessInstanceCatalog,
+  type HostedBrowserSessionState,
+  type MachineAccessPolicy,
   type PendingAgentEvent,
-  type WorkspaceSnapshot,
+  type RunnerDescriptor,
+  type RunnerModuleName,
+  type ShellAuditEvent,
+  type ShellCloseReason,
+  type ShellSessionId,
+  type ShellSessionSummary,
   type TaskPage,
-  type ThreadMessagePage,
   type ThreadEventPage,
+  type ThreadMessagePage,
+  type WorkspaceCatalogPage,
+  type WorkspaceSnapshot,
 } from "@opensteer/protocol";
-import { type IntegrationConnectionId, type ChannelTransportKind } from "@opensteer/channel-core";
-import { type MachineOwnershipRecord } from "./machine-ownership.js";
-import {
-  type ShellSessionRecord,
-  type MachineAccessTargetRecord,
-  type ReachableMachineRecord,
-  type ShellSessionHistoryRecord,
-} from "./machine-store.js";
-import {
-  type BrowserProfileRecord,
-  type BrowserProfileRevisionRecord,
-  type BrowserSessionRecord,
-  type BrowserSessionWithAttachmentCountRecord,
-  type ActiveBrowserProfileGrantRecord,
-  type RevokedBrowserProfileGrantRecord,
-} from "./browser-session-store.js";
-import {
-  type CreateHarnessInstanceInput,
-  type HarnessInstanceRecord,
-  type HarnessCatalogRecord,
-} from "./harness-store.js";
-import { type CredentialRecord } from "./credential-store.js";
-import { type BrowserProfileAccess } from "@opensteer/browser-profile/grant";
-import { type ExecutionEnvironmentRecord } from "./environment-store.js";
-import { type CreateWorkspaceInput, type WorkspaceFilesAdmission } from "./workspace-store.js";
-import {
-  type OwnerThreadPage,
-  type AgentThreadListScope,
-  type AgentThreadListPage,
-  type OwnedThreadRead,
-  type CreateThreadInput,
-  type ThreadCreationResult,
-  type DelegateThreadRequest,
-  type DelegatedThreadResult,
-  type AdmittedThreadDelegationRequest,
-  type ThreadUpdateResult,
-  type EnqueueThreadInputRequest,
-  type EnqueuedThreadInput,
-  type SteerThreadInputRequest,
-  type CancelThreadInputRequest,
-  type CancelledThreadInput,
-  type MoveThreadInputRequest,
-  type MovedThreadInput,
-  type AdmittedThreadInputRequest,
-} from "./thread-store.js";
+import type { Clock } from "@opensteer/shared/clock";
+import { type Kysely } from "kysely";
 import {
   type AgentControlAdmissionInput,
   type AgentControlAdmissionResult,
@@ -170,28 +80,117 @@ import {
   type CancelAssignmentInput,
   type CancelAssignmentResult,
 } from "./assignment-store.js";
-import { type AssignmentReturnDrain } from "./thread-inbox.js";
-import { type RunnerControlInput, type ClaimedCommand } from "./command-store.js";
+import { BrowserHistoryStore } from "./browser-history-store.js";
+import * as browserProfileStorageStore from "./browser-profile-storage-store.js";
+import * as browserSessionStore from "./browser-session-store.js";
+import {
+  type ActiveBrowserProfileGrantRecord,
+  type BrowserProfileRecord,
+  type BrowserSessionRecord,
+  type BrowserSessionWithAttachmentCountRecord,
+  type RevokedBrowserProfileGrantRecord,
+} from "./browser-session-store.js";
+import * as commandStore from "./command-store.js";
+import { type ClaimedCommand, type RunnerControlInput } from "./command-store.js";
+import * as computerUseStore from "./computer-use-store.js";
+import * as credentialStore from "./credential-store.js";
+import { type CredentialRecord } from "./credential-store.js";
+import * as deploymentStore from "./deployment-store.js";
+import * as environmentStore from "./environment-store.js";
+import { type ExecutionEnvironmentRecord } from "./environment-store.js";
+import { listRunNodes } from "./execution-nodes.js";
+import * as executionRecovery from "./execution-recovery.js";
+import {
+  type AnnouncedExecution,
+  type BackgroundDeadlineStop,
+  type ExecutionAttachment,
+  type ResumedExecution,
+  type RunRecoveryOutcome,
+} from "./execution-recovery.js";
+import * as executionStore from "./execution-store.js";
 import { type RunDispatchContext } from "./execution-store.js";
+import * as harnessStore from "./harness-store.js";
+import {
+  type CreateHarnessInstanceInput,
+  type HarnessCatalogRecord,
+  type HarnessInstanceRecord,
+} from "./harness-store.js";
+import { type MachineOwnershipRecord } from "./machine-ownership.js";
+import * as machineStore from "./machine-store.js";
+import {
+  type MachineAccessTargetRecord,
+  type ReachableMachineRecord,
+  type ShellSessionHistoryRecord,
+  type ShellSessionRecord,
+} from "./machine-store.js";
+import { NotificationStateStore } from "./notification-state.js";
+import {
+  publishPersonNotification,
+  type PersonNotificationInput,
+  type PersonNotificationResult,
+} from "./person-notification-store.js";
+import { RequestStore } from "./request-store.js";
+import { listRunAttempts } from "./run-attempts.js";
+import { type RevokedRunGrant } from "./run-grants.js";
+import * as runnerEventStore from "./runner-event-store.js";
+import * as runnerStore from "./runner-store.js";
+import {
+  type PendingRunnerEnrollmentRecord,
+  type RunnerAuthenticationRecord,
+  type RunnerConnectionRecord,
+  type RunnerEnrollmentIssuanceRecord,
+  type RunnerInventoryRecord,
+} from "./runner-store.js";
+import { type CommandRow, type DatabaseSchema, type PendingCommandRow } from "./schema.js";
+import * as snapshotStore from "./snapshot-store.js";
 import {
   type DurableWindowReadOptions,
-  type WorkspaceSnapshotReadOptions,
   type EventReplayWindow,
+  type WorkspaceSnapshotReadOptions,
 } from "./snapshot-store.js";
-import {
-  type BackgroundDeadlineStop,
-  type RunRecoveryOutcome,
-  type AnnouncedExecution,
-  type ResumedExecution,
-  type ExecutionAttachment,
-} from "./execution-recovery.js";
-import {
-  type WorkspaceMountRecord,
-  type WorkspaceMountInventoryEntry,
-  type PendingWorkspaceMountRevocation,
-} from "./workspace-mount-store.js";
+import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
+import * as taskDone from "./task-done.js";
 import { type ThreadHistoryQuery } from "./thread-history.js";
-import { type RevokedRunGrant } from "./run-grants.js";
+import { type AssignmentReturnDrain } from "./thread-inbox.js";
+import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
+import { drainPendingThreadStates } from "./thread-status.js";
+import * as threadStore from "./thread-store.js";
+import {
+  type AdmittedThreadDelegationRequest,
+  type AdmittedThreadInputRequest,
+  type AgentThreadListPage,
+  type AgentThreadListScope,
+  type CancelThreadInputRequest,
+  type CancelledThreadInput,
+  type CreateThreadInput,
+  type DelegateThreadRequest,
+  type DelegatedThreadResult,
+  type EnqueueThreadInputRequest,
+  type EnqueuedThreadInput,
+  type MoveThreadInputRequest,
+  type MovedThreadInput,
+  type OwnedThreadRead,
+  type OwnerThreadPage,
+  type SteerThreadInputRequest,
+  type ThreadCreationResult,
+  type ThreadUpdateResult,
+} from "./thread-store.js";
+import * as workspaceMembershipStore from "./workspace-membership-store.js";
+import {
+  type SecurityEffectRecord,
+  type WorkspaceInvitationRecord,
+  type WorkspaceMemberRecord,
+  type WorkspaceMembershipChangeListener,
+  type WorkspaceMembershipRecord,
+} from "./workspace-membership-store.js";
+import * as workspaceMountStore from "./workspace-mount-store.js";
+import {
+  type PendingWorkspaceMountRevocation,
+  type WorkspaceMountInventoryEntry,
+  type WorkspaceMountRecord,
+} from "./workspace-mount-store.js";
+import * as workspaceStore from "./workspace-store.js";
+import { type CreateWorkspaceInput, type WorkspaceFilesAdmission } from "./workspace-store.js";
 
 /** Told, after commit, which grants a write revoked. */
 export type RunGrantRevocationListener = (grants: readonly RevokedRunGrant[]) => void;
@@ -672,17 +671,6 @@ export class OpensteerStore {
     return browserSessionStore.createBrowserProfile(this.#database, input);
   }
 
-  async createBrowserProfileWithRevision(input: {
-    readonly ciphertext: Uint8Array;
-    readonly ciphertextSha256: string;
-    readonly id: BrowserProfileId;
-    readonly name: string;
-    readonly ownerId: UserId;
-    readonly revision: 1;
-  }): Promise<BrowserProfileRecord> {
-    return browserSessionStore.createBrowserProfileWithRevision(this.#database, input);
-  }
-
   async getBrowserProfile(
     profileId: BrowserProfileId,
     ownerId: UserId,
@@ -709,28 +697,16 @@ export class OpensteerStore {
     return browserSessionStore.deleteBrowserProfile(this.#database, input);
   }
 
+  bindBrowserProfile(binding: import("@opensteer/protocol").LocalProfileBinding) {
+    return browserProfileStorageStore.bindBrowserProfile(this.#database, binding);
+  }
+  acknowledgeBrowserProfileReady(binding: import("@opensteer/protocol").LocalProfileBinding) {
+    return browserProfileStorageStore.acknowledgeBrowserProfileReady(this.#database, binding);
+  }
   getBrowserProfileStorage(
     input: Parameters<typeof browserProfileStorageStore.getBrowserProfileStorage>[1],
   ) {
     return browserProfileStorageStore.getBrowserProfileStorage(this.#database, input);
-  }
-
-  reserveBrowserProfileInitialization(
-    input: Parameters<typeof browserProfileStorageStore.reserveBrowserProfileInitialization>[1],
-  ) {
-    return browserProfileStorageStore.reserveBrowserProfileInitialization(this.#database, input);
-  }
-
-  readBrowserProfileInitialization(
-    input: Parameters<typeof browserProfileStorageStore.readBrowserProfileInitialization>[1],
-  ) {
-    return browserProfileStorageStore.readBrowserProfileInitialization(this.#database, input);
-  }
-
-  completeBrowserProfileInitialization(
-    input: Parameters<typeof browserProfileStorageStore.completeBrowserProfileInitialization>[1],
-  ) {
-    return browserProfileStorageStore.completeBrowserProfileInitialization(this.#database, input);
   }
 
   listBrowserProfileErasureJobs(
@@ -757,36 +733,10 @@ export class OpensteerStore {
     return browserProfileStorageStore.reconcileBrowserProfileInventory(this.#database, input);
   }
 
-  async readBrowserProfileRevision(
-    profileId: BrowserProfileId,
-  ): Promise<BrowserProfileRevisionRecord | null> {
-    return browserSessionStore.readBrowserProfileRevision(this.#database, profileId);
-  }
-
-  async commitBrowserProfileRevision(input: {
-    readonly ciphertext: Uint8Array;
-    readonly ciphertextSha256: string;
-    readonly expectedRevision: number;
-    readonly periodic?: boolean;
-    readonly profileId: BrowserProfileId;
-  }): Promise<BrowserProfileRevisionRecord> {
-    return browserSessionStore.commitBrowserProfileRevision(this.#database, input);
-  }
-
-  async authorizeBrowserProfileLease(input: {
-    readonly leaseTokenHash: string;
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-  }): Promise<boolean> {
-    return browserSessionStore.authorizeBrowserProfileLease(this.#database, input);
-  }
-
   async createBrowserSession(input: {
     readonly tabGroupId?: BrowserSessionId;
     readonly opener?: BrowserSessionOpenerRecord | null;
     readonly id: BrowserSessionId;
-    readonly leaseGeneration: number;
-    readonly leaseTokenHash: string | null;
     readonly placementKey: string;
     readonly runnerId: RunnerId;
     readonly origin: "agent" | "trigger" | "workspace";
@@ -2253,12 +2203,13 @@ export type { PendingRunnerEnrollmentRecord } from "./runner-store.js";
 
 export type { BrowserProfileRecord } from "./browser-session-store.js";
 
-export type { BrowserSessionRecord } from "./browser-session-store.js";
-export type { BrowserUsageCredit, BrowserUsePage } from "./browser-session-store.js";
+export type {
+  BrowserSessionRecord,
+  BrowserUsageCredit,
+  BrowserUsePage,
+} from "./browser-session-store.js";
 
 export type { BrowserSessionWithAttachmentCountRecord } from "./browser-session-store.js";
-
-export type { BrowserProfileRevisionRecord } from "./browser-session-store.js";
 
 export type { WorkspaceMountRecord } from "./workspace-mount-store.js";
 

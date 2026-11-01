@@ -1,30 +1,30 @@
-import { createHash } from "node:crypto";
-import { isRecord } from "@opensteer/shared/isRecord";
 import {
   ContentPartSchema,
-  markColors,
-  markColorAllocationOrder,
-  workspaceIconNames,
   harnessDriverLabel,
   isLoopbackHostname,
+  markColorAllocationOrder,
+  markColors,
   normalizeToolOutput,
   ToolOutputSchema,
+  workspaceIconNames,
   type EventId,
 } from "@opensteer/core";
-import { type Kysely, sql } from "kysely";
+import type {
+  IntegrationConnectionId,
+  IntegrationServerId,
+  IntegrationToolMaterial,
+} from "@opensteer/integration-core";
+import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
+import { materializeToolCatalog } from "@opensteer/integration-core/tool-schemas";
+import { isRecord } from "@opensteer/shared/isRecord";
+import { sql, type Kysely } from "kysely";
 import {
   Migrator,
   type Migration,
   type MigrationProvider,
   type MigrationResultSet,
 } from "kysely/migration";
-import type {
-  IntegrationToolMaterial,
-  IntegrationConnectionId,
-  IntegrationServerId,
-} from "@opensteer/integration-core";
-import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
-import { materializeToolCatalog } from "@opensteer/integration-core/tool-schemas";
+import { createHash } from "node:crypto";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
@@ -4671,6 +4671,7 @@ export function migrationProvider() {
         "0121_native_browser_profiles": nativeBrowserProfilesMigration,
         "0122_thread_event_history": threadEventHistoryMigration,
         "0123_thread_asked_at": threadAskedAtMigration,
+        "0124_browser_native_only": browserNativeOnlyMigration,
       };
     },
   };
@@ -6494,6 +6495,56 @@ export const threadAskedAtMigration: Migration = {
       )
       update threads as thread set asked_at = times.asked_at
       from times where thread.id = times.id;
+    `.execute(database);
+  },
+};
+
+/** Native identities retain their exact bindings; deletion jobs retain archived owner stubs. */
+export const browserNativeOnlyMigration: Migration = {
+  async up(database) {
+    await sql`
+      update requests set status = 'cancelled', cancellation_reason = 'resource-deleted', resolved_at = now()
+        where kind = 'browser.profile.save' and status = 'pending';
+      delete from request_continuations where request_id in (select id from requests where kind = 'browser.profile.save');
+      create temporary table browser_native_cutover_removed on commit drop as
+        select id from browser_profiles where storage_state <> 'local';
+      delete from browser_tab_opens where binding ->> 'chosenSessionId' in
+        (select id from browser_sessions where profile_id in (select id from browser_native_cutover_removed));
+      delete from browser_sessions where profile_id in (select id from browser_native_cutover_removed);
+      delete from browser_profile_grants where profile_id in (select id from browser_native_cutover_removed);
+      delete from browser_source_imports where profile_id in (select id from browser_native_cutover_removed);
+      delete from browser_history_entries where profile_id in (select id from browser_native_cutover_removed);
+      delete from browser_history_icons where profile_id in (select id from browser_native_cutover_removed);
+      alter table browser_profiles
+        drop constraint browser_profiles_storage_binding_check,
+        drop constraint browser_profiles_initialization_token_check,
+        drop constraint browser_profiles_storage_state_check,
+        add column initialized boolean not null default false;
+      update browser_profiles set initialized = true where storage_state = 'local';
+      update browser_profiles p set archived_at = coalesce(p.archived_at, now()),
+        storage_state = 'local', initialized = true, storage_binding_version = d.binding_version,
+        storage_deployment_id = d.deployment_id, storage_runner_id = d.runner_id,
+        storage_instance_id = d.storage_instance_id, storage_binding_id = d.binding_id, storage_engine = d.engine
+        from browser_profile_deletions d where p.id = d.profile_id and p.storage_state <> 'local';
+      drop table browser_profile_revisions;
+      delete from browser_profiles where storage_state <> 'local';
+      alter table browser_profiles
+        drop column revision,
+        drop column frozen_seed_revision, drop column frozen_seed_digest,
+        drop column initialization_token_hash, drop column initialization_token_expires_at,
+        alter column storage_state set default 'unbound',
+        add constraint browser_profiles_storage_state_check check (storage_state in ('unbound', 'local')),
+        add constraint browser_profiles_storage_binding_check check (
+          (storage_state = 'unbound' and not initialized and storage_binding_version is null
+            and storage_deployment_id is null and storage_runner_id is null
+            and storage_instance_id is null and storage_binding_id is null and storage_engine is null)
+          or (storage_state = 'local' and storage_binding_version is not null
+            and storage_deployment_id is not null and storage_runner_id is not null
+            and storage_instance_id is not null and storage_binding_id is not null and storage_engine is not null)
+        );
+      alter table browser_sessions drop constraint browser_sessions_profile_lease_check,
+        drop constraint browser_sessions_lease_generation_check,
+        drop column lease_token_hash, drop column lease_generation, drop column profile_lease_expires_at;
     `.execute(database);
   },
 };

@@ -1,7 +1,3 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { gate } from "@opensteer/shared/test-support/observation";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   LocalProfileBindingSchema,
   RunnerAuxiliaryFrameFenceSchema,
@@ -12,6 +8,10 @@ import {
   BrowserChannelIdSchema,
   createBrowserRelayToHostMessageSchema,
 } from "@opensteer/protocol/browser-relay";
+import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { LocalBrowserRuntimeBridge } from "./browser-bridge.js";
 import { BrowserModuleRelay } from "./browser-relay.js";
 import type { RunnerModuleStream } from "./module-connection.js";
@@ -32,6 +32,10 @@ function fixture(negotiated = true) {
     runtimeId: "runtime_test",
     url: new URL("http://127.0.0.1:4312"),
   });
+  vi.spyOn(bridge, "capabilities").mockResolvedValue({
+    wireVersion: 1,
+    localProfileStorage: storage,
+  });
   const relay = new BrowserModuleRelay(bridge);
   const messages: Record<string, unknown>[] = [];
   const notices = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
@@ -46,8 +50,8 @@ function fixture(negotiated = true) {
   });
   const keys = generateKeyPairSync("ed25519");
   const stream: RunnerModuleStream = {
+    ...(negotiated ? { browserWireVersion: 1 } : {}),
     fence,
-    ...(negotiated ? { localProfiles: 1, profilePrepare: 1, initialNavigationVersion: 1 } : {}),
     browserAttachPublicKeys: [
       {
         keyId: "test",
@@ -55,9 +59,7 @@ function fixture(negotiated = true) {
       },
     ],
     send: async (frame) => {
-      const message = createBrowserRelayToHostMessageSchema(stream).parse(
-        JSON.parse(String(frame)),
-      );
+      const message = createBrowserRelayToHostMessageSchema().parse(JSON.parse(String(frame)));
       messages.push(message);
       notices.get(message.type)?.resolve();
     },
@@ -100,7 +102,6 @@ describe("BrowserModuleRelay native profiles", () => {
         ...binding,
         profileId: LocalProfileBindingSchema.shape.profileId.parse(`bpr_${randomUUID()}`),
       },
-      seed: { revision: 0, digest: "a".repeat(64) },
     }));
     f.inventory.mockResolvedValue({ storage, profiles });
     try {
@@ -120,7 +121,6 @@ describe("BrowserModuleRelay native profiles", () => {
     const claim: HeldLocalProfile = {
       phase: "ready",
       binding,
-      seed: { revision: 0, digest: "a".repeat(64) },
     };
     f.inventory.mockResolvedValue({ storage, profiles: Array.from({ length: 129 }, () => claim) });
     let batches = 0;
@@ -162,10 +162,10 @@ describe("BrowserModuleRelay native profiles", () => {
       f.relay.detach();
     }
   });
-  it("emits no new frames to a previous Host", async () => {
+  it("refuses an outdated Host before sending inventory", async () => {
     const f = fixture(false);
     try {
-      await f.relay.attach(f.stream);
+      await expect(f.relay.attach(f.stream)).rejects.toThrow("Update this Host");
       expect(f.inventory).not.toHaveBeenCalled();
       expect(f.messages).toHaveLength(0);
     } finally {
@@ -215,7 +215,7 @@ describe("BrowserModuleRelay native profiles", () => {
       f.relay.detach();
     }
   });
-  it.each(["attach", "delete", "prepare"] as const)(
+  it.each(["attach", "delete"] as const)(
     "keeps an admitted %s correlated across capability renewal",
     async (operation) => {
       const f = fixture();
@@ -233,26 +233,19 @@ describe("BrowserModuleRelay native profiles", () => {
         await f.relay.attach(f.stream);
         await f.send({ type: "capability.grant", lease: f.lease });
         await f.send(
-          operation === "prepare"
+          operation === "attach"
             ? {
-                type: "browser.profile.prepare",
+                type: "browser.attach",
                 channelId,
                 capability: f.capability,
-                preparationTicket: "abc.def.ghi",
+                attachTicket: "abc.def.ghi",
               }
-            : operation === "attach"
-              ? {
-                  type: "browser.attach",
-                  channelId,
-                  capability: f.capability,
-                  attachTicket: "abc.def.ghi",
-                }
-              : {
-                  type: "browser.profile.delete",
-                  capability: f.capability,
-                  binding,
-                  deletionId: randomUUID(),
-                },
+            : {
+                type: "browser.profile.delete",
+                capability: f.capability,
+                binding,
+                deletionId: randomUUID(),
+              },
         );
         await held.entered;
         await f.send({
@@ -260,11 +253,7 @@ describe("BrowserModuleRelay native profiles", () => {
           lease: { ...f.lease, capabilityGeneration: 2, capabilityLeaseId: `bcl_${randomUUID()}` },
         });
         const done = f.wait(
-          operation === "prepare"
-            ? "browser.profile.prepared"
-            : operation === "attach"
-              ? "browser.attached"
-              : "browser.profile.delete.result",
+          operation === "attach" ? "browser.attached" : "browser.profile.delete.result",
         );
         held.release();
         await done;
@@ -279,40 +268,37 @@ describe("BrowserModuleRelay native profiles", () => {
       }
     },
   );
-  it.each([false, true])(
-    "closes the exact attachment/preparation when revoked during readiness: %s",
-    async (preparation) => {
-      const f = fixture();
-      const held = gate({ label: "revoked attach", deadlineMs: 2000 });
-      const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
-      const close = vi.spyOn(f.bridge, "close");
-      vi.spyOn(f.bridge, "attach").mockImplementation(async () => {
-        await held.enter();
-        return { type: "browser.attached", retained: true };
+  it("closes the exact attachment when revoked during readiness", async () => {
+    const f = fixture();
+    const held = gate({ label: "revoked attach", deadlineMs: 2000 });
+    const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    const close = vi.spyOn(f.bridge, "close");
+    vi.spyOn(f.bridge, "attach").mockImplementation(async () => {
+      await held.enter();
+      return { type: "browser.attached", retained: true };
+    });
+    try {
+      await f.relay.attach(f.stream);
+      await f.send({ type: "capability.grant", lease: f.lease });
+      await f.send({
+        type: "browser.attach",
+        channelId,
+        capability: f.capability,
+        attachTicket: "abc.def.ghi",
       });
-      try {
-        await f.relay.attach(f.stream);
-        await f.send({ type: "capability.grant", lease: f.lease });
-        await f.send({
-          type: preparation ? "browser.profile.prepare" : "browser.attach",
-          channelId,
-          capability: f.capability,
-          ...(preparation ? { preparationTicket: "abc.def.ghi" } : { attachTicket: "abc.def.ghi" }),
-        });
-        await held.entered;
-        await f.send({ type: "capability.revoke", capability: f.capability });
-        close.mockClear();
-        const done = f.wait("browser.command-error");
-        held.release();
-        await done;
-        expect(close).toHaveBeenCalledWith(channelId, 4003, expect.any(String));
-        expect(f.messages.some((message) => message.type === "browser.attached")).toBe(false);
-      } finally {
-        held.release();
-        f.relay.detach();
-      }
-    },
-  );
+      await held.entered;
+      await f.send({ type: "capability.revoke", capability: f.capability });
+      close.mockClear();
+      const done = f.wait("browser.command-error");
+      held.release();
+      await done;
+      expect(close).toHaveBeenCalledWith(channelId, 4003, expect.any(String));
+      expect(f.messages.some((message) => message.type === "browser.attached")).toBe(false);
+    } finally {
+      held.release();
+      f.relay.detach();
+    }
+  });
   it("routes deletion without a live channel", async () => {
     const f = fixture();
     const deletionId = randomUUID();

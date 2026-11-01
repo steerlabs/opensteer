@@ -1,14 +1,15 @@
-import { createServer } from "node:http";
+import { nativeRuntimeProfile } from "./native-profile.test-support.js";
+import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { once } from "node:events";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
-import { delay } from "@opensteer/shared/delay";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   agentCdpAllowlist,
   defaultBrowserViewport,
@@ -16,19 +17,7 @@ import {
   SessionCdpRouter,
   type CdpParameters,
 } from "@opensteer/browser-core";
-import {
-  captureBrowserProfileSnapshot,
-  encodeBrowserProfileSnapshot,
-  decodeBrowserProfileSnapshot,
-  type BrowserOriginCaptureFailure,
-  type BrowserProfileSnapshot,
-  type BrowserCookie,
-} from "@opensteer/browser-profile/snapshot";
-import {
-  BrowserSessionIdSchema,
-  type BrowserClientMessage,
-  type BrowserSurfaceId,
-} from "@opensteer/protocol";
+import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserController,
   BrowserRuntime,
@@ -37,40 +26,45 @@ import {
   SurfaceLedger,
 } from "@opensteer/browser-runtime-core";
 import {
-  FakeProfileStateClient,
   FakeSink,
   FakeTicketVerifier,
   testSessionFilesRoot,
   validClaims,
-  validProfileClaims,
 } from "@opensteer/browser-runtime-core/test-support";
 import { runPasskeyPolicyScenario } from "@opensteer/browser-runtime-core/test-support/passkey-policy";
 import { runStateImportScenario } from "@opensteer/browser-runtime-core/test-support/state-import";
+import {
+  BrowserSessionIdSchema,
+  type BrowserClientMessage,
+  type BrowserSurfaceId,
+} from "@opensteer/protocol";
+import { delay } from "@opensteer/shared/delay";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { PublicBrowserEgressProxy } from "../egress-proxy.js";
 import {
-  TestChromiumLauncher as PlaywrightChromiumLauncher,
   browserTestSignal,
   cleanup,
+  TestChromiumLauncher as PlaywrightChromiumLauncher,
   waitForLedgerState,
   withBrowserTestSignal,
 } from "./browser-test-lifecycle.js";
 
 import {
-  executablePath,
-  serveFollowFixture,
-  startHarnessBridge,
-  runHarness,
-  testSignIns,
-  boundarySecrets,
-  serveBoundaryFixture,
-  sendAsAgent,
-  foundSecrets,
-  evaluationValue,
-  shownDialog,
   asJsonRecord,
   asRecord,
-  waitForAsync,
+  boundarySecrets,
+  evaluationValue,
+  executablePath,
+  foundSecrets,
+  runHarness,
+  sendAsAgent,
+  serveBoundaryFixture,
+  serveFollowFixture,
+  shownDialog,
+  startHarnessBridge,
+  testSignIns,
   waitFor,
+  waitForAsync,
 } from "./chromium.test-support.js";
 async function verifyNativeProfilePersistence(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "os-native-chromium-"));
@@ -237,293 +231,6 @@ async function verifyNativeProfilePersistence(): Promise<void> {
   expect(browser.context.isConnected?.()).toBe(false);
 }
 
-async function verifyNativeProfileConversion(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "os-native-convert-"));
-  const rejectedDirectory = await mkdtemp(join(tmpdir(), "os-native-reject-"));
-  const launcher = new PlaywrightChromiumLauncher({
-    chromiumSandbox: false,
-    executablePath,
-    headless: true,
-  });
-  cleanup.push(async () => {
-    await launcher.localProfiles.release(directory);
-    await launcher.localProfiles.release(rejectedDirectory);
-    await rm(directory, { recursive: true, force: true });
-    await rm(rejectedDirectory, { recursive: true, force: true });
-  });
-  const { nativeProfileRequest } = await import("./native-profile.test-support.js");
-  const request = nativeProfileRequest(directory);
-  const cookie = {
-    domain: "native-import.invalid",
-    path: "/",
-    name: "session",
-    value: "converted",
-    httpOnly: true,
-    secure: true,
-    expires: -1,
-    sameSite: "None" as const,
-  };
-  const seed: BrowserProfileSnapshot = {
-    cookies: [
-      cookie,
-      ...["https://one.example", "https://two.example"].map((partitionKey) => ({
-        ...cookie,
-        name: "chips",
-        partitionKey,
-        partitionKeyHasCrossSiteAncestor: false,
-        value: partitionKey,
-      })),
-    ],
-    origins: ["https://native-import.invalid", "https://second-import.invalid"].map((origin) => ({
-      origin,
-      localStorage: [{ name: "converted", value: origin }],
-      indexedDB: [
-        {
-          name: "converted",
-          version: 1,
-          stores: [
-            {
-              name: "values",
-              autoIncrement: false,
-              indexes: [],
-              records: [{ key: "record", value: { converted: true } }],
-            },
-          ],
-        },
-      ],
-    })),
-  };
-  await launcher.localProfiles.importAndFlush({
-    directory,
-    binding: request.storage.binding,
-    snapshot: seed,
-    signal: browserTestSignal(),
-  });
-  const browser = await launcher.launch(request);
-  cleanup.push(() => browser.close());
-  expect(browser.context.pages()).toHaveLength(0);
-  const snapshot = await browser.exportSnapshot();
-  const page = await browser.context.createPage();
-  const cdp = await page.cdp();
-  await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
-  cdp.on("Fetch.requestPaused", (value) => {
-    const event = asRecord(value);
-    void cdp.send("Fetch.fulfillRequest", {
-      requestId: event.requestId,
-      responseCode: 200,
-      responseHeaders: [{ name: "content-type", value: "text/html" }],
-      body: Buffer.from("<!doctype html><html></html>").toString("base64"),
-    });
-  });
-  await cdp.send("Page.enable");
-  for (const state of seed.origins) {
-    const loaded = Promise.withResolvers<void>();
-    const listener = () => loaded.resolve();
-    cdp.on("Page.loadEventFired", listener);
-    await cdp.send("Page.navigate", { url: state.origin });
-    await withTimeout(loaded.promise, 5000, {
-      timeoutError: () => new Error("Converted origin helper did not load"),
-    });
-    cdp.off("Page.loadEventFired", listener);
-    const result = await cdp.send<{ result: { value: unknown }; exceptionDetails?: unknown }>(
-      "Runtime.evaluate",
-      {
-        awaitPromise: true,
-        returnByValue: true,
-        expression: `(async () => {
-        const db = await new Promise((resolve, reject) => { const open = indexedDB.open("converted"); open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
-        const record = await new Promise((resolve, reject) => { const read = db.transaction("values").objectStore("values").get("record"); read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); db.close();
-        return { local: localStorage.getItem("converted"), record };
-      })()`,
-      },
-    );
-    expect(result.exceptionDetails).toBeUndefined();
-    expect(result.result.value).toEqual({ local: state.origin, record: { converted: true } });
-  }
-  expect(snapshot.cookies).toEqual(
-    expect.arrayContaining(seed.cookies.map((cookie) => expect.objectContaining(cookie))),
-  );
-  await browser.close();
-  await expect(
-    launcher.localProfiles.importAndFlush({
-      directory: rejectedDirectory,
-      binding: nativeProfileRequest(rejectedDirectory).storage.binding,
-      snapshot: { cookies: [{ ...cookie, secure: false }], origins: [] },
-      signal: browserTestSignal(),
-    }),
-  ).rejects.toThrow(/rejected an imported profile cookie/);
-}
-
-async function verifyLegacyProfileCheckpoint(): Promise<void> {
-  const site = createServer((_request, response) => {
-    response
-      .writeHead(200, { "content-type": "text/html; charset=utf-8" })
-      .end("<!doctype html><title>Portable profile</title>");
-  });
-  site.listen(0, "127.0.0.1");
-  await once(site, "listening");
-  cleanup.push(async () => {
-    site.close();
-    await once(site, "close");
-  });
-  const address = site.address();
-  if (!address || typeof address === "string") throw new Error("Test HTTP address missing.");
-  const origin = `http://127.0.0.1:${address.port}`;
-  const launcher = new PlaywrightChromiumLauncher({
-    chromiumSandbox: false,
-    executablePath,
-    headless: true,
-  });
-  const claims = validProfileClaims();
-  const first = await launcher.launch({
-    initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
-    partitionKey: `profile:${claims.identity.profileId}`,
-    sessionId: claims.sessionId,
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
-  });
-  const firstPage = first.context.pages()[0];
-  if (!firstPage) throw new Error("Expected an initial Chromium page.");
-  const firstCdp = await firstPage.cdp();
-  await firstCdp.send("Page.navigate", { url: origin });
-  await waitFor(() => firstPage.url() === `${origin}/`);
-  const populated = await firstCdp.send<{
-    exceptionDetails?: unknown;
-    result?: { value?: unknown };
-  }>("Runtime.evaluate", {
-    awaitPromise: true,
-    expression: `new Promise((resolve, reject) => {
-          document.cookie = "session=portable-cookie; SameSite=Lax";
-          localStorage.setItem("account", "client-a");
-          localStorage.setItem("empty", "");
-          localStorage.setItem("large", "界".repeat(3 * 1024 * 1024));
-          const request = indexedDB.open("opensteer-auth", 1);
-          request.onupgradeneeded = () => request.result.createObjectStore("tokens");
-          request.onerror = () => reject(request.error);
-          request.onsuccess = () => {
-            const transaction = request.result.transaction("tokens", "readwrite");
-            transaction.objectStore("tokens").put("portable-token", "access");
-            transaction.oncomplete = () => resolve(true);
-            transaction.onerror = () => reject(transaction.error);
-          };
-        })`,
-  });
-  // CDP resolves protocol errors as exceptionDetails. A completed send is
-  // insufficient evidence that the fixture committed its IndexedDB write.
-  expect(populated.exceptionDetails).toBeUndefined();
-  expect(populated.result?.value).toBe(true);
-  await firstPage.close();
-  const normalOrigin = `http://localhost:${address.port}`;
-  const normalPage = await first.context.createPage();
-  const normalCdp = await normalPage.cdp();
-  await normalCdp.send("Page.navigate", { url: normalOrigin });
-  await waitFor(() => normalPage.url() === `${normalOrigin}/`);
-  const written = await normalCdp.send<{ exceptionDetails?: unknown }>("Runtime.evaluate", {
-    expression: "localStorage.setItem('normal', 'normal-durable')",
-  });
-  expect(written.exceptionDetails).toBeUndefined();
-  const collected = await first.exportSnapshot();
-  const collectedStorage = collected.origins.find((entry) => entry.origin === origin)?.localStorage;
-  expect(collectedStorage?.find((entry) => entry.name === "account")?.value).toBe("client-a");
-  expect(collectedStorage?.find((entry) => entry.name === "empty")?.value).toBe("");
-  expect(
-    createHash("sha256")
-      .update(collectedStorage?.find((entry) => entry.name === "large")?.value ?? "")
-      .digest("hex"),
-  ).toBe(
-    createHash("sha256")
-      .update("界".repeat(3 * 1024 * 1024))
-      .digest("hex"),
-  );
-  const failures: BrowserOriginCaptureFailure[] = [];
-  const snapshot = decodeBrowserProfileSnapshot(
-    encodeBrowserProfileSnapshot(
-      captureBrowserProfileSnapshot({
-        cookies: collected.cookies,
-        origins: [
-          ...collected.origins.map((state) =>
-            state.origin === origin
-              ? {
-                  ...state,
-                  localStorage: [{ name: "over-quota", value: "x".repeat(6 * 1024 * 1024) }],
-                }
-              : state,
-          ),
-          { origin: "https://invalid.test/path", localStorage: [] },
-        ],
-        previous: collected,
-        onOriginFailure: (failure) => failures.push(failure),
-      }),
-    ),
-  );
-  expect(failures).toEqual([
-    { origin, reason: "invalid", retained: true },
-    { origin: null, reason: "invalid", retained: false },
-  ]);
-  expect(snapshot.cookies.some((cookie) => cookie.name === "session")).toBe(true);
-  expect(snapshot.origins.some((entry) => entry.origin === origin)).toBe(true);
-  await first.close();
-
-  const restored = await launcher.launch({
-    initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
-    partitionKey: `profile:${claims.identity.profileId}`,
-    sessionId: claims.sessionId,
-    storage: { kind: "legacy", snapshot },
-  });
-  cleanup.push(() => restored.close());
-  const restoredPage = restored.context.pages()[0];
-  if (!restoredPage) throw new Error("Expected a restored Chromium page.");
-  const restoredCdp = await restoredPage.cdp();
-  await restoredCdp.send("Page.navigate", { url: origin });
-  await waitFor(() => restoredPage.url() === `${origin}/`);
-  const state = await restoredCdp.send<{
-    result?: { value?: unknown };
-  }>("Runtime.evaluate", {
-    awaitPromise: true,
-    expression: `new Promise((resolve, reject) => {
-          const request = indexedDB.open("opensteer-auth");
-          request.onerror = () => reject(request.error);
-          request.onsuccess = () => {
-            const read = request.result.transaction("tokens").objectStore("tokens").get("access");
-            read.onerror = () => reject(read.error);
-            read.onsuccess = async () => resolve({
-              largeSha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(localStorage.getItem('large'))))).map(byte => byte.toString(16).padStart(2, '0')).join(''),
-              cookie: document.cookie,
-              empty: localStorage.getItem("empty"),
-              indexedDB: read.result,
-              localStorage: localStorage.getItem("account"),
-            });
-          };
-        })`,
-    returnByValue: true,
-  });
-  expect(state.result?.value).toEqual({
-    cookie: "session=portable-cookie",
-    empty: "",
-    indexedDB: "portable-token",
-    localStorage: "client-a",
-    largeSha256: createHash("sha256")
-      .update("界".repeat(3 * 1024 * 1024))
-      .digest("hex"),
-  });
-  const restoredNormal = await restored.context.createPage();
-  const restoredNormalCdp = await restoredNormal.cdp();
-  await restoredNormalCdp.send("Page.navigate", { url: normalOrigin });
-  await waitFor(() => restoredNormal.url() === `${normalOrigin}/`);
-  const normal = await restoredNormalCdp.send<{ result?: { value?: unknown } }>(
-    "Runtime.evaluate",
-    { expression: "localStorage.getItem('normal')", returnByValue: true },
-  );
-  expect(normal.result?.value).toBe("normal-durable");
-  const artifactDirectory =
-    process.env.OPENSTEER_PROFILE_E2E_ARTIFACT_DIR ??
-    join(tmpdir(), "opensteer-profile-checkpoint");
-  await mkdir(artifactDirectory, { recursive: true });
-  await writeFile(
-    join(artifactDirectory, "chromium-profile.json"),
-    `${JSON.stringify({ engine: "Playwright Chromium", executablePath, failures, restored: state.result?.value, normal: normal.result?.value, encodedBytes: encodeBrowserProfileSnapshot(snapshot).byteLength }, null, 2)}\n`,
-  );
-}
-
 describe("real Chromium runtime", () => {
   it("persists full-navigation fragments and detects durable URL overflow in the real engine", async () => {
     const site = await serveFollowFixture();
@@ -676,7 +383,6 @@ describe("real Chromium runtime", () => {
       ledger,
       files,
       sink,
-      exportSnapshot: () => browser.exportSnapshot(),
       replaceSiteCookies: (site, cookies, signal) =>
         browser.replaceSiteCookies(site, cookies, signal),
       signIns: testSignIns(),
@@ -1312,7 +1018,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const address = site.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
-    const claims = validProfileClaims();
+    const claims = validClaims();
     // A session's pages start at the documented default until the person's
     // view gives it a size.
     const agentSize = {
@@ -1325,9 +1031,9 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       headless: true,
     }).launch({
       initialViewport: { devicePixelRatio: 1, ...agentSize },
-      partitionKey: `profile:${claims.identity.profileId}`,
+      partitionKey: `session:${claims.sessionId}`,
       sessionId: claims.sessionId,
-      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
     const root = browser.context.pages()[0];
@@ -1354,7 +1060,6 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const controller = new BrowserController({
       cdpRouter,
       claims,
-      exportSnapshot: () => browser.exportSnapshot(),
       files,
       ledger,
       replaceSiteCookies: (site, cookies, deadline) =>
@@ -1901,11 +1606,14 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     if (!address || typeof address === "string") throw new Error("Missing fixture address");
     const origin = `http://127.0.0.1:${address.port}`;
     // Three sessions of one profile, so they share one Browser Host.
+    const profile = await nativeRuntimeProfile();
+    cleanup.push(profile.close);
     const verifier = new FakeTicketVerifier();
     for (const index of [1, 2, 3]) {
       verifier.setClaims(
         `ticket-${index}`,
         validClaims({
+          identity: profile.identity,
           sessionId: BrowserSessionIdSchema.parse(
             `bsn_00000000-0000-4000-8000-00000000010${index}`,
           ),
@@ -1913,12 +1621,12 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       );
     }
     const runtime = new BrowserRuntime({
+      localProfiles: profile.localProfiles,
       launcher: new PlaywrightChromiumLauncher({
         chromiumSandbox: false,
         executablePath,
         headless: true,
       }),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,
@@ -2088,15 +1796,22 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
         partitionKeyHasCrossSiteAncestor: true,
       },
     ];
-    const claims = validProfileClaims();
+    const claims = validClaims();
     const browser = await launcher.launch({
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
-      partitionKey: `profile:${claims.identity.profileId}`,
+      partitionKey: `session:${claims.sessionId}`,
       sessionId: claims.sessionId,
-      storage: { kind: "legacy", snapshot: { cookies, origins: [] } },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
-    const exported = await browser.exportSnapshot();
+    const cdp = await browser.context.pages()[0]!.cdp();
+    await cdp.send("Network.setCookies", { cookies: cookies.map(browserCookieToCdp) });
+    const exported = {
+      cookies: z
+        .object({ cookies: z.array(z.unknown()) })
+        .parse(await cdp.send("Network.getAllCookies"))
+        .cookies.map(browserCookieFromCdp),
+    };
     expect(exported.cookies).toHaveLength(cookies.length);
     expect(exported.cookies).toEqual(expect.arrayContaining(cookies));
     expect(exported.cookies.find((cookie) => cookie.name === "__Host-session")).not.toHaveProperty(
@@ -2104,7 +1819,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     );
   });
 
-  it("preserves profile state across legacy checkpoints, native restarts, and site-cookie replacement", async () => {
+  it("replaces cookie-only sign-ins in a native profile", async () => {
     // The egress proxy is how this engine reaches the fixture as *.example.test.
     const proxy = new PublicBrowserEgressProxy({
       port: 0,
@@ -2135,8 +1850,6 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       `${JSON.stringify(report, null, 2)}\n`,
     );
     expect(report.fixtureCookieHeader).not.toMatch(/anon|tracker/u);
-    await verifyLegacyProfileCheckpoint();
-    await verifyNativeProfileConversion();
   }, 60_000);
 
   it(
@@ -2232,12 +1945,12 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       headless: true,
       proxyUrl: `http://127.0.0.1:${proxyAddress.port}`,
     });
-    const claims = validProfileClaims();
+    const claims = validClaims();
     const browser = await launcher.launch({
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
-      partitionKey: `profile:${claims.identity.profileId}`,
+      partitionKey: `session:${claims.sessionId}`,
       sessionId: claims.sessionId,
-      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
     const ledger = new SurfaceLedger(browser.context, {
@@ -2294,12 +2007,12 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       executablePath,
       headless: true,
     });
-    const claims = validProfileClaims();
+    const claims = validClaims();
     const browser = await launcher.launch({
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
-      partitionKey: `profile:${claims.identity.profileId}`,
+      partitionKey: `session:${claims.sessionId}`,
       sessionId: claims.sessionId,
-      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
     const ledger = new SurfaceLedger(browser.context, {
@@ -2320,7 +2033,6 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const controller = new BrowserController({
       cdpRouter,
       claims,
-      exportSnapshot: () => browser.exportSnapshot(),
       files,
       ledger,
       replaceSiteCookies: (site, cookies, deadline) =>
@@ -2597,7 +2309,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     });
     const proxyAddress = await proxy.start();
     cleanup.push(() => proxy.close());
-    const claims = validProfileClaims();
+    const claims = validClaims();
     const browser = await new PlaywrightChromiumLauncher({
       chromiumSandbox: false,
       executablePath,
@@ -2605,9 +2317,9 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       proxyUrl: `http://127.0.0.1:${proxyAddress.port}`,
     }).launch({
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
-      partitionKey: `profile:${claims.identity.profileId}`,
+      partitionKey: `session:${claims.sessionId}`,
       sessionId: claims.sessionId,
-      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+      storage: { kind: "guest" },
     });
     cleanup.push(() => browser.close());
     const ledger = new SurfaceLedger(browser.context, {
@@ -2697,7 +2409,6 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const controller = new BrowserController({
       cdpRouter,
       claims,
-      exportSnapshot: () => browser.exportSnapshot(),
       files,
       ledger,
       replaceSiteCookies: (target, cookies, deadline) =>

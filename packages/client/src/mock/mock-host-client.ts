@@ -2,153 +2,141 @@ import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
-import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
+import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 
-import { WorkspaceTabActivations } from "../host/workspace-tab-activations.js";
-import {
-  arrangedBrowserTabLayout,
-  browserTabArrangement,
-  browserTabOrderTabs,
-} from "../host/browser-tab-order.js";
-import { groupBrowserTabs, ungroupBrowserTabs, moveBrowserTabs } from "@opensteer/core";
-import { BrowserTabGroupClient, removeGroupedTabs } from "../host/browser-tab-groups.js";
-import {
-  BrowserTabGroupColorSchema,
-  WorkspaceTabLineageSchema,
-  type BrowserTabLayout,
-} from "@opensteer/protocol";
-import { placeList } from "../host/places.js";
-import type { NativeViewerSource } from "../host/surfaces.js";
-import { computerAppIdentityKey, previousReleaseEligibility } from "@opensteer/protocol";
-import { MockComputerViews } from "./mock-computer-views.js";
-import { BrowserHistoryClient } from "../host/browser-history.js";
-import type { BrowserPreferencesStorage } from "../host/browser-preferences.js";
-import type { ClientLifecycle } from "../host/lifecycle.js";
-import { computerViewMethods } from "../host/computer-views.js";
-import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
-import type { BrowserTabOpenInput, BrowserTabOpenOptions } from "../host/client.js";
-import {
-  MockPlaceWorld,
-  seedMockPlaces,
-  type MockPlaceScript,
-  type MockPlacesWorld,
-} from "./mock-places.js";
-import { MockPhoneDisplaySocket } from "./mock-phone-display.js";
-import { mockGeneratedTaskIcon, seedMockTaskMarks } from "./mock-task-marks.js";
-import { ThreadStateProjection } from "../host/thread-state.js";
-import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
-import { delay } from "@opensteer/shared/delay";
-import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sha256 } from "@noble/hashes/sha2.js";
-import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
-import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
-import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
+import { channelProviderCatalog } from "@opensteer/channel-core";
 import {
-  mockNightlyTriggerId,
-  mockTriggerSummary,
-  seedMockAutomations,
-  type MockTriggerRecord,
-} from "./mock-automations.js";
-import {
-  provisionalThreadTitle,
-  ThreadTitleSchema,
-  defaultTaskSymbol,
-  nextMarkColor,
-  markColorAllocationOrder,
-  type MarkColor,
   AgentEventSchema,
-  CHAT_THREAD_TITLE,
-  DeploymentIdSchema,
-  AttachmentSchema,
+  AssignmentIdSchema,
   AssignmentSummarySchema,
   AssignmentViewSchema,
-  attachmentMaxBytes,
-  attachmentNativeImageMediaTypes,
-  type Attachment,
-  type AssignmentSummary,
-  type AssignmentView,
-  type WaitingRequest,
-  type ContentPart,
+  AttachmentSchema,
+  BrowserSurfaceIdSchema,
+  CHAT_THREAD_TITLE,
   DEFAULT_THREAD_ACCESS_MODE,
-  ModelSelectionSchema,
+  DeploymentIdSchema,
   MessageAuthorSchema,
   MessageSchema,
-  SequenceSchema,
+  ModelSelectionSchema,
+  NotificationViewSchema,
+  PendingRequestSchema,
   ProviderContinuationIdentitySchema,
   RequestIdSchema,
   RequestSchema,
   ResolvedRequestSchema,
   RunSchema,
+  RunnerIdSchema,
+  SequenceSchema,
   ThreadAccessModeSchema,
-  ThreadInputSchema,
-  ThreadInputQueueViewSchema,
   ThreadIdSchema,
-  AssignmentIdSchema,
-  PendingRequestSchema,
+  ThreadInputQueueViewSchema,
+  ThreadInputSchema,
   ThreadSchema,
+  ThreadTitleSchema,
   UserIdSchema,
   WorkspaceIdSchema,
+  attachmentMaxBytes,
+  attachmentNativeImageMediaTypes,
   createId,
+  defaultTaskSymbol,
   emptyExecutionPreferences,
+  groupBrowserTabs,
+  markColorAllocationOrder,
+  moveBrowserTabs,
   moveQueueItem,
+  nextMarkColor,
   notificationBodyMaxCharacters,
   notificationTitleMaxCharacters,
-  NotificationViewSchema,
+  provisionalThreadTitle,
   rememberExecutionChoice,
+  requestOptionDeclines,
   requestTitleText,
   sameProviderContinuationIdentity,
-  RunnerIdSchema,
+  ungroupBrowserTabs,
+  type AgentEvent,
+  type AssignmentSummary,
+  type AssignmentView,
+  type Attachment,
   type AuthSessionSummary,
+  type BrowserPageContentPart,
+  type ContentPart,
   type EnvironmentId,
-  type ExecutionChoice as HostExecutionChoice,
   type ExecutionPreferences,
+  type ExecutionChoice as HostExecutionChoice,
+  type MarkColor,
   type Message,
-  type NotificationView,
-  type Sequence,
-  type ThreadReadState,
-  type WorkspaceNotificationPreference,
   type ModelSelection,
+  type NotificationView,
   type Request,
   type RequestResponse,
   type Run,
+  type Sequence,
   type Thread,
   type ThreadAccessMode,
   type ThreadInput,
   type ThreadInputQueue,
+  type ThreadReadState,
+  type WaitingRequest,
   type WorkspaceIconName,
-  type AgentEvent,
-  requestOptionDeclines,
-  type BrowserPageContentPart,
-  BrowserSurfaceIdSchema,
+  type WorkspaceNotificationPreference,
 } from "@opensteer/core";
+import type {
+  ComputerAppIdentity,
+  ComputerAppSetupRequest,
+  IntegrationConnectionSummary,
+  IntegrationDefinitionSummary,
+  IntegrationGrant,
+  IntegrationOAuthApplicationSource,
+  IntegrationProviderApplication,
+  IntegrationRepositoryAccess,
+} from "@opensteer/integration-core";
+import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
+import {
+  ComputerAppApprovalSchema,
+  IntegrationInstallManifestSummarySchema,
+  SetComputerAppConnectionSchema,
+  integrationCredentialRejectedDetail,
+  type CreateIntegrationGrant,
+} from "@opensteer/integration-core/models";
+import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import {
   AgentPhoneHostTargetSchema,
-  androidPhoneDefinitionId,
-  browserUsageTabsPerRun,
+  BrowserTabGroupColorSchema,
   ComputerUseSessionSummarySchema,
   HarnessInstanceCatalogSchema,
-  type HarnessInstanceCatalog,
   type HarnessInstallation,
+  HostApiErrorSchema,
+  WorkspaceTabLineageSchema,
+  androidPhoneDefinitionId,
+  browserUsageTabsPerRun,
+  computerAppIdentityKey,
+  hostApi,
+  machineAccessPolicyDefault,
+  previousReleaseEligibility,
+  rpcSuccess,
+  taskLineMaxLength,
+  type BrowserTabLayout,
   type ComputerUseInstalledApp,
+  type HarnessInstanceCatalog,
   type HarnessModelDescriptor,
   type HarnessSourceDescriptor,
-  type ModelServer,
-  HostApiErrorSchema,
-  hostApi,
-  rpcSuccess,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
-  type ThreadMessagePage,
-  machineAccessPolicyDefault,
-  taskLineMaxLength,
   type MachineAccessPolicy,
   type MachineSummary,
+  type ModelServer,
+  type ThreadMessagePage,
 } from "@opensteer/protocol";
+import type { BrowserSignInOutcome } from "@opensteer/protocol/browser-sources";
+import { delay } from "@opensteer/shared/delay";
+import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import {
   TriggerOccurrenceSchema,
   TriggerRevisionSchema,
@@ -162,31 +150,23 @@ import {
   type TriggerSummary,
   type TriggerWatchActivation,
 } from "@opensteer/triggers";
-import { channelProviderCatalog } from "@opensteer/channel-core";
-import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import { z } from "zod";
-import type {
-  ComputerAppIdentity,
-  ComputerAppSetupRequest,
-  IntegrationConnectionSummary,
-  IntegrationDefinitionSummary,
-  IntegrationGrant,
-  IntegrationOAuthApplicationSource,
-  IntegrationProviderApplication,
-  IntegrationRepositoryAccess,
-} from "@opensteer/integration-core";
+import { accessModeUnavailableReason } from "../host/access-modes.js";
+import { BrowserHistoryClient } from "../host/browser-history.js";
+import type { BrowserPreferencesStorage } from "../host/browser-preferences.js";
+import { BrowserTabGroupClient, removeGroupedTabs } from "../host/browser-tab-groups.js";
 import {
-  ComputerAppApprovalSchema,
-  IntegrationInstallManifestSummarySchema,
-  SetComputerAppConnectionSchema,
-  integrationCredentialRejectedDetail,
-  type CreateIntegrationGrant,
-} from "@opensteer/integration-core/models";
+  arrangedBrowserTabLayout,
+  browserTabArrangement,
+  browserTabOrderTabs,
+} from "../host/browser-tab-order.js";
 import type {
   BrowserCommand,
-  BrowserProfileGrantSummary,
   BrowserFrameStore,
+  BrowserProfileGrantSummary,
   BrowserSessionSummary,
+  BrowserTabOpenInput,
+  BrowserTabOpenOptions,
   CreateHarnessInstanceInput,
   CreateThreadInput,
   CreateWorkspaceInput,
@@ -212,7 +192,25 @@ import type {
   WorkspaceSummary,
 } from "../host/client.js";
 import { HostClientRequestError } from "../host/client.js";
+import { computerViewMethods } from "../host/computer-views.js";
 import type { ExecutionChoice, ExecutionSelection } from "../host/execution-preferences.js";
+import { createInMemoryHostApiClient } from "../host/host-api-client.js";
+import {
+  rpcErrorStatus,
+  unwrapRpcResult,
+  type WebSocketClient,
+} from "../host/host-session-client.js";
+import type { ClientLifecycle } from "../host/lifecycle.js";
+import { placeList } from "../host/places.js";
+import type { NativeViewerSource } from "../host/surfaces.js";
+import { threadStopTarget } from "../host/thread-activity.js";
+import {
+  resolveThreadPlacement,
+  threadPlacementOptions,
+  type ThreadPlacementOption,
+} from "../host/thread-placement.js";
+import { isThreadUnread } from "../host/thread-read-state.js";
+import { ThreadStateProjection } from "../host/thread-state.js";
 import {
   assignmentReturnId,
   drawnLiveStream,
@@ -222,20 +220,48 @@ import {
   requestReceipt,
   threadInputDelivery,
 } from "../host/transcript.js";
-import { threadStopTarget } from "../host/thread-activity.js";
+import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
+import { WorkspaceTabActivations } from "../host/workspace-tab-activations.js";
+import { mockAppIcons } from "./mock-app-icons.js";
 import {
-  resolveThreadPlacement,
-  threadPlacementOptions,
-  type ThreadPlacementOption,
-} from "../host/thread-placement.js";
-import { accessModeUnavailableReason } from "../host/access-modes.js";
-import { createInMemoryHostApiClient } from "../host/host-api-client.js";
+  mockNightlyTriggerId,
+  mockTriggerSummary,
+  seedMockAutomations,
+  type MockTriggerRecord,
+} from "./mock-automations.js";
+import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
+import { mockComputerUseTurn } from "./mock-computer-use-transcript.js";
+import { MockComputerViews } from "./mock-computer-views.js";
 import {
-  rpcErrorStatus,
-  unwrapRpcResult,
-  type WebSocketClient,
-} from "../host/host-session-client.js";
-import { isThreadUnread } from "../host/thread-read-state.js";
+  createInitialIntegrationState,
+  mockAgentPhoneRunnerId,
+  mockCatalogTools,
+  mockComputerAppInstallation,
+  mockComputerAppTools,
+  mockComputerUseApps,
+  mockComputerUseDefinition,
+  mockGitHubRevoked,
+  mockHostedOAuthDisclosure,
+  mockIntegrationCallbackUrl,
+  mockIntegrationDefinitions,
+  mockIntegrationDigest,
+  mockIntegrationInstallation,
+  mockIphoneAppDefinitions,
+  mockMessagesRunnerId,
+  mockRejectedApiKey,
+  mockTmdbInstallation,
+  mockTmdbProposal,
+  mockVapi,
+  type MockIntegrationAttempt,
+} from "./mock-integration-fixtures.js";
+import { MockPhoneDisplaySocket } from "./mock-phone-display.js";
+import {
+  MockPlaceWorld,
+  seedMockPlaces,
+  type MockPlaceScript,
+  type MockPlacesWorld,
+} from "./mock-places.js";
+import { mockGeneratedTaskIcon, seedMockTaskMarks } from "./mock-task-marks.js";
 
 async function* binaryChunks(body: Blob, signal?: AbortSignal): AsyncIterable<Uint8Array> {
   const reader = body.stream().getReader();
@@ -256,30 +282,6 @@ async function* binaryChunks(body: Blob, signal?: AbortSignal): AsyncIterable<Ui
     reader.releaseLock();
   }
 }
-import { mockComputerUseTurn } from "./mock-computer-use-transcript.js";
-import {
-  createInitialIntegrationState,
-  mockAgentPhoneRunnerId,
-  mockCatalogTools,
-  mockComputerAppTools,
-  mockComputerAppInstallation,
-  mockComputerUseApps,
-  mockComputerUseDefinition,
-  mockHostedOAuthDisclosure,
-  mockIntegrationCallbackUrl,
-  mockIntegrationDefinitions,
-  mockIntegrationDigest,
-  mockIntegrationInstallation,
-  mockMessagesRunnerId,
-  mockIphoneAppDefinitions,
-  mockGitHubRevoked,
-  mockRejectedApiKey,
-  mockTmdbInstallation,
-  mockTmdbProposal,
-  mockVapi,
-  type MockIntegrationAttempt,
-} from "./mock-integration-fixtures.js";
-import { mockAppIcons } from "./mock-app-icons.js";
 
 // A mock launch represents the same signed-in person and seeded requests, so
 // account-scoped device preferences and drafts behave like a real attachment.
@@ -2915,17 +2917,12 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ outcome: client.respondBrowserSignIn(command), type: command.type });
     case "browser.password-sign-in.decline":
       return rpcSuccess({ status: client.declinePasswordSignIn(command), type: command.type });
-    case "browser.session.profile.save":
-      await client.saveBrowserSessionProfile(command.sessionId, command.input.name);
-      return unsupportedMockRpc();
     case "browser.profile.grant":
       await client.grantBrowserProfile(command);
       return unsupportedMockRpc();
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
       return unsupportedMockRpc();
-    case "browser.profile.prepare":
-      return rpcSuccess({ type: command.type });
     case "browser.history.remove":
       client.places!.removeHistory(command.profileId, command.url);
       return rpcSuccess({ type: command.type });
@@ -3866,14 +3863,18 @@ export class MockHostClient implements HostClient {
   readonly #pendingBrowserTabs = new PendingBrowserTabs({
     admitted: () => viewerScopeOf(this.#state.getSnapshot()) !== null,
     open: async (target, options) => {
+      const { signal, ...payload } = options;
       const started = this.#viewer.generation;
       const opened = unwrapRpcResult(
-        await this.rpc["commands.dispatch"]({
-          type: "browser.tab.open",
-          ...target,
-          ...options,
-          idempotencyKey: options.idempotencyKey!,
-        }),
+        await this.rpc["commands.dispatch"](
+          {
+            type: "browser.tab.open",
+            ...target,
+            ...payload,
+            idempotencyKey: options.idempotencyKey!,
+          },
+          signal ? { signal } : undefined,
+        ),
       );
       if (started !== this.#viewer.generation)
         throw new HostClientRequestError({
@@ -3894,8 +3895,9 @@ export class MockHostClient implements HostClient {
     changed: (pendingBrowserTabs) =>
       this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
   });
-  prepareBrowserProfile(): void {}
   readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
+  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
+  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   readonly openBrowserTab = async (
     target: string | BrowserTabOpenInput,
@@ -8409,13 +8411,6 @@ class MockHostState {
     };
     this.update({ ...this.snapshot, browserSessions: [...this.snapshot.browserSessions, session] });
     return session;
-  }
-
-  async saveBrowserSessionProfile(
-    _sessionId: string,
-    _name: string,
-  ): Promise<import("../host/client.js").BrowserProfileSummary> {
-    throw new Error("The opt-in mock does not provide browser profiles.");
   }
 
   async closeBrowser(sessionId: string): Promise<void> {

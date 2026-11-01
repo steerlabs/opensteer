@@ -1,4 +1,3 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -9,12 +8,13 @@ import {
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
+  type HarnessSourceDescriptor,
   type HostToRunnerMessage,
   type RunnerAuxiliaryTicketClaims,
   type RunnerCommand,
   type RunnerConnectionFence,
-  type HarnessSourceDescriptor,
 } from "@opensteer/protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { describe, expect, it, vi } from "vitest";
 import {
   RunnerRegistry,
@@ -2561,7 +2561,7 @@ function browserRunner(
     ...base,
     allowedModules: ["browser"],
     environmentIds: [],
-    modules: { browser: { profileSnapshotVersion: 2, runtimeId: "chromium" } },
+    modules: { browser: { wireVersion: 2, runtimeId: "chromium" } },
   };
 }
 

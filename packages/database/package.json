@@ -29,6 +29,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "@opensteer/browser-runtime-core": "workspace:*"
   }
 }

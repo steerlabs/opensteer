@@ -7,7 +7,6 @@ import {
   browserAccessInitialSelection,
   browserAccessResponse,
   browserAccessWarning,
-  browserProfileSavePrompt,
   browserSignInProblemCopy,
   browserSignInProblemMessage,
   browserSiteLabel,
@@ -27,8 +26,8 @@ import {
   type BrowserAccessSelection,
   type ChromeSignInAvailability,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
+import { useHostSnapshot } from "@opensteer/client/react";
 import {
   requestAgentProposedDetail,
   requestAgentProposedLabel,
@@ -40,12 +39,12 @@ import {
   type RequestPayload,
   type RequestResponse,
 } from "@opensteer/core";
+import type { MachineSummary } from "@opensteer/protocol";
 import type {
   BrowserSignInDecision,
   BrowserSignInOutcome,
   BrowserSourceInspection,
 } from "@opensteer/protocol/browser-sources";
-import type { MachineSummary } from "@opensteer/protocol";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -65,8 +64,8 @@ import {
 import { operationDetail } from "../client/mobile-client.js";
 import {
   color,
-  material,
   controlFontScaleLimit,
+  material,
   radius,
   space,
   touchTarget,
@@ -82,10 +81,10 @@ import {
   StatusDot,
 } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
-import { IntegrationConnectSheet } from "./integration-connect-sheet.js";
-import { InstallReview } from "./integration-install-review.js";
 import { Symbol } from "../ui/symbol.js";
 import { requestTitle, requestTitleLine } from "./docked-requests.js";
+import { IntegrationConnectSheet } from "./integration-connect-sheet.js";
+import { InstallReview } from "./integration-install-review.js";
 import {
   nextRequestSubmission,
   requestAnswerMaxLength,
@@ -225,8 +224,7 @@ export function RequestCard(props: {
       (request.kind === "computer.app.access" && request.payload.kind === "computer.app.access") ||
       (request.kind === "browser.sign-in" && signIn !== null) ||
       (request.kind === "browser.password-sign-in" && passwordSignIn !== null) ||
-      (request.kind === "browser.access" && request.payload.kind === "browser.access") ||
-      (request.kind === "browser.profile.save" && request.payload.kind === "browser.profile.save"));
+      (request.kind === "browser.access" && request.payload.kind === "browser.access"));
   const answerable =
     request.status === "pending" &&
     props.surface.denied === null &&
@@ -876,8 +874,7 @@ type BrowserAccessState = {
 };
 
 /**
- * Which saved browser profile a Workspace's agents may use, or the name a
- * fresh session's sign-ins are saved under — the same choice the web offers.
+ * Which browser profile a Workspace's agents may use, including empty creation.
  * Profiles come from the Host snapshot, never from the agent's words; a
  * profile already available to the Workspace says so and completes at once.
  */
@@ -891,24 +888,19 @@ function BrowserAccessBody(props: {
 }): ReactNode {
   const { snapshot } = useHostSnapshot(props.state.hostClient);
   const { payload } = props.request;
-  const save = payload.kind === "browser.profile.save";
+  if (payload.kind === "browser.profile.save")
+    return (
+      <AppText role="secondary">This older browser profile request is no longer available.</AppText>
+    );
   const suggestion = payload.kind === "browser.access" ? payload.suggestion : null;
   const profiles = snapshot.browserProfiles;
   const selection: BrowserAccessSelection | null =
     props.state.selection !== undefined
       ? props.state.selection
-      : save
-        ? { kind: "save" }
-        : suggestion
-          ? browserAccessInitialSelection(suggestion, profiles)
-          : null;
-  const name =
-    props.state.name ??
-    (payload.kind === "browser.profile.save"
-      ? (payload.suggestedName ?? "")
       : suggestion
-        ? browserAccessInitialName(suggestion)
-        : "");
+        ? browserAccessInitialSelection(suggestion, profiles)
+        : null;
+  const name = props.state.name ?? (suggestion ? browserAccessInitialName(suggestion) : "");
   const workspaceName =
     snapshot.workspaces.find((workspace) => workspace.id === props.request.targetWorkspaceId)
       ?.name ?? "this Workspace";
@@ -942,14 +934,7 @@ function BrowserAccessBody(props: {
   );
   return (
     <View style={styles.choices}>
-      {save ? (
-        <>
-          <AppText role="secondary" tone="soft">
-            {browserProfileSavePrompt(workspaceName)}
-          </AppText>
-          {nameField}
-        </>
-      ) : (
+      {
         <>
           <RowGroup>
             {profiles.map((profile) => (
@@ -981,12 +966,12 @@ function BrowserAccessBody(props: {
             {browserAccessWarning(workspaceName)}
           </AppText>
         </>
-      )}
+      }
       <ResponseStatus failure={props.failure} reason={props.reason} />
       <PrimaryButton
         busy={props.pendingId === browserAccessGrantId}
-        disabled={disabled || !browserAccessGrantable(selection, name, save ? [] : profiles)}
-        label={save ? "Save profile" : browserAccessGrantLabel(alreadyAvailable)}
+        disabled={disabled || !browserAccessGrantable(selection, name, profiles)}
+        label={browserAccessGrantLabel(alreadyAvailable)}
         onPress={() => props.state.onRespond(selection, name)}
       />
       <SecondaryButton

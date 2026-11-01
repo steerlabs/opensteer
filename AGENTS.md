@@ -262,7 +262,7 @@ decisions and constraints the code can't show.
 | Mobile lifecycle, UI or push notifications                             | [Mobile](docs/mobile.md)                                                                                      |
 | Managed infrastructure                                                 | [Cloud operations](apps/control-plane/src/cloud/README.md)                                                    |
 | Browser sessions, page uploads or profile storage                      | [Browser sessions](docs/browser-sessions.md)                                                                  |
-| Browser profile conversion formats                                     | [Legacy seed contract](packages/browser-profile/src/snapshot.ts)                                              |
+| Native browser profile identity and deletion                           | [Storage contract](packages/protocol/src/browser-profile-storage.ts)                                          |
 | Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |
 | Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
 | Voice mode and the voice agent                                         | [Voice](docs/voice.md)                                                                                        |

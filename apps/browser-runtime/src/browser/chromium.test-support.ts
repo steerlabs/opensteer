@@ -1,9 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
 import { expect } from "vitest";
 
 import {
@@ -12,7 +12,6 @@ import {
   type CdpParameters,
 } from "@opensteer/browser-core";
 
-import { type BrowserServerMessage, type BrowserSurfaceId } from "@opensteer/protocol";
 import {
   BrowserController,
   HostSignIns,
@@ -24,15 +23,16 @@ import {
   type BrowserPage,
   type CdpSession,
 } from "@opensteer/browser-runtime-core";
-import { FakeSink, validProfileClaims } from "@opensteer/browser-runtime-core/test-support";
+import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { type BrowserServerMessage, type BrowserSurfaceId } from "@opensteer/protocol";
 
+import { runHarness, sendAsAgent, startHarnessBridge } from "./browser-harness.test-support.js";
 import {
-  TestChromiumLauncher as PlaywrightChromiumLauncher,
-  findChromium,
   cleanup,
+  findChromium,
+  TestChromiumLauncher as PlaywrightChromiumLauncher,
   waitForBrowserState,
 } from "./browser-test-lifecycle.js";
-import { runHarness, sendAsAgent, startHarnessBridge } from "./browser-harness.test-support.js";
 
 const executablePath = findChromium();
 
@@ -135,16 +135,16 @@ class FrameTap {
 async function startFollowSession(options: { readonly path?: string } = {}) {
   const site = await serveFollowFixture();
   cleanup.push(() => site.close());
-  const claims = validProfileClaims();
+  const claims = validClaims();
   const browser = await new PlaywrightChromiumLauncher({
     chromiumSandbox: false,
     executablePath,
     headless: true,
   }).launch({
     initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
-    partitionKey: `profile:${claims.identity.profileId}`,
+    partitionKey: `session:${claims.sessionId}`,
     sessionId: claims.sessionId,
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+    storage: { kind: "guest" },
   });
   cleanup.push(() => browser.close());
   const cdpLog: CdpLogEntry[] = [];
@@ -180,7 +180,6 @@ async function startFollowSession(options: { readonly path?: string } = {}) {
   const controller = new BrowserController({
     cdpRouter,
     claims,
-    exportSnapshot: () => browser.exportSnapshot(),
     files,
     ledger,
     replaceSiteCookies: (target, cookies, deadline) =>
@@ -703,7 +702,6 @@ function observeContext(
     const existing = wrapped.get(page);
     if (existing) return existing;
     const observed: BrowserPage = {
-      submitNavigation: (url) => page.submitNavigation(url),
       agentCdp: () => page.agentCdp(),
       cdp: async () => {
         const targetId = await page.targetId();
@@ -988,31 +986,31 @@ const waitForAsync = waitForBrowserState;
 const waitFor = waitForBrowserState;
 
 export {
-  executablePath,
-  type PageSizeRequest,
-  type PageState,
-  type PointerEntry,
-  type TimedFrame,
-  startFollowSession,
-  closeBackgroundTab,
-  expectPictureRepaired,
-  rootCdpNavigate,
-  serveFollowFixture,
-  sameShape,
-  jpegSize,
-  type PictureBox,
-  redBoxInFrame,
-  startHarnessBridge,
-  runHarness,
-  testSignIns,
-  boundarySecrets,
-  serveBoundaryFixture,
-  sendAsAgent,
-  foundSecrets,
-  evaluationValue,
-  shownDialog,
   asJsonRecord,
   asRecord,
-  waitForAsync,
+  boundarySecrets,
+  closeBackgroundTab,
+  evaluationValue,
+  executablePath,
+  expectPictureRepaired,
+  foundSecrets,
+  jpegSize,
+  redBoxInFrame,
+  rootCdpNavigate,
+  runHarness,
+  sameShape,
+  sendAsAgent,
+  serveBoundaryFixture,
+  serveFollowFixture,
+  shownDialog,
+  startFollowSession,
+  startHarnessBridge,
+  testSignIns,
   waitFor,
+  waitForAsync,
+  type PageSizeRequest,
+  type PageState,
+  type PictureBox,
+  type PointerEntry,
+  type TimedFrame,
 };

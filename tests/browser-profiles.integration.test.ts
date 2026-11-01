@@ -1,5 +1,3 @@
-import { encodeBrowserProfileSnapshot } from "../packages/browser-profile/src/snapshot.js";
-import type { RunnerDescriptor } from "../packages/protocol/src/index.js";
 /**
  * Written against CONTRACTS.md before implementation. Failure journeys:
  * Guest copies lose later login; create replays duplicate identities; restricted
@@ -9,22 +7,14 @@ import type { RunnerDescriptor } from "../packages/protocol/src/index.js";
  * the checkout, including when a missing tool prevents later steps from running.
  */
 import { execFileSync } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { z } from "zod";
-import {
-  BrowserProfileIdSchema,
-  createId,
-  ModelSelectionSchema,
-  RequestIdSchema,
-  ThreadIdSchema,
-  type ThreadId,
-} from "../packages/core/src/index.js";
 import type { VerticalStack } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import {
@@ -32,11 +22,17 @@ import {
   type WebSocketClient,
 } from "../packages/client/src/host/host-session-client.js";
 import {
+  BrowserProfileIdSchema,
+  ModelSelectionSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  type ThreadId,
+} from "../packages/core/src/index.js";
+import {
   addCleanup,
   browserAvailable,
   deployment,
   grantedProfile,
-  profileRevision,
   run,
   startBrowser,
   waitFor,
@@ -67,12 +63,7 @@ const reportSchema = z
       .optional(),
     profiles: z
       .object({
-        profiles: z.array(
-          profileSchema.extend({
-            siteData: z.object({ hasData: z.boolean(), savedAt: z.string().nullable() }).optional(),
-          }),
-        ),
-        site: z.string().optional(),
+        profiles: z.array(profileSchema),
       })
       .optional(),
     // Missing identity is preserved as undefined so the assertion, rather than
@@ -289,91 +280,6 @@ async function fulfillNewProfile(
 }
 
 run("Browser profiles through a whole deployment", () => {
-  journey("J1a legacy copy reproduces the Guest login trap", async (evidence) => {
-    const { stack } = await profileDeployment();
-    const origin = await fixtureAccount();
-    const first = await profileTurn(stack, evidence, {
-      open: { fresh: true },
-      visit: `${origin}/account`,
-    });
-    const guest = first.report.opened!.session;
-    equal(evidence, "agent opened Guest", guest.profileId, null);
-    equal(evidence, "Guest starts signed out", first.report.page!.signedIn, false);
-    const saved = await stack.api["commands.dispatch"]({
-      type: "browser.session.profile.save",
-      sessionId: guest.id,
-      idempotencyKey: randomUUID(),
-      input: { name: "copied" },
-    });
-    evidence.observations.push({ saved });
-    if (!saved.ok || saved.data.type !== "browser.session.profile.save")
-      throw new Error(JSON.stringify(saved));
-    const login = await profileTurn(
-      stack,
-      evidence,
-      { sessionId: guest.id, visit: `${origin}/login` },
-      first.threadId,
-    );
-    equal(evidence, "person signs in in the original Guest tab", login.report.page!.signedIn, true);
-    equal(
-      evidence,
-      "copy did not convert the Guest identity",
-      login.report.opened!.session.profileId,
-      null,
-    );
-    await profileTurn(stack, evidence, { sessionId: guest.id, close: true }, first.threadId);
-    const copied = await profileTurn(
-      stack,
-      evidence,
-      { open: { profileId: saved.data.profile.id }, visit: `${origin}/account`, close: true },
-      first.threadId,
-    );
-    equal(
-      evidence,
-      "copied profile lost the later Guest login (incident)",
-      copied.report.page!.signedIn,
-      false,
-    );
-  });
-
-  journey("J1b create before login persists the exact identity across turns", async (evidence) => {
-    const { stack } = await profileDeployment();
-    const origin = await fixtureAccount();
-    const first = await profileTurn(stack, evidence, {
-      create: { name: "work" },
-      open: "created",
-      visit: `${origin}/login`,
-      close: true,
-    });
-    const profile = first.report.created!.profile;
-    equal(
-      evidence,
-      "sign-in session belongs to the created profile",
-      first.report.opened!.session.profileId,
-      profile.id,
-    );
-    equal(evidence, "fixture login succeeded", first.report.page!.signedIn, true);
-    await waitFor(async () => (await profileRevision(stack, profile.id)) > 0, 20_000);
-    evidence.observations.push({
-      profileId: profile.id,
-      savedRevision: await profileRevision(stack, profile.id),
-    });
-    const later = await profileTurn(
-      stack,
-      evidence,
-      { open: { profileId: profile.id }, visit: `${origin}/account`, close: true },
-      first.threadId,
-    );
-    equal(evidence, "later turn retained sign-in", later.report.page!.signedIn, true);
-    const guest = await profileTurn(
-      stack,
-      evidence,
-      { open: { fresh: true }, visit: `${origin}/account`, close: true },
-      first.threadId,
-    );
-    equal(evidence, "later Guest remains isolated", guest.report.page!.signedIn, false);
-  });
-
   journey("J2 creation replay and independent same-name calls", async (evidence) => {
     const { stack } = await profileDeployment();
     const { report } = await profileTurn(stack, evidence, {
@@ -671,184 +577,4 @@ run("Browser profiles through a whole deployment", () => {
       equal(evidence, "grants opened no session", bootstrap.data.browser.sessions.length, 0);
     },
   );
-
-  journey("J6 site lookup reports saved fixture data and an empty profile", async (evidence) => {
-    const { stack } = await profileDeployment();
-    const origin = await fixtureAccount();
-    // Person setup keeps this journey independent of the missing create tool.
-    const workId = await grantedProfile(stack, stack.mainWorkspaceId, "work");
-    const emptyId = await grantedProfile(stack, stack.mainWorkspaceId);
-    evidence.observations.push({ origin, workId, emptyId });
-    const first = await profileTurn(stack, evidence, {
-      open: { profileId: workId },
-      visit: `${origin}/login`,
-      close: true,
-    });
-    equal(evidence, "fixture signed in", first.report.page!.signedIn, true);
-    await waitFor(async () => (await profileRevision(stack, workId)) > 0, 20_000);
-    const lookup = await profileTurn(stack, evidence, { site: origin }, first.threadId);
-    const profiles = lookup.report.profiles!.profiles;
-    equal(
-      evidence,
-      "saved fixture data is reported",
-      profiles.find((profile) => profile.id === workId)?.siteData?.hasData,
-      true,
-    );
-    const savedAt = profiles.find((profile) => profile.id === workId)?.siteData?.savedAt;
-    equal(
-      evidence,
-      "saved fixture data has a savedAt timestamp",
-      typeof savedAt === "string" && Number.isFinite(Date.parse(savedAt)),
-      true,
-    );
-    equal(
-      evidence,
-      "empty profile holds no fixture data",
-      profiles.find((profile) => profile.id === emptyId)?.siteData,
-      { hasData: false, savedAt: null },
-    );
-  });
 });
-
-it("serves only an authorized frozen native seed and exposes offline erasure through bootstrap", async () => {
-  const stack = await deployment(undefined);
-  const bootstrap = await stack.api["bootstrap.get"]({});
-  if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-  const ownerId = bootstrap.data.user.id;
-  const created = await stack.api["commands.dispatch"]({
-    type: "browser.profile.create",
-    input: { name: "Native recovery" },
-    idempotencyKey: randomUUID(),
-  });
-  if (!created.ok || created.data.type !== "browser.profile.create")
-    throw new Error("Native test profile was not created");
-  const profileId = created.data.profile.id;
-  const runnerId = createId("runner"),
-    enrollmentHash = "native-profile-test-" + randomUUID();
-  await stack.host.store.createRunnerEnrollment({
-    allowedModules: ["browser"],
-    createdBy: ownerId,
-    expiresAt: new Date(Date.now() + 60_000),
-    id: "ren_" + randomUUID(),
-    idempotencyKey: randomUUID(),
-    name: "Offline owner",
-    requestFingerprint: randomUUID(),
-    runnerKind: "managed",
-    tokenHash: enrollmentHash,
-  });
-  await stack.host.store.enrollRunnerConnection({
-    descriptor: {
-      bootId: ("rbt_" + randomUUID()) as RunnerDescriptor["bootId"],
-      capabilities: [],
-      modules: { browser: { runtimeId: "native-offline", profileSnapshotVersion: 2 } },
-      name: "Offline owner",
-      runnerId,
-      runnerKind: "managed",
-      runtimeVersion: "test",
-    },
-    enrollmentTokenHash: enrollmentHash,
-    publicKeyFingerprint: "sha256:" + randomUUID(),
-    publicKeyPem: "test-native-profile-public-key",
-  });
-  const binding = {
-    version: 1 as const,
-    deploymentId: stack.host.deployment.id,
-    profileId,
-    runnerId,
-    storageInstanceId: randomUUID(),
-    bindingId: randomUUID(),
-    engine: "chromium" as const,
-  };
-  const seed = {
-    revision: 0,
-    digest: createHash("sha256")
-      .update(encodeBrowserProfileSnapshot({ cookies: [], origins: [] }))
-      .digest("hex"),
-  };
-  const token = randomBytes(32).toString("base64url");
-  await stack.host.store.reserveBrowserProfileInitialization({
-    binding,
-    seed,
-    tokenHash: createHash("sha256").update(token).digest("hex"),
-    expiresAt: new Date(Date.now() + 60_000),
-  });
-  const seedUrl = `/v1/browser-profile-initialization/${profileId}`;
-  const authorized = await stack.host.app.inject({
-    method: "GET",
-    url: seedUrl,
-    headers: { authorization: `Bearer ${token}` },
-  });
-  expect(authorized.statusCode).toBe(200);
-  expect(authorized.headers["cache-control"]).toBe("private, no-store");
-  expect(authorized.json()).toEqual({ binding, seed, snapshot: { cookies: [], origins: [] } });
-  const denied = await stack.host.app.inject({
-    method: "GET",
-    url: seedUrl,
-    headers: { authorization: `Bearer ${randomBytes(32).toString("base64url")}` },
-  });
-  expect(denied.statusCode).toBe(403);
-  const invalidCompletion = await stack.host.app.inject({
-    method: "POST",
-    url: seedUrl,
-    headers: { authorization: `Bearer ${token}` },
-    payload: { binding: { ...binding, bindingId: randomUUID() }, seed },
-  });
-  expect(invalidCompletion.statusCode).toBe(403);
-  expect(
-    (
-      await stack.host.browser.profileSiteData({
-        ownerId,
-        profileIds: [profileId],
-        site: "https://example.com",
-      })
-    ).profiles.has(profileId),
-  ).toBe(false);
-  const people = await connectedPeople(stack);
-  const deleted = await stack.api["commands.dispatch"]({
-    type: "browser.profile.delete",
-    profileId,
-    idempotencyKey: randomUUID(),
-  });
-  expect(deleted).toMatchObject({
-    ok: true,
-    data: { deletion: { profileId, computerId: runnerId, state: "pending-computer" } },
-  });
-  const after = await stack.api["bootstrap.get"]({});
-  expect(after).toMatchObject({
-    ok: true,
-    data: {
-      browser: {
-        profileDeletions: [{ profileId, computerId: runnerId, state: "pending-computer" }],
-      },
-    },
-  });
-  await vi.waitFor(
-    () => {
-      for (const client of people)
-        expect(client.getSnapshot().browserProfileDeletions).toEqual([
-          { profileId, computerId: runnerId, state: "pending-computer" },
-        ]);
-    },
-    { timeout: 5_000 },
-  );
-  const [job] = await stack.host.store.listBrowserProfileErasureJobs(runnerId);
-  if (!job) throw new Error("Deleted native profile has no erasure job");
-  for (const state of ["pending-restart", "deleted"] as const) {
-    await stack.host.store.acknowledgeBrowserProfileDeletion({ ...job, state });
-    for (const client of people) {
-      await client.refresh();
-      expect(client.getSnapshot().browserProfileDeletions).toEqual(
-        state === "deleted" ? [] : [{ profileId, computerId: runnerId, state }],
-      );
-    }
-  }
-  expect(
-    (
-      await stack.host.app.inject({
-        method: "GET",
-        url: seedUrl,
-        headers: { authorization: `Bearer ${token}` },
-      })
-    ).statusCode,
-  ).toBe(403);
-}, 30_000);

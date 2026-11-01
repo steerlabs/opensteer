@@ -1,5 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { z } from "zod";
+import {
+  browserFrameFits,
+  defaultBrowserViewport,
+  type CdpParameters,
+} from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
   browserWorkspaceTabUrlMaxLength,
@@ -9,12 +12,10 @@ import {
   type BrowserSurfaceId,
   type BrowserWorkspaceTabDescriptor,
 } from "@opensteer/protocol/browser";
-import {
-  browserFrameFits,
-  defaultBrowserViewport,
-  type CdpParameters,
-} from "@opensteer/browser-core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
 import type { BrowserContext, BrowserPage, CdpSession, PageGeometry, Viewport } from "./backend.js";
@@ -99,6 +100,8 @@ interface SurfaceRecord {
   recentCommits: Map<string, NavigationCommit>;
   navigation: { canGoBack: boolean; canGoForward: boolean } | null;
   navigationRevision: number;
+  navigationFailed: boolean;
+  navigationAttempt: number;
   committedUrl: string;
   /** The committed document's loader, from its commit or the first title sample. */
   loaderId: string | null;
@@ -350,6 +353,8 @@ export class SurfaceLedger {
   async navigate(surfaceId: BrowserSurfaceId, url: string, navigationId?: string) {
     const record = this.records.get(surfaceId);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    const attempt = ++record.navigationAttempt;
+    this.setNavigationFailed(record, false);
     const pending: NavigationBinding | undefined = navigationId
       ? {
           url,
@@ -373,6 +378,8 @@ export class SurfaceLedger {
           isDownload: z.boolean().optional(),
         })
         .parse(await record.cdp.send("Page.navigate", { url }));
+      if (attempt === record.navigationAttempt)
+        this.setNavigationFailed(record, !!result.errorText);
       if (!pending || !navigationId || record.pendingNavigations.get(navigationId) !== pending)
         return result;
       if (
@@ -389,8 +396,17 @@ export class SurfaceLedger {
       return result;
     } catch (error) {
       if (navigationId) record.pendingNavigations.delete(navigationId);
+      if (attempt === record.navigationAttempt) this.setNavigationFailed(record, true);
       throw error;
     }
+  }
+
+  private setNavigationFailed(record: SurfaceRecord, failed: boolean): void {
+    if (this.records.get(record.id) !== record || record.navigationFailed === failed) return;
+    record.navigationFailed = failed;
+    if (failed) record.loading = false;
+    if (record.announced)
+      this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
   }
 
   private matchNavigation(
@@ -725,11 +741,13 @@ export class SurfaceLedger {
    */
   async openSurface(
     options: {
+      readonly signal?: AbortSignal;
       readonly viewport?: Viewport;
       readonly activate?: boolean;
       readonly surfaceId?: BrowserSurfaceId;
     } = {},
   ): Promise<BrowserSurface> {
+    options.signal?.throwIfAborted();
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
     if (options.surfaceId && this.records.has(options.surfaceId))
       return this.toSurface(this.records.get(options.surfaceId)!);
@@ -738,15 +756,45 @@ export class SurfaceLedger {
       throw new BrowserRuntimeError("conflict", "The browser cannot open more tabs.");
     }
     // Discovery waits until the creator has assigned the requested identity.
-    await this.creatingPage;
+    await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
+      ...(options.signal ? { signal: options.signal } : {}),
+      timeoutError: () => new BrowserRuntimeError("conflict", "Opening this page timed out."),
+    });
+    options.signal?.throwIfAborted();
     let created: () => void = () => undefined;
     this.creatingPage = new Promise<void>((resolve) => {
       created = resolve;
     });
     let page: BrowserPage;
     try {
-      page = await this.context.createPage();
-      await this.register(page, options.activate ?? true, options.viewport, options.surfaceId);
+      const creating = this.context.createPage();
+      void creating.then(
+        (created) => {
+          if (options.signal?.aborted) void created.close().catch(() => undefined);
+        },
+        () => undefined,
+      );
+      page = await withTimeout(creating, 18_000, {
+        ...(options.signal ? { signal: options.signal } : {}),
+        timeoutError: () => new BrowserRuntimeError("conflict", "Opening this page timed out."),
+      });
+      const abort = () => {
+        void page.close().catch(() => undefined);
+      };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      try {
+        await withTimeout(
+          this.register(page, options.activate ?? true, options.viewport, options.surfaceId),
+          18_000,
+          {
+            ...(options.signal ? { signal: options.signal } : {}),
+            timeoutError: () => new BrowserRuntimeError("conflict", "Opening this page timed out."),
+          },
+        );
+        options.signal?.throwIfAborted();
+      } finally {
+        options.signal?.removeEventListener("abort", abort);
+      }
     } finally {
       this.creatingPage = null;
       created();
@@ -974,6 +1022,8 @@ export class SurfaceLedger {
           recentCommits: new Map(),
           navigation: null,
           navigationRevision: 0,
+          navigationFailed: false,
+          navigationAttempt: 0,
           loaderId: null,
           titleReader: null,
           documentId: randomUUID(),
@@ -1012,6 +1062,9 @@ export class SurfaceLedger {
             // A new document has no title until its own document names one.
             record.title = "";
             record.favicon = null;
+            // Reload and history commit without navigate(); Chromium's error page is not a recovery.
+            if (!("unreachableUrl" in frame) && !record.committedUrl.startsWith("chrome-error://"))
+              record.navigationFailed = false;
             record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
             record.geometryRevision++;
             if (record.announced)
@@ -1539,6 +1592,7 @@ export class SurfaceLedger {
       ...record.navigation,
       ...(record.favicon === null ? {} : { favicon: record.favicon }),
       ...(record.loading ? { loading: true } : {}),
+      ...(record.navigationFailed ? { navigationFailed: true } : {}),
       id: record.id,
       sizedByAgent: record.agentMetrics !== null,
       documentId: record.documentId,

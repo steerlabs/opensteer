@@ -1,6 +1,3 @@
-import { RealtimeHub } from "../packages/orchestration/src/realtime-hub.js";
-import { RunnerBrowserRuntimeRouter } from "../apps/host/src/browser/runner-browser-runtime.js";
-import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -12,16 +9,17 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { addCleanup, deployment } from "./browser-deployment.test-support.js";
+import type { NativeProfileOpenTiming } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
+import type { BrowserOpenTiming } from "../packages/browser-runtime-core/src/runtime.js";
+import type { BrowserProfileId } from "../packages/core/src/index.js";
+import { RealtimeHub } from "../packages/orchestration/src/realtime-hub.js";
+import type { BrowserTabOpenResult } from "../packages/protocol/src/index.js";
+import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
+import { closeHttpServerNow } from "../packages/shared/src/httpServer.js";
 import { gate } from "../packages/shared/src/observation.test-support.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
-import { closeHttpServerNow } from "../packages/shared/src/httpServer.js";
-import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
-import type { BrowserProfileId } from "../packages/core/src/index.js";
-import type { NativeProfileOpenTiming } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
-import type { BrowserOpenTiming } from "../packages/browser-runtime-core/src/runtime.js";
-import type { BrowserTabOpenResult } from "../packages/protocol/src/index.js";
+import { addCleanup, deployment } from "./browser-deployment.test-support.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -211,7 +209,7 @@ async function stateSite() {
   };
 }
 
-it("converts, retains, restarts, reconciles and erases native profiles through the real Host and Runner", async () => {
+it("creates native profiles lazily, retains sign-ins through restart, and erases them on their owner", async () => {
   await access(chromium.executablePath());
   const broadNotices = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
   const browser = await browserProcess();
@@ -221,10 +219,6 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
   let coldNativeTimings: NativeProfileOpenTiming[] = [];
   let warmWallMs: number | undefined;
   let coldWallMs: number | undefined;
-  let preparedFirstOpen: BrowserOpenTiming[] = [];
-  let preparedFirstOpenWallMs: number | undefined;
-  let joinedFirstOpen: BrowserOpenTiming[] = [];
-  let joinedFirstOpenWallMs: number | undefined;
   addCleanup(
     "native profile timing receipts",
     async () => {
@@ -240,10 +234,6 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
             coldNativeTimings,
             warmWallMs,
             coldWallMs,
-            preparedFirstOpen,
-            preparedFirstOpenWallMs,
-            joinedFirstOpen,
-            joinedFirstOpenWallMs,
           },
           null,
           2,
@@ -304,73 +294,41 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
     local: "local-kept",
     indexed: "idb-kept",
   };
-  const guest = await open(undefined, "/seed?id=seed");
-  expect(await site.observed("seed")).toEqual(expected);
-  const profile = await stack.host.browser.saveSessionAsProfile({
-    name: "Converted",
+  const profile = await stack.host.browser.createProfile({
+    name: "Native",
     ownerId: owner.id,
-    sessionId: guest.sessionId,
+    workspaceId: stack.mainWorkspaceId,
+    idempotencyKey: randomUUID(),
   });
-  await close(guest);
   const row = () =>
     stack.host.store.database
       .selectFrom("browserProfiles")
       .selectAll()
       .where("id", "=", profile.id)
       .executeTakeFirstOrThrow();
-  const frozen = await stack.host.store.database
-    .selectFrom("browserProfileRevisions")
-    .selectAll()
-    .where("profileId", "=", profile.id)
-    .executeTakeFirstOrThrow();
-  expect(await row()).toMatchObject({ storageState: "vault", revision: 1 });
-  const legacyLoad = vi.spyOn(stack.host.browser, "loadProfileState");
-  const legacyCommit = vi.spyOn(stack.host.browser, "commitProfileState");
-  const complete = vi.spyOn(stack.host.browser, "completeProfileInitialization");
-  const other = await stack.host.browser.createProfile({
-    name: "Independent",
-    ownerId: owner.id,
-    workspaceId: stack.mainWorkspaceId,
-    idempotencyKey: randomUUID(),
-  });
-  const preparedOther = await open(other.id, "/read?id=prepare-independent");
-  await site.observed("prepare-independent");
-  await close(preparedOther);
-  const seedGate = gate({ label: "slow conversion seed", deadlineMs: 15_000 });
-  const loadSeed = stack.host.browser.loadProfileInitialization.bind(stack.host.browser);
-  const seeds = vi
-    .spyOn(stack.host.browser, "loadProfileInitialization")
-    .mockImplementation(async (id, token) => {
-      if (id === profile.id) await bounded(seedGate.enter(), "Seed conversion was never released");
-      const result = await loadSeed(id, token);
-      return result;
-    });
-  const firstOpening = open(profile.id, "/delayed?id=conversion");
+  expect(await row()).toMatchObject({ storageState: "unbound", initialized: false });
+  expect((await browser.health()).profileHostCount).toBe(0);
+  const seeded = await open(profile.id, "/seed?id=seed");
+  expect(await site.observed("seed")).toEqual(expected);
+  await close(seeded);
+  const binding = await stack.host.store.getBrowserProfileStorage(profile.id);
+  expect(binding).toMatchObject({ kind: "local", initialized: true });
+  const firstOpening = open(profile.id, "/delayed?id=initial");
   void firstOpening.catch(() => undefined);
   let converted: BrowserTabOpenResult;
   try {
-    await seedGate.entered;
-    const independent = await bounded(
-      open(other.id, "/read?id=independent"),
-      "Profile B was serialized behind profile A",
-      5000,
-    );
-    await site.observed("independent");
-    await close(independent);
-    seedGate.release();
     converted = await firstOpening;
     await site.navigation.entered;
     expect(site.responseCompleted(), "tab.open waited for the delayed HTTP response").toBe(false);
     site.navigation.release();
   } finally {
-    seedGate.release();
     site.navigation.release();
     await bounded(
       firstOpening.catch(() => undefined),
-      "Admitted conversion did not settle during cleanup",
+      "Admitted initial did not settle during cleanup",
     );
   }
-  expect(await site.observed("conversion")).toEqual(expected);
+  expect(await site.observed("initial")).toEqual(expected);
   await vi.waitFor(
     async () => {
       const history = await stack.api["browser.history.get"]({ profileId: profile.id });
@@ -380,9 +338,10 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
           data: {
             entries: [
               expect.objectContaining({
-                url: site.origin + "/delayed?id=conversion",
+                url: site.origin + "/delayed?id=initial",
                 visitCount: 1,
               }),
+              expect.objectContaining({ url: site.origin + "/seed?id=seed", visitCount: 1 }),
             ],
           },
         },
@@ -390,37 +349,17 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
     },
     { timeout: 5000 },
   );
-  expect(await row()).toMatchObject({
-    storageState: "local",
-    revision: 1,
-    frozenSeedRevision: "1",
-    storageEngine: "chromium",
-  });
-  expect(
-    await stack.host.store.database
-      .selectFrom("browserProfileRevisions")
-      .selectAll()
-      .where("profileId", "=", profile.id)
-      .executeTakeFirstOrThrow(),
-  ).toEqual(frozen);
-  expect(legacyLoad).not.toHaveBeenCalled();
-  expect(legacyCommit).not.toHaveBeenCalled();
   await close(converted);
   await vi.waitFor(
     async () =>
       expect((await browser.health()).sessionCount, "Closed profile still holds a session").toBe(0),
     { timeout: 5000 },
   );
-  const requests = { seeds: seeds.mock.calls.length, complete: complete.mock.calls.length };
   const warmStart = browser.timings.length;
   const warmWallStart = performance.now();
   const warm = await open(profile.id, "/read?id=warm");
   warmWallMs = performance.now() - warmWallStart;
   expect(await site.observed("warm")).toEqual(expected);
-  expect(seeds).toHaveBeenCalledTimes(requests.seeds);
-  expect(complete).toHaveBeenCalledTimes(requests.complete);
-  expect(legacyLoad).not.toHaveBeenCalled();
-  expect(legacyCommit).not.toHaveBeenCalled();
   expect(browser.timings.some((timing) => timing.acquisition === "warm")).toBe(true);
   warmTimings = browser.timings.slice(warmStart);
   await close(warm);
@@ -443,317 +382,13 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
     ok: true,
     data: { tabs: [expect.objectContaining({ id: cold.tabId })] },
   });
-  expect(seeds).toHaveBeenCalledTimes(requests.seeds);
-  expect(complete).toHaveBeenCalledTimes(requests.complete);
   expect(browser.timings.some((timing) => timing.acquisition === "cold")).toBe(true);
   coldTimings = browser.timings.slice(coldStart);
   coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);
   await close(cold);
 
-  const preparingHost = vi.spyOn(stack.host.browser, "prepareProfile");
-  const preparationErrors: Error[] = [];
-  const preparationEnds: Promise<void>[] = [];
-  let intentProfileId = profile.id;
-  const resolveTarget = RunnerBrowserRuntimeRouter.prototype.resolve;
-  const resolvingPreparation = vi
-    .spyOn(RunnerBrowserRuntimeRouter.prototype, "resolve")
-    .mockImplementation(function (this: RunnerBrowserRuntimeRouter, placement) {
-      const target = resolveTarget.call(this, placement);
-      if (target?.prepareProfile) {
-        const prepare = target.prepareProfile.bind(target);
-        return {
-          ...target,
-          prepareProfile: (ticket: string) => {
-            const connection = prepare(ticket);
-            connection.on("error", (error) => preparationErrors.push(error));
-            preparationEnds.push(
-              new Promise<void>((resolve) => connection.on("close", () => resolve())),
-            );
-            return connection;
-          },
-        };
-      }
-      return target;
-    });
-  const preparingClient = async () => {
-    const previousEnds = preparationEnds.length;
-    await vi.waitFor(
-      async () => {
-        const bootstrap = await stack.api["bootstrap.get"]({});
-        expect(
-          bootstrap.ok && bootstrap.data.browser.available,
-          "Runtime inventory not admitted before client intent",
-        ).toBe(true);
-      },
-      { timeout: 15_000 },
-    );
-    const previousPrepares = preparingHost.mock.calls.length;
-    const client = new HttpHostClient({
-      baseUrl: stack.hostOrigin,
-      capabilities: ["browser-profile-prepare-v1"],
-      refreshIntervalMs: 0,
-      browserPreferencesStorage: {
-        keys: () => [],
-        getItem: (key) =>
-          key.startsWith("opensteer.browse-with.v1:")
-            ? JSON.stringify({ kind: "profile", profileId: intentProfileId })
-            : null,
-        setItem: () => {},
-        removeItem: () => {},
-      },
-      fetch: (input, init) => {
-        const headers = new Headers(init?.headers);
-        headers.set("cookie", stack.sessionCookie);
-        headers.set("origin", stack.hostOrigin.origin);
-        return fetch(input, { ...init, headers });
-      },
-    });
-    addCleanup("preparing client", async () => client.dispose(), 0);
-    await client.load();
-    expect(client.getSnapshot().session).toBe("authenticated");
-    client.prepareBrowserProfile();
-    await vi.waitFor(
-      () =>
-        expect(
-          preparingHost.mock.calls.length,
-          "The client did not send preparation intent",
-        ).toBeGreaterThan(previousPrepares),
-      { timeout: 2000 },
-    );
-    const preparation = preparingHost.mock.results.at(-1)!;
-    if (preparation.type === "return") await preparation.value;
-    const resolved = resolvingPreparation.mock.results.at(-1)!;
-    if (resolved.type === "return")
-      expect(resolved.value).toMatchObject({
-        profilePrepare: true,
-        incarnation: expect.any(String),
-      });
-    expect(
-      preparationEnds.length,
-      "The Host did not authorize preparation on Personal Main",
-    ).toBeGreaterThan(previousEnds);
-    return client;
-  };
-  await browser.close();
-  await browser.start();
-  await stack.restartRunner();
-  const readyCounts = {
-    native: browser.nativeTimings.length,
-    seeds: seeds.mock.calls.length,
-    complete: complete.mock.calls.length,
-  };
-  const readyClient = await preparingClient();
-  await bounded(preparationEnds.at(-1)!, "Ready preparation did not finish");
-  expect(preparationErrors).toEqual([]);
-  expect(await browser.health()).toMatchObject({ profileHostCount: 0, sessionCount: 0 });
-  expect(browser.nativeTimings).toHaveLength(readyCounts.native);
-  expect(seeds).toHaveBeenCalledTimes(readyCounts.seeds);
-  expect(complete).toHaveBeenCalledTimes(readyCounts.complete);
-  readyClient.dispose();
-
-  const vaultProfile = async (name: string) => {
-    const guest = await open(undefined, `/seed?id=${name}`);
-    await site.observed(name);
-    const saved = await stack.host.browser.saveSessionAsProfile({
-      name,
-      ownerId: owner.id,
-      sessionId: guest.sessionId,
-    });
-    await close(guest);
-    return saved;
-  };
-  const preparedVault = await vaultProfile("prepare-vault");
-  intentProfileId = preparedVault.id;
-  const visitsBeforePrepare = site.visits();
-  const beforePreparation = await stack.api["bootstrap.get"]({});
-  const conversionCounts = {
-    native: browser.nativeTimings.length,
-    seeds: seeds.mock.calls.length,
-    complete: complete.mock.calls.length,
-  };
-  const client = await preparingClient();
-  await bounded(preparationEnds.at(-1)!, "Vault preparation did not finish conversion");
-  expect(preparationErrors).toEqual([]);
-  expect(await browser.health()).toMatchObject({ profileHostCount: 0, sessionCount: 0 });
-  expect(seeds).toHaveBeenCalledTimes(conversionCounts.seeds + 1);
-  expect(complete).toHaveBeenCalledTimes(conversionCounts.complete + 1);
-  expect(
-    browser.nativeTimings
-      .slice(conversionCounts.native)
-      .filter((timing) => timing.stage === "chromium-launch"),
-  ).toHaveLength(1);
-  expect(site.visits(), "Preparation navigated an unauthorized tab").toEqual(visitsBeforePrepare);
-  const afterPreparation = await stack.api["bootstrap.get"]({});
-  expect(afterPreparation.ok && afterPreparation.data.browser.sessions).toEqual(
-    beforePreparation.ok && beforePreparation.data.browser.sessions,
-  );
-  const preparedCounts = {
-    native: browser.nativeTimings.length,
-    seeds: seeds.mock.calls.length,
-    complete: complete.mock.calls.length,
-  };
-  const firstStart = browser.timings.length;
-  const firstWallStart = performance.now();
-  const first = await open(preparedVault.id, "/read?id=prepared-first");
-  preparedFirstOpenWallMs = performance.now() - firstWallStart;
-  expect(await site.observed("prepared-first")).toEqual(expected);
-  preparedFirstOpen = browser.timings.slice(firstStart);
-  expect(preparedFirstOpen).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ stage: "profile-acquire", acquisition: "cold" }),
-    ]),
-  );
-  const clickNative = browser.nativeTimings.slice(preparedCounts.native);
-  expect(clickNative.filter((timing) => timing.stage === "chromium-launch")).toHaveLength(1);
-  expect(clickNative.filter((timing) => timing.stage === "import")).toEqual([]);
-  expect(seeds).toHaveBeenCalledTimes(preparedCounts.seeds);
-  expect(complete).toHaveBeenCalledTimes(preparedCounts.complete);
-  await close(first);
-  client.dispose();
-
-  const racingVault = await vaultProfile("racing-vault");
-  await browser.close();
-  await browser.start();
-  await stack.restartRunner();
-  intentProfileId = racingVault.id;
-  const prepareGate = gate({ label: "racing preparation seed", deadlineMs: 15_000 });
-  const racingCounts = {
-    seeds: seeds.mock.calls.length,
-    complete: complete.mock.calls.length,
-    native: browser.nativeTimings.length,
-  };
-  seeds.mockImplementationOnce(async (id, token) => {
-    expect(id).toBe(racingVault.id);
-    await prepareGate.enter();
-    return loadSeed(id, token);
-  });
-  const joinedClient = await preparingClient();
-  await prepareGate.entered;
-  const attachEntered = Promise.withResolvers<void>();
-  const attachBridge = LocalBrowserRuntimeBridge.prototype.attach;
-  const joiningBridge = vi
-    .spyOn(LocalBrowserRuntimeBridge.prototype, "attach")
-    .mockImplementation(function (
-      this: LocalBrowserRuntimeBridge,
-      channel,
-      ticket,
-      sink,
-      preparation,
-    ) {
-      const result = attachBridge.call(this, channel, ticket, sink, preparation);
-      if (!preparation) attachEntered.resolve();
-      return result;
-    });
-  const joinStart = browser.timings.length;
-  const joinWallStart = performance.now();
-  const joining = open(racingVault.id, "/read?id=joined-first");
-  void joining.catch(() => undefined);
-  try {
-    await bounded(attachEntered.promise, "Racing attach never reached the runtime bridge");
-    prepareGate.release();
-    const joined = await joining;
-    joinedFirstOpenWallMs = performance.now() - joinWallStart;
-    expect(await site.observed("joined-first")).toEqual(expected);
-    joinedFirstOpen = browser.timings.slice(joinStart);
-    await bounded(preparationEnds.at(-1)!, "Racing preparation did not finish");
-    expect(
-      browser.nativeTimings
-        .slice(racingCounts.native)
-        .filter((timing) => timing.stage === "chromium-launch"),
-    ).toHaveLength(2);
-    expect(
-      browser.nativeTimings
-        .slice(racingCounts.native)
-        .filter((timing) => timing.stage === "import"),
-    ).toHaveLength(1);
-    expect(seeds).toHaveBeenCalledTimes(racingCounts.seeds + 1);
-    // The racing ticket still carries initialization authority: ready storage
-    // replays Host completion without reimporting the seed or reopening its importer.
-    expect(complete).toHaveBeenCalledTimes(racingCounts.complete + 2);
-    await close(joined);
-  } finally {
-    prepareGate.release();
-    await bounded(
-      joining.catch(() => undefined),
-      "Racing open did not settle",
-    );
-    joinedClient.dispose();
-    joiningBridge.mockRestore();
-  }
-
-  // Simulate a DB-only rollback while the owning engine is stopped. The new
-  // authenticated stream must reconcile before any new execution ticket.
-  const seedsBeforeReconcile = seeds.mock.calls.length;
-  await browser.close();
-  await stack.host.store.database
-    .updateTable("browserProfiles")
-    .set({
-      storageState: "vault",
-      storageBindingVersion: null,
-      storageDeploymentId: null,
-      storageRunnerId: null,
-      storageInstanceId: null,
-      storageBindingId: null,
-      storageEngine: null,
-      frozenSeedRevision: null,
-      frozenSeedDigest: null,
-      initializationTokenHash: null,
-      initializationTokenExpiresAt: null,
-    })
-    .where("id", "=", profile.id)
-    .execute();
-  expect((await row()).storageState).toBe("vault");
-  await browser.start();
-  await stack.restartRunner();
-  await vi.waitFor(
-    async () =>
-      expect(
-        (await row()).storageState,
-        "Reconnect inventory failed to advance the restored Host row before a ticket",
-      ).toBe("local"),
-    { timeout: 10_000 },
-  );
-  const reconciled = await open(profile.id, "/read?id=reconciled");
-  expect(await site.observed("reconciled")).toEqual(expected);
-  expect(seeds).toHaveBeenCalledTimes(seedsBeforeReconcile);
-  await close(reconciled);
-
-  // A released runtime advertises neither feature. Its real auxiliary welcome
-  // and loopback attach consequently remain on the legacy protocol.
-  const capabilities = vi
-    .spyOn(LocalBrowserRuntimeBridge.prototype, "capabilities")
-    .mockResolvedValue({});
-  await stack.restartRunner();
-  const refused = await stack.api["commands.dispatch"]({
-    type: "browser.tab.open",
-    identity: { kind: "profile", profileId: profile.id },
-    idempotencyKey: randomUUID(),
-  });
-  expect(refused).toMatchObject({
-    ok: false,
-    error: { message: expect.stringContaining("Update this computer") },
-  });
-  const vault = await stack.host.browser.createProfile({
-    name: "Legacy",
-    ownerId: owner.id,
-    workspaceId: stack.mainWorkspaceId,
-    idempotencyKey: randomUUID(),
-  });
-  const legacy = await open(vault.id, "/read?id=legacy");
-  await site.observed("legacy");
-  expect(legacyLoad).toHaveBeenCalledTimes(1);
-  expect(
-    (
-      await stack.host.store.database
-        .selectFrom("browserProfiles")
-        .select("storageState")
-        .where("id", "=", vault.id)
-        .executeTakeFirstOrThrow()
-    ).storageState,
-  ).toBe("vault");
-  await close(legacy);
-  capabilities.mockRestore();
-  await stack.restartRunner();
+  expect(await stack.host.store.getBrowserProfileStorage(profile.id)).toEqual(binding);
+  // A reconnect may confirm established storage, never replace its immutable binding.
   const deleted = await stack.api["commands.dispatch"]({
     type: "browser.profile.delete",
     profileId: profile.id,
@@ -807,13 +442,6 @@ it("converts, retains, restarts, reconciles and erases native profiles through t
         (deletion) => deletion.profileId === profile.id,
       ),
   ).toBeFalsy();
-  expect(
-    await stack.host.store.database
-      .selectFrom("browserProfileRevisions")
-      .selectAll()
-      .where("profileId", "=", profile.id)
-      .execute(),
-  ).toEqual([]);
   const tombstone = JSON.parse(
     await readFile(path.join(browser.profileRoot, "tombstones", `${profile.id}.json`), "utf8"),
   );
@@ -829,11 +457,8 @@ it("advertises exact prepared storage through the standalone browser-only Runner
   const bridge = new LocalBrowserRuntimeBridge(browser);
   const capabilities = await bridge.capabilities();
   expect(capabilities).toEqual({
-    localProfiles: 1,
-    profilePrepare: 1,
-    profilePrepareInstanceId: expect.any(String),
+    wireVersion: 1,
     localProfileStorage: { storageInstanceId: expect.any(String), engine: "chromium" },
-    initialNavigationVersion: 1,
   });
   await vi.waitFor(
     async () => {

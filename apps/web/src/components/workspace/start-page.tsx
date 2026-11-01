@@ -253,9 +253,6 @@ export const StartPage = memo(function StartPage({
       lastChoice: lastBrowsingChoice(scope),
     });
   });
-  useEffect(() => {
-    hostClient.prepareBrowserProfile(lastBrowsingChoice(scope));
-  }, [hostClient, snapshot.connection, scope.deploymentId, scope.userId]);
   const [pending, setPending] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -362,12 +359,12 @@ export const StartPage = memo(function StartPage({
     setRefusal(null);
     rememberBrowsingChoice(scope, identity);
     hostClient.browserPreferences.lastBrowsingChoice = identity;
-    hostClient.prepareBrowserProfile(identity);
     inputRef.current?.focus();
   };
 
   const fail = (error: unknown, result: StartPageResult) => {
-    if (!mounted.current) return;
+    // Closing the opening tab is the person's choice, not a refusal to explain.
+    if (!mounted.current || (error instanceof Error && error.name === "AbortError")) return;
     const reason = error instanceof HostClientRequestError ? error.reason : undefined;
     const name = selected.presentation.name;
     if (reason === "browser-placement-ambiguous")

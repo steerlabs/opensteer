@@ -1,25 +1,25 @@
-import { z } from "zod";
-import { createHash, timingSafeEqual } from "node:crypto";
 import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-  type Server as HttpServer,
-} from "node:http";
-import { once } from "node:events";
-import {
-  BrowserServerMessageSchema,
   BrowserAttachPublicKeysSchema,
+  BrowserServerMessageSchema,
   LocalProfileBindingSchema,
-  type BrowserServerMessage,
   type BrowserAttachPublicKey,
+  type BrowserServerMessage,
 } from "@opensteer/protocol";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { once } from "node:events";
+import {
+  createServer,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
+import { z } from "zod";
 import type { BrowserControllerSink } from "./browser/controller.js";
-import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
+import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
+import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
 
 export interface BrowserRuntimeServerOptions {
   relayBridge?: {
@@ -82,7 +82,7 @@ export class BrowserRuntimeServer {
     });
     this.httpServer.on("upgrade", (request, socket, head) => {
       const pathname = safePathname(request);
-      if (pathname !== "/v1/browser" && pathname !== "/v1/browser/prepare") {
+      if (pathname !== "/v1/browser") {
         refuseConnection(socket, 404, "Not Found");
         return;
       }
@@ -107,62 +107,9 @@ export class BrowserRuntimeServer {
         websocket.close(1008, "attach rejected");
         return;
       }
-      if (safePathname(request) === "/v1/browser/prepare") {
-        const cancellation = new AbortController();
-        let prepared: { close(): Promise<void> } | undefined;
-        websocket.once("close", () => {
-          cancellation.abort();
-          void prepared?.close().catch(() => undefined);
-        });
-        websocket.on("message", () => websocket.close(1008, "preparation grants no commands"));
-        void this.runtime
-          .prepareProfile(ticket, {
-            signal: cancellation.signal,
-            passkeys:
-              Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
-            localProfiles:
-              Boolean(this.relayBridge) &&
-              request.headers["x-opensteer-browser-local-profiles"] === "1",
-            profilePrepare:
-              Boolean(this.relayBridge) &&
-              request.headers["x-opensteer-browser-profile-prepare"] === "1",
-          })
-          .then(
-            async (result) => {
-              prepared = result;
-              if (result.retained)
-                void result.closed.then(() => {
-                  if (websocket.readyState === WebSocket.OPEN)
-                    websocket.close(1000, "preparation retired");
-                });
-              if (cancellation.signal.aborted) {
-                await result.close();
-                return;
-              }
-              websocket.send(
-                JSON.stringify({ type: "browser.profile.prepared", retained: result.retained }),
-              );
-            },
-            async (error: unknown) => {
-              await sendProtocolError(
-                new WebSocketBrowserSink(websocket, this.maxBufferedBytes),
-                toBrowserRuntimeError(error),
-              ).catch(() => undefined);
-              if (websocket.readyState === WebSocket.OPEN)
-                websocket.close(1008, "preparation rejected");
-            },
-          );
-        return;
-      }
       this.accept(websocket, ticket, {
         passkeys:
           Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
-        localProfiles:
-          Boolean(this.relayBridge) &&
-          request.headers["x-opensteer-browser-local-profiles"] === "1",
-        initialNavigation:
-          Boolean(this.relayBridge) &&
-          request.headers["x-opensteer-browser-initial-navigation"] === "1",
       });
     });
   }
@@ -173,9 +120,7 @@ export class BrowserRuntimeServer {
     if (
       token === undefined &&
       encodedKeys === undefined &&
-      request.headers["x-opensteer-browser-passkeys"] === undefined &&
-      request.headers["x-opensteer-browser-local-profiles"] === undefined &&
-      request.headers["x-opensteer-browser-initial-navigation"] === undefined
+      request.headers["x-opensteer-browser-passkeys"] === undefined
     )
       return;
     const bridge = this.relayBridge;
@@ -210,11 +155,6 @@ export class BrowserRuntimeServer {
       token.length > 4096 ||
       !safeTokenEqual(token, this.relayBridge.token)
     ) {
-      response.writeHead(403);
-      response.end();
-      return;
-    }
-    if (request.headers["x-opensteer-browser-local-profiles"] !== "1") {
       response.writeHead(403);
       response.end();
       return;
@@ -273,11 +213,7 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(
-    websocket: WebSocket,
-    ticket: string,
-    options: { passkeys: boolean; localProfiles: boolean; initialNavigation: boolean },
-  ): void {
+  private accept(websocket: WebSocket, ticket: string, options: { passkeys: boolean }): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
@@ -330,7 +266,7 @@ export class BrowserRuntimeServer {
           await attached.close().catch(() => undefined);
           return;
         }
-        if (options.localProfiles || options.initialNavigation) {
+        if (this.relayBridge) {
           websocket.send(
             JSON.stringify({
               type: "browser.attached",
@@ -349,10 +285,9 @@ export class BrowserRuntimeServer {
   }
 
   private async closeOnce(): Promise<void> {
-    // A failed profile save rejects here, before any connection is touched,
-    // so a retry still reaches every session and health.
-    await this.runtime.shutdown();
-    // Every session is saved and closed: no connection has work left to finish.
+    // Admission/attempt abort is synchronous; sockets never wait for persistence.
+    const persistence = this.runtime.shutdown();
+    void persistence.catch(() => undefined);
     await this.listening?.catch(() => undefined);
     const closed = [new Promise<void>((resolve) => this.websocketServer.close(() => resolve()))];
     if (this.httpServer.listening) closed.push(closeHttpServerNow(this.httpServer));
@@ -364,6 +299,7 @@ export class BrowserRuntimeServer {
       websocket.terminate();
     }
     await Promise.all(closed);
+    await persistence;
   }
 }
 

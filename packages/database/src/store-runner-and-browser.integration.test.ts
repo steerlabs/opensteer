@@ -1,13 +1,11 @@
-import type { StoreFixture } from "./store.integration.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
+  createId,
   HarnessIdSchema,
   ThreadIdSchema,
-  createId,
   type BrowserSessionId,
-  type Workspace,
   type ThreadId,
   type UserId,
+  type Workspace,
 } from "@opensteer/core";
 import {
   browserSessionMaxThreads,
@@ -19,25 +17,27 @@ import {
   type RunnerModuleName,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect } from "vitest";
 import {
   configuredBootstrapEnrollmentLifetimeMs,
   OpensteerStore,
   type AgentThreadListPage,
 } from "./index.js";
+import type { StoreFixture } from "./store.integration.test-support.js";
 import {
   describeStore,
-  testModelSelection,
-  testContinuationIdentity,
-  testWorkspaceProfile,
-  reachOnlyModules,
-  writeBrowserUsageArtifact,
   enrollTestRunner,
-  testRunnerDescriptor,
   fingerprint,
-  pendingEvent,
   liveRequest,
+  pendingEvent,
+  reachOnlyModules,
   sealedTestRequestResponse,
+  testContinuationIdentity,
+  testModelSelection,
+  testRunnerDescriptor,
+  testWorkspaceProfile,
+  writeBrowserUsageArtifact,
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
@@ -55,10 +55,10 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.claimCommand(turn.command.id, "host-worker-secret-input");
     const binding = await store.acquireExecutionBinding({
+      leaseTokenHash: "lease-secret-input",
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: thread.harnessInstanceId,
-      leaseTokenHash: "lease-secret-input",
       membershipGeneration: 1,
       runnerBootId: "boot-secret-input",
       runnerId,
@@ -526,10 +526,10 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.claimCommand(turn.command.id, "host-worker-dispatch-failure");
     const binding = await store.acquireExecutionBinding({
+      leaseTokenHash: "lease-dispatch-failure",
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: thread.harnessInstanceId,
-      leaseTokenHash: "lease-dispatch-failure",
       membershipGeneration: 1,
       runnerBootId: "boot-dispatch-failure",
       runnerId,
@@ -723,10 +723,10 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.claimCommand(turn.command.id, "host-worker-dispatch-failure-race");
     const binding = await store.acquireExecutionBinding({
+      leaseTokenHash: "lease-dispatch-failure-race",
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: thread.harnessInstanceId,
-      leaseTokenHash: "lease-dispatch-failure-race",
       membershipGeneration: 1,
       runnerBootId: "boot-dispatch-failure-race",
       runnerId,
@@ -798,10 +798,10 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.claimCommand(turn.command.id, "host-worker-disconnect-recovery");
     const binding = await store.acquireExecutionBinding({
+      leaseTokenHash: "lease-disconnect-recovery",
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: thread.harnessInstanceId,
-      leaseTokenHash: "lease-disconnect-recovery",
       membershipGeneration: 1,
       runnerBootId: "boot-disconnect-recovery",
       runnerId,
@@ -969,10 +969,10 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.claimCommand(abandoned.command.id, "host-before-restart");
     const abandonedBinding = await store.acquireExecutionBinding({
+      leaseTokenHash: "lease-before-restart",
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: thread.harnessInstanceId,
-      leaseTokenHash: "lease-before-restart",
       membershipGeneration: 1,
       runnerBootId: "boot-before-restart",
       runnerId,
@@ -1056,10 +1056,10 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.claimCommand(racing.command.id, "host-after-restart");
     const binding = await store.acquireExecutionBinding({
+      leaseTokenHash: "lease-restart-recovery",
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: thread.harnessInstanceId,
-      leaseTokenHash: "lease-restart-recovery",
       membershipGeneration: 1,
       runnerBootId: "boot-restart-recovery",
       runnerId,
@@ -3164,15 +3164,17 @@ describeStore("PostgreSQL store", (it) => {
       title: "Recent browser task",
       workspaceId: fixture.workspace.id,
     });
+    const browserRunnerId = await storeFixture.enrollBrowserRunner(
+      fixture.userId,
+      "Browser history fixture",
+    );
     const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
+    await nativeSession(store, {
       id: sessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
       origin: "agent",
-      placementKey: `runner:${fixture.runnerId}:browser`,
+      placementKey: `runner:${browserRunnerId}:browser`,
       profileId: null,
-      runnerId: fixture.runnerId,
+      runnerId: browserRunnerId,
       runtimeId: "browser",
       workspaceId: fixture.workspace.id,
     });
@@ -3238,14 +3240,12 @@ describeStore("PostgreSQL store", (it) => {
       ownerId: stranger,
     });
     const otherSessionId = createBrowserSessionId();
-    await store.createBrowserSession({
+    await nativeSession(store, {
       id: otherSessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: "private-profile-lease",
       origin: "agent",
-      placementKey: `runner:${fixture.runnerId}:browser`,
+      placementKey: `runner:${browserRunnerId}:browser`,
       profileId: otherProfile.id,
-      runnerId: fixture.runnerId,
+      runnerId: browserRunnerId,
       runtimeId: "browser",
       workspaceId: fixture.workspace.id,
     });
@@ -3299,10 +3299,8 @@ describeStore("PostgreSQL store", (it) => {
       workspaceId: fixture.workspace.id,
     });
     const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
+    await nativeSession(store, {
       id: sessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
       origin: "agent",
       placementKey: `runner:${fixture.runnerId}:browser`,
       profileId: null,
@@ -3459,15 +3457,17 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("browser-pages");
+    const browserRunnerId = await storeFixture.enrollBrowserRunner(
+      fixture.userId,
+      "Browser history fixture",
+    );
     const sessionId = createBrowserSessionId();
-    await store.createBrowserSession({
+    await nativeSession(store, {
       id: sessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: null,
       origin: "agent",
-      placementKey: `runner:${fixture.runnerId}:browser`,
+      placementKey: `runner:${browserRunnerId}:browser`,
       profileId: null,
-      runnerId: fixture.runnerId,
+      runnerId: browserRunnerId,
       runtimeId: "browser",
       workspaceId: fixture.workspace.id,
     });
@@ -3598,14 +3598,12 @@ describeStore("PostgreSQL store", (it) => {
       ownerId: outsider,
     });
     const privateSessionId = createBrowserSessionId();
-    await store.createBrowserSession({
+    await nativeSession(store, {
       id: privateSessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: "outsider-lease",
       origin: "agent",
-      placementKey: `runner:${fixture.runnerId}:browser`,
+      placementKey: `runner:${browserRunnerId}:browser`,
       profileId: privateProfile.id,
-      runnerId: fixture.runnerId,
+      runnerId: browserRunnerId,
       runtimeId: "browser",
       workspaceId: fixture.workspace.id,
     });
@@ -3689,15 +3687,60 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
+  it("binds empty native profiles once and fences readiness and inventory after revocation", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { binding, profile, ownerId } = await nativeProfileFixture(
+      storeFixture,
+      "native-authority",
+    );
+    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({ kind: "unbound" });
+    expect(await store.bindBrowserProfile(binding)).toEqual({
+      kind: "local",
+      binding,
+      initialized: false,
+    });
+    expect(await store.bindBrowserProfile({ ...binding, bindingId: randomUUID() })).toEqual({
+      kind: "local",
+      binding,
+      initialized: false,
+    });
+    await expect(
+      store.acknowledgeBrowserProfileReady({ ...binding, bindingId: randomUUID() }),
+    ).rejects.toThrow();
+    await store.acknowledgeBrowserProfileReady(binding);
+    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({
+      kind: "local",
+      binding,
+      initialized: true,
+    });
+    await expect(
+      store.reconcileBrowserProfileInventory({
+        phase: "ready",
+        binding: { ...binding, storageInstanceId: randomUUID() },
+      }),
+    ).rejects.toThrow();
+    await store.revokeRunner(binding.runnerId, ownerId, { allowDeployment: true });
+    await expect(
+      store.reconcileBrowserProfileInventory({ phase: "ready", binding }),
+    ).rejects.toThrow("original computer ownership");
+    await expect(store.acknowledgeBrowserProfileReady(binding)).rejects.toThrow(
+      "original computer ownership",
+    );
+    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({
+      kind: "local",
+      binding,
+      initialized: true,
+    });
+  });
   it("counts unfinished erasures against profile creation capacity until disk deletion completes", async ({
     storeFixture,
   }) => {
     const { store } = storeFixture;
-    const { ownerId, binding, profile, seed } = await nativeProfileFixture(
-      storeFixture,
-      "capacity",
-    );
-    await store.reconcileBrowserProfileInventory({ phase: "ready", binding, seed });
+    const { ownerId, binding, profile } = await nativeProfileFixture(storeFixture, "capacity");
+    await store.bindBrowserProfile(binding);
+    await store.acknowledgeBrowserProfileReady(binding);
     await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
     for (let index = 0; index < 127; index++)
       await store.createBrowserProfile({
@@ -3707,17 +3750,6 @@ describeStore("PostgreSQL store", (it) => {
       });
     const create = { ownerId, name: "Overflow", idempotencyKey: "capacity-overflow" };
     await expect(store.createBrowserProfile(create)).rejects.toMatchObject({ code: "conflict" });
-    const revision = {
-      ownerId,
-      name: "Imported overflow",
-      id: createId("browserProfile"),
-      revision: 1 as const,
-      ciphertext: new Uint8Array([1]),
-      ciphertextSha256: "a".repeat(64),
-    };
-    await expect(store.createBrowserProfileWithRevision(revision)).rejects.toMatchObject({
-      code: "conflict",
-    });
     const [job] = await store.listBrowserProfileErasureJobs(binding.runnerId);
     expect(job).toBeDefined();
     await store.acknowledgeBrowserProfileDeletion({
@@ -3733,380 +3765,6 @@ describeStore("PostgreSQL store", (it) => {
       state: "deleted",
     });
     await expect(store.createBrowserProfile(create)).resolves.toMatchObject({ name: "Overflow" });
-  });
-  it("freezes conversion under the legacy revision lock and fences snapshot access", async ({
-    storeFixture,
-  }) => {
-    const { store, database, enrollBrowserRunner } = storeFixture;
-    const ownerId = await store.createUser("Native profile owner");
-    const runnerId = await enrollBrowserRunner(ownerId, "Native browser");
-    const deployment = await store.ensureDeployment({
-      canonicalOrigin: "http://127.0.0.1:4310",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: testWorkspaceProfile,
-    });
-    const profile = await store.createBrowserProfile({
-      ownerId,
-      name: "Native",
-      idempotencyKey: "native",
-    });
-    const binding = {
-      version: 1 as const,
-      deploymentId: deployment.id,
-      profileId: profile.id,
-      runnerId,
-      storageInstanceId: randomUUID(),
-      bindingId: randomUUID(),
-      engine: "electron" as const,
-    };
-    const seed = { revision: 0, digest: "a".repeat(64) };
-    const authorization = { tokenHash: "b".repeat(64), expiresAt: new Date(Date.now() + 60_000) };
-    await store.reserveBrowserProfileInitialization({ binding, seed, ...authorization });
-    await expect(store.readBrowserProfileRevision(profile.id)).rejects.toThrow(
-      "Update this computer",
-    );
-    await expect(
-      store.commitBrowserProfileRevision({
-        profileId: profile.id,
-        expectedRevision: 0,
-        ciphertext: Buffer.from("late"),
-        ciphertextSha256: "c".repeat(64),
-      }),
-    ).rejects.toThrow("Update this computer");
-    await expect(
-      store.reserveBrowserProfileInitialization({
-        binding: { ...binding, bindingId: randomUUID() },
-        seed,
-        ...authorization,
-      }),
-    ).rejects.toThrow("binding");
-    await expect(
-      store.completeBrowserProfileInitialization({
-        binding,
-        seed,
-        tokenHash: authorization.tokenHash,
-      }),
-    ).resolves.toMatchObject({ kind: "local", binding, seed });
-    await expect(
-      store.completeBrowserProfileInitialization({
-        binding,
-        seed,
-        tokenHash: authorization.tokenHash,
-      }),
-    ).resolves.toMatchObject({ kind: "local", binding });
-    await expect(store.getBrowserProfileStorage(profile.id)).resolves.toEqual({
-      kind: "local",
-      binding,
-      seed,
-    });
-    const deleted = await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
-    expect(deleted.deletion).toMatchObject({
-      profileId: profile.id,
-      computerId: runnerId,
-      state: "pending-computer",
-    });
-    expect(await store.listPendingBrowserProfileDeletions(ownerId)).toEqual([deleted.deletion]);
-    expect(
-      await database
-        .selectFrom("browserProfileRevisions")
-        .selectAll()
-        .where("profileId", "=", profile.id)
-        .execute(),
-    ).toEqual([]);
-  });
-
-  it("lets the profile lock decide conversion versus a racing legacy commit", async ({
-    storeFixture,
-  }) => {
-    const { store, database } = storeFixture;
-    const { binding, seed, profile } = await nativeProfileFixture(storeFixture, "race");
-    const results = await Promise.allSettled([
-      store.commitBrowserProfileRevision({
-        profileId: profile.id,
-        expectedRevision: 0,
-        ciphertext: Buffer.alloc(64, 1),
-        ciphertextSha256: "d".repeat(64),
-      }),
-      store.reserveBrowserProfileInitialization({
-        binding,
-        seed,
-        tokenHash: "e".repeat(64),
-        expiresAt: new Date(Date.now() + 60_000),
-      }),
-    ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    const storage = await store.getBrowserProfileStorage(profile.id);
-    if (storage.kind === "vault") {
-      expect(results[1]).toMatchObject({
-        status: "rejected",
-        reason: { message: expect.stringContaining("revision changed") },
-      });
-      await store.reserveBrowserProfileInitialization({
-        binding,
-        seed: { ...seed, revision: 1 },
-        tokenHash: "e".repeat(64),
-        expiresAt: new Date(Date.now() + 60_000),
-      });
-    } else {
-      expect(storage).toMatchObject({ kind: "initializing", seed });
-      expect(results[0]).toMatchObject({
-        status: "rejected",
-        reason: { message: expect.stringContaining("Update this computer") },
-      });
-    }
-    expect(
-      (
-        await database
-          .selectFrom("browserProfiles")
-          .select("frozenSeedRevision")
-          .where("id", "=", profile.id)
-          .executeTakeFirstOrThrow()
-      ).frozenSeedRevision,
-    ).toBe(storage.kind === "vault" ? "1" : "0");
-  });
-
-  it("reconciles runtime authority forward and honors erasure tombstones after Host rollback", async ({
-    storeFixture,
-  }) => {
-    const { store, database } = storeFixture;
-    const { binding, seed, profile, ownerId } = await nativeProfileFixture(
-      storeFixture,
-      "inventory",
-    );
-    await store.reconcileBrowserProfileInventory({ phase: "initializing", binding, seed });
-    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({
-      kind: "initializing",
-      binding,
-      seed,
-    });
-    await store.reconcileBrowserProfileInventory({ phase: "ready", binding, seed });
-    await store.reconcileBrowserProfileInventory({ phase: "initializing", binding, seed });
-    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({
-      kind: "local",
-      binding,
-      seed,
-    });
-    await expect(
-      store.reconcileBrowserProfileInventory({
-        phase: "ready",
-        binding: { ...binding, storageInstanceId: randomUUID() },
-        seed,
-      }),
-    ).rejects.toThrow("conflict");
-    const deletionId = randomUUID();
-    // Restore only the DB's preconversion authority; the runtime retains its tombstone.
-    await database
-      .updateTable("browserProfiles")
-      .set({
-        storageState: "vault",
-        storageBindingVersion: null,
-        storageDeploymentId: null,
-        storageRunnerId: null,
-        storageInstanceId: null,
-        storageBindingId: null,
-        storageEngine: null,
-        frozenSeedRevision: null,
-        frozenSeedDigest: null,
-      })
-      .where("id", "=", profile.id)
-      .execute();
-    await store.reconcileBrowserProfileInventory({
-      phase: "deleted",
-      binding,
-      deletionId,
-      erasure: "pending-restart",
-    });
-    expect(await store.getBrowserProfile(profile.id, ownerId)).toBeNull();
-    expect(await store.listPendingBrowserProfileDeletions(ownerId)).toEqual([
-      { profileId: profile.id, computerId: binding.runnerId, state: "pending-restart" },
-    ]);
-    await store.reconcileBrowserProfileInventory({ phase: "ready", binding, seed });
-    expect(await store.getBrowserProfile(profile.id, ownerId)).toBeNull();
-    await store.acknowledgeBrowserProfileDeletion({ binding, deletionId, state: "deleted" });
-    await store.acknowledgeBrowserProfileDeletion({
-      binding,
-      deletionId,
-      state: "pending-restart",
-    });
-    expect(await store.listPendingBrowserProfileDeletions(ownerId)).toEqual([]);
-    await store.reconcileBrowserProfileInventory({
-      phase: "deleted",
-      binding,
-      deletionId,
-      erasure: "deleted",
-    });
-    expect(await store.listBrowserProfileErasureJobs(binding.runnerId)).toEqual([]);
-  });
-
-  it("keeps frozen seed authorization exact, expiring and unavailable when its revision is missing", async ({
-    storeFixture,
-  }) => {
-    const { store } = storeFixture;
-    const { binding, seed, profile } = await nativeProfileFixture(storeFixture, "seed");
-    await store.reconcileBrowserProfileInventory({
-      phase: "initializing",
-      binding,
-      seed: { ...seed, revision: 17 },
-    });
-    await store.reserveBrowserProfileInitialization({
-      binding,
-      seed: { ...seed, revision: 17 },
-      tokenHash: "f".repeat(64),
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-    await expect(
-      store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash: "0".repeat(64) }),
-    ).rejects.toThrow("authorization");
-    await expect(
-      store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash: "f".repeat(64) }),
-    ).rejects.toThrow("seed is unavailable");
-    await store.reserveBrowserProfileInitialization({
-      binding,
-      seed: { ...seed, revision: 17 },
-      tokenHash: "f".repeat(64),
-      expiresAt: new Date(0),
-    });
-    await expect(
-      store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash: "f".repeat(64) }),
-    ).rejects.toThrow("authorization");
-    // Ready profiles need no recovery seed and never offer it again.
-    await store.reconcileBrowserProfileInventory({
-      phase: "ready",
-      binding,
-      seed: { ...seed, revision: 17 },
-    });
-    await expect(
-      store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash: "f".repeat(64) }),
-    ).rejects.toThrow("authorization");
-  });
-
-  it.for([false, true])(
-    "rejects seed access and completion after computer revocation (local=%s)",
-    async (local, { storeFixture }) => {
-      const { store } = storeFixture;
-      const { binding, seed, profile, ownerId } = await nativeProfileFixture(
-        storeFixture,
-        "authority",
-      );
-      const tokenHash = "f".repeat(64);
-      await store.reserveBrowserProfileInitialization({
-        binding,
-        seed,
-        tokenHash,
-        expiresAt: new Date(Date.now() + 60_000),
-      });
-      await expect(
-        store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash }),
-      ).resolves.toMatchObject({ kind: "initializing" });
-      if (local) await store.completeBrowserProfileInitialization({ binding, seed, tokenHash });
-      await store.revokeRunner(binding.runnerId, ownerId, { allowDeployment: true });
-      await expect(
-        store.readBrowserProfileInitialization({ profileId: profile.id, tokenHash }),
-      ).rejects.toThrow(local ? "authorization" : "original computer ownership and browser grant");
-      await expect(
-        store.completeBrowserProfileInitialization({ binding, seed, tokenHash }),
-      ).rejects.toThrow("original computer ownership and browser grant");
-      expect((await store.getBrowserProfileStorage(profile.id)).kind).toBe(
-        local ? "local" : "initializing",
-      );
-    },
-  );
-
-  it("drains legacy final-save ownership before conversion and gives native sessions no grace", async ({
-    storeFixture,
-  }) => {
-    const { store, database, enrollBrowserRunner, createRunFixture } = storeFixture;
-    const fixture = await createRunFixture("native-drain");
-    const runnerId = await enrollBrowserRunner(fixture.userId, "Native drain owner");
-    const deployment = await store.getDeployment();
-    if (!deployment) throw new Error("Native drain fixture has no Deployment");
-    const profile = await store.createBrowserProfile({
-      ownerId: fixture.userId,
-      name: "Drain",
-      idempotencyKey: "native-drain",
-    });
-    const binding = {
-      version: 1 as const,
-      deploymentId: deployment.id,
-      profileId: profile.id,
-      runnerId,
-      storageInstanceId: randomUUID(),
-      bindingId: randomUUID(),
-      engine: "chromium" as const,
-    };
-    const seed = { revision: 0, digest: "a".repeat(64) };
-    const authorization = { tokenHash: "b".repeat(64), expiresAt: new Date(Date.now() + 60_000) };
-    const legacy = await store.createBrowserSession({
-      id: createBrowserSessionId(),
-      profileId: profile.id,
-      workspaceId: fixture.workspace.id,
-      runnerId,
-      placementKey: "native-drain",
-      runtimeId: "browser",
-      origin: "workspace",
-      leaseGeneration: 1,
-      leaseTokenHash: "legacy-hash",
-    });
-    await expect(
-      store.reserveBrowserProfileInitialization({ binding, seed, ...authorization }),
-    ).rejects.toThrow("final save");
-    await store.transitionBrowserSession({ sessionId: legacy.id, state: "closed" });
-    await expect(
-      store.reserveBrowserProfileInitialization({ binding, seed, ...authorization }),
-    ).rejects.toThrow("final save");
-    await store.commitBrowserProfileRevision({
-      profileId: profile.id,
-      expectedRevision: 0,
-      ciphertext: Buffer.alloc(64, 7),
-      ciphertextSha256: "c".repeat(64),
-    });
-    await store.reserveBrowserProfileInitialization({
-      binding,
-      seed: { ...seed, revision: 1 },
-      ...authorization,
-    });
-    await store.completeBrowserProfileInitialization({
-      binding,
-      seed: { ...seed, revision: 1 },
-      tokenHash: authorization.tokenHash,
-    });
-    const native = await store.createBrowserSession({
-      id: createBrowserSessionId(),
-      profileId: profile.id,
-      workspaceId: fixture.workspace.id,
-      runnerId,
-      placementKey: "native-drain",
-      runtimeId: "browser",
-      origin: "workspace",
-      leaseGeneration: 1,
-      leaseTokenHash: null,
-    });
-    await store.transitionBrowserSession({ sessionId: native.id, state: "closed" });
-    const ended = await database
-      .selectFrom("browserSessions")
-      .select(["leaseTokenHash", "profileLeaseExpiresAt"])
-      .where("id", "=", native.id)
-      .executeTakeFirstOrThrow();
-    expect(ended.leaseTokenHash).toBeNull();
-    expect(ended.profileLeaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
-    await expect(
-      store.createBrowserSession({
-        id: createBrowserSessionId(),
-        profileId: profile.id,
-        workspaceId: fixture.workspace.id,
-        runnerId: fixture.runnerId,
-        placementKey: "other-computer",
-        runtimeId: "browser",
-        origin: "workspace",
-        leaseGeneration: 1,
-        leaseTokenHash: null,
-      }),
-    ).rejects.toThrow("owning computer");
-    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({
-      kind: "local",
-      binding,
-      seed: { ...seed, revision: 1 },
-    });
   });
 
   it("deletes a profile with its tabs so no session, save or grant can follow", async ({
@@ -4184,10 +3842,8 @@ describeStore("PostgreSQL store", (it) => {
     });
     const runnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
     const startSession = (id: BrowserSessionId, tabGroupId?: BrowserSessionId) =>
-      store.createBrowserSession({
+      nativeSession(store, {
         id,
-        leaseGeneration: 1,
-        leaseTokenHash: `sha256:${id}`,
         origin: "workspace",
         placementKey: `runner:${runnerId}:local-browser`,
         profileId: profile.id,
@@ -4199,7 +3855,7 @@ describeStore("PostgreSQL store", (it) => {
     const close = (id: BrowserSessionId) =>
       database
         .updateTable("browserSessions")
-        .set({ closedAt: new Date(), profileLeaseExpiresAt: new Date(0), state: "closed" })
+        .set({ closedAt: new Date(), state: "closed" })
         .where("id", "=", id)
         .execute();
     const live = await startSession(createBrowserSessionId());
@@ -4225,13 +3881,6 @@ describeStore("PostgreSQL store", (it) => {
       .execute();
     // Finished history holds nothing.
     await close((await startSession(createBrowserSessionId())).id);
-    const ciphertext = new Uint8Array(32).fill(7);
-    await store.commitBrowserProfileRevision({
-      ciphertext,
-      ciphertextSha256: "a".repeat(64),
-      expectedRevision: 0,
-      profileId: profile.id,
-    });
 
     const deleted = await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
 
@@ -4245,7 +3894,6 @@ describeStore("PostgreSQL store", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ closedAt: expect.any(Date) });
     expect((await store.listBrowserProfiles(ownerId)).map(({ id }) => id)).toEqual([kept.id]);
-    expect(await store.readBrowserProfileRevision(profile.id)).toBeNull();
     expect(await store.listActiveBrowserProfileGrants(ownerId)).toEqual([
       expect.objectContaining({ grantId: keptGrant.grantId }),
     ]);
@@ -4257,14 +3905,6 @@ describeStore("PostgreSQL store", (it) => {
     await expect(startSession(createBrowserSessionId())).rejects.toMatchObject({
       code: "not_found",
     });
-    await expect(
-      store.commitBrowserProfileRevision({
-        ciphertext,
-        ciphertextSha256: "b".repeat(64),
-        expectedRevision: 1,
-        profileId: profile.id,
-      }),
-    ).rejects.toMatchObject({ code: "not_found" });
     await expect(
       store.renameBrowserProfile({ name: "Back", ownerId, profileId: profile.id }),
     ).rejects.toMatchObject({ code: "not_found" });
@@ -4290,7 +3930,7 @@ describeStore("PostgreSQL store", (it) => {
     );
   });
 
-  it("persists portable browser profiles and keeps active sessions on one placement", async ({
+  it("persists native profile grants and keeps every session on its bound computer", async ({
     storeFixture,
   }) => {
     const { store, database, enrollBrowserRunner } = storeFixture;
@@ -4421,10 +4061,8 @@ describeStore("PostgreSQL store", (it) => {
     expect(laptopGrant.access).toBe("full-control");
 
     const sessionId = createBrowserSessionId();
-    const session = await store.createBrowserSession({
+    const session = await nativeSession(store, {
       id: sessionId,
-      leaseGeneration: 1,
-      leaseTokenHash: "sha256:lease",
       origin: "workspace",
       placementKey: `runner:${hostedRunnerId}:hosted-browser-1`,
       profileId: profile.id,
@@ -4434,20 +4072,11 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(session.state).toBe("starting");
     expect((await store.getBrowserSessionForOwner(sessionId, ownerId))?.id).toBe(sessionId);
-    expect(
-      await store.authorizeBrowserProfileLease({
-        leaseTokenHash: "sha256:lease",
-        profileId: profile.id,
-        sessionId,
-      }),
-    ).toBe(true);
 
     const otherSessionId = createBrowserSessionId();
     await expect(
-      store.createBrowserSession({
+      nativeSession(store, {
         id: otherSessionId,
-        leaseGeneration: 1,
-        leaseTokenHash: "sha256:other",
         origin: "workspace",
         placementKey: `runner:${hostedRunnerId}:hosted-browser-1`,
         profileId: profile.id,
@@ -4532,10 +4161,8 @@ describeStore("PostgreSQL store", (it) => {
     );
 
     await expect(
-      store.createBrowserSession({
+      nativeSession(store, {
         id: createBrowserSessionId(),
-        leaseGeneration: 1,
-        leaseTokenHash: "sha256:elsewhere",
         origin: "workspace",
         placementKey: `runner:${laptopRunnerId}:local-browser`,
         profileId: profile.id,
@@ -4557,28 +4184,12 @@ describeStore("PostgreSQL store", (it) => {
     await store.transitionBrowserSession({ from: ["ready"], sessionId, state: "closing" });
     await store.transitionBrowserSession({ from: ["closing"], sessionId, state: "closed" });
     expect(
-      await store.authorizeBrowserProfileLease({
-        leaseTokenHash: "sha256:lease",
-        profileId: profile.id,
-        sessionId,
-      }),
-    ).toBe(true);
-    expect(
       (await store.failActiveBrowserSessions(`runner:${hostedRunnerId}:hosted-browser-1`)).failed,
     ).toBe(1);
     expect((await store.getBrowserSessionForOwner(sessionId, ownerId))?.state).toBe("closed");
-    expect(
-      await store.authorizeBrowserProfileLease({
-        leaseTokenHash: "sha256:other",
-        profileId: profile.id,
-        sessionId: otherSessionId,
-      }),
-    ).toBe(true);
     await expect(
-      store.createBrowserSession({
+      nativeSession(store, {
         id: createBrowserSessionId(),
-        leaseGeneration: 1,
-        leaseTokenHash: "sha256:move-too-early",
         origin: "workspace",
         placementKey: `runner:${laptopRunnerId}:local-browser`,
         profileId: profile.id,
@@ -4588,89 +4199,10 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
 
-    const graceBefore = await database
-      .selectFrom("browserSessions")
-      .select("profileLeaseExpiresAt")
-      .where("id", "=", sessionId)
-      .executeTakeFirstOrThrow();
-    await store.commitBrowserProfileRevision({
-      ciphertext: Buffer.alloc(30, 3),
-      ciphertextSha256: createHash("sha256").update(Buffer.alloc(30, 3)).digest("hex"),
-      expectedRevision: 0,
-      profileId: profile.id,
-      periodic: true,
-    });
-    expect(
-      await store.authorizeBrowserProfileLease({
-        leaseTokenHash: "sha256:lease",
-        profileId: profile.id,
-        sessionId,
-      }),
-    ).toBe(true);
-    expect(
-      await database
-        .selectFrom("browserSessions")
-        .select("profileLeaseExpiresAt")
-        .where("id", "=", sessionId)
-        .executeTakeFirstOrThrow(),
-    ).toEqual(graceBefore);
-    const encryptedRevision = Buffer.alloc(30, 1);
-    await store.commitBrowserProfileRevision({
-      ciphertext: encryptedRevision,
-      ciphertextSha256: createHash("sha256").update(encryptedRevision).digest("hex"),
-      expectedRevision: 1,
-      profileId: profile.id,
-    });
-    // A profile in use saves repeatedly; only the newest ciphertext is kept.
-    const laterRevision = Buffer.alloc(30, 2);
-    await store.commitBrowserProfileRevision({
-      ciphertext: laterRevision,
-      ciphertextSha256: createHash("sha256").update(laterRevision).digest("hex"),
-      expectedRevision: 2,
-      profileId: profile.id,
-    });
-    expect(
-      await sql<{ revision: number }>`
-        select revision from browser_profile_revisions where profile_id = ${profile.id}
-      `.execute(database),
-    ).toMatchObject({ rows: [{ revision: 3 }] });
-    await expect(store.readBrowserProfileRevision(profile.id)).resolves.toMatchObject({
-      revision: 3,
-    });
-    expect(
-      await store.authorizeBrowserProfileLease({
-        leaseTokenHash: "sha256:lease",
-        profileId: profile.id,
-        sessionId,
-      }),
-    ).toBe(false);
-    expect(
-      await store.authorizeBrowserProfileLease({
-        leaseTokenHash: "sha256:other",
-        profileId: profile.id,
-        sessionId: otherSessionId,
-      }),
-    ).toBe(false);
-    await expect(
-      store.createBrowserSession({
-        id: createBrowserSessionId(),
-        leaseGeneration: 1,
-        leaseTokenHash: "sha256:moved",
-        origin: "workspace",
-        placementKey: `runner:${laptopRunnerId}:local-browser`,
-        profileId: profile.id,
-        runnerId: laptopRunnerId,
-        runtimeId: "local-browser",
-        workspaceId: workspace.id,
-      }),
-    ).resolves.toMatchObject({ runnerId: laptopRunnerId });
-
     const freshSessionId = createBrowserSessionId();
     await expect(
-      store.createBrowserSession({
+      nativeSession(store, {
         id: freshSessionId,
-        leaseGeneration: 1,
-        leaseTokenHash: null,
         origin: "workspace",
         placementKey: `runner:${hostedRunnerId}:hosted-browser-1`,
         profileId: null,
@@ -4680,10 +4212,8 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toMatchObject({ profileId: null, state: "starting" });
     await expect(
-      store.createBrowserSession({
+      nativeSession(store, {
         id: createBrowserSessionId(),
-        leaseGeneration: 1,
-        leaseTokenHash: null,
         origin: "workspace",
         placementKey: `runner:${hostedRunnerId}:hosted-browser-1`,
         profileId: null,
@@ -4736,6 +4266,37 @@ async function nativeProfileFixture(fixture: StoreFixture, name: string) {
       bindingId: randomUUID(),
       engine: "electron" as const,
     },
-    seed: { revision: 0, digest: "a".repeat(64) },
   };
+}
+
+async function nativeSession(
+  store: OpensteerStore,
+  input: Parameters<OpensteerStore["createBrowserSession"]>[0],
+) {
+  if (input.profileId) {
+    const storage = await store.getBrowserProfileStorage(input.profileId);
+    if (storage.kind === "unbound") {
+      const existing = await store.database
+        .selectFrom("deployments")
+        .select("id")
+        .executeTakeFirst();
+      const deployment =
+        existing ??
+        (await store.ensureDeployment({
+          canonicalOrigin: "http://127.0.0.1:4310",
+          hostInstanceId: createId("hostInstance"),
+          deploymentShape: testWorkspaceProfile,
+        }));
+      await store.bindBrowserProfile({
+        version: 1,
+        deploymentId: deployment.id,
+        profileId: input.profileId,
+        runnerId: input.runnerId,
+        storageInstanceId: "20000000-0000-4000-8000-000000000001",
+        bindingId: randomUUID(),
+        engine: "chromium",
+      });
+    }
+  }
+  return store.createBrowserSession(input);
 }

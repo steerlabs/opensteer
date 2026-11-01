@@ -1,12 +1,10 @@
-import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
-import { NotificationPreviewKeyStore } from "@opensteer/database";
-import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
-import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
-import { ComputerViewService } from "../computer-use/computer-view-service.js";
-import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
-import { PlaceContextService } from "../computer-use/place-context-service.js";
-import { sign } from "node:crypto";
-import { resolveIntegrationAccountBinding } from "../integrations/integration-account-binding.js";
+import {
+  AesGcmSecretVault,
+  createPublicHttpsFetch,
+  StaticEncryptionKeyProvider,
+} from "@opensteer/access/host";
+import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
+import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
 import {
   harnessDriverLabel,
   HarnessIdSchema,
@@ -21,57 +19,32 @@ import {
   type UserId,
   type Workspace,
 } from "@opensteer/core";
-import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
-import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
 import {
-  personalWebBuildId,
-  type PendingAgentEvent,
-  type RunnerAuxiliaryModule,
-  type RunnerDescriptor,
-  type HarnessInstanceCatalog,
-  type ShellSessionId,
-} from "@opensteer/protocol";
-import {
-  AesGcmSecretVault,
-  StaticEncryptionKeyProvider,
-  createPublicHttpsFetch,
-} from "@opensteer/access/host";
-import {
-  createGraphqlAdapter,
-  createMcpAdapter,
-  createOpenApiAdapter,
-} from "@opensteer/integration-adapters";
-import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
-import {
-  resolveIntegrationDeploymentPosture,
-  type ComputerAppPlatform,
-  type IntegrationConnectionId,
-} from "@opensteer/integration-core";
-import { hostKeyFingerprint as fingerprintForSpki } from "@opensteer/deployment-authority";
-import {
-  acquireDeploymentAuthorityLease,
   AccountDirectoryStore,
+  acquireDeploymentAuthorityLease,
   AttachmentStore,
   AutomationFailureStore,
-  ChannelStore,
   BrowserSourceStore,
-  WorkspaceTabStore,
   BrowserTabGroupStore,
+  ChannelStore,
   createDatabase,
   databaseShutdownDetails,
-  isTransactionConflict,
   IntegrationAuthAttemptStore,
-  IntegrationStore,
   IntegrationPlatformStore,
+  IntegrationStore,
+  isTransactionConflict,
   migrateToLatest,
+  NotificationPreviewKeyStore,
   NotificationStore,
   OpensteerStore,
   personalRemoteAccessRefusedReason,
   personalRemoteAccessRequiredRefusal,
   runnerAdvertisesItsEnvironmentBinding,
   TriggerStore,
+  WorkspaceTabStore,
   type DeploymentAuthorityLease,
 } from "@opensteer/database";
+import { hostKeyFingerprint as fingerprintForSpki } from "@opensteer/deployment-authority";
 import {
   deriveLocalSetupToken,
   IdentityService,
@@ -79,24 +52,36 @@ import {
   oidcIdentityProviderId,
   type OidcProviderConfiguration,
 } from "@opensteer/identity";
-import { BrowserProfileVault } from "../browser/profile-vault.js";
-import { BrowserSourceService } from "../browser/browser-source-service.js";
-import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import {
-  AttachmentService,
-  RunAttachmentsTokenService,
-} from "../attachments/attachment-service.js";
-import { resolve } from "node:path";
+  createGraphqlAdapter,
+  createMcpAdapter,
+  createOpenApiAdapter,
+} from "@opensteer/integration-adapters";
+import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
+import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
+import {
+  resolveIntegrationDeploymentPosture,
+  type ComputerAppPlatform,
+  type IntegrationConnectionId,
+} from "@opensteer/integration-core";
 import {
   CommandService,
   ExecutionCoordinator,
+  KeyedAdmissionQueue,
   LiveRunRegistry,
   RealtimeHub,
   RunnerRegistry,
-  KeyedAdmissionQueue,
   type RunnerIdentity,
   type RunnerStreamLossReason,
 } from "@opensteer/orchestration";
+import {
+  personalWebBuildId,
+  type HarnessInstanceCatalog,
+  type PendingAgentEvent,
+  type RunnerAuxiliaryModule,
+  type RunnerDescriptor,
+  type ShellSessionId,
+} from "@opensteer/protocol";
 import {
   Ed25519PortableFsProductAuthorizationSigner,
   PortableFsManagerClient,
@@ -104,44 +89,22 @@ import {
   type PortableFsMountManagerEndpoint,
 } from "@opensteer/workspace-portablefs";
 import type { FastifyInstance } from "fastify";
-import { AgentControlService, AgentControlTokenService } from "../agents/agent-control-service.js";
-import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
-import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
-import { AccountDirectoryClient } from "../access/account-directory-client.js";
+import { sign } from "node:crypto";
+import { resolve } from "node:path";
 import { AccountAdoptionControlClient } from "../access/account-adoption-control-client.js";
+import { RemoteAccountAdoptionGrantVerifier } from "../access/account-adoption-grant-verifier.js";
+import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
-import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
-import {
-  NotificationPublicationClient,
-  type NotificationPublicationTarget,
-} from "../notifications/notification-publication-client.js";
-import { RemoteAccountAdoptionGrantVerifier } from "../access/account-adoption-grant-verifier.js";
-import { HostAuthenticator } from "../identity/auth.js";
-import { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
-import { BrowserService } from "../browser/browser-service.js";
-import { announceBrowserUsage, browserPresencePublisher } from "../browser/browser-presence.js";
-import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
-import { ChannelService } from "../channels/channel-service.js";
-import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
-import {
-  CredentialService,
-  loadOrCreateBrowserProfileKey,
-  loadOrCreateCredentialKey,
-} from "../identity/credential-service.js";
-import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
-import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
-import { ComputerUseService } from "../computer-use/computer-use-service.js";
-import {
-  machineAccessNotifier,
-  notifyComputerPresence,
-  notifyMachinesChanged,
-} from "../shell/machine-access-events.js";
-import { ShellHub } from "../shell/shell-hub.js";
-import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
+import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
+import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
+import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
+import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
+import { AgentControlService, AgentControlTokenService } from "../agents/agent-control-service.js";
+import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
+import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
+import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
-import { EgressService } from "../server/egress-service.js";
 import {
   harnessInspectionDefinition,
   inspectAndRecordInvalidatedHarnessCatalog,
@@ -149,73 +112,105 @@ import {
   reconcileAndRecordHarnessCatalogs,
   reconcileHarnessCatalogs,
 } from "../agents/harness-catalogs.js";
-import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import { withDevelopmentDatabaseReset } from "./development-database.js";
-import { LocalBootstrapService } from "./local-bootstrap.js";
-import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
-import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integration-auth-attempt-service.js";
-import { integrationCallSubject } from "../integrations/integration-call-subject.js";
-import { IntegrationDashboardService } from "../integrations/integration-dashboard-service.js";
-import {
-  IntegrationService,
-  type IntegrationConnectionConnected,
-} from "../integrations/integration-service.js";
-import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
-import { ContinuationService } from "../agents/continuation-service.js";
-import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
-import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
-import { IntegrationSkillBundleService } from "../integrations/integration-skill-bundle-service.js";
-import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { RunCapabilityTokenService } from "../agents/run-capability.js";
+import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
+import { SecurityEffectService } from "../agents/security-effect-service.js";
+import {
+  AttachmentService,
+  RunAttachmentsTokenService,
+} from "../attachments/attachment-service.js";
+import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
+import { announceBrowserUsage, browserPresencePublisher } from "../browser/browser-presence.js";
+import { BrowserService } from "../browser/browser-service.js";
+import { BrowserSourceService } from "../browser/browser-source-service.js";
+import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
+import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
+import { PasswordSignInService } from "../browser/password-sign-in-service.js";
+import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
+import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
+import { ChannelService } from "../channels/channel-service.js";
+import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
+import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { ComputerUseService } from "../computer-use/computer-use-service.js";
+import { ComputerViewService } from "../computer-use/computer-view-service.js";
+import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
+import { PlaceContextService } from "../computer-use/place-context-service.js";
+import { HostAuthenticator } from "../identity/auth.js";
+import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
+import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
+import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
   loadOrCreateHostKeys,
-  signHostDiscovery,
   SignedTokenService,
+  signHostDiscovery,
 } from "../identity/host-keys.js";
-import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { MountExchangeService } from "../identity/mount-exchange.js";
-import { reconcileRunnerLocalStorage } from "../workspace/runner-local-storage-reconciliation.js";
-import { WorkspaceMountService } from "../workspace/workspace-mount-service.js";
-import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
-import { HostStaticDistribution } from "../server/static-distribution.js";
-import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
 import {
   loadOrCreatePortableFsProductKey,
   loadPortableFsManagerTlsIdentity,
 } from "../identity/portablefs-manager-identity.js";
-import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
-import { SecurityEffectService } from "../agents/security-effect-service.js";
+import { resolveIntegrationAccountBinding } from "../integrations/integration-account-binding.js";
+import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integration-auth-attempt-service.js";
+import { integrationCallSubject } from "../integrations/integration-call-subject.js";
+import { IntegrationDashboardService } from "../integrations/integration-dashboard-service.js";
+import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
+import {
+  IntegrationService,
+  type IntegrationConnectionConnected,
+} from "../integrations/integration-service.js";
+import { IntegrationSkillBundleService } from "../integrations/integration-skill-bundle-service.js";
+import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
+import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
+import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
+import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
+import {
+  NotificationPublicationClient,
+  type NotificationPublicationTarget,
+} from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
-import { WorkspaceService } from "../workspace/workspace-service.js";
-import { WorkspaceActivityService } from "../workspace/workspace-activity.js";
-import { WorkspaceArchiveService } from "../workspace/workspace-archive-service.js";
-import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
+import { EgressService } from "../server/egress-service.js";
+import { HostStaticDistribution } from "../server/static-distribution.js";
 import {
-  PortableFsWorkspaceFilesDriver,
-  RunnerLocalWorkspaceFilesDriver,
-  WorkspaceFilesService,
-} from "../workspace/files/workspace-files-service.js";
-import {
-  RunnerLocalWorkspaceDriver,
-  type RunnerStorageRegistry,
-} from "../workspace/runner-local-workspace-driver.js";
-import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import { WorkspaceReconcileLoop } from "../workspace/workspace-reconcile-loop.js";
-import { WorkspaceWakeService } from "../workspace/workspace-wake-service.js";
+  machineAccessNotifier,
+  notifyComputerPresence,
+  notifyMachinesChanged,
+} from "../shell/machine-access-events.js";
+import { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
+import { ShellHub } from "../shell/shell-hub.js";
+import { AutomationFailureService } from "../triggers/automation-failure-service.js";
 import {
   TriggerCapabilityTokenService,
   TriggerControlService,
   TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
 import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
-import { AutomationFailureService } from "../triggers/automation-failure-service.js";
 import {
   WatchCapabilityTokenService,
   WatchControlTokenService,
 } from "../triggers/watch-capability.js";
-import { WatchService } from "../triggers/watch-service.js";
-import { WatchProgramService } from "../triggers/watch-program-service.js";
 import { WatchControlService } from "../triggers/watch-control-service.js";
+import { WatchProgramService } from "../triggers/watch-program-service.js";
+import { WatchService } from "../triggers/watch-service.js";
+import {
+  PortableFsWorkspaceFilesDriver,
+  RunnerLocalWorkspaceFilesDriver,
+  WorkspaceFilesService,
+} from "../workspace/files/workspace-files-service.js";
+import { reconcileRunnerLocalStorage } from "../workspace/runner-local-storage-reconciliation.js";
+import {
+  RunnerLocalWorkspaceDriver,
+  type RunnerStorageRegistry,
+} from "../workspace/runner-local-workspace-driver.js";
+import { WorkspaceActivityService } from "../workspace/workspace-activity.js";
+import { WorkspaceArchiveService } from "../workspace/workspace-archive-service.js";
+import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
+import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
+import { WorkspaceMountService } from "../workspace/workspace-mount-service.js";
+import { WorkspaceReconcileLoop } from "../workspace/workspace-reconcile-loop.js";
+import { WorkspaceService } from "../workspace/workspace-service.js";
+import { WorkspaceWakeService } from "../workspace/workspace-wake-service.js";
+import { withDevelopmentDatabaseReset } from "./development-database.js";
+import { LocalBootstrapService } from "./local-bootstrap.js";
 
 // Refreshed on every start while the Host is unclaimed, so the window only ever
 // matters to a Host that has been left running and untouched for a year.
@@ -748,16 +743,9 @@ export async function createHostRuntime(
         (await store.getThreadForOwner(threadId, ownerUserId))?.title ?? null,
     });
     const messagingRelay = new MessagingRelayHub();
-    const browserProfileKey = await loadOrCreateBrowserProfileKey({
-      dataDirectory,
-      ...(config.browserProfileKeyPath ? { keyPath: config.browserProfileKeyPath } : {}),
-    });
-    const profileVault = new BrowserProfileVault({ key: browserProfileKey, repository: store });
-    browserProfileKey.fill(0);
     const localProfiles = new BrowserLocalProfiles({
       deploymentId: deployment.id,
       repository: store,
-      vault: profileVault,
       baseUrl: config.canonicalOrigin,
       ...(deployment.deploymentShape.kind === "personal"
         ? { beforeProfileOpen: () => runnerBrowsers.requirePersonalProfileInventory() }
@@ -804,6 +792,7 @@ export async function createHostRuntime(
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
     const browser = new BrowserService({
+      hostOrigin: config.canonicalOrigin,
       personal: deployment.deploymentShape.kind === "personal",
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
@@ -840,7 +829,6 @@ export async function createHostRuntime(
           .catch((error: unknown) => reportBrowserPresenceError(error));
       },
       onPlaceNotice: (ownerId, notice) => realtime.sendToUsers([ownerId], notice),
-      profileStateBaseUrl: config.canonicalOrigin,
       onSessionsChanged: (workspaceId, sessionIds, source) => {
         // Catalog visibility is viewer-wide, independent of socket subscriptions.
         void Promise.all(sessionIds.map((sessionId) => store.listBrowserSessionViewers(sessionId)))
@@ -861,7 +849,6 @@ export async function createHostRuntime(
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
       onError: (error) => reportBrowserUsageError(error),
       onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
-      profileVault,
       repository: store,
       signer: new BrowserAttachTicketSigner({
         keyId: browserAttachKeyId,
@@ -2793,7 +2780,6 @@ export async function createHostRuntime(
         await step("browser", () => browser.close());
         passwordSignIns.close();
         browserSources.close();
-        profileVault.destroy();
         runnerBrowsers.close();
         browserRelay.close();
         await step("shell hub", () => shellHub?.close());

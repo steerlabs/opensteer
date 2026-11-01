@@ -1,25 +1,22 @@
-import { realpath } from "node:fs/promises";
-import { securePrivateDirectory } from "@opensteer/shared/atomicPrivateFile";
-import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
-import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
-import { randomBytes } from "node:crypto";
-import path from "node:path";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
   defaultAttachTicketReplayLedgerPath,
   Ed25519AttachTicketVerifier,
-  HttpBrowserProfileStateClient,
   sessionFilesRoot,
   type BrowserLoginAuthority,
-  type BrowserProfileStateClient,
   type NativePresentationSource,
 } from "@opensteer/browser-runtime-core";
+import { securePrivateDirectory } from "@opensteer/shared/atomicPrivateFile";
+import { randomBytes } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import path from "node:path";
 import { BrowserAttachKeyRegistry } from "../browser/browser-attach-key-registry.js";
 import { ElectronBrowserLauncher } from "../browser/electron-browser-launcher.js";
-import { logShutdownError } from "../app/desktop-shutdown.js";
-import { BoundedPersonalLog, RotatingPersonalLog } from "./personal-process-port.js";
+import { profileFailureDiagnostic } from "../browser/profile-failure-diagnostic.js";
+import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
+import { BoundedPersonalLog, RotatingPersonalLog } from "./personal-process-port.js";
 
 export interface LocalBrowserRuntimeOptions {
   readonly downloads: Pick<DesktopDownloads, "accept">;
@@ -30,8 +27,6 @@ export interface LocalBrowserRuntimeOptions {
   readonly runtimeId: string;
   /** The file this runtime alone writes its session-start diagnostics to. */
   readonly logPath?: string;
-  readonly checkpointIntervalMs?: number;
-  readonly profileStateClient?: BrowserProfileStateClient;
   /**
    * Saved-password sign-ins through Opensteer Passwords. Only the Personal
    * Deployment's browser has it: its Runner is this Mac's own, and that is
@@ -81,17 +76,6 @@ export async function startLocalBrowserRuntime(
     ? { localProfiles: { root: profileRoot } }
     : {};
   const runtime = new BrowserRuntime({
-    onCheckpointFailure: ({ error, ...diagnostic }) =>
-      logShutdownError(
-        (_event, fields) =>
-          diagnostics.append(
-            `${JSON.stringify({ ...fields, ...diagnostic, event: "browser.profile.checkpoint.failed", reason: error.reason })}\n`,
-          ),
-        "browser-profile",
-        diagnostic.phase,
-        error,
-        diagnostic.elapsedMs,
-      ),
     onOpenTiming: (timing) =>
       diagnostics.append(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
@@ -103,10 +87,6 @@ export async function startLocalBrowserRuntime(
     launcher,
     // Native data and its exclusive root ownership outlive enrollment slots.
     ...profileStorage,
-    ...(options.checkpointIntervalMs !== undefined
-      ? { checkpointIntervalMs: options.checkpointIntervalMs }
-      : {}),
-    profileStateClient: options.profileStateClient ?? new HttpBrowserProfileStateClient(),
     runtimeId: options.runtimeId,
     sessionFilesRoot: sessionFilesRoot(profileRoot),
     ...(options.loginAuthority ? { loginAuthority: options.loginAuthority } : {}),

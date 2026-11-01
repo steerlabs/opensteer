@@ -1,21 +1,29 @@
-import { createServer } from "node:http";
+import { nativeRuntimeProfile } from "./native-profile.test-support.js";
 import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
-import { WebSocket } from "ws";
-import { delay } from "@opensteer/shared/delay";
-import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   browserFrameFits,
   browserFrameLimits,
   defaultBrowserViewport,
   type CdpParameters,
 } from "@opensteer/browser-core";
+import { delay } from "@opensteer/shared/delay";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 
+import { BrowserRuntime, BrowserRuntimeServer } from "@opensteer/browser-runtime-core";
+import {
+  FakeSink,
+  FakeTicketVerifier,
+  testSessionFilesRoot,
+  validClaims,
+} from "@opensteer/browser-runtime-core/test-support";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -23,46 +31,38 @@ import {
   type BrowserServerMessage,
   type BrowserSurfaceId,
 } from "@opensteer/protocol";
-import { BrowserRuntime, BrowserRuntimeServer } from "@opensteer/browser-runtime-core";
-import {
-  FakeProfileStateClient,
-  FakeSink,
-  FakeTicketVerifier,
-  testSessionFilesRoot,
-  validClaims,
-} from "@opensteer/browser-runtime-core/test-support";
 
 import {
   TestChromiumLauncher as PlaywrightChromiumLauncher,
   browserTestSignal,
   cleanup,
-  waitForLedgerState,
   waitForBrowserMessages,
+  waitForLedgerState,
 } from "./browser-test-lifecycle.js";
 
 import {
+  asRecord,
+  closeBackgroundTab,
+  evaluationValue,
   executablePath,
+  expectPictureRepaired,
+  jpegSize,
+  redBoxInFrame,
+  rootCdpNavigate,
+  runHarness,
+  sameShape,
+  sendAsAgent,
+  serveFollowFixture,
+  shownDialog,
+  startFollowSession,
+  startHarnessBridge,
+  waitFor,
+  waitForAsync,
   type PageSizeRequest,
   type PageState,
+  type PictureBox,
   type PointerEntry,
   type TimedFrame,
-  startFollowSession,
-  closeBackgroundTab,
-  expectPictureRepaired,
-  rootCdpNavigate,
-  serveFollowFixture,
-  sameShape,
-  jpegSize,
-  type PictureBox,
-  redBoxInFrame,
-  startHarnessBridge,
-  runHarness,
-  sendAsAgent,
-  evaluationValue,
-  shownDialog,
-  asRecord,
-  waitForAsync,
-  waitFor,
 } from "./chromium.test-support.js";
 /**
  * A page is the size of the person's view, as a window is, and an agent may
@@ -1132,7 +1132,6 @@ describe("real Chromium pages follow the person's view", () => {
         executablePath,
         headless: true,
       }),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,
@@ -1357,8 +1356,7 @@ describe("real Chromium pages follow the person's view", () => {
     await session.follow(personTab, { width: 900, height: 640 });
 
     // The agent works in a tab of its own, out of the person's view. The
-    // site works for a while before its button asks, so the agent's next
-    // command reaches Chromium first and Chromium holds it for the dialog.
+    // fixture opens a real dialog; Chromium holds the size command until it is answered.
     const created = asRecord(
       await session.agent("Target.createTarget", {
         url: `${session.origin}/plain`,
@@ -1387,12 +1385,10 @@ describe("real Chromium pages follow the person's view", () => {
         const button = document.createElement("button");
         button.id = "delete";
         button.textContent = "Delete listing";
-        button.addEventListener("click", () => setTimeout(() => {
-          window.workedFrom = Date.now();
-          const until = performance.now() + 1500;
-          while (performance.now() < until) {}
+        window.workedFrom = performance.timeOrigin + performance.now();
+        button.addEventListener("click", () => {
           window.answer = confirm("Delete this listing?");
-        }, 0));
+        });
         document.body.append(button);
       })()`);
     let dialogOpenedAt: number | null = null;
@@ -1413,11 +1409,32 @@ describe("real Chromium pages follow the person's view", () => {
       if (open) await session.ledger.answerDialog(open.id, false, undefined).catch(() => undefined);
       await settles(Promise.all(viewerFollows));
     });
-    await agentRead("document.getElementById('delete').click()");
-    await delay(250, browserTestSignal());
+    const binding = session.ledger.binding(agentTab)!;
+    const send = binding.cdp.send.bind(binding.cdp);
+    const metricsEntered = Promise.withResolvers<void>();
+    const releaseMetrics = Promise.withResolvers<void>();
+    let gated = false;
+    const intercepted = vi
+      .spyOn(binding.cdp, "send")
+      .mockImplementation(
+        async <Result>(method: string, parameters?: CdpParameters): Promise<Result> => {
+          if (method === "Emulation.setDeviceMetricsOverride" && !gated) {
+            gated = true;
+            metricsEntered.resolve();
+            await withTimeout(releaseMetrics.promise, 5_000, {
+              timeoutError: () => new Error("Fixture did not release the admitted size command"),
+            });
+          }
+          return send<Result>(method, parameters);
+        },
+      );
+    cleanup.push(async () => {
+      releaseMetrics.resolve();
+      intercepted.mockRestore();
+    });
     const agentSize = { height: 500, width: 600 };
     const writeSentAt = performance.now();
-    const writeSentEpoch = Date.now();
+    const writeSentEpoch = performance.timeOrigin + performance.now();
     let writeSettledAt: number | null = null;
     const agentWrite = session
       .agent(
@@ -1435,7 +1452,20 @@ describe("real Chromium pages follow the person's view", () => {
           return error instanceof Error ? error.message : String(error);
         },
       );
-    await waitFor(() => dialogOpenedAt !== null, 5_000).catch(() => undefined);
+
+    await withTimeout(metricsEntered.promise, 5_000, {
+      timeoutError: () => new Error("Size command did not reach the engine boundary"),
+    });
+    // Admit the size write before the dialog, then deliver it to the actual
+    // engine after the modal event. No renderer stress or wall-clock race.
+    const asking = send("Runtime.evaluate", {
+      expression: "document.getElementById('delete').click()",
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    void asking.catch(() => undefined);
+    await vi.waitFor(() => expect(dialogOpenedAt).not.toBeNull(), { timeout: 5_000 });
+    releaseMetrics.resolve();
 
     // The person drags their own tab's panel edge.
     const dragSince = performance.now();
@@ -1447,8 +1477,9 @@ describe("real Chromium pages follow the person's view", () => {
     ];
     const dragging: Array<Promise<void>> = [];
     for (const size of drag) {
-      dragging.push(session.follow(personTab, size));
-      await delay(40, browserTestSignal());
+      const followed = session.follow(personTab, size);
+      dragging.push(followed);
+      expect(await settles(followed)).toBe(true);
     }
     const dragSettled = await settles(Promise.all(dragging));
     const dragSettledMs = Math.round(performance.now() - dragSince);
@@ -1507,6 +1538,9 @@ describe("real Chromium pages follow the person's view", () => {
         type: "dialog.respond",
       }),
     );
+    await withTimeout(asking, 5_000, {
+      timeoutError: () => new Error("Dialog click did not finish after its answer"),
+    });
     const writeOutcome = await withTimeout(agentWrite, 5_000, {
       timeoutError: () => new Error("timed out"),
     }).catch(() => "unanswered within 5s");
@@ -2123,24 +2157,30 @@ describe("real Chromium pages follow the person's view", () => {
   it("opens a session's first page at its ticket's size and keeps sessions of one profile apart", async () => {
     const site = await serveFollowFixture();
     cleanup.push(() => site.close());
+    const profile = await nativeRuntimeProfile();
+    cleanup.push(profile.close);
     const verifier = new FakeTicketVerifier();
     const sized = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000201");
     const unsized = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000202");
     verifier.setClaims(
       "ticket-sized",
       validClaims({
+        identity: profile.identity,
         sessionId: sized,
         viewport: { width: 1_111, height: 777 },
       }),
     );
-    verifier.setClaims("ticket-unsized", validClaims({ sessionId: unsized }));
+    verifier.setClaims(
+      "ticket-unsized",
+      validClaims({ identity: profile.identity, sessionId: unsized }),
+    );
     const runtime = new BrowserRuntime({
+      localProfiles: profile.localProfiles,
       launcher: new PlaywrightChromiumLauncher({
         chromiumSandbox: false,
         executablePath,
         headless: true,
       }),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,

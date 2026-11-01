@@ -1,12 +1,3 @@
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import { gate } from "@opensteer/shared/test-support/observation";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
-import { WebSocket } from "ws";
 import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
@@ -23,6 +14,13 @@ import {
   webSocketUpgradeRequest,
   writeTransportCloseReport,
 } from "@opensteer/shared/test-support/httpServer";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import { pageViewport, type PageGeometry } from "./browser/backend.js";
 import { BrowserRuntime } from "./runtime.js";
 import { BrowserRuntimeServer } from "./server.js";
@@ -31,7 +29,6 @@ import {
   FakeLaunchedBrowser,
   FakeLauncher,
   FakePage,
-  FakeProfileStateClient,
   FakeTicketVerifier,
   flushMicrotasks,
   testSessionFilesRoot,
@@ -39,77 +36,12 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
-  it("cancels page-free preparation through the authenticated loopback bridge", async () => {
-    const runtime = new BrowserRuntime({
-      launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
-      runtimeId: "runtime_test",
-      sessionFilesRoot: testSessionFilesRoot(),
-      ticketVerifier: new FakeTicketVerifier(),
-    });
-    const held = gate({ label: "loopback preparation", deadlineMs: 2000 });
-    const closed = Promise.withResolvers<void>();
-    const close = vi.fn(async () => {
-      closed.resolve();
-    });
-    let signal: AbortSignal | undefined;
-    vi.spyOn(runtime, "prepareProfile").mockImplementation(async (_ticket, options) => {
-      expect(options).toMatchObject({ localProfiles: true, profilePrepare: true });
-      signal = options?.signal;
-      await held.enter();
-      return { retained: true, closed: closed.promise, close };
-    });
-    const token = "a".repeat(64);
-    const server = new BrowserRuntimeServer({
-      port: 0,
-      runtime,
-      relayBridge: { token, updateAttachKeys: () => {} },
-    });
-    const address = await server.start();
-    const keys = generateKeyPairSync("ed25519");
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser/prepare`, {
-      headers: {
-        authorization: "Bearer abc.def.ghi",
-        "x-opensteer-browser-local-profiles": "1",
-        "x-opensteer-browser-profile-prepare": "1",
-        "x-opensteer-browser-bridge-token": token,
-        "x-opensteer-browser-attach-keys": Buffer.from(
-          JSON.stringify([
-            {
-              keyId: "test",
-              publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
-            },
-          ]),
-        ).toString("base64url"),
-      },
-    });
-    try {
-      await withTimeout(once(socket, "open"), 2000, {
-        timeoutError: () => new Error("Preparation bridge never opened"),
-      });
-      await held.entered;
-      socket.close();
-      await vi.waitFor(
-        () => expect(signal?.aborted, "Loopback close never cancelled preparation").toBe(true),
-        { timeout: 1000 },
-      );
-      held.release();
-      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce(), { timeout: 1000 });
-      expect(runtime.health().sessionCount).toBe(0);
-    } finally {
-      held.release();
-      socket.terminate();
-      await server.close();
-    }
-  });
   it("negotiates initial-page readiness through the authenticated bridge", async () => {
     const claims = validClaims({
-      initialNavigationVersion: 1,
       initialNavigation: { operationKey: "initial-test", url: "https://example.test/" },
     });
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(claims),
@@ -165,7 +97,6 @@ describe("BrowserRuntimeServer", () => {
   it("refuses listening and health until initialization succeeds, including failed initialization", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -209,7 +140,6 @@ describe("BrowserRuntimeServer", () => {
     );
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,
@@ -260,7 +190,6 @@ describe("BrowserRuntimeServer", () => {
   it("serves health and rejects an upgrade without a Host ticket", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -280,7 +209,6 @@ describe("BrowserRuntimeServer", () => {
   it("accepts rotating Host keys only through the authenticated relay bridge", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -328,44 +256,6 @@ describe("BrowserRuntimeServer", () => {
     await once(websocket, "close");
     await server.close();
   });
-
-  it("keeps transport alive until a retryable shutdown checkpoint succeeds", async () => {
-    const delegate = new FakeProfileStateClient();
-    let commitAttempts = 0;
-    const runtime = new BrowserRuntime({
-      launcher: new FakeLauncher(),
-      profileStateClient: {
-        load: () => delegate.load(),
-        commit: async (...parameters) => {
-          commitAttempts += 1;
-          if (commitAttempts === 1) throw new Error("profile vault unavailable");
-          return delegate.commit(...parameters);
-        },
-      },
-      runtimeId: "runtime_test",
-      sessionFilesRoot: testSessionFilesRoot(),
-      ticketVerifier: new FakeTicketVerifier(),
-    });
-    const server = new BrowserRuntimeServer({ port: 0, runtime });
-    const address = await server.start();
-    const websocket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser`, {
-      headers: { authorization: "Bearer signed-ticket" },
-    });
-    await once(websocket, "open");
-    await waitFor(() => runtime.health().sessionCount === 1);
-
-    await expect(server.close()).rejects.toThrow(/checkpointed/i);
-    expect(websocket.readyState).toBe(WebSocket.OPEN);
-    const health = await fetch(`http://${address.host}:${address.port}/health`);
-    expect(health.status).toBe(200);
-    expect(await health.json()).toMatchObject({ profileHostCount: 1, state: "closing" });
-
-    const socketClosed = once(websocket, "close");
-    await server.close();
-    await socketClosed;
-    expect(commitAttempts).toBe(2);
-    expect(runtime.health().state).toBe("closed");
-  });
 });
 
 /*
@@ -403,7 +293,6 @@ describe("BrowserRuntimeServer agent page sizes", () => {
     const page = createPage();
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -561,8 +450,7 @@ describe("BrowserRuntimeServer shutdown", () => {
     await writeTransportCloseReport("browser-runtime-server", cases);
   });
 
-  it("saves every profile, then ends every connection at once and stops listening", async () => {
-    const profiles = new FakeProfileStateClient();
+  it("closes every browser and connection and stops listening", async () => {
     const ticketVerifier = new FakeTicketVerifier();
     ticketVerifier.setClaims(
       "viewer-ticket",
@@ -572,7 +460,6 @@ describe("BrowserRuntimeServer shutdown", () => {
     );
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: profiles,
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier,
@@ -603,7 +490,6 @@ describe("BrowserRuntimeServer shutdown", () => {
       name: "profiles saved, then every transport ended",
       close: observed,
       repeatedCloseJoinsFirst: repeated === closing,
-      profileCommits: profiles.commits.length,
       runtimeState: runtime.health().state,
       connections: connections.map((connection) => connection.report()),
       viewerClose: viewerCode,
@@ -612,8 +498,6 @@ describe("BrowserRuntimeServer shutdown", () => {
 
     expect(observed.settled).toBe("closed");
     expect(repeated).toBe(closing);
-    // Both sessions use the same profile, which is saved once.
-    expect(profiles.commits).toHaveLength(1);
     expect(runtime.health().state).toBe("closed");
     expect(everyConnectionClosed).toBe(true);
     expect(viewerCode).toEqual({ code: 1001, reason: "runtime shutting down" });
@@ -623,7 +507,6 @@ describe("BrowserRuntimeServer shutdown", () => {
   it("refuses an upgrade it will not serve without waiting on the peer that sent it", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -686,19 +569,15 @@ describe("BrowserRuntimeServer shutdown", () => {
     }
   }, 30_000);
 
-  it("keeps every connection through a failed profile save, then ends them all when a retry saves", async () => {
-    const delegate = new FakeProfileStateClient();
-    let commitAttempts = 0;
+  it("closes every connection despite failed owned-resource cleanup", async () => {
+    const launcher = new FakeLauncher();
+    const close = launcher.browser.close.bind(launcher.browser);
+    vi.spyOn(launcher.browser, "close").mockImplementationOnce(async () => {
+      await close();
+      throw new Error("Owned-resource cleanup failed");
+    });
     const runtime = new BrowserRuntime({
-      launcher: new FakeLauncher(),
-      profileStateClient: {
-        load: () => delegate.load(),
-        commit: async (...parameters) => {
-          commitAttempts += 1;
-          if (commitAttempts === 1) throw new Error("profile vault unavailable");
-          return delegate.commit(...parameters);
-        },
-      },
+      launcher,
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),
@@ -713,29 +592,27 @@ describe("BrowserRuntimeServer shutdown", () => {
     const connections = [...held, silent];
 
     const failed = await observeClose(server.close());
-    const openAfterFailure = connections
-      .filter((connection) => connection.kind !== "keep-alive")
-      .every((connection) => !connection.isClosed());
-    const health = await fetch(`http://${address.host}:${address.port}/health`);
+    const closedAfterFailure = await allClosed(connections);
+    const refusedAfterFailure = await connectionRefused(address.port);
     const retried = await observeClose(server.close());
     const everyConnectionClosed = await allClosed(connections);
     const listenerRefused = await connectionRefused(address.port);
     cases.push({
-      name: "failed profile save keeps transport; retry ends it",
+      name: "failed resource cleanup still releases transport",
       failedClose: failed,
-      openAfterFailure,
-      healthAfterFailure: health.status,
+      closedAfterFailure,
+      refusedAfterFailure,
       retriedClose: retried,
-      commitAttempts,
+      closeAttempts: launcher.browser.closeCount,
       connections: connections.map((connection) => connection.report()),
       listenerRefused,
     });
 
     expect(failed.settled).toBe("rejected");
-    expect(openAfterFailure).toBe(true);
-    expect(health.status).toBe(200);
+    expect(closedAfterFailure).toBe(true);
+    expect(refusedAfterFailure).toBe(true);
     expect(retried.settled).toBe("closed");
-    expect(commitAttempts).toBe(2);
+    expect(launcher.browser.closeCount).toBe(1);
     expect(everyConnectionClosed).toBe(true);
     expect(listenerRefused).toBe(true);
   }, 30_000);
@@ -743,7 +620,6 @@ describe("BrowserRuntimeServer shutdown", () => {
   it("never starts listening once a close began during startup", async () => {
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(),
-      profileStateClient: new FakeProfileStateClient(),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(),

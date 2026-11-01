@@ -1,62 +1,58 @@
-import { EventEmitter } from "node:events";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import {
-  BrowserLocalProfiles,
-  type BrowserLocalProfileRepository,
-} from "./browser-local-profiles.js";
-import { BrowserProfileVault } from "./profile-vault.js";
-import { previousBrowser } from "./test-support/passkey-compatibility/readers.js";
-import { BrowserPasskeyOfferSchema } from "@opensteer/protocol/passkeys";
-import { mkdir, writeFile } from "node:fs/promises";
-import { createHash, generateKeyPairSync, verify, randomUUID, type KeyObject } from "node:crypto";
 import {
   createId,
   OpensteerError,
-  SequenceSchema,
   RunIdSchema,
+  SequenceSchema,
   type AgentEvent,
+  type BrowserProfileGrantId,
   type BrowserProfileId,
   type EnvironmentId,
-  type BrowserProfileGrantId,
   type Request,
   type RequestId,
-  type RunnerId,
   type RunId,
+  type RunnerId,
   type ThreadId,
   type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
+import type { BrowserHistoryStore, WorkspaceTabStore } from "@opensteer/database";
 import {
   BrowserAttachTicketClaimsSchema,
+  browserCaptureMaxTargets,
   BrowserClientMessageSchema,
+  browserHostMethods,
+  BrowserServerMessageSchema,
+  browserSessionMaxThreads,
   BrowserSurfaceIdSchema,
   BrowserSurfaceSchema,
-  BrowserServerMessageSchema,
-  RunnerBrowserModuleSchema,
   BrowserTabSummaryViewSchema,
-  browserHostMethods,
-  browserSessionMaxThreads,
-  browserCaptureMaxTargets,
   createBrowserSessionId,
   decodeBrowserFrameEnvelope,
+  RunnerBrowserModuleSchema,
   type BrowserProfileAccess,
   type BrowserSessionId,
   type HostedBrowserSessionState,
 } from "@opensteer/protocol";
-import type { BrowserHistoryStore, WorkspaceTabStore } from "@opensteer/database";
-import { WebSocket, WebSocketServer } from "ws";
-import type { BrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
+import { BrowserPasskeyOfferSchema } from "@opensteer/protocol/passkeys";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { createHash, generateKeyPairSync, randomUUID, verify, type KeyObject } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket, WebSocketServer } from "ws";
 import { installWebSocketLiveness } from "../server/websocket-liveness.js";
+import {
+  BrowserLocalProfiles,
+  type BrowserLocalProfileRepository,
+} from "./browser-local-profiles.js";
 import {
   BrowserService,
   type ActiveBrowserProfileGrant,
-  type BrowserRuntimeTarget,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
+  type BrowserRuntimeTarget,
+  type BrowserRuntimeTargetResolver,
   type BrowserSessionRecord,
   type BrowserSessionRepository,
-  type BrowserRuntimeTargetResolver,
   type BrowserUsageCredit,
   type BrowserUsePage,
 } from "./browser-service.js";
@@ -73,7 +69,6 @@ const cleanups: Array<() => Promise<void>> = [];
  * belongs to a Runner now, so even the simplest case names a machine.
  */
 function runnerTarget(options: {
-  readonly initialNavigationVersion?: boolean;
   readonly initialPageMismatch?: boolean;
   readonly navigationVersion?: boolean;
   readonly navigationAttributionVersion?: boolean;
@@ -114,7 +109,7 @@ function runnerTarget(options: {
                 headers: { authorization: `Bearer ${ticket}` },
                 perMessageDeflate: false,
               });
-              if (options.initialNavigationVersion) {
+              {
                 const claims = BrowserAttachTicketClaimsSchema.parse(
                   JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8")),
                 );
@@ -131,7 +126,7 @@ function runnerTarget(options: {
               installWebSocketLiveness(socket);
               return socket;
             },
-            initialNavigationVersion: options.initialNavigationVersion ?? false,
+            localProfileStorage: fixtureStorage,
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
@@ -158,35 +153,34 @@ function browserRuntimeSocketUrl(value: URL): URL {
   return url;
 }
 
+const fixtureStorage = {
+  engine: "electron" as const,
+  storageInstanceId: "20000000-0000-4000-8000-000000000001",
+};
+function nativeProfileOptions() {
+  const bindings = new Map<string, import("@opensteer/protocol").BrowserProfileStorage>();
+  return {
+    ...profileStateOptions,
+    localProfiles: new BrowserLocalProfiles({
+      deploymentId: createId("deployment"),
+      baseUrl: new URL("https://host.test"),
+      repository: {
+        listPendingBrowserProfileDeletions: async () => [],
+        getBrowserProfileStorage: async (id: BrowserProfileId) =>
+          bindings.get(id) ?? { kind: "unbound" },
+        bindBrowserProfile: async (binding: import("@opensteer/protocol").LocalProfileBinding) => {
+          const storage = { kind: "local" as const, binding, initialized: false };
+          bindings.set(binding.profileId, storage);
+          return storage;
+        },
+      } as unknown as BrowserLocalProfileRepository,
+    }),
+  };
+}
 const profileStateOptions = {
   onSessionsChanged: () => undefined,
   onWorkspaceEvent: () => undefined,
-  profileStateBaseUrl: new URL("https://host.test"),
-  profileVault: {
-    commit: async (input: { expectedRevision: number; snapshot: BrowserProfileSnapshot }) => ({
-      revision: input.expectedRevision + 1,
-      snapshot: input.snapshot,
-    }),
-    load: async () => ({ revision: 0, savedAt: null, snapshot: { cookies: [], origins: [] } }),
-    prepareRevision: (input: {
-      expectedRevision: number;
-      profileId: BrowserProfileId;
-      snapshot: BrowserProfileSnapshot;
-    }) => {
-      const ciphertext = Buffer.from(
-        JSON.stringify({
-          profileId: input.profileId,
-          revision: input.expectedRevision + 1,
-          snapshot: input.snapshot,
-        }),
-      );
-      return {
-        ciphertext,
-        ciphertextSha256: createHash("sha256").update(ciphertext).digest("hex"),
-        revision: input.expectedRevision + 1,
-      };
-    },
-  },
+  hostOrigin: new URL("https://host.test"),
 };
 
 afterEach(async () => {
@@ -195,6 +189,47 @@ afterEach(async () => {
 });
 
 describe("BrowserService", () => {
+  it("bounds queued database admission and fences it when the owner retries after timeout", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const entered = Promise.withResolvers<void>(),
+      release =
+        Promise.withResolvers<
+          Awaited<ReturnType<MemoryBrowserRepository["findMainWorkspaceForOwner"]>>
+        >();
+    const original = repository.findMainWorkspaceForOwner.bind(repository);
+    const workspace = await original(ownerId);
+    vi.spyOn(repository, "findMainWorkspaceForOwner").mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const bind = vi.spyOn(repository, "bindBrowserTabOpen"),
+      create = vi.spyOn(repository, "createBrowserSession");
+    const service = freshService({ keys, runtime, repository });
+    vi.useFakeTimers();
+    try {
+      const opening = service.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey: "deadline-admission",
+      });
+      const rejected = expect(opening).rejects.toMatchObject({ reason: "browser-open.timeout" });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(18_000);
+      await rejected;
+      release.resolve(workspace);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bind).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(runtime.connectionCount()).toBe(0);
+    } finally {
+      release.resolve(workspace);
+      vi.useRealTimers();
+    }
+  });
   it("orders profile deletion after startup admission so a late browser cannot escape erasure", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
@@ -275,10 +310,10 @@ describe("BrowserService", () => {
       workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
-      ...profileStateOptions,
+      ...nativeProfileOptions(),
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-      targetResolver: runnerTarget({ url: runtime.url, initialNavigationVersion: true }),
+      targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(() => service.close());
     const command = {
@@ -289,7 +324,6 @@ describe("BrowserService", () => {
     };
     const opened = await service.openTab(ownerId, command);
     expect(runtime.lastClaims()).toMatchObject({
-      initialNavigationVersion: 1,
       initialNavigation: {
         operationKey: createHash("sha256")
           .update(`${ownerId}:${command.idempotencyKey}`)
@@ -316,6 +350,7 @@ describe("BrowserService", () => {
     const profile = repository.addHostedProfile("Native history");
     const recordVisit = vi.fn<BrowserHistoryStore["recordVisit"]>().mockResolvedValue(true);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       history: {
@@ -325,7 +360,6 @@ describe("BrowserService", () => {
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({
         url: runtime.url,
-        initialNavigationVersion: true,
         navigationAttributionVersion: true,
       }),
     });
@@ -366,6 +400,136 @@ describe("BrowserService", () => {
     expect(recordVisit).toHaveBeenCalledOnce();
   });
 
+  it("durably replays a failed initial open without starting another browser", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const create = vi.spyOn(repository, "createBrowserSession");
+    const service = new BrowserService({
+      ...nativeProfileOptions(),
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({
+        url: runtime.url,
+        initialPageMismatch: true,
+      }),
+    });
+    cleanups.push(() => service.close());
+    const command = {
+      type: "browser.tab.open" as const,
+      identity: { kind: "guest" as const },
+      idempotencyKey: randomUUID(),
+    };
+    await expect(service.openTab(ownerId, command)).rejects.toBeDefined();
+    expect(
+      (await repository.getBrowserTabOpen(ownerId, command.idempotencyKey))?.outcome,
+    ).toMatchObject({ kind: "failed" });
+    await expect(service.openTab(ownerId, command)).rejects.toMatchObject({
+      reason: "browser-tab-open-failed",
+    });
+    expect(create).toHaveBeenCalledOnce();
+    await expect(
+      service.openTab(ownerId, { ...command, url: "https://different.test/" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("replays a failed additional tab while leaving the shared browser ready", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const service = freshService({ keys, repository, runtime });
+    const opened = await service.start({ ownerId, workspaceId, fresh: true });
+    const command = {
+      type: "browser.tab.open" as const,
+      sessionId: opened.session.id,
+      idempotencyKey: randomUUID(),
+    };
+    const opening = service.openTab(ownerId, command);
+    const refused = expect(opening).rejects.toMatchObject({ reason: "browser-tab-open-failed" });
+    const request = await runtime.nextCommand();
+    expect(request.type).toBe("cdp.command");
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: request.requestId,
+      error: { code: "conflict", message: "Could not create page", retryable: false },
+    });
+    await refused;
+    expect((await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state).toBe(
+      "ready",
+    );
+    await expect(service.openTab(ownerId, command)).rejects.toMatchObject({
+      reason: "browser-tab-open-failed",
+    });
+    expect(runtime.receivedCommands()).toHaveLength(1);
+    const retry = service.openTab(ownerId, { ...command, idempotencyKey: randomUUID() });
+    const retried = expect(retry).rejects.toMatchObject({ reason: "browser-tab-open-failed" });
+    const next = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: next.requestId,
+      error: { code: "conflict", message: "Could not create page", retryable: false },
+    });
+    await retried;
+    expect(runtime.receivedCommands()).toHaveLength(2);
+  });
+
+  it("keeps an unanswered additional tab recoverable by its original key", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const service = freshService({ keys, repository, runtime });
+    const opened = await service.start({ ownerId, workspaceId, fresh: true });
+    const command = {
+      type: "browser.tab.open" as const,
+      sessionId: opened.session.id,
+      idempotencyKey: randomUUID(),
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let request: Record<string, unknown>;
+    try {
+      const opening = service.openTab(ownerId, command);
+      const unknown = expect(opening).rejects.toMatchObject({
+        reason: "browser-tab-open-outcome-unknown",
+      });
+      request = await runtime.nextCommand();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await unknown;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect((await repository.getBrowserTabOpen(ownerId, command.idempotencyKey))?.outcome).toEqual({
+      kind: "pending",
+    });
+    const retry = service.openTab(ownerId, command);
+    const resent = await runtime.nextCommand();
+    expect(resent).toMatchObject({
+      type: "cdp.command",
+      command: {
+        parameters: {
+          idempotencyKey: (request.command as { parameters: { idempotencyKey: string } }).parameters
+            .idempotencyKey,
+        },
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resent.requestId,
+      result: { tabId: "page-2" },
+    });
+    await expect(retry).resolves.toMatchObject({ tabId: "page-2" });
+  });
+
   it("refuses mismatched initial page readiness", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
@@ -373,12 +537,12 @@ describe("BrowserService", () => {
       workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({
         url: runtime.url,
-        initialNavigationVersion: true,
         initialPageMismatch: true,
       }),
     });
@@ -389,116 +553,7 @@ describe("BrowserService", () => {
     expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
   });
 
-  it.each([
-    [true, true, "vault", true],
-    [false, true, "vault", false],
-    [true, false, "vault", false],
-    [false, false, "local", true],
-  ] as const)(
-    "prepares only authorized profiles and limits proactive conversion: personal=%s main=%s storage=%s",
-    async (personal, main, kind, allowed) => {
-      const keys = generateKeyPairSync("ed25519");
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace"),
-        runnerId = createId("runner");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-      const profile = repository.addHostedProfile("Prepared");
-      const binding = {
-        version: 1 as const,
-        deploymentId: createId("deployment"),
-        profileId: profile.id,
-        runnerId,
-        storageInstanceId: randomUUID(),
-        bindingId: randomUUID(),
-        engine: "chromium" as const,
-      };
-      const initialization = {
-        seed: { revision: 19, digest: "f".repeat(64) },
-        initializationToken: "x".repeat(43),
-        initializationUrl: "https://host.test/frozen",
-      };
-      const localIdentity = { kind: "profile-local" as const, binding, initialization };
-      const identity = vi.fn(async () => localIdentity);
-      const localProfiles = {
-        storage: async () => (kind === "vault" ? { kind: "vault" } : { kind, binding }),
-        identity,
-      } as unknown as BrowserLocalProfiles;
-      const close = vi.fn();
-      const prepareProfile = vi.fn(
-        (_ticket: string) =>
-          Object.assign(new EventEmitter(), {
-            close,
-          }) as unknown as import("./browser-service.js").BrowserRuntimeConnection,
-      );
-      const target = {
-        placementKey: "prepared",
-        runtimeId: "test",
-        incarnation: "one",
-        main,
-        profilePrepare: true,
-        localProfileStorage: {
-          storageInstanceId: binding.storageInstanceId,
-          engine: binding.engine,
-        },
-        prepareProfile,
-        connect: () => {
-          throw Error("Preparation must not attach");
-        },
-      };
-      const service = new BrowserService({
-        ...profileStateOptions,
-        personal,
-        localProfiles,
-        repository,
-        signer: new BrowserAttachTicketSigner({
-          keyId: "host-primary",
-          privateKey: keys.privateKey,
-        }),
-        targetResolver: {
-          placements: () => [
-            {
-              available: true,
-              environmentIds: [],
-              kind: "runner",
-              label: "Main",
-              runnerId,
-              runtimeId: "test",
-            },
-          ],
-          resolve: () => target,
-        },
-      });
-      cleanups.push(() => service.close());
-      await expect(
-        service.prepareProfile(ownerId, { kind: "profile", profileId: createId("browserProfile") }),
-      ).rejects.toThrow(/unavailable/);
-      await expect(
-        service.prepareProfile(createId("user"), { kind: "profile", profileId: profile.id }),
-      ).rejects.toThrow();
-      await service.prepareProfile(ownerId, { kind: "guest" });
-      expect(prepareProfile).not.toHaveBeenCalled();
-      await service.prepareProfile(ownerId, { kind: "profile", profileId: profile.id });
-      await service.prepareProfile(ownerId, { kind: "profile", profileId: profile.id });
-      expect(prepareProfile).toHaveBeenCalledTimes(allowed ? 1 : 0);
-      expect(identity).toHaveBeenCalledTimes(allowed ? 1 : 0);
-      expect(await repository.listBrowserSessions(ownerId)).toEqual([]);
-      if (allowed) {
-        const ticket = prepareProfile.mock.calls[0]![0];
-        const claims = JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString());
-        expect(claims).toMatchObject({
-          purpose: "profile-prepare",
-          identity: localIdentity,
-          subject: ownerId,
-        });
-        expect(claims).not.toHaveProperty("sessionId");
-        target.incarnation = "two";
-        await service.prepareProfile(ownerId, { kind: "profile", profileId: profile.id });
-        expect(prepareProfile).toHaveBeenCalledTimes(2);
-      }
-    },
-  );
-
-  it("keeps converted profiles on their computer, refuses old runtimes and omits saved site data", async () => {
+  it("keeps native profiles on their computer, refuses old runtimes and omits saved site data", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
     const ownerId = createId("user"),
@@ -518,27 +573,17 @@ describe("BrowserService", () => {
     const localProfiles = new BrowserLocalProfiles({
       deploymentId: binding.deploymentId,
       baseUrl: new URL("https://host.test"),
-      vault: new BrowserProfileVault({
-        key: Buffer.alloc(32, 3),
-        repository: {
-          readBrowserProfileRevision: async () => {
-            throw new Error("Native seed inspected");
-          },
-          commitBrowserProfileRevision: async () => {
-            throw new Error("Native save attempted");
-          },
-        },
-      }),
       repository: {
         getBrowserProfileStorage: async () => ({
           kind: "local",
           binding,
-          seed: { revision: 0, digest: "a".repeat(64) },
+          initialized: true,
         }),
         listPendingBrowserProfileDeletions: async () => [],
       } as unknown as BrowserLocalProfileRepository,
     });
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       localProfiles,
       repository,
@@ -547,7 +592,7 @@ describe("BrowserService", () => {
     });
     cleanups.push(() => service.close());
     await expect(service.start({ ownerId, workspaceId, profileId: profile.id })).rejects.toThrow(
-      "Update this computer to open this profile.",
+      "This computer's profile storage changed. Restore the original storage instance.",
     );
     await expect(
       service.openTab(ownerId, {
@@ -557,17 +602,9 @@ describe("BrowserService", () => {
         placement: { kind: "runner", runnerId: createId("runner") },
       }),
     ).rejects.toThrow("owning computer");
-    expect(
-      (
-        await service.profileSiteData({
-          ownerId,
-          profileIds: [profile.id],
-          site: "https://example.com",
-        })
-      ).profiles.has(profile.id),
-    ).toBe(false);
     expect(runtime.connectionCount()).toBe(0);
     const offline = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       localProfiles,
       repository,
@@ -849,15 +886,6 @@ describe("BrowserService", () => {
           },
         ],
       });
-      const answer = async (method: string, result: unknown) => {
-        const command = await runtime.nextCommand();
-        expect(command).toMatchObject({ type: "cdp.command", command: { method } });
-        runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result });
-      };
-      await answer("Target.getTargets", {
-        targetInfos: [{ type: "page", targetId: "target", surfaceId: "page-1" }],
-      });
-      await answer("Target.attachToTarget", { sessionId: "initial-cdp" });
       const navigate = await runtime.nextCommand();
       expect(navigate).toMatchObject({ type: "cdp.command", command: { method: "Page.navigate" } });
       if (path === "agent-start") expect(navigate).not.toHaveProperty("navigationId");
@@ -883,18 +911,24 @@ describe("BrowserService", () => {
           url: "https://www.amazon.com/",
         });
       runtime.sendServer({ type: "cdp.result", requestId: navigate.requestId, result: {} });
-      await answer("Target.detachFromTarget", {});
       await opening;
       await service.readHistory(ownerId, profile.id);
       if (path === "agent-start") expect(recordVisit).not.toHaveBeenCalled();
       else
-        expect(recordVisit).toHaveBeenCalledExactlyOnceWith({
-          profileId: profile.id,
-          ownerId,
-          url: "https://www.amazon.com/",
-          title: "Amazon",
-          typed: path === "tab-open",
-        });
+        await vi.waitFor(
+          () =>
+            expect(
+              recordVisit,
+              "Initial browser commit was not recorded",
+            ).toHaveBeenCalledExactlyOnceWith({
+              profileId: profile.id,
+              ownerId,
+              url: "https://www.amazon.com/",
+              title: "Amazon",
+              typed: path === "tab-open",
+            }),
+          { timeout: 1_000 },
+        );
     },
   );
 
@@ -1291,7 +1325,10 @@ describe("BrowserService", () => {
       idempotencyKey: "lost-open",
     };
     const opening = service.openTab(ownerId, input);
-    const rejected = expect(opening).rejects.toMatchObject({ code: "internal" });
+    const rejected = expect(opening).rejects.toMatchObject({
+      code: "conflict",
+      reason: "browser-tab-open-failed",
+    });
     const command = await runtime.nextCommand();
     runtime.sendServer({
       type: "browser.surfaces.changed",
@@ -1321,33 +1358,11 @@ describe("BrowserService", () => {
     await service.forgetHistory(ownerId, { profileId: profile.id, idempotencyKey: "clear" });
     expect(recordVisit).toHaveBeenCalledTimes(1);
     recordVisit.mockClear();
-    const replay = service.openTab(ownerId, input);
-    const replayCommand = await runtime.nextCommand();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
-      surfaces: [
-        {
-          id: "page-1",
-          active: true,
-          documentId: "old",
-          url: input.url,
-          title: "Old",
-        },
-      ],
+    const count = runtime.receivedCommands().length;
+    await expect(service.openTab(ownerId, input)).rejects.toMatchObject({
+      reason: "browser-tab-open-failed",
     });
-    runtime.sendServer({
-      type: "navigation.committed",
-      navigationId: command.navigationId,
-      surfaceId: "page-1",
-      documentId: "old",
-      url: input.url,
-    });
-    runtime.sendServer({
-      type: "cdp.result",
-      requestId: replayCommand.requestId,
-      result: { tabId: "page-1" },
-    });
-    await replay;
+    expect(runtime.receivedCommands()).toHaveLength(count);
     await service.readHistory(ownerId, profile.id);
     expect(recordVisit).not.toHaveBeenCalled();
     await attachment.handle(
@@ -2124,6 +2139,7 @@ describe("BrowserService", () => {
     const tabId = BrowserSurfaceIdSchema.parse("page-1");
     const close = vi.fn(async () => ({ groupId }));
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       connectTimeoutMs: 2000,
@@ -2179,6 +2195,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     let notices = 0;
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, workspaceId),
       connectTimeoutMs: 2_000,
@@ -2280,7 +2297,7 @@ describe("BrowserService", () => {
       if (version === 1) expect(claims.navigationAttributionVersion).toBe(1);
       else {
         expect(claims).not.toHaveProperty("navigationAttributionVersion");
-        previousBrowser.BrowserAttachTicketClaimsSchema!.parse(claims);
+        BrowserAttachTicketClaimsSchema.parse(claims);
       }
       const attachment = await service.attach(
         ownerId,
@@ -2297,7 +2314,7 @@ describe("BrowserService", () => {
         if (version === 1) expect(command.navigationId).toEqual(expect.any(String));
         else {
           expect(command).not.toHaveProperty("navigationId");
-          previousBrowser.BrowserClientMessageSchema!.parse(command);
+          BrowserClientMessageSchema.parse(command);
         }
       } finally {
         attachment.close();
@@ -2315,6 +2332,7 @@ describe("BrowserService", () => {
       const ownerId = createId("user");
       const workspaceId = createId("workspace");
       const service = new BrowserService({
+        ...nativeProfileOptions(),
         ...profileStateOptions,
         repository: new MemoryBrowserRepository(ownerId, workspaceId),
         connectTimeoutMs: 2000,
@@ -2419,6 +2437,7 @@ describe("BrowserService", () => {
       const workspaceId = createId("workspace");
       const repository = new MemoryBrowserRepository(ownerId, workspaceId);
       const service = new BrowserService({
+        ...nativeProfileOptions(),
         ...profileStateOptions,
         repository,
         connectTimeoutMs: 2000,
@@ -2452,6 +2471,7 @@ describe("BrowserService", () => {
       id === groupId ? group : null,
     );
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, createId("workspace")),
       signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
@@ -3175,6 +3195,7 @@ describe("BrowserService", () => {
     const announced: WorkspaceId[] = [];
     const usage: BrowserUsageCredit[] = [];
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
@@ -3241,6 +3262,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       repository,
@@ -3261,25 +3283,12 @@ describe("BrowserService", () => {
       workspaceId,
     });
 
-    const targets = await runtime.nextCommand();
-    runtime.sendServer({
-      type: "cdp.result",
-      requestId: targets.requestId,
-      result: { targetInfos: [{ targetId: "target-first", type: "page" }] },
-    });
-    const attach = await runtime.nextCommand();
-    runtime.sendServer({
-      type: "cdp.result",
-      requestId: attach.requestId,
-      result: { sessionId: "cdp-first" },
-    });
     const navigation = await runtime.nextCommand();
     expect(navigation).toMatchObject({
       type: "cdp.command",
       command: {
         method: "Page.navigate",
         parameters: { url: "https://example.com/start" },
-        sessionId: "cdp-first",
       },
     });
     runtime.sendServer({
@@ -3287,15 +3296,12 @@ describe("BrowserService", () => {
       requestId: navigation.requestId,
       result: { frameId: "frame-first" },
     });
-    const detach = await runtime.nextCommand();
-    runtime.sendServer({ type: "cdp.result", requestId: detach.requestId, result: {} });
     const started = await starting;
     expect(started.session.state).toBe("ready");
     expect(runtime.connectionCount()).toBe(1);
     expect(runtime.lastClaims()?.identity).toMatchObject({
-      kind: "profile",
-      profileId: workProfile.id,
-      profileStateUrl: `https://host.test/v1/browser-profile-state/${workProfile.id}/${started.session.id}`,
+      kind: "profile-local",
+      binding: { profileId: workProfile.id },
     });
     await repository.grant(workProfile.id, "full-control");
 
@@ -3484,6 +3490,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       repository,
@@ -3567,6 +3574,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       repository,
@@ -3633,6 +3641,7 @@ describe("BrowserService", () => {
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const announced: WorkspaceId[] = [];
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       onSessionsChanged: (id) => announced.push(id),
@@ -3665,6 +3674,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       repository,
@@ -3701,6 +3711,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       repository,
@@ -3729,6 +3740,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
       repository,
@@ -3760,8 +3772,6 @@ describe("BrowserService", () => {
     const target = runnerTarget({ url: runtime.url });
     const stale = await repository.createBrowserSession({
       id: createBrowserSessionId(),
-      leaseGeneration: 1,
-      leaseTokenHash: "hash",
       origin: "workspace",
       placementKey: `runner:${target.runnerId}:runtime-1`,
       profileId: profile.id,
@@ -3770,6 +3780,7 @@ describe("BrowserService", () => {
       workspaceId,
     });
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({
@@ -3787,79 +3798,6 @@ describe("BrowserService", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("opens a session whose first page answers with a navigation error, and fails one whose CDP fails", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const service = new BrowserService({
-      ...profileStateOptions,
-      connectTimeoutMs: 2_000,
-      repository,
-      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-      targetResolver: runnerTarget({ url: runtime.url }),
-    });
-    cleanups.push(async () => service.close());
-    await service.initialize();
-    const firstNavigation = async (
-      answer: (requestId: unknown) => Record<string, unknown>,
-    ): Promise<void> => {
-      const targets = await runtime.nextCommand();
-      runtime.sendServer({
-        type: "cdp.result",
-        requestId: targets.requestId,
-        result: { targetInfos: [{ targetId: "target-first", type: "page" }] },
-      });
-      const attach = await runtime.nextCommand();
-      runtime.sendServer({
-        type: "cdp.result",
-        requestId: attach.requestId,
-        result: { sessionId: "cdp-first" },
-      });
-      const navigation = await runtime.nextCommand();
-      runtime.sendServer(answer(navigation.requestId));
-      const detach = await runtime.nextCommand();
-      runtime.sendServer({ type: "cdp.result", requestId: detach.requestId, result: {} });
-    };
-
-    // Failure mode: a page that is not up yet (a dev server still starting)
-    // fails the whole open, although the browser is ready and can reload it.
-    const refused = service.start({
-      fresh: true,
-      initialUrl: "http://localhost:3000/",
-      ownerId,
-      reuseExisting: false,
-      workspaceId,
-    });
-    await firstNavigation((requestId) => ({
-      type: "cdp.result",
-      requestId,
-      result: { errorText: "net::ERR_CONNECTION_REFUSED", frameId: "frame-first" },
-    }));
-    await expect(refused).resolves.toMatchObject({
-      session: { state: "ready" },
-      wasExisting: false,
-    });
-
-    // A CDP failure is not a page answer: the open still fails.
-    const broken = service.start({
-      fresh: true,
-      initialUrl: "http://localhost:3000/",
-      ownerId,
-      reuseExisting: false,
-      workspaceId,
-    });
-    await firstNavigation((requestId) => ({
-      type: "cdp.error",
-      requestId,
-      error: { code: "internal", message: "Page.navigate failed.", retryable: false },
-    }));
-    await expect(broken).rejects.toMatchObject({ code: "workspace_unavailable" });
-  });
-
   it("deduplicates browser access only by Run call identity and returns one uniform result", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
@@ -3867,6 +3805,7 @@ describe("BrowserService", () => {
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const events: AgentEvent[] = [];
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       onWorkspaceEvent: (event) => {
         events.push(event);
@@ -3972,6 +3911,7 @@ describe("BrowserService", () => {
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const existing = repository.addHostedProfile("Client portal");
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
@@ -4029,11 +3969,13 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const signer = new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey });
     const main = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, workspaceId, "main"),
       signer,
     });
     const specialized = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, workspaceId),
       signer,
@@ -4072,6 +4014,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MaximumBrowserCatalogRepository(ownerId, workspaceId, 100);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
@@ -4085,6 +4028,7 @@ describe("BrowserService", () => {
     expect(Buffer.byteLength(JSON.stringify(bootstrap), "utf8")).toBeGreaterThan(10 * 1_024);
 
     const overflow = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MaximumBrowserCatalogRepository(ownerId, workspaceId, 101),
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
@@ -4109,6 +4053,7 @@ describe("BrowserService", () => {
       url: runtime.url,
     });
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
@@ -4496,6 +4441,7 @@ describe("BrowserService", () => {
     const granted = repository.addHostedProfile("Granted");
     const userOnly = repository.addHostedProfile("User only");
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
@@ -4528,6 +4474,7 @@ describe("BrowserService", () => {
     const profile = repository.addHostedProfile("Shopping");
     const onProfilesChanged = vi.fn();
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       onProfilesChanged,
       repository,
@@ -4592,6 +4539,7 @@ describe("BrowserService", () => {
     const workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const service = new BrowserService({
+      ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
@@ -4690,268 +4638,7 @@ describe("BrowserService", () => {
       message: "This Workspace is using a browser profile.",
     });
   });
-
-  it("promotes a fresh session's live state into a new profile on request", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const service = freshService({ keys, repository, runtime });
-    const fresh = await service.start({ fresh: true, ownerId, workspaceId });
-
-    const saving = service.saveSessionAsProfile({
-      name: "Client portal",
-      ownerId,
-      sessionId: fresh.session.id,
-    });
-    await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "state.export" });
-    runtime.sendServer({
-      snapshot: exportedSnapshot,
-      type: "state.exported",
-    });
-    const saved = await saving;
-    expect(saved).toMatchObject({ name: "Client portal", revision: 1 });
-    expect(repository.profileRevision(saved.id)).toMatchObject({
-      ciphertext: expect.any(Uint8Array),
-      ciphertextSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-      revision: 1,
-    });
-    // Promotion is point-in-time: the source session stays fresh and open.
-    expect(repository.session(fresh.session.id)).toMatchObject({
-      profileId: null,
-      state: "ready",
-    });
-
-    const profile = repository.addHostedProfile("Personal");
-    const backed = await service.start({
-      ownerId,
-      profileId: profile.id,
-      workspaceId: repository.addWorkspace("specialized"),
-    });
-    await expect(
-      service.saveSessionAsProfile({ name: "Fork", ownerId, sessionId: backed.session.id }),
-    ).rejects.toMatchObject({
-      code: "conflict",
-      message: "This session already persists into its browser profile.",
-    });
-  });
-
-  it("reports a Runtime that refuses or never answers a state export", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const service = freshService({ keys, repository, runtime });
-    const fresh = await service.start({ fresh: true, ownerId, workspaceId });
-
-    const failing = service.exportSessionState(ownerId, fresh.session.id);
-    await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "state.export" });
-    runtime.sendServer({
-      error: { code: "internal", message: "export failed", retryable: false },
-      type: "browser.error",
-    });
-    await expect(failing).rejects.toMatchObject({ code: "internal" });
-
-    // Exports are serialized, so the next request only reaches the Runtime once
-    // the previous one has been answered.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const silent = service.exportSessionState(ownerId, fresh.session.id);
-      await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "state.export" });
-      const rejected = expect(silent).rejects.toMatchObject({ code: "timeout" });
-      await vi.advanceTimersByTimeAsync(30_000);
-      await rejected;
-    } finally {
-      vi.useRealTimers();
-    }
-
-    const dropped = service.exportSessionState(ownerId, fresh.session.id);
-    await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "state.export" });
-    await service.stop(ownerId, fresh.session.id);
-    await expect(dropped).rejects.toMatchObject({ code: "conflict" });
-    await expect(service.exportSessionState(ownerId, fresh.session.id)).rejects.toMatchObject({
-      code: "conflict",
-    });
-  });
-
-  it("brokers an agent save request and promotes the session when the owner grants it", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const events: AgentEvent[] = [];
-    const service = freshService({
-      keys,
-      onWorkspaceEvent: (event: AgentEvent) => {
-        events.push(event);
-      },
-      repository,
-      runtime,
-    });
-    const opened = await service.openAgentSession({
-      agentBindingId: "run:save",
-      fresh: true,
-      ownerId,
-      workspaceId,
-    });
-    const request = {
-      callId: "browser-save-unit-request",
-      originatingWorkspaceId: workspaceId,
-      ownerId,
-      reason: "Reuse this portal login next time",
-      runId: createId("run"),
-      sessionId: opened.session.id,
-      suggestedName: "Client portal",
-      threadId: createId("thread"),
-      workspaceId,
-    };
-
-    const requested = await service.requestSaveProfile(request);
-    expect(requested).toEqual({
-      kind: "browser.profile.save",
-      replayed: false,
-      requestId: expect.stringMatching(/^req_/),
-      status: "pending",
-    });
-    expect(events).toHaveLength(1);
-    const duplicate = await service.requestSaveProfile(request);
-    expect(duplicate).toEqual({ ...requested, replayed: true });
-    expect(events).toHaveLength(1);
-    // Different calls remain independent even when both target this Workspace.
-    await expect(
-      service.requestAccess({
-        callId: "browser-save-unit-independent-access",
-        originatingWorkspaceId: workspaceId,
-        ownerId,
-        reason: "Grant the portal profile",
-        runId: request.runId,
-        suggestion: { kind: "user_choice" },
-        threadId: request.threadId,
-        workspaceId,
-      }),
-    ).resolves.toMatchObject({ kind: "browser.access", replayed: false, status: "pending" });
-
-    const response = {
-      kind: "external",
-      value: { decision: "fulfilled", name: "Client portal" },
-    } as const;
-    const resolving = service.resolveRequest({
-      requestId: requested.requestId,
-      resolvedBy: ownerId,
-      response,
-    });
-    await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "state.export" });
-    runtime.sendServer({ snapshot: exportedSnapshot, type: "state.exported" });
-    const resolved = await resolving;
-    expect(resolved.profile).toMatchObject({ name: "Client portal", revision: 1 });
-    expect(resolved.grant).toMatchObject({ profileId: resolved.profile?.id, workspaceId });
-    expect(resolved.request).toMatchObject({ response, status: "fulfilled" });
-    expect(repository.profileRevision(resolved.profile!.id)).toMatchObject({
-      ciphertext: expect.any(Uint8Array),
-      ciphertextSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-      revision: 1,
-    });
-    expect(events.map((event) => event.type)).toEqual([
-      "request.opened",
-      "request.opened",
-      "request.resolved",
-    ]);
-    await expect(service.requestSaveProfile(request)).resolves.toEqual({
-      ...requested,
-      replayed: true,
-      status: "fulfilled",
-    });
-    expect(events).toHaveLength(3);
-    expect(repository.session(opened.session.id)).toMatchObject({ profileId: null });
-  });
-
-  it("cancels a pending save when its source session closes", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const events: AgentEvent[] = [];
-    const service = freshService({
-      keys,
-      onWorkspaceEvent: (event: AgentEvent) => events.push(event),
-      repository,
-      runtime,
-    });
-    const opened = await service.openAgentSession({
-      agentBindingId: "run:save",
-      fresh: true,
-      ownerId,
-      workspaceId,
-    });
-    const request = {
-      callId: "browser-save-missing-session",
-      originatingWorkspaceId: workspaceId,
-      ownerId,
-      reason: "Reuse this portal login next time",
-      runId: createId("run"),
-      sessionId: opened.session.id,
-      threadId: createId("thread"),
-      workspaceId,
-    };
-    const requested = await service.requestSaveProfile(request);
-
-    await service.stop(ownerId, opened.session.id);
-    await expect(repository.requests.get(requested.requestId)).resolves.toMatchObject({
-      cancellationReason: "resource-deleted",
-      status: "cancelled",
-    });
-    expect(events.map(({ type }) => type)).toEqual(["request.opened", "request.cancelled"]);
-    await expect(
-      service.resolveRequest({
-        requestId: requested.requestId,
-        resolvedBy: ownerId,
-        response: {
-          kind: "external",
-          value: { decision: "fulfilled", name: "Client portal" },
-        },
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await expect(repository.listBrowserProfiles(ownerId)).resolves.toEqual([]);
-    await expect(
-      service.resolveRequest({
-        requestId: requested.requestId,
-        resolvedBy: ownerId,
-        response: { kind: "external", value: { decision: "declined" } },
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      service.requestSaveProfile({ ...request, sessionId: opened.session.id }),
-    ).resolves.toEqual({ ...requested, replayed: true, status: "cancelled" });
-  });
 });
-
-const exportedSnapshot = {
-  cookies: [
-    {
-      domain: "portal.example",
-      expires: -1,
-      httpOnly: true,
-      name: "session",
-      path: "/",
-      sameSite: "Lax" as const,
-      secure: true,
-      value: "signed-in",
-    },
-  ],
-  origins: [],
-};
 
 function freshService(options: {
   readonly history?: BrowserHistoryStore;
@@ -4972,6 +4659,7 @@ function freshService(options: {
   readonly runtime: { readonly url: URL };
 }): BrowserService {
   const service = new BrowserService({
+    ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,
     ...profileStateOptions,
     ...(options.history ? { history: options.history } : {}),
@@ -5057,6 +4745,7 @@ function placementService(options: {
         });
       }
       return {
+        localProfileStorage: fixtureStorage,
         cdpBoundary: true,
         sharedControl: true,
         connect: (ticket) => relayConnection(relay).connect(ticket),
@@ -5066,6 +4755,7 @@ function placementService(options: {
     },
   };
   const service = new BrowserService({
+    ...nativeProfileOptions(),
     ...profileStateOptions,
     repository:
       options.repository ?? new MemoryBrowserRepository(options.ownerId, options.workspaceId),
@@ -5170,7 +4860,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     );
   }
   async settleBrowserTabOpen(binding: import("@opensteer/protocol").BrowserTabOpenBinding) {
-    this.tabOpens.set(`${binding.callerUserId}:${binding.idempotencyKey}`, binding);
+    const key = binding.callerUserId + ":" + binding.idempotencyKey;
+    const current = this.tabOpens.get(key);
+    if (
+      current?.outcome.kind === "pending" &&
+      current.requestFingerprint === binding.requestFingerprint
+    )
+      this.tabOpens.set(key, binding);
   }
   async rememberedBrowserPlacement() {
     return null;
@@ -5261,13 +4957,8 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
   } | null = null;
   readonly #ownerId: UserId;
   readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "specialized">();
-  readonly #leaseHashes = new Map<BrowserSessionId, string>();
   readonly #profiles = new Map<BrowserProfileId, BrowserProfileRecord>();
   readonly #deletedProfiles = new Set<BrowserProfileId>();
-  readonly #profileRevisions = new Map<
-    BrowserProfileId,
-    { readonly ciphertext: Uint8Array; readonly ciphertextSha256: string; readonly revision: 1 }
-  >();
   readonly #sessions = new Map<BrowserSessionId, BrowserSessionRecord>();
   readonly #workspaceId: WorkspaceId;
   readonly #workspaceKind: "main" | "specialized";
@@ -5292,32 +4983,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
           replayed: true,
           request: this.#requests.get(existingId)!,
         };
-      }
-      if (input.kind === "browser.profile.save") {
-        if (input.payload.kind !== "browser.profile.save") {
-          throw new OpensteerError({ code: "bad_request", message: "Invalid save payload" });
-        }
-        const session = this.#sessions.get(input.payload.sessionId as BrowserSessionId);
-        const targetKind =
-          input.targetWorkspaceId === this.#workspaceId
-            ? this.#workspaceKind
-            : this.#otherWorkspaces.get(input.targetWorkspaceId);
-        if (
-          !session ||
-          session.state !== "ready" ||
-          !this.#ownsSession(session, input.requestedBy)
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The source Browser Session is no longer available to save",
-          });
-        }
-        if (targetKind === "specialized" && session.workspaceId !== input.targetWorkspaceId) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Browser Session is outside the target Workspace",
-          });
-        }
       }
       const request: Request = {
         callId: input.callId,
@@ -5356,7 +5021,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         pending.status !== "pending" ||
         pending.requestedBy !== input.resolvedBy ||
         input.response.kind !== "external" ||
-        (pending.kind !== "browser.access" && pending.kind !== "browser.profile.save")
+        pending.kind !== "browser.access"
       ) {
         throw new OpensteerError({
           code: "conflict",
@@ -5373,20 +5038,12 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         | undefined;
       const fulfilled = value?.decision === "fulfilled";
       let profile: BrowserProfileRecord | null = null;
-      let preparedRevision:
-        | {
-            readonly ciphertext: Uint8Array;
-            readonly ciphertextSha256: string;
-            readonly revision: 1;
-          }
-        | undefined;
       if (fulfilled && pending.kind === "browser.access") {
         if (value.createProfile) {
           profile = {
             id: createId("browserProfile"),
             name: value.createProfile.name,
             ownerId: input.resolvedBy,
-            revision: 0,
           };
         } else if (value.profileId) {
           profile =
@@ -5397,30 +5054,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         if (!profile) {
           throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
         }
-      } else if (fulfilled) {
-        if (!input.preparedProfile || pending.payload.kind !== "browser.profile.save") {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "A fulfilled profile-save Request needs one prepared profile revision",
-          });
-        }
-        if (this.#sessions.get(pending.payload.sessionId as BrowserSessionId)?.state !== "ready") {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The source Browser Session is no longer available to save",
-          });
-        }
-        profile = {
-          id: input.preparedProfile.id,
-          name: input.preparedProfile.name,
-          ownerId: input.resolvedBy,
-          revision: 1,
-        };
-        preparedRevision = {
-          ciphertext: input.preparedProfile.ciphertext,
-          ciphertextSha256: input.preparedProfile.ciphertextSha256,
-          revision: 1,
-        };
       }
       let grant: ActiveBrowserProfileGrant | null = null;
       const targetKind =
@@ -5461,7 +5094,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       // Everything above is prepared and validated before this synchronous
       // commit boundary, mirroring the production database transaction.
       if (profile && !this.#profiles.has(profile.id)) this.#profiles.set(profile.id, profile);
-      if (profile && preparedRevision) this.#profileRevisions.set(profile.id, preparedRevision);
       if (grant) this.#grant = grant;
       this.#requests.set(request.id, request);
       return {
@@ -5469,36 +5101,15 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         grant,
         profile,
         request,
-        saveSessionId:
-          fulfilled && pending.payload.kind === "browser.profile.save"
-            ? pending.payload.sessionId
-            : null,
       };
     },
   };
-
-  authorizeBrowserProfileLease(input: {
-    leaseTokenHash: string;
-    profileId: BrowserProfileId;
-    sessionId: BrowserSessionId;
-  }): Promise<boolean> {
-    const session = this.#sessions.get(input.sessionId);
-    return Promise.resolve(
-      Boolean(
-        session &&
-        session.profileId === input.profileId &&
-        !terminal(session.state) &&
-        this.#leaseHashes.get(input.sessionId) === input.leaseTokenHash,
-      ),
-    );
-  }
 
   addHostedProfile(name: string): BrowserProfileRecord {
     const profile = {
       id: createId("browserProfile"),
       name,
       ownerId: this.#ownerId,
-      revision: 0,
     };
     this.#profiles.set(profile.id, profile);
     return profile;
@@ -5529,41 +5140,9 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       id: createId("browserProfile"),
       name: input.name,
       ownerId: input.ownerId,
-      revision: 0,
     };
     this.#profiles.set(profile.id, profile);
     return profile;
-  }
-
-  async createBrowserProfileWithRevision(input: {
-    readonly ciphertext: Uint8Array;
-    readonly ciphertextSha256: string;
-    readonly id: BrowserProfileId;
-    readonly name: string;
-    readonly ownerId: UserId;
-    readonly revision: 1;
-  }): Promise<BrowserProfileRecord> {
-    if (this.#profiles.has(input.id) || this.#profileRevisions.has(input.id)) {
-      throw new OpensteerError({ code: "conflict", message: "Browser profile already exists" });
-    }
-    const profile: BrowserProfileRecord = {
-      id: input.id,
-      name: input.name,
-      ownerId: input.ownerId,
-      revision: input.revision,
-    };
-    // The profile and first encrypted revision become visible together.
-    this.#profiles.set(profile.id, profile);
-    this.#profileRevisions.set(profile.id, {
-      ciphertext: input.ciphertext,
-      ciphertextSha256: input.ciphertextSha256,
-      revision: input.revision,
-    });
-    return profile;
-  }
-
-  profileRevision(profileId: BrowserProfileId) {
-    return this.#profileRevisions.get(profileId) ?? null;
   }
 
   #requestEvent(request: Request): AgentEvent {
@@ -5595,30 +5174,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       data: { request },
       type: "request.resolved",
     };
-  }
-
-  #cancelProfileSaveRequests(sessionId: BrowserSessionId): readonly AgentEvent[] {
-    const events: AgentEvent[] = [];
-    for (const request of this.#requests.values()) {
-      if (
-        request.status !== "pending" ||
-        request.payload.kind !== "browser.profile.save" ||
-        request.payload.sessionId !== sessionId
-      ) {
-        continue;
-      }
-      const cancelled: Request = {
-        ...request,
-        cancellationReason: "resource-deleted",
-        resolvedAt: new Date().toISOString(),
-        resolvedBy: null,
-        response: null,
-        status: "cancelled",
-      };
-      this.#requests.set(cancelled.id, cancelled);
-      events.push(this.#requestEvent(cancelled));
-    }
-    return events;
   }
 
   grant(profileId: BrowserProfileId, access: BrowserProfileAccess) {
@@ -5683,8 +5238,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
 
   async createBrowserSession(input: {
     readonly id: BrowserSessionId;
-    readonly leaseGeneration: number;
-    readonly leaseTokenHash: string | null;
     readonly placementKey: string;
     readonly runnerId: RunnerId;
     readonly origin: "agent" | "trigger" | "workspace";
@@ -5692,8 +5245,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly runtimeId: string;
     readonly workspaceId: WorkspaceId;
   }): Promise<BrowserSessionRecord> {
-    void input.leaseGeneration;
-    if (input.leaseTokenHash) this.#leaseHashes.set(input.id, input.leaseTokenHash);
     const now = new Date();
     const record: BrowserSessionRecord = {
       createdAt: now,
@@ -5773,12 +5324,19 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly failed: number;
   }> {
     let count = 0;
+    if (placementKey === undefined)
+      for (const [key, binding] of this.tabOpens)
+        if (binding.outcome.kind === "pending")
+          this.tabOpens.set(key, {
+            ...binding,
+            outcome: { kind: "failed", reason: "interrupted" },
+          });
     const events: AgentEvent[] = [];
     for (const session of this.#sessions.values()) {
       if ((placementKey && session.placementKey !== placementKey) || terminal(session.state))
         continue;
       this.#sessions.set(session.id, { ...session, state: "failed", updatedAt: new Date() });
-      events.push(...this.#cancelProfileSaveRequests(session.id));
+
       for (const [bindingId, attachment] of this.#attachments) {
         if (attachment.sessionId === session.id) this.#attachments.delete(bindingId);
       }
@@ -5852,7 +5410,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
     }
     this.#deletedProfiles.add(input.profileId);
-    this.#profileRevisions.delete(input.profileId);
     if (this.#grant?.profileId === input.profileId) this.#grant = null;
     return {
       sessionIds: [...this.#sessions.values()]
@@ -5923,10 +5480,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     if (input.from && !input.from.includes(current.state)) {
       if (current.state === input.state) {
         return {
-          events:
-            input.state === "closing" || terminal(input.state)
-              ? this.#cancelProfileSaveRequests(input.sessionId)
-              : [],
+          events: [],
           session: current,
         };
       }
@@ -5940,10 +5494,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       }
     }
     return {
-      events:
-        input.state === "closing" || terminal(input.state)
-          ? this.#cancelProfileSaveRequests(input.sessionId)
-          : [],
+      events: [],
       session: next,
     };
   }
@@ -5994,6 +5545,19 @@ async function startFakeRuntime(
     }
     const claims = verifyTicket(authorization.slice(7), publicKey, keyId);
     latestClaims = claims;
+    if (claims.initialNavigation?.url) {
+      const navigation = {
+        type: "cdp.command",
+        requestId: randomUUID(),
+        ...(claims.initialNavigation.navigationId
+          ? { navigationId: claims.initialNavigation.navigationId }
+          : {}),
+        command: { method: "Page.navigate", parameters: { url: claims.initialNavigation.url } },
+      };
+      const waiting = waiters.shift();
+      if (waiting) waiting(navigation);
+      else commands.push(navigation);
+    }
     for (const message of options.beforeInitialSnapshot ?? []) {
       socket.send(JSON.stringify(message));
     }
@@ -6256,9 +5820,7 @@ it.each([
       });
       expect(runtime.lastClaims()?.passkeys).toBe(enabled ? 1 : undefined);
       if (!enabled)
-        previousBrowser.BrowserAttachTicketClaimsSchema!.parse(
-          JSON.parse(JSON.stringify(runtime.lastClaims())),
-        );
+        BrowserAttachTicketClaimsSchema.parse(JSON.parse(JSON.stringify(runtime.lastClaims())));
       const old = new RecordingPeer("old-viewer"),
         modern = new RecordingPeer("modern-viewer");
       const baseline = await service.attach(ownerId, opened.session.id, old, consumerOptions());
@@ -6332,12 +5894,11 @@ it.each([
       } else expect(modern.text()[0]).not.toHaveProperty("passkeys");
       opted.close();
       baseline.close();
-      for (const frame of old.text()) previousBrowser.BrowserServerMessageSchema!.parse(frame);
+      for (const frame of old.text()) BrowserServerMessageSchema.parse(frame);
       if (!enabled) {
         expect(runtime.receivedCommands().length).toBeGreaterThan(0);
-        for (const frame of runtime.receivedCommands())
-          previousBrowser.BrowserClientMessageSchema!.parse(frame);
-        for (const frame of modern.text()) previousBrowser.BrowserServerMessageSchema!.parse(frame);
+        for (const frame of runtime.receivedCommands()) BrowserClientMessageSchema.parse(frame);
+        for (const frame of modern.text()) BrowserServerMessageSchema.parse(frame);
       }
     } finally {
       vi.unstubAllEnvs();

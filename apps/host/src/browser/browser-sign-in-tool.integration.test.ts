@@ -56,7 +56,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 1 },
           browser: {
             runtimeId: "browser-runtime-integration",
-            profileSnapshotVersion: 2,
+            wireVersion: 1,
             cdpBoundary: 1,
             sharedControl: 1,
             signIn: { version: 3 },

@@ -69,6 +69,38 @@ it("does not acknowledge when the person command fails", async () => {
   expect(ack).not.toHaveBeenCalled();
   client.dispose();
 });
+it("acknowledges without a failure when the person closes the opening tab", async () => {
+  const client = new MockHostClient();
+  const gate = Promise.withResolvers<void>();
+  const dispatch = client.rpc["commands.dispatch"];
+  const delayed: typeof dispatch = async (command, options) => {
+    if (command.type === "browser.tab.open")
+      await withTimeout(gate.promise, 2_000, {
+        timeoutError: () => new Error("The delayed browser command was never released."),
+      });
+    return dispatch(command, options);
+  };
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(client.rpc, {
+      get: (target, name) => (name === "commands.dispatch" ? delayed : Reflect.get(target, name)),
+    }),
+  });
+  const ack = vi.fn(async () => {});
+  const show = vi.fn();
+  try {
+    const opening = openDesktopWebLink(link, client, { kind: "guest" }, show, ack);
+    client.dismissPendingBrowserTab(`desktop-web-link:${link.id}`);
+    await opening;
+    expect(ack).toHaveBeenCalledExactlyOnceWith(link.id);
+    expect(show).toHaveBeenCalledExactlyOnceWith({
+      kind: "pending-browser",
+      idempotencyKey: `desktop-web-link:${link.id}`,
+    });
+  } finally {
+    gate.resolve();
+    client.dispose();
+  }
+});
 it("waits for a signed-in Personal UI and an available browser placement", () => {
   const client = new MockHostClient();
   const snapshot = client.getSnapshot();

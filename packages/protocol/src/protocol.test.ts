@@ -1,10 +1,5 @@
+import { ThreadAccessModeSchema, createId, type Message } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
-import {
-  BrowserAccessSuggestionSchema,
-  createId,
-  ThreadAccessModeSchema,
-  type Message,
-} from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   AgentBrowserSessionSummarySchema,
@@ -15,26 +10,25 @@ import {
   BrowserClientMessageSchema,
   BrowserServerMessageSchema,
   DesktopAccountAuthStateSchema,
-  HostedBrowserSessionSchema,
   HarnessInstanceCatalogSchema,
   HarnessInstanceCatalogViewSchema,
   HostToRunnerMessageSchema,
+  HostedBrowserSessionSchema,
   PendingAgentEventSchema,
   PersonalRemoteAccessStatusSchema,
   PublishPersonalConnectProjectionRequestSchema,
   RunnerCommandSchema,
-  advertisedRunnerModules,
-  runnerEnvironmentIds,
   RunnerDescriptorSchema,
   RunnerHarnessDriverSchema,
   RunnerHarnessDriverViewSchema,
   RunnerToHostMessageSchema,
-  SaveBrowserSessionProfileBodySchema,
   StartHostedBrowserBodySchema,
+  advertisedRunnerModules,
   agentToolPayloadMaxSerializedBytes,
   decodeBrowserFrameEnvelope,
   maxHarnessInstancesPerEnvironment,
   maxHarnessModelsPerCatalog,
+  runnerEnvironmentIds,
 } from "./index.js";
 
 /** The fence every post-authentication frame repeats in both directions. */
@@ -338,7 +332,7 @@ describe("wire protocol", () => {
     const descriptor = RunnerDescriptorSchema.parse({
       bootId: `rbt_${randomUUID()}`,
       capabilities: [],
-      modules: { browser: { profileSnapshotVersion: 2, runtimeId: "chromium" } },
+      modules: { browser: { wireVersion: 2, runtimeId: "chromium" } },
       name: "Hosted browser",
       runnerId: createId("runner"),
       runnerKind: "managed",
@@ -348,18 +342,18 @@ describe("wire protocol", () => {
     expect(advertisedRunnerModules(descriptor.modules)).toEqual(["browser"]);
     for (const browser of [
       { runtimeId: "chromium" },
-      { profileSnapshotVersion: 1, runtimeId: "chromium" },
-      { profileSnapshotVersion: 3, runtimeId: "chromium" },
+      { wireVersion: 1, runtimeId: "chromium" },
+      { wireVersion: 3, runtimeId: "chromium" },
     ]) {
       expect(
         RunnerDescriptorSchema.parse({ ...descriptor, modules: { browser } }).modules.browser,
       ).toEqual(browser);
     }
-    for (const profileSnapshotVersion of [0, -1, 1.5]) {
+    for (const wireVersion of [0, -1, 1.5]) {
       expect(
         RunnerDescriptorSchema.safeParse({
           ...descriptor,
-          modules: { browser: { profileSnapshotVersion, runtimeId: "chromium" } },
+          modules: { browser: { wireVersion, runtimeId: "chromium" } },
         }).success,
       ).toBe(false);
     }
@@ -1193,10 +1187,18 @@ describe("wire protocol", () => {
   });
   it("binds a Browser Session to exactly one immutable identity", () => {
     const profileIdentity = {
-      kind: "profile",
-      profileId: createId("browserProfile"),
-      profileLeaseToken: "a".repeat(43),
-      profileStateUrl: "https://host.example.test/v1/browser-profile-state",
+      kind: "profile-local",
+      initialized: true,
+      readyUrl: "https://host.example.test/ready",
+      binding: {
+        version: 1,
+        deploymentId: createId("deployment"),
+        profileId: createId("browserProfile"),
+        runnerId: createId("runner"),
+        storageInstanceId: randomUUID(),
+        bindingId: randomUUID(),
+        engine: "chromium",
+      },
     } as const;
     expect(BrowserAttachTicketIdentitySchema.parse(profileIdentity)).toEqual(profileIdentity);
     expect(BrowserAttachTicketIdentitySchema.parse({ kind: "fresh" })).toEqual({ kind: "fresh" });
@@ -1211,6 +1213,9 @@ describe("wire protocol", () => {
     }
 
     const claims = {
+      operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+      remainingBudgetMs: 18_000,
+      wireVersion: 1,
       access: "full-control",
       audience: "opensteer-browser-runtime",
       expiresAt: new Date().toISOString(),
@@ -1278,96 +1283,6 @@ describe("wire protocol", () => {
     ]) {
       expect(StartHostedBrowserBodySchema.safeParse(invalid).success).toBe(false);
     }
-  });
-
-  it("carries a user-confirmed name through a browser session save", () => {
-    expect(SaveBrowserSessionProfileBodySchema.parse({ name: "  Client dashboard  " })).toEqual({
-      name: "Client dashboard",
-    });
-    expect(SaveBrowserSessionProfileBodySchema.safeParse({ name: " " }).success).toBe(false);
-    expect(BrowserAccessSuggestionSchema.safeParse({ kind: "save_session" }).success).toBe(false);
-  });
-
-  it("keeps browser session identity and profile saves explicit on the agent control plane", () => {
-    const requestId = randomUUID();
-    expect(
-      AgentControlRequestSchema.parse({ fresh: true, requestId, type: "browser.session.open" }),
-    ).toMatchObject({ fresh: true });
-    for (const invalid of [
-      { requestId, type: "browser.session.open" },
-      {
-        fresh: true,
-        profileId: createId("browserProfile"),
-        requestId,
-        type: "browser.session.open",
-      },
-      {
-        fresh: true,
-        requestId,
-        sessionId: `bsn_${randomUUID()}`,
-        type: "browser.session.open",
-      },
-    ]) {
-      expect(AgentControlRequestSchema.safeParse(invalid).success).toBe(false);
-    }
-
-    const sessionId = `bsn_${randomUUID()}`;
-    expect(
-      AgentControlRequestSchema.parse({
-        reason: "Reuse this dashboard login next time",
-        requestId,
-        sessionId,
-        suggestedName: "Client dashboard",
-        type: "browser.profile.save",
-      }),
-    ).toEqual({
-      reason: "Reuse this dashboard login next time",
-      requestId,
-      sessionId,
-      suggestedName: "Client dashboard",
-      type: "browser.profile.save",
-    });
-    for (const invalidSave of [
-      { requestId, type: "browser.profile.save" },
-      { requestId, sessionId, type: "browser.profile.save" },
-      { reason: "  ", requestId, sessionId, type: "browser.profile.save" },
-    ]) {
-      expect(AgentControlRequestSchema.safeParse(invalidSave).success).toBe(false);
-    }
-    const createdRequestId = createId("request");
-    expect(
-      AgentControlResponseSchema.parse({
-        requestId,
-        result: {
-          kind: "browser.profile.save",
-          replayed: false,
-          requestId: createdRequestId,
-          status: "pending",
-        },
-        type: "browser.profile.save.result",
-      }),
-    ).toEqual({
-      requestId,
-      result: {
-        kind: "browser.profile.save",
-        replayed: false,
-        requestId: createdRequestId,
-        status: "pending",
-      },
-      type: "browser.profile.save.result",
-    });
-    expect(
-      AgentControlResponseSchema.safeParse({
-        requestId,
-        result: {
-          kind: "browser.profile.save",
-          replayed: false,
-          requestId: randomUUID(),
-          status: "pending",
-        },
-        type: "browser.profile.save.result",
-      }).success,
-    ).toBe(false);
   });
 });
 

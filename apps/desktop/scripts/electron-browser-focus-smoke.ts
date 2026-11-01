@@ -1,18 +1,4 @@
-import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { promisify } from "node:util";
-import { app } from "electron";
 import { SessionCdpRouter } from "@opensteer/browser-core";
-import {
-  BrowserAttachTicketClaimsSchema,
-  BrowserSessionIdSchema,
-  type BrowserServerMessage,
-} from "@opensteer/protocol";
 import {
   BrowserController,
   HostSignIns,
@@ -21,7 +7,21 @@ import {
   type BrowserFrame,
   type BrowserLaunchRequest,
 } from "@opensteer/browser-runtime-core";
+import {
+  BrowserAttachTicketClaimsSchema,
+  BrowserSessionIdSchema,
+  type BrowserServerMessage,
+} from "@opensteer/protocol";
+import { app } from "electron";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
+import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -121,7 +121,7 @@ async function run(): Promise<void> {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000071",
       sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000072"),
-      storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+      storage: { kind: "guest" },
     };
     let browser = await launcher.launch(request);
     cleanup.push(() => browser.close());
@@ -156,6 +156,9 @@ async function run(): Promise<void> {
     const controller = new BrowserController({
       cdpRouter: router,
       claims: BrowserAttachTicketClaimsSchema.parse({
+        operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+        remainingBudgetMs: 18_000,
+        wireVersion: 1,
         access: "full-control",
         audience: "opensteer-browser-runtime",
         expiresAt: "2099-01-01T00:05:00.000Z",
@@ -166,7 +169,6 @@ async function run(): Promise<void> {
         sessionId: request.sessionId,
         subject: "electron-focus-smoke",
       }),
-      exportSnapshot: () => browser.exportSnapshot(),
       files: sessionFiles,
       replaceSiteCookies: (site, cookies, deadline) =>
         browser.replaceSiteCookies(site, cookies, deadline),

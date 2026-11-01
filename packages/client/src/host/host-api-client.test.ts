@@ -341,3 +341,37 @@ it("cancels a pending body read immediately with the caller's reason", async () 
     vi.useRealTimers();
   }
 });
+
+it("bounds buffered browser-open RPC headers independently of the generic response allowance", async () => {
+  vi.useFakeTimers();
+  let signal: AbortSignal | null | undefined;
+  const fetch = vi.fn<typeof globalThis.fetch>((_url, init) => {
+    signal = init?.signal;
+    return new Promise(() => {});
+  });
+  const client = createHttpHostApiClient({
+    baseUrl: new URL("https://host.test"),
+    fetch,
+    bufferedResponses: true,
+    onAuthenticationRequired: vi.fn(),
+  });
+  try {
+    const result = client["commands.dispatch"]({
+      type: "browser.tab.open",
+      identity: { kind: "guest" },
+      idempotencyKey: "buffered-open",
+    });
+    await vi.advanceTimersByTimeAsync(24_999);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signal?.aborted).toBe(true);
+    await expect(result).resolves.toMatchObject({
+      ok: false,
+      error: { reason: "transport-timed-out", retryable: true },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});

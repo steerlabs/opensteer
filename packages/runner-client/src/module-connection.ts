@@ -1,4 +1,4 @@
-import { delay } from "@opensteer/shared/delay";
+import type { RuntimeMode } from "@opensteer/core";
 import {
   HostToRunnerMessageSchema,
   RunnerAuxiliaryRequestIdSchema,
@@ -7,10 +7,11 @@ import {
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
   type RunnerBootId,
-  type RunnerDescriptor,
   type RunnerConnectionFence,
+  type RunnerDescriptor,
   type RunnerModuleReadinessReport,
 } from "@opensteer/protocol";
+import { delay } from "@opensteer/shared/delay";
 import { randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import { answerAuxiliaryChallenge, RunnerAuxiliaryFenceLedger } from "./auxiliary-connection.js";
@@ -23,7 +24,6 @@ import {
 import type { FileRunnerIdentityStore, RunnerIdentity } from "./identity.js";
 import { runnerEnrollmentCredential, runnerIdentityProof } from "./proof.js";
 import { runnerWebSocketTransport } from "./transport.js";
-import type { RuntimeMode } from "@opensteer/core";
 
 const handshakeTimeoutMs = 15_000;
 const maximumReconnectDelayMs = 30_000;
@@ -39,9 +39,7 @@ export interface RunnerModuleLogger {
 }
 
 export interface RunnerModuleStream {
-  readonly localProfiles?: 1;
-  readonly profilePrepare?: 1;
-  readonly initialNavigationVersion?: 1;
+  readonly browserWireVersion?: 1;
   readonly passkeys?: 1;
   readonly loginText?: 1;
   readonly passwordSignIn?: 1;
@@ -326,11 +324,8 @@ export class RunnerModuleConnection {
     const welcome = RunnerAuxiliaryWelcomeSchema.parse(parsed);
     const fence = this.#auxiliaryFence.adopt(welcome);
     await this.#options.onStream({
+      ...(welcome.browserWireVersion ? { browserWireVersion: welcome.browserWireVersion } : {}),
       ...(welcome.passkeys === 1 ? { passkeys: 1 } : {}),
-      ...(welcome.localProfiles === 1
-        ? { localProfiles: 1, ...(welcome.profilePrepare === 1 ? { profilePrepare: 1 } : {}) }
-        : {}),
-      ...(welcome.initialNavigationVersion === 1 ? { initialNavigationVersion: 1 } : {}),
       browserAttachPublicKeys: welcome.browserAttachPublicKeys,
       fence,
       send: (frame, binary) => send(socket, frame, binary),

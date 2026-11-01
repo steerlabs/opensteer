@@ -1,18 +1,18 @@
+import { SessionCdpRouter } from "@opensteer/browser-core";
+import {
+  browserHostMethods,
+  BrowserSessionTabOpenCommandSchema,
+  BrowserSurfaceIdSchema,
+  type BrowserAttachTicketClaims,
+  type BrowserClientMessage,
+} from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import {
   PublicKeyCredentialRequestOptionsJSONSchema,
   serializeClientData,
 } from "../passkeys/index.js";
-import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  browserHostMethods,
-  BrowserSurfaceIdSchema,
-  BrowserSessionTabOpenCommandSchema,
-  type BrowserAttachTicketClaims,
-  type BrowserClientMessage,
-} from "@opensteer/protocol";
-import type { BrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
 import {
   FakeBrowserCdpBackend,
   FakeContext,
@@ -24,7 +24,6 @@ import {
   validClaims,
   withoutTitleSamples,
 } from "../test-support/fakes.js";
-import { SessionCdpRouter } from "@opensteer/browser-core";
 import { BrowserController } from "./controller.js";
 import { HostSignIns, type HostLoginAuthorizeInput } from "./host-sign-ins.js";
 import { SessionFiles } from "./session-files.js";
@@ -36,13 +35,6 @@ describe("BrowserController", () => {
   let ledger: SurfaceLedger;
   let cdpRouter: SessionCdpRouter;
   let sink: FakeSink;
-  const exportedSnapshot: BrowserProfileSnapshot = {
-    cookies: [],
-    origins: [
-      { localStorage: [{ name: "theme", value: "dark" }], origin: "https://example.test/" },
-    ],
-  };
-  const exportSnapshot = () => Promise.resolve(exportedSnapshot);
   const replaceSiteCookies = () => Promise.resolve();
   const files = new SessionFiles(testSessionFilesRoot());
 
@@ -77,7 +69,6 @@ describe("BrowserController", () => {
           ...validClaims(),
           ...(history ? { navigationAttributionVersion: 1 as const } : {}),
         },
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,
@@ -115,6 +106,120 @@ describe("BrowserController", () => {
     },
   );
 
+  it("closes a page that arrives after its additional-open budget expires", async () => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<import("./backend.js").BrowserPage>();
+    vi.spyOn(context, "createPage").mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims(),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    await controller.start();
+    vi.useFakeTimers();
+    try {
+      const requestId = globalThis.crypto.randomUUID();
+      const opening = controller.handle({
+        type: "cdp.command",
+        requestId,
+        command: {
+          method: browserHostMethods.openTab,
+          parameters: { idempotencyKey: "hung-additional" },
+        },
+      });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(18_000);
+      await opening;
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.error", requestId }),
+      );
+      const late = new FakePage();
+      release.resolve(late);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(late.closeCount).toBe(1);
+      expect(ledger.snapshot()).toHaveLength(1);
+    } finally {
+      release.resolve(new FakePage());
+      vi.useRealTimers();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+  it.each([
+    ["initial", "reply"],
+    ["initial", "rejection"],
+    ["additional", "reply"],
+    ["additional", "rejection"],
+  ] as const)("publishes %s navigation failures in page state (%s)", async (kind, failure) => {
+    const fail = (page: FakePage) =>
+      page.cdpSession.responses.set(
+        "Page.navigate",
+        failure === "reply"
+          ? { errorText: "net::ERR_NAME_NOT_RESOLVED" }
+          : () => Promise.reject(new Error("Navigation transport failed")),
+      );
+    fail(page);
+    const createPage = context.createPage.bind(context);
+    vi.spyOn(context, "createPage").mockImplementation(async () => {
+      const page = await createPage();
+      fail(page as FakePage);
+      return page;
+    });
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims(),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+    });
+    try {
+      await controller.start();
+      let id: string;
+      if (kind === "initial")
+        id = controller.startInitialNavigation(page, {
+          operationKey: "failed-nav",
+          url: "https://missing.test/",
+        }).surfaceId;
+      else {
+        await controller.handle({
+          type: "cdp.command",
+          requestId: globalThis.crypto.randomUUID(),
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: "failed-nav", url: "https://missing.test/" },
+          },
+        });
+        id = ledger.snapshot().find((surface) => surface.id !== ledger.snapshot()[0]?.id)!.id;
+      }
+      await vi.waitFor(
+        () =>
+          expect(ledger.snapshot().find((surface) => surface.id === id)).toMatchObject({
+            navigationFailed: true,
+          }),
+        { timeout: 1000 },
+      );
+      expect(
+        sink.messages.some(
+          (message) =>
+            message.type === "browser.surfaces.changed" &&
+            message.surfaces.some((surface) => surface.id === id && "navigationFailed" in surface),
+        ),
+      ).toBe(true);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("attributes only viewer input that reaches the page", async () => {
     const passkeys = new HostRelayAuthenticator(() => undefined);
     const record = vi.spyOn(passkeys, "record");
@@ -122,7 +227,6 @@ describe("BrowserController", () => {
       passkeys,
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -169,7 +273,6 @@ describe("BrowserController", () => {
       passkeys,
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -236,7 +339,6 @@ describe("BrowserController", () => {
         passkeys,
         cdpRouter,
         claims: validClaims({ editingVersion: 2, clipboard: false }),
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,
@@ -350,7 +452,6 @@ describe("BrowserController", () => {
       const controller = new BrowserController({
         cdpRouter,
         claims: validClaims({ editingVersion: 2, clipboard: false }),
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,
@@ -423,7 +524,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ editingVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -474,7 +574,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -542,7 +641,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ editingVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -637,7 +735,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ editingVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -701,7 +798,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ workspaceTabRestoreVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -749,7 +845,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims({ workspaceTabRestoreVersion: 1 }),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -1491,6 +1586,71 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  it.each(["selection", "cancel"] as const)(
+    "drops a canceled viewport hint without queuing press cleanup (%s)",
+    async (departure) => {
+      const controller = createController();
+      await controller.start();
+      const agentSurface = activeSurfaceId();
+      const personSurface = await ledger.openSurface();
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const held = gate({ label: "dialog-held agent metrics", deadlineMs: 2_000 });
+      page.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () => held.enter());
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+      const writing = controller.handle({
+        type: "cdp.command",
+        requestId: globalThis.crypto.randomUUID(),
+        command: {
+          method: "Emulation.setDeviceMetricsOverride",
+          parameters: { width: 500, height: 400, deviceScaleFactor: 1, mobile: false },
+          sessionId,
+        },
+      });
+      const pending: Promise<void>[] = [writing];
+      try {
+        await held.entered;
+        pending.push(
+          controller.handle({
+            type: "viewport.follow",
+            surfaceId: agentSurface,
+            width: 800,
+            height: 600,
+          }),
+        );
+        pending.push(
+          controller.handle(
+            departure === "selection"
+              ? { type: "surface.activate", surfaceId: personSurface.id }
+              : { type: "input.cancel" },
+          ),
+        );
+        if (departure === "selection") await pending.at(-1);
+        else await flushMicrotasks();
+        clock.mockReturnValue(300);
+        pending.push(
+          controller.handle({
+            type: "viewport.follow",
+            surfaceId: agentSurface,
+            width: 900,
+            height: 700,
+          }),
+        );
+        await flushMicrotasks();
+        expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+      } finally {
+        clock.mockRestore();
+        held.release();
+        await Promise.all(pending);
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
   it("keeps agent target creation and activation independent from the viewed surface", async () => {
     const controller = createController();
     await controller.start();
@@ -1961,7 +2121,6 @@ describe("BrowserController", () => {
     const controller = new BrowserController({
       cdpRouter,
       claims: validClaims(),
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -2545,30 +2704,6 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
-  it("refuses a state export from a session without full control", async () => {
-    // The protocol's access union has exactly one member today, so a
-    // non-full-control attachment is modelled directly rather than parsed.
-    const controller = new BrowserController({
-      cdpRouter,
-      claims: { ...validClaims(), access: "view-only" } as unknown as BrowserAttachTicketClaims,
-      exportSnapshot,
-      files,
-      ledger,
-      replaceSiteCookies,
-      signIns: noSignIns(),
-      sink,
-    });
-    await controller.start();
-
-    await controller.handle({ type: "state.export" });
-    expect(sink.messages.filter((message) => message.type === "state.exported")).toHaveLength(0);
-    expect(sink.messages.filter((message) => message.type === "browser.error")).toMatchObject([
-      { error: { code: "forbidden" } },
-    ]);
-    await controller.close();
-    await ledger.close();
-  });
-
   function createController(
     maxPendingCommands?: number,
     outputLimits: { maxPendingMessageBytes?: number; maxPendingMessages?: number } = {},
@@ -2577,7 +2712,6 @@ describe("BrowserController", () => {
     return new BrowserController({
       cdpRouter,
       claims,
-      exportSnapshot,
       files,
       ledger,
       replaceSiteCookies,
@@ -2613,7 +2747,6 @@ describe("BrowserController", () => {
       const controller = new BrowserController({
         cdpRouter,
         claims: validClaims(),
-        exportSnapshot,
         files,
         ledger,
         replaceSiteCookies,

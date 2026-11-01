@@ -1,20 +1,21 @@
-import { randomBytes, sign, type KeyObject } from "node:crypto";
+import { OpensteerError } from "@opensteer/core";
 import {
   BrowserAttachTicketClaimsSchema,
-  BrowserPreparationTicketClaimsSchema,
-  type BrowserPreparationTicketClaims,
   type BrowserAttachTicketClaims,
   type BrowserAttachTicketIdentity,
   type BrowserSessionId,
 } from "@opensteer/protocol/browser";
+import { createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
+import { z } from "zod";
 
 const ticketType = "opensteer-browser-attach+jwt";
 
 interface IssueBrowserAttachTicketInput {
   readonly access: "full-control";
+  readonly operationExpiresAt?: string;
+  readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
   readonly navigationVersion?: 1;
-  readonly initialNavigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly navigationAttributionVersion?: 1;
   readonly editingVersion?: 1 | 2;
@@ -22,7 +23,7 @@ interface IssueBrowserAttachTicketInput {
   readonly workspaceTabRestoreVersion?: 1;
   readonly initialSurfaceId?: BrowserAttachTicketClaims["initialSurfaceId"];
   readonly dormantSurfaceIds?: BrowserAttachTicketClaims["dormantSurfaceIds"];
-  /** The session's immutable identity: a profile with its state lease, or fresh. */
+  /** The session's immutable native binding, or a temporary Guest. */
   readonly identity: BrowserAttachTicketIdentity;
   readonly runtimeId: string;
   readonly sessionId: BrowserSessionId;
@@ -68,21 +69,49 @@ export class BrowserAttachTicketSigner {
     this.#privateKey = options.privateKey;
   }
 
-  issuePreparation(
-    input: Pick<BrowserPreparationTicketClaims, "identity" | "runtimeId" | "subject" | "passkeys">,
-  ): string {
-    const issuedAt = this.#clock();
-    return this.#sign(
-      BrowserPreparationTicketClaimsSchema.parse({
-        ...input,
-        audience: "opensteer-browser-runtime",
-        purpose: "profile-prepare",
-        issuedAt: issuedAt.toISOString(),
-        expiresAt: new Date(issuedAt.getTime() + this.#lifetimeMs).toISOString(),
-        nonce: randomBytes(24).toString("base64url"),
-      }),
-      "opensteer-browser-prepare+jwt",
-    );
+  /** Readiness can only acknowledge the exact native binding already signed for attach. */
+  readNativeReady(ticket: string): BrowserAttachTicketClaims {
+    const reject = () =>
+      new OpensteerError({
+        code: "forbidden",
+        message: "Native profile readiness authority is invalid or expired.",
+      });
+    try {
+      if (
+        ticket.length > 16_384 ||
+        !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(ticket)
+      )
+        throw reject();
+      const [header, payload, signature] = ticket.split(".") as [string, string, string];
+      z.strictObject({
+        alg: z.literal("EdDSA"),
+        kid: z.literal(this.#keyId),
+        typ: z.literal(ticketType),
+      }).parse(JSON.parse(Buffer.from(header, "base64url").toString("utf8")));
+      if (
+        !verify(
+          null,
+          Buffer.from(`${header}.${payload}`, "ascii"),
+          createPublicKey(this.#privateKey),
+          Buffer.from(signature, "base64url"),
+        )
+      )
+        throw reject();
+      const claims = BrowserAttachTicketClaimsSchema.parse(
+        JSON.parse(Buffer.from(payload, "base64url").toString("utf8")),
+      );
+      const now = this.#clock().getTime();
+      if (
+        claims.identity.kind !== "profile-local" ||
+        Date.parse(claims.issuedAt) > now ||
+        Date.parse(claims.expiresAt) <= now ||
+        Date.parse(claims.operationExpiresAt) <= now
+      )
+        throw reject();
+      return claims;
+    } catch {
+      throw reject();
+    }
   }
 
   issue(input: IssueBrowserAttachTicketInput): string {
@@ -97,9 +126,8 @@ export class BrowserAttachTicketSigner {
           }
         : {}),
       ...(input.navigationVersion === 1 ? { navigationVersion: 1 } : {}),
-      ...(input.initialNavigationVersion !== undefined || input.initialNavigation !== undefined
+      ...(input.initialNavigation !== undefined
         ? {
-            initialNavigationVersion: input.initialNavigationVersion,
             initialNavigation: input.initialNavigation,
           }
         : {}),
@@ -111,6 +139,10 @@ export class BrowserAttachTicketSigner {
             dormantSurfaceIds: input.dormantSurfaceIds,
           }
         : {}),
+      operationExpiresAt:
+        input.operationExpiresAt ?? new Date(issuedAt.getTime() + 18_000).toISOString(),
+      remainingBudgetMs: Math.min(18_000, input.remainingBudgetMs ?? 18_000),
+      wireVersion: 1,
       audience: "opensteer-browser-runtime",
       expiresAt: new Date(issuedAt.getTime() + this.#lifetimeMs).toISOString(),
       identity: input.identity,
@@ -124,7 +156,7 @@ export class BrowserAttachTicketSigner {
     return this.#sign(claims, ticketType);
   }
 
-  #sign(claims: BrowserAttachTicketClaims | BrowserPreparationTicketClaims, typ: string): string {
+  #sign(claims: BrowserAttachTicketClaims, typ: string): string {
     const protectedHeader = Buffer.from(
       JSON.stringify({ alg: "EdDSA", kid: this.#keyId, typ }),
       "utf8",

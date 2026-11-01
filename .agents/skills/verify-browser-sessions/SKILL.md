@@ -27,42 +27,62 @@ pnpm test:vm -- pnpm test:electron-downloads
 
 Use the CDP-boundary smoke in `apps/desktop/scripts/electron-cdp-boundary-smoke.ts` through its VM launcher when changing the allowlist. Check private-world handles/events and blocked-CORS headers stay unavailable. Reuse existing journeys; retain screenshots/traces only when manual acceptance needs them. See `docs/testing.md` for VM ownership and cleanup.
 
-## Native profiles
+## Native profiles and bounded opening
 
-Select the affected layer rather than running every command:
+Select the layer changed; keep every engine's cookie scope and durability checks:
 
 ```sh
-pnpm exec vitest run packages/browser-runtime-core/src/native-profiles.test.ts packages/browser-runtime-core/src/local-profile-store.test.ts
-pnpm exec vitest run apps/browser-runtime/src/browser/playwright-launcher.test.ts
+pnpm exec vitest run packages/browser-runtime-core/src/native-profiles.test.ts packages/browser-runtime-core/src/local-profile-store.test.ts packages/browser-runtime-core/src/native-profile-ready.test.ts
+pnpm exec vitest run apps/browser-runtime/src/browser/playwright-launcher.test.ts apps/browser-runtime/src/browser/persistent-launch-cleanup.test.ts
 pnpm exec vitest run apps/desktop/src/browser/electron-browser-launcher.test.ts apps/desktop/src/browser/session-cookie-mirror.test.ts apps/desktop/src/browser/browser-session-policy.test.ts
+pnpm exec vitest run packages/client/src/host/pending-browser-tabs.test.ts packages/client/src/host/browser-presentation-wait.test.ts
+pnpm test:integration -- tests/browser-native-only-migration.integration.test.ts
+pnpm test:integration -- packages/database/src/operation-budget.integration.test.ts
+pnpm test:integration -- tests/browser-native-profiles.integration.test.ts
 pnpm test:integration -- tests/browser-profiles.integration.test.ts
-pnpm test:integration -- tests/browser-sessions-identities.integration.test.ts
 ```
 
-Real Electron qualification runs only in the disposable VM, on request or after merge.
-Use the integrated committed revision for both smokes:
+The native migration proof uses two fixed local bindings, with their native
+sentinels and cookie files present before migration. Check owner/name/grants,
+history, tabs, binding and initialized facts survive, native bytes stay unchanged,
+and outstanding deletion jobs keep archived owner/binding stubs. New profiles
+remain empty and unbound until signed attach. Missing established data must fail;
+never-created data may publish empty files atomically before any Session owns it.
 
-The credential-free golden's login keychain is locked after boot over SSH.
-Unlock it inside the disposable guest using its documented fixture credential;
-never use a mock keychain or weaken the production encryption provider:
+Exercise durable same-key replay, payload conflict, restart interruption and late
+success after terminal failure. The Host's 20-second budget includes DB locks,
+placement and relay; the runtime receives remaining signed authority. The 25-second
+client budget includes native mount/paint and drawn frames. Presentation Retry
+must reuse the same page. Initial and additional navigation errors stay visible
+on that page. A hung persistent launch must reap its exact child before rejection.
 
-```sh
-pnpm test:vm -- --revision <sha> bash -c '
-  security unlock-keychain -p admin "$HOME/Library/Keychains/login.keychain-db" || exit
-  pnpm test:electron-profile-restore; profiles=$?
-  pnpm test:electron-cookies; cookies=$?
-  [ "$profiles" -eq 0 ] && [ "$cookies" -eq 0 ]
-'
-```
+Real Electron qualification runs only in a disposable VM, on request or after
+merge. Use the integrated committed revision; never run host Electron. Unlock only
+the disposable golden's fixture keychain as its VM instructions allow. Run the
+native profile and cookie smokes through the VM workflow.
 
-Qualify last committed state across process crash, not power loss:
+Qualify orderly quit, update-style restart and SIGKILL reopen with persistent,
+session and HttpOnly cookies, duplicate CHIPS identities, native localStorage,
+IndexedDB, service workers and CacheStorage. Crash after controlled cookie writes;
+there is no conversion or checkpoint path. Keep Chromium session-cookie restore
+while proving it restores no unauthorized tabs.
 
-- Check orderly quit, update-style restart and SIGKILL reopen with persistent/session/HttpOnly cookies, duplicate partitioned cookie identities, multiple localStorage/IndexedDB origins, service workers and CacheStorage. Crash immediately after conversion readiness as well as after a controlled cookie write. Requalify the pinned localStorage and cookie commit barriers on engine upgrades.
-- Kill only the smoke's owned Network Service PID and check the first outgoing request, surviving worker cookie reads, Cookie Store change events and that interrupted capture never shrinks the mirror. The documented restart window is accepted; eventual DOM state alone cannot qualify restoration. Missing/corrupt ready mirrors must refuse opening without clearing data or falling back to the seed.
-- Keep Chromium's native session-cookie restore while proving no unauthorized tabs restore. Guest stays isolated. Close, warm reuse, pressure eviction and failed launch preserve native stores; different profiles proceed independently. Exercise complete inventory, interrupted inventory, binding conflicts and ready/initializing/tombstone reconciliation against an older isolated DB.
-- Delete with an offline owner, reconnect and an Electron Session retained until restart. Check visible pending states, stale-ticket refusal and actual tree removal before `deleted`; enrollment removal must preserve profile storage. Use only disposable roots and test accounts, never installed app data. Let the owned engine exit before removing its directories, and stop every owned process/database even after failure.
+Kill only the smoke's captured Network Service PID. Check immediate gate refusal
+and view closure, explicit reopen, the first outgoing request, surviving workers,
+and that interrupted capture cannot shrink the encrypted mirror. Missing/corrupt
+mirrors must refuse opening without clearing data. Deferred collaborators must
+leave reads unresolved through cancellation and reacquire the same mocked Session;
+old listeners and publications stay fenced. Never admit a Session with an
+unacknowledged cookie mutation.
 
-Do not count a skipped engine/platform or unrun VM smoke as qualified. Frozen
-legacy readers must still cover unconverted profiles and old Hosts/runtimes;
-converted profiles must report the update refusal without Guest or a new-profile
-workaround. Agent behavior checks use `run-agent-evals`.
+Check warm reuse, idle capacity eviction, independent profiles, complete and
+interrupted inventories, immutable binding conflicts and tombstone reconciliation.
+Delete with an offline owner and a Session retained until process exit; visible
+pending states must precede physical erasure acknowledgement. Use disposable roots
+and test accounts, never installed app data. Stop all owned processes and databases.
+
+The Host epoch and browser wire contract deliberately reject earlier browser
+releases. Check their clear update refusal; do not preserve Vault, preparation,
+snapshot or Guest-save adapters. Update model-facing browser cases with the tool
+catalog, and use the focused agent-eval workflow when behavioral qualification is
+requested. Skipped engines and unrun VM smokes remain unqualified.

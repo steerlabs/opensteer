@@ -1,15 +1,13 @@
-import { z } from "zod";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
+import { testSessionFilesRoot } from "@opensteer/browser-runtime-core/test-support";
 import { BrowserAttachTicketClaimsSchema } from "@opensteer/protocol";
-import {
-  FakeProfileStateClient,
-  testSessionFilesRoot,
-} from "@opensteer/browser-runtime-core/test-support";
 import { chromium } from "playwright-core";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { PlaywrightChromiumLauncher } from "./playwright-launcher.js";
 
 let engine: LaunchedBrowser | undefined;
@@ -56,7 +54,6 @@ const runtime = new BrowserRuntime({
         JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()),
       ),
   },
-  profileStateClient: new FakeProfileStateClient(),
   sessionFilesRoot: testSessionFilesRoot(),
 });
 const attach = runtime.attach.bind(runtime);
@@ -94,7 +91,11 @@ runtime.attach = async (ticket, sink) => {
   };
   return attached;
 };
-const server = new BrowserRuntimeServer({ runtime, port: 0 });
+const server = new BrowserRuntimeServer({
+  runtime,
+  port: 0,
+  relayBridge: { token: randomUUID(), updateAttachKeys: () => {} },
+});
 let stopping: Promise<void> | undefined;
 const stop = () => {
   stopping ??= server.close().finally(() => process.exit());

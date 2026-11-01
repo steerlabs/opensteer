@@ -1,12 +1,12 @@
+import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
+import {
+  readPrivateFileText,
+  replacePrivateFileAtomically,
+  serializePrivateFileCommit,
+} from "@opensteer/shared/atomicPrivateFile";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
-import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
-import {
-  discardPrivateFileTemporaryFiles,
-  readPrivateFileText,
-  replacePrivateFileAtomically,
-} from "@opensteer/shared/atomicPrivateFile";
 import {
   ProtectedJsonFile,
   ProtectedStateUnreadableError,
@@ -73,7 +73,7 @@ interface SessionCookieMirrorOptions {
   readonly subscribe: (invalidate: () => void) => () => void;
   readonly onFailure: (error: unknown) => void;
   readonly onIdle?: () => void;
-  readonly publish?: (file: string, content: string) => Promise<void>;
+  readonly publish?: (file: string, content: string, assertCurrent: () => void) => Promise<void>;
 }
 
 /** One lane for cookie capture, publication and Opensteer-controlled mutations. */
@@ -115,6 +115,9 @@ export class SessionCookieMirror {
         protectedState: "Browser profile cookie key",
       },
       schema: keySchema,
+      assertCurrent: () => {
+        if (this.#stopped) throw unreadable();
+      },
       ...(options.platform ? { platform: options.platform } : {}),
     });
     // Cookie events omit partition keys. Their only authority is invalidation.
@@ -124,19 +127,14 @@ export class SessionCookieMirror {
     });
   }
 
-  /** Only the runtime's positively identified initializing profile may create sidecars. */
-  initialize(
-    importAndFlush: () => Promise<void>,
-    commitStorage?: () => Promise<void>,
-  ): Promise<void> {
+  /** Creates encrypted sidecars for an unpublished empty native profile. */
+  initialize(): Promise<void> {
     const epoch = this.#epoch;
     return this.#enqueue(async () => {
       await this.#loadKey(true);
-      await importAndFlush();
       if (this.#epoch !== epoch) throw unreadable();
       const generation = this.#dirty;
       await this.#capture(epoch, true);
-      await commitStorage?.();
       if (this.#epoch !== epoch) throw unreadable();
       this.#captured = generation;
       this.#suspended = false;
@@ -217,7 +215,11 @@ export class SessionCookieMirror {
     this.#unsubscribe();
     for (const waiter of this.#waiters) waiter.reject(unreadable());
     this.#waiters.clear();
-    await this.#lane.catch(() => undefined);
+    void this.#lane
+      .finally(() => {
+        this.#key?.fill(0);
+      })
+      .catch(() => undefined);
     this.#key?.fill(0);
     this.#key = undefined;
     this.#canonical = undefined;
@@ -292,12 +294,15 @@ export class SessionCookieMirror {
   }
 
   async #loadKey(create: boolean): Promise<void> {
-    // Availability must be checked on reopen/recovery even with a cached key.
-    await discardPrivateFileTemporaryFiles(
-      this.#options.directory,
-      (name) => name === "session-cookies.v1.json" || name === "session-cookie-key.v1.json",
+    // A retired writer may already have issued its rename. Observe it before reading.
+    await serializePrivateFileCommit(
+      path.join(this.#options.directory, "session-cookie-key.v1.json"),
+      async () => {},
     );
+    if (this.#stopped) throw unreadable();
+    // Availability must be checked on reopen/recovery even with a cached key.
     await this.#keyFile.assertAvailable();
+    if (this.#stopped) throw unreadable();
     if (this.#key) return;
     let wrapped = await this.#keyFile.read();
     if (!wrapped) {
@@ -308,12 +313,18 @@ export class SessionCookieMirror {
     if (JSON.stringify(wrapped.binding) !== JSON.stringify(this.#binding)) throw unreadable();
     const key = Buffer.from(wrapped.key, "base64");
     if (key.length !== 32) throw unreadable();
+    if (this.#stopped) {
+      key.fill(0);
+      throw unreadable();
+    }
     this.#key = key;
   }
 
   async #read(keyReady: Promise<void>): Promise<z.infer<typeof plaintextSchema>> {
     const [read, key] = await Promise.allSettled([
-      readPrivateFileText(this.#file, maximumBytes, { invalid: unreadable, exposed: unreadable }),
+      serializePrivateFileCommit(this.#file, async () => {}).then(() =>
+        readPrivateFileText(this.#file, maximumBytes, { invalid: unreadable, exposed: unreadable }),
+      ),
       keyReady,
     ]);
     if (key.status === "rejected") throw key.reason;
@@ -394,7 +405,11 @@ export class SessionCookieMirror {
       tag: cipher.getAuthTag().toString("base64"),
     });
     if (Buffer.byteLength(serialized) > maximumBytes) throw unreadable();
-    await (this.#options.publish ?? replacePrivateFileAtomically)(this.#file, serialized);
+    await (this.#options.publish ?? replacePrivateFileAtomically)(this.#file, serialized, () => {
+      if (epoch !== this.#epoch || this.#stopped || (this.#suspended && !restoring))
+        throw unreadable();
+    });
+    if (epoch !== this.#epoch || this.#stopped) return;
     this.#sequence = sequence;
     this.#canonical = canonical;
   }

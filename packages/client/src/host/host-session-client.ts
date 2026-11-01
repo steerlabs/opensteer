@@ -12,41 +12,34 @@ import { browserTabOrderTabs } from "./browser-tab-order.js";
 import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
-import { DisplaySourceSchema } from "@opensteer/protocol";
 import { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPreferencesStorage } from "./browser-preferences.js";
 import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
-import type {
-  BrowserTabOpenInput,
-  BrowserTabOpenOptions,
-  HostClient as OwnerViewHostClient,
-} from "./client.js";
 import {
-  BrowserSurfaceIdSchema,
   AgentEventViewSchema,
-  ThreadViewSchema,
-  ThreadStatusSchema,
-  eventDataSchemas,
-  SequenceSchema,
-  WorkspaceIdSchema,
+  BrowserSurfaceIdSchema,
+  CHAT_THREAD_TITLE,
   LiveItemViewSchema,
   LiveRunProgressViewSchema,
-  liveProgressMaxItems,
+  RunIdSchema,
+  SequenceSchema,
   ThreadIdSchema,
+  ThreadStatusSchema,
   ThreadTitleSchema,
-  defaultTaskSymbol,
-  type WorkspaceIconName,
-  CHAT_THREAD_TITLE,
+  ThreadViewSchema,
+  TimeZoneSchema,
+  WorkspaceIdSchema,
   compareSequence,
+  defaultTaskSymbol,
   emptyExecutionPreferences,
+  eventDataSchemas,
   harnessDisplayRank,
+  liveProgressMaxItems,
   liveStreamKeyId,
   liveStreamKeyOf,
   requestTitleText,
-  RunIdSchema,
-  TimeZoneSchema,
   zeroSequence,
   type AgentEventView as AgentEvent,
   type AssignmentSummary,
@@ -55,50 +48,99 @@ import {
   type ExecutionPreferences,
   type NotificationView,
   type Request,
-  type WaitingRequest,
   type Sequence,
   type Thread,
   type ThreadAccessMode,
   type ThreadId,
   type ThreadInputQueue,
   type ThreadReadState,
+  type WaitingRequest,
+  type WorkspaceIconName,
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  HarnessModelSettingsMapSchema,
-  BrowserSessionIdSchema,
   BrowserServerMessageSchema,
+  BrowserSessionIdSchema,
+  DisplaySourceSchema,
+  HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
   WorkspaceSnapshotSchema,
-  workspaceSnapshotMaxThreads,
+  browserTabCatalogMaxBytes,
+  browserUsageRunBatchSize,
+  browserViewerCloseCodes,
+  decodeBrowserFrameEnvelope,
   hostApi,
   threadPageMaxItems,
   workspaceFilePreviewMaxBytes,
-  browserViewerCloseCodes,
-  browserUsageRunBatchSize,
-  decodeBrowserFrameEnvelope,
+  workspaceSnapshotMaxThreads,
+  type BrowserPresence,
   type BrowserServerMessage,
+  type BrowserSessionUsageProjection,
+  type BrowserTabCatalog,
   type DurableWindow,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
-  type MachineAccessPolicy,
-  type RpcResult,
-  type HostedBrowserSession,
-  type WorkspaceTabLineage,
-  type BrowserPresence,
-  type BrowserSessionUsageProjection,
-  type MachineSummary,
   type HostToClientMessage,
+  type HostedBrowserSession,
+  type MachineAccessPolicy,
+  type MachineSummary,
+  type RpcResult,
   type WorkspaceSnapshot,
+  type WorkspaceTabLineage,
   type WorkspaceView,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import { z } from "zod";
+import { BrowserWatchStore } from "./browser-watch.js";
+import type {
+  BrowserCommand,
+  BrowserFrameStore,
+  BrowserFrameView,
+  BrowserPlacementSummary,
+  BrowserSessionSummary,
+  BrowserSessionUseSummary,
+  BrowserStartIdentity,
+  BrowserTabOpenInput,
+  BrowserTabOpenOptions,
+  CreateThreadInput,
+  EnvironmentSummary,
+  HarnessSummary,
+  HostConnectionState,
+  HostSnapshot,
+  MachineAccessHistoryPage,
+  MachineAccessUpdateOutcome,
+  HostClient as OwnerViewHostClient,
+  TaskListState,
+  ThreadSummary,
+  TranscriptEntry,
+  WorkspaceFilePreview,
+  WorkspaceSummary,
+} from "./client.js";
 import { HostClientRequestError, isHostRefusal } from "./client.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
+import { createHttpHostApiClient } from "./host-api-client.js";
+import { threadInDirectory } from "./host-snapshot-selectors.js";
+import { LatestPlaceStore } from "./latest-place.js";
+import {
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
+  socketProbeDeadlineMs,
+  socketTrustWindowMs,
+  type ClientLifecycle,
+  type ClientNetworkState,
+  type ClientVisibility,
+} from "./lifecycle.js";
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
+import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
+import { PlaceActivityStore } from "./place-activity.js";
+import { newerBrowserTabCatalog, placeList } from "./places.js";
+import { RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
+import { mergeTaskEntries } from "./task-entries.js";
+import { threadStopTarget } from "./thread-activity.js";
+import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
+import { ThreadStateProjection } from "./thread-state.js";
 import {
   drawnLiveStream,
   foldLiveRun,
@@ -109,49 +151,6 @@ import {
   upsertEntry,
   withoutClosedLiveStreams,
 } from "./transcript.js";
-import type {
-  BrowserCommand,
-  BrowserFrameStore,
-  BrowserFrameView,
-  BrowserPlacementSummary,
-  BrowserSessionSummary,
-  BrowserSessionUseSummary,
-  BrowserStartIdentity,
-  CreateThreadInput,
-  EnvironmentSummary,
-  HarnessSummary,
-  HostConnectionState,
-  HostSnapshot,
-  MachineAccessHistoryPage,
-  MachineAccessUpdateOutcome,
-  TaskListState,
-  ThreadSummary,
-  TranscriptEntry,
-  WorkspaceSummary,
-  WorkspaceFilePreview,
-} from "./client.js";
-import { mergeTaskEntries } from "./task-entries.js";
-import { RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
-import { threadStopTarget } from "./thread-activity.js";
-import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
-import { ThreadStateProjection } from "./thread-state.js";
-import { LatestPlaceStore } from "./latest-place.js";
-import { PlaceActivityStore } from "./place-activity.js";
-import { BrowserWatchStore } from "./browser-watch.js";
-import { newerBrowserTabCatalog, placeList } from "./places.js";
-import { browserTabCatalogMaxBytes, type BrowserTabCatalog } from "@opensteer/protocol";
-import { createHttpHostApiClient } from "./host-api-client.js";
-import {
-  realtimeIdleProbeDeadlineMs,
-  realtimeIdleProbeMs,
-  socketProbeDeadlineMs,
-  socketTrustWindowMs,
-  type ClientLifecycle,
-  type ClientNetworkState,
-  type ClientVisibility,
-} from "./lifecycle.js";
-import { threadInDirectory } from "./host-snapshot-selectors.js";
-import { withThreadNames, applyOptimisticCommandPatch } from "./optimistic-command-patches.js";
 
 const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 const defaultRefreshIntervalMs = 15_000;
@@ -766,32 +765,13 @@ export class HttpHostClient {
       ),
     changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
   });
-  readonly #preparedBrowserProfiles = new Set<string>();
-  prepareBrowserProfile(
-    identity?: import("./start-page-model.js").BrowserIdentityChoice | null,
-  ): void {
-    if (
-      this.#snapshot.session !== "authenticated" ||
-      !this.#snapshot.browserAvailable ||
-      this.#snapshot.connection === "offline" ||
-      !this.#capabilities?.includes("browser-profile-prepare-v1")
-    )
-      return;
-    const choice = identity === undefined ? this.browserPreferences.lastBrowsingChoice : identity;
-    if (!choice || choice.kind === "guest") return;
-    if (this.#preparedBrowserProfiles.has(choice.profileId)) return;
-    this.#preparedBrowserProfiles.add(choice.profileId);
-    void this.rpc["commands.dispatch"]({
-      type: "browser.profile.prepare",
-      identity: choice,
-      idempotencyKey: mutationIdempotencyKey("prepare-profile"),
-    }).catch(() => undefined);
-  }
   readonly beginBrowserTabOpen: OwnerViewHostClient["beginBrowserTabOpen"] = (target, options) => {
     if (typeof target !== "string" && "identity" in target)
       this.browserPreferences.lastBrowsingChoice = target.identity;
     return this.#pendingBrowserTabs.begin(target, options);
   };
+  readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
+  readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
     // Authenticated RPC callers need not load a workspace's presentation first.
@@ -805,14 +785,17 @@ export class HttpHostClient {
   async #openBrowserTab(target: BrowserTabOpenInput, options: BrowserTabOpenOptions) {
     const started = this.#viewer.generation;
     const result = unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "browser.tab.open",
-        ...(typeof target === "string" ? { sessionId: target } : target),
-        ...(options.url === undefined ? {} : { url: options.url }),
-        ...(options.typed === undefined ? {} : { typed: options.typed }),
-        ...(options.viewport ? { viewport: options.viewport } : {}),
-        idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
-      }),
+      await this.rpc["commands.dispatch"](
+        {
+          type: "browser.tab.open",
+          ...(typeof target === "string" ? { sessionId: target } : target),
+          ...(options.url === undefined ? {} : { url: options.url }),
+          ...(options.typed === undefined ? {} : { typed: options.typed }),
+          ...(options.viewport ? { viewport: options.viewport } : {}),
+          idempotencyKey: options.idempotencyKey ?? mutationIdempotencyKey("open-tab"),
+        },
+        options.signal ? { signal: options.signal } : undefined,
+      ),
     );
     if (started !== this.#viewer.generation)
       throw new HostClientRequestError({
@@ -986,11 +969,11 @@ export class HttpHostClient {
     surfaceId: string,
     expected: Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">,
   ) {
+    const viewer = this.#viewer.generation;
     if (
       this.#snapshot.workspaceTabRestoreVersion === 1 &&
       this.#snapshot.workspaceTabs?.some((group) => group.tabs?.some((tab) => tab.id === surfaceId))
     ) {
-      const viewer = this.#viewer.generation;
       const result = unwrapRpcResult(
         await this.rpc["commands.dispatch"]({
           type: "workspace.tab.close",
@@ -1034,6 +1017,12 @@ export class HttpHostClient {
         idempotencyKey: `close-tab:${sessionId}:${surfaceId}:${expected.generation}:${inventoryRevision}`,
       }),
     );
+    if (viewer !== this.#viewer.generation)
+      throw new HostClientRequestError({
+        code: "unauthorized",
+        status: 401,
+        message: "The signed-in account changed while closing the tab.",
+      });
     if (result.type !== "browser.tab.close") throw new Error("Unexpected browser command result.");
     const catalog = this.#acceptCatalog(sessionId, result.catalog);
     this.#patchBrowserSession(sessionId, {
@@ -1444,7 +1433,6 @@ export class HttpHostClient {
         break;
       }
       case "browser.profile.create":
-      case "browser.session.profile.save":
         this.#update(
           applyOptimisticCommandPatch(this.#snapshot, {
             profile: result.profile,
@@ -4205,6 +4193,7 @@ export class HttpHostClient {
   #enterForeground(): void {
     if (this.#disposed || this.#visibility === "foreground") return;
     const backgroundedForMs = Date.now() - (this.#backgroundedAt ?? Date.now());
+    this.#pendingBrowserTabs.checkDeadlines();
     this.#visibility = "foreground";
     this.#targetedControl.suspend(this.#network === "offline");
     this.#targetedWatch.suspend(this.#network === "offline");
@@ -5857,17 +5846,9 @@ export class HttpHostClient {
     ) {
       this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
     }
-    if (this.#snapshot.connection === "connected" && snapshot.connection !== "connected")
-      this.#preparedBrowserProfiles.clear();
-    const shouldPrepare =
-      snapshot.connection !== this.#snapshot.connection ||
-      snapshot.session !== this.#snapshot.session ||
-      snapshot.homeWorkspaceId !== this.#snapshot.homeWorkspaceId ||
-      snapshot.browserAvailable !== this.#snapshot.browserAvailable;
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
-      this.#preparedBrowserProfiles.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
@@ -6053,7 +6034,6 @@ export class HttpHostClient {
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
-    if (shouldPrepare) this.prepareBrowserProfile();
   }
 }
 

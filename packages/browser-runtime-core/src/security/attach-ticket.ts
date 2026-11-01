@@ -2,8 +2,6 @@ import type { z } from "zod";
 import { verify as verifySignature } from "node:crypto";
 import {
   BrowserAttachTicketClaimsSchema,
-  BrowserPreparationTicketClaimsSchema,
-  type BrowserPreparationTicketClaims,
   type BrowserAttachTicketClaims,
 } from "@opensteer/protocol/browser";
 import { decodeBase64Url } from "@opensteer/shared/base64url";
@@ -21,10 +19,6 @@ export interface AttachTicketExpectation {
 
 export interface AttachTicketVerifier {
   verify(token: string, expectation: AttachTicketExpectation): Promise<BrowserAttachTicketClaims>;
-  verifyPreparation?(
-    token: string,
-    expectation: AttachTicketExpectation,
-  ): Promise<BrowserPreparationTicketClaims>;
 }
 
 export type PublicKeySource = Ed25519KeySource;
@@ -91,18 +85,6 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
     expectation: AttachTicketExpectation,
   ): Promise<BrowserAttachTicketClaims> {
     return this.verifyClaims(token, expectation, BrowserAttachTicketClaimsSchema, ticketType);
-  }
-
-  async verifyPreparation(
-    token: string,
-    expectation: AttachTicketExpectation,
-  ): Promise<BrowserPreparationTicketClaims> {
-    return this.verifyClaims(
-      token,
-      expectation,
-      BrowserPreparationTicketClaimsSchema,
-      "opensteer-browser-prepare+jwt",
-    );
   }
 
   private async verifyClaims<

@@ -1,34 +1,35 @@
-import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
 import { OpensteerError, type RunnerId } from "@opensteer/core";
+import { sameProfileBinding } from "@opensteer/database";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
   RunnerAuxiliaryFrameFenceSchema,
   RunnerAuxiliaryRequestIdSchema,
   sameRunnerAuxiliaryFence,
   type BrowserPlacementSelector,
+  type InitialPageReady,
+  type LocalProfileBinding,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryRequestId,
-  type LocalProfileBinding,
 } from "@opensteer/protocol";
+import { readBrowserFrameHeader } from "@opensteer/protocol/browser";
 import {
   BrowserCapabilityLeaseIdSchema,
   BrowserCapabilityReferenceSchema,
+  BrowserChannelIdSchema,
   createBrowserRelayToHostMessageSchema,
   createHostToBrowserRelayMessageSchema,
-  BrowserChannelIdSchema,
   sameBrowserCapability,
   type BrowserCapabilityLease,
   type BrowserCapabilityReference,
   type BrowserChannelId,
   type BrowserRelayFrameHeader,
 } from "@opensteer/protocol/browser-relay";
-import { sameProfileBinding } from "@opensteer/database";
-import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
-import { BrowserAttachTicketClaimsSchema, type InitialPageReady } from "@opensteer/protocol";
-import { readBrowserFrameHeader } from "@opensteer/protocol/browser";
+import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import WebSocket, { type RawData } from "ws";
 import { z } from "zod";
+import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
+import { browserRuntimeCompatibilityReason } from "./browser-runtime-compatibility.js";
 import type {
   BrowserRuntimeConnection,
   BrowserRuntimePlacement,
@@ -40,7 +41,6 @@ import type {
   RunnerBrowserHooks,
   RunnerBrowserRegistry,
 } from "./runner-browser-hub.js";
-import { browserSnapshotCompatibilityReason } from "./browser-snapshot-compatibility.js";
 
 // The broker validates browser payloads after capability-specific translation;
 // the relay validates only the channel, capability and stream fences here.
@@ -52,19 +52,11 @@ const browserChannelEnvelope = {
 };
 export const HostToBrowserRuntimeRelayMessageSchema = z.union([
   z.strictObject({ ...browserChannelEnvelope, type: z.literal("browser.client-message") }),
-  createHostToBrowserRelayMessageSchema({
-    localProfiles: 1,
-    profilePrepare: 1,
-    initialNavigationVersion: 1,
-  }),
+  createHostToBrowserRelayMessageSchema({}),
 ]);
 export const BrowserRuntimeRelayToHostMessageSchema = z.union([
   z.strictObject({ ...browserChannelEnvelope, type: z.literal("browser.server-message") }),
-  createBrowserRelayToHostMessageSchema({
-    localProfiles: 1,
-    profilePrepare: 1,
-    initialNavigationVersion: 1,
-  }),
+  createBrowserRelayToHostMessageSchema({}),
 ]);
 export type BrowserRuntimeRelayRequest = Extract<
   z.infer<typeof HostToBrowserRuntimeRelayMessageSchema>,
@@ -91,7 +83,6 @@ interface PendingRequest {
   readonly fence: RunnerAuxiliaryFrameFence;
   readonly runnerId: RunnerId;
   readonly expectedType:
-    | "browser.profile.prepared"
     | "browser.attached"
     | "browser.closed"
     | "capability.accepted"
@@ -118,7 +109,6 @@ interface PlacementCapabilityLease {
 }
 
 interface RoutedChannel {
-  readonly preparation: boolean;
   readonly channelId: BrowserChannelId;
   readonly connection: RunnerBrowserConnection;
   lastSequence: number;
@@ -215,32 +205,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     return {
       placementKey,
       main: stream.identity.runnerKind === "main",
-      ...(browser.localProfiles === 1 && browser.localProfileStorage
-        ? { localProfileStorage: browser.localProfileStorage }
-        : {}),
-      initialNavigationVersion: browser.initialNavigationVersion === 1,
-      ...(browser.localProfiles === 1 &&
-      browser.profilePrepare === 1 &&
-      browser.profilePrepareInstanceId
-        ? {
-            profilePrepare: true,
-            incarnation: browser.profilePrepareInstanceId,
-            prepareProfile: (ticket: string) => {
-              const connection = new RunnerBrowserConnection(this);
-              queueMicrotask(() => {
-                void this.#open(
-                  connection,
-                  placement.runnerId,
-                  browser.runtimeId,
-                  expectedFence,
-                  ticket,
-                  true,
-                );
-              });
-              return connection;
-            },
-          }
-        : {}),
+      ...(browser.localProfileStorage ? { localProfileStorage: browser.localProfileStorage } : {}),
       runtimeId: browser.runtimeId,
       stateImport: browser.stateImport === true,
       fileStaging: browser.fileStaging === true,
@@ -324,19 +289,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     runtimeId: string,
     expectedFence: RunnerAuxiliaryFrameFence,
     ticket: string,
-    preparation = false,
   ): Promise<void> {
     let placementLease: PlacementCapabilityLease | undefined;
     let channel: RoutedChannel | undefined;
     try {
       if (this.#closed) throw new Error("The browser relay router is closed.");
       const stream = this.#requireExpectedStream(runnerId, expectedFence);
-      if (
-        preparation &&
-        (stream.identity.modules.browser?.profilePrepare !== 1 ||
-          stream.identity.modules.browser?.localProfiles !== 1)
-      )
-        throw relayError("Profile preparation was not negotiated.");
       const reason = this.#admissionReason(stream);
       if (reason) throw relayError(reason);
       placementLease = await this.#acquirePlacementLease(stream, runtimeId);
@@ -356,7 +314,6 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       }
       const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
       const routedChannel: RoutedChannel = {
-        preparation,
         channelId,
         connection,
         lastSequence: -1,
@@ -365,24 +322,18 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
       activePlacementLease.channels.add(channelId);
-      if (preparation) activePlacementLease.maintenanceCount++;
       const attached = await this.#request(runnerId, stream.fence, {
         capability: activePlacementLease.capability,
         channelId,
-        expectedType: preparation ? "browser.profile.prepared" : "browser.attached",
-        // Negotiated readiness includes conversion and engine startup, rather
-        // than just the old loopback WebSocket upgrade. Use the broker's startup budget.
-        timeoutMs:
-          stream.identity.modules.browser?.localProfiles === 1 ||
-          stream.identity.modules.browser?.initialNavigationVersion === 1
-            ? 30_000
-            : undefined,
+        expectedType: "browser.attached",
+        // Initial page readiness shares the Host opening budget.
+        timeoutMs: 20_000,
         message: {
           ...stream.fence,
-          ...(preparation ? { preparationTicket: ticket } : { attachTicket: ticket }),
+          attachTicket: ticket,
           capability: activePlacementLease.capability,
           channelId,
-          type: preparation ? "browser.profile.prepare" : "browser.attach",
+          type: "browser.attach",
         },
       });
       if (connection.readyState !== WebSocket.CONNECTING) {
@@ -390,32 +341,11 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         this.#dropChannel(routedChannel, 1000, "Browser attach cancelled");
         return;
       }
-      const browser = stream.identity.modules.browser;
-      const claims =
-        !preparation && browser?.initialNavigationVersion === 1
-          ? BrowserAttachTicketClaimsSchema.parse(
-              JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8")),
-            )
-          : undefined;
-      if (attached.type !== "browser.attached" && attached.type !== "browser.profile.prepared")
+      if (attached.type !== "browser.attached")
         throw relayError("The browser did not acknowledge attachment.");
-      const initialPage = attached.type === "browser.attached" ? attached.initialPage : undefined;
-      if (claims?.initialNavigationVersion === 1) {
-        if (
-          !initialPage ||
-          initialPage.operationKey !== claims.initialNavigation?.operationKey ||
-          initialPage.navigation !== (claims.initialNavigation?.url ? "submitted" : "blank")
-        )
-          throw relayError("The browser returned mismatched initial page readiness.");
-      } else if (initialPage)
-        throw relayError("The browser sent unnegotiated initial page readiness.");
+      const initialPage = attached.initialPage;
       connection.initialPage = initialPage;
       connection.acceptOpen();
-      if (attached.type === "browser.profile.prepared" && !attached.retained) {
-        await this.#bestEffortCloseAndRevoke(routedChannel);
-        this.#dropChannel(routedChannel, 1000, "Profile preparation skipped");
-        return;
-      }
       if (!activePlacementLease.renewalTimer && !activePlacementLease.renewal) {
         this.#scheduleRenewal(activePlacementLease, activePlacementLease.expiresAt);
       }
@@ -492,7 +422,9 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
   #admissionReason(stream: RunnerAuxiliaryStream): string | null {
     const browser = stream.identity.modules.browser;
-    if (browser?.localProfiles === 1) {
+    const compatibility = browserRuntimeCompatibilityReason(browser?.wireVersion);
+    if (compatibility) return compatibility;
+    if (browser?.localProfileStorage !== undefined) {
       const inventory = this.#inventory.get(stream.identity.runnerId);
       if (
         !this.#localProfiles ||
@@ -503,7 +435,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       )
         return "Waiting for this computer to reconcile its browser profile storage.";
     }
-    return browserSnapshotCompatibilityReason(browser?.profileSnapshotVersion);
+    return null;
   }
 
   requirePersonalProfileInventory(): void {
@@ -512,7 +444,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       .find((stream) => stream.identity.runnerKind === "main");
     if (
       !main ||
-      (main.identity.modules.browser?.localProfiles === 1 && this.#admissionReason(main))
+      (main.identity.modules.browser?.localProfileStorage !== undefined &&
+        this.#admissionReason(main))
     )
       throw relayError(
         "Waiting for this Main computer to reconcile its browser profile storage.",
@@ -557,7 +490,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     const runnerId = stream.identity.runnerId;
     if (!this.#localProfiles || this.#admissionReason(stream)) return;
     const browser = stream.identity.modules.browser;
-    if (browser?.localProfiles !== 1 || !browser.localProfileStorage) return;
+    if (!browser?.localProfileStorage) return;
     let failure: { error: unknown } | undefined;
     for (const job of await this.#localProfiles.jobs(runnerId)) {
       if (
@@ -610,7 +543,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
   async #handleMessage(stream: RunnerAuxiliaryStream, message: BrowserRelayEvent): Promise<void> {
     if (message.type === "browser.profile.inventory") {
-      if (!this.#localProfiles || stream.identity.modules.browser?.localProfiles !== 1)
+      if (!this.#localProfiles || !stream.identity.modules.browser?.localProfileStorage)
         throw relayError("Browser profile inventory was not negotiated.");
       let inventory = this.#inventory.get(stream.identity.runnerId);
       if (!inventory || !sameRunnerAuxiliaryFence(inventory.fence, stream.fence)) {
@@ -644,7 +577,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
     if (
       message.type === "browser.profile.delete.result" &&
-      stream.identity.modules.browser?.localProfiles !== 1
+      !stream.identity.modules.browser?.localProfileStorage
     )
       throw relayError("Browser profile erasure was not negotiated.");
     if (message.type === "browser.command-error") {
@@ -682,7 +615,6 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
     if (
       message.type === "browser.profile.delete.result" ||
-      message.type === "browser.profile.prepared" ||
       message.type === "browser.attached" ||
       message.type === "capability.accepted" ||
       message.type === "capability.revoked"
@@ -709,11 +641,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
             return;
           }
         }
-        if (
-          (message.type === "browser.attached" || message.type === "browser.profile.prepared") &&
-          !this.#channels.has(message.channelId)
-        )
-          return;
+        if (message.type === "browser.attached" && !this.#channels.has(message.channelId)) return;
         throw relayError("The browser relay response is not correlated.");
       }
       this.#assertPendingResponse(
@@ -1068,7 +996,6 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#channels.delete(channel.channelId);
     const placementLease = channel.placementLease;
     placementLease.channels.delete(channel.channelId);
-    if (channel.preparation) placementLease.maintenanceCount--;
     if (placementLease.channels.size === 0 && placementLease.maintenanceCount === 0) {
       if (placementLease.renewalTimer) clearTimeout(placementLease.renewalTimer);
       placementLease.renewalTimer = undefined;

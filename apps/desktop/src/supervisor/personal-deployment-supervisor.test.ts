@@ -1,10 +1,15 @@
+import type { DeploymentConnection } from "@opensteer/client/connections";
+import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
+import { createId, type RunnerId } from "@opensteer/core";
+import type { DesktopPersonalDeploymentStatus } from "@opensteer/protocol/desktop";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
-import { createId, type RunnerId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import type { DeploymentConnection } from "@opensteer/client/connections";
-import type { DesktopPersonalDeploymentStatus } from "@opensteer/protocol/desktop";
+import {
+  PersonalRuntimeReleaseError,
+  type VerifiedPersonalRuntimeRelease,
+} from "../releases/personal-runtime-release.js";
 import type { PersonalDeploymentSecrets } from "../secrets/personal-deployment-credentials.js";
 import type {
   PersonalDeploymentFilesystemPort,
@@ -16,6 +21,10 @@ import {
   PersonalRuntimeTransitionError,
 } from "../secrets/personal-deployment-store.js";
 import {
+  ProtectedStateUnreadableError,
+  ProtectedStorageUnavailableError,
+} from "../secrets/protected-json-file.js";
+import {
   NativePersonalLoopbackPorts,
   PersonalDeploymentSupervisor,
   PersonalPrivatePortUnavailableError,
@@ -26,20 +35,11 @@ import type {
   PersonalLocalBrowserHandle,
   PersonalLocalRuntimePort,
 } from "./personal-local-runtime.js";
-import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import type {
   PersonalChildProcess,
   PersonalProcessPort,
   PersonalProcessSpec,
 } from "./personal-process-port.js";
-import {
-  PersonalRuntimeReleaseError,
-  type VerifiedPersonalRuntimeRelease,
-} from "../releases/personal-runtime-release.js";
-import {
-  ProtectedStateUnreadableError,
-  ProtectedStorageUnavailableError,
-} from "../secrets/protected-json-file.js";
 
 describe("PersonalDeploymentSupervisor", () => {
   it("does nothing on launch until This Computer was chosen", async () => {
@@ -1436,7 +1436,6 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
   });
   readonly paths: PersonalDeploymentPreparedPaths = {
     browserProfileRoot: "/data/browser-profiles",
-    browserProfileKeyPath: "/data/host/browser.key",
     browserProfilesDirectory: "/data/browser-profiles",
     credentialKeyPath: "/data/host/credentials.key",
     hostDataDirectory: "/data/host",

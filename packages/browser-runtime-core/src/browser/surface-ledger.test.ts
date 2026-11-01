@@ -246,6 +246,35 @@ describe("SurfaceLedger", () => {
     }
   });
 
+  it("clears a failed navigation when a later document commits, as after Reload", async () => {
+    const page = new FakePage();
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    try {
+      const id = ledger.snapshot()[0]!.id;
+      page.cdpSession.responses.set("Page.navigate", {
+        loaderId: "error",
+        errorText: "net::ERR_NAME_NOT_RESOLVED",
+      });
+      await ledger.navigate(id, "https://offline.test/");
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: {
+          id: "main",
+          loaderId: "error",
+          url: "chrome-error://chromewebdata/",
+          unreachableUrl: "https://offline.test/",
+        },
+      });
+      expect(ledger.snapshot()[0]).toMatchObject({ navigationFailed: true });
+      page.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: "main", loaderId: "reloaded", url: "https://offline.test/" },
+      });
+      expect(ledger.snapshot()[0]).not.toHaveProperty("navigationFailed");
+    } finally {
+      await ledger.close();
+    }
+  });
+
   it("retains validated fragments on committed full navigations", async () => {
     const page = new FakePage();
     const ledger = new SurfaceLedger(new FakeContext([page]));

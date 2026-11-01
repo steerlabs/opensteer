@@ -244,37 +244,41 @@ integration("Durable tab icons", () => {
       },
       { headers: host.ownerHeaders },
     );
-    void opening.catch(() => undefined);
-    answer(await request("Target.getTargets"), {
-      targetInfos: [{ targetId: "target-first", type: "page", surfaceId: "page-integration" }],
-    });
-    answer(await request("Target.attachToTarget"), { sessionId: "cdp-first" });
-    const navigate = await request("Page.navigate");
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
-      surfaces: [
-        surface("page-integration", "https://www.amazon.com/", "amazon-1", {
-          favicon: iconA,
-        }),
-      ],
-    });
-    runtime.sendServer({
-      type: "navigation.committed",
-      navigationId: navigate.navigationId,
-      surfaceId: "page-integration",
-      documentId: "amazon-1",
-      url: "https://www.amazon.com/",
-    });
-    answer(navigate, {});
-    answer(await request("Target.detachFromTarget"), {});
+    // The Runtime submits it from the signed ticket; the Host sends no CDP navigation.
     const opened = await opening;
     if (opened.type !== "browser.tab.open") throw new Error("Unexpected command");
     const sessionId = opened.sessionId;
+    const initialNavigation = runtime.lastClaims()?.initialNavigation;
+    expect(initialNavigation).toMatchObject({ url: "https://amazon.com/" });
+    expect(runtime.receivedCommands().some((command) => command.type === "cdp.command")).toBe(
+      false,
+    );
+    runtime.sendServer(
+      {
+        type: "browser.surfaces.changed",
+        surfaces: [
+          surface("page-integration", "https://www.amazon.com/", "amazon-1", {
+            favicon: iconA,
+          }),
+        ],
+      },
+      sessionId,
+    );
+    runtime.sendServer(
+      {
+        type: "navigation.committed",
+        navigationId: initialNavigation!.navigationId!,
+        surfaceId: "page-integration",
+        documentId: "amazon-1",
+        url: "https://www.amazon.com/",
+      },
+      sessionId,
+    );
+    await changed();
     expect((await read()).entries).toMatchObject([
       { url: "https://www.amazon.com/", typedCount: 1, visitCount: 1 },
     ]);
     expect((await read()).entries.some((entry) => entry.url === "https://amazon.com/")).toBe(false);
-    await changed();
     const viewer = new WebSocket(
       `ws://127.0.0.1:${host.hostPort}/v1/browser-sessions/${sessionId}/connect`,
       {

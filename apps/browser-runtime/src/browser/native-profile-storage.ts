@@ -1,10 +1,9 @@
+import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
+import { browserCookieFromCdp } from "@opensteer/browser-profile/cookies";
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { BrowserContext, CDPSession, Page } from "playwright-core";
-import { browserStorageOperation } from "@opensteer/browser-profile/storage-operation";
-import { browserCookieFromCdp } from "@opensteer/browser-profile/cookies";
-import type { BrowserCookie, BrowserProfileSnapshot } from "@opensteer/browser-profile/snapshot";
+import type { CDPSession } from "playwright-core";
 
 export async function initializeNativePreferences(directory: string): Promise<void> {
   if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
@@ -34,47 +33,6 @@ export async function initializeNativePreferences(directory: string): Promise<vo
   ).catch((error) => {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
   });
-}
-
-/** A synthetic, private helper; no imported origin can issue real requests or run a worker. */
-export async function importNativeOrigins(
-  context: BrowserContext,
-  helper: Page,
-  snapshot: BrowserProfileSnapshot,
-): Promise<void> {
-  const channel = await context.newCDPSession(helper);
-  try {
-    await channel.send("Network.setBypassServiceWorker", { bypass: true });
-    await helper.route("**/*", (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><html></html>" }),
-    );
-    for (const state of new Map(snapshot.origins.map((state) => [state.origin, state])).values()) {
-      await helper.goto(state.origin);
-      // The shared importer awaits IndexedDB transactions. Keep the writer alive
-      // until a same-origin document also acknowledges every localStorage write.
-      await helper.evaluate(`(async () => {
-        const state = ${JSON.stringify(state)};
-        const observer = document.createElement("iframe");
-        const loaded = new Promise(resolve => observer.addEventListener("load", resolve, { once: true }));
-        document.documentElement.appendChild(observer);
-        await loaded;
-        void observer.contentWindow.localStorage;
-        const pending = new Map(state.localStorage.map(({ name, value }) => [name, value]));
-        const acknowledged = pending.size ? new Promise(resolve => observer.contentWindow.addEventListener("storage", event => {
-          if (pending.get(event.key) === event.newValue) pending.delete(event.key);
-          if (!pending.size) resolve();
-        })) : Promise.resolve();
-        await (${browserStorageOperation.toString()})("restore", state);
-        await acknowledged;
-        observer.remove();
-      })()`);
-    }
-  } catch {
-    // Engine exceptions can include website-controlled storage names or URLs.
-    throw new Error("Chromium could not import profile origin storage.");
-  } finally {
-    await channel.detach().catch(() => undefined);
-  }
 }
 
 export function assertImportedCookies(

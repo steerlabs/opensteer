@@ -1,33 +1,31 @@
-import legacyTriggerWriteContract from "./fixtures/trigger-write-e45e4ecdc.json" with { type: "json" };
 import {
+  AgentCapabilityProfileIdSchema,
+  AssignmentIdSchema,
+  BrowserProfileIdSchema,
   BrowserTabReadInputSchema,
   BrowserTabWriteInputSchema,
-  ThreadWriteInputSchema,
-} from "@opensteer/core";
-import {
+  DelegationModelChoiceSchema,
+  EnvironmentIdSchema,
+  HarnessInstanceIdSchema,
+  MarkColorSchema,
   MessageIdSchema,
   PersonNotifyMessageSchema,
   PlaceContentPartSchema,
-  AgentCapabilityProfileIdSchema,
-  DelegationModelChoiceSchema,
-  AssignmentIdSchema,
-  type ThreadRole,
-  BrowserProfileIdSchema,
-  EnvironmentIdSchema,
-  HarnessInstanceIdSchema,
   RequestIdSchema,
   ThreadIdSchema,
+  ThreadWriteInputSchema,
   WorkspaceIconNameSchema,
-  MarkColorSchema,
   WorkspaceIdSchema,
   type AgentCapabilityProfileId,
+  type ThreadRole,
 } from "@opensteer/core";
-import { z } from "zod";
 import {
   TriggerProgramSchema,
   TriggerReadInputSchema,
   TriggerWriteInputSchema,
 } from "@opensteer/triggers";
+import { z } from "zod";
+import legacyTriggerWriteContract from "./fixtures/trigger-write-e45e4ecdc.json" with { type: "json" };
 
 export const AgentToolIdSchema = z.enum([
   "environment.list",
@@ -45,7 +43,6 @@ export const AgentToolIdSchema = z.enum([
   "request.withdraw",
   "browser.profile.create",
   "browser.profile.list",
-  "browser.profile.save",
   "sign-in",
   "browser.access.request",
   "browser.tab.read",
@@ -445,17 +442,9 @@ const definitions = [
       title: "List Browser Profiles",
     },
     description:
-      "List profiles: Main inherits owner profiles; specialists see grants. Named profiles keep browser data on their owning computer. site may add siteData; missing means unknown, not empty. A name or stored data never proves website login; verify on the website.",
+      "List profiles: Main inherits owner profiles; specialists see grants. Named profiles keep browser data on their owning computer. The list provides identity and grants; verify website sign-ins on the website.",
     id: "browser.profile.list",
-    inputSchema: z.strictObject({
-      site: z
-        .string()
-        .trim()
-        .min(1)
-        .max(2_048)
-        .optional()
-        .describe("Check website data where available, e.g. brex.com; missing means unknown."),
-    }),
+    inputSchema: z.strictObject({}),
     name: "browser_profile_list",
   },
   {
@@ -680,28 +669,8 @@ export const legacyBrowserSignInTool = {
   readonly permission: AgentToolId;
 };
 
-export const legacyBrowserProfileSaveTool = {
-  annotations: {
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false,
-    readOnlyHint: false,
-    title: "Save Browser Profile",
-  },
-  description:
-    "Ask the user to save a fresh Browser Session's current signed-in state as a new browser profile. Offer only after the user signed in to that session and when reuse is clearly useful; a direct user request to save is approval. The user names and approves the profile in Opensteer's Request surface. Profile-backed sessions persist automatically and cannot be saved as new profiles. Returns `{requestId, kind, status, replayed}`; replay is based only on this provider call's identity.",
-  permission: "browser.profile.save",
-  capabilityProfileIds: ["main", "workspace"],
-  inputSchema: z.strictObject({
-    reason: z.string().trim().min(1).max(500).describe("Why saving this login helps future work."),
-    sessionId: BrowserSessionIdInputSchema,
-    suggestedName: z.string().trim().min(1).max(120).optional(),
-  }),
-  name: "browser_profile_save",
-} as const;
-
 export function previousReleaseToolsForCapabilityProfile(id: AgentCapabilityProfileId) {
-  return [legacyBrowserSignInTool, legacyBrowserProfileSaveTool].filter((tool) =>
+  return [legacyBrowserSignInTool].filter((tool) =>
     tool.capabilityProfileIds.some((profileId) => profileId === id),
   );
 }

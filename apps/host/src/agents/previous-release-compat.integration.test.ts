@@ -3,12 +3,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createId, ModelSelectionSchema } from "@opensteer/core";
+import { createId, ModelSelectionSchema, unsupportedVersionReason } from "@opensteer/core";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { HttpHostClient, taskCanBeDone, taskList } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
+  hostApiVersionHeader,
   HostToClientMessageSchema,
   HostToRunnerMessageSchema,
   type WorkspaceSnapshot,
@@ -95,7 +97,28 @@ integration.sequential("previous public release client journeys", () => {
           await fetch(new URL("/.well-known/opensteer", active.hostOrigin))
         ).json();
         transcript.push({ descriptor });
-        expect(released.reader.HostDescriptorSchema.parse(descriptor).apiVersion).toBe(48);
+        expect(released.reader.HostDescriptorSchema.parse(descriptor).apiVersion).toBe(
+          hostApiVersion,
+        );
+        if (released.reader.hostApiCompatibility(descriptor) === "client-too-old") {
+          // Epoch 49's native-only browser cutover deliberately retires this release: it shows
+          // its update prompt, and the Host refuses its epoch before any read or dispatch.
+          const refused = await fetch(new URL("/v1/rpc/commands.dispatch", active.hostOrigin), {
+            method: "POST",
+            headers: {
+              cookie: active.sessionCookie,
+              origin: active.hostOrigin.origin,
+              "content-type": "application/json",
+              [hostApiVersionHeader]: String(hostApiVersion - 1),
+            },
+            body: JSON.stringify({}),
+          });
+          const body: unknown = await refused.json();
+          transcript.push({ refused: { status: refused.status, body } });
+          expect(refused.status).toBe(400);
+          expect(body).toMatchObject({ ok: false, error: { reason: unsupportedVersionReason } });
+          return;
+        }
         expect(released.reader.hostApiCompatibility(descriptor)).toBe("compatible");
         // As each release's deployment catalog does: the client keeps the
         // advertised capabilities it knows, and newer ones are noise to it.

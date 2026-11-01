@@ -104,7 +104,7 @@ it("keeps site policy readable for provider frames and denies foreign ancestors"
   }
 });
 
-it("holds every request at a closed restoration gate, including service workers", async () => {
+it("immediately cancels every request at a closed restoration gate, including service workers", async () => {
   const { BrowserSessionRequestGate, applyBrowserSessionPolicy } =
     await import("./browser-session-policy.js");
   const { vi } = await import("vitest");
@@ -129,19 +129,17 @@ it("holds every request at a closed restoration gate, including service workers"
   const helper = vi.fn();
   before({ url: "https://site.test/" }, worker);
   before({ url: "https://site.test/", webContentsId: 1 }, page);
-  const remove = gate.allowStorageHelper(2);
   before({ url: "https://site.test/", webContentsId: 2 }, helper);
-  expect(helper).toHaveBeenCalledWith({ cancel: false });
-  expect(worker).not.toHaveBeenCalled();
-  expect(page).not.toHaveBeenCalled();
-  remove();
+  expect(helper).toHaveBeenCalledWith({ cancel: true });
+  expect(worker).toHaveBeenCalledExactlyOnceWith({ cancel: true });
+  expect(page).toHaveBeenCalledExactlyOnceWith({ cancel: true });
   gate.open();
-  expect(worker).toHaveBeenCalledWith({ cancel: false });
-  expect(page).toHaveBeenCalledWith({ cancel: false });
+  expect(worker).toHaveBeenCalledOnce();
+  expect(page).toHaveBeenCalledOnce();
   gate.close();
   const blocked = vi.fn();
   before({ url: "https://site.test/", webContentsId: 2 }, blocked);
-  expect(blocked).not.toHaveBeenCalled();
+  expect(blocked).toHaveBeenCalledExactlyOnceWith({ cancel: true });
   gate.fail();
   expect(blocked).toHaveBeenCalledWith({ cancel: true });
   expect(session.webRequest.onBeforeRequest).toHaveBeenCalledOnce();
@@ -160,12 +158,10 @@ it("cancels dormant page and worker requests without replaying them on admission
   const helper = vi.fn();
   gate.beforeRequest(undefined, worker);
   gate.beforeRequest(1, page);
-  const remove = gate.allowStorageHelper(2);
   gate.beforeRequest(2, helper);
   expect(worker).toHaveBeenCalledExactlyOnceWith({ cancel: true });
   expect(page).toHaveBeenCalledExactlyOnceWith({ cancel: true });
-  expect(helper).toHaveBeenCalledExactlyOnceWith({ cancel: false });
-  remove();
+  expect(helper).toHaveBeenCalledExactlyOnceWith({ cancel: true });
   gate.open();
   expect(worker).toHaveBeenCalledOnce();
   expect(page).toHaveBeenCalledOnce();

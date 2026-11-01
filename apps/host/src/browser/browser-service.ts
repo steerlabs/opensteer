@@ -1,124 +1,111 @@
-import { LegacyBrowserProfileAdapter, navigateInitiallyLegacy } from "./legacy-browser-profile.js";
-import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
-import {
-  InitialPageReadySchema,
-  type InitialPageReady,
-  type CompleteProfileInitialization,
-  type PendingBrowserProfileDeletion,
-} from "@opensteer/protocol";
-import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
-import { BrowserCatalogRevisions } from "./browser-catalog-revisions.js";
-import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
-import { systemClock, type Clock } from "@opensteer/shared/clock";
-import {
-  workspaceTabIconRef,
-  WorkspaceTabStore,
-  OpensteerStore,
-  type BrowserTabGroupStore,
-  type BrowserHistoryStore,
-} from "@opensteer/database";
-import type { WorkspaceTabLineage, BrowserWorkspaceTabDescriptor } from "@opensteer/protocol";
-import { createHash, randomUUID } from "node:crypto";
-import type { RawData } from "ws";
-import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
-import {
-  browserProfileHoldsSite,
-  browserSiteFromUrl,
-} from "@opensteer/browser-profile/source-state";
-import { withTimeout } from "@opensteer/shared/withTimeout";
-import WebSocket from "ws";
+import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
-  BrowserProfileIdSchema,
-  createId,
+  UserIdSchema,
   type AgentEvent,
+  type AuthSessionId,
   type BrowserAccessSuggestion,
   type BrowserProfileGrantId,
   type BrowserProfileId,
-  type RunnerId,
   type EnvironmentId,
   type Request,
   type RequestId,
   type RequestResponse,
   type RunId,
+  type RunnerId,
   type ThreadId,
   type UserId,
-  type AuthSessionId,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
-  BrowserHistoryUrlSchema,
-  BrowserClientMessageSchema,
-  BrowserContextCandidateSchema,
-  previousReleaseEligibility,
-  browserHostMethods,
+  OpensteerStore,
+  withDatabaseOperationSignal,
+  withoutDatabaseOperationSignal,
+  workspaceTabIconRef,
+  WorkspaceTabStore,
+  type BrowserHistoryStore,
+  type BrowserTabGroupStore,
+} from "@opensteer/database";
+import type { BrowserWorkspaceTabDescriptor, WorkspaceTabLineage } from "@opensteer/protocol";
+import {
   browserBootstrapSessionsMaxBytes,
   browserCaptureMaxTargets,
-  type BrowserSurface,
-  type BrowserSurfaceId,
-  type BrowserDialog,
+  BrowserClientMessageSchema,
+  BrowserContextCandidateSchema,
+  BrowserDialogSchema,
+  BrowserHistoryUrlSchema,
+  browserHostMethods,
+  browserPageSite,
+  BrowserProfileAccessSchema,
+  BrowserServerMessageSchema,
+  browserStateImportHostTimeoutMs,
+  BrowserSurfaceIdSchema,
   BrowserTabCatalogSchema,
-  staleBrowserTabInventoryReason,
-  type BrowserContextCandidate,
-  type BrowserContextCandidateInput,
-  type BrowserTabIconInput,
-  type BrowserTabCloseCommand,
-  type BrowserTabCloseResult,
-  type BrowserTabOpenCommand,
-  type BrowserTabOpenBinding,
-  type BrowserTabOpenRefusalReason,
-  type BrowserSessionOpenerRecord,
-  projectBrowserSessionOpener,
   BrowserTabOpenCommandSchema,
   BrowserTabOpenRefusalDetailsSchema,
-  type BrowserTabOpenResult,
-  type BrowserTabCatalog,
-  type BrowserRuntimeActivity,
-  type PlaceIdentity,
-  placeIdentityKey,
-  type PlaceActivity,
-  type PlaceActivityNotice,
-  type PlaceOccupant,
-  type ThreadPlaceReference,
-  BrowserDialogSchema,
-  BrowserProfileAccessSchema,
-  BrowserSessionIdSchema,
-  BrowserSurfaceIdSchema,
-  BrowserServerMessageSchema,
-  browserPageSite,
-  browserStateImportHostTimeoutMs,
   browserViewerCloseCodes,
-  decodeBrowserFrameEnvelope,
   createBrowserSessionId,
-  type BrowserProfileGrant,
-  type BrowserProfileAccess,
-  type BrowserClientMessage,
+  decodeBrowserFrameEnvelope,
+  InitialPageReadySchema,
+  placeIdentityKey,
+  previousReleaseEligibility,
+  projectBrowserSessionOpener,
+  staleBrowserTabInventoryReason,
+  type AgentBrowserSessionSummary,
   type BrowserBinaryFrameHeader,
-  type BrowserRasterDensity,
+  type BrowserClientMessage,
+  type BrowserContextCandidate,
+  type BrowserContextCandidateInput,
+  type BrowserDialog,
+  type BrowserPagePresence,
   type BrowserPlacement,
   type BrowserPlacementSelector,
-  type BrowserProfile,
-  type AgentBrowserSessionSummary,
-  type BrowserServerMessage,
-  type BrowserPagePresence,
   type BrowserPresence,
+  type BrowserProfile,
+  type BrowserProfileAccess,
+  type BrowserProfileGrant,
+  type BrowserRasterDensity,
+  type BrowserRuntimeActivity,
+  type BrowserServerMessage,
   type BrowserSessionId,
+  type BrowserSessionOpenerRecord,
+  type BrowserSurface,
+  type BrowserSurfaceId,
+  type BrowserTabCatalog,
+  type BrowserTabCloseCommand,
+  type BrowserTabCloseResult,
+  type BrowserTabIconInput,
+  type BrowserTabOpenBinding,
+  type BrowserTabOpenCommand,
+  type BrowserTabOpenRefusalReason,
+  type BrowserTabOpenResult,
   type HostedBrowserBootstrap,
   type HostedBrowserSession,
   type HostedBrowserSessionState,
+  type InitialPageReady,
+  type PendingBrowserProfileDeletion,
+  type PlaceActivity,
+  type PlaceActivityNotice,
+  type PlaceIdentity,
+  type PlaceOccupant,
   type RequestCreationResult,
+  type ThreadPlaceReference,
 } from "@opensteer/protocol";
-import { z } from "zod";
-import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
-import { PasskeyService, type PasskeyViewer } from "./passkey-service.js";
 import type { PasskeyMode } from "@opensteer/protocol/passkeys";
+import type { BootstrapNoticeSource } from "@opensteer/shared/bootstrapDiagnostics";
+import { systemClock, type Clock } from "@opensteer/shared/clock";
+import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { createHash, randomUUID } from "node:crypto";
+import type { RawData } from "ws";
+import WebSocket from "ws";
+import { z } from "zod";
+import { BrowserCatalogRevisions } from "./browser-catalog-revisions.js";
 import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
-import {
-  BrowserProfileSnapshotSchema,
-  type BrowserCookie,
-  type BrowserProfileSnapshot,
-} from "@opensteer/browser-profile/snapshot";
-import type { BrowserProfileVault } from "./profile-vault.js";
+import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
+import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
+import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
+import { PasskeyService, type PasskeyViewer } from "./passkey-service.js";
 
 const olderBrowserDialogSchema = BrowserDialogSchema.omit({ id: true });
 
@@ -131,7 +118,7 @@ const maxBrowserProfiles = 128;
 const maxBrowserSessions = 100;
 const maxBrowserProfileGrants = 100;
 /** A live state export walks every context, so it gets more room than a CDP call. */
-const stateExportTimeoutMs = 30_000;
+
 /** How long after its latest command an agent still counts as acting in a browser. */
 export const browserActingWindowMs = 15_000;
 /** Optional attribution must not hold page commands behind a stalled metadata store. */
@@ -184,27 +171,10 @@ const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set(
   "clipboard.paste",
 ] satisfies readonly BrowserClientMessage["type"][]);
 
-const BrowserAccessDecisionSchema = z.union([
-  z.strictObject({ decision: z.literal("declined") }),
-  z.strictObject({ decision: z.literal("fulfilled"), profileId: BrowserProfileIdSchema }),
-  z.strictObject({
-    createProfile: z.strictObject({ name: z.string().trim().min(1).max(120) }),
-    decision: z.literal("fulfilled"),
-  }),
-]);
-const BrowserProfileSaveDecisionSchema = z.discriminatedUnion("decision", [
-  z.strictObject({ decision: z.literal("declined") }),
-  z.strictObject({
-    decision: z.literal("fulfilled"),
-    name: z.string().trim().min(1).max(120),
-  }),
-]);
-
 export interface BrowserProfileRecord {
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
-  readonly revision: number;
 }
 
 export interface ActiveBrowserProfileGrant {
@@ -286,15 +256,10 @@ export interface BrowserSessionRepository {
       lastUsedAt: Date;
     }[]
   >;
-  authorizeBrowserProfileLease(input: {
-    readonly leaseTokenHash: string;
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-  }): Promise<boolean>;
   readonly requests: {
     create(input: {
       readonly callId: string;
-      readonly kind: "browser.access" | "browser.profile.save";
+      readonly kind: "browser.access";
       readonly mode: "durable";
       readonly originatingRunId: RunId;
       readonly originatingThreadId: ThreadId;
@@ -315,13 +280,6 @@ export interface BrowserSessionRepository {
     }): Promise<Request | null>;
     get(id: RequestId): Promise<Request | null>;
     resolveBrowserRequest(input: {
-      readonly preparedProfile?: {
-        readonly ciphertext: Uint8Array;
-        readonly ciphertextSha256: string;
-        readonly id: BrowserProfileId;
-        readonly name: string;
-        readonly revision: 1;
-      };
       readonly requestId: RequestId;
       readonly resolvedBy: UserId;
       readonly response: RequestResponse;
@@ -330,21 +288,12 @@ export interface BrowserSessionRepository {
       readonly grant: ActiveBrowserProfileGrant | null;
       readonly profile: BrowserProfileRecord | null;
       readonly request: Request;
-      readonly saveSessionId: string | null;
     }>;
   };
   createBrowserProfile(input: {
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
-  }): Promise<BrowserProfileRecord>;
-  createBrowserProfileWithRevision(input: {
-    readonly ciphertext: Uint8Array;
-    readonly ciphertextSha256: string;
-    readonly id: BrowserProfileId;
-    readonly name: string;
-    readonly ownerId: UserId;
-    readonly revision: 1;
   }): Promise<BrowserProfileRecord>;
   createBrowserProfileGrant(input: {
     readonly access: BrowserProfileAccess;
@@ -356,8 +305,6 @@ export interface BrowserSessionRepository {
     readonly tabGroupId?: BrowserSessionId;
     readonly opener?: BrowserSessionOpenerRecord | null;
     readonly id: BrowserSessionId;
-    readonly leaseGeneration: number;
-    readonly leaseTokenHash: string | null;
     readonly placementKey: string;
     readonly runnerId: RunnerId;
     readonly origin: "agent" | "trigger" | "workspace";
@@ -494,11 +441,7 @@ export interface BrowserRuntimeTarget {
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
-  readonly profilePrepare?: boolean;
-  readonly incarnation?: string;
-  prepareProfile?(ticket: string): BrowserRuntimeConnection;
   readonly localProfileStorage?: { storageInstanceId: string; engine: "electron" | "chromium" };
-  readonly initialNavigationVersion?: boolean;
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
   readonly stateImport?: boolean;
   /** The Runtime stages page-bound files; one that predates it cannot receive any. */
@@ -550,6 +493,7 @@ type BrowserSessionIdentityInput =
   | { readonly fresh: true; readonly profileId?: never };
 
 export type StartBrowserSessionInput = {
+  readonly operationBudget?: { readonly signal: AbortSignal; readonly expiresAt: number };
   readonly initialPageOperationKey?: string;
   readonly sessionId?: BrowserSessionId;
   readonly tabGroupId?: BrowserSessionId;
@@ -607,6 +551,7 @@ type BrowserCdpWireResponse = Extract<
 >;
 
 interface BrowserServiceOptions {
+  readonly hostOrigin: URL;
   readonly personal?: boolean;
   readonly history?: BrowserHistoryStore;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
@@ -653,8 +598,6 @@ interface BrowserServiceOptions {
   readonly onWorkspaceEvent: (event: AgentEvent) => void;
   readonly localProfiles?: BrowserLocalProfiles;
   readonly eraseLocalProfiles?: (runnerId: RunnerId) => Promise<void>;
-  readonly profileStateBaseUrl: URL;
-  readonly profileVault: Pick<BrowserProfileVault, "commit" | "load" | "prepareRevision">;
   readonly repository: BrowserSessionRepository;
   readonly signer: BrowserAttachTicketSigner;
   readonly targetResolver?: BrowserRuntimeTargetResolver;
@@ -746,16 +689,8 @@ export class BrowserService {
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #repository: BrowserSessionRepository;
   readonly #localProfiles: BrowserLocalProfiles | undefined;
-  readonly #personal: boolean;
-  readonly #preparationAttempts = new Map<
-    RunnerId,
-    { incarnation: string; profiles: Set<string> }
-  >();
-  readonly #preparedProfiles = new Map<BrowserProfileId, BrowserRuntimeConnection>();
   readonly #eraseLocalProfiles: BrowserServiceOptions["eraseLocalProfiles"];
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
-  readonly #legacyProfiles: LegacyBrowserProfileAdapter;
-  readonly #profileVault: Pick<BrowserProfileVault, "commit" | "load" | "prepareRevision">;
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   #closed = false;
@@ -764,11 +699,9 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions) {
     this.#localProfiles = options.localProfiles;
-    this.#personal = options.personal === true;
     this.#eraseLocalProfiles = options.eraseLocalProfiles;
     this.#passkeys = options.passkeys === true;
-    this.#passkeyOwnOrigins =
-      options.passkeyOwnOrigins ?? (() => [options.profileStateBaseUrl.origin]);
+    this.#passkeyOwnOrigins = options.passkeyOwnOrigins ?? (() => [options.hostOrigin.origin]);
     this.#history =
       options.history ??
       (options.repository instanceof OpensteerStore
@@ -790,12 +723,6 @@ export class BrowserService {
     this.#actorMetadataTimeoutMs = options.actorMetadataTimeoutMs ?? browserActorMetadataTimeoutMs;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#repository = options.repository;
-    this.#legacyProfiles = new LegacyBrowserProfileAdapter({
-      repository: options.repository,
-      vault: options.profileVault,
-      baseUrl: options.profileStateBaseUrl,
-    });
-    this.#profileVault = options.profileVault;
     this.#signer = options.signer;
     this.#targetResolver = options.targetResolver;
   }
@@ -804,6 +731,58 @@ export class BrowserService {
     return Boolean(this.#targetResolver) && !this.#closed;
   }
 
+  async acknowledgeNativeProfileReady(
+    profileId: BrowserProfileId,
+    ticket: string,
+    requestSignal?: AbortSignal,
+  ): Promise<void> {
+    const claims = this.#signer.readNativeReady(ticket);
+    const expiresAt = Date.parse(claims.operationExpiresAt);
+    const remaining = Math.max(1, expiresAt - Date.now());
+    const deadline = AbortSignal.timeout(remaining);
+    const signal = requestSignal ? AbortSignal.any([requestSignal, deadline]) : deadline;
+    await withDatabaseOperationSignal(signal, expiresAt, () =>
+      withTimeout(
+        (async () => {
+          if (
+            claims.identity.kind !== "profile-local" ||
+            claims.identity.binding.profileId !== profileId ||
+            !this.#localProfiles
+          )
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "Native profile readiness authority does not match.",
+            });
+          const session = await this.#repository.getBrowserSessionForOwner(
+            claims.sessionId,
+            UserIdSchema.parse(claims.subject),
+          );
+          if (
+            !session ||
+            session.profileId !== profileId ||
+            session.runnerId !== claims.identity.binding.runnerId ||
+            session.runtimeId !== claims.runtimeId ||
+            isTerminal(session.state)
+          )
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "Native profile readiness session has ended.",
+            });
+          await this.#localProfiles.acknowledgeReady(claims.identity.binding);
+        })(),
+        remaining,
+        {
+          signal,
+          timeoutError: () =>
+            new OpensteerError({
+              code: "conflict",
+              reason: "browser-open.timeout",
+              message: "Native profile readiness timed out. Retry opening the profile.",
+            }),
+        },
+      ),
+    );
+  }
   async initialize(): Promise<void> {
     const failed = await this.#repository.failActiveBrowserSessions();
     await this.#workspaceTabs?.suspend();
@@ -1150,8 +1129,6 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
-    this.#preparedProfiles.get(input.profileId)?.close();
-    this.#preparedProfiles.delete(input.profileId);
     this.invalidatePlaceAuthority();
     const stops = await Promise.allSettled(
       sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
@@ -1171,63 +1148,10 @@ export class BrowserService {
     }
   }
 
-  loadProfileInitialization(profileId: BrowserProfileId, token: string) {
-    if (!this.#localProfiles) throw unavailable("Local browser profiles are unavailable.");
-    return this.#localProfiles.seed(profileId, token);
-  }
-
-  completeProfileInitialization(
-    profileId: BrowserProfileId,
-    token: string,
-    input: CompleteProfileInitialization,
-  ) {
-    if (!this.#localProfiles) throw unavailable("Local browser profiles are unavailable.");
-    return this.#localProfiles.complete(profileId, token, input);
-  }
-
   /** Every device of the owner rereads its profiles, whichever Workspace it follows. */
   async #ownerProfilesChanged(ownerId: UserId): Promise<void> {
     const main = await this.#repository.findMainWorkspaceForOwner(ownerId);
     if (main) this.#onProfilesChanged(ownerId, main.id);
-  }
-
-  async profileSiteData(input: {
-    readonly ownerId: UserId;
-    readonly profileIds: readonly BrowserProfileId[];
-    readonly site: string;
-  }) {
-    let site: string;
-    try {
-      site = browserSiteFromUrl(input.site);
-    } catch (error) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: error instanceof Error ? error.message : "Choose one website.",
-      });
-    }
-    const profiles = new Map<
-      BrowserProfileId,
-      { readonly hasData: boolean; readonly savedAt: string | null }
-    >();
-    for (let offset = 0; offset < input.profileIds.length; offset += 4) {
-      await Promise.all(
-        input.profileIds.slice(offset, offset + 4).map(async (profileId) => {
-          if (!(await this.#repository.getBrowserProfile(profileId, input.ownerId)))
-            throw new OpensteerError({ code: "not_found", message: "Browser profile not found." });
-          if (
-            this.#localProfiles &&
-            (await this.#localProfiles.storage(profileId)).kind !== "vault"
-          )
-            return;
-          const loaded = await this.#profileVault.load(profileId);
-          profiles.set(profileId, {
-            hasData: browserProfileHoldsSite(loaded.snapshot, site),
-            savedAt: loaded.savedAt?.toISOString() ?? null,
-          });
-        }),
-      );
-    }
-    return { site, profiles };
   }
 
   /**
@@ -1418,8 +1342,8 @@ export class BrowserService {
     const storage =
       profileId && this.#localProfiles
         ? await this.#localProfiles.storage(profileId)
-        : { kind: "vault" as const };
-    const boundRunnerId = storage.kind === "vault" ? undefined : storage.binding.runnerId;
+        : { kind: "unbound" as const };
+    const boundRunnerId = storage.kind === "unbound" ? undefined : storage.binding.runnerId;
     if (boundRunnerId && command.placement && command.placement.runnerId !== boundRunnerId)
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
@@ -1475,61 +1399,6 @@ export class BrowserService {
     };
   }
 
-  async prepareProfile(
-    ownerId: UserId,
-    identity: NonNullable<BrowserTabOpenCommand["identity"]>,
-  ): Promise<void> {
-    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
-    if (identity.kind === "guest") return;
-    await this.#serializeKey(`profile-admission:${identity.profileId}`, async () => {
-      const { profileId, placement, holder, storage, target } = await this.#resolveIdentityOpen(
-        ownerId,
-        { identity },
-      );
-      if (
-        !profileId ||
-        !this.#localProfiles ||
-        !target.profilePrepare ||
-        !target.prepareProfile ||
-        !target.incarnation
-      )
-        return;
-      // Only Personal's Main computer can proactively place/convert an unbound profile.
-      if (storage.kind === "vault" && (!this.#personal || !target.main || holder)) return;
-      let attempts = this.#preparationAttempts.get(placement.runnerId);
-      if (attempts?.incarnation !== target.incarnation) {
-        attempts = { incarnation: target.incarnation, profiles: new Set() };
-        this.#preparationAttempts.set(placement.runnerId, attempts);
-      }
-      if (attempts.profiles.has(profileId)) return;
-      attempts.profiles.add(profileId);
-      const localIdentity = await this.#localProfiles.identity(
-        profileId,
-        placement.runnerId,
-        target,
-      );
-      if (!localIdentity) return;
-      if (this.#closed) return;
-      const connection = target.prepareProfile(
-        this.#signer.issuePreparation({
-          identity: localIdentity,
-          runtimeId: target.runtimeId,
-          subject: ownerId,
-          ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
-        }),
-      );
-      this.#preparedProfiles.get(profileId)?.close();
-      this.#preparedProfiles.set(profileId, connection);
-      connection.on("error", () => {
-        connection.close();
-      });
-      connection.on("close", () => {
-        if (this.#preparedProfiles.get(profileId) === connection)
-          this.#preparedProfiles.delete(profileId);
-      });
-    });
-  }
-
   #historyOperation<T>(profileId: BrowserProfileId, operation: () => Promise<T>): Promise<T> {
     const pending = (this.#historyTails.get(profileId) ?? Promise.resolve())
       .catch(() => undefined)
@@ -1582,128 +1451,254 @@ export class BrowserService {
     if (changed) this.#onHistoryChanged(ownerId, input.profileId);
   }
 
-  openTab(ownerId: UserId, input: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
+  async openTab(ownerId: UserId, input: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
+    const expiresAt = Date.now() + 20_000;
+    const cancellation = new AbortController();
+    const budget: BrowserTabOpenBudget = {
+      signal: cancellation.signal,
+      expiresAt: expiresAt - 2_000,
+    };
+    const timeout = () =>
+      new OpensteerError({
+        code: "conflict",
+        message: "Opening this browser timed out. Retry to open a new page.",
+        reason: "browser-open.timeout",
+      });
+    const timer = setTimeout(() => cancellation.abort(timeout()), 18_000);
+    timer.unref?.();
+    try {
+      return await withDatabaseOperationSignal(budget.signal, budget.expiresAt, () =>
+        withTimeout(this.#openTab(ownerId, input, budget), 18_000, {
+          signal: budget.signal,
+          timeoutError: timeout,
+        }),
+      );
+    } catch (error) {
+      cancellation.abort(error);
+      // An unanswered page request may still have opened its page; its key recovers it.
+      if (
+        budget.pageRequested &&
+        !(error instanceof BrowserCdpRefusal) &&
+        !(error instanceof OpensteerError && error.reason === "browser-tab-open-failed")
+      )
+        throw this.#tabOpenRefusal(
+          "browser-tab-open-outcome-unknown",
+          "Opening did not confirm its outcome. Retry this request to recover its original page.",
+        );
+      if (budget.admitted) {
+        const remaining = Math.max(1, expiresAt - Date.now());
+        try {
+          const settlement = AbortSignal.timeout(remaining);
+          const settled = await withDatabaseOperationSignal(settlement, expiresAt, () =>
+            withTimeout(
+              (async () => {
+                await this.#repository.settleBrowserTabOpen({
+                  ...budget.admitted!,
+                  outcome: { kind: "failed", reason: "failed" },
+                });
+                if (budget.admitted!.browserStarted)
+                  await this.#transitionBrowserSession({
+                    from: ["starting", "ready", "closing"],
+                    sessionId: budget.admitted!.chosenSessionId,
+                    state: "failed",
+                  }).catch(() => undefined);
+                return this.#repository.getBrowserTabOpen(ownerId, budget.admitted!.idempotencyKey);
+              })(),
+              remaining,
+              { timeoutError: timeout },
+            ),
+          );
+          if (settled?.outcome.kind === "failed" && budget.admitted.browserStarted) {
+            const broker = this.#brokers.get(budget.admitted.chosenSessionId);
+            void withoutDatabaseOperationSignal(() =>
+              broker?.abort("Browser opening failed."),
+            )?.catch(() => undefined);
+          }
+          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+        } catch (settlementError) {
+          if (
+            settlementError instanceof OpensteerError &&
+            settlementError.reason === "browser-tab-open-failed"
+          )
+            throw settlementError;
+        }
+        throw this.#tabOpenRefusal(
+          "browser-tab-open-outcome-unknown",
+          "Opening did not confirm its outcome. Retry this request to recover its original page.",
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  #openTab(
+    ownerId: UserId,
+    input: BrowserTabOpenCommand,
+    budget: BrowserTabOpenBudget,
+  ): Promise<BrowserTabOpenResult> {
     const parsed = BrowserTabOpenCommandSchema.parse(input);
     const command = parsed.url ? { ...parsed, url: safeNavigationUrl(parsed.url) } : parsed;
     // A caller/key binds once; only opens of the same identity share selection/start work.
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
-      let pendingFinish: (() => Promise<void>) | undefined;
-      const select = async () => {
-        const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
-        let binding = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
-        if (binding) {
-          if (binding.requestFingerprint !== fingerprint)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Idempotency key already used.",
+      budget.signal.throwIfAborted();
+      let admitted: BrowserTabOpenBinding | undefined;
+      try {
+        let pendingFinish: (() => Promise<void>) | undefined;
+        const select = async () => {
+          budget.signal.throwIfAborted();
+          const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+          let binding = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
+          if (binding) {
+            if (binding.requestFingerprint !== fingerprint)
+              throw new OpensteerError({
+                code: "conflict",
+                message: "Idempotency key already used.",
+              });
+            if (binding.outcome.kind === "pending") budget.admitted = binding;
+            return binding;
+          }
+          let record: BrowserSessionRecord | null = null;
+          let opening: StartBrowserSessionInput | null = null;
+          let identityKey: string | null = null;
+          let runnerId: RunnerId;
+          if (command.sessionId !== undefined) {
+            record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
+            if (!record)
+              throw new OpensteerError({
+                code: "not_found",
+                message: "Browser session not found.",
+              });
+            this.#requireOpenableSession(record);
+            runnerId = record.runnerId;
+          } else {
+            const resolved = await this.#resolveIdentityOpen(ownerId, {
+              identity: command.identity!,
+              ...(command.placement ? { placement: command.placement } : {}),
             });
-          return binding;
-        }
-        let record: BrowserSessionRecord | null = null;
-        let opening: StartBrowserSessionInput | null = null;
-        let identityKey: string | null = null;
-        let runnerId: RunnerId;
-        if (command.sessionId !== undefined) {
-          record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
-          if (!record)
-            throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
-          this.#requireOpenableSession(record);
-          runnerId = record.runnerId;
-        } else {
-          const resolved = await this.#resolveIdentityOpen(ownerId, {
-            identity: command.identity!,
-            ...(command.placement ? { placement: command.placement } : {}),
-          });
-          const { workspace, profileId, placement } = resolved;
-          identityKey = resolved.identityKey;
-          runnerId = placement.runnerId;
-          const sessions = await this.#repository.listBrowserSessions(ownerId);
-          record =
-            sessions
-              .filter(
-                (candidate) =>
-                  candidate.workspaceId === workspace.id &&
-                  candidate.state === "ready" &&
-                  candidate.origin === "workspace" &&
-                  candidate.opener?.kind === "person" &&
-                  candidate.opener.userId === ownerId &&
-                  candidate.profileId === profileId &&
-                  samePlacement(placement, placementOf(candidate)) &&
-                  this.#brokers.get(candidate.id)?.live,
-              )
-              .sort(
-                (left, right) =>
-                  left.createdAt.getTime() - right.createdAt.getTime() ||
-                  left.id.localeCompare(right.id),
-              )[0] ?? null;
-          if (!record)
-            opening = {
-              ownerId,
-              workspaceId: workspace.id,
-              placement,
-              sessionId: createBrowserSessionId(),
-              ...(profileId ? { profileId } : { fresh: true as const }),
-              ...(command.url ? { initialUrl: command.url } : {}),
-              ...(command.viewport ? { viewport: command.viewport } : {}),
-            };
-        }
-        binding = {
-          callerUserId: ownerId,
-          idempotencyKey: command.idempotencyKey,
-          requestFingerprint: fingerprint,
-          chosenSessionId: record?.id ?? opening!.sessionId!,
-          browserStarted: opening !== null,
-          initialPageOperationKey: createHash("sha256")
-            .update(`${ownerId}:${command.idempotencyKey}`)
-            .digest("hex"),
-          outcome: { kind: "pending" },
-        };
-        await this.#repository.bindBrowserTabOpen({ binding, identityKey, runnerId });
-        if (opening) {
-          let tabId: BrowserSurfaceId | undefined;
-          const finish = await this.#prepareStart(
-            { ...opening!, initialPageOperationKey: binding.initialPageOperationKey },
-            (openedTabId) => {
-              tabId = openedTabId;
-            },
-            command.url ? { ownerId, typed: command.typed === true } : undefined,
-          );
-          const openingBinding = binding;
-          pendingFinish = async () => {
-            await finish();
-            if (!tabId)
-              throw this.#tabOpenRefusal(
-                "browser-tab-open-outcome-unknown",
-                "The browser opened without a confirmed page. Inspect the browser before trying again.",
-              );
-            await this.#repository.settleBrowserTabOpen({
-              ...openingBinding,
-              outcome: { kind: "opened", tabId },
-            });
+            const { workspace, profileId, placement } = resolved;
+            identityKey = resolved.identityKey;
+            runnerId = placement.runnerId;
+            const sessions = await this.#repository.listBrowserSessions(ownerId);
+            record =
+              sessions
+                .filter(
+                  (candidate) =>
+                    candidate.workspaceId === workspace.id &&
+                    candidate.state === "ready" &&
+                    candidate.origin === "workspace" &&
+                    candidate.opener?.kind === "person" &&
+                    candidate.opener.userId === ownerId &&
+                    candidate.profileId === profileId &&
+                    samePlacement(placement, placementOf(candidate)) &&
+                    this.#brokers.get(candidate.id)?.live,
+                )
+                .sort(
+                  (left, right) =>
+                    left.createdAt.getTime() - right.createdAt.getTime() ||
+                    left.id.localeCompare(right.id),
+                )[0] ?? null;
+            if (!record)
+              opening = {
+                ownerId,
+                workspaceId: workspace.id,
+                placement,
+                sessionId: createBrowserSessionId(),
+                ...(profileId ? { profileId } : { fresh: true as const }),
+                ...(command.url ? { initialUrl: command.url } : {}),
+                ...(command.viewport ? { viewport: command.viewport } : {}),
+              };
+          }
+          budget.signal.throwIfAborted();
+          binding = {
+            callerUserId: ownerId,
+            idempotencyKey: command.idempotencyKey,
+            requestFingerprint: fingerprint,
+            chosenSessionId: record?.id ?? opening!.sessionId!,
+            browserStarted: opening !== null,
+            initialPageOperationKey: createHash("sha256")
+              .update(`${ownerId}:${command.idempotencyKey}`)
+              .digest("hex"),
+            outcome: { kind: "pending" },
           };
-        }
-        return binding;
-      };
-      const selectAndStart = async () => {
-        let binding = await select();
-        // Another open of this identity must see the admitted session ready
-        // before selecting reuse. Different identities have independent lanes.
-        if (pendingFinish) {
-          await pendingFinish();
-          binding =
-            (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ?? binding;
-        }
-        return binding;
-      };
-      const binding =
-        command.identity === undefined
-          ? await selectAndStart()
-          : await this.#serializeKey(
-              `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : "guest"}`,
-              selectAndStart,
+          admitted = binding;
+          budget.admitted = binding;
+          await this.#repository.bindBrowserTabOpen({ binding, identityKey, runnerId });
+          budget.signal.throwIfAborted();
+          if (opening) {
+            let tabId: BrowserSurfaceId | undefined;
+            const finish = await this.#prepareStart(
+              {
+                ...opening!,
+                operationBudget: budget,
+                initialPageOperationKey: binding.initialPageOperationKey,
+              },
+              (openedTabId) => {
+                tabId = openedTabId;
+              },
+              command.url ? { ownerId, typed: command.typed === true } : undefined,
             );
-      return this.#resumeTabOpen(ownerId, command, binding);
+            const openingBinding = binding;
+            pendingFinish = async () => {
+              await finish();
+              if (!tabId)
+                throw this.#tabOpenRefusal(
+                  "browser-tab-open-outcome-unknown",
+                  "The browser opened without a confirmed page. Inspect the browser before trying again.",
+                );
+              await this.#repository.settleBrowserTabOpen({
+                ...openingBinding,
+                outcome: { kind: "opened", tabId },
+              });
+            };
+          }
+          return binding;
+        };
+        const selectAndStart = async () => {
+          let binding = await select();
+          // Another open of this identity must see the admitted session ready
+          // before selecting reuse. Different identities have independent lanes.
+          if (pendingFinish) {
+            await pendingFinish();
+            binding =
+              (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ??
+              binding;
+          }
+          return binding;
+        };
+        const binding =
+          command.identity === undefined
+            ? await selectAndStart()
+            : await this.#serializeKey(
+                `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : "guest"}`,
+                selectAndStart,
+              );
+        return await this.#resumeTabOpen(ownerId, command, binding, budget);
+      } catch (error) {
+        // Initial-start failures close their exact broker before reaching here.
+        // An additional page can fail definitively only on the Runtime's reply;
+        // a missing response retains its key and uncertain outcome.
+        if (admitted && (admitted.browserStarted || error instanceof BrowserCdpRefusal)) {
+          await this.#repository.settleBrowserTabOpen({
+            ...admitted,
+            outcome: { kind: "failed", reason: "failed" },
+          });
+          const settled = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
+          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+        }
+        throw error;
+      }
     });
+  }
+
+  #tabOpenFailure(binding: BrowserTabOpenBinding): OpensteerError {
+    return this.#tabOpenRefusal(
+      "browser-tab-open-failed",
+      binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
+        ? "Opening was interrupted by a Host restart. Retry to open a new page."
+        : "The browser could not open this page. Retry to open a new page.",
+    );
   }
 
   #requireOpenableSession(record: BrowserSessionRecord): void {
@@ -1733,7 +1728,9 @@ export class BrowserService {
     ownerId: UserId,
     command: BrowserTabOpenCommand,
     binding: BrowserTabOpenBinding,
+    budget: BrowserTabOpenBudget,
   ): Promise<BrowserTabOpenResult> {
+    if (binding.outcome.kind === "failed") throw this.#tabOpenFailure(binding);
     return this.#serializeKey(binding.chosenSessionId, async () => {
       const record = await this.#repository.getBrowserSessionForOwner(
         binding.chosenSessionId,
@@ -1744,6 +1741,7 @@ export class BrowserService {
           "browser-tab-open-outcome-unknown",
           "The original browser is unavailable. This request cannot start another browser.",
         );
+      budget.signal.throwIfAborted();
       if (binding.outcome.kind !== "opened") {
         this.#requireOpenableSession(record);
         // A submitted initial page cannot be repeated after an uncertain start.
@@ -1761,6 +1759,7 @@ export class BrowserService {
         const navigationId = command.url
           ? broker.beginHistoryNavigation(ownerId, command.typed === true)
           : undefined;
+        budget.pageRequested = true;
         const response = await broker.requestCdp({
           type: "cdp.command",
           requestId: randomUUID(),
@@ -1768,6 +1767,19 @@ export class BrowserService {
           command: {
             method: browserHostMethods.openTab,
             parameters: {
+              operationAuthority: this.#signer.issue({
+                access: "full-control",
+                identity: { kind: "fresh" },
+                runtimeId: record.runtimeId,
+                sessionId: record.id,
+                subject: ownerId,
+                operationExpiresAt: new Date(budget.expiresAt).toISOString(),
+                remainingBudgetMs: Math.max(1, budget.expiresAt - Date.now()),
+                initialNavigation: {
+                  operationKey: binding.initialPageOperationKey,
+                  ...(command.url ? { url: command.url } : {}),
+                },
+              }),
               idempotencyKey: binding.initialPageOperationKey,
               ...(command.url === undefined ? {} : { url: command.url }),
               ...(command.viewport === undefined ? {} : { viewport: command.viewport }),
@@ -1778,6 +1790,9 @@ export class BrowserService {
         broker.bindHistoryNavigation(navigationId, tabId);
         binding = { ...binding, outcome: { kind: "opened", tabId } };
         await this.#repository.settleBrowserTabOpen(binding);
+        binding =
+          (await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey)) ?? binding;
+        if (binding.outcome.kind === "failed") throw this.#tabOpenFailure(binding);
       }
       if (binding.outcome.kind !== "opened")
         throw this.#tabOpenRefusal(
@@ -3030,84 +3045,6 @@ export class BrowserService {
   }
 
   /**
-   * Durable agent request to promote a fresh Browser Session's signed-in state
-   * into a new profile. The owner names and approves it; the promotion itself
-   * happens when the request resolves.
-   */
-  async requestSaveProfile(input: {
-    readonly callId: string;
-    readonly originatingWorkspaceId: WorkspaceId;
-    readonly ownerId: UserId;
-    readonly reason: string;
-    readonly runId: RunId;
-    readonly sessionId: BrowserSessionId;
-    readonly suggestedName?: string;
-    readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<RequestCreationResult & { readonly kind: "browser.profile.save" }> {
-    const created = await this.#repository.requests.create({
-      callId: input.callId,
-      kind: "browser.profile.save",
-      mode: "durable",
-      originatingRunId: input.runId,
-      originatingThreadId: input.threadId,
-      originatingWorkspaceId: input.originatingWorkspaceId,
-      payload: {
-        kind: "browser.profile.save",
-        reason: input.reason,
-        sessionId: input.sessionId,
-        ...(input.suggestedName ? { suggestedName: input.suggestedName } : {}),
-      },
-      presentation: {
-        detail: input.reason,
-        kind: "external",
-        subject: { id: input.sessionId, kind: "browser-session" },
-        title: "Save browser profile",
-      },
-      requestedBy: input.ownerId,
-      requiredActor: "requester",
-      targetWorkspaceId: input.workspaceId,
-    });
-    for (const event of created.events) this.#onWorkspaceEvent(event);
-    return {
-      kind: "browser.profile.save",
-      replayed: created.replayed,
-      requestId: created.request.id,
-      status: created.request.status,
-    };
-  }
-
-  /**
-   * User-initiated promotion of a fresh session's live state into a new profile.
-   * The click is the consent, so there is no request record and no grant: the
-   * source session stays fresh, open, and unlinked from the new profile.
-   */
-  async saveSessionAsProfile(input: {
-    readonly name: string;
-    readonly ownerId: UserId;
-    readonly sessionId: BrowserSessionId;
-  }): Promise<BrowserProfile> {
-    const record = await this.#requireSavableSession(input.ownerId, input.sessionId);
-    const snapshot = await this.#exportSessionState(record);
-    const profileId = createId("browserProfile");
-    const prepared = this.#profileVault.prepareRevision({
-      expectedRevision: 0,
-      profileId,
-      snapshot,
-    });
-    if (prepared.revision !== 1) throw new Error("First Browser Profile revision is not one");
-    const profile = await this.#repository.createBrowserProfileWithRevision({
-      ...prepared,
-      id: profileId,
-      name: input.name,
-      ownerId: input.ownerId,
-      revision: 1,
-    });
-    this.#onProfilesChanged(input.ownerId, record.workspaceId);
-    return publicProfile(profile);
-  }
-
-  /**
    * The session a sign-in would change, when the caller may act on it: its
    * owner, or an agent whose Workspace may reach it. Null when it is gone.
    */
@@ -3198,18 +3135,6 @@ export class BrowserService {
     return "applied";
   }
 
-  /** The live context state of one owned, running Browser Session. */
-  async exportSessionState(
-    ownerId: UserId,
-    sessionId: BrowserSessionId,
-  ): Promise<BrowserProfileSnapshot> {
-    const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
-    if (!record) {
-      throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
-    }
-    return this.#exportSessionState(record);
-  }
-
   async resolveRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
@@ -3224,7 +3149,7 @@ export class BrowserService {
       !pending ||
       pending.status !== "pending" ||
       pending.requestedBy !== input.resolvedBy ||
-      (pending.kind !== "browser.access" && pending.kind !== "browser.profile.save") ||
+      pending.kind !== "browser.access" ||
       input.response.kind !== "external"
     ) {
       throw new OpensteerError({
@@ -3232,43 +3157,7 @@ export class BrowserService {
         message: "Browser Request is no longer pending or cannot use this response",
       });
     }
-    const decision =
-      pending.kind === "browser.access"
-        ? BrowserAccessDecisionSchema.parse(input.response.value)
-        : BrowserProfileSaveDecisionSchema.parse(input.response.value);
-    let preparedProfile:
-      | NonNullable<
-          Parameters<
-            BrowserSessionRepository["requests"]["resolveBrowserRequest"]
-          >[0]["preparedProfile"]
-        >
-      | undefined;
-    if (decision.decision === "fulfilled" && pending.kind === "browser.profile.save") {
-      const save = BrowserProfileSaveDecisionSchema.parse(decision);
-      if (save.decision !== "fulfilled" || pending.payload.kind !== "browser.profile.save") {
-        throw new OpensteerError({ code: "conflict", message: "Invalid profile-save decision" });
-      }
-      const record = await this.#requireSavableSession(
-        input.resolvedBy,
-        BrowserSessionIdSchema.parse(pending.payload.sessionId),
-      );
-      const snapshot = await this.#exportSessionState(record);
-      const profileId = createId("browserProfile");
-      const prepared = this.#profileVault.prepareRevision({
-        expectedRevision: 0,
-        profileId,
-        snapshot,
-      });
-      if (prepared.revision !== 1) throw new Error("First Browser Profile revision is not one");
-      preparedProfile = {
-        ...prepared,
-        id: profileId,
-        name: save.name,
-        revision: 1,
-      };
-    }
     const resolved = await this.#repository.requests.resolveBrowserRequest({
-      ...(preparedProfile ? { preparedProfile } : {}),
       requestId: input.requestId,
       resolvedBy: input.resolvedBy,
       response: input.response,
@@ -3281,62 +3170,6 @@ export class BrowserService {
       profile: resolved.profile ? publicProfile(resolved.profile) : null,
       request: resolved.request,
     };
-  }
-
-  async #requireSavableSession(
-    ownerId: UserId,
-    sessionId: BrowserSessionId,
-  ): Promise<BrowserSessionRecord> {
-    const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
-    if (!record) {
-      throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
-    }
-    if (record.state !== "ready") {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "The Browser Session is not ready to save.",
-      });
-    }
-    // Promotion is a point-in-time copy of a fresh session. Profile forking does
-    // not exist, so a profile-backed session is never saved as a new profile.
-    if (record.profileId !== null) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This session already persists into its browser profile.",
-      });
-    }
-    return record;
-  }
-
-  async #exportSessionState(record: BrowserSessionRecord): Promise<BrowserProfileSnapshot> {
-    if (isTerminal(record.state)) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "The Browser Session is no longer running.",
-      });
-    }
-    const broker = this.#brokers.get(record.id);
-    if (!broker) throw unavailable("The Browser Session is not connected.");
-    return BrowserProfileSnapshotSchema.parse(await broker.requestStateExport());
-  }
-
-  async loadProfileState(input: {
-    readonly leaseToken: string;
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-  }) {
-    return this.#legacyProfiles.load(input);
-  }
-
-  async commitProfileState(input: {
-    readonly expectedRevision: number;
-    readonly periodic?: boolean;
-    readonly leaseToken: string;
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-    readonly snapshot: BrowserProfileSnapshot;
-  }) {
-    return this.#legacyProfiles.commit(input);
   }
 
   async attach(
@@ -3492,8 +3325,6 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
-    for (const connection of this.#preparedProfiles.values()) connection.close();
-    this.#preparedProfiles.clear();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
     for (const timer of this.#catalogNotices.values()) clearTimeout(timer);
@@ -3600,11 +3431,10 @@ export class BrowserService {
     if (input.profileId && !profile) {
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found." });
     }
-    const storage =
-      profile && this.#localProfiles
-        ? await this.#localProfiles.storage(profile.id)
-        : { kind: "vault" as const };
-    const boundRunnerId = storage.kind === "vault" ? undefined : storage.binding.runnerId;
+    if (profile && !this.#localProfiles)
+      throw unavailable("Native browser profile storage is unavailable.");
+    const storage = profile ? await this.#localProfiles!.storage(profile.id) : null;
+    const boundRunnerId = storage?.kind === "local" ? storage.binding.runnerId : undefined;
     if (boundRunnerId && input.placement && input.placement.runnerId !== boundRunnerId)
       throw unavailable(
         "This profile belongs to another computer. Open it on its owning computer.",
@@ -3654,22 +3484,16 @@ export class BrowserService {
       );
 
     const sessionId = input.sessionId ?? createBrowserSessionId();
-    // The lease exists only to authorize profile-state load and commit, so a
-    // fresh session never mints one.
     const localIdentity =
       profile && this.#localProfiles
         ? await this.#localProfiles.identity(profile.id, placement.runnerId, target)
         : null;
-    const legacyIdentity =
-      profile && !localIdentity ? this.#legacyProfiles.identity(profile.id, sessionId) : null;
     if (input.initialSurfaceId && !target.workspaceTabRestoreVersion)
       throw unavailable("Update this browser computer to reopen tabs.");
     const record = await this.#repository.createBrowserSession({
       id: sessionId,
       ...(input.tabGroupId ? { tabGroupId: input.tabGroupId } : {}),
       runnerId: placement.runnerId,
-      leaseGeneration: 1,
-      leaseTokenHash: legacyIdentity?.tokenHash ?? null,
       origin,
       opener:
         input.opener !== undefined
@@ -3693,14 +3517,17 @@ export class BrowserService {
       await this.#workspaceTabs?.bind(input.tabGroupId, sessionId, input.initialSurfaceId);
     this.#onSessionsChanged(record.workspaceId, [record.id], "browser.start");
     const initialHistoryNavigation =
-      profile &&
-      initialUrl &&
-      personNavigation &&
-      target.initialNavigationVersion &&
-      target.navigationAttributionVersion
+      profile && initialUrl && personNavigation && target.navigationAttributionVersion
         ? { ...personNavigation, navigationId: randomUUID() }
         : undefined;
+    input.operationBudget?.signal.throwIfAborted();
     const ticket = this.#signer.issue({
+      ...(input.operationBudget
+        ? {
+            operationExpiresAt: new Date(input.operationBudget.expiresAt).toISOString(),
+            remainingBudgetMs: Math.max(1, input.operationBudget.expiresAt - Date.now()),
+          }
+        : {}),
       access: "full-control",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
@@ -3721,19 +3548,14 @@ export class BrowserService {
             dormantSurfaceIds: input.dormantSurfaceIds ? [...input.dormantSurfaceIds] : undefined,
           }
         : {}),
-      ...(target.initialNavigationVersion
-        ? {
-            initialNavigationVersion: 1 as const,
-            initialNavigation: {
-              operationKey: input.initialPageOperationKey ?? sessionId,
-              ...(initialHistoryNavigation
-                ? { navigationId: initialHistoryNavigation.navigationId }
-                : {}),
-              ...(initialUrl ? { url: initialUrl } : {}),
-            },
-          }
-        : {}),
-      identity: localIdentity ?? legacyIdentity?.identity ?? { kind: "fresh" },
+      initialNavigation: {
+        operationKey: input.initialPageOperationKey ?? sessionId,
+        ...(initialHistoryNavigation
+          ? { navigationId: initialHistoryNavigation.navigationId }
+          : {}),
+        ...(initialUrl ? { url: initialUrl } : {}),
+      },
+      identity: localIdentity ?? { kind: "fresh" },
       runtimeId: target.runtimeId,
       sessionId,
       subject: input.ownerId,
@@ -3748,7 +3570,8 @@ export class BrowserService {
       : null;
     let socket: BrowserRuntimeConnection;
     try {
-      socket = target.connect(ticket);
+      input.operationBudget?.signal.throwIfAborted();
+      socket = withoutDatabaseOperationSignal(() => target.connect(ticket));
     } catch (error) {
       await this.#transitionBrowserSession({
         from: ["starting"],
@@ -3757,88 +3580,98 @@ export class BrowserService {
       });
       throw browserStartUnavailable(correlationId, stage, error);
     }
-    const broker = new HostedBrowserBroker({
-      profileId: record.profileId,
-      ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
-      historyWrite: (operation) => {
-        if (!this.#history || !profile) return;
-        void this.#historyOperation(profile.id, async () => {
-          if (await operation(this.#history!)) this.#onHistoryChanged(profile.ownerId, profile.id);
-        }).catch(() => this.#onError(new Error("Browser history persistence failed")));
-      },
-      groupId: input.tabGroupId ?? sessionId,
-      ...(input.initialSurfaceId && restoredTab?.favicon
-        ? {
-            restoredIcon: {
-              id: input.initialSurfaceId,
-              url: restoredTab.url,
-              favicon: restoredTab.favicon,
-            },
-          }
-        : {}),
-      onPageChanged: () => this.#announcePresence(sessionId),
-      onTabsChanged: () => this.#queueCatalogNotice(sessionId, record.workspaceId),
-      onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
-      workspaceId: record.workspaceId,
-      cdpBoundary: target.cdpBoundary === true,
-      sharedControl: target.sharedControl === true,
-      navigation: target.navigationVersion === true,
-      targetControl: target.targetControl === true,
-      captureRegion: target.captureRegion === true,
-      rasterDemand: target.rasterDemand === true,
-      passkeys: target.passkeys === true && this.#passkeys,
-      passkeyOwnOrigins: this.#passkeyOwnOrigins,
-      editing: target.editing,
-      clipboard: target.editing === 1 || target.clipboard === true,
-      computer: target.computer ?? null,
-      connectTimeoutMs: this.#connectTimeoutMs,
-      fileStaging: target.fileStaging === true,
-      signIn: target.signIn === true,
-      stateImport: target.stateImport === true,
-      onState: (state) =>
-        this.#transitionBrowserSession({
-          ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
+    let readinessBudget = input.operationBudget;
+    const broker = withoutDatabaseOperationSignal(
+      () =>
+        new HostedBrowserBroker({
+          profileId: record.profileId,
+          ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
+          historyWrite: (operation) => {
+            if (!this.#history || !profile) return;
+            void this.#historyOperation(profile.id, async () => {
+              if (await operation(this.#history!))
+                this.#onHistoryChanged(profile.ownerId, profile.id);
+            }).catch(() => this.#onError(new Error("Browser history persistence failed")));
+          },
+          groupId: input.tabGroupId ?? sessionId,
+          ...(input.initialSurfaceId && restoredTab?.favicon
+            ? {
+                restoredIcon: {
+                  id: input.initialSurfaceId,
+                  url: restoredTab.url,
+                  favicon: restoredTab.favicon,
+                },
+              }
+            : {}),
+          onPageChanged: () => this.#announcePresence(sessionId),
+          onTabsChanged: () => this.#queueCatalogNotice(sessionId, record.workspaceId),
+          onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
+          workspaceId: record.workspaceId,
+          cdpBoundary: target.cdpBoundary === true,
+          sharedControl: target.sharedControl === true,
+          navigation: target.navigationVersion === true,
+          targetControl: target.targetControl === true,
+          captureRegion: target.captureRegion === true,
+          rasterDemand: target.rasterDemand === true,
+          passkeys: target.passkeys === true && this.#passkeys,
+          passkeyOwnOrigins: this.#passkeyOwnOrigins,
+          editing: target.editing,
+          clipboard: target.editing === 1 || target.clipboard === true,
+          computer: target.computer ?? null,
+          connectTimeoutMs: this.#connectTimeoutMs,
+          fileStaging: target.fileStaging === true,
+          signIn: target.signIn === true,
+          stateImport: target.stateImport === true,
+          onState: (state) => {
+            const transition = () =>
+              this.#transitionBrowserSession({
+                ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
+                sessionId,
+                state,
+              });
+            return readinessBudget
+              ? withDatabaseOperationSignal(
+                  readinessBudget.signal,
+                  readinessBudget.expiresAt,
+                  transition,
+                )
+              : transition();
+          },
+          onTerminal: async () => {
+            for (const actor of this.#actors.values())
+              if (actor.sessionId === sessionId) this.#clearActor(actor);
+            const endedBroker = this.#brokers.get(sessionId);
+            await this.#flushCatalogNotice(sessionId, record.workspaceId, endedBroker);
+            await this.#workspaceTabs?.suspend(sessionId);
+            if (this.#workspaceTabs)
+              this.#onSessionsChanged(record.workspaceId, [sessionId], "browser.terminal");
+            const previous = endedBroker?.catalog(() => []);
+            if (previous)
+              this.#endedCatalogs.set(sessionId, {
+                ...previous,
+                revision: previous.revision + 1,
+                tabs: [],
+              });
+            if (this.#endedCatalogs.size > maxBrowserSessions)
+              this.#endedCatalogs.delete(this.#endedCatalogs.keys().next().value!);
+            this.#onCatalogChanged(sessionId, record.workspaceId);
+            this.#forgetActing(sessionId);
+            this.#announcePresence(sessionId);
+            this.#brokers.delete(sessionId);
+            this.#sessionProfiles.delete(sessionId);
+            this.#holdings.delete(sessionId);
+            this.#announcedPresence.delete(sessionId);
+          },
           sessionId,
-          state,
+          socket,
         }),
-      onTerminal: async () => {
-        for (const actor of this.#actors.values())
-          if (actor.sessionId === sessionId) this.#clearActor(actor);
-        const endedBroker = this.#brokers.get(sessionId);
-        await this.#flushCatalogNotice(sessionId, record.workspaceId, endedBroker);
-        await this.#workspaceTabs?.suspend(sessionId);
-        if (this.#workspaceTabs)
-          this.#onSessionsChanged(record.workspaceId, [sessionId], "browser.terminal");
-        const previous = endedBroker?.catalog(() => []);
-        if (previous)
-          this.#endedCatalogs.set(sessionId, {
-            ...previous,
-            revision: previous.revision + 1,
-            tabs: [],
-          });
-        if (this.#endedCatalogs.size > maxBrowserSessions)
-          this.#endedCatalogs.delete(this.#endedCatalogs.keys().next().value!);
-        this.#onCatalogChanged(sessionId, record.workspaceId);
-        this.#forgetActing(sessionId);
-        this.#announcePresence(sessionId);
-        this.#brokers.delete(sessionId);
-        this.#sessionProfiles.delete(sessionId);
-        this.#holdings.delete(sessionId);
-        this.#announcedPresence.delete(sessionId);
-      },
-      sessionId,
-      socket,
-    });
+    );
     this.#brokers.set(sessionId, broker);
     if (profile) this.#sessionProfiles.set(sessionId, profile.id);
     return async () => {
       try {
         stage = "runtime-readiness";
         await broker.ready();
-        if (profile) {
-          this.#preparedProfiles.get(profile.id)?.close();
-          this.#preparedProfiles.delete(profile.id);
-        }
         if (
           target.workspaceTabRestoreVersion &&
           origin !== "trigger" &&
@@ -3847,7 +3680,7 @@ export class BrowserService {
         )
           await broker.workspaceTabsReady();
         let initialTabId = broker.catalog(() => []).tabs[0]?.id;
-        if (target.initialNavigationVersion) {
+        {
           const ready = InitialPageReadySchema.parse(socket.initialPage);
           if (
             ready.operationKey !== (input.initialPageOperationKey ?? sessionId) ||
@@ -3855,18 +3688,14 @@ export class BrowserService {
           )
             throw unavailable("The browser returned mismatched initial page readiness.");
           initialTabId = ready.surfaceId;
-        } else if (initialUrl) {
-          stage = "legacy-first-navigation";
-          initialTabId = await navigateInitiallyLegacy(broker, initialUrl, personNavigation);
         }
         await this.#flushCatalogNotice(sessionId, record.workspaceId);
         if (initialTabId) onInitialPage?.(initialTabId);
         stage = "session-read";
         const latest = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
-        return {
-          session: await this.#personSession(latest ?? record, input.ownerId),
-          wasExisting: false,
-        };
+        const session = await this.#personSession(latest ?? record, input.ownerId);
+        readinessBudget = undefined;
+        return { session, wasExisting: false };
       } catch (error) {
         this.#brokers.delete(sessionId);
         await broker.abort(`The session failed during ${stage}.`).catch(() => undefined);
@@ -4242,12 +4071,6 @@ export class BrowserService {
   }
 }
 
-interface PendingStateExport {
-  readonly reject: (error: unknown) => void;
-  readonly resolve: (snapshot: BrowserProfileSnapshot) => void;
-  readonly timeout: NodeJS.Timeout;
-}
-
 interface PendingStateImport {
   readonly reject: (error: unknown) => void;
   readonly resolve: () => void;
@@ -4493,19 +4316,14 @@ class HostedBrowserBroker {
     }
   >();
   /**
-   * `state.export` carries no correlation ID, so exactly one may be in flight
-   * per session and the next `state.exported` or `browser.error` answers it.
-   */
-  #pendingStateExport: PendingStateExport | null = null;
-  /**
    * `state.import` is correlated by the Host's own operation ID, never by
    * `browser.error`. Imports share the export queue, so a `browser.error`
    * arriving while an import is outstanding cannot be taken for an export's.
    */
   readonly #pendingStateImports = new Map<string, PendingStateImport>();
-  #stateExportTail = Promise.resolve();
   #commandTail = Promise.resolve();
   #runtimeFrameTail = Promise.resolve();
+  #stateImportTail = Promise.resolve();
   #lastFrameId = -1;
   /**
    * The newest picture of the active tab while the Runtime streams. A viewer
@@ -4682,6 +4500,7 @@ class HostedBrowserBroker {
           openerId: surface.openerId ?? null,
           availability: this.live ? "ready" : "unavailable",
           ...(surface.loading ? { loading: true } : {}),
+          ...(surface.navigationFailed ? { navigationFailed: true } : {}),
           ...(surface.canGoBack === undefined ? {} : { canGoBack: surface.canGoBack }),
           ...(surface.canGoForward === undefined ? {} : { canGoForward: surface.canGoForward }),
           documentId: surface.documentId ?? null,
@@ -4864,28 +4683,12 @@ class HostedBrowserBroker {
     });
   }
 
-  /**
-   * Asks the Runtime for the session's live context state. Requests are
-   * serialized per session because the command has no correlation ID.
-   */
-  requestStateExport(): Promise<BrowserProfileSnapshot> {
-    const operation = this.#stateExportTail.then(
-      () => this.#exportState(),
-      () => this.#exportState(),
-    );
-    this.#stateExportTail = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return operation;
-  }
-
   requestStateImport(site: string, cookies: readonly BrowserCookie[]): Promise<void> {
-    const operation = this.#stateExportTail.then(
+    const operation = this.#stateImportTail.then(
       () => this.#importState(site, cookies),
       () => this.#importState(site, cookies),
     );
-    this.#stateExportTail = operation.then(
+    this.#stateImportTail = operation.then(
       () => undefined,
       () => undefined,
     );
@@ -4923,41 +4726,6 @@ class HostedBrowserBroker {
         clearTimeout(pending.timeout);
         this.#pendingStateImports.delete(operationId);
         pending.reject(error);
-      });
-    });
-  }
-
-  #exportState(): Promise<BrowserProfileSnapshot> {
-    if (this.#settled || !this.#runtimeReady) {
-      return Promise.reject(
-        new OpensteerError({ code: "conflict", message: "Browser Runtime is not ready." }),
-      );
-    }
-    return new Promise<BrowserProfileSnapshot>((resolve, reject) => {
-      const settle = (outcome: () => void) => {
-        const pending = this.#pendingStateExport;
-        if (!pending) return;
-        clearTimeout(pending.timeout);
-        this.#pendingStateExport = null;
-        outcome();
-      };
-      const timeout = setTimeout(() => {
-        settle(() =>
-          reject(
-            new OpensteerError({
-              code: "timeout",
-              message: "Browser Runtime did not export the session state in time.",
-              retryable: true,
-            }),
-          ),
-        );
-      }, stateExportTimeoutMs);
-      timeout.unref();
-      this.#pendingStateExport = { reject, resolve, timeout };
-      void this.#sendCommand({ type: "state.export" }).catch((error: unknown) => {
-        settle(() => {
-          reject(error);
-        });
       });
     });
   }
@@ -5177,14 +4945,6 @@ class HostedBrowserBroker {
       for (const listener of this.#cdpListeners) listener(message.event);
       return false;
     }
-    if (message.type === "state.exported") {
-      // Exported state is identity material, so it answers the Host's request
-      // and is never fanned out to the session's viewers.
-      this.#settleStateExport((pending) => {
-        pending.resolve(message.snapshot);
-      });
-      return false;
-    }
     if (
       message.type === "signin.probe.result" ||
       message.type === "login.needs" ||
@@ -5200,11 +4960,6 @@ class HostedBrowserBroker {
       if (message.error) pending.reject(agentProtocolError(message.error));
       else pending.resolve();
       return false;
-    }
-    if (message.type === "browser.error" && this.#pendingStateExport) {
-      this.#settleStateExport((pending) => {
-        pending.reject(agentProtocolError(message.error));
-      });
     }
     if (message.type === "browser.workspace-tabs") {
       this.#durableTabs = message.tabs;
@@ -5467,21 +5222,13 @@ class HostedBrowserBroker {
     return message.type === "browser.snapshot";
   }
 
-  #settleStateExport(outcome: (pending: PendingStateExport) => void): void {
-    const pending = this.#pendingStateExport;
-    if (!pending) return;
-    clearTimeout(pending.timeout);
-    this.#pendingStateExport = null;
-    outcome(pending);
-  }
-
   #handleCdpResponse(message: BrowserCdpWireResponse): void {
     const pending = this.#pendingCdpRequests.get(message.requestId);
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.#pendingCdpRequests.delete(message.requestId);
     if (message.type === "cdp.error") {
-      pending.reject(agentProtocolError(message.error));
+      pending.reject(new BrowserCdpRefusal(agentProtocolError(message.error)));
       return;
     }
     if (message.type !== pending.expectedType) {
@@ -6204,11 +5951,6 @@ class HostedBrowserBroker {
       }
       this.#cdpTerminalListeners.clear();
       this.#runtimeReady = false;
-      this.#settleStateExport((pending) => {
-        pending.reject(
-          new OpensteerError({ code: "conflict", message: "Browser Runtime disconnected." }),
-        );
-      });
       for (const pending of this.#pendingStateImports.values()) {
         clearTimeout(pending.timeout);
         pending.reject(
@@ -6614,7 +6356,7 @@ function watchFrameEnvelope(
 }
 
 function publicProfile(record: BrowserProfileRecord): BrowserProfile {
-  return { id: record.id, name: record.name, revision: record.revision };
+  return { id: record.id, name: record.name };
 }
 
 function publicSession(record: BrowserSessionRecord): HostedBrowserSession {
@@ -6785,3 +6527,22 @@ const editingServerKinds = new Set<string>([
   "clipboard.part",
   "browser.contextmenu",
 ]);
+
+interface BrowserTabOpenBudget {
+  readonly signal: AbortSignal;
+  readonly expiresAt: number;
+  admitted?: BrowserTabOpenBinding;
+  pageRequested?: boolean;
+}
+
+class BrowserCdpRefusal extends OpensteerError {
+  constructor(cause: OpensteerError) {
+    super({
+      cause,
+      code: cause.code,
+      message: cause.message,
+      retryable: cause.retryable,
+      ...(cause.reason ? { reason: cause.reason } : {}),
+    });
+  }
+}

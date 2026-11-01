@@ -1,17 +1,17 @@
 import type { ThreadInputQueue } from "@opensteer/core";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
-  BrowserProfileGrantSummary,
   BrowserProfileDeletionSummary,
+  BrowserProfileGrantSummary,
   BrowserProfileSummary,
   BrowserSessionSummary,
   HarnessSummary,
   HostSnapshot,
   MessageEntry,
   RunQueueEntry,
-  ThreadSummary,
   TaskEntry,
   TaskListState,
+  ThreadSummary,
   WorkspaceSummary,
 } from "./client.js";
 import { isTerminalRunEntryStatus, upsertEntry } from "./transcript.js";
@@ -37,10 +37,7 @@ type OptimisticCommandPatch =
     }
   | {
       readonly profile: BrowserProfileSummary;
-      readonly type: Extract<
-        CommandType,
-        "browser.profile.create" | "browser.session.profile.save"
-      >;
+      readonly type: Extract<CommandType, "browser.profile.create">;
     }
   | {
       readonly grant: BrowserProfileGrantSummary;
@@ -169,7 +166,6 @@ export const optimisticCommandPatches = {
       session.id === sessionId ? { ...session, state: "closed" } : session,
     ),
   }),
-  "browser.session.profile.save": upsertBrowserProfile,
   "browser.session.start": (snapshot, { session }) => ({
     ...snapshot,
     browserSessions: [
@@ -273,8 +269,6 @@ export function applyOptimisticCommandPatch(
     case "browser.profile.delete":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.session.close":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "browser.session.profile.save":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.session.start":
       return optimisticCommandPatches[patch.type](snapshot, patch);

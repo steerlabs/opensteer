@@ -1,13 +1,13 @@
-import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
-import { idleLifecyclePhase } from "./electron-idle-lifecycle-smoke.js";
+import { BrowserSessionIdSchema } from "@opensteer/protocol";
+import { app, BaseWindow, contentTracing, webContents } from "electron";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { app, BaseWindow, contentTracing, webContents } from "electron";
 import { z } from "zod";
-import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
+import { idleLifecyclePhase } from "./electron-idle-lifecycle-smoke.js";
+import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -23,7 +23,7 @@ export async function idleCpuPhase(): Promise<void> {
     initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000044",
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000044"),
-    storage: { kind: "legacy", snapshot: { cookies: [], origins: [] } },
+    storage: { kind: "guest" },
   });
   const page = browser.context.pages()[0];
   assert(page);

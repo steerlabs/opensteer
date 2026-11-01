@@ -1,20 +1,22 @@
-import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
-import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
-import { nodeErrorCode } from "@opensteer/shared/nodeError";
-import { noFollowFlag } from "@opensteer/shared/privateFiles";
-import { constants } from "node:fs";
-import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
-import { lstat, open, rm, type FileHandle } from "node:fs/promises";
-import path from "node:path";
 import { DeploymentIdSchema, HostKeyFingerprintSchema } from "@opensteer/core";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
+import { nodeErrorCode } from "@opensteer/shared/nodeError";
+import {
+  noFollowFlag,
+  readBoundedRegularFile,
+  setPrivateFileMode,
+} from "@opensteer/shared/privateFiles";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open, rm, type FileHandle } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
-import { ProtectedJsonFile, type DesktopSecretCryptography } from "./protected-json-file.js";
 import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 import type {
   PersonalDeploymentManifest,
   PersonalDeploymentPreparedPaths,
 } from "./personal-deployment-store.js";
+import { ProtectedJsonFile, type DesktopSecretCryptography } from "./protected-json-file.js";
 
 const PersonalDeploymentSecretStateSchema = z.strictObject({
   databasePassword: z.string().regex(/^[A-Za-z0-9_-]{64}$/u),
@@ -107,10 +109,7 @@ export class NativePersonalDeploymentCredentials implements PersonalDeploymentCr
       throw new Error("Personal messaging enrollment token was not stored.");
     }
     const hostKeyFingerprint = await ensureHostKeyPair(paths, this.#privateFiles);
-    await Promise.all([
-      ensureHostDataEncryptionKey(paths.browserProfileKeyPath, this.#privateFiles),
-      ensureHostDataEncryptionKey(paths.credentialKeyPath, this.#privateFiles),
-    ]);
+    await ensureHostDataEncryptionKey(paths.credentialKeyPath, this.#privateFiles);
     return { ...state, hostKeyFingerprint, messagingEnrollmentToken };
   }
 }

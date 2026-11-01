@@ -1,14 +1,13 @@
 #!/usr/bin/env node
-import { setPrivateHandleMode } from "@opensteer/shared/privateFiles";
-import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
-import { randomBytes, randomUUID } from "node:crypto";
+import { noFollowFlag, setPrivateHandleMode } from "@opensteer/shared/privateFiles";
 import { execFile } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { link, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -87,7 +86,6 @@ export async function initializeSelfHostSecrets(
     createSecret(target, "browser_runner_enrollment_token", randomSecret(48), created),
     createSecret(target, "opensteer_auth_secret", randomSecret(48), created),
     createSecret(target, "initial_owner_enrollment_token", randomSecret(48), created),
-    createSecret(target, "browser_profile_key", randomBytes(32).toString("base64url"), created),
     createSecret(target, "credential_key", randomBytes(32).toString("base64url"), created),
     createSecret(target, "messaging_runner_enrollment_token", randomSecret(48), created),
     createSecret(

@@ -39,8 +39,8 @@ describe("browser profile settings", () => {
       const rows = browserProfileSettingsRows({
         ...base,
         browserProfiles: [
-          { id: "bpr_work", name: "Work", revision: 2 },
-          { id: "bpr_shopping", name: "Shopping", revision: 1 },
+          { id: "bpr_work", name: "Work" },
+          { id: "bpr_shopping", name: "Shopping" },
         ],
         browserProfileGrants: [
           grant("g1", "bpr_work", buyer.id),
