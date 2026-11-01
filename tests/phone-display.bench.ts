@@ -198,7 +198,10 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
     const stroke = 180;
     const decoderBundle = await bundle({
       entryPoints: [
-        join(import.meta.dirname, "mobile-network/phone-display-decoder.test-support.ts"),
+        join(
+          import.meta.dirname,
+          "../apps/web/src/components/phone-display-decoder.test-support.ts",
+        ),
       ],
       bundle: true,
       write: false,

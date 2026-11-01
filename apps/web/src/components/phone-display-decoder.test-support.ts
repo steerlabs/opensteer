@@ -1,5 +1,5 @@
-import { PhoneDisplayDecoder } from "../../apps/web/src/components/phone-display-media.js";
-import type { DisplayFrame } from "../../packages/client/src/integrations/phone-display-stream.js";
+import type { DisplayFrame } from "@opensteer/client/integrations";
+import { PhoneDisplayDecoder } from "./phone-display-media.js";
 
 export interface BenchmarkDisplayPacket {
   readonly id: number;

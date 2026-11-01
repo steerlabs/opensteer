@@ -1,8 +1,8 @@
-import { benchmarkPhoneDecoder } from "../../../../tests/mobile-network/phone-display-decoder.test-support.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { DisplayStreams } from "@opensteer/client/integrations";
 import type { WebSocketClient } from "@opensteer/client/host";
+import { benchmarkPhoneDecoder } from "./phone-display-decoder.test-support.js";
 import { retainPhoneDisplayPicture, type PhoneDisplayPicture } from "./phone-display-media.js";
 
 /*
