@@ -267,7 +267,7 @@ decisions and constraints the code can't show.
 | Voice dictation into the composer                                      | [Dictation](docs/dictation.md)                                                                                |
 | Voice mode and the voice agent                                         | [Voice](docs/voice.md)                                                                                        |
 | Saved-password sign-ins and Opensteer Passwords                        | [Opensteer Passwords](docs/passwords.md)                                                                      |
-| Desktop builds, signing and releases                                   | [Releases](docs/releases.md)                                                                                  |
+| Desktop builds, signing and releases; Account service deploys          | [Releases](docs/releases.md)                                                                                  |
 | Tests, CI selection, integration databases and the VM                  | [Testing](docs/testing.md)                                                                                    |
 
 ## Taste

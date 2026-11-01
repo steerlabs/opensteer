@@ -104,6 +104,8 @@ jobs:
           {
             pnpm typecheck
             pnpm build
+            # Package the Account app as its image does; pnpm deploy checks peers workspace-wide.
+            pnpm --filter @opensteer/control-plane deploy --legacy --prod "$RUNNER_TEMP/control-plane"
           } 2>&1 | tee "$RUNNER_TEMP/evidence/build-types.log"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

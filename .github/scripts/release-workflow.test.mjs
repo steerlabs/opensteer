@@ -35,10 +35,11 @@ test("read-only preflight, secret-free discovery and only stable publication app
         ? "write"
         : "read",
       ...(name === "preflight" ? { actions: "read" } : {}),
+      ...(name === "account" ? { "id-token": "write" } : {}),
     });
     assert.equal(
       job.environment,
-      name === "build" ? "release" : name === "publish-stable" ? "publish" : undefined,
+      { build: "release", "publish-stable": "publish", account: "account" }[name],
     );
     for (const step of job.steps) {
       if (step.uses) assert.match(step.uses, /^[\w-]+\/[\w-]+@[a-f0-9]{40}$/);
@@ -49,6 +50,9 @@ test("read-only preflight, secret-free discovery and only stable publication app
     }
   }
   assert.equal(workflow.jobs.discover.needs, "preflight");
+  // A Beta must never reach people before the Account service it may depend on.
+  assert.ok(workflow.jobs["publish-insider"].needs.includes("account"));
+  assert.match(workflow.jobs.account.if, /channel == 'beta'/);
   assert.ok(workflow.jobs.build.needs.includes("discover"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,
@@ -510,6 +514,7 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
       publish = false,
       reuse = false,
       skip = false,
+      account = "success",
     } = {},
   ) =>
     Boolean(
@@ -518,6 +523,7 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
           preflight: { outputs: { channel } },
           discover: { result: "success", outputs: { reuse: String(reuse), skip: String(skip) } },
           draft: { result: reuse ? "skipped" : "success" },
+          account: { result: account },
         },
         github: { event_name: event },
         inputs: { publish },
@@ -528,6 +534,7 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
   assert.equal(enabled("publish-insider"), false);
   assert.equal(enabled("publish-insider", { publish: true, reuse: true }), true);
   assert.equal(enabled("publish-insider", { event: "push", skip: true }), false);
+  assert.equal(enabled("publish-insider", { event: "push", account: "failure" }), false);
   assert.equal(enabled("publish-insider", { channel: "stable", publish: true }), false);
   assert.equal(enabled("publish-stable", { channel: "stable" }), false);
   assert.equal(enabled("publish-stable", { channel: "stable", publish: true, reuse: true }), true);
