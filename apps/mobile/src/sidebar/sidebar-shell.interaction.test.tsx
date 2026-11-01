@@ -17,8 +17,10 @@ import type { ReservedRegion } from "react-native-reserved-regions";
  *   regions arrived;
  * - choosing a task or a tab from the docked sidebar piles screens up behind
  *   Back, or rebuilds Chat instead of returning to the mounted one;
- * - a page in front takes the docked sidebar away, so switching to a task
- *   or another tab means going back first;
+ * - a page in front keeps the docked sidebar, so the page and its agent's
+ *   Thread make three panes;
+ * - a page is handed different folds depending on how it was reached, so one
+ *   from Tabs cannot use tabletop that the same page from its Thread can;
  * - a tab chosen from the sidebar, or Tabs opened over a task, carries the
  *   conversation that happened to be in front, so the page is shown under it;
  * - docking dismisses the keyboard or moves focus;
@@ -35,7 +37,6 @@ const harness = vi.hoisted(() => ({
   dispatch: vi.fn(),
   panels: [] as {
     docked: boolean;
-    selectedPlace: unknown;
     selectedThreadId: string | null;
     openThreadId: string | null;
     visible: boolean;
@@ -43,6 +44,8 @@ const harness = vi.hoisted(() => ({
       onOpenPlace: (destination: object) => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
+      onSchedules: () => void;
+      onChat: () => void;
     };
     scroll: { offset: number };
     shelves: { list: unknown };
@@ -160,6 +163,8 @@ vi.mock("./sidebar-panel.js", () => ({
         <button onClick={() => props.actions.onOpenTask("deployment-a", "thread-b")}>Task B</button>
         <button onClick={() => props.actions.onOpenPlace(tabB)}>Tab B</button>
         <button onClick={props.actions.onTabs}>Tabs</button>
+        <button onClick={props.actions.onSchedules}>Schedules</button>
+        <button onClick={props.actions.onChat}>Chat</button>
       </nav>
     );
   },
@@ -232,8 +237,10 @@ async function mount(routes: readonly Route[] = [home]) {
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  const state = { index: routes.length - 1, routes };
-  const render = async () => {
+  let state = { index: routes.length - 1, routes };
+  /** Draws the shell again, over a different stack when one is given. */
+  const render = async (next: readonly Route[] = state.routes) => {
+    state = { index: next.length - 1, routes: next };
     await act(async () =>
       root.render(
         <SidebarShell navigation={{ dispatch: harness.dispatch }} state={state}>
@@ -271,7 +278,53 @@ function typeDraft(container: HTMLElement, words: string) {
 
 const lastPanel = () => harness.panels.at(-1)!;
 
+function stackStyle(container: HTMLElement): Record<string, unknown> {
+  const column = container.querySelector<HTMLElement>('[data-testid="stack-column"]');
+  if (column === null) throw new Error("No stack column.");
+  return JSON.parse(column.dataset["style"] ?? "{}") as Record<string, unknown>;
+}
+
 describe("the sidebar as the window changes shape", () => {
+  it("allows drawer drag on Schedules and replaces sidebar destinations without growing the stack", async () => {
+    const schedules = {
+      key: "schedules",
+      name: "Schedules",
+      params: { deploymentId: "deployment-a" },
+    };
+    const { container } = await mount([home, schedules]);
+    expect(harness.drawer.lock).toBe("unlocked");
+    press(container, "Schedules");
+    expect(harness.dispatch).not.toHaveBeenCalled();
+    press(container, "Tabs");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      payload: { name: "Tabs", params: { deploymentId: "deployment-a" } },
+    });
+    press(container, "Chat");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({ type: "POP_TO_TOP" });
+  });
+
+  it("replaces Tabs with Schedules and resets deep screens to Chat plus Schedules", async () => {
+    const { container } = await mount([
+      home,
+      { key: "tabs", name: "Tabs", params: { deploymentId: "deployment-a" } },
+    ]);
+    press(container, "Schedules");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "REPLACE",
+      payload: { name: "Schedules", params: { deploymentId: "deployment-a" } },
+    });
+    const deep = await mount([home, threadA, { key: "detail", name: "Schedule" }]);
+    press(deep.container, "Schedules");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "RESET",
+      payload: {
+        index: 1,
+        routes: [home, { name: "Schedules", params: { deploymentId: "deployment-a" } }],
+      },
+    });
+  });
+
   it("keeps the stack mounted with its draft, and navigates nowhere, through unfold and fold", async () => {
     const { container, render } = await mount([home, threadA]);
     typeDraft(container, "half a thought");
@@ -375,34 +428,40 @@ describe("the sidebar as the window changes shape", () => {
     expect(harness.dismiss).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the sidebar docked beside a page, and marks that exact page as the one open", async () => {
-    harness.bounds = { height: 1133, width: 744 };
-    const page = {
-      key: "page-key",
-      name: "WorkspaceBrowser",
-      params: tabBRoute,
-    };
-    const { render } = await mount([home, page]);
-    expect(lastPanel()).toMatchObject({
-      docked: true,
-      selectedPlace: tabB,
-      openThreadId: null,
-      visible: true,
-    });
-    // A conversation's own page, opened from it, is the same page and keeps it
-    // too, and its conversation is still on screen, so its task stays put.
-    const owned = {
+  it("gives a page in front the sidebar's room however it was reached, and docks it again behind", async () => {
+    harness.bounds = { height: 900, width: 1200 };
+    const { container, render } = await mount([home, threadA]);
+    expect(lastPanel().docked).toBe(true);
+    const sidebarColumn = () => container.querySelector('[data-testid="sidebar-column"]');
+    const whole = { marginBottom: 0, marginStart: 0, marginTop: 0, width: 1200 };
+    // Room for the sidebar beside a page and its agent's Thread, but that is three panes.
+    const fromThread = {
       key: "owned-key",
       name: "WorkspaceBrowser",
       params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
     };
-    await mount([home, threadA, owned]);
-    expect(lastPanel()).toMatchObject({
-      docked: true,
-      selectedPlace: { kind: "browser", sessionId: "s", tabId: "t" },
-      openThreadId: "thread-a",
-    });
+    await render([home, threadA, fromThread]);
+    expect(lastPanel().docked).toBe(false);
+    expect(sidebarColumn()).toBeNull();
+    expect(main(container).dataset["docked"]).toBe("false");
+    expect(stackStyle(container)).toMatchObject(whole);
+    await render([home, { key: "tab-key", name: "WorkspaceBrowser", params: tabBRoute }]);
+    expect(lastPanel().docked).toBe(false);
+    expect(stackStyle(container)).toMatchObject(whole);
+
+    // Back from the page, the sidebar is where room left it: a width inside the
+    // threshold's margin keeps it docked, as it would have without the page.
+    await render([home, threadA]);
+    expect(lastPanel().docked).toBe(true);
+    harness.bounds = { height: 900, width: 700 };
     await render();
+    expect(lastPanel().docked).toBe(true);
+    await render([home, threadA, fromThread]);
+    expect(lastPanel().docked).toBe(false);
+    await render([home, threadA]);
+    expect(lastPanel().docked).toBe(true);
+
+    expect(mounts).toEqual({ count: 1, unmounts: 0 });
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 
@@ -424,7 +483,7 @@ describe("the sidebar as the window changes shape", () => {
     });
   });
 
-  it("pushes a tab chosen over Tabs, so Back returns to Tabs, and does nothing for the tab already open", async () => {
+  it("pushes a tab chosen over Tabs, so Back returns to Tabs", async () => {
     const tabs = { key: "tabs-key", name: "Tabs", params: { deploymentId: "deployment-a" } };
     const { container } = await mount([home, tabs]);
     press(container, "Tab B");
@@ -434,39 +493,6 @@ describe("the sidebar as the window changes shape", () => {
         params: tabBRoute,
       },
       type: "PUSH",
-    });
-    harness.dispatch.mockReset();
-    const open = {
-      key: "page-key",
-      name: "WorkspaceBrowser",
-      params: tabBRoute,
-    };
-    const same = await mount([home, open]);
-    press(same.container, "Tab B");
-    expect(harness.dispatch).not.toHaveBeenCalled();
-
-    // A task's Watch of the same tab is a different destination: choosing the
-    // tab itself must leave that conversation behind.
-    const watched = await mount([
-      home,
-      threadA,
-      {
-        ...open,
-        params: {
-          deploymentId: "deployment-a",
-          sessionId: tabB.sessionId,
-          tabId: tabB.tabId,
-          threadId: "thread-a",
-        },
-      },
-    ]);
-    press(watched.container, "Tab B");
-    expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith({
-      type: "RESET",
-      payload: {
-        index: 1,
-        routes: [home, { name: "WorkspaceBrowser", params: tabBRoute }],
-      },
     });
   });
 
@@ -485,12 +511,6 @@ describe("the sidebar as the window changes shape", () => {
 });
 
 describe("the shell around what the system reserves", () => {
-  function stackStyle(container: HTMLElement): Record<string, unknown> {
-    const column = container.querySelector<HTMLElement>('[data-testid="stack-column"]');
-    if (column === null) throw new Error("No stack column.");
-    return JSON.parse(column.dataset["style"] ?? "{}") as Record<string, unknown>;
-  }
-
   it("keeps the stack to one side of a fold the sidebar is not docked at, without remounting it", async () => {
     harness.bounds = { height: 900, width: 720 };
     harness.regions = [
@@ -516,35 +536,33 @@ describe("the shell around what the system reserves", () => {
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 
-  it("leaves a page and its conversation the folds they can use, and a page alone the larger side", async () => {
+  it("hands a page every fold, the same whether it was reached from its Thread or from Tabs", async () => {
     harness.bounds = { height: 900, width: 900 };
     harness.regions = [
       { frame: { height: 20, width: 900, x: 0, y: 420 }, kind: "division", occludesContent: false },
     ];
-    const paired = {
-      key: "page-key",
-      name: "WorkspaceBrowser",
-      params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
-    };
-    const alone = {
-      key: "tab-key",
-      name: "WorkspaceBrowser",
-      params: tabBRoute,
-    };
-    // A task alone keeps off the fold, on its larger side.
+    // A task keeps off the fold, on its larger side.
     const task = await mount([home, threadA]);
     expect(stackStyle(task.container)).toMatchObject({ marginBottom: 0, marginTop: 440 });
-    // A page with its conversation: the pair below measures the fold itself and arranges around it.
-    const watched = await mount([home, threadA, paired]);
-    expect(stackStyle(watched.container)).toMatchObject({
-      marginBottom: 0,
-      marginStart: 0,
-      marginTop: 0,
-      width: 900,
-    });
-    // A page alone has nothing to put across the fold from it, so it keeps off it.
-    const tab = await mount([home, alone]);
-    expect(stackStyle(tab.container)).toMatchObject({ marginBottom: 0, marginTop: 440 });
+    // A page measures the fold itself, to arrange tabletop around it.
+    const whole = { marginBottom: 0, marginStart: 0, marginTop: 0, width: 900 };
+    const fromThread = await mount([
+      home,
+      threadA,
+      {
+        key: "page-key",
+        name: "WorkspaceBrowser",
+        params: { deploymentId: "deployment-a", sessionId: "s", tabId: "t", threadId: "thread-a" },
+      },
+    ]);
+    expect(stackStyle(fromThread.container)).toMatchObject(whole);
+    const tabs = { key: "tabs-key", name: "Tabs", params: { deploymentId: "deployment-a" } };
+    const fromTabs = await mount([
+      home,
+      tabs,
+      { key: "tab-key", name: "WorkspaceBrowser", params: tabBRoute },
+    ]);
+    expect(stackStyle(fromTabs.container)).toMatchObject(whole);
   });
 
   it("gives the drawer and the docked column one scroll position and one set of shelves, kept by the shell", async () => {

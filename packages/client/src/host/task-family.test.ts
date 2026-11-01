@@ -6,6 +6,7 @@ import {
   taskFamilyGlance,
   sameTaskFamily,
   sameTaskFamilyGlance,
+  sameTaskMark,
 } from "./task-family.js";
 import { assignmentMark } from "./assignment-presentation.js";
 
@@ -47,6 +48,19 @@ describe("task family", () => {
       newer.id,
     ]);
   });
+  it("keeps each parent's Assignment when the same worker serves two parents", () => {
+    const first = assignment(1, "completed");
+    const second = {
+      ...assignment(2, "open", first.workerThread.id),
+      parentThreadId: createId("thread"),
+    };
+    const source = reader([first, second]);
+    expect(taskFamily(source, parent).earlier.map((task) => task.assignmentId)).toEqual([first.id]);
+    expect(
+      taskFamily(source, second.parentThreadId).running.map((task) => task.assignmentId),
+    ).toEqual([second.id]);
+  });
+
   it("orders running by handoff, earlier by settlement, and active automations by next fire before paused", () => {
     const a = assignment(1),
       b = assignment(2),
@@ -108,6 +122,15 @@ describe("task family", () => {
     expect(glance.marks).toHaveLength(3);
     expect(glance.marks[0]).toEqual(assignmentMark(target, source));
     expect(sameTaskFamilyGlance(glance, taskFamilyGlance(source, parent))).toBe(true);
+  });
+  it("matches marks by their drawn tile, a missing mark only another missing one", () => {
+    const mark = assignmentMark(seed, snapshot);
+    expect(sameTaskMark(mark, { ...mark })).toBe(true);
+    expect(sameTaskMark(mark, { ...mark, color: mark.color === "teal" ? "blue" : "teal" })).toBe(
+      false,
+    );
+    expect(sameTaskMark(null, undefined)).toBe(true);
+    expect(sameTaskMark(mark, null)).toBe(false);
   });
   it("ignores self-parent assignments and gives no glance for an empty family", () => {
     expect(taskFamilyGlance(reader([assignment(1, "open", parent)]), parent)).toBeNull();

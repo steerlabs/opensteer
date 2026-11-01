@@ -63,9 +63,11 @@ New-task creation and its first message keep their keys across navigation and lo
 answers. Leaving an unsent task creates nothing. See `apps/mobile/src/thread/first-message.tsx`
 and the draft stores under `apps/mobile/src/thread`.
 
-Never read ownerless legacy drafts into a signed-in user's draft. Migration of a
-saved approval-plus-send drops the decision and preserves the unsent message,
-files and quote. Sending does not answer a Request. Offline drafts are editable;
+Ask puts its page on the destination draft for the current reader, never in a
+route: routes carry no reader identity and outlive sign-out, so a stale route's
+page is ignored. Never read ownerless legacy drafts into a signed-in user's
+draft. Migration of a saved approval-plus-send drops the decision and preserves
+the unsent message, files and quote. Sending does not answer a Request. Offline drafts are editable;
 approvals require a live authenticated Host because replaying a stale decision
 is unsafe. Only Host state resolves a Request, not local command admission.
 
@@ -75,15 +77,17 @@ send waiting for an AI choice may proceed only from the Host-confirmed choice of
 that picker visit; dismissal cancels it. See `apps/mobile/src/thread/thread-mutation-registry.ts`
 and [Agent orchestration](agent-orchestration.md) for queue authority.
 
-Keep Chat mounted across task navigation and adaptive layouts. A hidden mounted
-Chat neither claims the active Thread nor marks content read; an overlaid sidebar
+Keep Chat mounted across task navigation and adaptive layouts, and a page's
+companion Thread through a window too narrow for two. A hidden mounted pane
+neither claims the active Thread nor marks content read; an overlaid sidebar
 also makes Chat unread. Mark only published content actually shown at latest.
 Layout changes preserve drafts, scroll, streams and navigation. Use measured pane
 geometry, reserved folds and text size, not device names; cancel a pointer gesture
-if its target geometry changes. Room alone decides whether the sidebar docks: it
-stays beside a page and has no hide control, because it is the one place to
-switch between tasks and tabs. Sources: `apps/mobile/src/layout.ts`, `src/sidebar`
-and `src/screens/workspace-browser*`.
+if its target geometry changes. Room alone decides whether the sidebar docks,
+except that a page in front takes its side, for itself and its occupant's
+Thread, however the page was reached: never three panes.
+Sources: `apps/mobile/src/layout.ts`, `src/sidebar` and
+`src/screens/workspace-browser*`.
 
 Integration OAuth browser return is only a wake-up: read the durable attempt back
 with the same Host credential. Transcript links use
@@ -192,11 +196,11 @@ picture credit even on decode failure, discarded slots or navigation before a ca
 See `apps/mobile/src/browser` and `src/computers`.
 
 Routes select exact tabs or exact owner-view IDs and generations. Closed targets
-stay closed; never substitute a sibling or a task holding the same app. A tab
-chosen from Tabs or the sidebar belongs to no conversation and is shown alone;
-never attach the one in front or the tab's occupant. Only a task's own tabs open
-over its conversation. Owner
-metadata does not advance Workspace event cursors or enter conversation context.
+stay closed; never substitute a sibling or a task holding the same app. How a tab
+was reached changes only where Back goes. Who is in it comes from its occupants,
+never the route or the screen in front. Where two panes fit, the occupant's own
+Thread sits beside the page. Owner metadata does not advance Workspace event
+cursors or enter conversation context.
 Saved tabs restore through the shared activation owner; a late result after leaving
 or switching users must not navigate. Older Hosts retain the live-session listing
 path. The phone can open Agent Phone owner views, view existing Mac owner views and manage

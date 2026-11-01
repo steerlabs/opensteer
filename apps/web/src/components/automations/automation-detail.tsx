@@ -4,6 +4,7 @@ import {
   HostClientRequestError,
   conversationName,
   mutationIdempotencyKey,
+  schedulesClient,
   unwrapRpcResult,
   type HostClient,
   type HostSnapshot,
@@ -23,6 +24,8 @@ import { useToast } from "../toast.js";
 import { actionErrorMessage, conversationPath, useMinuteClock } from "../../ui-utils.js";
 import {
   automationShape,
+  runOutcome,
+  scheduleStatusWord,
   describeEvent,
   describeRepeating,
   formatFullMoment,
@@ -32,7 +35,7 @@ import {
   placeAutomation,
   watchState,
   type Tone,
-} from "./automation-presentation.js";
+} from "@opensteer/client/host";
 import { machineOf } from "./automations-page.js";
 import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 
@@ -241,13 +244,17 @@ function AutomationView({
 
   const runNow = () =>
     act(async () => {
-      await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`trigger-run:${trigger.id}`),
-        payload: { requestedFrom: "web" },
-        triggerId: trigger.id,
-        type: "trigger.run",
-      });
-      await refresh();
+      const schedules = schedulesClient(client);
+      try {
+        const confirmed = await schedules.act(trigger.id, "run", undefined, {
+          requestedFrom: "web",
+        });
+        onChanged(confirmed.definition);
+      } catch (error) {
+        const state = schedules.detail(trigger.id).getSnapshot();
+        if (state.status === "ready") onChanged(state.data.definition);
+        throw error;
+      }
       return "Running now";
     });
 
@@ -517,7 +524,7 @@ function statusSentence(input: {
   }
   if (trigger.status === "paused") {
     return trigger.pauseReason
-      ? "Paused by Opensteer."
+      ? `${scheduleStatusWord(trigger.status, trigger.pauseReason)}.`
       : "Paused. It won’t run until you resume it.";
   }
   if (source.kind === "webhook") return "It runs each time its webhook is called.";
@@ -827,37 +834,6 @@ function RunRow({
       ) : null}
     </div>
   );
-}
-
-function runOutcome(
-  occurrence: TriggerOccurrence,
-  replyIn: string | null,
-  replyStatus: TriggerDetail["downstreamRuns"][number]["run"]["status"] | null,
-  now: number,
-): string {
-  switch (occurrence.status) {
-    case "pending":
-      return now - Date.parse(occurrence.createdAt) < 60_000
-        ? "Starting"
-        : "Waiting for its computer";
-    case "running":
-      return "Running now";
-    case "canceled":
-      return "Canceled";
-    case "failed":
-      return "Failed";
-    case "succeeded":
-      if (replyIn === null) return "Finished without a message";
-      switch (replyStatus) {
-        case "completed":
-          return `Opensteer replied in ${replyIn}`;
-        case "failed":
-        case "interrupted":
-          return `Opensteer couldn’t finish in ${replyIn}`;
-        default:
-          return `Opensteer is working in ${replyIn}`;
-      }
-  }
 }
 
 /** The program's own output, for the curious: what it printed, returned or threw. */

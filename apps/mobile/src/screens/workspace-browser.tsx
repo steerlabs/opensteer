@@ -2,21 +2,19 @@ import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending
 import {
   browserPlaceUnavailableReason,
   canRespondToRequests,
-  conversationSurfaces,
-  conversationThreadIds,
   describeHostConnection,
+  mainWorkspace,
+  placeAgents,
   placeDestinationEnded,
-  surfaceDestination,
-  threadInDirectory,
+  samePlaceAgents,
   type BrowserTabOpenHandle,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type SurfaceItem,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
-import { useConversationSurfaces, useHostSnapshot, usePlaceList } from "@opensteer/client/react";
-import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
+import { useHostSelector, useHostSnapshot, usePlaceList } from "@opensteer/client/react";
+import type { BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { useHeaderHeight } from "@react-navigation/elements";
 import {
@@ -39,6 +37,7 @@ import {
   I18nManager,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   useWindowDimensions,
   View,
@@ -52,18 +51,18 @@ import {
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BrowserPage } from "../browser/browser-page.js";
-import { SurfaceGrid } from "../browser/surface-grid.js";
-import { actingFor, surfaceGlyph } from "../browser/agent-surface.js";
-import { SurfaceSwitcherContext, useSurfaceHeader } from "../browser/surface-header.js";
+import { PageBar, type AskTarget } from "../browser/page-bar.js";
+import { useSurfaceHeader } from "../browser/surface-header.js";
 import {
+  paramsDestination,
   routeDestination,
   sameDestination,
-  surfaceRoute,
   type SurfacesRoute,
 } from "../browser/surface-route.js";
-import { surfaceTile, tabSiteLabel, type TabTile } from "../browser/tab-tiles.js";
+import { tabSiteLabel } from "../browser/site-label.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
 import { MacAppView } from "../computers/mac-app-view.js";
-import { color, headerFontScaleLimit, space } from "../theme.js";
+import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import {
   derivePagePair,
   edgesAround,
@@ -75,25 +74,26 @@ import {
   type Rect,
   type Size,
 } from "../layout.js";
-import { ThreadPane, type PageCompanion, type ThreadHeaderState } from "../thread/thread-pane.js";
+import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { InsetView, Pane } from "../ui/pane.js";
-import { useMobileState } from "../ui/mobile-client-context.js";
+import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
+import { Symbol } from "../ui/symbol.js";
 import { useAppForeground } from "../ui/foreground.js";
+import { NewTaskPane } from "./new-task.js";
 
 /**
- * Tabs, as the route says: a conversation's own grid of tabs and apps, or
- * exactly one tab, app or phone with its conversation. The route is the
- * selection — a tile, the bar's switcher or the conversation's own control
- * names the tab — so nothing here chooses or swaps what is shown.
+ * Exactly one tab, Mac app or phone, as the route names it: the native bar,
+ * the page, and one bar under it with who is here and Ask. The route is the
+ * selection, so nothing here chooses or swaps what is shown.
  *
- * A focused tab takes the screen above its conversation's latest reply and
- * composer: talking to the agent never means leaving the page, and the reply
- * opens the conversation itself, which is the screen under this one. A tab
- * opened from Tabs or the sidebar belongs to no conversation and stands alone,
- * so it is exactly the page that was chosen, with nothing under it.
+ * How the page was reached — from a conversation, from Tabs, from the sidebar
+ * — changes only where Back goes, which is the stack's own business. Who is in
+ * the page comes from its occupants alone. Where the room fits two panes, the
+ * agent's own Thread sits beside the page; on a phone, tapping the agent goes
+ * to it.
  */
 export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRoute>): ReactNode {
   const { selection } = useMobileState();
@@ -110,13 +110,9 @@ export function WorkspaceBrowserScreen({ route }: StaticScreenProps<SurfacesRout
   }
   return (
     <Surfaces
-      // The conversation is part of what this screen is; the tab is not, so a
-      // saved tab moving to its restored session keeps the conversation mounted.
-      key={
-        route.params.scope === "workspace"
-          ? `${route.params.deploymentId}:workspace`
-          : `${route.params.deploymentId}:task:${route.params.threadId}`
-      }
+      // A saved tab moving to its restored session is the same page, so the
+      // screen stays mounted through it.
+      key={route.params.deploymentId}
       hostClient={selection.hostClient}
       route={route.params}
     />
@@ -158,18 +154,23 @@ function Surfaces(props: {
   );
 }
 
-interface ForUserProps {
+function SurfacesForUser(props: {
   readonly active: boolean;
   readonly hostClient: HostClient;
   readonly loadError: string | null;
   readonly reload: () => Promise<void>;
   readonly route: SurfacesRoute;
   readonly snapshot: HostSnapshot;
-}
-
-function SurfacesForUser(props: ForUserProps): ReactNode {
-  const { snapshot } = props;
+}): ReactNode {
+  const { route, snapshot } = props;
   const connected = canRespondToRequests(snapshot);
+  // One value per place the route names, so the page below is not handed a
+  // new destination on every snapshot.
+  const destinationKey = JSON.stringify(routeDestination(route));
+  const destination = useMemo(
+    () => JSON.parse(destinationKey) as WorkspaceSurfaceDestination | null,
+    [destinationKey],
+  );
   const notices = (
     <>
       {props.loadError ? (
@@ -188,91 +189,10 @@ function SurfacesForUser(props: ForUserProps): ReactNode {
       )}
     </>
   );
-  if (props.route.pendingBrowserTab)
-    return <PendingBrowserTabView hostClient={props.hostClient} route={props.route} />;
-  return props.route.scope === "workspace" ? (
-    <WorkspaceTab {...props} connected={connected} notices={notices} />
-  ) : (
-    <ConversationTabs
-      {...props}
-      connected={connected}
-      notices={notices}
-      route={props.route}
-      threadId={props.route.threadId}
-    />
-  );
-}
-
-/** A conversation's own tabs: its grid, or one of them with the conversation. */
-function ConversationTabs(
-  props: ForUserProps & {
-    readonly connected: boolean;
-    readonly notices: ReactNode;
-    readonly threadId: string;
-  },
-): ReactNode {
-  const { hostClient, route, snapshot, threadId } = props;
-  const navigation = useNavigation();
-  const surfaces = useConversationSurfaces(hostClient, threadId);
-  const tiles = useMemo(() => surfaces.map(surfaceTile), [surfaces]);
-  const openSurface = useCallback(
-    (tile: TabTile) => {
-      const item = surfaces.find(({ key }) => key === tile.key);
-      if (item === undefined) return;
-      navigation.dispatch(
-        StackActions.push(
-          "WorkspaceBrowser",
-          surfaceRoute(route.deploymentId, threadId, surfaceDestination(item)),
-        ),
-      );
-    },
-    [navigation, route.deploymentId, surfaces, threadId],
-  );
-  const destination = routeDestination(route);
-  if (destination === null) {
-    return (
-      <Grid
-        active={props.active && props.connected}
-        hostClient={hostClient}
-        loading={snapshot.deploymentShape === null}
-        notices={props.notices}
-        onOpen={openSurface}
-        title={conversationTitle(snapshot, threadId)}
-        tiles={tiles}
-      />
-    );
-  }
-  return (
-    <Focused
-      active={props.active}
-      connected={props.connected}
-      destination={destination}
-      hostClient={hostClient}
-      notices={props.notices}
-      others={surfaces.some((item) => !sameDestination(surfaceDestination(item), destination))}
-      surfaces={surfaces}
-      remaining={() =>
-        conversationSurfaces(hostClient.getSnapshot(), threadId).some(
-          (item) => !sameDestination(surfaceDestination(item), destination),
-        )
-      }
-      route={route}
-      snapshot={snapshot}
-      threadId={threadId}
-    />
-  );
-}
-
-/**
- * A tab opened from Tabs or the sidebar, alone. A conversation a previous
- * release's route still names is not shown with it.
- */
-function WorkspaceTab(
-  props: ForUserProps & { readonly connected: boolean; readonly notices: ReactNode },
-): ReactNode {
-  const { hostClient, route, snapshot } = props;
-  const places = usePlaceList(hostClient);
-  const destination = routeDestination(route);
+  if (route.pendingBrowserTab)
+    return <PendingBrowserTabView hostClient={props.hostClient} route={route} />;
+  // A previous release's route for a conversation's grid of tabs names no
+  // place; there is no grid any more, and nothing is picked in its place.
   if (destination === null)
     return (
       <Screen>
@@ -282,96 +202,25 @@ function WorkspaceTab(
   return (
     <Focused
       active={props.active}
-      connected={props.connected}
+      connected={connected}
       destination={destination}
-      hostClient={hostClient}
-      notices={props.notices}
-      others={places.some((place) => !sameDestination(place.destination, destination))}
-      surfaces={[]}
-      remaining={() => true}
+      hostClient={props.hostClient}
+      notices={notices}
       route={route}
       snapshot={snapshot}
-      threadId={null}
     />
   );
 }
 
-/** A conversation's name as its own bar says it, or null before it is known. */
-function conversationTitle(snapshot: HostSnapshot, threadId: string): string | null {
-  if (snapshot.homeThreadId === threadId) return CHAT_THREAD_TITLE;
-  return threadInDirectory(threadId, snapshot)?.title ?? null;
-}
+/** What is beside the page: a Thread, or a task being started from it. */
+type Companion = { readonly kind: "thread"; readonly threadId: string } | { readonly kind: "task" };
 
-function Grid(props: {
-  readonly active: boolean;
-  readonly hostClient: HostClient;
-  readonly loading: boolean;
-  readonly notices: ReactNode;
-  readonly onOpen: (tile: TabTile) => void;
-  readonly tiles: readonly TabTile[];
-  /** The conversation these tabs are, said under the bar's title. */
-  readonly title: string | null;
-}): ReactNode {
-  const navigation = useNavigation();
-  const { title } = props;
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => null,
-      headerTitle: () => <GridTitle subtitle={title} />,
-      title: "Tabs",
-      unstable_headerRightItems: () => [],
-    });
-  }, [navigation, title]);
-  return (
-    <Screen edgeToEdge>
-      <SurfaceGrid
-        active={props.active}
-        empty={{
-          title: "No tabs yet",
-          detail: "Tabs and apps this conversation uses appear here.",
-        }}
-        header={<View style={styles.notices}>{props.notices}</View>}
-        hostClient={props.hostClient}
-        loading={props.loading && props.tiles.length === 0}
-        onOpen={props.onOpen}
-        tiles={props.tiles}
-      />
-    </Screen>
-  );
-}
-
-/** "Tabs", with the conversation they belong to under it. */
-function GridTitle(props: { readonly subtitle: string | null }): ReactNode {
-  return (
-    <View
-      accessibilityLabel={props.subtitle === null ? "Tabs" : `Tabs, ${props.subtitle}`}
-      accessible
-      style={styles.gridTitle}
-    >
-      <AppText
-        maxFontSizeMultiplier={headerFontScaleLimit}
-        numberOfLines={1}
-        role="secondaryMedium"
-      >
-        Tabs
-      </AppText>
-      {props.subtitle === null ? null : (
-        <AppText
-          maxFontSizeMultiplier={headerFontScaleLimit}
-          numberOfLines={1}
-          role="caption"
-          tone="muted"
-        >
-          {props.subtitle}
-        </AppText>
-      )}
-    </View>
-  );
-}
+const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 
 /**
- * One tab, app or phone with its conversation. Typing into the page puts the
- * conversation away until the keyboard is done, so the page has the room.
+ * One tab, app or phone, its bar, and — where a pair fits — a second pane.
+ * Typing into the page puts the bar away until the keyboard is done, so the
+ * page has the room.
  */
 function Focused(props: {
   readonly active: boolean;
@@ -379,90 +228,154 @@ function Focused(props: {
   readonly destination: WorkspaceSurfaceDestination;
   readonly hostClient: HostClient;
   readonly notices: ReactNode;
-  /** The grid this tab came from holds others, so it is worth returning to. */
-  readonly others: boolean;
-  /** Whether the grid still holds another tab, read when this one closes. */
-  readonly remaining: () => boolean;
   readonly route: SurfacesRoute;
   readonly snapshot: HostSnapshot;
-  /** The conversation's own tabs and apps, for the bar to switch between. */
-  readonly surfaces: readonly SurfaceItem[];
-  /** The conversation the composer talks to; none for a tab shown alone. */
-  readonly threadId: string | null;
 }): ReactNode {
-  const { destination, hostClient, route, snapshot, surfaces, threadId } = props;
+  const { destination, hostClient, route, snapshot } = props;
+  const { deploymentId } = route;
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
-  const workspace = route.scope === "workspace";
+  const drafts = useMobileClient().drafts;
   const [page, setPage] = useState<BrowserPageContentPart | null>(null);
   const [typing, setTyping] = useState(false);
-  const [title, setTitle] = useState<string | null>(null);
-  // Beside the page, the conversation says whom it talks to in its bar's words.
-  const onHeader = useCallback((header: ThreadHeaderState) => setTitle(header.title), []);
-  const showGrid = useCallback(() => {
-    const state = navigation.getState();
-    const below = state?.routes[state.index - 1];
-    if (workspace) {
-      if (below?.name === "Tabs") navigation.goBack();
-      else navigation.dispatch(StackActions.popTo("Tabs", { deploymentId: route.deploymentId }));
-      return;
-    }
-    if (
-      below?.name === "WorkspaceBrowser" &&
-      isRecord(below.params) &&
-      below.params["threadId"] === threadId &&
-      below.params["scope"] === undefined &&
-      below.params["sessionId"] === undefined &&
-      below.params["machineId"] === undefined
-    ) {
-      navigation.goBack();
-      return;
-    }
-    navigation.dispatch(
-      StackActions.replace("WorkspaceBrowser", { deploymentId: route.deploymentId, threadId }),
-    );
-  }, [navigation, route.deploymentId, threadId, workspace]);
-  // Back to the conversation itself, past every page and grid of it on the
-  // way: they were all opened from it, so it is the screen under them.
-  const showConversation = useCallback(() => {
+  // The beside Thread's name as its own bar would say it, kept with whose it
+  // is so another Thread never wears it while its own is on the way.
+  const [named, setNamed] = useState<{ readonly threadId: string; readonly title: string } | null>(
+    null,
+  );
+
+  // Who is here, from this place's occupants alone. A saved tab is found by
+  // its own id, wherever its lineage lives now.
+  const places = usePlaceList(hostClient);
+  const place = useMemo(
+    () => places.find((candidate) => samePlace(candidate, destination)) ?? null,
+    [destination, places],
+  );
+  const occupied = useMemo(
+    () => ({ destination, occupants: place?.occupants ?? [] }),
+    [destination, place?.occupants],
+  );
+  const selectAgents = useCallback(
+    (current: HostSnapshot) => placeAgents(occupied, current),
+    [occupied],
+  );
+  const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
+  const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);
+
+  // Chosen from the pill's menu or by Ask, and kept until the person closes
+  // it; otherwise the acting agent, else the most recent one.
+  const [chosen, setChosen] = useState<Companion | null>(null);
+  const firstAgent = agents.agents[0]?.threadId ?? null;
+  const companion: Companion | null =
+    chosen ?? (firstAgent === null ? null : { kind: "thread", threadId: firstAgent });
+
+  const besideId = companion?.kind === "thread" ? companion.threadId : null;
+  const onHeader = useCallback(
+    (header: ThreadHeaderState) => {
+      if (besideId !== null) setNamed({ threadId: besideId, title: header.title });
+    },
+    [besideId],
+  );
+
+  const shownPage = destination.kind === "browser" ? page : null;
+  const latest = useRef({ homeThreadId, shownPage });
+  latest.current = { homeThreadId, shownPage };
+
+  /**
+   * An agent's Thread, as its own screen. The screen directly under this one
+   * may be that very Thread — the page was opened from it — and then Back is
+   * the way there, not a second copy. Chat is the root under everything, so
+   * it is returned to rather than pushed.
+   */
+  const openThread = useCallback(
+    (threadId: string) => {
+      const state = navigation.getState();
+      const below = state?.routes[state.index - 1];
+      if (threadId === latest.current.homeThreadId) {
+        if (below?.name === "Home") navigation.goBack();
+        else navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
+        return;
+      }
+      if (
+        below?.name === "Thread" &&
+        isRecord(below.params) &&
+        below.params["threadId"] === threadId
+      )
+        navigation.goBack();
+      else navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId }));
+    },
+    [deploymentId, navigation],
+  );
+  const showBeside = useCallback((threadId: string) => setChosen({ kind: "thread", threadId }), []);
+  /**
+   * Ask's page goes on the draft it is for — Chat's, or the new task's — and
+   * is this reader's, so it is shown, removed and sent from that draft like
+   * the words with it, and survives leaving it unsent. A page Ask cannot name,
+   * such as a Mac app's, takes any earlier one off rather than leaving it to
+   * stand for what was asked about. Answers whether there is such a draft.
+   */
+  const putPageOnDraft = useCallback(
+    (target: AskTarget): boolean => {
+      const { homeThreadId: home, shownPage: included } = latest.current;
+      const current = hostClient.getSnapshot();
+      const userId = current.user?.id;
+      const workspaceId = mainWorkspace(current)?.id;
+      const draftKey =
+        target === "chat" ? home : workspaceId === undefined ? null : newTaskDraftKey(workspaceId);
+      if (userId === undefined || draftKey === null) return false;
+      void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
+      return true;
+    },
+    [deploymentId, drafts, hostClient],
+  );
+  /** Ask, on a phone: that composer's own screen, with the page on its draft. */
+  const askAway = useCallback(
+    (target: AskTarget) => {
+      if (!putPageOnDraft(target)) return;
+      const workspaceId = mainWorkspace(hostClient.getSnapshot())?.id;
+      if (target === "chat") navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
+      else if (workspaceId !== undefined)
+        navigation.dispatch(StackActions.push("NewTask", { deploymentId, workspaceId }));
+    },
+    [deploymentId, hostClient, navigation, putPageOnDraft],
+  );
+  /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
+  const askBeside = useCallback(
+    (target: AskTarget) => {
+      if (!putPageOnDraft(target)) return;
+      const home = latest.current.homeThreadId;
+      if (target === "task") setChosen({ kind: "task" });
+      else if (home !== null) setChosen({ kind: "thread", threadId: home });
+    },
+    [putPageOnDraft],
+  );
+  const closeCompanion = useCallback(() => setChosen(null), []);
+  const onStarted = useCallback(
+    (threadId: string) => {
+      setChosen({ kind: "thread", threadId });
+      return navigation.isFocused();
+    },
+    [navigation],
+  );
+
+  /**
+   * Back from a page that closed, past every page under it that has ended
+   * too: each was opened from the screen below it, which is where the person
+   * is going.
+   */
+  const onClosed = useCallback(() => {
     const state = navigation.getState();
     const index = state?.index ?? 0;
+    const current = hostClient.getSnapshot();
     let depth = 1;
-    while (depth <= index && isConversationSurfaces(state?.routes[index - depth], threadId))
+    while (depth <= index) {
+      const below = state?.routes[index - depth];
+      const ended = below?.name === "WorkspaceBrowser" ? paramsDestination(below.params) : null;
+      if (ended === null || !placeDestinationEnded(current, ended)) break;
       depth += 1;
+    }
     navigation.dispatch(StackActions.pop(depth));
-  }, [navigation, threadId]);
-  const onClosed = useCallback(() => {
-    if (workspace || props.remaining()) showGrid();
-    else showConversation();
-  }, [props, showConversation, showGrid, workspace]);
-  const switcher = useMemo(() => {
-    if (threadId === null || surfaces.length < 2) return null;
-    const threads = conversationThreadIds(snapshot, threadId);
-    return {
-      choices: surfaces.map((item) => {
-        const tile = surfaceTile(item);
-        const target = surfaceDestination(item);
-        return {
-          acting: actingFor(item, threads),
-          current: sameDestination(target, destination),
-          glyph: surfaceGlyph(item),
-          key: item.key,
-          // In place of this one: Back still returns to the conversation.
-          onPress: () =>
-            navigation.dispatch(
-              StackActions.replace(
-                "WorkspaceBrowser",
-                surfaceRoute(route.deploymentId, threadId, target),
-              ),
-            ),
-          site: tile.site,
-          title: tile.title,
-        };
-      }),
-      onShowAll: showGrid,
-    };
-  }, [destination, navigation, route.deploymentId, showGrid, snapshot, surfaces, threadId]);
+  }, [hostClient, navigation]);
   const onOpenTab = useCallback(
     (opening: BrowserTabOpenHandle) => {
       if (!navigation.isFocused()) {
@@ -493,11 +406,11 @@ function Focused(props: {
               connected={props.connected}
               editAddress={route.editAddress === true}
               hostClient={hostClient}
-              onBackToTabs={props.others ? showGrid : undefined}
               onClosed={onClosed}
               onOpenTab={onOpenTab}
               onTyping={setTyping}
               onViewing={setPage}
+              place={place}
               sessionId={destination.sessionId}
               snapshot={snapshot}
               tabId={destination.tabId}
@@ -505,43 +418,76 @@ function Focused(props: {
           ),
           pageShaped: browserShowsPage(snapshot, destination.sessionId, destination.tabId),
         };
-  // Built where the arrangement is known: docked under the page, or beside it.
-  const shownPage = destination.kind === "browser" ? page : null;
-  const conversation =
-    threadId === null
-      ? null
-      : (kind: PageCompanion["kind"]) => (
-          <ThreadPane
-            deploymentId={route.deploymentId}
-            hostClient={hostClient}
-            onHeader={onHeader}
-            onOpenThread={(id) =>
-              navigation.dispatch(
-                StackActions.push("Thread", { deploymentId: route.deploymentId, threadId: id }),
-              )
-            }
-            requestId={null}
-            withPage={
-              kind === "docked"
-                ? { kind, onShowConversation: showConversation, page: shownPage }
-                : { kind, page: shownPage }
-            }
-            threadId={threadId}
-          />
-        );
-  return (
-    <SurfaceSwitcherContext.Provider value={switcher}>
-      <PagePairSurface
-        body={body}
-        conversation={conversation}
-        conversationTitle={title}
-        keyboardVerticalOffset={headerHeight}
-        notices={props.notices}
-        pageShaped={pageShaped}
-        typing={typing}
+  const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
+  const second =
+    companion === null ? null : companion.kind === "task" ? (
+      mainWorkspaceId === null ? null : (
+        <NewTaskPane
+          autoFocus
+          deploymentId={deploymentId}
+          hostClient={hostClient}
+          key="new-task"
+          onStarted={onStarted}
+          underHeader={false}
+          workspaceId={mainWorkspaceId}
+        />
+      )
+    ) : (
+      <ThreadPane
+        deploymentId={deploymentId}
+        hostClient={hostClient}
+        // Another Thread is another conversation: its draft, stream and scroll
+        // are its own.
+        key={companion.threadId}
+        onHeader={onHeader}
+        onOpenThread={(id) =>
+          navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
+        }
+        requestId={null}
+        withPage={{ page: shownPage }}
+        threadId={companion.threadId}
       />
-    </SurfaceSwitcherContext.Provider>
+    );
+  return (
+    <PagePairSurface
+      body={body}
+      bar={(paired) => (
+        <PageBar
+          agents={agents}
+          beside={paired ? besideId : null}
+          chat={homeThreadId !== null}
+          intent={paired ? "beside" : "open"}
+          onAsk={paired ? askBeside : askAway}
+          onOpenAgent={paired ? showBeside : openThread}
+        />
+      )}
+      companion={
+        second === null
+          ? null
+          : {
+              content: second,
+              onClose: chosen === null ? null : closeCompanion,
+              title:
+                companion?.kind === "task"
+                  ? "New task"
+                  : named?.threadId === besideId
+                    ? named.title
+                    : null,
+            }
+      }
+      keyboardVerticalOffset={headerHeight}
+      notices={props.notices}
+      pageShaped={pageShaped}
+      typing={typing}
+    />
   );
+}
+
+/** Whether a place is the one a route names: a tab by its own id, else exactly. */
+function samePlace(place: PlaceItem, destination: WorkspaceSurfaceDestination): boolean {
+  if (destination.kind === "browser")
+    return place.destination.kind === "browser" && place.destination.tabId === destination.tabId;
+  return sameDestination(place.destination, destination);
 }
 
 /** Whether a browser tab is drawn as a page now: listed by a running browser. */
@@ -573,24 +519,18 @@ function BrowserTab(props: {
   readonly connected: boolean;
   readonly editAddress: boolean;
   readonly hostClient: HostClient;
-  /** Offered when the grid holds other tabs. */
-  readonly onBackToTabs: (() => void) | undefined;
   readonly onClosed: () => void;
   readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
+  /** This tab in the place list, found by its own id; null while it is not listed. */
+  readonly place: PlaceItem | null;
   readonly sessionId: string;
   readonly snapshot: HostSnapshot;
   readonly tabId: string;
 }): ReactNode {
-  const { hostClient, snapshot, tabId } = props;
+  const { hostClient, place, snapshot, tabId } = props;
   const navigation = useNavigation();
-  const places = usePlaceList(hostClient);
-  const place =
-    places.find(
-      (candidate) =>
-        candidate.destination.kind === "browser" && candidate.destination.tabId === tabId,
-    ) ?? null;
   const saved = place?.workspaceTab;
   const lineageSession =
     saved?.state === "live" && place?.destination.kind === "browser"
@@ -675,7 +615,6 @@ function BrowserTab(props: {
     <BrowserEnded
       detail={session?.state === "failed" ? session.error : null}
       failed={session?.state === "failed"}
-      onBackToTabs={props.onBackToTabs}
     />
   );
 }
@@ -873,36 +812,38 @@ function TabStatus(props: {
   );
 }
 
+/** The second pane beside a page, and how it is closed when the person opened it. */
+interface PairCompanion {
+  readonly content: ReactNode;
+  /** Given when the person chose what is shown; null for the agent shown by default. */
+  readonly onClose: (() => void) | null;
+  /** Whom the pane talks to, in its own words, once it has said. */
+  readonly title: string | null;
+}
+
 /**
- * The page and its conversation, in the pair's own surface: stacked, the
- * conversation docked under the page; side by side, the page leading; or
- * tabletop, the page above a fold and the conversation below. This view
- * measures its own surface and the regions reserved in it — its origin is
- * under the navigation bar, not the window's — and is the only thing that
- * decides which.
+ * The page and its bar, and the second pane where the surface fits two: side
+ * by side, the page leading; or tabletop, the page above a fold and the pane
+ * below. Compact, it is the page alone. This view measures its own surface and
+ * the regions reserved in it — its origin is under the navigation bar, not the
+ * window's — and is the only thing that decides which.
  *
- * Every arrangement is the same three children in the same order, so the
- * page's live channel and the conversation's draft and stream stay mounted
- * through a fold. Each pane is given its size by the arrangement — stacked,
- * the dock is as tall as what it holds and the page has the rest — never by
- * measuring the other: a pane sized by its content collapses to nothing when
- * its content asks to fill it.
+ * The page is always the first child of the same tree, so its live channel
+ * stays mounted through a fold, a rotation, and the second pane coming and
+ * going. Each pane is given its size by the arrangement, never by measuring
+ * the other.
  *
  * The keyboard belongs to whichever pane is typing: the page while its address
- * or the remote page's keyboard is up, the conversation otherwise. Only that
- * pane makes room for it. In tabletop the conversation is under the fold, where
- * the keyboard comes up, so while the composer is typing the page gives up its
+ * or the remote page's keyboard is up, the second pane otherwise. Only that
+ * pane makes room for it. In tabletop the second pane is under the fold, where
+ * the keyboard comes up, so while its composer is typing the page gives up its
  * half rather than leave the composer no room.
  */
 function PagePairSurface(props: {
   readonly body: ReactNode;
-  /**
-   * The conversation, docked or beside the page as this arrangement draws it;
-   * null for a tab opened directly from Tabs or the sidebar.
-   */
-  readonly conversation: ((kind: PageCompanion["kind"]) => ReactNode) | null;
-  /** The conversation's name, so the column beside the page says whom it talks to. */
-  readonly conversationTitle: string | null;
+  /** The bar under the page, told whether a second pane fits beside it. */
+  readonly bar: (paired: boolean) => ReactNode;
+  readonly companion: PairCompanion | null;
   readonly keyboardVerticalOffset: number;
   readonly notices: ReactNode;
   readonly pageShaped: boolean;
@@ -915,35 +856,17 @@ function PagePairSurface(props: {
       current.height === height && current.width === width ? current : { height, width },
     );
   }, []);
-  if (props.conversation === null)
-    return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        enabled={props.typing}
-        keyboardVerticalOffset={props.keyboardVerticalOffset}
-        style={styles.fill}
-        testID="page-slot"
-      >
-        <InsetView style={styles.fill} testID="page-content">
-          {props.notices}
-          <View style={props.pageShaped ? styles.page : styles.fill}>{props.body}</View>
-        </InsetView>
-      </KeyboardAvoidingView>
-    );
   return (
     <ReservedRegionsProvider onLayout={onLayout} style={styles.fill}>
-      <PagePair {...props} bounds={bounds} conversation={props.conversation} />
+      <PagePair {...props} bounds={bounds} />
     </ReservedRegionsProvider>
   );
 }
 
 function PagePair(
-  props: Parameters<typeof PagePairSurface>[0] & {
-    readonly bounds: Size;
-    readonly conversation: (kind: PageCompanion["kind"]) => ReactNode;
-  },
+  props: Parameters<typeof PagePairSurface>[0] & { readonly bounds: Size },
 ): ReactNode {
-  const { bounds, pageShaped, typing } = props;
+  const { bounds, companion, pageShaped, typing } = props;
   const regions = useReservedRegions();
   const ready = useReservedRegionsReady();
   const { fontScale } = useWindowDimensions();
@@ -953,7 +876,7 @@ function PagePair(
   // edge cannot use, so a fit is judged on the room the panes really have.
   const insets = useSafeAreaInsets();
   const previous = useRef<PagePairArrangement>({ mode: "stacked" });
-  const { pair, region } = derivePagePair({
+  const derived = derivePagePair({
     bounds,
     fontScale,
     insets,
@@ -963,11 +886,29 @@ function PagePair(
     rtl,
   });
   useLayoutEffect(() => {
-    previous.current = pair;
+    previous.current = derived.pair;
   });
+  const paired = derived.pair.mode !== "stacked";
+  // Nothing to put beside the page: it takes the most room it has off the folds.
+  const pair: PagePairArrangement = companion !== null ? derived.pair : { mode: "stacked" };
+  const region = companion !== null ? derived.region : derived.alone;
+  // Once beside the page, the companion stays mounted through a window too
+  // narrow for two, as the page does, so its draft, stream and scroll are
+  // there when the pair returns. Out of view it is inert: unseen, untouchable,
+  // unreachable by a screen reader, and — told by its pane — claiming nothing
+  // and marking nothing read. It keeps the size it had beside the page, so its
+  // text does not reflow; it still follows its transcript, which is the cost of
+  // keeping it. A phone that never pairs never draws it.
+  const beside = pair.mode !== "stacked";
+  const kept = useRef(false);
+  kept.current = companion !== null && (beside || kept.current);
+  const besideSize = useRef<Size | null>(null);
+  const onCompanionLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height, width } = event.nativeEvent.layout;
+    besideSize.current = { height, width };
+  }, []);
 
-  const stacked = pair.mode === "stacked";
-  // Tabletop, with the composer typing under the fold.
+  // Tabletop, with the second pane's composer typing under the fold.
   const yielding = pair.mode === "tabletop" && keyboard && !typing;
   const { pageClearance, conversationClearance } = pairClearances(
     bounds,
@@ -997,26 +938,12 @@ function PagePair(
         ? yielding
           ? { flexShrink: 1, maxHeight: pair.pageHeight, minHeight: 0 }
           : { height: pair.pageHeight }
-        : styles.pageAboveDock;
-  const gapStyle =
-    pair.mode === "side"
-      ? { width: pair.gap }
-      : pair.mode === "tabletop" && !yielding
-        ? { height: pair.gap }
-        : null;
-  const conversationStyle =
-    pair.mode === "side"
-      ? styles.besidePage
-      : pair.mode === "tabletop"
-        ? yielding
-          ? styles.underKeyboard
-          : styles.belowFold
-        : [styles.docked, typing && styles.hidden];
+        : styles.pageAlone;
   const behavior = Platform.OS === "ios" ? "padding" : "height";
   return (
     <View
       style={[styles.fill, pair.mode === "side" ? styles.row : null, placed]}
-      testID={`pair-${pair.mode}`}
+      testID={`pair-${derived.pair.mode}`}
     >
       <KeyboardAvoidingView
         behavior={behavior}
@@ -1031,26 +958,52 @@ function PagePair(
           <InsetView style={styles.fill} testID="page-content">
             {props.notices}
             <View style={pageShaped ? styles.pageCentred : styles.fill}>{props.body}</View>
+            <View style={typing ? styles.hidden : null}>{props.bar(paired)}</View>
           </InsetView>
         </Pane>
       </KeyboardAvoidingView>
-      <View style={gapStyle} />
-      <KeyboardAvoidingView
-        behavior={behavior}
-        enabled={!typing}
-        keyboardVerticalOffset={props.keyboardVerticalOffset}
-        style={conversationStyle}
-        testID="conversation-slot"
-      >
-        <Pane
-          clearance={conversationClearance}
-          geometry={`${geometry}:conversation`}
-          style={stacked ? styles.ownHeight : styles.fill}
-        >
-          {stacked ? null : <ConversationName title={props.conversationTitle} />}
-          {props.conversation(stacked ? "docked" : "beside")}
-        </Pane>
-      </KeyboardAvoidingView>
+      {companion === null || !kept.current ? null : (
+        <>
+          <View
+            style={
+              pair.mode === "side"
+                ? { width: pair.gap }
+                : pair.mode === "stacked" || yielding
+                  ? null
+                  : { height: pair.gap }
+            }
+          />
+          <KeyboardAvoidingView
+            accessibilityElementsHidden={!beside}
+            behavior={behavior}
+            enabled={beside && !typing}
+            importantForAccessibility={beside ? "auto" : "no-hide-descendants"}
+            keyboardVerticalOffset={props.keyboardVerticalOffset}
+            onLayout={onCompanionLayout}
+            pointerEvents={beside ? "auto" : "none"}
+            style={
+              pair.mode === "side"
+                ? styles.besidePage
+                : pair.mode === "stacked"
+                  ? [styles.outOfView, besideSize.current]
+                  : yielding
+                    ? styles.underKeyboard
+                    : styles.belowFold
+            }
+            testID="conversation-slot"
+          >
+            <Pane
+              clearance={conversationClearance}
+              geometry={`${geometry}:conversation`}
+              hidden={!beside}
+              style={styles.fill}
+            >
+              <CompanionName onClose={companion.onClose} title={companion.title} />
+              {companion.content}
+            </Pane>
+          </KeyboardAvoidingView>
+        </>
+      )}
     </View>
   );
 }
@@ -1094,40 +1047,54 @@ function pairClearances(
       pageClearance: occlusionClearance({ ...region, height: pair.pageHeight }, occlusions),
     };
   }
-  // Stacked — or tabletop giving way to the keyboard — each pane's place moves
-  // with its content, so both clear the whole region.
+  // The page alone — or tabletop giving way to the keyboard — each pane's
+  // place moves with its content, so both clear the whole region.
   const clearance = occlusionClearance(region, occlusions);
   return { conversationClearance: clearance, pageClearance: clearance };
 }
 
 /**
- * Whom the column beside a page talks to, in the conversation's own name: the
- * bar above it names the page, and the composer under it says nothing else.
+ * Whom the pane beside a page talks to, in its own name — the bar above names
+ * the page — and, when the person chose it, the way to put it away.
  */
-function ConversationName(props: { readonly title: string | null }): ReactNode {
-  if (props.title === null) return null;
+function CompanionName(props: {
+  readonly onClose: (() => void) | null;
+  readonly title: string | null;
+}): ReactNode {
+  if (props.title === null && props.onClose === null) return null;
   return (
-    <View style={styles.conversationName} testID="conversation-name">
+    <View style={styles.companionName} testID="conversation-name">
       <AppText
         maxFontSizeMultiplier={headerFontScaleLimit}
         numberOfLines={1}
         role="caption"
+        style={styles.companionTitle}
         tone="muted"
       >
-        {props.title}
+        {props.title ?? ""}
       </AppText>
+      {props.onClose === null ? null : (
+        <Pressable
+          accessibilityLabel={props.title === null ? "Close" : `Close ${props.title}`}
+          accessibilityRole="button"
+          hitSlop={space[8]}
+          onPress={props.onClose}
+          style={styles.close}
+        >
+          <Symbol name="xmark" size={12} tint={color.muted} />
+        </Pressable>
+      )}
     </View>
   );
 }
 
 /**
- * A tab that is gone stays gone: one line says so, with why when it failed,
- * and the grid is offered only when it holds others. Nothing takes its place.
+ * A tab that is gone stays gone: one line says so, with why when it failed.
+ * Nothing takes its place; Back returns to wherever it was opened from.
  */
 function BrowserEnded(props: {
   readonly detail: string | null;
   readonly failed: boolean;
-  readonly onBackToTabs: (() => void) | undefined;
 }): ReactNode {
   useSurfaceHeader({ acting: false, glyph: "globe", menu: [], secondary: null, title: "Tab" });
   return (
@@ -1140,28 +1107,12 @@ function BrowserEnded(props: {
           {props.detail}
         </AppText>
       ) : null}
-      {props.onBackToTabs === undefined ? null : (
-        <SecondaryButton label="Back to tabs" onPress={props.onBackToTabs} />
-      )}
     </View>
   );
 }
 
-/** A conversation's own grid or tab, as the stack holds it. */
-function isConversationSurfaces(
-  route: { readonly name: string; readonly params?: object | undefined } | undefined,
-  threadId: string | null,
-): boolean {
-  return (
-    route?.name === "WorkspaceBrowser" &&
-    isRecord(route.params) &&
-    route.params["scope"] === undefined &&
-    route.params["threadId"] === threadId
-  );
-}
-
 const styles = StyleSheet.create({
-  // Beside the page, the conversation is a column of its own, edged by one hairline.
+  // Beside the page, the second pane is a column of its own, edged by one hairline.
   besidePage: {
     backgroundColor: color.background,
     borderColor: color.lineStrong,
@@ -1170,12 +1121,19 @@ const styles = StyleSheet.create({
   },
   belowFold: { backgroundColor: color.background, flex: 1 },
   centred: { textAlign: "center" },
-  conversationName: { alignItems: "center", paddingHorizontal: space[16] },
-  // Under the page, the conversation is as tall as its latest reply, what
-  // needs the reader and the composer, and the page has everything else. Only
-  // when that is more than the whole surface — large text on a short screen
-  // with the keyboard up — does it shrink and its own content scroll.
-  docked: { backgroundColor: color.background, flexShrink: 1 },
+  close: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: touchTarget,
+    minWidth: touchTarget,
+  },
+  companionName: {
+    alignItems: "center",
+    flexDirection: "row",
+    minHeight: touchTarget,
+    paddingHorizontal: space[16],
+  },
+  companionTitle: { flex: 1, textAlign: "center" },
   ended: {
     alignItems: "center",
     flex: 1,
@@ -1184,23 +1142,18 @@ const styles = StyleSheet.create({
     padding: space[24],
   },
   fill: { flex: 1 },
-  gridTitle: { alignItems: "center", maxWidth: 240 },
   hidden: { display: "none" },
-  notices: { gap: space[8] },
-  // As tall as what it holds, and no taller than its slot. A pane fills by
-  // default, and filling a pane that its content sizes is zero.
-  ownHeight: { flex: 0, flexShrink: 1 },
-  page: { flexShrink: 1, minHeight: 0 },
-  // Stacked, the page has exactly the room the dock leaves. It has no floor:
-  // with the keyboard up on a short screen, a floor is what pushes the
-  // composer under the keyboard, and the composer is what is being used.
-  pageAboveDock: { flex: 1, minHeight: 0 },
+  // Laid out, so its native views and scroll position stay, but not drawn.
+  outOfView: { left: 0, opacity: 0, position: "absolute", top: 0 },
+  // Alone, the page has the whole surface but the bar under it. It has no
+  // floor: with the keyboard up on a short screen, a floor is what pushes the
+  // page's own address field under the keyboard.
+  pageAlone: { flex: 1, minHeight: 0 },
   // The page at its own shape, centred in the room it is given, as a picture
-  // is: the bands above and below are even, and the page never jumps when the
-  // dock under it grows by a line.
+  // is: the bands above and below are even.
   pageCentred: { flex: 1, justifyContent: "center", minHeight: 0 },
   row: { flexDirection: "row" },
-  // Tabletop with the composer typing: the conversation keeps at least its
-  // composer and dock, and the page above gives up height to make room.
+  // Tabletop with the composer typing: the second pane keeps at least its
+  // composer, and the page above gives up height to make room.
   underKeyboard: { backgroundColor: color.background, flexGrow: 1, flexShrink: 0 },
 });

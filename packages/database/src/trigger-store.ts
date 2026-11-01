@@ -1127,6 +1127,7 @@ export class TriggerStore {
   enqueueManual(input: {
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
+    readonly idempotencyKey?: string;
     readonly payload?: unknown;
     readonly triggerId: TriggerId;
   }): Promise<TriggerOccurrence> {
@@ -1140,7 +1141,9 @@ export class TriggerStore {
       const enqueued = await enqueueOccurrence(
         transaction,
         trigger,
-        `manual:${globalThis.crypto.randomUUID()}`,
+        input.idempotencyKey === undefined
+          ? `manual:${globalThis.crypto.randomUUID()}`
+          : `manual-command:${JSON.stringify([input.ownerId, input.actorThreadId, input.idempotencyKey])}`,
         { payload: input.payload ?? null, source: { kind: "manual" } },
       );
       return enqueued.occurrence;

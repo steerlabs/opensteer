@@ -23,6 +23,7 @@ import { color, material, radius, space } from "../theme.js";
 import { ComposerGlyph } from "../thread/composer-bar.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
+import { usePaneInView } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
 
 /** What the voice UI drives: the runtime's one `VoiceController`. */
@@ -128,7 +129,8 @@ export function VoiceMic(props: {
 /**
  * A screen with a composer docks the bar above it while it is on top, never
  * over it; elsewhere the bar floats near the bottom. React Navigation keeps a
- * pushed screen's parent mounted, so a dock counts only while focused.
+ * pushed screen's parent mounted, and a page keeps its side thread mounted but
+ * hidden when the pair narrows, so a dock counts only while focused and in view.
  */
 let focusedDocks = 0;
 const dockListeners = new Set<() => void>();
@@ -145,7 +147,9 @@ function changeDocks(delta: number) {
 }
 
 export function VoiceDock(): ReactNode {
-  const focused = useIsFocused();
+  const onScreen = useIsFocused();
+  const inView = usePaneInView();
+  const focused = onScreen && inView;
   const { controller, snapshot } = useVoice();
   useEffect(() => {
     if (!focused) return;

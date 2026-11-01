@@ -1,5 +1,5 @@
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { provisionalThreadTitle } from "@opensteer/core";
+import { provisionalThreadTitle, type BrowserPageContentPart } from "@opensteer/core";
 import {
   canRespondToRequests,
   accessModeConflict,
@@ -32,7 +32,7 @@ import {
   type TextInputInstance,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import type { PendingCommand } from "../client/thread-drafts.js";
+import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
 import { color } from "../theme.js";
 import {
@@ -51,7 +51,6 @@ import {
   FirstMessageHeld,
   FirstMessageInvitation,
   handOverFirstMessage,
-  newTaskDraftKey,
 } from "../thread/first-message.js";
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -203,6 +202,8 @@ function NewTask(props: {
     [],
   );
   const staged = useDraftAttachments({ client: hostClient, draftKey, drafts, files, workspaceId });
+  // The page Ask put on this draft, kept with the words until it is sent or removed.
+  const includedPage = draft?.page ?? null;
 
   const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
   const execution = useMemo(
@@ -223,6 +224,12 @@ function NewTask(props: {
     void drafts.writeDraft(deploymentId, userId, draftKey, next).then(
       () => setDraftFailure(null),
       () => setDraftFailure("This draft could not be saved on this phone."),
+    );
+  };
+  const changePage = (next: BrowserPageContentPart | null): void => {
+    void drafts.writeDraftPage(deploymentId, userId, draftKey, next).then(
+      () => setDraftFailure(null),
+      () => setDraftFailure("This page could not be saved on this phone."),
     );
   };
 
@@ -261,6 +268,7 @@ function NewTask(props: {
           if (accessReason !== null) throw new Error(accessReason);
           const words = text.trim();
           claimed = await claimFirstMessage({
+            browserPage: includedPage,
             deploymentId,
             draftKey,
             drafts,
@@ -341,6 +349,7 @@ function NewTask(props: {
             (cleared) => {
               if (!cleared) return;
               changeText(refused.text);
+              if (refused.browserPage !== undefined) changePage(refused.browserPage);
               staged.restore(
                 (refused.attachments ?? []).map((part, index) => ({
                   localUri: refused.localUris?.[index] ?? null,
@@ -364,6 +373,7 @@ function NewTask(props: {
       drafts,
       files,
       hostClient,
+      includedPage,
       notifications,
       onStarted,
       staged,
@@ -393,6 +403,7 @@ function NewTask(props: {
       }
       onRemoveQuote={noop}
       onSend={(selection) => void send(null, selection)}
+      page={includedPage === null ? null : { onRemove: () => changePage(null), part: includedPage }}
       placeholder="Describe the task…"
       usageScope={{ deploymentId, userId }}
       quote={null}

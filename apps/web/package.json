@@ -44,7 +44,6 @@
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "@opensteer/triggers": "workspace:*",
-    "cronstrue": "3.27.0",
     "heic-to": "1.5.2",
     "react": "catalog:",
     "react-dom": "catalog:",

@@ -18,7 +18,7 @@ import {
   sectionAutomations,
   watchState,
   type Tone,
-} from "./automation-presentation.js";
+} from "@opensteer/client/host";
 import { AreaLink } from "../workspace/area-link.js";
 
 /** Requests a first-time reader can send as written, to see what an automation is. */

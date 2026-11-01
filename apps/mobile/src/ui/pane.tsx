@@ -5,6 +5,7 @@ import { noInsets, type EdgeInsets } from "../layout.js";
 
 const ClearanceContext = createContext<EdgeInsets>(noInsets);
 const GeometryContext = createContext("");
+const InViewContext = createContext(true);
 
 /**
  * One pane of a layout surface: a sidebar column, the stack beside it, a page
@@ -28,6 +29,12 @@ export function Pane(props: {
    * either surface rearranging.
    */
   readonly geometry?: string;
+  /**
+   * Kept mounted out of view while its screen is in front, as a page's
+   * companion is in a window too narrow for two. Its surface hides it; this
+   * tells what is inside, and every pane nested in it, that nobody sees it.
+   */
+  readonly hidden?: boolean;
   readonly style?: StyleProp<ViewStyle>;
   readonly testID?: string;
 }): ReactNode {
@@ -37,13 +44,26 @@ export function Pane(props: {
   const clearance = useMemo(() => ({ bottom, left, right, top }), [bottom, left, right, top]);
   const parent = useContext(GeometryContext);
   const geometry = props.geometry === undefined ? parent : `${parent}/${props.geometry}`;
+  const inView = useContext(InViewContext) && props.hidden !== true;
   return (
     <SafeAreaProvider style={props.style} testID={props.testID}>
       <GeometryContext.Provider value={geometry}>
-        <ClearanceContext.Provider value={clearance}>{props.children}</ClearanceContext.Provider>
+        <InViewContext.Provider value={inView}>
+          <ClearanceContext.Provider value={clearance}>{props.children}</ClearanceContext.Provider>
+        </InViewContext.Provider>
       </GeometryContext.Provider>
     </SafeAreaProvider>
   );
+}
+
+/**
+ * Whether this pane is drawn where the reader can see it. A pane kept mounted
+ * out of view is like a screen under another in the stack: it claims nothing,
+ * marks nothing read and lets go of the keyboard and microphone, so what reads
+ * navigation focus for that asks here as well.
+ */
+export function usePaneInView(): boolean {
+  return useContext(InViewContext);
 }
 
 /**

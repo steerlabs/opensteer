@@ -45,6 +45,7 @@ export type SFSymbolName =
   | "ellipsis"
   | "exclamationmark.circle"
   | "exclamationmark.triangle.fill"
+  | "eye"
   | "folder"
   | "gearshape"
   | "globe"
@@ -64,13 +65,16 @@ export type SFSymbolName =
   | "mic.slash"
   | "macmini"
   | "magnifyingglass"
+  | "pause"
   | "pencil"
   | "person.2"
   | "person.crop.circle"
   | "photo"
+  | "play"
   | "plus"
   | "puzzlepiece.extension"
   | "rectangle.on.rectangle"
+  | "repeat"
   | "safari"
   | "server.rack"
   | "shield"
@@ -196,6 +200,7 @@ const glyph: Record<SFSymbolName, string> = {
   ellipsis: "…",
   "exclamationmark.circle": "!",
   "exclamationmark.triangle.fill": "⚠",
+  eye: "◉",
   folder: "▭",
   gearshape: "⚙",
   globe: "◍",
@@ -215,13 +220,16 @@ const glyph: Record<SFSymbolName, string> = {
   "mic.slash": "⊘",
   macmini: "▬",
   magnifyingglass: "⌕",
+  pause: "⏸\uFE0E",
   pencil: "✎",
   "person.2": "☺︎",
   "person.crop.circle": "☻",
   photo: "▨",
+  play: "▶\uFE0E",
   plus: "+",
   "puzzlepiece.extension": "⧉",
   "rectangle.on.rectangle": "❐",
+  repeat: "↻",
   safari: "◉",
   "server.rack": "☰",
   shield: "⛉",

@@ -48,6 +48,7 @@ import {
   View,
 } from "react-native";
 import Animated from "react-native-reanimated";
+import { pageIdentity } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import type {
   PendingCommand,
@@ -67,6 +68,7 @@ import {
 import { appear, enter, exit } from "../ui/motion.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
+import { usePaneInView } from "../ui/pane.js";
 import { ComposerBar, ComposerGlyph, composerLaneHeight } from "./composer-bar.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { composerView } from "./composer-model.js";
@@ -127,7 +129,8 @@ export function Composer(props: {
   readonly mutationGate: ThreadMutationGate;
   /**
    * The page the person is looking at, included with the next message unless
-   * they remove it. Removing it holds for this message and this page only.
+   * they remove it. Removing it holds for this message and this page only. A
+   * page Ask put on the draft comes first.
    */
   readonly page?: BrowserPageContentPart | null;
   readonly onChangeModel: (conversation?: boolean) => void;
@@ -185,14 +188,16 @@ export function Composer(props: {
   const dictating = ["starting", "listening", "finishing"].includes(speechView.phase);
   const displayedText = preview?.text ?? text;
   const visible = useRef(false);
+  const inView = usePaneInView();
   useFocusEffect(
     useCallback(() => {
+      if (!inView) return;
       visible.current = true;
       return () => {
         visible.current = false;
         dictation.leave(owner);
       };
-    }, [dictation, owner]),
+    }, [dictation, inView, owner]),
   );
   const quote = draft?.quote ?? null;
   const pending = drafts.readPending(deploymentId, userId, threadId);
@@ -202,6 +207,11 @@ export function Composer(props: {
   const [draftFailure, setDraftFailure] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const input = useRef<TextInputInstance>(null);
+  // Out of view, the field lets go of the keyboard: nothing is typed where it
+  // cannot be seen.
+  useEffect(() => {
+    if (!inView) input.current?.blur();
+  }, [inView]);
   const { fontScale } = useWindowDimensions();
   // Roughly six lines at the default text size before the field scrolls inside
   // itself. It is a height rather than a line count because the field's lines
@@ -245,17 +255,16 @@ export function Composer(props: {
   });
   const attachmentsReady = staged.items.every((item) => draftAttachmentPart(item) !== null);
 
-  // What the person decided about the page in front of them, for as long as
-  // that same page stays in front of them: taken off this message, or the page
-  // a refused message carried, given back. Another page, and the next message,
-  // bring the offered page back.
+  // The page this message includes. One Ask put on the draft is the person's
+  // own choice and stays with the draft until it is sent or removed. Otherwise
+  // it is the page in front of them, unless they took that page off this
+  // message; another page, and the next message, bring it back.
+  const draftPage = draft?.page ?? null;
   const offeredPage = props.page ?? null;
-  const offeredKey = offeredPage === null ? "" : pageIdentity(offeredPage);
-  const [pageChoice, setPageChoice] = useState<{
-    readonly key: string;
-    readonly page: BrowserPageContentPart | null;
-  } | null>(null);
-  const includedPage = pageChoice?.key === offeredKey ? pageChoice.page : offeredPage;
+  const offeredKey = offeredPage === null ? null : pageIdentity(offeredPage);
+  const [declinedPage, setDeclinedPage] = useState<string | null>(null);
+  const includedPage =
+    draftPage ?? (offeredKey === null || offeredKey === declinedPage ? null : offeredPage);
 
   const done = useHostSelector(
     hostClient,
@@ -398,6 +407,17 @@ export function Composer(props: {
     });
   };
 
+  const changePage = (next: BrowserPageContentPart | null): void => {
+    void drafts.writeDraftPage(deploymentId, userId, threadId, next).catch(() => {
+      setDraftFailure("This page could not be saved on this phone.");
+    });
+  };
+  /** Takes the shown page off this message, the page in front included. */
+  const removePage = (): void => {
+    if (draftPage !== null) changePage(null);
+    setDeclinedPage(offeredKey);
+  };
+
   const restore = props.restore ?? null;
   useEffect(() => {
     if (restore === null) return;
@@ -429,8 +449,12 @@ export function Composer(props: {
       })),
     );
     // The page goes back with the words, as the message was written: the one
-    // it carried, or none if it had been taken off.
-    setPageChoice({ key: offeredKey, page: refused.browserPage ?? null });
+    // it carried, onto the draft unless Ask has put another there since, or
+    // none if it had been taken off.
+    if (refused.browserPage === undefined) setDeclinedPage(offeredKey);
+    else if (drafts.readDraft(deploymentId, userId, threadId)?.page === undefined) {
+      changePage(refused.browserPage);
+    }
     if (refused.quotedMessageId !== undefined && quote === null) {
       // The excerpt is gone with the sent message; the reference is what
       // matters, and it is shown as the source it is.
@@ -576,7 +600,7 @@ export function Composer(props: {
       // Do not erase words typed while the durable claim was being written.
       if (draftText.current === sourceText) changeText("");
       changeQuote(null);
-      setPageChoice(null);
+      setDeclinedPage(null);
       const claimed = drafts.readPending(deploymentId, userId, threadId);
       if (claimed === null) return;
       // The message holds the files now; files picked meanwhile stay on the strip.
@@ -833,12 +857,7 @@ export function Composer(props: {
         {...(includedPage === null || view.readOnly
           ? {}
           : {
-              caption: (
-                <IncludedPage
-                  onRemove={() => setPageChoice({ key: offeredKey, page: null })}
-                  page={includedPage}
-                />
-              ),
+              caption: <IncludedPage onRemove={removePage} page={includedPage} />,
             })}
         {...(view.readOnly
           ? {}
@@ -1042,11 +1061,6 @@ function PendingMessage(props: {
       </View>
     </View>
   );
-}
-
-/** One page, whatever its title becomes: its browser, its tab and its address. */
-function pageIdentity(page: BrowserPageContentPart): string {
-  return `${page.sessionId}\u0000${page.tabId}\u0000${page.url}`;
 }
 
 /**

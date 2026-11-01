@@ -1,22 +1,12 @@
 import { useHostSelector } from "@opensteer/client/react";
-import {
-  conversationSurfaces,
-  conversationThreadIds,
-  sameTaskFamilyGlance,
-  surfaceDestination,
-  taskFamilyGlance,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useLayoutEffect, useState, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
-import { agentSurface } from "../browser/agent-surface.js";
-import { surfaceRoute } from "../browser/surface-route.js";
-import { browserHeaderActions } from "../navigation-header.js";
-import { color, headerFontScaleLimit, space } from "../theme.js";
+import { headerFontScaleLimit, space } from "../theme.js";
+import { AroundButton, aroundHeaderOptions } from "../thread/around-button.js";
+import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
-import { FamilyButton, TaskFamilySheet, familyLabel } from "../thread/task-family.js";
 import { TaskMenu, useTaskMenuChoices } from "../thread/task-status.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
@@ -84,9 +74,10 @@ export function useScopedThreadHeader(
  * draws Liquid Glass — on iOS 26 the scroll edge effect is the system's own
  * answer, and below it a blur is.
  *
- * What the agent is using stays contextual: its symbol appears only while the
- * conversation, including work it handed out, has a tab, Mac app or phone
- * open, and it opens the one the agent is in. The title is the conversation's name and,
+ * What is around the conversation stays contextual: one control appears only
+ * while it has a tab, Mac app or phone open, tasks or schedules of its own, or
+ * a conversation it works for, and it opens Around this thread, where each
+ * row opens exactly what it names. The title is the conversation's name and,
  * for a task someone handed out, where it stands and its menu: Run details
  * opens from the reply under way and from each reply's menu, where the reader
  * is already looking.
@@ -112,7 +103,7 @@ export function useThreadHeader(props: {
   useLayoutEffect(() => {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
-      ...(attached && header !== null && !savedSubtitle ? {} : browserHeaderActions(null)),
+      ...(attached && header !== null && !savedSubtitle ? {} : aroundHeaderOptions(null)),
       // The route table paints every header with the product's ground. A
       // transparent header has to be told to keep none, or nothing scrolls
       // under it and the blur has nothing to blur.
@@ -197,91 +188,27 @@ function ThreadTitle(
   },
 ): ReactNode {
   const navigation = useNavigation();
-  const userId = useHostUserId(props.hostClient);
-  const [familyOwner, setFamilyOwner] = useState<{
-    host: HostClient;
-    thread: string | null;
-    user: string | null;
-  } | null>(null);
-  const familyOpen =
-    familyOwner?.host === props.hostClient &&
-    familyOwner.thread === props.threadId &&
-    familyOwner.user === userId;
-  const selectGlance = useCallback(
-    (snapshot: HostSnapshot) =>
-      props.threadId === null ? null : taskFamilyGlance(snapshot, props.threadId),
+  const selectAround = useMemo(
+    () => (props.threadId === null ? selectNothing : aroundGlanceSelector(props.threadId)),
     [props.threadId],
   );
-  const glance = useHostSelector(props.hostClient, selectGlance, sameTaskFamilyGlance);
-  const { deploymentId, threadId, surfacesActing, surface } = props;
+  const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
+  const { deploymentId, threadId } = props;
   useLayoutEffect(() => {
-    const open = () => setFamilyOwner({ host: props.hostClient, thread: threadId, user: userId });
-    // Read as it is pressed: the agent may have moved since the bar was drawn.
-    const watch = () => {
-      if (threadId === null) return;
-      const host = props.hostClient;
-      const snapshot = host.getSnapshot();
-      const item = agentSurface(
-        conversationSurfaces(snapshot, threadId),
-        conversationThreadIds(snapshot, threadId),
-        host.latestPlaceOfThread(threadId),
-      );
-      navigation.dispatch(
-        StackActions.push(
-          "WorkspaceBrowser",
-          item === null
-            ? { deploymentId, threadId }
-            : surfaceRoute(deploymentId, threadId, surfaceDestination(item)),
-        ),
-      );
-    };
     navigation.setOptions(
-      browserHeaderActions(
-        surface === null ? null : { acting: surfacesActing, glyph: surface, onPress: watch },
-        glance === null
-          ? undefined
-          : {
-              action: {
-                // UIKit draws the symbol in place of the label; the badge
-                // counts what is running, and the tint says when one asks.
-                icon: "checklist" as const,
-                label: familyLabel(glance),
-                ...(glance.running > 0 ? { badge: String(glance.running) } : {}),
-                accessibilityLabel: familyLabel(glance),
-                accessibilityHint: "Opens this conversation's tasks and automations",
-                tintColor: glance.needsYou
-                  ? color.amber
-                  : glance.running > 0
-                    ? color.text
-                    : color.muted,
-                onPress: open,
-              },
-              content: <FamilyButton glance={glance} onPress={open} />,
-            },
+      aroundHeaderOptions(
+        glance === null || threadId === null ? null : (
+          <AroundButton
+            glance={glance}
+            onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
+          />
+        ),
       ),
     );
-  }, [
-    deploymentId,
-    glance,
-    navigation,
-    surface,
-    surfacesActing,
-    threadId,
-    props.hostClient,
-    userId,
-  ]);
+  }, [deploymentId, glance, navigation, threadId]);
   const menu = useTaskMenuChoices(props.hostClient, props.threadId, props.task);
   return (
     <View style={styles.title}>
-      {familyOpen && threadId !== null ? (
-        <TaskFamilySheet
-          key={threadId}
-          hostClient={props.hostClient}
-          threadId={threadId}
-          onClose={() => setFamilyOwner(null)}
-          onOpenThread={props.onOpenThread}
-        />
-      ) : null}
       <TaskMenu
         hostClient={props.hostClient}
         maxWidth={titleWidth}
@@ -329,6 +256,8 @@ function ThreadTitle(
     </View>
   );
 }
+
+const selectNothing = (_snapshot: HostSnapshot) => null;
 
 // Wide enough for a real thread title, narrow enough never to reach the bar's
 // own controls: the native title slot is centred between them.

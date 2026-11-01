@@ -61,7 +61,21 @@ const DraftQuoteSchema = z.strictObject({
   excerpt: z.string().max(400),
   messageId: z.string().min(1).max(200),
 });
+/**
+ * A page a message includes: the message's own content part, under the limits
+ * the Host holds it to. On a draft it is the page Ask put there; on a message
+ * in flight it is frozen with the message, so a retry includes the same page
+ * even after the browser has moved on.
+ */
+const BrowserPageSchema = ContentPartSchema.refine(
+  (part): part is BrowserPageContentPart => part.type === "browser-page",
+  "A message keeps only a browser page here.",
+);
+// Fields a draft gained later are optional under the same schema version: a
+// file written before them still parses, and an older release, which refuses
+// fields it does not know, loses the file only once a draft uses one.
 const DraftSchema = LegacyDraftSchema.extend({
+  page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
   userId: z.string().min(1).max(200),
 });
@@ -103,18 +117,8 @@ const PendingThreadStartSchema = z.strictObject({
   title: z.string().min(1).max(200),
   workspaceId: z.string().min(1).max(200),
 });
-/**
- * The page the person was looking at when they sent, as they saw it. It is
- * frozen with the message, so a retry includes the same page even after the
- * browser has moved on. It is the message's own content part, under the
- * limits the Host holds it to.
- */
-const PendingBrowserPageSchema = ContentPartSchema.refine(
-  (part): part is BrowserPageContentPart => part.type === "browser-page",
-  "A message keeps only a browser page here.",
-);
 const PendingCommandSchema = LegacyPendingCommandSchema.extend({
-  browserPage: PendingBrowserPageSchema.optional(),
+  browserPage: BrowserPageSchema.optional(),
   // Every message is sent to be queued. A `steer` record is one an earlier
   // release saved, and it is replayed exactly as it was first sent.
   delivery: z.enum(["queue", "steer"]).default("queue"),
@@ -172,6 +176,11 @@ export type ThreadDraftQuote = z.infer<typeof DraftQuoteSchema>;
 export type DraftAttachment = NonNullable<ThreadDraft["attachments"]>[number];
 export type PendingCommand = z.infer<typeof PendingCommandSchema>;
 export type PendingThreadStart = z.infer<typeof PendingThreadStartSchema>;
+
+/** The draft key a new task's first message is written under, one per Workspace. */
+export function newTaskDraftKey(workspaceId: string): string {
+  return `new-task:${workspaceId}`;
+}
 
 /** What a composer knows; the store stamps the time it was claimed. */
 export type PendingCommandInput = Omit<PendingCommand, "createdAt" | "delivery" | "userId">;
@@ -247,6 +256,13 @@ export interface ThreadDraftStore {
     threadId: string,
     quote: ThreadDraftQuote | null,
   ): Promise<void>;
+  /** Puts the page Ask handed over on this draft, replacing any other. Null takes it off. */
+  writeDraftPage(
+    deploymentId: string,
+    userId: string,
+    threadId: string,
+    page: BrowserPageContentPart | null,
+  ): Promise<void>;
   writeDraftAttachments(
     deploymentId: string,
     userId: string,
@@ -271,10 +287,11 @@ export function createThreadDraftStore(options: {
     version += 1;
     for (const listener of listeners) listener();
   };
-  // Text and quote edits stay visible while their writes are queued. Keep
-  // overlays per field so a newly saved attachment remains visible too.
+  // Text, quote and page edits stay visible while their writes are queued.
+  // Keep overlays per field so a newly saved attachment remains visible too.
   const textEdits = new Map<string, { readonly text: string }>();
   const quoteEdits = new Map<string, { readonly quote: ThreadDraftQuote | null }>();
+  const pageEdits = new Map<string, { readonly page: BrowserPageContentPart | null }>();
   const writes = new MutationQueue();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
@@ -290,19 +307,36 @@ export function createThreadDraftStore(options: {
     if (entry !== null && entry.userId !== userId) return null;
     const textEdit = textEdits.get(entryKey);
     const quoteEdit = quoteEdits.get(entryKey);
-    if (textEdit === undefined && quoteEdit === undefined) return entry;
-    const text = textEdit?.text ?? entry?.text ?? "";
-    const quote = quoteEdit === undefined ? entry?.quote : (quoteEdit.quote ?? undefined);
-    if (text === "" && quote === undefined && (entry?.attachments?.length ?? 0) === 0) {
-      return null;
-    }
-    return DraftSchema.parse({
+    const pageEdit = pageEdits.get(entryKey);
+    if (textEdit === undefined && quoteEdit === undefined && pageEdit === undefined) return entry;
+    const fields = {
       attachments: entry?.attachments,
-      ...(quote === undefined ? {} : { quote }),
-      text,
+      page: pageEdit === undefined ? entry?.page : (pageEdit.page ?? undefined),
+      quote: quoteEdit === undefined ? entry?.quote : (quoteEdit.quote ?? undefined),
+      text: textEdit?.text ?? entry?.text ?? "",
+    };
+    if (draftEmpty(fields)) return null;
+    return DraftSchema.parse({
+      ...fields,
       updatedAt: entry?.updatedAt ?? options.now().toISOString(),
       userId,
     });
+  };
+
+  /** Saves a draft's fields, or forgets the draft once nothing is left in it. */
+  const putDraft = (
+    nextDrafts: Map<string, ThreadDraft>,
+    entryKey: string,
+    userId: string,
+    fields: DraftFields,
+  ): void => {
+    if (draftEmpty(fields)) nextDrafts.delete(entryKey);
+    else
+      touch(
+        nextDrafts,
+        entryKey,
+        DraftSchema.parse({ ...fields, updatedAt: options.now().toISOString(), userId }),
+      );
   };
 
   const mutate = (
@@ -388,6 +422,7 @@ export function createThreadDraftStore(options: {
       const entryKey = key(deploymentId, userId, threadId);
       const claimedTextEdit = textEdits.get(entryKey);
       const claimedQuoteEdit = quoteEdits.get(entryKey);
+      const claimedPageEdit = pageEdits.get(entryKey);
       const entry = PendingCommandSchema.parse({
         attachments: command.attachments,
         browserPage: command.browserPage,
@@ -448,6 +483,14 @@ export function createThreadDraftStore(options: {
         quoteEdits.delete(entryKey);
         publish();
       }
+      if (
+        claimedPageEdit !== undefined &&
+        pageEdits.get(entryKey) === claimedPageEdit &&
+        JSON.stringify(claimedPageEdit.page ?? null) === JSON.stringify(entry.browserPage ?? null)
+      ) {
+        pageEdits.delete(entryKey);
+        publish();
+      }
     },
 
     async clearPending(deploymentId, userId, threadId, expectedIdempotencyKey): Promise<boolean> {
@@ -488,22 +531,7 @@ export function createThreadDraftStore(options: {
       publish();
       await mutate((nextDrafts) => {
         const current = nextDrafts.get(entryKey);
-        const attachments = current?.attachments;
-        const quote = current?.quote;
-        if (edit.text === "" && (attachments?.length ?? 0) === 0 && quote === undefined) {
-          nextDrafts.delete(entryKey);
-        } else
-          touch(
-            nextDrafts,
-            entryKey,
-            DraftSchema.parse({
-              attachments,
-              quote,
-              text: edit.text,
-              updatedAt: options.now().toISOString(),
-              userId,
-            }),
-          );
+        putDraft(nextDrafts, entryKey, userId, { ...draftFields(current), text: edit.text });
       });
       if (textEdits.get(entryKey) === edit) {
         textEdits.delete(entryKey);
@@ -548,20 +576,10 @@ export function createThreadDraftStore(options: {
           }
           return DraftAttachmentsSchema.parse([...merged.values()]);
         })();
-        if (nextAttachments.length === 0 && !current?.text && current?.quote === undefined) {
-          nextDrafts.delete(entryKey);
-        } else
-          touch(
-            nextDrafts,
-            entryKey,
-            DraftSchema.parse({
-              attachments: nextAttachments,
-              quote: current?.quote,
-              text: current?.text ?? "",
-              updatedAt: options.now().toISOString(),
-              userId,
-            }),
-          );
+        putDraft(nextDrafts, entryKey, userId, {
+          ...draftFields(current),
+          attachments: nextAttachments,
+        });
       });
     },
 
@@ -572,27 +590,59 @@ export function createThreadDraftStore(options: {
       publish();
       await mutate((nextDrafts) => {
         const current = nextDrafts.get(entryKey);
-        const attachments = current?.attachments;
-        if (edit.quote === null && !current?.text && (attachments?.length ?? 0) === 0) {
-          nextDrafts.delete(entryKey);
-          return;
-        }
-        touch(
-          nextDrafts,
-          entryKey,
-          DraftSchema.parse({
-            attachments,
-            ...(edit.quote === null ? {} : { quote: edit.quote }),
-            text: current?.text ?? "",
-            updatedAt: options.now().toISOString(),
-            userId,
-          }),
-        );
+        putDraft(nextDrafts, entryKey, userId, {
+          ...draftFields(current),
+          quote: edit.quote ?? undefined,
+        });
       });
       if (quoteEdits.get(entryKey) === edit) {
         quoteEdits.delete(entryKey);
         publish();
       }
     },
+
+    async writeDraftPage(deploymentId, userId, threadId, page): Promise<void> {
+      const entryKey = key(deploymentId, userId, threadId);
+      const edit = { page: page === null ? null : BrowserPageSchema.parse(page) };
+      pageEdits.set(entryKey, edit);
+      publish();
+      await mutate((nextDrafts) => {
+        const current = nextDrafts.get(entryKey);
+        putDraft(nextDrafts, entryKey, userId, {
+          ...draftFields(current),
+          page: edit.page ?? undefined,
+        });
+      });
+      if (pageEdits.get(entryKey) === edit) {
+        pageEdits.delete(entryKey);
+        publish();
+      }
+    },
   };
+}
+
+/** What a draft holds, apart from whose it is and when it last changed. */
+interface DraftFields {
+  readonly attachments: ThreadDraft["attachments"] | undefined;
+  readonly page: ThreadDraft["page"] | undefined;
+  readonly quote: ThreadDraft["quote"] | undefined;
+  readonly text: string;
+}
+
+function draftFields(draft: ThreadDraft | undefined): DraftFields {
+  return {
+    attachments: draft?.attachments,
+    page: draft?.page,
+    quote: draft?.quote,
+    text: draft?.text ?? "",
+  };
+}
+
+function draftEmpty(fields: DraftFields): boolean {
+  return (
+    fields.text === "" &&
+    (fields.attachments?.length ?? 0) === 0 &&
+    fields.quote === undefined &&
+    fields.page === undefined
+  );
 }

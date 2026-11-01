@@ -25,6 +25,8 @@ import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import { NewSpecialistScreen } from "./screens/new-specialist.js";
 import { NewTaskScreen } from "./screens/new-task.js";
+import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
+import { SchedulesScreen } from "./screens/schedules.js";
 import { SettingsScreen } from "./screens/settings.js";
 import { SpecialistScreen } from "./screens/specialist.js";
 import { SpecialistsScreen } from "./screens/specialists.js";
@@ -35,6 +37,7 @@ import { ThreadFindScreen } from "./screens/thread-find.js";
 import { HomeScreen } from "./screens/home.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
+import { AroundScreen } from "./thread/around-sheet.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { Pane } from "./ui/pane.js";
 import { color } from "./theme.js";
@@ -48,8 +51,8 @@ import { color } from "./theme.js";
  * path. The header uses the platform face and stays native chrome.
  *
  * Chat (`Home`) is the root of every Deployment's stack and stays mounted
- * under everything pushed over it. Specialists and Tabs are the sidebar's
- * other destinations: each is pushed over Chat with the Menu in place of
+ * under everything pushed over it. Specialists, Tabs and Schedules are the
+ * sidebar's other destinations: each is pushed over Chat with the Menu in place of
  * Back, and choosing Chat from the sidebar returns to it, so the stack never
  * grows by moving around the sidebar. Everything else — a task, search, a specialist, a
  * watcher — is an ordinary push with the native Back, which returns to the
@@ -118,6 +121,14 @@ const RootStack = createNativeStackNavigator({
     // Every tab this person may see, from the sidebar like Specialists. A tab
     // opened from here is shown alone.
     Tabs: { screen: TabsScreen, options: { ...destinationOptions(), title: "Tabs" } },
+    // Everything set to run on its own, from the sidebar like Tabs.
+    Schedules: {
+      screen: SchedulesScreen,
+      options: { ...destinationOptions(), title: "Schedules" },
+    },
+    // One schedule, from Schedules or a thread's Around sheet. Its name is
+    // the large title, set once it loads.
+    Schedule: { screen: ScheduleScreen, options: { headerLargeTitle: true, title: "" } },
     // One specialist, over the directory. Its name is the large title, set
     // once it loads, so it folds into the bar as its work scrolls under it.
     Specialist: { screen: SpecialistScreen, options: { headerLargeTitle: true, title: "" } },
@@ -215,6 +226,19 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Run details",
+      },
+    },
+    // Around this thread: the places, tasks and schedules around a
+    // conversation, from its bar. It names itself and opens part-way, so the
+    // conversation stays in view; a row opens over the conversation.
+    ThreadAround: {
+      screen: AroundScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Around this thread",
       },
     },
     // A long list opens full height like the pages it leads to: a half-height
@@ -393,6 +417,8 @@ type OpensteerRootParamList = {
     /** The first-message Send that opened this picker, if any. */
     readonly pickerAttemptId?: string;
   };
+  readonly Schedule: ScheduleDestination;
+  readonly Schedules: { readonly deploymentId: string };
   readonly Settings: undefined;
   readonly Specialist: { readonly deploymentId: string; readonly workspaceId: string };
   readonly Specialists: { readonly deploymentId: string };
@@ -411,6 +437,7 @@ type OpensteerRootParamList = {
     readonly started?: boolean;
     readonly threadId: string;
   };
+  readonly ThreadAround: { readonly deploymentId: string; readonly threadId: string };
   readonly ThreadFind: { readonly deploymentId: string; readonly threadId: string };
   readonly ThreadSettings: { readonly deploymentId: string; readonly threadId: string };
   readonly ThreadStep: {

@@ -517,11 +517,8 @@ describe("the conversation's title", () => {
   const chatHeader: ThreadHeaderState = {
     canRetry: false,
     connectionLabel: null,
-    surface: null,
-    surfacesActing: false,
     task: null,
     title: "Chat",
-    workspaceId,
     workspaceName: null,
     workspaceColor: null,
     workspaceIcon: null,

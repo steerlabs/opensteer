@@ -433,8 +433,6 @@ describe("mobile task mark review journeys", () => {
         const header: ThreadHeaderState = {
           canRetry: connectionLabel !== null,
           connectionLabel,
-          surface: null,
-          surfacesActing: false,
           task: assigned
             ? {
                 announcement: "Working",
@@ -450,7 +448,6 @@ describe("mobile task mark review journeys", () => {
               }
             : null,
           title: "Tokyo flights",
-          workspaceId: thread.workspaceId,
           workspaceName: "Travel",
           workspaceColor: "blue",
           workspaceIcon: "luggage",
@@ -512,8 +509,6 @@ describe("mobile task mark review journeys", () => {
       const header: ThreadHeaderState = {
         canRetry: offline,
         connectionLabel: offline ? "Offline" : null,
-        surface: null,
-        surfacesActing: false,
         task: {
           announcement: word,
           assignmentId: "assignment",
@@ -527,7 +522,6 @@ describe("mobile task mark review journeys", () => {
           word,
         },
         title: "Tokyo flights",
-        workspaceId: thread.workspaceId,
         workspaceName,
         workspaceColor: "blue",
         workspaceIcon: "luggage",
