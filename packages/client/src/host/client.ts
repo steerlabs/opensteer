@@ -106,6 +106,7 @@ import type {
   BrowserTabCatalog,
   BrowserTabCloseResult,
   BrowserTabOpenResult,
+  PlaceIdentity,
   ThreadPlaceReference,
 } from "@opensteer/protocol";
 import type { BrowserWatchState } from "./browser-watch.js";
@@ -397,6 +398,21 @@ export interface ReasoningEntry {
   text: string;
 }
 
+/**
+ * Where a Run began acting in a browser tab. It marks the point, not a span:
+ * the Host cannot see when the Run stops working there. The title and site are
+ * what the page showed then; navigating inside the tab does not change them.
+ */
+export interface PlaceEntry {
+  createdAt: string;
+  id: string;
+  kind: "place";
+  place: PlaceIdentity;
+  runId: string;
+  site: string | null;
+  title: string;
+}
+
 export interface ToolEntry {
   arguments: unknown;
   callId: string;
@@ -565,6 +581,7 @@ export type TranscriptEntry =
   | DelegationEntry
   | DeliveryEntry
   | MessageEntry
+  | PlaceEntry
   | ReasoningEntry
   | RequestReceiptEntry
   | RequestWaitEntry

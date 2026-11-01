@@ -85,6 +85,7 @@ export type ActivityFeedEntry = Exclude<
       | "assignment-return"
       | "delivery"
       | "message"
+      | "place"
       | "request-wait"
       | "selection"
       | "withdrawn";
