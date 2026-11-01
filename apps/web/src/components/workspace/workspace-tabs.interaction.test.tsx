@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
@@ -29,6 +30,24 @@ import {
   deferred,
 } from "./workspace.interaction.test-support.js";
 describe("workspace tab commands", () => {
+  it("lets a tab's title run to the row's edge, its close action taking no room at rest", async () => {
+    await mount("/");
+    const style = document.createElement("style");
+    style.textContent = ["tokens", "workspace"]
+      .map((name) => readFileSync(`apps/web/src/styles/${name}.css`, "utf8"))
+      .join("\n");
+    document.body.append(style);
+    const fixed = placeList(client.getSnapshot()).find((place) => !place.closable)!;
+    const row = element(`.side-tab[data-place-key="${fixed.key}"]`);
+    expect(row.querySelector(".side-tab__close-slot, .side-row-action")).toBeNull();
+    const title = getComputedStyle(element(".side-tab__title", row));
+    expect(title.flexGrow).toBe("1");
+    expect(title.textOverflow).not.toBe("ellipsis");
+    expect(title.maskImage).toContain("linear-gradient");
+    const close = getComputedStyle(element(".side-tab__close"));
+    expect([close.width, close.opacity]).toEqual(["0px", "0"]);
+  });
+
   it("closes a pending row immediately and never selects its exact late tab", async () => {
     const gate = deferred<void>();
     let completion: Promise<unknown> = Promise.resolve();
@@ -326,7 +345,7 @@ describe("tabs that read like a browser's", () => {
     expect(element(".side-tab--start").classList.contains("is-active")).toBe(true);
   });
 
-  it("the tab in the middle is the active tab, its × always there; in Talk no tab is active", async () => {
+  it("the tab in the middle is the active tab, its close action available; in Talk no tab is active", async () => {
     await mount("/");
     expect(document.querySelector(".side-tab.is-active")).toBeNull();
     const place = pageTab();

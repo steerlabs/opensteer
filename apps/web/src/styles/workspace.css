@@ -648,10 +648,6 @@
   white-space: nowrap;
 }
 
-.side-tab.side-result .side-tab__title {
-  flex: 1 1 auto;
-}
-
 .side-tab.side-result .side-result__hint {
   flex: 0 0 auto;
   max-width: 40%;
@@ -998,8 +994,15 @@ button.side-needs:hover {
   font-size: var(--text-lg);
   font-weight: var(--weight-medium);
   line-height: 1.32;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A long name fades out at the row's edge instead of ending in an ellipsis.
+   The name fills the row, so a short one never reaches the fade. */
+.side-task__title,
+.side-tab__title,
+.side-task__ask {
+  mask-image: linear-gradient(to right, var(--mask-ink) calc(100% - var(--space-24)), transparent);
 }
 
 .side-task__title {
@@ -1025,19 +1028,47 @@ button.side-needs:hover {
   color: var(--amber-text);
   font-size: var(--text-sm);
   line-height: 1.36;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.side-row-action {
+/* A task with no state to show keeps no column for one. */
+.side-task .task-state:empty {
   display: none;
+}
+
+/* A row's action takes no room until the row is pointed at or focused, so
+   the name runs to the edge; it opens in place and the name's fade moves
+   with it. Without hover there is nothing to reveal it, so it stays open. */
+.side-row-action {
+  --row-action-size: var(--control-height-sm);
+  display: grid;
   flex: none;
   place-items: center;
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  margin-right: var(--space-4);
+  width: 0;
+  height: var(--row-action-size);
+  margin-right: 0;
+  overflow: hidden;
   border-radius: var(--radius-xs);
   color: var(--muted);
+  opacity: 0;
+  transition:
+    width var(--duration-fast) var(--ease-out),
+    margin-right var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+:is(.side-task, .side-tab):is(:hover, :focus-within) .side-row-action {
+  width: var(--row-action-size);
+  margin-right: var(--space-4);
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .side-row-action {
+    width: var(--row-action-size);
+    margin-right: var(--space-4);
+    opacity: 1;
+  }
 }
 
 .side-row-action:hover {
@@ -1050,35 +1081,13 @@ button.side-needs:hover {
   height: 12px;
 }
 
-.side-task:is(:hover, :focus-within) .side-row-action {
-  display: grid;
-}
-
-/* A tab's × keeps its column, shown on hover and focus and always on the
-   active tab, so nothing in the row moves when it appears; rows without one
-   keep the column empty, and every row's marks stand in one line. */
-.side-tab .side-row-action {
-  display: grid;
-  visibility: hidden;
-}
-
-.side-tab:is(:hover, :focus-within, .is-active) .side-row-action {
-  visibility: visible;
-}
-
-.side-tab__close-slot {
-  flex: none;
-  width: 24px;
-  margin-right: var(--space-4);
-}
-
 .side-tab__main {
   gap: var(--space-10);
   padding-right: var(--space-4);
 }
 
 .side-tab__title {
-  flex: 0 1 auto;
+  flex: 1;
 }
 
 /* Marks sit in the marks' 20px column, so every row's title starts on one line. */
@@ -1098,7 +1107,7 @@ button.side-needs:hover {
 }
 
 .side-tab__marks {
-  padding-right: var(--space-2);
+  padding-right: var(--space-6);
 }
 
 /* Between a browser's tabs and the Mac apps and phones: a hairline in the
@@ -2460,11 +2469,13 @@ button.start-apps__row--away:focus-visible {
     min-height: var(--touch-target);
   }
 
-  .occupant-mark,
-  .side-row-action,
-  .side-tab__close-slot {
+  .occupant-mark {
     width: var(--control-height);
     height: var(--control-height);
+  }
+
+  .side-row-action {
+    --row-action-size: var(--control-height);
   }
 }
 
@@ -2479,21 +2490,13 @@ button.start-apps__row--away:focus-visible {
   }
 
   .occupant-mark,
-  .side-row-action,
-  .side-tab__close-slot,
   .context-chip__remove {
     width: var(--touch-target);
     height: var(--touch-target);
   }
-}
 
-@media (hover: none) {
   .side-row-action {
-    display: grid;
-  }
-
-  .side-tab .side-row-action {
-    visibility: visible;
+    --row-action-size: var(--touch-target);
   }
 }
 
