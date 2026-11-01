@@ -802,7 +802,7 @@ html.native-browser-live #root {
   background: transparent;
 }
 html.native-browser-live .place--browser {
-  background: transparent;
+  background: var(--light-sheet);
 }
 html.native-browser-live .place--browser .place-state {
   background: var(--surface-elevated);

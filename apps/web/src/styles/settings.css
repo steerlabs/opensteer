@@ -321,10 +321,12 @@
   .settings-layout__main {
     --ground: var(--fill-sheet);
     overflow: clip;
-    border: 1px solid;
-    border-color: var(--rim-sheet);
+    border: 1px solid var(--rim-sheet);
     border-radius: var(--radius-lg);
-    background: var(--ground);
+    background:
+      linear-gradient(var(--ground) 0 0) padding-box,
+      var(--light-sheet),
+      var(--ground);
     box-shadow: var(--edge-sheet);
   }
 

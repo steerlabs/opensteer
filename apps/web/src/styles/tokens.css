@@ -146,12 +146,15 @@
   --rim-selected: rgb(var(--light) / 12%);
   --rim-accent: color-mix(in srgb, var(--ember), var(--ink-on-ember) 24%);
   --rim-attention: color-mix(in srgb, var(--ember) 26%, transparent);
-  /* A sheet is lit from above: top, sides and bottom, for `border-color`. An
-     even rim faint enough for a surface that size vanishes against the
-     sheet's own fill. It stays a real border, not a painted gradient: the
-     desktop's live page clears the sheet's fill, and forced colours drop
-     gradients. */
-  --rim-sheet: rgb(var(--light) / 22%) rgb(var(--light) / 10%) rgb(var(--light) / 7%);
+  /* A sheet is lit from above. Its rim is an even real border, which forced
+     colours keep; the light is --light-sheet, a background layer under the
+     border that fades down the shoulders. Per-side border colours would
+     switch abruptly at each corner's mitre. The layer ends above the sheet's
+     opaque first row, so the desktop's live page, which clears the sheet's
+     fill, keeps the light without it tinting the page. */
+  --rim-sheet: rgb(var(--light) / 9%);
+  --light-sheet: linear-gradient(rgb(var(--light) / 13%), 35%, transparent) top / 100% 40px
+    no-repeat border-box;
 
   --edge-plate: inset 0 1px 0 rgb(var(--light) / 7%);
   --edge-accent: inset 0 1px 0 rgb(255 255 255 / 50%);
@@ -297,7 +300,7 @@
     --rim-plate: rgb(var(--light) / 22%);
     --rim-selected: rgb(var(--light) / 40%);
     --rim-control: rgb(var(--light) / 55%);
-    --rim-sheet: rgb(var(--light) / 32%) rgb(var(--light) / 24%) rgb(var(--light) / 20%);
+    --rim-sheet: rgb(var(--light) / 24%);
     --edge-plate: inset 0 1px 0 rgb(var(--light) / 14%);
   }
 }
