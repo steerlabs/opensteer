@@ -334,12 +334,12 @@ try {
         );
         await page.emulateMedia({ reducedMotion: "reduce" });
         const animations = await page
-          .locator(".task-state__spinner")
+          .locator(".working-ring:not([data-settling])")
           .evaluateAll((els) => els.map((el) => getComputedStyle(el).animationName));
         expectThat(
           { animations },
           animations.length > 0 && animations.every((name) => name === "none"),
-          "working spinners still animate under reduced motion",
+          "working rings still turn under reduced motion",
         );
         return { ...observed, animations };
       },
