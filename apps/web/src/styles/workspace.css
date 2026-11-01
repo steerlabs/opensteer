@@ -1322,6 +1322,7 @@ button.side-needs:hover {
   /* The head's own rule is the bar's last pixel. */
   height: calc(var(--conv-header-height) - 1px);
   min-width: 0;
+  container: conv-header-bar / inline-size;
 }
 
 .workspace--work .conv-header {
@@ -1365,7 +1366,8 @@ button.side-needs:hover {
   align-items: center;
   gap: var(--space-8);
   flex: 1;
-  min-width: 0;
+  /* However much the bar holds, the name keeps a readable floor. */
+  min-width: min(96px, 40%);
 }
 
 .conv-header__title {
@@ -3381,6 +3383,22 @@ html[data-tab-sorting] * {
 .task-family-button svg {
   width: 14px;
   height: 14px;
+}
+
+/* A narrow bar keeps the name readable: the mark's badge alone says it needs
+   the reader, the reason waits in the transcript, and the tasks' glance shows
+   one running mark and its count, leaving automations to its panel. It comes
+   after the rules it overrides. */
+@container conv-header-bar (max-width: 479px) {
+  .conv-header__state,
+  .conv-header__cause,
+  .task-family-button__automations--separated {
+    display: none;
+  }
+
+  .task-family-button__marks .task-mark + .task-mark {
+    display: none;
+  }
 }
 
 .popover.popover--task-family {
