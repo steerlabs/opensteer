@@ -104,7 +104,7 @@ it("keeps search pagination available without claiming unread pages have no matc
   }
 });
 
-it("keeps asked order across metadata updates and retains the open Done task", async () => {
+it("moves a task only when a person asks it for something", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   const base = client.getSnapshot();
   const template = base.tasks!.entries.find(({ thread }) => thread.role === "work")!;
@@ -112,10 +112,12 @@ it("keeps asked order across metadata updates and retains the open Done task", a
     ...template,
     thread: {
       ...template.thread,
+      id: "thr_00000000-0000-4000-8000-000000009998",
       title: "Older",
       status: "idle" as const,
-      doneAt: "2026-10-01T00:00:00Z",
+      doneAt: null,
       askedAt: "2026-10-01T00:00:00Z",
+      updatedAt: "2026-10-01T00:00:00Z",
     },
   };
   const b = {
@@ -124,8 +126,8 @@ it("keeps asked order across metadata updates and retains the open Done task", a
       ...a.thread,
       id: "thr_00000000-0000-4000-8000-000000009999",
       title: "Newer",
-      doneAt: null,
       askedAt: "2026-10-02T00:00:00Z",
+      updatedAt: "2026-10-02T00:00:00Z",
     },
   };
   let entries = [a, b];
@@ -143,7 +145,6 @@ it("keeps asked order across metadata updates and retains the open Done task", a
       <TasksPane
         deploymentId="test"
         hostClient={client}
-        openThreadId={a.thread.id}
         query=""
         workspaceId={null}
         onOpenTask={() => {}}
@@ -156,13 +157,19 @@ it("keeps asked order across metadata updates and retains the open Done task", a
       "Newer",
       "Older",
     ]);
-    entries = [{ ...a, thread: { ...a.thread, askedAt: "2026-10-03T00:00:00Z" } }, b];
+    // Its agent replying, renaming it or changing its model updates it, but nobody asked.
+    entries = [{ ...a, thread: { ...a.thread, updatedAt: "2026-10-03T00:00:00Z" } }, b];
+    await act(async () => render());
+    expect([...node.querySelectorAll("[data-task]")].map((row) => row.textContent)).toEqual([
+      "Newer",
+      "Older",
+    ]);
+    entries = [{ ...a, thread: { ...a.thread, askedAt: "2026-10-04T00:00:00Z" } }, b];
     await act(async () => render());
     expect([...node.querySelectorAll("[data-task]")].map((row) => row.textContent)).toEqual([
       "Older",
       "Newer",
     ]);
-    expect(node.textContent).not.toContain("Done");
   } finally {
     await act(async () => root.unmount());
     client.dispose();

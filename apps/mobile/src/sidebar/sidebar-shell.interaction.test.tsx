@@ -37,6 +37,7 @@ const harness = vi.hoisted(() => ({
     docked: boolean;
     selectedPlace: unknown;
     selectedThreadId: string | null;
+    openThreadId: string | null;
     visible: boolean;
     actions: {
       onOpenPlace: (destination: object) => void;
@@ -382,8 +383,14 @@ describe("the sidebar as the window changes shape", () => {
       params: tabBRoute,
     };
     const { render } = await mount([home, page]);
-    expect(lastPanel()).toMatchObject({ docked: true, selectedPlace: tabB, visible: true });
-    // A conversation's own page, opened from it, is the same page and keeps it too.
+    expect(lastPanel()).toMatchObject({
+      docked: true,
+      selectedPlace: tabB,
+      openThreadId: null,
+      visible: true,
+    });
+    // A conversation's own page, opened from it, is the same page and keeps it
+    // too, and its conversation is still on screen, so its task stays put.
     const owned = {
       key: "owned-key",
       name: "WorkspaceBrowser",
@@ -393,6 +400,7 @@ describe("the sidebar as the window changes shape", () => {
     expect(lastPanel()).toMatchObject({
       docked: true,
       selectedPlace: { kind: "browser", sessionId: "s", tabId: "t" },
+      openThreadId: "thread-a",
     });
     await render();
     expect(harness.dispatch).not.toHaveBeenCalled();

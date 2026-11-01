@@ -6472,6 +6472,11 @@ export const threadEventHistoryMigration: Migration = {
   },
 };
 
+/**
+ * When a person last asked each Thread for work. History cannot tell an input
+ * refused at admission from one cancelled after it, so every human input that
+ * could start or join a turn counts.
+ */
 export const threadAskedAtMigration: Migration = {
   async up(database) {
     await sql`
@@ -6482,7 +6487,6 @@ export const threadAskedAtMigration: Migration = {
         join thread_inputs as input on input.message_id = message.id
         where message.kind = 'input' and message.author ->> 'kind' = 'human'
           and input.policy <> 'report'
-          and input.cancel_reason is distinct from 'execution-authority-unavailable'
         group by message.thread_id
       ), times as (
         select thread.id, date_trunc('milliseconds', coalesce(asked.asked_at, thread.created_at)) as asked_at

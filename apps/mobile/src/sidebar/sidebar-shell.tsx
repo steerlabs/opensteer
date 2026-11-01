@@ -178,6 +178,12 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     selectedPlace !== null &&
     focusedParams?.["scope"] === undefined &&
     typeof focusedParams?.["threadId"] === "string";
+  // The task whose conversation is on screen, alone or beside its page.
+  const pageThreadId =
+    aroundFolds && typeof focusedParams?.["threadId"] === "string"
+      ? focusedParams["threadId"]
+      : null;
+  const openThreadId = selectedThreadId ?? pageThreadId;
 
   // The arrangement last drawn, held across renders so a width hovering on
   // the threshold does not flip it.
@@ -423,6 +429,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   scroll={scrollMemory}
                   selectedPlace={selectedPlace}
                   selectedThreadId={selectedThreadId}
+                  openThreadId={openThreadId}
                   visible={visible}
                 />
               )
@@ -458,6 +465,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       scroll={scrollMemory}
                       selectedPlace={selectedPlace}
                       selectedThreadId={selectedThreadId}
+                      openThreadId={openThreadId}
                       visible
                     />
                   </Pane>

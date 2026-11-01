@@ -233,6 +233,19 @@ describe("taskList", () => {
     const read = taskList(snapshot([old, done]));
     expect(titles(read.ready)).toEqual(["Still open"]);
     expect(titles(read.done)).toEqual(["Shared Done"]);
+    // Opened from the Done shelf, it is already where it belongs and stays there.
+    const fromShelf = taskList(snapshot([old, done]), {
+      openThreadId: done.thread.id,
+      previous: read,
+    });
+    expect(titles(fromShelf.ready)).toEqual(["Still open"]);
+    expect(titles(fromShelf.done)).toEqual(["Shared Done"]);
+    // Opened from Ready while unread, reading it keeps it there.
+    const fromReady = taskList(snapshot([old, done]), {
+      openThreadId: done.thread.id,
+      previous: unread,
+    });
+    expect(titles(fromReady.ready)).toEqual(["Still open", "Shared Done"]);
   });
 
   it("keeps Chat apart from every group, and counts as running only what works now", () => {

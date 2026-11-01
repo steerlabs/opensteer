@@ -115,10 +115,16 @@ export function sameTaskListSource(previous: TaskListSource, next: TaskListSourc
 
 export interface TaskListOptions {
   /**
-   * The task this screen shows. Opening a task must not move it, so a Done one
-   * stays where it was until the reader has read it and left it.
+   * The task this screen shows. Opening a task must not move it: reading it
+   * would otherwise send a Done one from Ready to Done under the reader. It
+   * stays in Ready until it is no longer open.
    */
   readonly openThreadId?: string | null | undefined;
+  /**
+   * The list this screen last drew. A Done task opened from the Done shelf is
+   * already where it belongs, so it stays there rather than rising to Ready.
+   */
+  readonly previous?: Pick<WorkspaceTaskList, "done"> | null | undefined;
 }
 
 /** The reader's tasks across every Workspace, with their Chat apart. */
@@ -245,11 +251,14 @@ function arrange(
   const working: TaskRow[] = [];
   const ready: TaskRow[] = [];
   const done: TaskRow[] = [];
+  const { openThreadId, previous } = options;
+  const holdOpen =
+    openThreadId != null && !previous?.done.some(({ threadId }) => threadId === openThreadId);
   for (const entry of entries) {
     const row = rowOf(snapshot, entry, asks.get(entry.thread.id) ?? []);
     if (entry.thread.id === snapshot.homeThreadId) chat = row;
     else if (row.done)
-      (row.unread || row.threadId === options.openThreadId ? ready : done).push(row);
+      (row.unread || (holdOpen && row.threadId === openThreadId) ? ready : done).push(row);
     else if (row.stopped) ready.push(row);
     else working.push(row);
   }

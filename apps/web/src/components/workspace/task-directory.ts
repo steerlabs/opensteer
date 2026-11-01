@@ -40,7 +40,7 @@ export function useTaskDirectory(
   // keeps the same directory, so the rows that read it do not re-render.
   const previous = useRef<{ readonly key: string; readonly value: TaskDirectory } | null>(null);
   return useMemo(() => {
-    const value = taskDirectory(snapshot, openThreadId);
+    const value = taskDirectory(snapshot, openThreadId, previous.current?.value.list);
     const key = JSON.stringify([
       value.list,
       value.attention,
@@ -58,8 +58,12 @@ export function useTaskDirectory(
   }, [snapshot, openThreadId]);
 }
 
-function taskDirectory(snapshot: HostSnapshot, openThreadId?: string | null): TaskDirectory {
-  const list = taskList(snapshot, { openThreadId });
+function taskDirectory(
+  snapshot: HostSnapshot,
+  openThreadId: string | null | undefined,
+  previous: TaskList | undefined,
+): TaskDirectory {
+  const list = taskList(snapshot, { openThreadId, previous });
   const rows = new Map<string, TaskRow>();
   for (const row of [
     ...(list.chat ? [list.chat] : []),

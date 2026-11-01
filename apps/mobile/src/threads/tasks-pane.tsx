@@ -60,7 +60,6 @@ type TasksRow =
 
 export function TasksPane(props: {
   readonly deploymentId: string;
-  readonly openThreadId?: string | null;
   /** Content above the list, scrolling with it: a specialist's own heading. */
   readonly header?: ReactNode;
   readonly hostClient: HostClient;
@@ -100,10 +99,7 @@ export function TasksPane(props: {
   const now = Date.now();
   const read =
     workspaceId === null ? snapshot.tasks : (snapshot.workspaceTasks[workspaceId] ?? null);
-  const list =
-    workspaceId === null
-      ? taskList(snapshot, { openThreadId: props.openThreadId })
-      : workspaceTaskList(snapshot, workspaceId, { openThreadId: props.openThreadId });
+  const list = workspaceId === null ? taskList(snapshot) : workspaceTaskList(snapshot, workspaceId);
   const searching = query.trim() !== "";
   // The shared matcher decides what a query finds; the list decides the order.
   const matches = searching
