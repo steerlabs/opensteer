@@ -220,7 +220,7 @@ has `snapshot.json`; retain the newest three. See
 Restore with Opensteer and PostgreSQL stopped, preserving the current data for
 recovery. Installing an older binary alone is not a restore. A database snapshot
 does not include native browser storage, and restoring a preconversion DB must
-not revive its old vault seed as authority.
+never recreate or replace its established native directory.
 
 Recovery requires a Host that understands native profiles, with named-profile
 execution unavailable until every profile-owning runtime storage root reconciles
