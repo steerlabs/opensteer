@@ -31,13 +31,16 @@ export function homeThreadKind(
 }
 
 /** The task list, read once for every mark and row that names a task. */
-export function useTaskDirectory(hostClient: HostClient): TaskDirectory {
+export function useTaskDirectory(
+  hostClient: HostClient,
+  openThreadId?: string | null,
+): TaskDirectory {
   const snapshot = useTaskSnapshot(hostClient);
   // A snapshot that changed nothing a mark or row says (a tab's catalog, say)
   // keeps the same directory, so the rows that read it do not re-render.
   const previous = useRef<{ readonly key: string; readonly value: TaskDirectory } | null>(null);
   return useMemo(() => {
-    const value = taskDirectory(snapshot);
+    const value = taskDirectory(snapshot, openThreadId);
     const key = JSON.stringify([
       value.list,
       value.attention,
@@ -52,11 +55,11 @@ export function useTaskDirectory(hostClient: HostClient): TaskDirectory {
     if (previous.current?.key === key) return previous.current.value;
     previous.current = { key, value };
     return value;
-  }, [snapshot]);
+  }, [snapshot, openThreadId]);
 }
 
-function taskDirectory(snapshot: HostSnapshot): TaskDirectory {
-  const list = taskList(snapshot);
+function taskDirectory(snapshot: HostSnapshot, openThreadId?: string | null): TaskDirectory {
+  const list = taskList(snapshot, { openThreadId });
   const rows = new Map<string, TaskRow>();
   for (const row of [
     ...(list.chat ? [list.chat] : []),

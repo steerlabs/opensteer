@@ -1,3 +1,4 @@
+import { RowMotion } from "./workspace/row-motion.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router";
 import { CHAT_THREAD_TITLE, type ThreadAccessMode } from "@opensteer/core";
@@ -585,63 +586,74 @@ function SpecialistTasks({ workspaceId }: { readonly workspaceId: string }) {
     { done: false, id: "specialist-ready", rows: list.ready, title: "Ready" },
     { done: true, id: "specialist-done", rows: list.done, title: "Done" },
   ].filter((group) => group.rows.length > 0);
+  const motionList = useRef<HTMLElement | null>(null);
   return (
-    <section aria-label="Tasks" className="specialist-tasks">
-      {loaded ? (
-        groups.length === 0 ? (
-          <p className="specialist-tasks__empty">No tasks yet.</p>
-        ) : (
-          groups.map((group) => (
-            <TaskGroup
-              count={group.done ? null : group.rows.length}
-              id={group.id}
-              key={group.id}
-              title={group.title}
+    <RowMotion
+      list={motionList}
+      signature={groups
+        .map((group) => group.id + group.rows.map((row) => row.threadId).join(","))
+        .join(";")}
+      lifted={false}
+      snap={false}
+      nested
+    >
+      <section aria-label="Tasks" className="specialist-tasks" ref={motionList}>
+        {loaded ? (
+          groups.length === 0 ? (
+            <p className="specialist-tasks__empty">No tasks yet.</p>
+          ) : (
+            groups.map((group) => (
+              <TaskGroup
+                count={group.done ? null : group.rows.length}
+                id={group.id}
+                key={group.id}
+                title={group.title}
+              >
+                {group.rows.map((row) => (
+                  <li key={row.threadId} data-motion-key={row.threadId}>
+                    <TaskRowLink
+                      done={group.done}
+                      onSetDone={setTaskDone}
+                      row={row}
+                      time={taskTime(row, now)}
+                    />
+                  </li>
+                ))}
+              </TaskGroup>
+            ))
+          )
+        ) : failed ? (
+          <p className="specialist-tasks__empty">
+            Couldn’t load this specialist’s tasks.{" "}
+            <button
+              className="link-btn"
+              onClick={() => setAttempt((value) => value + 1)}
+              type="button"
             >
-              {group.rows.map((row) => (
-                <li key={row.threadId}>
-                  <TaskRowLink
-                    done={group.done}
-                    onSetDone={setTaskDone}
-                    row={row}
-                    time={taskTime(row, now)}
-                  />
-                </li>
-              ))}
-            </TaskGroup>
-          ))
-        )
-      ) : failed ? (
-        <p className="specialist-tasks__empty">
-          Couldn’t load this specialist’s tasks.{" "}
+              Try again
+            </button>
+          </p>
+        ) : (
+          <LoadingRows label="Loading tasks" rows={2} />
+        )}
+        {list.hasMore ? (
           <button
-            className="link-btn"
-            onClick={() => setAttempt((value) => value + 1)}
+            className="btn btn--ghost btn--small specialist-tasks__more"
+            disabled={loadingMore}
+            onClick={() => {
+              setLoadingMore(true);
+              void hostClient
+                .loadEarlierTasks(workspaceId)
+                .catch(reportActionError)
+                .finally(() => setLoadingMore(false));
+            }}
             type="button"
           >
-            Try again
+            {loadingMore ? "Loading…" : "Show more"}
           </button>
-        </p>
-      ) : (
-        <LoadingRows label="Loading tasks" rows={2} />
-      )}
-      {list.hasMore ? (
-        <button
-          className="btn btn--ghost btn--small specialist-tasks__more"
-          disabled={loadingMore}
-          onClick={() => {
-            setLoadingMore(true);
-            void hostClient
-              .loadEarlierTasks(workspaceId)
-              .catch(reportActionError)
-              .finally(() => setLoadingMore(false));
-          }}
-          type="button"
-        >
-          {loadingMore ? "Loading…" : "Show more"}
-        </button>
-      ) : null}
-    </section>
+        ) : null}
+      </section>
+    </RowMotion>
   );
 }
 

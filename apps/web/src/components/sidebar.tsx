@@ -124,7 +124,6 @@ export function Sidebar({
   const { nav } = workspace;
   const { pathname } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
-  const directory = useTaskDirectory(hostClient);
   const places = usePlaceList(hostClient);
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const [filter, setFilter] = useState<TabFilterValue>(allTabs);
@@ -205,15 +204,16 @@ export function Sidebar({
   const [tasksShare, commitTasksShare] = useTasksShare();
   useWholeRows(listsRef, !collapsed);
   const { openDrawer } = workspace;
-  const { list, homeThreadId } = directory;
   const openThreadId =
     pathname === "/"
-      ? homeThreadId
+      ? snapshot.homeThreadId
       : pathname.startsWith("/threads/")
         ? decodeURIComponent(pathname.slice("/threads/".length))
         : null;
-  // A helper has no row, so the task it works for, or Chat, is where the reader is.
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
+  const directory = useTaskDirectory(hostClient, openRowThreadId);
+  const { list, homeThreadId } = directory;
+  const tasksList = useRef<HTMLUListElement | null>(null);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -526,19 +526,26 @@ export function Sidebar({
               </Link>
             </div>
             {rows.length > 0 ? (
-              <SideList labelledBy="sidebar-tasks" whole>
-                {rows.map((row) => (
-                  <TaskRowItem
-                    hostClient={hostClient}
-                    ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
-                    key={row.threadId}
-                    onNavigate={onCloseMobile}
-                    onSetDone={onSetTaskDone}
-                    open={row.threadId === openRowThreadId}
-                    row={row}
-                    workspace={workspace}
-                  />
-                ))}
+              <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
+                <RowMotion
+                  snap={false}
+                  list={tasksList}
+                  signature={rows.map((row) => row.threadId).join(",")}
+                  lifted={false}
+                >
+                  {rows.map((row) => (
+                    <TaskRowItem
+                      hostClient={hostClient}
+                      ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
+                      key={row.threadId}
+                      onNavigate={onCloseMobile}
+                      onSetDone={onSetTaskDone}
+                      open={row.threadId === openRowThreadId}
+                      row={row}
+                      workspace={workspace}
+                    />
+                  ))}
+                </RowMotion>
               </SideList>
             ) : null}
           </section>
@@ -827,6 +834,7 @@ const TaskRowItem = memo(function TaskRowItem({
     .join(" — ");
   return (
     <li
+      data-motion-key={row.threadId}
       className={classes.filter(Boolean).join(" ")}
       data-thread-id={threadId}
       onContextMenu={(event) => {

@@ -249,6 +249,8 @@ export interface HarnessSummary {
 }
 
 export interface ThreadSummary {
+  /** When a person last asked for work; task lists order by this time. */
+  askedAt: string;
   doneAt: string | null;
   icon: WorkspaceIconName | null;
   color: MarkColor | null;

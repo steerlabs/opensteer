@@ -458,6 +458,13 @@ export const CHAT_THREAD_TITLE = "Chat";
 
 export const ThreadSchema = z.object({
   accessMode: ThreadAccessModeSchema,
+  /**
+   * When a person last asked this Thread for work: their newest message that
+   * started or joined its turn, else when it was created. Task lists order by
+   * it, so a task moves only when someone asks it for something. Older Hosts
+   * and durable Thread events carry no such field.
+   */
+  askedAt: IsoDateTimeSchema.optional(),
   capabilityProfileId: AgentCapabilityProfileIdSchema,
   continuationIdentity: ProviderContinuationIdentitySchema.nullable(),
   createdAt: IsoDateTimeSchema,
