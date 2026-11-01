@@ -33,9 +33,6 @@ catalogs:
     '@earendil-works/pi-coding-agent':
       specifier: 0.87.1
       version: 0.87.1
-    '@electron-internal/extract-zip':
-      specifier: 1.0.5
-      version: 1.0.5
     '@fastify/compress':
       specifier: 9.3.0
       version: 9.3.0
@@ -63,6 +60,9 @@ catalogs:
     fastify:
       specifier: 5.12.6
       version: 5.12.6
+    fflate:
+      specifier: 0.8.2
+      version: 0.8.2
     jose:
       specifier: 6.2.8
       version: 6.2.8
@@ -221,7 +221,7 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
       fflate:
-        specifier: 0.8.2
+        specifier: 'catalog:'
         version: 0.8.2
       kysely:
         specifier: 'catalog:'
@@ -1727,9 +1727,6 @@ importers:
 
   packages/harness-antigravity:
     dependencies:
-      '@electron-internal/extract-zip':
-        specifier: 'catalog:'
-        version: 1.0.5
       '@opensteer/core':
         specifier: workspace:*
         version: link:../core
@@ -1742,6 +1739,9 @@ importers:
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.2
       zod:
         specifier: 'catalog:'
         version: 4.6.7

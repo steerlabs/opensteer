@@ -1191,7 +1191,7 @@ label.machine-access__grant-head {
 }
 
 .settings-engine__update-state {
-  color: var(--accent-strong);
+  color: var(--ember);
   font-size: var(--text-sm);
   margin-left: auto;
 }

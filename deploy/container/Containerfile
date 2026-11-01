@@ -123,9 +123,13 @@ COPY packages/control-plane-protocol/package.json ./packages/control-plane-proto
 COPY packages/core/package.json ./packages/core/package.json
 COPY packages/database/package.json ./packages/database/package.json
 COPY packages/deployment-authority/package.json ./packages/deployment-authority/package.json
+COPY packages/harness-acp/package.json ./packages/harness-acp/package.json
+COPY packages/harness-antigravity/package.json ./packages/harness-antigravity/package.json
 COPY packages/harness-claude/package.json ./packages/harness-claude/package.json
 COPY packages/harness-codex/package.json ./packages/harness-codex/package.json
 COPY packages/harness-cursor/package.json ./packages/harness-cursor/package.json
+COPY packages/harness-grok/package.json ./packages/harness-grok/package.json
+COPY packages/harness-muse/package.json ./packages/harness-muse/package.json
 COPY packages/harness-opencode/package.json ./packages/harness-opencode/package.json
 COPY packages/harness-pi/package.json ./packages/harness-pi/package.json
 COPY packages/harness/package.json ./packages/harness/package.json
@@ -248,9 +252,13 @@ COPY packages/control-plane-protocol/package.json ./packages/control-plane-proto
 COPY packages/core/package.json ./packages/core/package.json
 COPY packages/database/package.json ./packages/database/package.json
 COPY packages/deployment-authority/package.json ./packages/deployment-authority/package.json
+COPY packages/harness-acp/package.json ./packages/harness-acp/package.json
+COPY packages/harness-antigravity/package.json ./packages/harness-antigravity/package.json
 COPY packages/harness-claude/package.json ./packages/harness-claude/package.json
 COPY packages/harness-codex/package.json ./packages/harness-codex/package.json
 COPY packages/harness-cursor/package.json ./packages/harness-cursor/package.json
+COPY packages/harness-grok/package.json ./packages/harness-grok/package.json
+COPY packages/harness-muse/package.json ./packages/harness-muse/package.json
 COPY packages/harness-opencode/package.json ./packages/harness-opencode/package.json
 COPY packages/harness-pi/package.json ./packages/harness-pi/package.json
 COPY packages/harness/package.json ./packages/harness/package.json

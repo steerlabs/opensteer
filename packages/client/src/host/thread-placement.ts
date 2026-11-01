@@ -428,7 +428,7 @@ export function selectionForModelEffort(
   const tierRank = (tier: ModelEffortTier) => modelEffortTiers.indexOf(tier);
   const value =
     effort === "highest"
-      ? offered.toSorted((left, right) => tierRank(right.tier) - tierRank(left.tier))[0]?.value
+      ? [...offered].sort((left, right) => tierRank(right.tier) - tierRank(left.tier))[0]?.value
       : offered.find(({ tier }) => tier === effort)?.value;
   return value === undefined
     ? selectionForModel(model)

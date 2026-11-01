@@ -12,11 +12,11 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@electron-internal/extract-zip": "catalog:",
     "@opensteer/core": "workspace:*",
     "@opensteer/harness": "workspace:*",
     "@opensteer/harness-acp": "workspace:*",
     "@opensteer/shared": "workspace:*",
+    "fflate": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

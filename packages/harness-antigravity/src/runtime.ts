@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { createReadStream, createWriteStream, type WriteStream } from "node:fs";
+import { once } from "node:events";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import {
   lstat,
@@ -12,7 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import extractZip from "@electron-internal/extract-zip";
+import { Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import { z } from "zod";
 import {
   antigravityPlatform,
@@ -54,7 +56,6 @@ export interface PrepareAntigravityRuntimeOptions {
 
 export interface PrepareAntigravityRuntimeReleaseOptions extends PrepareAntigravityRuntimeOptions {
   readonly asset: AntigravityReleaseAsset;
-  readonly extract?: typeof extractZip;
   readonly version: string;
 }
 
@@ -141,6 +142,57 @@ async function downloadArchive(
   }
 }
 
+/**
+ * Streams the verified archive into `directory`, writing only the manifest's
+ * members. Pure JavaScript, so the Runner bundle carries no native unzipper.
+ */
+async function extractReleaseMembers(
+  archive: string,
+  directory: string,
+  asset: AntigravityReleaseAsset,
+  signal: AbortSignal,
+): Promise<void> {
+  const expected = new Set<string>(asset.members.map((member) => member.name));
+  const outputs: WriteStream[] = [];
+  let failure: Error | undefined;
+  const unzip = new Unzip((file) => {
+    if (!expected.has(file.name)) {
+      failure ??= new Error("The Antigravity archive contains unexpected members");
+      return;
+    }
+    const output = createWriteStream(join(directory, file.name), { flags: "wx", mode: 0o700 });
+    output.on("error", (error) => {
+      failure ??= error;
+    });
+    outputs.push(output);
+    file.ondata = (error, chunk, final) => {
+      if (error) {
+        failure ??= error;
+        output.destroy();
+        return;
+      }
+      output.write(chunk);
+      if (final) output.end();
+    };
+    file.start();
+  });
+  unzip.register(UnzipInflate);
+  unzip.register(UnzipPassThrough);
+  for await (const chunk of createReadStream(archive, { signal })) {
+    unzip.push(chunk as Uint8Array);
+    if (failure) throw failure;
+    // Inflating is synchronous; let the disk catch up before reading more.
+    for (const output of outputs) if (output.writableNeedDrain) await once(output, "drain");
+  }
+  unzip.push(new Uint8Array(0), true);
+  await Promise.all(
+    outputs.map((output) =>
+      output.writableFinished || output.destroyed ? undefined : once(output, "finish"),
+    ),
+  );
+  if (failure) throw failure;
+}
+
 async function inspectExtractedRelease(
   directory: string,
   asset: AntigravityReleaseAsset,
@@ -201,7 +253,7 @@ export async function prepareAntigravityRuntimeRelease(
     const signal = AbortSignal.any([options.signal, AbortSignal.timeout(45 * 60_000)]);
     await downloadArchive(asset, archive, options.fetch ?? fetch, signal);
     await mkdir(extracted, { mode: 0o700 });
-    await (options.extract ?? extractZip)(archive, { dir: extracted });
+    await extractReleaseMembers(archive, extracted, asset, signal);
     await inspectExtractedRelease(extracted, asset);
     const runtime = releasePaths(extracted, options.version);
     const identity = await options.validate(runtime, signal);
