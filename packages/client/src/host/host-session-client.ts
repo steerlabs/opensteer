@@ -2631,27 +2631,36 @@ export class HttpHostClient {
     const markers = new Map<string, Sequence>();
     this.#readStateLoads.add(markers);
     try {
-      let page = await this.#readThreadHistory(threadId);
-      if (!this.#viewerStillCurrent(generation, userId)) return;
+      const first = await this.#readLatestHistory(threadId, generation, userId);
+      if (!first) return;
+      let latest = first;
       const overtaken = () => {
         const sequence = this.#invalidatedHydrations.get(threadId);
-        return sequence !== undefined && compareSequence(page.readState.asOfSequence, sequence) < 0;
+        return (
+          sequence !== undefined &&
+          compareSequence(latest.page.readState.asOfSequence, sequence) < 0
+        );
       };
       for (
         let attempt = 0;
         attempt < 3 &&
-        (overtaken() || this.#threadState.needsRead(page.thread, page.readState.asOfSequence));
+        (overtaken() ||
+          this.#threadState.needsRead(latest.page.thread, latest.page.readState.asOfSequence));
         attempt += 1
       ) {
-        const fresh = await this.#readThreadHistory(threadId);
-        if (compareSequence(fresh.readState.asOfSequence, page.readState.asOfSequence) >= 0)
-          page = fresh;
-        if (!this.#viewerStillCurrent(generation, userId)) return;
+        const fresh = await this.#readLatestHistory(threadId, generation, userId);
+        if (!fresh) return;
+        if (
+          compareSequence(fresh.page.readState.asOfSequence, latest.page.readState.asOfSequence) >=
+          0
+        )
+          latest = fresh;
       }
       if (overtaken())
         throw new Error("The connection changed while loading this conversation. Try again.");
+      const { history, page, window } = latest;
       this.#allowWorkspace(page.thread.workspaceId, generation);
-      let entries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
+      let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
       const pageMax = page.events.at(-1)?.sequence;
       const replayed = buffer.filter(
         (event) => pageMax === undefined || compareSequence(event.sequence, pageMax) > 0,
@@ -2660,12 +2669,12 @@ export class HttpHostClient {
       // The page is durable history only; whatever the Thread's Runs are
       // streaming right now is drawn again on top of it, less any stream the
       // page shows completed before the event stream has said so.
-      for (const event of [...page.events, ...replayed]) this.#live.complete(event);
+      for (const event of [...history, ...replayed]) this.#live.complete(event);
       const receivedAt = new Date().toISOString();
       for (const run of this.#live.threadRuns(threadId as ThreadId)) {
         entries = foldLiveRun(entries, run, receivedAt);
       }
-      for (const event of [...page.events, ...replayed]) this.#threadState.record(event);
+      for (const event of [...history, ...replayed]) this.#threadState.record(event);
       // History paging must not reconstruct today's selection from an old creation event.
       const summary = this.#threadState.reconcile(
         toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
@@ -2682,11 +2691,11 @@ export class HttpHostClient {
       this.#hydratedThreads.set(threadId, page.readState.asOfSequence);
       this.#update({
         ...this.#snapshot,
-        assignments: withAssignmentsFrom(this.#snapshot.assignments, [...page.events, ...replayed]),
+        assignments: withAssignmentsFrom(this.#snapshot.assignments, [...history, ...replayed]),
         threadLookups,
         threads,
         transcripts: { ...this.#snapshot.transcripts, [threadId]: entries },
-        transcriptWindows: { ...this.#snapshot.transcriptWindows, [threadId]: page.window },
+        transcriptWindows: { ...this.#snapshot.transcriptWindows, [threadId]: window },
       });
       if (workspaceId) this.#ensureWorkspaceChannel(workspaceId);
       if (this.#observedThreads.has(threadId)) this.#ensureRequests(threadId);
@@ -2707,12 +2716,62 @@ export class HttpHostClient {
     }
   }
 
-  async #readThreadHistory(threadId: string) {
+  /**
+   * The newest history page, and as many pages before it as it takes to reach
+   * something the Thread draws: its newest turns can all be ones it does not,
+   * such as Chat's silent background Runs. Null once the viewer has changed.
+   */
+  async #readLatestHistory(threadId: string, generation: number, userId: string | undefined) {
+    const page = await this.#readThreadHistory(threadId);
+    if (!this.#viewerStillCurrent(generation, userId)) return null;
+    const thread = toThreadSummary(
+      page.thread,
+      this.#snapshot.environments,
+      this.#snapshot.harnesses,
+    );
+    let history = page.events;
+    let window = page.window;
+    while (
+      window.hasMore &&
+      this.#drawnRowCount(
+        thread,
+        history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]),
+        withAssignmentsFrom(this.#snapshot.assignments, history),
+      ) === 0
+    ) {
+      const before = window.nextBefore;
+      if (!before) throw new Error("Thread event page is missing its continuation cursor.");
+      const older = await this.#readThreadHistory(threadId, before);
+      if (!this.#viewerStillCurrent(generation, userId)) return null;
+      if (older.window.hasMore && older.window.nextBefore === before)
+        throw new Error("Thread event page is missing its continuation cursor.");
+      history = [...older.events, ...history];
+      window = older.window;
+    }
+    return { history, page, window };
+  }
+
+  /** How many rows a Thread's transcript draws once its history is settled. */
+  #drawnRowCount(
+    thread: Pick<ThreadSummary, "id" | "role" | "inputQueuePaused">,
+    entries: readonly TranscriptEntry[],
+    assignments: HostSnapshot["assignments"],
+  ): number {
+    return drawnTranscriptRowKeys(entries, {
+      thread,
+      inputQueue: this.#snapshot.inputQueues[thread.id] ?? null,
+      assignments,
+      waitingRequests: this.#snapshot.waitingRequests,
+    }).length;
+  }
+
+  async #readThreadHistory(threadId: string, before?: string) {
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
+        ...(before ? { before } : {}),
         threadId,
         ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
       }),
@@ -5497,33 +5556,17 @@ export class HttpHostClient {
     const drawnRows = (snapshot: HostSnapshot) => {
       const thread = snapshot.threads.find((item) => item.id === threadId);
       return thread
-        ? drawnTranscriptRowKeys(snapshot.transcripts[threadId] ?? [], {
-            thread,
-            inputQueue: snapshot.inputQueues[threadId] ?? null,
-            assignments: snapshot.assignments,
-            waitingRequests: snapshot.waitingRequests,
-          }).length
+        ? this.#drawnRowCount(thread, snapshot.transcripts[threadId] ?? [], snapshot.assignments)
         : 0;
     };
     while (!scan.retired && this.#viewerStillCurrent(generation, userId)) {
       const thread = this.#snapshot.threads.find((item) => item.id === threadId);
       const currentWindow = this.#snapshot.transcriptWindows[threadId];
       if (!thread || currentWindow?.hasMore === false) return;
-      const before = currentWindow?.nextBefore;
-      const page = unwrapRpcResult(
-        await this.rpc["thread.events.list"]({
-          ...(this.#capabilities?.includes("place-events-v1")
-            ? { placeEvents: "include" as const }
-            : {}),
-          ...(before ? { before } : {}),
-          ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
-          threadId,
-        }),
-      );
+      const before = currentWindow?.nextBefore ?? undefined;
+      const page = await this.#readThreadHistory(threadId, before);
       if (scan.retired || !this.#viewerStillCurrent(generation, userId)) return;
       if (!this.#snapshot.threads.some((item) => item.id === threadId)) return;
-      if (page.threadId !== threadId || page.thread.id !== threadId)
-        throw new Error("Thread event page mismatch.");
       // A reconnect hydration may have replaced the window during this read.
       if (this.#snapshot.transcriptWindows[threadId] !== currentWindow) return;
       for (const event of page.events) this.#threadState.record(event);

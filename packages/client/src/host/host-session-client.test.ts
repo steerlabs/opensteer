@@ -2651,7 +2651,6 @@ describe("HttpHostClient durable realtime", () => {
         stuck?: boolean;
         holdSecond?: boolean;
         holdFirst?: boolean;
-        empty?: boolean;
         folded?: boolean;
         /** The newest page starts inside a Run a steer split, so no Run entry heads its first trace. */
         cut?: boolean;
@@ -2703,11 +2702,7 @@ describe("HttpHostClient durable realtime", () => {
       const secondAnswer = Promise.withResolvers<void>();
       const requests: Record<string, unknown>[] = [];
       let viewerId = ownerId;
-      let warming =
-        options.empty === true ||
-        options.folded === true ||
-        options.cut === true ||
-        options.shown !== undefined;
+      let warming = options.folded === true || options.cut === true || options.shown !== undefined;
       const socket = new FakeSocket();
       const client = createHttpHostClient({
         capabilities: options.turnPages === false ? [] : ["history-turns-v1"],
@@ -2734,41 +2729,39 @@ describe("HttpHostClient durable realtime", () => {
             });
           if (warming) {
             warming = false;
-            const events = options.empty
-              ? []
-              : options.cut
-                ? [
-                    agentEvent(workspace.id, thread.id, recent.runId, "3", "reasoning.completed", {
-                      blockId: "cut-step",
-                      text: "Work before the steer",
-                    }),
-                    agentEvent(workspace.id, thread.id, recent.runId, "4", "message.created", {
-                      input: makeThreadInput(steer),
-                      message: steer,
-                    }),
-                    agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
-                      status: "completed",
-                      replyMessageId: recent.id,
-                    }),
-                    agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
-                      input: null,
-                      message: recent,
-                    }),
-                  ]
-                : [
-                    ...(options.folded
-                      ? [
-                          agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
-                            status: "completed",
-                            replyMessageId: recent.id,
-                          }),
-                        ]
-                      : []),
-                    agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
-                      input: null,
-                      message: recent,
-                    }),
-                  ];
+            const events = options.cut
+              ? [
+                  agentEvent(workspace.id, thread.id, recent.runId, "3", "reasoning.completed", {
+                    blockId: "cut-step",
+                    text: "Work before the steer",
+                  }),
+                  agentEvent(workspace.id, thread.id, recent.runId, "4", "message.created", {
+                    input: makeThreadInput(steer),
+                    message: steer,
+                  }),
+                  agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                    status: "completed",
+                    replyMessageId: recent.id,
+                  }),
+                  agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                    input: null,
+                    message: recent,
+                  }),
+                ]
+              : [
+                  ...(options.folded
+                    ? [
+                        agentEvent(workspace.id, thread.id, recent.runId, "5", "run.completed", {
+                          status: "completed",
+                          replyMessageId: recent.id,
+                        }),
+                      ]
+                    : []),
+                  agentEvent(workspace.id, thread.id, recent.runId, "6", "message.created", {
+                    input: null,
+                    message: recent,
+                  }),
+                ];
             return json({
               thread,
               threadId: thread.id,
@@ -2851,7 +2844,7 @@ describe("HttpHostClient durable realtime", () => {
         snapshot: {
           ...workspaceSnapshot(workspace, "6"),
           threads: [thread],
-          messages: options.empty ? [] : [recent],
+          messages: [recent],
           messageWindows: [
             {
               byteCount: 256,
@@ -2880,16 +2873,18 @@ describe("HttpHostClient durable realtime", () => {
         firstAnswer,
         secondAsked,
         secondAnswer,
-        receiveHuman: () =>
+        receiveHuman: () => {
+          const live = { ...makeMessage(thread.id, "input", "Live"), sequence: sequence("7") };
           socket.receive({
             type: "host.events",
             events: [
               agentEvent(workspace.id, thread.id, null, "7", "message.created", {
-                input: makeThreadInput(recent),
-                message: { ...recent, sequence: sequence("7") },
+                input: makeThreadInput(live),
+                message: live,
               }),
             ],
-          }),
+          });
+        },
         changeViewer: async () => {
           viewerId = createId("user");
           await client.refresh();
@@ -2954,7 +2949,7 @@ describe("HttpHostClient durable realtime", () => {
     );
 
     it("does not count a live human message as older-page progress", async () => {
-      const f = await setupHistory({ empty: true, holdFirst: true });
+      const f = await setupHistory({ holdFirst: true, shown: "active" });
       try {
         const loading = f.client.loadEarlierTranscript(f.thread.id);
         await withTimeout(f.firstAsked.promise, 1000, {
@@ -2967,7 +2962,7 @@ describe("HttpHostClient durable realtime", () => {
               f.client
                 .getSnapshot()
                 .transcripts[f.thread.id]?.some(
-                  (entry) => entry.kind === "message" && entry.body === "Recent",
+                  (entry) => entry.kind === "message" && entry.body === "Live",
                 ),
             ).toBe(true),
           { timeout: 1000 },
@@ -3170,6 +3165,367 @@ describe("HttpHostClient durable realtime", () => {
         }
       },
     );
+  });
+
+  describe("opening a Thread", () => {
+    async function openThread(
+      role: "conversation" | "work",
+      capabilities: readonly "history-turns-v1"[],
+      options: { empty?: boolean; stuck?: boolean; earlier?: boolean } = {},
+    ) {
+      const workspace = makeWorkspace();
+      const thread = { ...makeThread(workspace.id), role };
+      const question = makeMessage(thread.id, "input", "Earlier question");
+      const reply = {
+        ...makeMessage(thread.id, "assistant", "Earlier reply"),
+        runId: question.runId,
+      };
+      const silentRun = createId("run");
+      const startedBy = { cause: "task-return", kind: "platform" as const };
+      const pages: Record<string, { events: AgentEvent[]; nextBefore: string | null }> = {
+        newest: {
+          events: [
+            agentEvent(workspace.id, thread.id, silentRun, "4", "run.started", {
+              status: "running",
+              startedBy,
+            }),
+            agentEvent(workspace.id, thread.id, silentRun, "5", "run.completed", {
+              status: "completed",
+              replyMessageId: null,
+            }),
+          ],
+          nextBefore: "4",
+        },
+        "4": {
+          events: [
+            agentEvent(workspace.id, thread.id, question.runId, "1", "message.created", {
+              input: makeThreadInput(question),
+              message: question,
+            }),
+            agentEvent(workspace.id, thread.id, question.runId, "2", "message.created", {
+              input: null,
+              message: reply,
+            }),
+            agentEvent(workspace.id, thread.id, question.runId, "3", "run.completed", {
+              status: "completed",
+              replyMessageId: reply.id,
+            }),
+          ],
+          nextBefore: null,
+        },
+      };
+      if (options.empty || options.stuck) pages["4"]!.events = [];
+      if (options.stuck) pages["4"]!.nextBefore = "4";
+      if (options.earlier) {
+        pages["4"]!.nextBefore = "1";
+        const oldest = makeMessage(thread.id, "input", "Oldest question");
+        pages["1"] = {
+          events: [
+            agentEvent(workspace.id, thread.id, oldest.runId, "0", "message.created", {
+              input: makeThreadInput(oldest),
+              message: oldest,
+            }),
+          ],
+          nextBefore: null,
+        };
+      }
+      let viewerId = ownerId;
+      const olderAsked = Promise.withResolvers<void>();
+      const olderAnswer = Promise.withResolvers<void>();
+      const requests: Readonly<Record<string, unknown>>[] = [];
+      const socket = new FakeSocket();
+      const client = createHttpHostClient({
+        capabilities,
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          if (url.pathname !== "/v1/rpc/thread.events.list") {
+            const boot = bootstrap([workspace]);
+            return json({ ...boot, user: { ...boot.user, id: viewerId } });
+          }
+          const request = rpcPayload(url, init);
+          requests.push(request);
+          const before = typeof request.before === "string" ? request.before : "newest";
+          if (before !== "newest") {
+            olderAsked.resolve();
+            await withTimeout(olderAnswer.promise, 1000, {
+              timeoutError: () => new Error("The held opening page was never released."),
+            });
+          }
+          const page = pages[before]!;
+          return json({
+            thread,
+            threadId: thread.id,
+            events: page.events,
+            readState: {
+              ...defaultReadState(thread.id),
+              asOfSequence: page.events.at(-1)?.sequence ?? "5",
+            },
+            window: {
+              byteCount: 256,
+              itemCount: page.events.length,
+              totalItems: 5,
+              threadId: thread.id,
+              hasMore: page.nextBefore !== null,
+              nextBefore: page.nextBefore,
+            },
+          });
+        },
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      });
+      client.activateThread(thread.id);
+      return {
+        client,
+        olderAnswer,
+        olderAsked,
+        requests,
+        thread,
+        workspace,
+        socket,
+        pages,
+        changeViewer: async () => {
+          viewerId = createId("user");
+          await client.refresh();
+        },
+      };
+    }
+
+    it.each([[["history-turns-v1"] as const], [[] as const]])(
+      "shows Chat's latest exchange behind its silent background Runs (capabilities %j)",
+      async (capabilities) => {
+        const { client, olderAnswer, olderAsked, requests, thread } = await openThread(
+          "conversation",
+          capabilities,
+        );
+        try {
+          await withTimeout(olderAsked.promise, 1000, {
+            timeoutError: () => new Error("Opening Chat never read past its silent page."),
+          });
+          // Still loading, never an empty Chat with only Earlier messages to press.
+          expect(client.getSnapshot().threadLookups[thread.id]).toBe("loading");
+          olderAnswer.resolve();
+          await vi.waitFor(
+            () => expect(client.getSnapshot().threadLookups[thread.id]).toBeUndefined(),
+            { timeout: 1000 },
+          );
+          expect(requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+          const rows = conversationRows(
+            groupTranscriptEntries(
+              visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null, {
+                conversation: true,
+              }),
+            ),
+            { live: false, atComputer: () => false },
+          );
+          expect(
+            rows.map(({ group }) =>
+              group.kind === "turn"
+                ? group.turn.reply?.body
+                : group.kind === "message"
+                  ? group.entry.body
+                  : null,
+            ),
+          ).toEqual(["Earlier question", "Earlier reply"]);
+          expect(client.getSnapshot().transcriptWindows[thread.id]).toMatchObject({
+            hasMore: false,
+            nextBefore: null,
+          });
+        } finally {
+          olderAnswer.resolve();
+          client.dispose();
+        }
+      },
+    );
+
+    it("reads one page of a task whose newest Run draws its work", async () => {
+      const { client, requests, thread } = await openThread("work", ["history-turns-v1"]);
+      try {
+        await vi.waitFor(
+          () => expect(client.getSnapshot().threadLookups[thread.id]).toBeUndefined(),
+          { timeout: 1000 },
+        );
+        expect(requests).toHaveLength(1);
+        expect(client.getSnapshot().transcriptWindows[thread.id]).toMatchObject({
+          hasMore: true,
+          nextBefore: "4",
+        });
+      } finally {
+        client.dispose();
+      }
+    });
+
+    async function heldOpening(options: Parameters<typeof openThread>[2] = {}) {
+      const f = await openThread("conversation", ["history-turns-v1"], options);
+      try {
+        await withTimeout(f.olderAsked.promise, 1000, {
+          timeoutError: () => new Error("Opening never requested the older page."),
+        });
+        return f;
+      } catch (error) {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+        throw error;
+      }
+    }
+
+    async function finishOpening(f: Awaited<ReturnType<typeof openThread>>) {
+      f.olderAnswer.resolve();
+      await vi.waitFor(
+        () =>
+          expect(
+            f.client.getSnapshot().threadLookups[f.thread.id],
+            "Opening did not settle",
+          ).toBeUndefined(),
+        { timeout: 1000 },
+      );
+    }
+
+    function openingRows(f: Awaited<ReturnType<typeof openThread>>) {
+      return conversationRows(
+        groupTranscriptEntries(
+          visibleTranscript(f.client.getSnapshot().transcripts[f.thread.id] ?? [], null, {
+            conversation: true,
+          }),
+        ),
+        { live: false, atComputer: () => false },
+      ).map(({ group }) =>
+        group.kind === "turn"
+          ? group.turn.reply?.body
+          : group.kind === "message"
+            ? group.entry.body
+            : null,
+      );
+    }
+
+    it("replays newer socket messages once while opening scans, without reapplying covered events", async () => {
+      const f = await heldOpening();
+      try {
+        const live = makeMessage(f.thread.id, "input", "Live question");
+        const event = agentEvent(f.workspace.id, f.thread.id, live.runId, "6", "message.created", {
+          input: makeThreadInput(live),
+          message: live,
+        });
+        f.socket.receive({ type: "host.events", events: [...f.pages.newest!.events, event] });
+        f.socket.receive({ type: "host.events", events: [event] });
+        await finishOpening(f);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Live question"]);
+        expect(
+          f.client.getSnapshot().transcripts[f.thread.id]?.filter((entry) => entry.kind === "run"),
+        ).toHaveLength(2);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("rereads the newest history when a Workspace snapshot overtakes an opening scan", async () => {
+      const f = await heldOpening();
+      try {
+        const fresh = makeMessage(f.thread.id, "input", "Fresh question");
+        f.pages.newest = {
+          events: [
+            agentEvent(f.workspace.id, f.thread.id, fresh.runId, "7", "message.created", {
+              input: makeThreadInput(fresh),
+              message: fresh,
+            }),
+          ],
+          nextBefore: "fresh",
+        };
+        f.socket.receive({
+          type: "host.snapshot",
+          snapshot: { ...workspaceSnapshot(f.workspace, "6"), threads: [f.thread] },
+        });
+        await finishOpening(f);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", undefined]);
+        expect(openingRows(f)).toEqual(["Fresh question"]);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("fresh");
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("installs nothing for the previous viewer when they change during an opening scan", async () => {
+      const f = await heldOpening();
+      try {
+        // Joins the hydration; the viewer change also fences this queued refresh.
+        const joined = f.client.loadLatestTranscript(f.thread.id);
+        await withTimeout(f.changeViewer(), 1000, {
+          timeoutError: () => new Error("Viewer refresh did not finish."),
+        });
+        f.olderAnswer.resolve();
+        await withTimeout(joined, 1000, {
+          timeoutError: () => new Error("The old viewer's hydration did not settle."),
+        });
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toBeUndefined();
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toBeUndefined();
+        expect(f.client.getSnapshot().threadLookups[f.thread.id]).toBeUndefined();
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("continues Earlier from the oldest page reached while opening", async () => {
+      const f = await heldOpening({ earlier: true });
+      try {
+        await finishOpening(f);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("1");
+        await withTimeout(f.client.loadEarlierTranscript(f.thread.id), 1000, {
+          timeoutError: () => new Error("Earlier did not finish."),
+        });
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "1"]);
+        expect(openingRows(f)).toEqual(["Oldest question", "Earlier question", "Earlier reply"]);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.hasMore).toBe(false);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("settles an entirely invisible history as an exhausted empty Chat", async () => {
+      const f = await heldOpening({ empty: true });
+      try {
+        await finishOpening(f);
+        expect(openingRows(f)).toEqual([]);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]).toMatchObject({
+          hasMore: false,
+          nextBefore: null,
+        });
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
+
+    it("fails opening when an invisible page repeats its continuation cursor", async () => {
+      const f = await heldOpening({ stuck: true });
+      try {
+        f.olderAnswer.resolve();
+        await vi.waitFor(
+          () =>
+            expect(
+              f.client.getSnapshot().threadLookups[f.thread.id],
+              "Opening remained loading after a stuck cursor",
+            ).toBe("failed"),
+          { timeout: 1000 },
+        );
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+        expect(f.client.getSnapshot().transcripts[f.thread.id]).toEqual([]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
   });
 
   /*

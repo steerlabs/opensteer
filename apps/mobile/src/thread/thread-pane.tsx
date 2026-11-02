@@ -1179,7 +1179,9 @@ function ThreadPaneForUser(
         keyExtractor={(item) => item.key}
         ListFooterComponent={queueFooter ?? undefined}
         // Beside a page, before anything has been said, the page is the subject.
-        ListEmptyComponent={companion === null ? <EmptyThread /> : undefined}
+        ListEmptyComponent={
+          companion === null ? <EmptyThread loading={snapshot.lookup === "loading"} /> : undefined
+        }
         ListHeaderComponent={
           <ThreadHeader
             earlier={canLoadEarlier}
@@ -1641,7 +1643,16 @@ function sameWorkspaceMarks(
   );
 }
 
-function EmptyThread(): ReactNode {
+/** Opening reads back past turns it does not draw, so "nothing yet" waits for that. */
+function EmptyThread({ loading }: { readonly loading: boolean }): ReactNode {
+  if (loading)
+    return (
+      <View style={styles.empty}>
+        <AppText role="secondary" tone="muted">
+          Loading messages…
+        </AppText>
+      </View>
+    );
   return (
     <View style={styles.empty}>
       <AppText role="displaySmall">What would you like to do?</AppText>
