@@ -3,9 +3,40 @@ const {
   withXcodeProject,
   withDangerousMod,
   withAndroidManifest,
+  withAppBuildGradle,
 } = require("expo/config-plugins");
 const fs = require("node:fs");
 const path = require("node:path");
+const { mergeContents } = require(
+  require.resolve("@expo/config-plugins/build/utils/generateCode", {
+    paths: [require.resolve("expo/config-plugins")],
+  }),
+);
+function appBuildGradle(contents) {
+  // A library's desugaring flag does not enable it in the consuming app.
+  for (const [tag, anchor, src] of [
+    [
+      "notification-preview-desugaring",
+      /^android \{/,
+      "    compileOptions { coreLibraryDesugaringEnabled true }",
+    ],
+    [
+      "notification-preview-desugaring-dependency",
+      /^dependencies \{/,
+      "    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'",
+    ],
+  ]) {
+    contents = mergeContents({
+      tag,
+      src: contents,
+      newSrc: src,
+      anchor,
+      offset: 1,
+      comment: "//",
+    }).contents;
+  }
+  return contents;
+}
 const group = "group.com.opensteer.mobile.notifications";
 const targetName = "OpensteerNotificationService";
 const service = "com.opensteer.notificationpreview.OpensteerFirebaseMessagingService";
@@ -81,6 +112,12 @@ function project(project, config) {
   return project;
 }
 module.exports = function withNotificationPreview(config) {
+  config = withAppBuildGradle(config, (next) => {
+    if (next.modResults.language !== "groovy")
+      throw new Error("Notification preview requires Groovy app Gradle configuration");
+    next.modResults.contents = appBuildGradle(next.modResults.contents);
+    return next;
+  });
   config = withEntitlementsPlist(config, (next) => {
     next.modResults["com.apple.security.application-groups"] = [
       ...new Set([...(next.modResults["com.apple.security.application-groups"] || []), group]),
@@ -134,3 +171,5 @@ module.exports = function withNotificationPreview(config) {
 };
 module.exports.manifest = manifest;
 module.exports.project = project;
+
+module.exports.appBuildGradle = appBuildGradle;

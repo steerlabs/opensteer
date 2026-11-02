@@ -25,7 +25,7 @@ import { workspaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { threadReturn } from "../navigation-state.js";
 import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
-import { openPhoneOwnerView } from "../computers/open-phone-owner-view.js";
+import { openPhoneOwnerView } from "../computers/open-owner-view.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { IphoneAppsBlock } from "../iphone-apps/iphone-apps-block.js";

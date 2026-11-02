@@ -24,10 +24,13 @@ const directory = path.join(
 mkdirSync(directory, { recursive: true });
 const fixtures = path.join(import.meta.dirname, "fixtures");
 const fixtureNames = new Set([
+  "mac.h264",
+  "resized.h264",
+  "noisy.h264",
   "red-blue-64x48.jpg",
   "green-yellow-48x64.jpg",
-  "lime-key-64x64.h264",
-  "blue-delta-64x64.h264",
+  "lime-key-128x128.h264",
+  "blue-delta-128x128.h264",
 ]);
 const results: { step: string; passed: boolean; details: unknown }[] = [];
 let started = false;
@@ -139,7 +142,16 @@ function classify(color: number[]) {
 let shot = 0;
 function screenshot(step: string) {
   const file = path.join(directory, `${String(++shot).padStart(3, "0")}-${step}.png`);
-  if (udid) simctl("io", udid, "screenshot", "--type=png", file);
+  // Duo launches on its cover display; simctl defaults to the inactive inner display.
+  if (udid)
+    simctl(
+      "io",
+      udid,
+      "screenshot",
+      "--type=png",
+      ...(device === "iPhone-Duo" ? ["--display=1"] : []),
+      file,
+    );
   else writeFileSync(file, adb("exec-out", "screencap", "-p"));
   return { file, image: decodePng(readFileSync(file)) };
 }

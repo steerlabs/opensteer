@@ -11,6 +11,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
   os: "android",
+  recovery: undefined as number | undefined,
+  needsKeyframe: null as
+    null | ((event: { nativeEvent: { epoch: string; pictureGone?: boolean } }) => void),
   binaryVersion: 1,
   geometry: "side:display@0",
   epoch: "",
@@ -84,27 +87,35 @@ vi.mock("expo", async () => {
   const React = await import("react");
   return {
     requireOptionalNativeModule: (name: string) =>
-      name === "PhoneDisplay" ? { binaryPresentationVersion: state.binaryVersion } : null,
+      name === "PhoneDisplay"
+        ? { binaryPresentationVersion: state.binaryVersion, decoderRecoveryVersion: state.recovery }
+        : null,
     requireNativeView: () =>
-      React.forwardRef((props: { onReady: typeof state.ready }, ref) => {
-        state.ready = props.onReady;
-        React.useImperativeHandle(ref, () => ({
-          reset: async (epoch: string) => {
-            state.epoch = epoch;
-          },
-          decode: async (frame: { epoch: string; data: string }) => {
-            state.epoch = frame.epoch;
-            state.decoded.push({ epoch: frame.epoch, data: frame.data });
-            return state.decodeResult ? state.decodeResult() : true;
-          },
-          decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
-            state.epoch = metadata.epoch;
-            state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
-            return state.decodeResult ? state.decodeResult() : true;
-          },
-        }));
-        return <div />;
-      }),
+      React.forwardRef(
+        (
+          props: { onReady: typeof state.ready; onNeedsKeyframe: typeof state.needsKeyframe },
+          ref,
+        ) => {
+          state.ready = props.onReady;
+          state.needsKeyframe = props.onNeedsKeyframe;
+          React.useImperativeHandle(ref, () => ({
+            reset: async (epoch: string) => {
+              state.epoch = epoch;
+            },
+            decode: async (frame: { epoch: string; data: string }) => {
+              state.epoch = frame.epoch;
+              state.decoded.push({ epoch: frame.epoch, data: frame.data });
+              return state.decodeResult ? state.decodeResult() : true;
+            },
+            decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
+              state.epoch = metadata.epoch;
+              state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
+              return state.decodeResult ? state.decodeResult() : true;
+            },
+          }));
+          return <div />;
+        },
+      ),
   };
 });
 vi.mock("expo-clipboard", () => ({
@@ -214,6 +225,7 @@ afterEach(async () => {
   state.decoded = [];
   state.decodeResult = null;
   state.binaryVersion = 1;
+  state.recovery = undefined;
 });
 async function setup(
   phone = true,
@@ -244,7 +256,10 @@ async function setup(
                   viewId: "owner-view",
                   generation: 1,
                   state: "ready",
-                  target: { kind: "app", app: { displayName: "Notes" } },
+                  target: {
+                    kind: "app",
+                    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+                  },
                   expiresAt: "2099-01-01T00:00:00.000Z",
                 },
               ]
@@ -268,10 +283,26 @@ async function setup(
     subscribeLifecycle: () => () => undefined,
     connectComputerDisplay: connect,
     retainComputerView: () => ({ release: () => undefined }),
-    listApprovedComputerApps: async () => [
-      { machineId: "machine", target: { kind: "phone", display: "main" } },
-    ],
-    openComputerView: vi.fn(async () => ({ viewId: "new-owner", generation: 2 })),
+    listApprovedComputerApps: vi.fn(async () => [
+      {
+        machineId: "machine",
+        target: phone
+          ? { kind: "phone", display: "main" }
+          : {
+              kind: "app",
+              app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+            },
+      },
+    ]),
+    openComputerView: vi.fn(async () => ({
+      viewId: "new-owner",
+      generation: 2,
+      machineId: "machine",
+      target: phone
+        ? { kind: "phone", display: "main" }
+        : { kind: "app", app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null } },
+      ...(phone ? {} : { window: { id: 42, title: "Shopping" } }),
+    })),
   } as unknown as HostClient;
   const pool = sharedDisplayStreams(client);
   const retain = pool.retain.bind(pool);
@@ -326,6 +357,7 @@ async function setup(
             active={active}
             hostClient={client}
             viewId="owner-view"
+            windowId={phone ? undefined : 42}
             generation={1}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
@@ -797,6 +829,36 @@ it.each([0, 1])(
   },
 );
 
+it("holds every delta after a frame it had no room for until a key arrives", async () => {
+  await setup();
+  const finish: ((accepted: boolean) => void)[] = [];
+  state.decodeResult = () => new Promise((resolve) => finish.push(resolve));
+  const send = (sequence: number, key: boolean) =>
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence,
+          ptsUs: sequence * 1000,
+          width: 200,
+          height: 400,
+          ...(key ? { key: true, codec: "avc1.42C01F" } : { key: false }),
+        },
+        Uint8Array.of(sequence),
+      ).slice().buffer,
+    });
+  // Four frames fill the queue, so the fifth is dropped and its successors lose their reference.
+  await act(async () => {
+    for (let sequence = 2; sequence <= 6; sequence++) send(sequence, false);
+  });
+  expect(socket.sent).toContainEqual({ type: "display.keyframe" });
+  await act(async () => finish.forEach((resolve) => resolve(true)));
+  await act(async () => send(7, false));
+  expect(state.decoded.slice(1).map((frame) => frame.bytes)).toEqual([[2], [3], [4], [5]]);
+  await act(async () => send(8, true));
+  expect(state.decoded.at(-1)?.bytes).toEqual([8]);
+});
+
 it("keeps native submissions bounded with a larger viewer window and fences pending work on hide", async () => {
   const { render } = await setup();
   const finish: ((accepted: boolean) => void)[] = [];
@@ -973,6 +1035,69 @@ it("reopens an ended phone owner view through the explicit open path", async () 
       generation: 2,
     },
   });
+});
+
+it("reopens an ended Mac view by app name and the same window, replacing its route", async () => {
+  const { endOwner, render, client } = await setup(false, "android", true, true, "owner");
+  endOwner();
+  await render();
+  await press("Reopen Notes");
+  expect(client.openComputerView).toHaveBeenCalledWith("machine", {
+    kind: "app",
+    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+    window: 42,
+  });
+  expect(state.dispatch).toHaveBeenLastCalledWith({
+    name: "WorkspaceBrowser",
+    params: {
+      deploymentId: "deployment",
+      scope: "workspace",
+      appKey: "com.apple.notes",
+      machineId: "machine",
+      viewId: "new-owner",
+      generation: 2,
+      windowId: 42,
+    },
+  });
+});
+
+it("explains when the ended Mac app is no longer approved", async () => {
+  const { endOwner, render, client } = await setup(false, "android", true, true, "owner");
+  vi.mocked(client.listApprovedComputerApps).mockResolvedValue([]);
+  endOwner();
+  await render();
+  await press("Reopen Notes");
+  expect(container.textContent).toContain("This app is no longer approved for viewing.");
+  expect(client.openComputerView).not.toHaveBeenCalled();
+});
+
+it.each(["owner", "task"] as const)(
+  "plays a Mac %s on a recovery-capable iOS binary",
+  async (screen) => {
+    state.recovery = 1;
+    const { connect } = await setup(false, "ios", screen === "owner", true, screen);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain("Mac window video is unavailable");
+  },
+);
+it("revokes picture input and requests a key when the decoder loses its picture", async () => {
+  await setup();
+  await holdAndType();
+  const before = socket.sent.length;
+  await act(async () =>
+    state.needsKeyframe?.({ nativeEvent: { epoch: state.epoch, pictureGone: true } }),
+  );
+  expect(socket.sent.slice(before)).toContainEqual({ type: "display.keyframe" });
+  expect(socket.sent.slice(before)).toContainEqual({ type: "display.input-reset" });
+  const keyboard = () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="Keyboard"]');
+  expect(keyboard()?.disabled).toBe(true);
+  // A key can already be queued when the asynchronous loss event reaches JS.
+  await act(async () =>
+    state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+  );
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  expect(keyboard()?.disabled).toBe(false);
 });
 
 function noop(): void {}

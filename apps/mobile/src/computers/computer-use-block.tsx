@@ -55,7 +55,7 @@ import {
   StatusDot,
 } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { AppMark } from "./app-mark.js";
+import { AppMark, MacAppIcon } from "./app-mark.js";
 import { FailureText, useBlockActions } from "./block-actions.js";
 
 /**
@@ -218,7 +218,9 @@ export function ComputerUseBlock(props: {
                   busy={busy === appKey(row.connectionId)}
                   disabled={disabled}
                   failure={failureFor(appKey(row.connectionId))}
+                  hostClient={hostClient}
                   key={row.connectionId}
+                  machineId={machine.id}
                   machineName={machine.name}
                   onTakeBack={() =>
                     run(appKey(row.connectionId), () =>
@@ -481,6 +483,8 @@ function AppRow(props: {
   readonly busy: boolean;
   readonly disabled: boolean;
   readonly failure: string | null;
+  readonly hostClient: HostClient;
+  readonly machineId: string;
   readonly machineName: string;
   readonly onTakeBack: () => void;
   readonly row: ComputerUseAppRow;
@@ -496,7 +500,12 @@ function AppRow(props: {
   return (
     <View style={styles.appRow}>
       <View style={styles.row}>
-        <AppMark blocked={row.blocked} name={name} />
+        <MacAppIcon
+          app={row.identity}
+          blocked={row.blocked}
+          hostClient={props.hostClient}
+          machineId={props.machineId}
+        />
         <View style={styles.rowText}>
           <AppText numberOfLines={1} role="body" tone={row.blocked ? "muted" : "default"}>
             {name}

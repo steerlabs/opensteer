@@ -91,7 +91,9 @@ it.each([
         width: 320,
         height: 240,
       },
-      new Uint8Array([0, 0, 0, 1, 101, 255]),
+      peer === "current"
+        ? new Uint8Array(2 * 1_048_576).fill(255)
+        : new Uint8Array([0, 0, 0, 1, 101, 255]),
     );
     const oldResolve = z.strictObject({ source: DisplaySourceSchema });
     try {
@@ -294,7 +296,7 @@ it.each([
         }),
       );
       await expect.poll(() => received.length).toBe(1);
-      expect(received[0]).toEqual(Buffer.from(media));
+      expect(received[0]?.equals(Buffer.from(media))).toBe(true);
       await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
       if (peer.startsWith("uncached-")) expect(handler.ownerViewVersion()).toBeUndefined();
       if (peer === "current") {

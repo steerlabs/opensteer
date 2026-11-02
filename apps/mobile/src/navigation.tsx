@@ -26,6 +26,7 @@ import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import { NewSpecialistScreen } from "./screens/new-specialist.js";
 import { NewTaskScreen } from "./screens/new-task.js";
+import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
 import { SettingsScreen } from "./screens/settings.js";
@@ -166,6 +167,18 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.5, 0.95],
         sheetGrabberVisible: true,
         title: "Tabs",
+      },
+    },
+    // The person's own Mac apps and Agent Phones to open, from Tabs. It lists
+    // by computer and opens over the screen it came from.
+    OpenApp: {
+      screen: OpenAppScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Open",
       },
     },
     // The model picker starts compact and can expand for a long catalog. It
@@ -430,6 +443,7 @@ type OpensteerRootParamList = {
     /** The first-message Send that opened this picker, if any. */
     readonly pickerAttemptId?: string;
   };
+  readonly OpenApp: { readonly deploymentId: string };
   readonly Schedule: ScheduleDestination;
   readonly Schedules: { readonly deploymentId: string };
   readonly Settings: undefined;

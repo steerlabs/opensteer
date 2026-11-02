@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class PhoneDisplayModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PhoneDisplay")
+    Constant("decoderRecoveryVersion") { 1 }
     // JavaScript reads this before using decodeBytes or the picture view: an
     // older binary has neither, and keeps the base64 and Image paths.
     Constant("binaryPresentationVersion") { 1 }
@@ -43,12 +44,12 @@ class PhoneDisplayModule : Module() {
       AsyncFunction("reset") { view: PhoneDisplayView, epoch: String -> view.reset(epoch) }
       AsyncFunction("decode") { view: PhoneDisplayView, frame: FramePacket, promise: Promise ->
         val data = frame.data
-        if (data.length > 5_592_408) promise.resolve(false)
+        if (data.length > 5_592_408) { view.lost(frame.epoch); promise.resolve(false) }
         else view.decode(FrameMetadata(frame), promise) { Base64.decode(data, Base64.NO_WRAP) }
       }
       // Expo copies the Uint8Array into a ByteArray once, on the JavaScript thread.
       AsyncFunction("decodeBytes") { view: PhoneDisplayView, bytes: ByteArray, metadata: FrameMetadata, promise: Promise ->
-        if (bytes.size > 4_194_306) promise.resolve(false) else view.decode(metadata, promise) { bytes }
+        if (bytes.size > 4_194_306) { view.lost(metadata.epoch); promise.resolve(false) } else view.decode(metadata, promise) { bytes }
       }
     }
     View(PhoneDisplayPictureView::class) {
@@ -112,14 +113,15 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   @Volatile private var visible = true
   @Volatile private var revision = 0L
   private var codec: MediaCodec? = null
-  private val output = HashMap<Long, Boolean>()
+  private val fence = KeyframeFence()
+  private val output = HashMap<Long, java.util.ArrayDeque<Boolean>>()
   @Volatile private var pictureWidth = 0
   @Volatile private var pictureHeight = 0
   private var initialized = false
   private val drain = object : Runnable {
     override fun run() {
       val decoder = codec ?: return
-      try { drainOutput(decoder) } catch (_: Exception) { release() }
+      try { drainOutput(decoder) } catch (_: Exception) { recover() }
       if (codec != null) worker.postDelayed(this, 10)
     }
   }
@@ -141,8 +143,24 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   fun reset(next: String) {
     epoch = next
     revision++
+    fence.lost()
+    onNeedsKeyframe(mapOf("epoch" to next, "pictureGone" to true))
     cover.visibility = View.VISIBLE
     worker.post { release() }
+  }
+  fun lost(wanted: String) { if (wanted == epoch) fence.lost() }
+  private fun recover() {
+    val wanted = epoch
+    revision++
+    fence.lost()
+    val stamp = revision
+    release()
+    post {
+      if (wanted == epoch && stamp == revision) {
+        cover.visibility = View.VISIBLE
+        onNeedsKeyframe(mapOf("epoch" to wanted, "pictureGone" to true))
+      }
+    }
   }
   private fun release() {
     codec?.let { runCatching { it.stop() }; runCatching { it.release() } }
@@ -154,14 +172,17 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   fun decode(frame: FrameMetadata, promise: Promise, read: () -> ByteArray) {
     val wanted = frame.epoch; val width = frame.width; val height = frame.height
     val pts = frame.pts.toLong(); val key = frame.key; val replayed = frame.replayed
+    val number = fence.arrive()
     if (wanted != epoch || !available || !visible || !attached) {
-      promise.resolve(false); return
+      if (wanted == epoch) fence.lost(number); promise.resolve(false); return
     }
-    if (pending.incrementAndGet() > 4) { pending.decrementAndGet(); promise.resolve(false); return }
+    if (pending.incrementAndGet() > 4) { pending.decrementAndGet(); fence.lost(number); promise.resolve(false); return }
     val stamp = revision
     worker.post {
+      var admitted = false
       try {
         if (wanted != epoch || stamp != revision || !available || !visible || !attached) { promise.resolve(false); return@post }
+        if (!fence.allows(key)) { promise.resolve(false); return@post }
         if (codec == null) {
           if (!key) { promise.resolve(false); return@post }
           pictureWidth = width; pictureHeight = height
@@ -188,20 +209,23 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
         val decoder = requireNotNull(codec)
         drainOutput(decoder)
         // Replay can arrive faster than output. Wait on this decoder worker before resetting it.
-        if (output.size >= 4) drainOutput(decoder, 500_000)
-        if (output.size >= 4) { release(); promise.resolve(false); return@post }
+        if (output.values.sumOf { it.size } >= 4) drainOutput(decoder, 500_000)
+        if (output.values.sumOf { it.size } >= 4) { recover(); promise.resolve(false); return@post }
         val index = decoder.dequeueInputBuffer(10_000)
         if (index < 0) { promise.resolve(false); return@post }
         val bytes = read()
+        require(bytes.isNotEmpty())
         val buffer = requireNotNull(decoder.getInputBuffer(index))
-        if (bytes.size > buffer.capacity()) { release(); promise.resolve(false); return@post }
+        if (bytes.size > buffer.capacity()) { recover(); promise.resolve(false); return@post }
         buffer.clear(); buffer.put(bytes)
-        output[pts] = !replayed
+        output.getOrPut(pts) { java.util.ArrayDeque() }.addLast(!replayed)
         decoder.queueInputBuffer(index, 0, bytes.size, pts, 0)
+        fence.enqueued(key, number)
+        admitted = true
         drainOutput(decoder)
         promise.resolve(true)
-      } catch (_: Exception) { release(); promise.resolve(false) }
-      finally { pending.decrementAndGet() }
+      } catch (_: Exception) { recover(); promise.resolve(false) }
+      finally { if (!admitted && wanted == epoch && stamp == revision) fence.lost(number); pending.decrementAndGet() }
     }
   }
   private fun drainOutput(decoder: MediaCodec, firstTimeoutUs: Long = 0) {
@@ -212,7 +236,9 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
       timeout = 0
       if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
       if (index < 0) return
-      val render = output.remove(info.presentationTimeUs) == true && available && visible && attached
+      val pictures = output[info.presentationTimeUs]
+      val render = pictures?.pollFirst() == true && available && visible && attached
+      if (pictures?.isEmpty() == true) output.remove(info.presentationTimeUs)
       decoder.releaseOutputBuffer(index, render)
     }
   }

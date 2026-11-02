@@ -1,5 +1,5 @@
 import { OmniboxResults, useOmnibox, omniboxChoosable as choosable } from "../browser/omnibox.js";
-import { threadMark } from "@opensteer/client/host";
+import { ownerViewDestination, threadMark } from "@opensteer/client/host";
 import {
   memo,
   useCallback,
@@ -57,7 +57,6 @@ import {
   type StartPageLink,
 } from "./navigation.js";
 import { useFocusRescue } from "./occupant-marks.js";
-import { ownerViewDestination } from "./owner-views.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /* ---- The person's last explicit choice of profile, per deployment and user ---- */

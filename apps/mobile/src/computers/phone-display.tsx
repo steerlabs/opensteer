@@ -10,21 +10,14 @@ import {
   type DisplayLease,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
-import { displayViewerWindowFrames } from "@opensteer/protocol";
+import { displayViewerWindowFrames, type ComputerAppIdentity } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  AppState,
-  PixelRatio,
-  Platform,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
+import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
-import { openPhoneOwnerView } from "./open-phone-owner-view.js";
+import { MacAppIcon } from "./app-mark.js";
+import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import type { NativeMenuSection } from "../thread/composer-menu.js";
@@ -39,6 +32,7 @@ import {
 
 import {
   NativeDisplay,
+  macWindowVideoSupported,
   phoneDisplayBinary,
   type DisplayFrameMetadata,
   type NativeDecoder,
@@ -64,6 +58,8 @@ export function decodeDisplayFrame(
  * page's is. A tile's preview has none.
  */
 export interface ComputerBar {
+  /** The Mac app shown, whose own icon names it; absent for a phone. */
+  readonly app?: ComputerAppIdentity | undefined;
   /** The Mac an app is on; null for a phone, whose own name is the title. */
   readonly detail: string | null;
   readonly menu: NativeMenuSection;
@@ -96,7 +92,7 @@ export function ComputerDisplay({
   readonly machineId?: string;
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
 }) {
-  const unavailable = !phone && Platform.OS === "ios";
+  const unavailable = !phone && !macWindowVideoSupported();
   const kind = reference.kind;
   const sessionId = reference.kind === "task-session" ? reference.sessionId : "";
   const appKey = reference.kind === "task-session" ? reference.appKey : undefined;
@@ -193,6 +189,7 @@ export function ComputerDisplay({
     let submitting = 0;
     const queued: { frame: DisplayFrame; epoch: number }[] = [];
     let bytes = 0;
+    let awaitingKey = false;
     const pending = new Set<DisplayFrame>();
     const clear = () => {
       epoch.current++;
@@ -293,6 +290,11 @@ export function ComputerDisplay({
         connection = frame.connection;
         generation = frame.header.generation;
       }
+      // A dropped frame breaks the reference chain, so nothing but a key follows it.
+      if (awaitingKey && !frame.header.key) {
+        frame.done();
+        return;
+      }
       if (
         pending.size >=
           (frame.replayed
@@ -303,9 +305,11 @@ export function ComputerDisplay({
         (pending.size > 0 && bytes + frame.payload.byteLength > 1_048_576)
       ) {
         frame.done();
+        awaitingKey = true;
         lease.requestKeyframe();
         return;
       }
+      awaitingKey = false;
       pending.add(frame);
       bytes += frame.payload.byteLength;
       queued.push({ frame, epoch: epoch.current });
@@ -361,6 +365,11 @@ export function ComputerDisplay({
         style={StyleSheet.absoluteFill}
         onNeedsKeyframe={({ nativeEvent }) => {
           if (nativeEvent.epoch !== String(epoch.current)) return;
+          if (nativeEvent.pictureGone) {
+            controls.current?.resetInput();
+            setPicture(null);
+            setShown(false);
+          }
           requestKeyframe.current?.();
         }}
         onReady={({ nativeEvent }) => {
@@ -462,7 +471,11 @@ export function ComputerDisplay({
           </GlassSurface>
         ) : null}
         <ToolbarCapsule style={styles.name}>
-          <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
+          {bar.app !== undefined && machineId !== undefined ? (
+            <MacAppIcon app={bar.app} hostClient={hostClient} machineId={machineId} size={22} />
+          ) : (
+            <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
+          )}
           <View style={styles.nameWords}>
             <AppText
               maxFontSizeMultiplier={controlFontScaleLimit}
@@ -530,6 +543,7 @@ export function ComputerTaskView(props: {
   ) : (
     <ComputerDisplay
       bar={{
+        app,
         detail: phone ? null : machineName,
         menu: session
           ? [
@@ -613,6 +627,8 @@ export function ComputerOwnerView(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly viewId: string;
+  /** The Mac window the view bound, reopened as the same window. */
+  readonly windowId?: number | undefined;
 }) {
   const { active, generation, hostClient, viewId } = props;
   const navigation = useNavigation();
@@ -630,24 +646,29 @@ export function ComputerOwnerView(props: {
     setFailure(null);
     try {
       const deploymentId = hostClient.getSnapshot().deploymentId;
-      const source = await openPhoneOwnerView(
-        hostClient,
-        props.machineId,
-        () =>
-          mounted.current &&
-          navigation.isFocused() &&
-          hostClient.getSnapshot().deploymentId === deploymentId,
-      );
-      if (source && deploymentId)
+      const stillHere = () =>
+        mounted.current &&
+        navigation.isFocused() &&
+        hostClient.getSnapshot().deploymentId === deploymentId;
+      const destination =
+        props.appKey === null
+          ? await openPhoneOwnerView(hostClient, props.machineId, stillHere).then((source) =>
+              source ? { kind: "phone" as const, machineId: props.machineId, source } : null,
+            )
+          : await openAppOwnerView(
+              hostClient,
+              props.machineId,
+              props.appKey,
+              props.windowId,
+              stillHere,
+            );
+      if (destination && deploymentId)
         navigation.dispatch(
-          StackActions.replace(
-            "WorkspaceBrowser",
-            workspaceRoute(deploymentId, { kind: "phone", machineId: props.machineId, source }),
-          ),
+          StackActions.replace("WorkspaceBrowser", workspaceRoute(deploymentId, destination)),
         );
     } catch (error) {
       if (mounted.current)
-        setFailure(error instanceof Error ? error.message : "The phone could not be opened.");
+        setFailure(error instanceof Error ? error.message : `${label} could not be opened.`);
     } finally {
       if (mounted.current) setReopening(false);
     }
@@ -662,8 +683,8 @@ export function ComputerOwnerView(props: {
   const machineName = machine?.name ?? (phone ? "Your phone" : "Your Mac");
   const label = phone
     ? machineName
-    : current?.target.kind === "app"
-      ? current.target.app.displayName
+    : view?.target.kind === "app"
+      ? view.target.app.displayName
       : "This app";
   if (current === null)
     return (
@@ -672,18 +693,12 @@ export function ComputerOwnerView(props: {
           <AppText role="bodyMedium" style={styles.statusText}>
             This view has ended
           </AppText>
-          {phone ? (
-            <SecondaryButton
-              accessibilityLabel="Reopen phone"
-              disabled={reopening}
-              label={reopening ? "Opening…" : "Reopen"}
-              onPress={() => void reopen()}
-            />
-          ) : (
-            <AppText role="secondary" style={styles.statusText} tone="muted">
-              Open it again on the computer to see it here.
-            </AppText>
-          )}
+          <SecondaryButton
+            accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
+            disabled={reopening}
+            label={reopening ? "Opening…" : "Reopen"}
+            onPress={() => void reopen()}
+          />
           {failure ? (
             <AppText role="secondary" style={styles.statusText} tone="muted">
               {failure}
@@ -695,6 +710,7 @@ export function ComputerOwnerView(props: {
   return (
     <ComputerDisplay
       bar={{
+        app: current.target.kind === "app" ? current.target.app : undefined,
         detail: phone ? null : machineName,
         menu: [],
         onTyping: props.onTyping,

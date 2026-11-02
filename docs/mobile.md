@@ -203,17 +203,18 @@ Thread sits beside the page. Owner metadata does not advance Workspace event
 cursors or enter conversation context.
 Saved tabs restore through the shared activation owner; a late result after leaving
 or switching users must not navigate. Older Hosts retain the live-session listing
-path. The phone can open Agent Phone owner views, view existing Mac owner views and manage
-connected Chrome profiles; opening Mac owner views, starting browsers and connecting
-Chrome stay on computers. See `surfaceRoute`,
+path. The phone opens the person's own views of approved Mac apps, their windows and
+Agent Phones, and manages connected Chrome profiles; approving an app, starting browsers
+and connecting Chrome stay on computers. Opening needs no authority beyond the Host's
+owner-view admission, which is per user, not per device. See `surfaceRoute`,
 `workspaceRoute` and `placeList` in `packages/client/src/host`.
 
 Native decoder epochs clear old pixels and queued output before a replacement
 target appears. Same-source recovery may keep its picture; static age alone is not
 failure. Suspended capture clears it until lifecycle permits restoration. Task
 Watch follows the agent's window; an owner view binds its own window. Follow the
-shared [window-group rules](computer-use.md#2-the-helper). iOS Mac window video is
-disabled pending native qualification; Android retains native decoding. Bundle
+shared [window-group rules](computer-use.md#2-the-helper). iOS Mac window video requires a binary advertising decoder recovery; older
+binaries keep the placeholder after OTA updates. Android retains native decoding. Bundle
 exports do not qualify playback. Native H.264 viewing requires a matching binary.
 JavaScript sends media bytes, and draws browser pictures in the native view,
 only when the binary declares `binaryPresentationVersion`; an update running on

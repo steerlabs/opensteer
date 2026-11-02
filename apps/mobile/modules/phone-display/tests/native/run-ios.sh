@@ -72,6 +72,8 @@ while read -r runtime type name; do
   simulator="$(xcrun simctl create "PhoneDisplay-$name" "$type" "$runtime")"
   xcrun simctl boot "$simulator"
   xcrun simctl bootstatus "$simulator" -b > "$evidence/boot-$name.log" 2>&1
+  xcrun simctl io "$simulator" enumerate > "$evidence/displays-$name.txt" 2>&1
+  xcrun simctl io "$simulator" screenshot --help > "$evidence/screenshot-help-$name.txt" 2>&1 || true
   xcrun simctl install "$simulator" "$app"
   phase="journey:$name"
   OPENSTEER_PHONE_DISPLAY_UDID="$simulator" OPENSTEER_PHONE_DISPLAY_DEVICE="$name" \

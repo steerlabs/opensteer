@@ -30,6 +30,7 @@ export function MacAppView(props: {
         machineId={destination.machineId}
         onTyping={props.onTyping}
         viewId={destination.source.viewId}
+        windowId={destination.kind === "app" ? destination.windowId : undefined}
       />
     );
   return destination.computerSessionId === undefined ? null : (

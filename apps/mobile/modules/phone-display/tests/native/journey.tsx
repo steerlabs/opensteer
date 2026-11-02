@@ -42,6 +42,24 @@ async function fixture(name: string): Promise<Uint8Array> {
   if (!response.ok) throw new Error(`fixture ${name} ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }
+/** Split synthetic Annex B fixtures at their access-unit delimiters. */
+function accessUnits(bytes: Uint8Array): Uint8Array[] {
+  const starts: number[] = [];
+  for (let i = 0; i + 4 < bytes.length; i++) {
+    const size =
+      bytes[i] === 0 && bytes[i + 1] === 0
+        ? bytes[i + 2] === 1
+          ? 3
+          : bytes[i + 2] === 0 && bytes[i + 3] === 1
+            ? 4
+            : 0
+        : 0;
+    if (!size) continue;
+    if ((bytes[i + size]! & 31) === 9) starts.push(i);
+    i += size - 1;
+  }
+  return starts.map((start, i) => bytes.subarray(start, starts[i + 1] ?? bytes.length));
+}
 /** The bytes behind a header in one buffer, as the browser watch hands them over. */
 function offsetBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   const prefix = 7;
@@ -417,18 +435,18 @@ function Journey() {
       if (native === null) throw new Error("display decoder ref missing");
       const binary = phoneDisplayBinary();
       const [key, delta] = await Promise.all([
-        fixture("lime-key-64x64.h264"),
-        fixture("blue-delta-64x64.h264"),
+        fixture("lime-key-128x128.h264"),
+        fixture("blue-delta-128x128.h264"),
       ]);
       const frame = (
         epoch: string,
         key: boolean,
         pts: number,
         replayed = false,
-      ): DisplayFrameMetadata => ({ epoch, width: 64, height: 64, pts, key, replayed });
+      ): DisplayFrameMetadata => ({ epoch, width: 128, height: 128, pts, key, replayed });
       const area = await measure(videoBox);
       const center = (color: Color, label: string): Probe[] => [
-        { ...at(fit(area, 64, 64), 0.5, 0.5), color, label },
+        { ...at(fit(area, 128, 128), 0.5, 0.5), color, label },
       ];
       const black: Color = [0, 0, 0];
 
@@ -444,7 +462,7 @@ function Journey() {
       const announced = await readyE1;
       await expect(
         "onReady names the source epoch and size",
-        announced.epoch === "e1" && announced.width === 64 && announced.height === 64,
+        announced.epoch === "e1" && announced.width === 128 && announced.height === 128,
         announced,
       );
       await check("video-key", center([0, 255, 0], "lime key frame"));
@@ -509,6 +527,117 @@ function Journey() {
       );
       await readyE3;
       await check("video-base64-key", center([0, 255, 0], "lime key via base64"));
+      // Mac encoder geometry, reference loss, static refresh and generation changes.
+      for (const [name, width, height] of [
+        ["mac", 1512, 982],
+        ["resized", 1280, 800],
+      ] as const) {
+        const units = accessUnits(await fixture(`${name}.h264`));
+        const epoch = `mac-${name}`;
+        const metadata = (key: boolean, replayed = false): DisplayFrameMetadata => ({
+          epoch,
+          width,
+          height,
+          key,
+          replayed,
+          pts: key ? 0 : 500_000,
+        });
+        const pixels = (color: Color): Probe[] => [
+          { ...at(fit(area, width, height), 0.5, 0.5), color, label: name },
+        ];
+        await native.reset(epoch);
+        await expect(
+          `${name} initial delta fenced`,
+          !(await decodeDisplayFrame(native, binary, units[1]!, metadata(false))),
+        );
+        await expect(
+          `${name} replay key admitted`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true, true)),
+        );
+        await check(`${name}-replay-hidden`, pixels(black));
+        await check(`${name}-replay-never-displayed`, pixels([0, 255, 0]), {
+          never: true,
+          ms: 800,
+        });
+        const first = ready.next((value) => value.epoch === epoch, `${name} onReady`);
+        await expect(
+          `${name} delta admitted`,
+          await decodeDisplayFrame(native, binary, units[1]!, metadata(false)),
+        );
+        const size = await first;
+        await expect(
+          `${name} announces new geometry`,
+          size.width === width && size.height === height,
+          size,
+        );
+        await check(`${name}-delta`, pixels([0, 0, 255]));
+        await expect(
+          `${name} invalid sample dropped`,
+          !(await decodeDisplayFrame(native, binary, new Uint8Array(), metadata(false))),
+        );
+        await expect(
+          `${name} delta after drop fenced`,
+          !(await decodeDisplayFrame(native, binary, units[1]!, metadata(false))),
+        );
+        await expect(
+          `${name} key restores references`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true)),
+        );
+        await check(`${name}-key`, pixels([0, 255, 0]));
+        await expect(
+          `${name} equal PTS refresh admitted`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true)),
+        );
+        await check(`${name}-static-refresh`, pixels([0, 255, 0]));
+        await background(`${name}-background`, pixels([0, 255, 0]));
+        await check(`${name}-background-cleared`, pixels(black));
+        await expect(
+          `${name} return delta fenced`,
+          !(await decodeDisplayFrame(native, binary, units[1]!, metadata(false))),
+        );
+        const returned = ready.next(
+          (value) => value.epoch === epoch,
+          `${name} ready after background`,
+          6000,
+        );
+        await expect(
+          `${name} return key admitted`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true)),
+        );
+        await returned;
+        await check(`${name}-returned`, pixels([0, 255, 0]));
+      }
+      const noisy = await fixture("noisy.h264");
+      await expect("noisy key exceeds the former relay limit", noisy.byteLength > 1_048_576, {
+        bytes: noisy.byteLength,
+      });
+      await native.reset("noisy");
+      const noisyPixels: Probe[] = [
+        { ...at(fit(area, 1920, 1248), 0.5, 0.5), color: [128, 128, 128], label: "decoded noise" },
+      ];
+      await check(
+        "noisy-reset-black",
+        noisyPixels.map((probe) => ({ ...probe, color: black })),
+      );
+      const noisyReady = ready.next((value) => value.epoch === "noisy", "noisy key rendered");
+      await expect(
+        "large noisy key admitted",
+        await decodeDisplayFrame(native, binary, noisy, {
+          epoch: "noisy",
+          width: 1920,
+          height: 1248,
+          key: true,
+          replayed: false,
+          pts: 0,
+        }),
+      );
+      const noisySize = await noisyReady;
+      await expect(
+        "noisy key rendered at source size",
+        noisySize.width === 1920 && noisySize.height === 1248,
+        noisySize,
+      );
+      await check("noisy-key", noisyPixels);
       setVideoMounted(false);
     };
 

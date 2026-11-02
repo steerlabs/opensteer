@@ -1,6 +1,6 @@
 import { requireNativeView, requireOptionalNativeModule } from "expo";
 import type { ComponentType, Ref } from "react";
-import type { ViewProps } from "react-native";
+import { Platform, type ViewProps } from "react-native";
 
 /** One encoded video frame, labelled with the decoder epoch it was queued under. */
 export interface DisplayFrameMetadata {
@@ -23,7 +23,7 @@ export const NativeDisplay = requireNativeView<
   ViewProps & {
     ref?: Ref<NativeDecoder>;
     onReady?: (event: { nativeEvent: { epoch: string; width: number; height: number } }) => void;
-    onNeedsKeyframe?: (event: { nativeEvent: { epoch: string } }) => void;
+    onNeedsKeyframe?: (event: { nativeEvent: { epoch: string; pictureGone?: boolean } }) => void;
   }
 >("PhoneDisplay");
 
@@ -76,4 +76,14 @@ export function nativePictureView(): NativePictureView | null {
   if (!phoneDisplayBinary()) return null;
   pictureView ??= requireNativeView("PhoneDisplay", "PhoneDisplayPicture");
   return pictureView;
+}
+
+/** An OTA update cannot enable Mac video on an iOS decoder without recovery. */
+export function macWindowVideoSupported(): boolean {
+  return (
+    Platform.OS === "android" ||
+    (Platform.OS === "ios" &&
+      (requireOptionalNativeModule<{ decoderRecoveryVersion?: number }>("PhoneDisplay")
+        ?.decoderRecoveryVersion ?? 0) >= 1)
+  );
 }

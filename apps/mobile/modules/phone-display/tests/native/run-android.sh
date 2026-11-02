@@ -79,21 +79,22 @@ emulator -avd "$avd" -port "$port" -no-window -no-audio -no-snapshot -no-boot-an
   -gpu swiftshader_indirect > "$evidence/emulator.log" 2>&1 &
 emulator_pid="$!"
 printf 'avd=%s\nserial=%s\nemulatorPid=%s\n' "$avd" "$serial" "$emulator_pid" > "$evidence/emulator.txt"
-# Read the boot event from this fresh image, including the log buffer if it
-# arrived before ADB attached. The deadline also covers device discovery.
+# Screen-enabled precedes package installation readiness. Wait for the user-unlocked
+# boot broadcast, including the log buffer if it arrived before ADB attached.
+# The deadline also covers device discovery.
 python3 - "$serial" "$avd" <<'PYBOOT'
 import subprocess, sys
 serial, avd = sys.argv[1:]
 try:
     event = subprocess.run(
         ["adb", "-s", serial, "wait-for-device", "shell", "logcat", "-b", "events",
-         "-s", "boot_progress_enable_screen:I", "*:S", "-m", "1"],
+         "-e", "'\\[0,android.intent.action.BOOT_COMPLETED\\]'", "-m", "1"],
         check=True, capture_output=True, text=True, timeout=180,
     ).stdout
 except subprocess.TimeoutExpired:
-    sys.exit(f"{serial} did not announce boot_progress_enable_screen within 180 s")
-if "boot_progress_enable_screen" not in event:
-    sys.exit(f"{serial} ended its boot event stream before the screen was enabled")
+    sys.exit(f"{serial} did not finish BOOT_COMPLETED for u0 within 180 s")
+if "[0,android.intent.action.BOOT_COMPLETED]" not in event:
+    sys.exit(f"{serial} ended its boot event stream before BOOT_COMPLETED finished")
 actual = subprocess.run(
     ["adb", "-s", serial, "emu", "avd", "name"],
     check=True, capture_output=True, text=True, timeout=5,

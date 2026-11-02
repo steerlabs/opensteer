@@ -8,6 +8,7 @@ import { useDictation } from "../dictation/context.js";
 import { navigationRef } from "../navigation-ref.js";
 import { useVoiceBackgroundStop } from "../platform/use-voice-background-stop.js";
 import { voiceMediaPort } from "../platform/voice.js";
+import { macWindowVideoSupported } from "../computers/phone-display-native.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { VoiceContext } from "./controls.js";
 
@@ -41,6 +42,8 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
         };
       },
       places: () => voicePlaces(hostClient, navigationRef.getCurrentRoute()),
+      // A binary without qualified Mac video shows a placeholder, so the call isn't offered Mac apps.
+      canShow: (destination) => destination.kind !== "app" || macWindowVideoSupported(),
       onStart: async () => {
         const owner = dictation.getSnapshot().owner;
         if (owner) await dictation.stop(owner);
