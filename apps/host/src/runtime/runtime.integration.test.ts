@@ -32,6 +32,7 @@ import {
 } from "@opensteer/deployment-authority";
 import {
   HarnessInstanceCatalogSchema,
+  IssuePersonalPairingCodeResponseSchema,
   PendingAgentEventSchema,
   PersonalHostAccessRouteEnvelopeSchema,
   PersonalRemoteAccessStatusSchema,
@@ -3931,8 +3932,8 @@ integration("Host vertical slice", () => {
       credentialDelivery: "cookie",
       schemaVersion: 2,
     });
-    // The route a request arrived on is the trusted ingress authority, never an
-    // Origin header a client writes for itself.
+    // The exchange must match the signed route coordinates; an Origin header
+    // alone cannot supply them.
     const exchangeIngress = {
       "content-type": "application/json",
       host: new URL(privateOrigin).host,
@@ -3982,20 +3983,18 @@ integration("Host vertical slice", () => {
       sessionSurface: "personal-remote",
       user: expect.objectContaining({ id: bootstrap.user.id }),
     });
-    const remoteCannotMint = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
+    const remoteMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
       headers: { ...remoteHeaders, "content-type": "application/json" },
       method: "POST",
     });
-    expect(remoteCannotMint.status).toBe(403);
+    expect(remoteMinted.status, await remoteMinted.clone().text()).toBe(200);
+    expect(remoteMinted.headers.get("cache-control")).toBe("no-store");
+    const nativePairing = IssuePersonalPairingCodeResponseSchema.parse(await remoteMinted.json());
+    expect(nativePairing.generation).toBe(privateStatus.generation);
 
-    // The same route, the same authority, a phone's delivery: a pairing code
-    // authorises either presentation, and the header one sets no cookie.
-    const nativePairing = await jsonFetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
-      body: "{}",
-      headers: { ...sessionHeaders, "content-type": "application/json" },
-      method: "POST",
-    });
+    // A code minted by a remote owner bootstraps another device with the same
+    // owner authority. Header delivery sets no cookie.
     const nativePaired = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: JSON.stringify({
         credential: {
@@ -4026,15 +4025,63 @@ integration("Host vertical slice", () => {
       user: expect.objectContaining({ id: bootstrap.user.id }),
     });
 
-    // The phone reaches the Deployment; it is never the computer that runs it.
-    const nativeCannotMint = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
+    const nativeMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
       headers: { ...nativeHeaders, "content-type": "application/json" },
       method: "POST",
     });
-    expect(nativeCannotMint.status).toBe(403);
-    // `canonicalAuthorizationRequired` is refused on exactly this surface, and
-    // the phone's credential never reports the canonical one.
+    expect(nativeMinted.status, await nativeMinted.clone().text()).toBe(200);
+    expect(nativeMinted.headers.get("cache-control")).toBe("no-store");
+    expect(IssuePersonalPairingCodeResponseSchema.parse(await nativeMinted.json())).toMatchObject({
+      generation: privateStatus.generation,
+    });
+
+    // Owner authority is required even for an already authenticated device.
+    await runtime.store.database
+      .updateTable("users")
+      .set({ instanceRole: "user" })
+      .where("id", "=", bootstrap.user.id)
+      .execute();
+    try {
+      const nonOwnerMint = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
+        body: "{}",
+        headers: { ...nativeHeaders, "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(nonOwnerMint.status).toBe(403);
+      expect(await nonOwnerMint.json()).toMatchObject({ error: { code: "forbidden" } });
+      const nonOwnerStatus = await fetch(`${origin}/v1/personal-remote-access`, {
+        headers: nativeHeaders,
+      });
+      expect(nonOwnerStatus.status).toBe(403);
+    } finally {
+      await runtime.store.database
+        .updateTable("users")
+        .set({ instanceRole: "administrator" })
+        .where("id", "=", bootstrap.user.id)
+        .execute();
+    }
+
+    // Owner sessions can request Connect work, but cannot read executor credentials.
+    for (const action of ["provision", "rotate"]) {
+      for (const privateExecutor of [false, true]) {
+        const response = await fetch(
+          `${origin}/v1/personal-remote-access/${privateExecutor ? "executor/" : ""}connect-${action}`,
+          {
+            body: JSON.stringify({
+              hostInstanceId: accessRoute.document.authority.hostInstanceId,
+              operationId: `cop_${crypto.randomUUID()}`,
+              ...(action === "provision" ? { localOrigin: origin } : {}),
+            }),
+            headers: { ...nativeHeaders, "content-type": "application/json" },
+            method: "POST",
+          },
+        );
+        expect(response.status).toBe(privateExecutor ? 403 : 404);
+        expect(await response.text()).not.toContain("tunnelToken");
+      }
+    }
+    // Session delivery is still reported independently of owner authority.
     await expect(
       testRpcData(origin, "integrations.get", {}, { headers: nativeHeaders }),
     ).resolves.toMatchObject({ authorizationSurface: "personal-remote" });
@@ -4061,10 +4108,8 @@ integration("Host vertical slice", () => {
       { headers: { authorization: `PersonalRemote ${remoteCredential}` } },
     );
     expect(cookieAsHeader.status).toBe(401);
-    // Renaming the cookie must not turn a routed session into this
-    // Deployment's own: at the canonical origin a canonical session passes the
-    // mutation origin check and `canonicalAuthorizationRequired`. Every
-    // presentation but the remote cookie's own is refused.
+    // Cookie names cannot change a credential's pinned delivery family or
+    // turn a routed cookie into a canonical one.
     for (const [label, cookie] of [
       [
         "header token, canonical name",
@@ -4094,11 +4139,11 @@ integration("Host vertical slice", () => {
       expect(unreadable.status, authorization).toBe(401);
     }
 
-    // Off is a local-machine operation. It advances the route generation and
-    // revokes the remote cookie in the same database transaction.
+    // A remote owner can turn access Off. The generation advances and both
+    // remote delivery families are revoked in the same database transaction.
     const disabled = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: { ...sessionHeaders, "content-type": "application/json" },
+      headers: { ...remoteHeaders, "content-type": "application/json" },
       method: "PUT",
     });
     expect(disabled.status).toBe(200);
@@ -4706,8 +4751,8 @@ integration("Host vertical slice", () => {
       await jsonFetch(`${origin}/v1/personal-remote-access`, { headers: sessionHeaders }),
     ).toMatchObject({ mode: "off", route: null });
 
-    // The owner's own machine sees the whole link. A session that arrived over
-    // a signed private route sees only that the link is not yet usable.
+    // Every owner device sees the same complete link and its activation state;
+    // Account execution credentials remain on the Host.
     const privateOrigin = "https://personal.tailnet.example";
     const configuredPrivate = await jsonFetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "private", routeOrigin: privateOrigin, schemaVersion: 1 }),
@@ -4747,9 +4792,27 @@ integration("Host vertical slice", () => {
     const remoteStatus = await jsonFetch(`${origin}/v1/personal-remote-access`, {
       headers: remoteHeaders,
     });
-    expect(remoteStatus.accountLink).toEqual({ state: "activating" });
-    expect(JSON.stringify(remoteStatus)).not.toContain(accountId);
-    expect(JSON.stringify(remoteStatus)).not.toContain(linkGeneration);
+    expect(remoteStatus).toEqual(configuredPrivate);
+    expect(remoteStatus.accountLink).toEqual({
+      ...accountIdentity,
+      generation: linkGeneration,
+      state: "activating",
+    });
+    const remoteAdministration = await testRpcData(
+      origin,
+      "personal.remoteAccess.get",
+      {},
+      {
+        headers: remoteHeaders,
+      },
+    );
+    expect(remoteAdministration.access).toEqual(remoteStatus);
+    for (const status of [remoteStatus, remoteAdministration]) {
+      const serialized = JSON.stringify(status);
+      expect(serialized).not.toContain(hostCredential);
+      expect(serialized).not.toContain(completionGrant);
+      expect(serialized).not.toContain("tunnelToken");
+    }
 
     // Cancelling an activating link is one call, and the Account answering
     // "no such link" is a durable answer that completes it rather than a
