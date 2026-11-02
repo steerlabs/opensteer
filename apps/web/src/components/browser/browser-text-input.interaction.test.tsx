@@ -10,6 +10,7 @@ import {
   type BrowserFrameView,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { BrowserCursorStore } from "@opensteer/client/host";
 import { BrowserViewport } from "./browser-viewport.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -60,7 +61,7 @@ type ViewOptions = {
   sessionId: string;
   visible: boolean;
 };
-async function setup(editing?: BrowserEditingStore) {
+async function setup(editing?: BrowserEditingStore, cursor?: BrowserCursorStore) {
   let picture: BrowserFrameView | null = frame();
   let pictureSession = "browser-a";
   let options: ViewOptions = {
@@ -73,6 +74,7 @@ async function setup(editing?: BrowserEditingStore) {
   const changed = new Set<() => void>();
   const frames: BrowserFrameStore = {
     ...(editing ? { editing } : {}),
+    ...(cursor ? { cursor } : {}),
     get: (id) => (id === pictureSession ? picture : null),
     subscribe: (_id, listener) => {
       changed.add(listener);
@@ -89,6 +91,7 @@ async function setup(editing?: BrowserEditingStore) {
       root?.render(
         <BrowserViewport
           {...options}
+          documentId="doc"
           frames={frames}
           live
           onCommand={(command) => commands.push(command)}
@@ -558,4 +561,98 @@ describe("browser text entry through the presented page", async () => {
       { type: "clipboard.paste", surfaceId: secondSurface, text: "next page" },
     ]);
   });
+});
+
+it("applies only the current pointer cursor and resets on leave, scroll, geometry and reconnect", async () => {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"],
+  });
+  const cursor = new BrowserCursorStore();
+  const { container, commands, receive, present, render } = await setup(undefined, cursor);
+  const stage = container.querySelector<HTMLElement>(".browser-canvas")!;
+  vi.spyOn(stage, "getBoundingClientRect").mockReturnValue({
+    width: 800,
+    height: 600,
+    left: 0,
+    top: 0,
+  } as DOMRect);
+  const hover = () =>
+    act(() =>
+      stage.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 100,
+          clientY: 100,
+        }),
+      ),
+    );
+  const hint = (sequence: number, shape = "pointer") =>
+    act(() =>
+      cursor.receive("browser-a", {
+        type: "browser.cursor",
+        surfaceId: firstSurface,
+        consumerToken: "00000000-0000-4000-8000-000000000001",
+        cursorSequence: sequence,
+        documentId: "doc",
+        geometryRevision: 0,
+        captureRevision: 0,
+        cursor: shape,
+      } as Parameters<BrowserCursorStore["receive"]>[1]),
+    );
+  const sequence = () => {
+    const command = commands.filter((c) => c.type === "input.pointer").at(-1);
+    if (command?.type !== "input.pointer" || command.cursorSequence === undefined)
+      throw new Error("Hover did not carry a cursor sequence");
+    return command.cursorSequence;
+  };
+  try {
+    await hover();
+    await act(async () => {
+      for (const paint of paints.splice(0)) paint(performance.now());
+    });
+    await hint(sequence());
+    expect(stage.style.cursor).toBe("pointer");
+    await hint(sequence() - 1, "text");
+    expect(stage.style.cursor).toBe("pointer");
+    await act(() =>
+      stage.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, relatedTarget: document.body }),
+      ),
+    );
+    expect(stage.style.cursor).toBe("default");
+    await hint(sequence());
+    expect(stage.style.cursor).toBe("default");
+    await hover();
+    await act(async () => {
+      for (const paint of paints.splice(0)) paint(performance.now());
+    });
+    await hint(sequence(), "text");
+    expect(stage.style.cursor).toBe("text");
+    await act(() =>
+      stage.dispatchEvent(
+        new WheelEvent("wheel", { bubbles: true, clientX: 100, clientY: 100, deltaY: 10 }),
+      ),
+    );
+    expect(stage.style.cursor).toBe("default");
+    await hint(sequence());
+    expect(stage.style.cursor).toBe("default");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(commands.some((c) => c.type === "cursor.query")).toBe(true);
+    await hover();
+    await act(async () => {
+      for (const paint of paints.splice(0)) paint(performance.now());
+    });
+    await hint(sequence());
+    expect(stage.style.cursor).toBe("pointer");
+    receive({ ...frame(), header: { ...frame().header, geometryRevision: 1 } });
+    await present();
+    expect(stage.style.cursor).toBe("default");
+    render({ canInput: false });
+    expect(stage.style.cursor).toBe("default");
+  } finally {
+    vi.useRealTimers();
+  }
 });
