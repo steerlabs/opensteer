@@ -51,6 +51,7 @@ export type MacVideoEvent = VideoEvent extends infer Event
 interface Entry {
   readonly id: DisplayStreamId;
   readonly deadline: number;
+  readonly displayProfile: boolean;
   sources: readonly DisplaySource[];
   data: WebSocket | null;
   media: WebSocket | null;
@@ -172,6 +173,7 @@ export class MacWindowVideoRelay {
         return;
       const entry: Entry = {
         id: message.streamId,
+        displayProfile: message.displayProfile === 1,
         deadline: Date.now() + message.timeoutMs,
         sources: message.sources,
         data: null,
@@ -276,6 +278,11 @@ export class MacWindowVideoRelay {
             {
               streamId: entry.id,
               revision: message.revision,
+              ...(entry.displayProfile &&
+              this.#computerUse.videoProfile() === 1 &&
+              message.maxBitrate !== undefined
+                ? { maxBitrate: message.maxBitrate }
+                : {}),
               sources: message.sources,
               ...(message.warm ? { warm: message.warm } : {}),
               ...(message.maxLongSide ? { maxLongSide: message.maxLongSide } : {}),
@@ -308,7 +315,15 @@ export class MacWindowVideoRelay {
         target: message.target,
         sources: message.sources,
         maxLongSide: Math.min(1920, message.maxLongSide),
-        maxFps: Math.min(30, message.maxFps),
+        maxFps: Math.min(
+          entry.displayProfile && this.#computerUse.videoProfile() === 1 ? 60 : 30,
+          message.maxFps,
+        ),
+        ...(entry.displayProfile &&
+        this.#computerUse.videoProfile() === 1 &&
+        message.maxBitrate !== undefined
+          ? { maxBitrate: message.maxBitrate }
+          : {}),
       },
       entry.deadline,
     );

@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 
 describe("viewer-driven phone bitrate", () => {
+  it.each([4_000_000, 20_000_000])(
+    "uses the %i platform ceiling for reduction and recovery",
+    (maximum) => {
+      const rate = new DisplayViewerBitrate(maximum);
+      rate.stall(0, 500, -900);
+      rate.stall(600, 500, 100);
+      expect(rate.cap).toBe(maximum * 0.75);
+      rate.cap = maximum / 1.1;
+      for (let now = 1_000; now <= 11_000; now += 100) rate.ack(now, 100_000, 100, 100);
+      expect(rate.cap).toBeNull();
+    },
+  );
   it.each([650, 1_200])("does not cap a %i ms receiver pause or its late ACK burst", (pause) => {
     const rate = new DisplayViewerBitrate();
     for (let now = 0; now <= 2_000; now += 100) rate.ack(now, 1_000, 100, 100);

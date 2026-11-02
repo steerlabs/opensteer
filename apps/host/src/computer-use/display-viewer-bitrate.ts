@@ -1,12 +1,17 @@
 const minimumBitrate = 400_000;
-const maximumBitrate = 4_000_000;
 
-/** ACKs measure the viewer link, independently of the phone-to-Host link. */
+/** ACKs measure the viewer link, independently of the producer-to-Host link. */
 export class DisplayViewerBitrate {
   cap: number | null = null;
   #sampleAt: number | null = null;
   #bytes = 0;
-  #delivered = maximumBitrate;
+  #delivered: number;
+
+  readonly maximumBitrate: number;
+  constructor(maximumBitrate = 4_000_000) {
+    this.maximumBitrate = maximumBitrate;
+    this.#delivered = maximumBitrate;
+  }
   #lastFlow: number | null = null;
   #healthySince: number | null = null;
   #queue: { since: number; observedAt: number } | null = null;
@@ -26,7 +31,7 @@ export class DisplayViewerBitrate {
     const delivered = elapsed >= 500 ? (this.#bytes * 8_000) / elapsed : this.#delivered;
     this.cap = Math.max(
       minimumBitrate,
-      Math.floor(Math.min((this.cap ?? maximumBitrate) * 0.75, delivered * 0.8)),
+      Math.floor(Math.min((this.cap ?? this.maximumBitrate) * 0.75, delivered * 0.8)),
     );
     this.#reducedAt = now;
   }
@@ -36,7 +41,7 @@ export class DisplayViewerBitrate {
     if (this.#lastFlow === null || (now - this.#lastFlow > 500 && this.#queue === null)) {
       this.#sampleAt = now;
       this.#bytes = 0;
-      this.#delivered = maximumBitrate;
+      this.#delivered = this.maximumBitrate;
       this.#healthySince = now;
     }
     this.#lastFlow = now;
@@ -51,7 +56,7 @@ export class DisplayViewerBitrate {
     if (elapsed < 2_000) return;
     this.#delivered = (this.#bytes * 8_000) / elapsed;
     if (this.cap !== null && now - (this.#healthySince ?? now) >= 8_000) {
-      this.cap = this.cap * 1.2 >= maximumBitrate ? null : Math.round(this.cap * 1.2);
+      this.cap = this.cap * 1.2 >= this.maximumBitrate ? null : Math.round(this.cap * 1.2);
       this.#healthySince = now;
     }
     this.#sampleAt = now;

@@ -434,6 +434,10 @@ authorize an agent action. Window video captures neither audio nor the system cu
 Diagnostics contain IDs, typed reasons and native domain/code, never media, window text,
 typed input, URLs or native error user-info dictionaries.
 
+Mac video profiles negotiate independently between Electron and the helper, and between
+Electron and the Runner; the Host confirms the Runner’s advertised display profile.
+Without confirmation at every hop, starts keep the legacy 30 fps shape and omit bitrate caps.
+
 ### Negotiated Mac owner input
 
 Every hop negotiates owner input; legacy version 1 parses tolerantly and enables none.

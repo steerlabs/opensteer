@@ -1472,7 +1472,7 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .positive()
     .transform((version) => (version === 1 ? version : undefined))
     .optional(),
-  /** Shared phone encoder cap, confirmed by the Host on display.start. */
+  /** Shared encoder cap for Mac and Android, confirmed by the Host on display.start. */
   displayProfile: z
     .number()
     .int()

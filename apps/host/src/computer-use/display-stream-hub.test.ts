@@ -26,6 +26,7 @@ import WebSocket from "ws";
 import { normalizeHostError } from "../server/http-errors.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { ComputerUseError } from "./computer-use-service.js";
 import { registerComputerUseDisplayRoutes } from "./computer-use-display-routes.js";
@@ -3061,6 +3062,63 @@ it("does not create a phone producer when owner input authorization finishes aft
 });
 
 describe("viewer-driven phone bitrate", () => {
+  it("sends small decreases immediately while gating increases", async () => {
+    let cap: number | null = 2_000_000;
+    const ack = vi.spyOn(DisplayViewerBitrate.prototype, "ack").mockImplementation(function (
+      this: DisplayViewerBitrate,
+    ) {
+      this.cap = cap;
+    });
+    try {
+      const f = await fixture(true, { displayProfile: true });
+      const viewer = await f.viewer(false, false, true);
+      const phone = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async (next: number | null, expected: number | null) => {
+        cap = next;
+        sequence++;
+        phone.socket.send(f.frame(sequence, sequence === 1));
+        await viewer.received(() => viewer.media().length === sequence);
+        f.advance(10);
+        viewer.send({ type: "display.ack", sequence });
+        await viewer.roundTrip();
+        expect(
+          f.sent.filter((m) => m.type === "host.integrations.display.demand").at(-1),
+        ).toMatchObject({ maxBitrate: expected });
+      };
+      await deliver(2_000_000, 2_000_000);
+      await deliver(1_900_000, 1_900_000);
+      await deliver(2_500_000, 1_900_000);
+      f.advance(2_000);
+      await deliver(2_000_000, 1_900_000);
+      await deliver(2_500_000, 2_500_000);
+      await deliver(null, 2_500_000);
+      f.advance(2_000);
+      await deliver(null, null);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it.each([false, true])(
+    "negotiates Mac video profile %s without phone-only capabilities",
+    async (profile) => {
+      const f = await fixture(true, {
+        mac: true,
+        displayProfile: profile,
+        sharedInput: true,
+        displayCut: true,
+        phoneOwnerControl: true,
+      });
+      await f.viewer(false, false, true);
+      expect(f.start()).toMatchObject({ maxFps: profile ? 60 : 30 });
+      if (profile) expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: null });
+      else expect(f.start()).not.toHaveProperty("maxBitrate");
+      expect(f.start()).not.toHaveProperty("sharedInput");
+      expect(f.start()).not.toHaveProperty("displayCut");
+      expect(f.start()).not.toHaveProperty("phoneOwnerControl");
+    },
+  );
   it.each([650, 1_200])(
     "does not cap a %i ms receiver pause through credit age, sweep or the late ACK burst",
     async (pause) => {
@@ -3272,10 +3330,12 @@ describe("viewer-driven phone bitrate", () => {
     for (let index = 1; index < updates.length; index++) {
       const previous = updates[index - 1]!;
       const next = updates[index]!;
-      expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
-      if (previous.cap !== null && next.cap !== null)
+      const decreasing = next.cap !== null && (previous.cap === null || next.cap < previous.cap);
+      if (!decreasing) expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
+      if (!decreasing && previous.cap !== null && next.cap !== null)
         expect(Math.abs(next.cap - previous.cap) / previous.cap).toBeGreaterThanOrEqual(0.15);
     }
+    expect(updates.every(({ cap }) => cap === null || cap <= 4_000_000)).toBe(true);
     const removed = once(f.serverViewers[0]!, "close", { signal: AbortSignal.timeout(3_000) });
     slow.socket.close();
     await removed;

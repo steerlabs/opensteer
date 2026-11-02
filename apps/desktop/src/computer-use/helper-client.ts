@@ -170,6 +170,7 @@ export interface ComputerUseHelperClientOptions {
     readonly loginText?: LoginReceiverKey;
     readonly ownerViewVersion?: number;
     readonly ownerInputVersion?: 2;
+    readonly videoProfile?: 1;
     readonly protocolVersion: number;
     readonly helperVersion: string;
     readonly permissions: ComputerUsePermissions;
@@ -235,6 +236,7 @@ interface HelperConnection {
   readonly generation: number;
   readonly helperVersion: string;
   readonly ownerInputVersion?: 2 | undefined;
+  readonly videoProfile?: 1 | undefined;
   readonly permissions: ComputerUsePermissions;
   readonly socket: Socket;
 }
@@ -320,6 +322,14 @@ export class ComputerUseHelperClient {
     }
     const deadline = options.deadline ?? this.#defaultDeadline();
     const connection = await this.#connect(deadline);
+    if (connection.videoProfile !== 1 && method === "display.start") {
+      const { maxBitrate: _cap, ...start } = macWindowVideoParams["display.start"].parse(params);
+      params = { ...start, maxFps: Math.min(30, start.maxFps) };
+    }
+    if (connection.videoProfile !== 1 && method === "display.demand") {
+      const { maxBitrate: _cap, ...demand } = macWindowVideoParams["display.demand"].parse(params);
+      params = demand;
+    }
     if (method === "display.resolve") {
       const resolved = macWindowVideoParams["display.resolve"].parse(params);
       params = {
@@ -614,6 +624,7 @@ export class ComputerUseHelperClient {
         ownerViewVersion: macOwnerViewVersion,
         ownerInputVersion: 2,
         loginText: 1,
+        videoProfile: 1,
       },
       due,
     ).catch((error: unknown) => {
@@ -642,6 +653,7 @@ export class ComputerUseHelperClient {
       ...(result.ownerInputVersion === undefined
         ? {}
         : { ownerInputVersion: result.ownerInputVersion }),
+      ...(result.videoProfile === 1 ? { videoProfile: 1 } : {}),
       protocolVersion: result.protocolVersion,
       helperVersion: result.helperVersion,
       permissions: result.permissions,
@@ -649,6 +661,7 @@ export class ComputerUseHelperClient {
     return {
       helperVersion: result.helperVersion,
       ownerInputVersion: result.ownerInputVersion,
+      videoProfile: result.videoProfile,
       generation,
       permissions: result.permissions,
       socket,

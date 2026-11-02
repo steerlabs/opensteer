@@ -5,6 +5,7 @@ import {
   MacOwnerInputEventSchema,
   MacWindowVideoSourceEventSchema,
   MacOwnerInputVersionSchema,
+  MacVideoProfileSchema,
 } from "./mac-window-video.js";
 import { ComputerViewHelperRequestSchema } from "./computer-view-requests.js";
 import { ComputerViewSchema, ComputerViewNativeResultSchema } from "./computer-view.js";
@@ -616,6 +617,7 @@ const EmptyParamsSchema = z.strictObject({});
 export const ComputerUseHelloParamsSchema = z.strictObject({
   loginText: z.literal(1).optional(),
   ownerInputVersion: MacOwnerInputVersionSchema,
+  videoProfile: MacVideoProfileSchema,
   ownerViewVersion: z.literal(3).optional(),
   clientVersion: z.string().min(1).max(64),
   protocolVersion: z.number().int().positive().max(1_000),
@@ -631,6 +633,7 @@ export const ComputerUseHelloParamsSchema = z.strictObject({
 export const ComputerUseHelloResultSchema = z.strictObject({
   loginText: LoginReceiverKeySchema.optional(),
   ownerInputVersion: MacOwnerInputVersionSchema,
+  videoProfile: MacVideoProfileSchema,
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   helperVersion: z.string().min(1).max(64),
   minProtocolVersion: z.number().int().positive().max(1_000),
@@ -650,6 +653,7 @@ export const ComputerUsePermissionsResultSchema = z.strictObject({
   /** Desktop bridge advertisement derived from its authenticated helper handshake. */
   computerUseVersion: z.literal(2).optional(),
   ownerInputVersion: MacOwnerInputVersionSchema,
+  videoProfile: MacVideoProfileSchema,
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   permissions: ComputerUsePermissionsSchema,
 });
@@ -1191,6 +1195,7 @@ function helperFrameFits(value: unknown): boolean {
  */
 export const computerUseBridgeMaxFrameBytes = 4 * 1_024 * 1_024;
 /** Connection opt-in keeps readiness replies readable by previous strict Runners. */
+export const computerUseBridgeVideoProfileHeader = "x-opensteer-mac-video-profile";
 export const computerUseBridgeOwnerInputHeader = "x-opensteer-mac-owner-input";
 export const ComputerUseBridgeTokenSchema = z.string().min(32).max(4_096);
 

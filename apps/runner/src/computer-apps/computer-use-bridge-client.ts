@@ -3,6 +3,7 @@ import {
   ComputerUseBridgeRequestSchema,
   computerUseBridgeMaxFrameBytes,
   computerUseBridgeOwnerInputHeader,
+  computerUseBridgeVideoProfileHeader,
   macWindowVideoParams,
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
@@ -105,6 +106,7 @@ export interface ComputerUseBridgeRequestOptions {
 export interface ComputerUseBridgeClientOptions {
   /** Readiness for the current Desktop connection, cleared on loss and reconnect. */
   readonly ownerInputVersion?: () => 2 | undefined;
+  readonly videoProfile?: () => 1 | undefined;
   /** How long past a deadline to wait; `computerUseRunnerGraceMs` unless a test shortens it. */
   readonly graceMs?: number;
   /** The clock deadlines are read against. */
@@ -336,6 +338,17 @@ export class ComputerUseBridgeClient {
           }
           params = { source: resolved.data.source };
         }
+        if (this.#options.videoProfile?.() !== 1) {
+          if (frame.method === "display.start") {
+            const { maxBitrate: _cap, ...start } =
+              macWindowVideoParams["display.start"].parse(params);
+            params = { ...start, maxFps: Math.min(30, start.maxFps) };
+          } else if (frame.method === "display.demand") {
+            const { maxBitrate: _cap, ...demand } =
+              macWindowVideoParams["display.demand"].parse(params);
+            params = demand;
+          }
+        }
         pending.written = true;
         socket.send(JSON.stringify({ ...frame, params, timeoutMs }), (error) => {
           if (error) this.#reject(id, this.#lostError(pending));
@@ -379,6 +392,7 @@ export class ComputerUseBridgeClient {
       headers: {
         authorization: `Bearer ${this.#options.token}`,
         [computerUseBridgeOwnerInputHeader]: "2",
+        [computerUseBridgeVideoProfileHeader]: "1",
       },
       maxPayload: computerUseBridgeMaxFrameBytes,
       perMessageDeflate: false,

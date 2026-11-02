@@ -268,7 +268,11 @@ describe("computer use over the desktop bridge", () => {
     });
     teardown.push(() => prepared?.close?.());
     const descriptor = JSON.parse(JSON.stringify(prepared?.descriptor));
-    expect(descriptor).toMatchObject({ computerUseVersion: 2, ownerViewVersion: 3 });
+    expect(descriptor).toMatchObject({
+      computerUseVersion: 2,
+      ownerViewVersion: 3,
+      displayProfile: 1,
+    });
     bridge.answer("permissions.get", () => ({
       error: { code: "failed", message: "Initial probe failed." },
     }));
@@ -395,14 +399,22 @@ describe("computer use over the desktop bridge", () => {
     const permissions = { accessibility: "granted", screenRecording: "granted" } as const;
     const reads = () => bridge.requests.filter(({ method }) => method === "permissions.get").length;
     bridge.answer("permissions.get", () => ({
-      result: { permissions, computerUseVersion: 2, ownerViewVersion: 3, ownerInputVersion: 2 },
+      result: {
+        permissions,
+        computerUseVersion: 2,
+        ownerViewVersion: 3,
+        ownerInputVersion: 2,
+        videoProfile: 1,
+      },
     }));
     await computerUse.permissions();
     expect(computerUse.ownerViewVersion()).toBe(3);
+    expect(computerUse.videoProfile()).toBe(1);
     now += 1_000;
     await computerUse.permissions();
     expect(reads()).toBe(1);
     expect(computerUse.ownerViewVersion()).toBe(3);
+    expect(computerUse.videoProfile()).toBe(1);
     bridge.answer("permissions.get", () => ({ result: { permissions, computerUseVersion: 2 } }));
     const lost = new Promise<void>((resolve) => {
       const stop = computerUse.onGrantsChanged(() => {
@@ -415,6 +427,7 @@ describe("computer use over the desktop bridge", () => {
     await computerUse.permissions();
     expect(reads()).toBe(2);
     expect(computerUse.ownerViewVersion()).toBeUndefined();
+    expect(computerUse.videoProfile()).toBeUndefined();
   });
 
   it.each([
@@ -422,6 +435,7 @@ describe("computer use over the desktop bridge", () => {
     "screenRecording",
     "ownerViewVersion",
     "ownerInputVersion",
+    "videoProfile",
     "computerUseVersion",
   ] as const)("announces an actual %s change from a periodic readiness check", async (field) => {
     const bridge = await startFakeBridge();
@@ -437,6 +451,7 @@ describe("computer use over the desktop bridge", () => {
       computerUseVersion: 2,
       ownerViewVersion: 3,
       ownerInputVersion: 2,
+      videoProfile: 1,
     };
     bridge.answer("permissions.get", () => ({ result: ready }));
     const changed = vi.fn();
@@ -481,6 +496,7 @@ describe("computer use over the desktop bridge", () => {
         computerUseVersion: 2,
         ownerViewVersion: 3,
         ownerInputVersion: 2,
+        videoProfile: 1,
       };
       bridge.answer("permissions.get", () => ({ result: ready }));
       await computerUse.permissions();
@@ -536,6 +552,7 @@ describe("computer use over the desktop bridge", () => {
       await expect(computerUse.permissions()).resolves.toEqual(ready.permissions);
       expect(bridge.requests).toHaveLength(reads);
       expect(computerUse.ownerViewVersion()).toBe(3);
+      expect(computerUse.videoProfile()).toBe(1);
     },
   );
 
@@ -578,6 +595,7 @@ describe("computer use over the desktop bridge", () => {
           computerUseVersion: 2,
           ownerViewVersion: 3,
           ownerInputVersion: 2,
+          videoProfile: 1,
         },
       }),
     });
@@ -597,6 +615,7 @@ describe("computer use over the desktop bridge", () => {
     fixture.bridge.emit({ kind: "event", event: "grants.changed" });
     await vi.waitFor(() => expect(hinted).toBe(true));
     expect(computerUse.ownerViewVersion()).toBe(3);
+    expect(computerUse.videoProfile()).toBe(1);
     fixture.bridge.answer("passwords.capabilities", () => ({ result: { authority: 1 } }));
     release!();
     await vi.waitFor(() =>

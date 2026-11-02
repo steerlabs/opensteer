@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   ComputerAppIdentitySchema,
   ComputerUseActParamsSchema,
+  ComputerUseHelloParamsSchema,
+  ComputerUseHelloResultSchema,
+  ComputerUsePermissionsResultSchema,
   WindowInfoSchema,
   OwnerWindowInfoSchema,
   ComputerUseSessionWindowsParamsSchema,
@@ -38,6 +41,7 @@ import {
   ComputerViewSchema,
   macOwnerViewVersion,
 } from "./computer-view.js";
+import { macWindowVideoParams } from "./mac-window-video.js";
 import { runnerSupportsComputerUse } from "./runner.js";
 import {
   HostToIntegrationsModuleMessageSchema,
@@ -867,4 +871,58 @@ describe("owner window compatibility", () => {
     ])
       expect(runnerSupportsComputerUse(module)).toBe(false);
   });
+});
+
+it.each([undefined, 1, 2])(
+  "reads video profile %s tolerantly without a protocol bump",
+  (videoProfile) => {
+    const profile = videoProfile === undefined ? {} : { videoProfile };
+    const permissions = { accessibility: "granted", screenRecording: "granted" };
+    expect(
+      ComputerUseHelloParamsSchema.parse({ clientVersion: "test", protocolVersion: 10, ...profile })
+        .videoProfile,
+    ).toBe(videoProfile === 1 ? 1 : undefined);
+    expect(
+      ComputerUseHelloResultSchema.parse({
+        helperVersion: "test",
+        minProtocolVersion: 10,
+        protocolVersion: 10,
+        permissions,
+        ...profile,
+      }).videoProfile,
+    ).toBe(videoProfile === 1 ? 1 : undefined);
+    expect(ComputerUsePermissionsResultSchema.parse({ permissions, ...profile }).videoProfile).toBe(
+      videoProfile === 1 ? 1 : undefined,
+    );
+  },
+);
+
+it("bounds helper video fps and bitrate while preserving the legacy shape", () => {
+  const streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const start = {
+    streamId,
+    target: { kind: "mac-window", bindingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    sources: [],
+    maxLongSide: 1280,
+    maxFps: 30,
+  };
+  expect(macWindowVideoParams["display.start"].parse(start)).toEqual(start);
+  for (const maxFps of [0, 1, 30, 60, 61])
+    expect(macWindowVideoParams["display.start"].safeParse({ ...start, maxFps }).success).toBe(
+      maxFps >= 1 && maxFps <= 60,
+    );
+  for (const maxBitrate of [null, 399_999, 400_000, 20_000_000, 20_000_001]) {
+    const valid = maxBitrate === null || (maxBitrate >= 400_000 && maxBitrate <= 20_000_000);
+    expect(macWindowVideoParams["display.start"].safeParse({ ...start, maxBitrate }).success).toBe(
+      valid,
+    );
+    expect(
+      macWindowVideoParams["display.demand"].safeParse({
+        streamId,
+        revision: 1,
+        sources: [],
+        maxBitrate,
+      }).success,
+    ).toBe(valid);
+  }
 });
