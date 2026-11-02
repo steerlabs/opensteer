@@ -164,63 +164,147 @@ describe("Personal remote administration intents", () => {
     }
   });
 
-  it("refuses an intent whose session is revoked while admission waits on the access lock", async () => {
-    let release!: () => void;
-    let entered!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const locked = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const blocker = database.transaction().execute(async (transaction) => {
-      await transaction
-        .selectFrom("personalRemoteAccess")
-        .select("singletonKey")
-        .where("singletonKey", "=", "personal")
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      entered();
-      await withTimeout(held, 5000, {
-        timeoutError: () => new Error("Access lock was never released"),
+  it.each([
+    "intent",
+    "approve",
+    "approve-replay",
+    "complete",
+    "complete-replay",
+    "configure",
+    "configure-noop",
+    "pairing",
+    "resume",
+    "revoke-sessions",
+    "unlink",
+    "projection",
+    "revoke-connect",
+  ] as const)(
+    "refuses %s when its session is revoked while waiting on the access lock",
+    async (mutation) => {
+      const fixture = await sealedLinkCompletion();
+      const access = fixture.access;
+      await access.configure(
+        { session },
+        { mode: "private", routeOrigin: "https://private.test", schemaVersion: 1 },
+      );
+      if (
+        ["complete-replay", "resume", "unlink", "projection", "revoke-connect"].includes(mutation)
+      ) {
+        await access.consumeAccountLink({ session }, fixture.completion);
+        fixture.fetch.mockClear();
+      }
+      const keysBefore = await database.selectFrom("personalAccountLinkKeys").selectAll().execute();
+      const linksBefore = await database
+        .selectFrom("personalRemoteAccountLink")
+        .selectAll()
+        .execute();
+      const accessBefore = await access.status();
+      const mutations = {
+        intent: () =>
+          access.administration.request(session, { action: "unlink" }, "revoked-during-admission"),
+        approve: () => access.approveAccountLink({ session }, linkChallenge()),
+        "approve-replay": () => access.approveAccountLink({ session }, fixture.challenge),
+        complete: () => access.consumeAccountLink({ session }, fixture.completion),
+        "complete-replay": () => access.consumeAccountLink({ session }, fixture.completion),
+        configure: () =>
+          access.configure({ session }, { mode: "off", routeOrigin: null, schemaVersion: 1 }),
+        "configure-noop": () =>
+          access.configure(
+            { session },
+            { mode: "private", routeOrigin: "https://private.test", schemaVersion: 1 },
+          ),
+        pairing: () => access.issuePairingCode({ session }),
+        resume: () => access.resumeAccountLink({ session }, { schemaVersion: 1 }),
+        "revoke-sessions": () => access.revokeAccountSessions({ session }),
+        unlink: () => access.removeAccountLink({ session }),
+        projection: () =>
+          access.publishConnectProjection(
+            { session },
+            { state: "disabled", expectedAccessRoute: null, schemaVersion: 2 },
+          ),
+        "revoke-connect": () =>
+          access.revokeConnectResource(
+            { session },
+            {
+              hostInstanceId: authority.hostInstanceId,
+              operationId: `cop_${crypto.randomUUID()}`,
+            },
+          ),
+      };
+      let release!: () => void;
+      let entered!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
       });
-    });
-    let admission: Promise<unknown> | undefined;
-    try {
-      await withTimeout(locked, 1000, {
-        timeoutError: () => new Error("Access lock was never acquired"),
+      const locked = new Promise<void>((resolve) => {
+        entered = resolve;
       });
-      admission = service()
-        .administration.request(session, { action: "unlink" }, "revoked-during-admission")
-        .then(
+      const blocker = database.transaction().execute(async (transaction) => {
+        await sql`select pg_advisory_xact_lock(hashtextextended('personal-remote-access', 0))`.execute(
+          transaction,
+        );
+        await transaction
+          .selectFrom("personalRemoteAccess")
+          .select("singletonKey")
+          .where("singletonKey", "=", "personal")
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+        entered();
+        await withTimeout(held, 5000, {
+          timeoutError: () => new Error("Access lock was never released"),
+        });
+      });
+      let admission: Promise<unknown> | undefined;
+      try {
+        await withTimeout(locked, 1000, {
+          timeoutError: () => new Error("Access lock was never acquired"),
+        });
+        admission = mutations[mutation]().then(
           () => ({ accepted: true }),
           (error: unknown) => error,
         );
-      await vi.waitFor(
-        async () => {
-          const waiting = await sql<{
-            count: number;
-          }>`select count(*)::integer as count from pg_stat_activity
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql<{
+              count: number;
+            }>`select count(*)::integer as count from pg_stat_activity
           where datname=current_database() and application_name='remote-administration-test'
-          and wait_event_type='Lock' and query ilike '%personal_remote_access%'`.execute(database);
-          expect(waiting.rows[0]?.count, "Intent admission never waited on the access lock").toBe(
-            1,
-          );
-        },
-        { timeout: 2000 },
-      );
-      await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
-      release();
-      await blocker;
-      expect(await admission).toMatchObject({ code: "unauthorized" });
-      expect(
-        await database.selectFrom("personalRemoteAdministration").selectAll().execute(),
-      ).toEqual([]);
-    } finally {
-      release();
-      await blocker;
-      await admission;
-    }
+          and wait_event_type='Lock' and query ilike '%personal%remote%access%'`.execute(database);
+            expect(waiting.rows[0]?.count, "Mutation never waited on the access lock").toBe(1);
+          },
+          { timeout: 2000 },
+        );
+        await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
+        release();
+        await blocker;
+        expect(await admission).toMatchObject({ code: "unauthorized" });
+        expect(
+          await database.selectFrom("personalRemoteAdministration").selectAll().execute(),
+        ).toEqual([]);
+        expect(await database.selectFrom("personalAccountLinkKeys").selectAll().execute()).toEqual(
+          keysBefore,
+        );
+        expect(
+          await database.selectFrom("personalRemoteAccountLink").selectAll().execute(),
+        ).toEqual(linksBefore);
+        expect(await access.status()).toEqual(accessBefore);
+        expect(
+          await database.selectFrom("personalRemotePairingCodes").selectAll().execute(),
+        ).toEqual([]);
+        expect(fixture.fetch).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await blocker;
+        await admission;
+      }
+    },
+  );
+
+  it("refuses hosted OAuth repair from a revoked session", async () => {
+    await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
+    await expect(service().markHostedOAuthConnectionsForRepair({ session })).rejects.toMatchObject({
+      code: "unauthorized",
+    });
   });
 
   it("keeps idempotent retries identical and serializes simultaneous devices", async () => {
@@ -416,70 +500,13 @@ describe("Personal remote administration intents", () => {
   });
 
   it("opens a Host-sealed completion once across restart and fences generation changes and replay after unlink", async () => {
-    const access = service();
-    const challenge = linkChallenge();
-    const proof = await access.approveAccountLink({ session }, challenge);
-    const generation = "g".repeat(43);
-    const grant = `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
-    const hostCredential = `osc_${"h".repeat(43)}`;
-    const issuedAt = Math.floor(Date.now() / 1000);
-    const claims = PersonalHostAccountLinkCompletionGrantClaimsSchema.parse({
-      account: challenge.account,
-      aud: authority.canonicalOrigin,
-      authority,
-      challengeId: challenge.challengeId,
-      exp: issuedAt + 300,
-      iat: issuedAt,
-      iss: challenge.account.issuer,
-      jti: `phg_${crypto.randomUUID()}`,
-      linkGeneration: generation,
-      sub: challenge.account.subject,
-      tokenUse: "opensteer-personal-host-account-link",
-    });
-    const verifyLink = vi.fn(async () => claims);
-    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-      expect(init?.headers).toMatchObject({ authorization: `Bearer ${hostCredential}` });
-      if (input.toString().endsWith("/authority"))
-        return Response.json({ deploymentId: authority.deploymentId, published: true });
-      return Response.json(
-        input.toString().endsWith("/activate")
-          ? {
-              activated: true,
-              deploymentId: authority.deploymentId,
-              linkGeneration: generation,
-            }
-          : { deploymentId: authority.deploymentId, unlinked: true },
-      );
-    });
-    const restarted = service({
-      fetch,
-      grantVerifier: { issuer: challenge.account.issuer, verifyLink } as never,
-    });
-    const metadata = CompletePersonalHostAccountLinkResponseSchema.omit({
-      sealedCompletion: true,
-    }).parse({
-      challengeId: challenge.challengeId,
-      linkGeneration: generation,
-      resultExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      schemaVersion: 2,
-    });
-    const completion = {
-      ...metadata,
-      sealedCompletion: sealOAuthBrokerPayload(
-        {
-          completionGrant: grant,
-          hostCredential,
-          linkGeneration: generation,
-          resultExpiresAt: metadata.resultExpiresAt,
-        },
-        proof.document.completionPublicKey,
-        personalHostAccountLinkCompletionContext(
-          authority,
-          metadata.challengeId,
-          metadata.linkGeneration,
-        ),
-      ),
-    };
+    const {
+      completion,
+      hostCredential,
+      grant,
+      verifyLink,
+      access: restarted,
+    } = await sealedLinkCompletion();
     expect(JSON.stringify(completion)).not.toContain(hostCredential);
     expect(JSON.stringify(completion)).not.toContain(grant);
     await expect(
@@ -540,4 +567,80 @@ function linkChallenge() {
     challengeCredential: `olc_${"c".repeat(43)}`,
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
   });
+}
+
+async function sealedLinkCompletion() {
+  const access = service();
+  const challenge = linkChallenge();
+  const proof = await access.approveAccountLink({ session }, challenge);
+  const generation = "g".repeat(43);
+  const grant = `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
+  const hostCredential = `osc_${"h".repeat(43)}`;
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const claims = PersonalHostAccountLinkCompletionGrantClaimsSchema.parse({
+    account: challenge.account,
+    aud: authority.canonicalOrigin,
+    authority,
+    challengeId: challenge.challengeId,
+    exp: issuedAt + 300,
+    iat: issuedAt,
+    iss: challenge.account.issuer,
+    jti: `phg_${crypto.randomUUID()}`,
+    linkGeneration: generation,
+    sub: challenge.account.subject,
+    tokenUse: "opensteer-personal-host-account-link",
+  });
+  const verifyLink = vi.fn(async () => claims);
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    expect(init?.headers).toMatchObject({ authorization: `Bearer ${hostCredential}` });
+    if (input.toString().endsWith("/authority"))
+      return Response.json({ deploymentId: authority.deploymentId, published: true });
+    return Response.json(
+      input.toString().endsWith("/activate")
+        ? {
+            activated: true,
+            deploymentId: authority.deploymentId,
+            linkGeneration: generation,
+          }
+        : { deploymentId: authority.deploymentId, unlinked: true },
+    );
+  });
+  const accessWithCompletion = service({
+    fetch,
+    grantVerifier: { issuer: challenge.account.issuer, verifyLink } as never,
+  });
+  const metadata = CompletePersonalHostAccountLinkResponseSchema.omit({
+    sealedCompletion: true,
+  }).parse({
+    challengeId: challenge.challengeId,
+    linkGeneration: generation,
+    resultExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    schemaVersion: 2,
+  });
+  const completion = {
+    ...metadata,
+    sealedCompletion: sealOAuthBrokerPayload(
+      {
+        completionGrant: grant,
+        hostCredential,
+        linkGeneration: generation,
+        resultExpiresAt: metadata.resultExpiresAt,
+      },
+      proof.document.completionPublicKey,
+      personalHostAccountLinkCompletionContext(
+        authority,
+        metadata.challengeId,
+        metadata.linkGeneration,
+      ),
+    ),
+  };
+  return {
+    challenge,
+    completion,
+    hostCredential,
+    grant,
+    verifyLink,
+    fetch,
+    access: accessWithCompletion,
+  };
 }

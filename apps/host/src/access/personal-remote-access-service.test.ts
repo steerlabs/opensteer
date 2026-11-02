@@ -434,7 +434,7 @@ describe("PersonalRemoteAccessService", () => {
       code: "conflict",
       message: "Disable the Connect route before unlinking the Opensteer Account",
     });
-    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
     expect(fixture.deleteLink).not.toHaveBeenCalled();
     expect(fixture.revokeConnectSessions).not.toHaveBeenCalled();
   });
@@ -563,9 +563,15 @@ function ownerSession(
  * One optional row behind the chained builder, which is how both the
  * an absent singleton read.
  */
-function rowQuery(row: { readonly authSessionId: string } | undefined) {
+function rowQuery<T>(row: T) {
   return {
     execute: vi.fn(async () => []),
+    innerJoin() {
+      return this;
+    },
+    selectAll() {
+      return this;
+    },
     orderBy() {
       return this;
     },
@@ -645,7 +651,11 @@ function configureDatabase(initial: {
       transformQuery: (node: unknown) => node,
     }),
     selectFrom: vi.fn((table: string) =>
-      table === "personalRemoteAccess" ? remoteAccessQuery : marker,
+      table === "personalRemoteAccess"
+        ? remoteAccessQuery
+        : table === "authSessions"
+          ? liveSessionQuery()
+          : marker,
     ),
     updateTable: vi.fn(() => updateQuery),
   };
@@ -679,18 +689,6 @@ function projectionDatabase(
     state: "active",
     singletonKey: "opensteer-account",
     subject: `acct_${crypto.randomUUID()}`,
-  };
-  const localSessionQuery = {
-    executeTakeFirst: vi.fn(async () => undefined),
-    forShare() {
-      return this;
-    },
-    select() {
-      return this;
-    },
-    where() {
-      return this;
-    },
   };
   const remoteAccessQuery = {
     executeTakeFirstOrThrow: vi.fn(async () => ({
@@ -735,7 +733,18 @@ function projectionDatabase(
     transaction: () => ({
       execute: (run: (value: unknown) => unknown) =>
         run({
-          selectFrom: vi.fn(() => localSessionQuery),
+          getExecutor: () => ({
+            compileQuery: () => ({}),
+            executeQuery: vi.fn(async () => ({ rows: [] })),
+            transformQuery: (node: unknown) => node,
+          }),
+          selectFrom: vi.fn((table: string) =>
+            table === "authSessions"
+              ? liveSessionQuery()
+              : table === "personalRemoteAccess"
+                ? remoteAccessQuery
+                : linkQuery,
+          ),
         }),
     }),
   };
@@ -779,6 +788,9 @@ function accountMutationDatabase(
   const linkQuery = {
     executeTakeFirst: vi.fn(async () => link),
     executeTakeFirstOrThrow: vi.fn(async () => link),
+    forUpdate() {
+      return this;
+    },
     forNoKeyUpdate() {
       return this;
     },
@@ -842,9 +854,11 @@ function accountMutationDatabase(
       executeQuery: vi.fn(async () => ({ rows: [] })),
       transformQuery: (node: unknown) => node,
     }),
+    updateTable: vi.fn(() => updateLinkQuery),
     selectFrom: vi.fn((table: string) => {
       if (table === "personalRemoteAccess") return remoteAccessQuery;
       if (table === "personalRemoteAccountLink") return linkQuery;
+      if (table === "authSessions") return liveSessionQuery();
       return emptyQuery;
     }),
   };
@@ -896,4 +910,8 @@ function fakeIdentity() {
   return { announceSessionsEnded: vi.fn() } as unknown as IdentityService & {
     readonly announceSessionsEnded: ReturnType<typeof vi.fn>;
   };
+}
+
+function liveSessionQuery() {
+  return rowQuery({ id: createId("authSession"), deviceLabel: "Owner device", userAgent: null });
 }

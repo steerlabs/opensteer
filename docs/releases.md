@@ -81,8 +81,10 @@ mismatches and already published stable versions fail closed.
 Deploy the Account service with sealed Personal link completions before shipping
 the corresponding Host and clients. Linking requires the Host-signed completion
 public key and returns only ciphertext; there is no plaintext compatibility path.
-Older Account services are refused with an update instruction. In-flight links
-from the preceding format must be restarted after updating. Links created with
+Older Account services are refused with an update instruction. Old-format desktop
+pending journals require Recover from any attached device. Recover verifies Host
+state before discarding the incompatible journal, then resumes any Host-owned
+activation; if the Host has no link, start linking again. Links created with
 plaintext completions must be unlinked and relinked to retire credentials already
 held by the initiating device; deployment alone cannot erase those copies.
 

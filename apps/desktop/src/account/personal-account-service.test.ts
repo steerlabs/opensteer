@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { desktopPersonalAccountLinkSecretsPath } from "../app/application-paths.js";
 import { createId } from "@opensteer/core";
 import {
   AccountLinkGenerationSchema,
@@ -16,6 +20,7 @@ import {
 import { DesktopPersonalAccountService } from "./personal-account-service.js";
 import {
   DesktopPersonalAccountLinkStateSchema,
+  DesktopPersonalAccountLinkStore,
   type DesktopPersonalAccountLinkState,
   type PersonalAccountUnlinkStep,
 } from "./personal-account-link-store.js";
@@ -239,6 +244,78 @@ describe("DesktopPersonalAccountService", () => {
     await expect(offline.links.load()).resolves.not.toBeNull();
   });
 
+  it.each(["unlinked", "activating", "active"] as const)(
+    "recovers an old pending journal from Host state %s, then unlinks",
+    async (hostState) => {
+      const fixture = unlinkFixture(0);
+      if (hostState === "unlinked") fixture.clearHostLink();
+      if (hostState === "activating") fixture.startActivating();
+      fixture.account.accountIdentity.mockResolvedValue(null);
+      const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-old-link-"));
+      try {
+        const links = new DesktopPersonalAccountLinkStore({
+          dataDirectory,
+          cryptography: {
+            decryptStringAsync: async (encrypted) => ({
+              result: encrypted.toString("utf8"),
+              shouldReEncrypt: false,
+            }),
+            encryptStringAsync: async (plaintext) => Buffer.from(plaintext, "utf8"),
+            getSelectedStorageBackend: () => "keychain",
+            isAsyncEncryptionAvailable: async () => true,
+          },
+        });
+        const { completionFormat: _format, ...challenge } = fixture.challenge;
+        const { completionPublicKey: _key, ...document } = fixture.proof.document;
+        const oldJournal = {
+          authority: fixture.runtime,
+          schemaVersion: 4,
+          issueOperationId: null,
+          unlinkOperation: null,
+          operation: {
+            challenge,
+            operationId: `plo_${crypto.randomUUID()}`,
+            proof: { ...fixture.proof, document: { ...document, documentVersion: 2 } },
+            completion: {
+              schemaVersion: 1,
+              challengeId: challenge.challengeId,
+              completionGrant: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
+              hostCredential: `osc_${"h".repeat(43)}`,
+              linkGeneration: "g".repeat(43),
+              resultExpiresAt: fixture.completion.resultExpiresAt,
+            },
+          },
+        };
+        const filePath = desktopPersonalAccountLinkSecretsPath(
+          dataDirectory,
+          fixture.runtime.discovery.deploymentId,
+        );
+        await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+        const saved = JSON.stringify({
+          ciphertext: Buffer.from(JSON.stringify(oldJournal)).toString("base64"),
+          schemaVersion: 1,
+        });
+        await writeFile(filePath, saved, { mode: 0o600 });
+        const service = fixture.createService(links);
+        await expect(service.status()).resolves.toMatchObject({ status: "needs-repair" });
+        expect(await readFile(filePath, "utf8")).toBe(saved);
+        await expect(service.unlink()).rejects.toThrow("incompatible or corrupt");
+        await service.recover();
+        await expect(service.status()).resolves.toMatchObject({
+          status: hostState === "unlinked" ? "unlinked" : "linked",
+        });
+        expect(fixture.host.resumeAccountLink).toHaveBeenCalledTimes(
+          hostState === "activating" ? 1 : 0,
+        );
+        expect(fixture.link.ensureLinkedForMutation).not.toHaveBeenCalled();
+        await expect(links.load(fixture.runtime.discovery.deploymentId)).resolves.toBeNull();
+        await expect(service.unlink()).resolves.toMatchObject({ status: "unlinked" });
+      } finally {
+        await rm(dataDirectory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("serializes two rapid cancels and a resume racing them", async () => {
     const fixture = unlinkFixture(0);
     await fixture.links.clear();
@@ -397,27 +474,31 @@ function unlinkFixture(boundary: number) {
     ),
   };
   const link = { ensureLinkedForMutation: vi.fn(async () => initialState) };
-  const service = new DesktopPersonalAccountService({
-    account,
-    host,
-    link,
-    links,
-    manifest: {
-      load: async () => manifest,
-      save: async (_previous, next) => {
-        manifest = next;
-        return manifest;
+  const createService = (
+    linkStore: ConstructorParameters<typeof DesktopPersonalAccountService>[0]["links"],
+  ) =>
+    new DesktopPersonalAccountService({
+      account,
+      host,
+      link,
+      links: linkStore,
+      manifest: {
+        load: async () => manifest,
+        save: async (_previous, next) => {
+          manifest = next;
+          return manifest;
+        },
       },
-    },
-    remote: {
-      disableConnectForUnlink: async () => {
-        events.push("disable");
-        return {} as never;
+      remote: {
+        disableConnectForUnlink: async () => {
+          events.push("disable");
+          return {} as never;
+        },
+        revokeConnectResourceForUnlink: async () => void events.push("resource"),
       },
-      revokeConnectResourceForUnlink: async () => void events.push("resource"),
-    },
-    runtime: { current: async () => runtime },
-  });
+      runtime: { current: async () => runtime },
+    });
+  const service = createService(links);
   const challenge = IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
     account: accountIdentity,
     authorityEnvelope: runtime.discoveryEnvelope,
@@ -479,6 +560,7 @@ function unlinkFixture(boundary: number) {
     privateRoute: "https://studio.tailnet.test",
     runtime,
     service,
+    createService,
     tokens: ["vault-token-kept"],
   };
 }

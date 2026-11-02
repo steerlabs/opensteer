@@ -220,6 +220,13 @@ export class DesktopPersonalAccountService {
     });
   }
 
+  async recover(): Promise<void> {
+    let status = await this.status();
+    if (status.status === "needs-repair") status = await this.resetLinkJournal();
+    if (status.status === "unlinking") await this.unlink();
+    else await this.resumeActivatingLink();
+  }
+
   /**
    * Names this Personal Opensteer after the Mac it runs on — "Alex’s MacBook
    * Pro", as the owner named it in System Settings — while it still wears a

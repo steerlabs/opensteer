@@ -717,6 +717,9 @@ async function runDesktop(
       );
       try {
         const intent = operation.intent;
+        // Recover reuses the failed action's execution ID while issuing a new operation ID.
+        if (intent.action === "recover" || operation.executionId !== operation.id)
+          await personalAccount.recover();
         if (intent.action === "configure") {
           if (intent.mode === "connect" && !(await personalHostRemote.status()).accountLink)
             throw new Error("Link an Account from the device signing in before enabling Connect.");
@@ -731,12 +734,7 @@ async function runDesktop(
         } else if (intent.action === "unlink") {
           await personalAccount.unlink();
         } else {
-          const status = await personalAccount.status();
-          if (status.status === "unlinking") await personalAccount.unlink();
-          else {
-            await personalAccount.resumeActivatingLink();
-            await personalRemote.initialize();
-          }
+          await personalRemote.initialize();
         }
       } finally {
         detachRemote();
