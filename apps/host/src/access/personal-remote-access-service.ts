@@ -6,6 +6,7 @@ import {
   PersonalRemoteAdministration,
   requirePersonalAdministrator,
 } from "./personal-remote-administration.js";
+import { isDeepStrictEqual } from "node:util";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
@@ -52,7 +53,7 @@ import {
   type PersonalPairingCodeCredential,
   type PersonalRemoteAccessStatus,
 } from "@opensteer/protocol";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { HostKeyPair } from "../identity/host-keys.js";
 import { signHostDiscovery, signPersonalHostAccessRoute } from "../identity/host-keys.js";
 import { signPersonalHostAccountLinkProof } from "../identity/host-keys.js";
@@ -74,6 +75,14 @@ export interface PersonalRemoteSessionExchange {
   readonly headers: Headers;
   readonly issued: IssuedPersonalRemoteSession;
 }
+
+type AccountLink = Selectable<DatabaseSchema["personalRemoteAccountLink"]>;
+type AccountOperation = NonNullable<AccountLink["accountOperation"]>;
+type AccountOperationInput = AccountOperation extends infer Operation
+  ? Operation extends AccountOperation
+    ? Omit<Operation, "id">
+    : never
+  : never;
 
 const pairingCodeLifetimeMilliseconds = 10 * 60 * 1_000;
 const maximumPendingPairingCodes = 64;
@@ -103,6 +112,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #grantVerifier: PersonalAccountGrantVerifier | undefined;
   readonly #now: () => Date;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #accountOperations = new Map<string, Promise<RevokeConnectResponse | undefined>>();
   readonly #disconnectRunners: () => Promise<void>;
 
   constructor(options: {
@@ -125,6 +135,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       authorityEnvelope: signHostDiscovery(options.keys, options.authority),
       database: options.database,
       readAccess: () => this.status(),
+      resumeAccountOperation: (intent) => this.#resumeAccountOperation(intent.action === "unlink"),
       accountIssuer: options.grantVerifier?.issuer ?? null,
     });
     this.#authority = PersonalHostAccessAuthoritySchema.parse(options.authority);
@@ -194,11 +205,14 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .executeTakeFirstOrThrow();
       const account = await transaction
         .selectFrom("personalRemoteAccountLink")
-        .select(["singletonKey", "state"])
+        .select(["singletonKey", "state", "accountOperation"])
         .where("singletonKey", "=", "opensteer-account")
         .forShare()
         .executeTakeFirst();
-      if (request.mode === "connect" && account?.state !== "active") {
+      if (
+        request.mode === "connect" &&
+        (account?.state !== "active" || account.accountOperation?.kind === "unlink")
+      ) {
         throw new OpensteerError({
           code: "conflict",
           message: "Link an Opensteer Account before enabling Connect",
@@ -488,35 +502,28 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         message: "Personal Account linking is unavailable",
       });
     await this.purgeExpiredAccountLinkKeys();
-    const linked = await this.#database.transaction().execute(async (transaction) => {
-      await lockRemoteAccess(transaction);
-      const existing = await transaction
-        .selectFrom("personalRemoteAccountLink")
-        .selectAll()
-        .where("singletonKey", "=", "opensteer-account")
-        .executeTakeFirst();
-      if (existing) {
-        await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
-        assertStoredAccountLinkConsume(existing, request);
-        return existing;
-      }
-      const pendingKeys = await transaction
-        .selectFrom("personalAccountLinkKeys")
-        .selectAll()
-        .orderBy("challengeId", "asc")
-        // FOR UPDATE: successful completion deletes all pending challenge keys.
-        .forUpdate()
-        .execute();
-      await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
-      const keys = pendingKeys.find(
-        (key) => key.challengeId === request.challengeId && key.expiresAt > this.#now(),
-      );
-      if (!keys)
-        throw new OpensteerError({
-          code: "forbidden",
-          message:
-            "Account-link completion has expired or was already consumed. Start Account linking again.",
-        });
+    // Reading and decrypting does not consume the key. JWKS can require a network
+    // fetch, so only the later fenced transaction may consume this exact key.
+    const existing = await this.#database
+      .selectFrom("personalRemoteAccountLink")
+      .selectAll()
+      .where("singletonKey", "=", "opensteer-account")
+      .executeTakeFirst();
+    const keys = existing
+      ? undefined
+      : await this.#database
+          .selectFrom("personalAccountLinkKeys")
+          .selectAll()
+          .where("challengeId", "=", request.challengeId)
+          .executeTakeFirst();
+    let completion:
+      | {
+          payload: import("@opensteer/control-plane-protocol").PersonalHostAccountLinkCompletionPayload;
+          claims: import("@opensteer/control-plane-protocol").PersonalHostAccountLinkCompletionGrantClaims;
+        }
+      | undefined;
+    if (!existing) {
+      if (!keys || keys.expiresAt <= this.#now()) throw expiredAccountCompletion();
       let payload;
       try {
         payload = PersonalHostAccountLinkCompletionPayloadSchema.parse(
@@ -561,27 +568,66 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "Account-link completion binding is invalid or expired",
         });
       }
+      completion = { payload, claims };
+    }
+    const linked = await this.#database.transaction().execute(async (transaction) => {
+      await lockRemoteAccess(transaction);
+      const current = await transaction
+        .selectFrom("personalRemoteAccountLink")
+        .selectAll()
+        .where("singletonKey", "=", "opensteer-account")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const pendingKeys = current
+        ? []
+        : await transaction
+            .selectFrom("personalAccountLinkKeys")
+            .selectAll()
+            .orderBy("challengeId", "asc")
+            .forUpdate()
+            .execute();
+      await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
+      if (current) {
+        assertStoredAccountLinkConsume(current, request);
+        if (current.state === "active") return current;
+        return this.#admitAccountOperation(transaction, current, { kind: "activate" });
+      }
+      const key = pendingKeys.find((pending) => pending.challengeId === request.challengeId);
+      if (
+        !completion ||
+        !keys ||
+        !key ||
+        key.privateKey !== keys.privateKey ||
+        key.publicKey !== keys.publicKey ||
+        key.expiresAt <= this.#now()
+      )
+        throw expiredAccountCompletion();
+      if (
+        Date.parse(completion.payload.resultExpiresAt) <= this.#now().getTime() ||
+        completion.claims.exp * 1000 <= this.#now().getTime()
+      )
+        throw expiredAccountCompletion();
       await transaction.deleteFrom("personalAccountLinkKeys").execute();
       return transaction
         .insertInto("personalRemoteAccountLink")
         .values({
-          challengeId: claims.challengeId,
-          grantId: claims.jti,
-          hostCredential: payload.hostCredential,
-          issuer: claims.account.issuer,
+          accountOperation: { id: randomUUID(), kind: "activate" },
+          challengeId: completion.claims.challengeId,
+          grantId: completion.claims.jti,
+          hostCredential: completion.payload.hostCredential,
+          issuer: completion.claims.account.issuer,
           linkGeneration: request.linkGeneration,
           linkedAt: this.#now(),
           singletonKey: "opensteer-account",
           state: "activating",
-          subject: claims.account.subject,
+          subject: completion.claims.account.subject,
           updatedAt: this.#now(),
         })
         .returningAll()
         .executeTakeFirstOrThrow();
     });
     this.administration.changed();
-    await this.#activateAccountLink(linked);
-    this.administration.changed();
+    if (linked.accountOperation?.kind === "activate") await this.#executeAccountOperation(linked);
     return this.status();
   }
 
@@ -591,7 +637,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   ): Promise<PersonalRemoteAccessStatus> {
     requirePersonalAdministrator(caller.session);
     ResumePersonalHostAccountLinkRequestSchema.parse(input);
-    await this.#database.transaction().execute(async (transaction) => {
+    const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       const stored = await transaction
         .selectFrom("personalRemoteAccountLink")
@@ -600,15 +646,14 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .forNoKeyUpdate()
         .executeTakeFirst();
       await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
-      if (!stored) {
+      if (!stored)
         throw new OpensteerError({
           code: "not_found",
           message: "Personal Account link was not found",
         });
-      }
-      await this.#activateAccountLink(stored, transaction);
+      return this.#admitAccountOperation(transaction, stored, { kind: "activate" });
     });
-    this.administration.changed();
+    await this.#executeAccountOperation(linked);
     return this.status();
   }
 
@@ -631,89 +676,28 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     afterResponse?: (effect: () => void) => void,
   ): Promise<void> {
     requirePersonalAdministrator(caller.session);
-    await this.#database.transaction().execute(async (transaction) => {
+    const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);
       await transaction
         .selectFrom("personalAccountLinkKeys")
         .select("challengeId")
         .orderBy("challengeId", "asc")
-        // FOR UPDATE: cancellation deletes every pending challenge key.
         .forUpdate()
         .execute();
+      const stored = await transaction
+        .selectFrom("personalRemoteAccountLink")
+        .selectAll()
+        .where("singletonKey", "=", "opensteer-account")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
       await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
       await transaction.deleteFrom("personalAccountLinkKeys").execute();
+      return stored
+        ? this.#admitAccountOperation(transaction, stored, { kind: "unlink" })
+        : undefined;
     });
-    const linked = await this.#database
-      .selectFrom("personalRemoteAccountLink")
-      .selectAll()
-      .where("singletonKey", "=", "opensteer-account")
-      .executeTakeFirst();
-    if (!linked) return;
-
-    let ended: readonly AuthSessionId[] = [];
-    await this.#database.transaction().execute(async (transaction) => {
-      await lockRemoteAccess(transaction);
-      await requireConnectDisabled(transaction);
-      await transaction
-        .selectFrom("personalRemoteAccountLink")
-        .select("singletonKey")
-        .where("singletonKey", "=", "opensteer-account")
-        // FOR UPDATE: the link is deleted below, before its authority can be replaced.
-        .forUpdate()
-        .executeTakeFirst();
-      // Lock the caller and revocation set before central removal, then revoke only
-      // after the Account acknowledges it. Failure rolls the entire local change back.
-      ended = await revokeRemoteSessions(transaction, caller.session, {
-        routeKind: "connect",
-        beforeRevoke: async () => {
-          // The Account registration must be removed while the Host still owns the
-          // credential that authorizes that operation. Any failed or ambiguous
-          // response leaves the local link intact so this exact idempotent request
-          // can be retried. A definitive not-found is not such a response: the
-          // Account has told this Host, under its own credential, that the record it
-          // came to remove does not exist. Repeating the call cannot change that
-          // answer, and refusing to finish would strand the owner's unlink behind a
-          // step that is already complete, so local removal proceeds exactly as on
-          // an acknowledged unlink.
-          try {
-            await this.#accountClient(linked).unlinkPersonalHost({
-              challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(linked.challengeId),
-              linkGeneration: AccountLinkGenerationSchema.parse(linked.linkGeneration),
-            });
-          } catch (error) {
-            if (!(error instanceof PersonalAccountLinkNotFoundError)) throw error;
-          }
-        },
-      });
-      const removed = await transaction
-        .deleteFrom("personalRemoteAccountLink")
-        .where("singletonKey", "=", "opensteer-account")
-        .where("challengeId", "=", linked.challengeId)
-        .where("grantId", "=", linked.grantId)
-        .where("hostCredential", "=", linked.hostCredential)
-        .where("issuer", "=", linked.issuer)
-        .where("linkGeneration", "=", linked.linkGeneration)
-        .where("subject", "=", linked.subject)
-        .executeTakeFirst();
-      if (removed.numDeletedRows === 1n) return;
-      const current = await transaction
-        .selectFrom("personalRemoteAccountLink")
-        .select("singletonKey")
-        .where("singletonKey", "=", "opensteer-account")
-        .forShare()
-        .executeTakeFirst();
-      if (current) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Personal Account link changed while it was being removed",
-        });
-      }
-    });
-    this.administration.changed();
-    const announce = () => this.#identity.announceSessionsEnded(ended);
-    if (afterResponse) afterResponse(announce);
-    else announce();
+    if (linked) await this.#executeAccountOperation(linked, afterResponse);
   }
 
   async markHostedOAuthConnectionsForRepair(caller: {
@@ -929,7 +913,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   ): Promise<void> {
     requirePersonalAdministrator(caller.session);
     const request = PublishPersonalConnectProjectionRequestSchema.parse(input);
-    await this.#database.transaction().execute(async (transaction) => {
+    const admitted = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       const status = await this.#readStatus(transaction);
       const linked = await transaction
@@ -937,6 +921,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .selectAll()
         .where("singletonKey", "=", "opensteer-account")
         .where("state", "=", "active")
+        .forNoKeyUpdate()
         .executeTakeFirst();
       await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
       if (!linked) {
@@ -966,13 +951,16 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "The Personal Connect route changed before it could be published",
         });
       }
-      const client = this.#accountClient(linked);
-      await client.publishPersonalConnect({
-        accessRoute: request.state === "disabled" ? null : status.route,
-        generation: status.generation,
-        state: request.state,
+      return this.#admitAccountOperation(transaction, linked, {
+        kind: "projection",
+        projection: {
+          accessRoute: request.state === "disabled" ? null : status.route,
+          generation: status.generation,
+          state: request.state,
+        },
       });
     });
+    await this.#executeAccountOperation(admitted);
   }
 
   async purgeExpiredAccountLinkKeys(): Promise<void> {
@@ -991,13 +979,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
    */
   async publishAccountAuthority(): Promise<"published" | "unlinked"> {
     if (!this.#grantVerifier) return "unlinked";
+    await this.#resumeAccountOperation();
     const linked = await this.#database
       .selectFrom("personalRemoteAccountLink")
       .selectAll()
       .where("singletonKey", "=", "opensteer-account")
-      .where("state", "=", "active")
       .executeTakeFirst();
-    if (!linked) return "unlinked";
+    if (!linked || linked.state !== "active") return "unlinked";
     await this.#accountClient(linked).publishAuthority();
     return "published";
   }
@@ -1014,13 +1002,14 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         message: "Personal Host authority changed before Connect could be revoked",
       });
     }
-    return this.#database.transaction().execute(async (transaction) => {
+    const admitted = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       const linked = await transaction
         .selectFrom("personalRemoteAccountLink")
         .selectAll()
         .where("singletonKey", "=", "opensteer-account")
         .where("state", "=", "active")
+        .forNoKeyUpdate()
         .executeTakeFirst();
       await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
       if (!linked) {
@@ -1029,8 +1018,11 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "Link an Opensteer Account before revoking Connect",
         });
       }
-      return this.#accountClient(linked).revokePersonalConnect(request);
+      return this.#admitAccountOperation(transaction, linked, { kind: "revoke", request });
     });
+    const result = await this.#executeAccountOperation(admitted);
+    if (!result) throw new Error("Connect revocation did not return an acknowledgement");
+    return result;
   }
 
   async connectCredentialForExecutor(
@@ -1045,7 +1037,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       .where("singletonKey", "=", "opensteer-account")
       .where("state", "=", "active")
       .executeTakeFirst();
-    if (!link)
+    if (!link || link.accountOperation?.kind === "unlink")
       throw new OpensteerError({
         code: "conflict",
         message: "Link an Opensteer Account before enabling Connect",
@@ -1072,15 +1064,156 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     });
   }
 
-  async #activateAccountLink(
-    link: {
-      readonly challengeId: string;
-      readonly hostCredential: string;
-      readonly issuer: string;
-      readonly linkGeneration: string;
-    },
-    database: Kysely<DatabaseSchema> = this.#database,
-  ): Promise<void> {
+  async #admitAccountOperation(
+    transaction: Transaction<DatabaseSchema>,
+    link: AccountLink,
+    input: AccountOperationInput,
+  ): Promise<AccountLink> {
+    // The caller has acquired the access/link locks and the shared session
+    // fence. Commit the exact external step before releasing that authority.
+    if (link.accountOperation) {
+      const { id: _id, ...pending } = link.accountOperation;
+      if (isDeepStrictEqual(pending, input)) return link;
+      // Unlink may cancel an activation whose response was lost. Its finalizer
+      // cannot resurrect the link once this step has replaced it.
+      if (input.kind !== "unlink" || pending.kind !== "activate")
+        throw new OpensteerError({
+          code: "conflict",
+          message: "An Account change is awaiting acknowledgement. Use Recover to resume it.",
+        });
+    }
+    const accountOperation: AccountOperation = { ...input, id: randomUUID() };
+    await transaction
+      .updateTable("personalRemoteAccountLink")
+      .set({ accountOperation, updatedAt: this.#now() })
+      .where("singletonKey", "=", "opensteer-account")
+      .where("linkGeneration", "=", link.linkGeneration)
+      .executeTakeFirstOrThrow();
+    return { ...link, accountOperation };
+  }
+
+  async #resumeAccountOperation(cancellingActivation = false): Promise<void> {
+    const linked = await this.#database
+      .selectFrom("personalRemoteAccountLink")
+      .selectAll()
+      .where("singletonKey", "=", "opensteer-account")
+      .executeTakeFirst();
+    if (cancellingActivation && linked?.accountOperation?.kind === "activate") return;
+    if (linked?.accountOperation) await this.#executeAccountOperation(linked);
+  }
+
+  async #executeAccountOperation(
+    link: AccountLink,
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<RevokeConnectResponse | undefined> {
+    if (!link.accountOperation) return;
+    const id = link.accountOperation.id;
+    const running = this.#accountOperations.get(id);
+    if (running) return running;
+    const execution = this.#runAccountOperation(link, afterResponse);
+    this.#accountOperations.set(id, execution);
+    try {
+      return await execution;
+    } finally {
+      this.#accountOperations.delete(id);
+    }
+  }
+
+  async #runAccountOperation(
+    link: AccountLink,
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<RevokeConnectResponse | undefined> {
+    const operation = link.accountOperation;
+    if (!operation) return;
+    const client = this.#accountClient(link);
+    let result: RevokeConnectResponse | undefined;
+    if (operation.kind === "activate") await this.#activateAccountLink(link);
+    else if (operation.kind === "unlink") {
+      // Keep the only credential capable of retrying an ambiguous unlink until
+      // Account acknowledgement. A definitive not-found is acknowledgement too.
+      try {
+        await client.unlinkPersonalHost({
+          challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(link.challengeId),
+          linkGeneration: AccountLinkGenerationSchema.parse(link.linkGeneration),
+        });
+      } catch (error) {
+        if (!(error instanceof PersonalAccountLinkNotFoundError)) throw error;
+      }
+    } else if (operation.kind === "projection")
+      await client.publishPersonalConnect(operation.projection);
+    else
+      result = await client.revokePersonalConnect(
+        RevokeConnectRequestSchema.parse(operation.request),
+      );
+
+    let ended: readonly AuthSessionId[] = [];
+    let staleProjection = false;
+    await this.#database.transaction().execute(async (transaction) => {
+      await lockRemoteAccess(transaction);
+      if (operation.kind === "unlink") await requireConnectDisabled(transaction);
+      if (operation.kind === "projection") {
+        const status = await this.#readStatus(transaction);
+        staleProjection = status.generation !== operation.projection.generation;
+      }
+      const current = await transaction
+        .selectFrom("personalRemoteAccountLink")
+        .selectAll()
+        .where("singletonKey", "=", "opensteer-account")
+        .forUpdate()
+        .executeTakeFirst();
+      if (!current && operation.kind === "unlink") return;
+      if (
+        !current ||
+        current.challengeId !== link.challengeId ||
+        current.linkGeneration !== link.linkGeneration ||
+        current.grantId !== link.grantId ||
+        current.hostCredential !== link.hostCredential ||
+        current.issuer !== link.issuer ||
+        current.subject !== link.subject
+      )
+        throw accountLinkChanged();
+      if (!current.accountOperation) return; // Another replay finalized this same step.
+      if (current.accountOperation.id !== operation.id) throw accountLinkChanged();
+      if (operation.kind === "unlink") {
+        ended = await revokeRemoteSessions(transaction, undefined, { routeKind: "connect" });
+        await transaction
+          .deleteFrom("personalRemoteAccountLink")
+          .where("singletonKey", "=", "opensteer-account")
+          .where("linkGeneration", "=", link.linkGeneration)
+          .executeTakeFirst();
+      } else {
+        await transaction
+          .updateTable("personalRemoteAccountLink")
+          .set({
+            accountOperation: null,
+            ...(operation.kind === "activate" ? { state: "active" as const } : {}),
+            updatedAt: this.#now(),
+          })
+          .where("singletonKey", "=", "opensteer-account")
+          .where("linkGeneration", "=", link.linkGeneration)
+          .executeTakeFirstOrThrow();
+      }
+    });
+    this.administration.changed();
+    if (ended.length) {
+      const announce = () => this.#identity.announceSessionsEnded(ended);
+      if (afterResponse) afterResponse(announce);
+      else announce();
+    }
+    if (staleProjection)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The Personal Connect route changed while it was being published",
+      });
+    return result;
+  }
+
+  async #activateAccountLink(link: {
+    readonly challengeId: string;
+    readonly hostCredential: string;
+    readonly issuer: string;
+    readonly linkGeneration: string;
+  }): Promise<void> {
     try {
       const client = this.#accountClient(link);
       await client.activatePersonalAccountLink({
@@ -1093,14 +1226,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       // document is published; both calls are idempotent, so a lost response
       // simply replays them.
       await client.publishAuthority();
-      await database
-        .updateTable("personalRemoteAccountLink")
-        .set({ state: "active", updatedAt: this.#now() })
-        .where("singletonKey", "=", "opensteer-account")
-        .where("challengeId", "=", link.challengeId)
-        .where("hostCredential", "=", link.hostCredential)
-        .where("linkGeneration", "=", link.linkGeneration)
-        .executeTakeFirstOrThrow();
     } catch (error) {
       // Three central answers, three different things the owner must do, so
       // they stay three errors rather than one prose message the Desktop would
@@ -1200,6 +1325,21 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   }
 }
 
+function expiredAccountCompletion(): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    message:
+      "Account-link completion has expired or was already consumed. Start Account linking again.",
+  });
+}
+
+function accountLinkChanged(): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    message: "Personal Account link changed while its Account operation was running",
+  });
+}
+
 function assertStoredAccountLinkConsume(
   stored: { readonly challengeId: string; readonly linkGeneration: string },
   request: { readonly challengeId: string; readonly linkGeneration: string },
@@ -1224,10 +1364,9 @@ async function lockRemoteAccess(transaction: Transaction<DatabaseSchema>): Promi
 /** The logins it deleted, to be announced once the transaction commits. */
 async function revokeRemoteSessions(
   transaction: Transaction<DatabaseSchema>,
-  session: AuthenticatedSession,
+  session: AuthenticatedSession | undefined,
   options: {
     readonly routeKind?: "connect";
-    readonly beforeRevoke?: () => Promise<void>;
   } = {},
 ): Promise<readonly AuthSessionId[]> {
   let remoteSessions = transaction.selectFrom("personalRemoteSessions").select("authSessionId");
@@ -1236,14 +1375,16 @@ async function revokeRemoteSessions(
     .selectFrom("authSessions")
     .select("id")
     .where((expression) =>
-      expression.or([expression("id", "=", session.id), expression("id", "in", remoteSessions)]),
+      expression.or([
+        ...(session ? [expression("id", "=", session.id)] : []),
+        expression("id", "in", remoteSessions),
+      ]),
     )
     .orderBy("id", "asc")
     // FOR UPDATE: reserve the deletion set and caller together before validating the caller.
     .forUpdate()
     .execute();
-  await requestSettlementActor(transaction, session.user.id, session.id);
-  await options.beforeRevoke?.();
+  if (session) await requestSettlementActor(transaction, session.user.id, session.id);
   const rows = await transaction
     .deleteFrom("authSessions")
     .where("id", "in", remoteSessions)

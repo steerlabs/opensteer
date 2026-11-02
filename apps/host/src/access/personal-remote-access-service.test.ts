@@ -227,6 +227,7 @@ describe("PersonalRemoteAccessService", () => {
     const keys = generateKeyPairSync("ed25519");
     const pinnedAuthority = authority;
     const link = accountLink("https://accounts.opensteer.test");
+    link.state = "activating";
     const fixture = accountMutationDatabase(link);
     const verifyLink = vi.fn(async () => {
       throw new Error("expired completion grant must not be verified on exact retry");
@@ -408,7 +409,7 @@ describe("PersonalRemoteAccessService", () => {
     expect(fixture.revokeConnectSessions).not.toHaveBeenCalled();
   });
 
-  it("preserves the link when the route races back to Connect before final unlink", async () => {
+  it("keeps the unlink journal if an unexpected Connect route prevents finalization", async () => {
     const keys = generateKeyPairSync("ed25519");
     const pinnedAuthority = authority;
     const fixture = accountMutationDatabase(accountLink("https://accounts.opensteer.test"), [
@@ -434,7 +435,7 @@ describe("PersonalRemoteAccessService", () => {
       code: "conflict",
       message: "Disable the Connect route before unlinking the Opensteer Account",
     });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
     expect(fixture.deleteLink).not.toHaveBeenCalled();
     expect(fixture.revokeConnectSessions).not.toHaveBeenCalled();
   });
@@ -681,6 +682,9 @@ function projectionDatabase(
   } = { generation: 1, mode: "off", routeOrigin: null },
 ) {
   const link = {
+    accountOperation: null as import("kysely").Selectable<
+      import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
+    >["accountOperation"],
     challengeId: `phc_${crypto.randomUUID()}`,
     grantId: `phg_${crypto.randomUUID()}`,
     hostCredential,
@@ -712,6 +716,12 @@ function projectionDatabase(
     },
   };
   const linkQuery = {
+    forNoKeyUpdate() {
+      return this;
+    },
+    forUpdate() {
+      return this;
+    },
     executeTakeFirst: vi.fn(async () => link),
     leftJoin() {
       return this;
@@ -738,6 +748,16 @@ function projectionDatabase(
             executeQuery: vi.fn(async () => ({ rows: [] })),
             transformQuery: (node: unknown) => node,
           }),
+          updateTable: () => ({
+            set(values: Partial<typeof link>) {
+              Object.assign(link, values);
+              return this;
+            },
+            where() {
+              return this;
+            },
+            executeTakeFirstOrThrow: async () => ({ numUpdatedRows: 1n }),
+          }),
           selectFrom: vi.fn((table: string) =>
             table === "authSessions"
               ? liveSessionQuery()
@@ -752,6 +772,9 @@ function projectionDatabase(
 
 function accountLink(issuer: string) {
   return {
+    accountOperation: null as import("kysely").Selectable<
+      import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
+    >["accountOperation"],
     challengeId: `phc_${crypto.randomUUID()}`,
     grantId: `phg_${crypto.randomUUID()}`,
     hostCredential: `osc_${"h".repeat(43)}`,
@@ -816,11 +839,9 @@ function accountMutationDatabase(
   };
   const revokeConnectSessions = vi.fn(async () => [{ id: remoteLoginId }]);
   const updateLinkQuery = {
-    executeTakeFirstOrThrow: vi.fn(async () => {
-      link.state = "active";
-      return { numUpdatedRows: 1n };
-    }),
-    set() {
+    executeTakeFirstOrThrow: vi.fn(async () => ({ numUpdatedRows: 1n })),
+    set(values: Partial<typeof link>) {
+      Object.assign(link, values);
       return this;
     },
     where() {

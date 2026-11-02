@@ -225,7 +225,25 @@ interface PersonalRemoteAccessTable {
   updatedAt: Timestamp;
 }
 
+type PersonalRemoteAccountOperation = { readonly id: string } & (
+  | { readonly kind: "activate" }
+  | { readonly kind: "unlink" }
+  | {
+      readonly kind: "projection";
+      readonly projection: {
+        readonly accessRoute: import("@opensteer/protocol").PersonalHostAccessRouteEnvelope | null;
+        readonly generation: number;
+        readonly state: "disabled" | "offline" | "ready";
+      };
+    }
+  | {
+      readonly kind: "revoke";
+      readonly request: { readonly hostInstanceId: HostInstanceId; readonly operationId: string };
+    }
+);
+
 interface PersonalRemoteAccountLinkTable {
+  accountOperation: Generated<PersonalRemoteAccountOperation | null>;
   singletonKey: "opensteer-account";
   challengeId: string;
   grantId: string;

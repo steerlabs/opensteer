@@ -4681,6 +4681,7 @@ export function migrationProvider() {
         "0129_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
         "0130_remote_administration": remoteAdministrationMigration,
         "0131_personal_account_link_sealing": personalAccountLinkSealingMigration,
+        "0132_personal_account_operation": personalAccountOperationMigration,
       };
     },
   };
@@ -6662,5 +6663,14 @@ const personalAccountLinkSealingMigration: Migration = {
       private_key text not null,
       expires_at timestamptz not null
     )`.execute(database);
+  },
+};
+
+const personalAccountOperationMigration: Migration = {
+  async up(database) {
+    await sql`alter table personal_remote_account_link add column account_operation jsonb;
+      update personal_remote_account_link
+      set account_operation = jsonb_build_object('id', grant_id, 'kind', 'activate')
+      where state = 'activating';`.execute(database);
   },
 };

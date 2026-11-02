@@ -41,7 +41,11 @@ The Host persists owner intent and progress; the desktop app executes it through
 its existing Connect and Account coordinators. Every owner device uses the same
 Host commands. An absent executor leaves a visible pending operation with that
 reason. Recovery resumes the failed action with the same external operation
-identity; turning access Off can supersede pending work.
+identity; turning access Off can supersede pending work. Account steps are admitted
+under the shared session fence and journaled on the exact link before network I/O.
+No Account request holds a Host transaction or session lock. Restart and executor
+recovery replay the idempotent step, then conditionally finalize that link;
+unlink retains its credential until the Account acknowledges removal.
 
 A request persists before acknowledgement. Execution that can remove the current
 route starts only after that response completes, and continues under the
@@ -55,8 +59,10 @@ exchange. Browser linking uses an Account-portal confirmation with exact
 origin/source-bound messaging; native devices use their own Account credentials.
 The Host signs a per-challenge encryption key into its proof; the Account seals
 completion to that key only after verifying the pinned Host signature. The
-courier and desktop recovery journal hold ciphertext. The Host atomically opens
-it, deletes its private key and stores the linked credential before activation.
+courier and desktop recovery journal hold ciphertext. The Host opens and verifies
+the completion outside its transaction, then atomically revalidates the session
+and exact challenge key, deletes that key and stores the linked credential before
+activation.
 Expired keys are erased on startup and by Host maintenance; cancellation
 and unlink erase pending keys. The linked Host credential authorizes fenced
 Connect provision/rotation and teardown, so execution does not require a second

@@ -16,6 +16,7 @@ import type { z } from "zod";
 
 export class PersonalRemoteAdministration {
   readonly #database: Kysely<DatabaseSchema>;
+  readonly #resumeAccountOperation: (intent: PersonalRemoteAdministrationIntent) => Promise<void>;
   readonly #readAccess: () => Promise<PersonalRemoteAccessStatus>;
   readonly #accountIssuer: string | null;
   readonly #authorityEnvelope: import("@opensteer/deployment-authority").HostDiscoveryEnvelope;
@@ -28,10 +29,12 @@ export class PersonalRemoteAdministration {
   constructor(options: {
     database: Kysely<DatabaseSchema>;
     readAccess: () => Promise<PersonalRemoteAccessStatus>;
+    resumeAccountOperation: (intent: PersonalRemoteAdministrationIntent) => Promise<void>;
     accountIssuer: string | null;
     authorityEnvelope: import("@opensteer/deployment-authority").HostDiscoveryEnvelope;
   }) {
     this.#database = options.database;
+    this.#resumeAccountOperation = options.resumeAccountOperation;
     this.#readAccess = options.readAccess;
     this.#accountIssuer = options.accountIssuer;
     this.#authorityEnvelope = options.authorityEnvelope;
@@ -197,7 +200,15 @@ export class PersonalRemoteAdministration {
 
   async next(executor: object): Promise<PersonalRemoteAdministrationOperation | null> {
     if (this.#closed || executor !== this.#executor) return null;
-    const row = await this.#latest();
+    let row = await this.#latest();
+    if (!row || this.#held.has(row.id) || (row.state !== "pending" && row.state !== "running"))
+      return null;
+    // Recover finishes the prior Account step before replaying its coordinator.
+    // A fresh Off or unlink intent must still reach the executor while Account is down.
+    if (row.requestedIntent.action === "recover" || row.executionId !== row.id)
+      await this.#resumeAccountOperation(row.intent);
+    if (this.#closed || executor !== this.#executor) return null;
+    row = await this.#latest();
     return row && !this.#held.has(row.id) && (row.state === "pending" || row.state === "running")
       ? PersonalRemoteAdministrationOperationSchema.parse(row)
       : null;
