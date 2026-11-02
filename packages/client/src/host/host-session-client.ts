@@ -1,3 +1,4 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
@@ -1065,6 +1066,7 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
+  readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
   >();
@@ -2499,6 +2501,11 @@ export class HttpHostClient {
     return () => this.#notificationListeners.delete(listener);
   }
 
+  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
+    this.#personShowListeners.add(listener);
+    return () => this.#personShowListeners.delete(listener);
+  }
+
   #applyReadStates(
     incoming: readonly ThreadReadState[],
     markers?: ReadonlyMap<string, Sequence>,
@@ -3525,6 +3532,7 @@ export class HttpHostClient {
     this.#clearBrowserFrames();
     this.#forgetLiveRereads();
     this.#listeners.clear();
+    this.#personShowListeners.clear();
     this.#lifecycleListeners.clear();
     this.#placeActivity.dispose();
     this.#latestPlace.dispose();
@@ -4530,6 +4538,7 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
+            ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("place-events-v1")
               ? { placeEvents: "include" as const }
               : {}),
@@ -4681,7 +4690,8 @@ export class HttpHostClient {
     }
     const message = HostToClientMessageSchema.parse(value);
     if (
-      (message.type === "host.read-states" ||
+      (message.type === "host.show" ||
+        message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
         message.type === "host.triggers-changed" ||
         message.type === "host.browser-usage-changed" ||
@@ -4700,6 +4710,28 @@ export class HttpHostClient {
     // Notices addressed to the person arrive on every socket they hold, so
     // only what this channel's own subscription sends shows it is delivering.
     if (showsSubscriptionProgress(message, channel)) channel.progressAt = Date.now();
+    if (message.type === "host.show") {
+      if (
+        this.#visibility !== "foreground" ||
+        this.#disposed ||
+        this.#snapshot.session !== "authenticated" ||
+        viewer.userId === null ||
+        this.#snapshot.user?.id !== viewer.userId ||
+        this.#snapshot.deploymentId !== viewer.deploymentId ||
+        this.#forbiddenWorkspaces.has(message.workspaceId)
+      )
+        return;
+      for (const listener of this.#personShowListeners) {
+        try {
+          listener(message);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+      return;
+    }
     if (message.type === "host.pong") {
       // Only a probe is correlated; an uncorrelated pong answers nobody.
       if (message.nonce === channel.probeNonce) this.#clearProbe(channel);

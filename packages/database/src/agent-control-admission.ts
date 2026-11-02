@@ -36,6 +36,7 @@ export const agentControlActionLimits = {
   "thread.delegate": 8,
   "thread.list": 64,
   "thread.message": 32,
+  "person.show": 32,
   "thread.read": 64,
   "thread.write": 32,
   "trigger.read": 128,
@@ -67,6 +68,7 @@ export type AgentControlAction =
   | "thread.list"
   | "thread.message"
   | "person.notify"
+  | "person.show"
   | "thread.read"
   | "thread.write"
   | "trigger.read"
@@ -165,6 +167,7 @@ const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass
   "thread.list": "thread.list",
   "thread.message": "thread.message",
   "person.notify": "thread.message",
+  "person.show": "person.show",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
   "trigger.read": "trigger.read",

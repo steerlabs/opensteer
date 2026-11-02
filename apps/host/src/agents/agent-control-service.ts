@@ -1,3 +1,4 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import {
   AgentToolIdSchema,
   capabilityProfileAcceptsTool,
@@ -100,6 +101,9 @@ export class AgentControlTokenService extends RunCapabilityTokenService<"openste
 }
 
 export class AgentControlService {
+  readonly #personShow:
+    | ((userId: AgentControlRunScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
+    | undefined;
   readonly #supportsLoginFill: (scope: AgentControlRunScope) => boolean;
   readonly #browserSources: Pick<BrowserSourceService, "agentSignIn">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
@@ -131,6 +135,10 @@ export class AgentControlService {
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
+    readonly personShow?: (
+      userId: AgentControlRunScope["requestedBy"],
+      message: PersonShowMessage,
+    ) => Promise<number>;
     readonly supportsLoginFill?: (scope: AgentControlRunScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentSignIn">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
@@ -161,6 +169,7 @@ export class AgentControlService {
     readonly workspaceWake?: AgentWorkspaceWaker;
     readonly workspaces: AgentWorkspaceCreator;
   }) {
+    this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
@@ -235,6 +244,49 @@ export class AgentControlService {
     }
 
     assertToolAllowed(claims.capabilityProfileId, request);
+
+    if (request.type === "person.show") {
+      if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
+      if ("tabId" in request.target) {
+        if (!this.#browserTabs) throw badRequest("Saved tabs are unavailable on this Host.");
+        await this.#browserTabs.authorizeShow(
+          {
+            kind: "agent",
+            ownerId: claims.requestedBy,
+            workspaceId: claims.workspaceId,
+            threadId: claims.threadId,
+            agentBindingId: `run:${claims.runId}`,
+          },
+          request.target.tabId,
+        );
+      } else {
+        const target = await this.#store.getThreadForOwner(
+          request.target.threadId,
+          claims.requestedBy,
+        );
+        if (!target) throw forbidden("Thread is unavailable to this user");
+        this.#assertThreadScope(currentThread, target);
+      }
+      const admission = await this.#admit(claims, request);
+      const connectedDevices = admission.wasDuplicate
+        ? 0
+        : await this.#personShow(claims.requestedBy, {
+            type: "host.show",
+            workspaceId: claims.workspaceId,
+            threadId: claims.threadId,
+            target: request.target,
+          });
+      return AgentControlResponseSchema.parse({
+        type: "person.show.result",
+        requestId: request.requestId,
+        connectedDevices,
+        status: admission.wasDuplicate
+          ? "already-requested"
+          : connectedDevices > 0
+            ? "sent-unconfirmed"
+            : "no-device-connected",
+      });
+    }
 
     if (request.type === "person.notify") {
       if (!(await this.#store.runnerCapabilities(claims.runnerId))?.includes("person-notify-v1"))
@@ -1036,6 +1088,7 @@ const toolForAction: Readonly<
   "thread.list": "thread.list",
   "thread.message": "thread.message",
   "person.notify": "person.notify",
+  "person.show": "person.show",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
   "workspace.create": "workspace.create",

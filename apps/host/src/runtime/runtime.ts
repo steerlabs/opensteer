@@ -2201,6 +2201,7 @@ export async function createHostRuntime(
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
     const agentControl = new AgentControlService({
+      personShow: (userId, message) => realtime.showToPerson(userId, message),
       browserTabs,
       supportsLoginFill: (scope) => {
         const runner = runners.identityForEnvironment(scope.environmentId);

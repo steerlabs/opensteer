@@ -318,6 +318,7 @@ export const RunnerCapabilitySchema = z.enum([
   "thread-icon-v1",
   "task-done-v1",
   "person-notify-v1",
+  "person-show-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 

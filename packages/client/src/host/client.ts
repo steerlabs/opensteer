@@ -1,3 +1,4 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import type {
   ChannelAccessPolicy,
   ChannelAccount,
@@ -1121,6 +1122,7 @@ export interface HostClient {
    * replayed: what was missed is still unread in its Thread.
    */
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
+  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
   setTaskDone(threadId: string, done: boolean): Promise<Thread>;

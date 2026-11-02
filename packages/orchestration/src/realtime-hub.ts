@@ -108,6 +108,7 @@ export interface RealtimeFillWindow {
 }
 
 interface SubscriberOptions {
+  readonly personShow: boolean;
   readonly placeEvents: boolean;
   readonly cursor: Sequence;
   readonly fill: (after: Sequence, through: Sequence) => Promise<RealtimeFillWindow>;
@@ -214,6 +215,21 @@ class Subscriber {
     this.sink = options.sink;
     this.userId = options.userId;
     this.workspaceId = options.workspaceId;
+  }
+
+  async show(message: Extract<HostToClientMessage, { type: "host.show" }>): Promise<boolean> {
+    // Never buffer navigation across synchronization or a reconnect.
+    if (!this.acceptsPersonShow) return false;
+    try {
+      await this.sink.send(message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  get acceptsPersonShow(): boolean {
+    return this.#state === "live" && this.#options.personShow;
   }
 
   offer(event: AgentEvent): void {
@@ -610,6 +626,7 @@ export class RealtimeHub {
     readonly afterSequence: Sequence;
     readonly snapshotMessages?: "omit";
     readonly placeEvents?: "include";
+    readonly personShow?: "accept";
     readonly sink: RealtimeSink;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
@@ -638,6 +655,7 @@ export class RealtimeHub {
       onClose: remove,
       sink: input.sink,
       placeEvents: input.placeEvents === "include",
+      personShow: input.personShow === "accept",
       userId: input.userId,
       workspaceId: input.workspaceId,
     });
@@ -872,6 +890,25 @@ export class RealtimeHub {
       if (subscriber.userId === userId)
         subscriber.enqueueMessage({ type: "host.read-states", workspaceId, states: [state] });
     }
+  }
+
+  async showToPerson(
+    userId: UserId,
+    message: Extract<HostToClientMessage, { type: "host.show" }>,
+  ): Promise<number> {
+    const sinks = new Set<RealtimeSink>();
+    const deliveries: Promise<boolean>[] = [];
+    for (const subscriber of this.#subscribers.get(message.workspaceId) ?? []) {
+      if (
+        subscriber.userId !== userId ||
+        !subscriber.acceptsPersonShow ||
+        sinks.has(subscriber.sink)
+      )
+        continue;
+      sinks.add(subscriber.sink);
+      deliveries.push(subscriber.show(message));
+    }
+    return (await Promise.all(deliveries)).filter(Boolean).length;
   }
 
   /** This reader's task placement or Workspace membership changed. */

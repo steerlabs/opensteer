@@ -4673,6 +4673,7 @@ export function migrationProvider() {
         "0123_thread_asked_at": threadAskedAtMigration,
         "0124_browser_native_only": browserNativeOnlyMigration,
         "0125_run_place_events": runPlaceEventsMigration,
+        "0126_person_show": personShowMigration,
       };
     },
   };
@@ -6557,5 +6558,29 @@ export const browserNativeOnlyMigration: Migration = {
         drop constraint browser_sessions_lease_generation_check,
         drop column lease_token_hash, drop column lease_generation, drop column profile_lease_expires_at;
     `.execute(database);
+  },
+};
+
+const personShowMigration: Migration = {
+  async up(database) {
+    for (const name of [
+      "agent_control_requests_action_check",
+      "agent_control_requests_action_class_check",
+    ] as const) {
+      const result = await sql<{
+        definition: string;
+      }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'public.agent_control_requests'::regclass and conname = ${name}`.execute(
+        database,
+      );
+      const definition = result.rows[0]?.definition;
+      if (!definition?.includes("'thread.message'::text"))
+        throw new Error("Cannot extend agent-control actions for person show");
+      await sql.raw(`alter table agent_control_requests drop constraint ${name}`).execute(database);
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint ${name} ${definition.replace("'thread.message'::text", "'thread.message'::text, 'person.show'::text")}`,
+        )
+        .execute(database);
+    }
   },
 };
