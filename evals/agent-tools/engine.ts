@@ -2,6 +2,7 @@ import { cp, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createId,
+  harnessRuntimeExpectedVersion,
   ThreadIdSchema,
   ModelSelectionSchema,
   type ModelSelection,
@@ -31,11 +32,13 @@ import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
 import { fingerprint } from "./report.js";
 
+const claudeExecutable = process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude";
+
 // Adding an engine is one factory, with no replay prompt or native-tool copy.
 export const drivers: Record<"claude" | "codex", () => HarnessDriver> = {
   claude: () =>
     new ClaudeHarnessDriver({
-      executable: process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude",
+      executable: claudeExecutable,
       sdk: claudeAgentSdk,
       inspectExecutable: inspectClaudeExecutable,
     }),
@@ -43,6 +46,14 @@ export const drivers: Record<"claude" | "codex", () => HarnessDriver> = {
     new CodexHarnessDriver({ launch: { executable: packagedCodexExecutable(), arguments: [] } }),
 };
 export type Engine = keyof typeof drivers;
+
+/** Codex ships with Opensteer; Claude Code is the person's own install. */
+export async function engineVersion(engine: Engine): Promise<string> {
+  if (engine === "codex") return harnessRuntimeExpectedVersion("codex");
+  const inspected = await inspectClaudeExecutable(claudeExecutable, process.env);
+  if (inspected.status !== "available") throw new Error(inspected.detail);
+  return inspected.version;
+}
 export async function prepareEngine(
   root: string,
   engine: Engine,

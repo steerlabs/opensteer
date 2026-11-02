@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { ModelSelectionSchema, harnessRuntimeExpectedVersion } from "@opensteer/core";
+import { ModelSelectionSchema } from "@opensteer/core";
 import { parseCases } from "./cases.js";
 import { grade } from "./grader.js";
 import {
@@ -15,7 +15,7 @@ import {
   summary,
   type ComparableRow,
 } from "./report.js";
-import { prepareEngine, runEngine, type Engine } from "./engine.js";
+import { engineVersion, prepareEngine, runEngine, type Engine } from "./engine.js";
 import { startFakeHost } from "./host.js";
 
 const checkout = resolve(import.meta.dirname, "../..");
@@ -131,7 +131,7 @@ async function main() {
       engine,
       accessMode: "full-access",
       runtimeBoundary: "isolated-service",
-      engineVersion: harnessRuntimeExpectedVersion(engine),
+      engineVersion: await engineVersion(engine),
       model: selection.modelId,
       providerId: selection.providerId,
       ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}),
