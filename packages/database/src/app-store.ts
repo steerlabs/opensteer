@@ -6,6 +6,7 @@ import {
   OpensteerError,
   appMaxBytes,
   nonTerminalRunStatuses,
+  threadInReach,
   type AgentEvent,
   type EnvironmentId,
   type RunId,
@@ -129,6 +130,15 @@ export class AppStore {
             .forNoKeyUpdate()
             .executeTakeFirst();
           if (!app) throw missing();
+          const threads = await transaction
+            .selectFrom("threads")
+            .select(["id", "capabilityProfileId", "lineageRootThreadId", "workspaceId"])
+            .where("id", "in", [input.threadId, app.threadId])
+            .execute();
+          const publisher = threads.find((thread) => thread.id === input.threadId);
+          const origin = threads.find((thread) => thread.id === app.threadId);
+          // Updating changes what the origin Thread shows, so the publisher must reach it.
+          if (!publisher || !origin || !threadInReach(publisher, origin)) throw missing();
           version = app.latestVersion + 1;
           await transaction
             .updateTable("apps")

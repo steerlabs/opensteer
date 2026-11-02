@@ -758,6 +758,7 @@ describe("Claude Agent SDK harness", () => {
     });
     expect(sdk.calls[0]?.options.allowedTools).toEqual([
       "ToolSearch",
+      "mcp__opensteer__app_publish",
       "mcp__opensteer__request_list",
       "mcp__opensteer__request_withdraw",
       "mcp__opensteer__environment_list",

@@ -44,6 +44,11 @@ export function prepareAppHtml(html: string, theme: AppTheme): string {
   };
   send({type:'opensteer-app:ready'});
   addEventListener('keydown',e=>{if(e.key==='Escape')send({type:'opensteer-app:escape'})});
+  addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('a[href]');if(!a||e.defaultPrevented)return;
+    const url=new URL(a.href,location.href);if(!/^https?:$/.test(url.protocol))return;
+    const here=new URL(location.href);url.hash='';here.hash='';if(url.href===here.href)return;
+    e.preventDefault();open(a.href,'_blank','noopener');
+  });
   let last=0, queued=false;
   const report=()=>{queued=false;const b=document.body;if(!b)return;
     const height=Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)+Math.max(0,b.getBoundingClientRect().top));

@@ -64,7 +64,7 @@ it("runs inline HTML in an opaque origin without cookies, storage, parent access
       response.writeHead(200, appFrameHeaders());
       response.end(
         prepareAppHtml(
-          `<!doctype html><html><head></head><body style="height:2400px"><input aria-label="App input"><script>
+          `<!doctype html><html><head></head><body style="height:2400px"><input aria-label="App input"><a href="#details">Details</a><a href="https://example.com/docs">Docs</a><script>
         (async()=>{
           const blocked=fn=>{try{fn();return false}catch{return true}};
           const result={cookie:blocked(()=>document.cookie),storage:blocked(()=>localStorage.getItem('session')),parent:blocked(()=>parent.document.cookie)};
@@ -112,6 +112,18 @@ it("runs inline HTML in an opaque origin without cookies, storage, parent access
     expect(await page.evaluate("Math.max(...window.appHeights)")).toBeGreaterThan(2_000);
     const frame = page.frames().find((frame) => frame.url().endsWith("/app"))!;
     expect(await frame.evaluate(() => document.documentElement.dataset.theme)).toBe("dark");
+    // Ordinary links leave through a new window (the system browser on desktop and mobile);
+    // the app's own document and in-page fragments stay put.
+    await page.route("https://example.com/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "Docs" }),
+    );
+    const popup = page.waitForEvent("popup", { timeout: 1_500 });
+    await frame.getByRole("link", { name: "Docs" }).click({ timeout: 1_500 });
+    expect((await popup).url()).toBe("https://example.com/docs");
+    await frame.getByRole("link", { name: "Details" }).click({ timeout: 1_500 });
+    expect(new URL(frame.url()).pathname).toBe("/app");
+    expect(new URL(frame.url()).hash).toBe("#details");
+    expect(page.context().pages()).toHaveLength(2);
     await frame.getByRole("textbox", { name: "App input" }).fill("Unsaved input");
     await page.evaluate("window.originalAppFrame=document.querySelector('iframe')");
     await page.getByRole("button", { name: "Open", exact: true }).click({ timeout: 1_500 });

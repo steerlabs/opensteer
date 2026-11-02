@@ -1,7 +1,14 @@
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createId, appMaxBytes, OpensteerError, type AgentEvent } from "@opensteer/core";
+import {
+  createId,
+  appMaxBytes,
+  OpensteerError,
+  type AgentEvent,
+  type RunId,
+  type ThreadId,
+} from "@opensteer/core";
 import { AppStore } from "@opensteer/database";
 import { expect, vi } from "vitest";
 import { describeStore } from "@opensteer/database/test-support/store";
@@ -172,6 +179,70 @@ describeStore("published app HTML", (it) => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("lets only a publisher that reaches the origin Thread update its app", async ({
+    storeFixture,
+  }) => {
+    const { store, database, startRunFixture } = storeFixture;
+    const f = await startRunFixture("app-reach");
+    const apps = new AppStore(database);
+    const publication = (threadId: ThreadId, runId: RunId, publishKey: string, appId?: string) =>
+      apps.publish({
+        ...(appId ? { appId } : {}),
+        workspaceId: f.workspace.id,
+        threadId,
+        runId,
+        environmentId: f.environmentId,
+        userId: f.userId,
+        title: "Budget",
+        sha256: "b".repeat(64),
+        sizeBytes: 1,
+        publishKey,
+      });
+    const original = await publication(f.thread.id, f.run.id, "original");
+    const thread = (idempotencyKey: string, parentThreadId?: ThreadId) =>
+      store.createThread({
+        createdBy: f.userId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        idempotencyKey,
+        modelSelection: f.thread.modelSelection,
+        ...(parentThreadId ? { parentThreadId } : {}),
+        title: idempotencyKey,
+        workspaceId: f.workspace.id,
+      });
+    const running = async (threadId: ThreadId, idempotencyKey: string) => {
+      const turn = await storeFixture.enqueueHumanTrigger({
+        content: [{ type: "text", text: "Update" }],
+        idempotencyKey,
+        requestedBy: f.userId,
+        threadId,
+      });
+      await database
+        .updateTable("runs")
+        .set({ status: "running" })
+        .where("id", "=", turn.run.id)
+        .execute();
+      return turn.run.id;
+    };
+    // A task delegated from another conversation sits in a different lineage.
+    const { thread: unrelatedRoot } = await thread("unrelated-root");
+    const { thread: delegated } = await thread("unrelated-task", unrelatedRoot.id);
+    const { thread: child } = await thread("origin-task", f.thread.id);
+    expect([delegated.capabilityProfileId, child.capabilityProfileId]).toEqual([
+      "delegated",
+      "delegated",
+    ]);
+    const delegatedRun = await running(delegated.id, "unrelated-task-run");
+    const childRun = await running(child.id, "origin-task-run");
+
+    await expect(
+      publication(delegated.id, delegatedRun, "outside-lineage", original.appId),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      publication(child.id, childRun, "origin-lineage", original.appId),
+    ).resolves.toMatchObject({ appId: original.appId, version: 2 });
   });
 
   it("refuses foreign and missing IDs, missing/non-HTML/oversized files, and offline Runner reads without a publication", async ({

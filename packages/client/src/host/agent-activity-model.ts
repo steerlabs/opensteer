@@ -1893,6 +1893,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         label: "Started a task",
       }),
   ],
+  ["app_publish", said(["Publishing an app", "Published an app"], "share")],
   ["person_notify", said(["Sending a notification", "Sent a notification"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
   ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
