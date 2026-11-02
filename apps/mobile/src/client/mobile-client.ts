@@ -758,6 +758,35 @@ export class MobileClient {
     return waitForIntegrationAuthorization({ attemptId: callback.attemptId, client });
   }
 
+  async linkSelectedPersonalAccount(): Promise<void> {
+    const hostClient = this.#hostClient;
+    const deploymentId = this.#attachedDeploymentId;
+    if (!hostClient || !deploymentId) throw new Error("Connect to the computer first.");
+    const connection = this.#requireConnection(deploymentId);
+    if ((await this.oauth.state()).account.status !== "signed-in") {
+      await this.signInAccount();
+      throw new Error("Finish Account sign-in, then tap Link Account again.");
+    }
+    await (
+      await import("@opensteer/client/host")
+    ).linkPersonalHostAccount(
+      hostClient,
+      this.accountDirectory,
+      connection.authority,
+      hostClient.getSnapshot().identityConfig?.deployment.name ?? "Opensteer",
+    );
+  }
+
+  async removeHostSession(session: import("@opensteer/core").AuthSessionSummary): Promise<void> {
+    if (!this.#hostClient || !this.#attachedDeploymentId)
+      throw new Error("Connect to the computer first.");
+    if (session.current) {
+      await this.signOut(this.#attachedDeploymentId);
+      return;
+    }
+    await (await import("@opensteer/client/host")).removeHostSession(this.#hostClient, session.id);
+  }
+
   async signInAccount(): Promise<void> {
     const result = await this.oauth.beginAccountSignIn();
     if (result.account.status !== "signed-in" || result.account.identity === null) {

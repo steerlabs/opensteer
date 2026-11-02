@@ -4679,6 +4679,7 @@ export function migrationProvider() {
         "0127_person_show": personShowMigration,
         "0128_request_settlement_provenance": requestSettlementProvenanceMigration,
         "0129_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
+        "0130_remote_administration": remoteAdministrationMigration,
       };
     },
   };
@@ -6626,5 +6627,28 @@ export const ownerSessionComputerApprovalsMigration: Migration = {
   async up(database) {
     await sql`drop table if exists public.computer_use_approval_keys;
       alter table public.computer_use_policies drop column if exists approval;`.execute(database);
+  },
+};
+
+export const remoteAdministrationMigration: Migration = {
+  async up(database) {
+    await sql`
+      drop table machine_local_sessions;
+      create table personal_remote_administration (
+        position bigserial unique,
+        execution_id text not null,
+        requested_intent jsonb not null,
+        id text primary key,
+        requested_by text not null references users(id),
+        idempotency_key text not null,
+        intent jsonb not null,
+        state text not null check (state in ('pending', 'running', 'succeeded', 'failed')),
+        detail text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (requested_by, idempotency_key)
+      );
+      create index personal_remote_administration_latest on personal_remote_administration (position desc);
+    `.execute(database);
   },
 };

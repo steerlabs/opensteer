@@ -85,7 +85,7 @@ describe("desktop bridge", () => {
         removeHandler: (channel) => handlers.delete(channel),
       },
       passwords: passwordsPort().port,
-      personalRemote: personalRemote(),
+
       portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
       runner,
     });
@@ -152,7 +152,6 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.hostWebSocketEvent,
       desktopBridgeChannels.localExecutionStatusChanged,
       desktopBridgeChannels.passwordsStatusChanged,
-      desktopBridgeChannels.personalRemoteAccessStatusChanged,
       desktopBridgeChannels.notificationActivated,
       desktopBridgeChannels.usbDeviceChoice,
       desktopBridgeChannels.agentPhoneAdbAuthorize,
@@ -214,7 +213,7 @@ describe("desktop bridge", () => {
         removeHandler: (channel) => handlers.delete(channel),
       },
       passwords: passwordsPort().port,
-      personalRemote: personalRemote(),
+
       portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
       runner: runnerController(),
     });
@@ -403,7 +402,7 @@ function registerWith(
       removeHandler: (channel) => handlers.delete(channel),
     },
     passwords: passwords.port,
-    personalRemote: personalRemote(),
+
     portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
     runner: runnerController(),
   });
@@ -502,25 +501,6 @@ function runnerController() {
       listeners.add(listener);
       return () => listeners.delete(listener);
     }),
-  };
-}
-
-function personalRemote() {
-  const status = {
-    deploymentId: null,
-    detail: "Unavailable",
-    generation: 0,
-    mode: "off" as const,
-    phase: "unavailable" as const,
-    retryable: false,
-    routeOrigin: null,
-    schemaVersion: 1 as const,
-  };
-  return {
-    configure: vi.fn(async () => status),
-    issuePairingCode: vi.fn(),
-    status,
-    subscribe: vi.fn(() => () => undefined),
   };
 }
 

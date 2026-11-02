@@ -217,19 +217,6 @@ interface PersonalRemoteSessionTable {
   createdAt: Timestamp;
 }
 
-/**
- * Positive proof that a session was established at this computer's keyboard.
- * Written only by the local-owner claim, which spends the process-launch
- * capability the application that started this Host holds, and cascaded away
- * with the session itself. "Machine-local" is this row plus a browser cookie,
- * never the absence of some other row: a native access token names the browser
- * session that authorized it, so the marker alone would travel with it.
- */
-interface MachineLocalSessionTable {
-  authSessionId: AuthSessionId;
-  establishedAt: Timestamp;
-}
-
 interface PersonalRemoteAccessTable {
   singletonKey: "personal";
   generation: ColumnType<string, number | string, number | string>;
@@ -2026,7 +2013,19 @@ export interface DatabaseSchema {
   personalRemoteAccess: PersonalRemoteAccessTable;
   personalRemoteAccountLink: PersonalRemoteAccountLinkTable;
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;
-  machineLocalSessions: MachineLocalSessionTable;
+  personalRemoteAdministration: {
+    position: Generated<string>;
+    executionId: string;
+    requestedIntent: JsonColumn<import("@opensteer/protocol").PersonalRemoteAdministrationIntent>;
+    id: string;
+    requestedBy: UserId;
+    idempotencyKey: string;
+    intent: JsonColumn<import("@opensteer/protocol").PersonalRemoteAdministrationIntent>;
+    state: "pending" | "running" | "succeeded" | "failed";
+    detail: string | null;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
   personalRemoteSessions: PersonalRemoteSessionTable;
   personalRemoteSessionGrantUses: PersonalRemoteSessionGrantUseTable;
   authVerifications: AuthVerificationTable;

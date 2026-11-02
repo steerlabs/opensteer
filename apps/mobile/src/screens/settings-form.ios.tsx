@@ -29,6 +29,8 @@ import { StyleSheet } from "react-native";
 import { color, deploymentPaint } from "../theme.js";
 import type { DeploymentMark } from "../threads/deployment-identity.js";
 import {
+  remoteAdministrationActions,
+  remoteAdministrationActionLabels,
   browserProfilesSettingsRow,
   chromeSettingsRow,
   computersSettingsFooter,
@@ -77,6 +79,67 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
             </HStack>
           </Button>
         </Section>
+
+        {props.administration ? (
+          <>
+            {props.administration.access ? (
+              <Section
+                title="Remote access"
+                footer={
+                  <Footer
+                    text={
+                      props.administration.access.operation?.detail ??
+                      "Changes can disconnect this device and other devices."
+                    }
+                  />
+                }
+              >
+                <Text>{props.administration.access.access.mode}</Text>
+                {props.administration.access.access.accountLink ? (
+                  <Text>
+                    {props.administration.access.access.accountLink.issuer} ·{" "}
+                    {props.administration.access.access.accountLink.subject}
+                  </Text>
+                ) : null}
+                {remoteAdministrationActions(props.administration.access).map((action) => (
+                  <Button
+                    key={action}
+                    modifiers={[disabled(props.administration?.busy ?? false)]}
+                    onPress={() => props.administration?.onAction(action)}
+                  >
+                    <Text>{remoteAdministrationActionLabels[action]}</Text>
+                  </Button>
+                ))}
+                {props.administration.pairing ? (
+                  <Text>{props.administration.pairing.code}</Text>
+                ) : null}
+              </Section>
+            ) : null}
+            <Section title="Signed-in devices">
+              {props.administration.sessions.map((session) => (
+                <HStack key={session.id}>
+                  <Text>
+                    {session.deviceLabel}
+                    {session.current ? " · This device" : ""}
+                  </Text>
+                  <Spacer />
+                  <Button
+                    modifiers={[disabled(props.administration?.busy ?? false)]}
+                    onPress={() => props.administration?.onRemove(session)}
+                  >
+                    <Text>Remove</Text>
+                  </Button>
+                </HStack>
+              ))}
+              <Button onPress={props.administration.onRefresh}>
+                <Text>Refresh devices</Text>
+              </Button>
+              {props.administration.error ? (
+                <Text modifiers={[error]}>{props.administration.error}</Text>
+              ) : null}
+            </Section>
+          </>
+        ) : null}
 
         {props.computers.length === 0 ? null : (
           <Section footer={<Footer text={computersSettingsFooter} />} title="Computers">

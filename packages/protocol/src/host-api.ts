@@ -13,6 +13,16 @@ import {
   ChannelRouteSelectorSchema,
   IntegrationConnectionViewSchema,
 } from "@opensteer/channel-core";
+import {
+  PersonalRemoteAdministrationIntentSchema,
+  PersonalRemoteAdministrationOperationSchema,
+  PersonalRemoteAdministrationStatusSchema,
+  IssuePersonalPairingCodeResponseSchema,
+  ApprovePersonalHostAccountLinkRequestSchema,
+  ApprovePersonalHostAccountLinkResponseSchema,
+  ConsumePersonalHostAccountLinkRequestSchema,
+  PersonalRemoteAccessStatusSchema,
+} from "./personal-remote-access.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
   AssignmentIdSchema,
@@ -695,6 +705,25 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    intent: PersonalRemoteAdministrationIntentSchema,
+    type: z.literal("personal.remoteAccess.request"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("personal.remoteAccess.pairing.create"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    challenge: ApprovePersonalHostAccountLinkRequestSchema,
+    type: z.literal("personal.accountLink.approve"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    completion: ConsumePersonalHostAccountLinkRequestSchema,
+    type: z.literal("personal.accountLink.complete"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     sessionId: AuthSessionIdSchema,
     type: z.literal("session.revoke"),
   }),
@@ -1180,6 +1209,22 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     z.object({ outcome: z.literal("conflict"), type: z.literal("machine.access.update") }),
   ]),
   z.object({ ended: z.boolean(), type: z.literal("machine.access.session.stop") }),
+  z.object({
+    type: z.literal("personal.remoteAccess.request"),
+    operation: PersonalRemoteAdministrationOperationSchema,
+  }),
+  z.object({
+    type: z.literal("personal.remoteAccess.pairing.create"),
+    pairing: z.object(IssuePersonalPairingCodeResponseSchema.shape),
+  }),
+  z.object({
+    type: z.literal("personal.accountLink.approve"),
+    proof: ApprovePersonalHostAccountLinkResponseSchema,
+  }),
+  z.object({
+    type: z.literal("personal.accountLink.complete"),
+    access: PersonalRemoteAccessStatusSchema,
+  }),
   z.object({ type: z.literal("session.revoke") }),
   z.object({
     enrollmentId: z.string().min(1).max(256),
@@ -1489,6 +1534,11 @@ export const hostApi = defineRpc({
     ChannelConnectionInspectionViewSchema,
   ),
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
+  "personal.remoteAccess.get": declaration(
+    "GET",
+    z.strictObject({ after: z.number().int().nonnegative().optional() }),
+    PersonalRemoteAdministrationStatusSchema,
+  ),
   "commands.dispatch": declaration("POST", commandInputSchema, commandOutputSchema),
   "assignment.get": declaration(
     "GET",
@@ -1870,6 +1920,7 @@ export type HostApiClient = RpcClient<typeof hostApi>;
 
 export interface HostApiServerContext {
   readonly binaryBody?: AsyncIterable<Uint8Array>;
+  readonly afterResponse?: (effect: () => void) => void;
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
   readonly requestId: string;
   readonly requestUrl: string;
@@ -1881,5 +1932,4 @@ export interface HostApiServerContext {
 
 export type HostApiHandlers = RpcHandlers<typeof hostApi, HostApiServerContext>;
 
-export type HostApiScope =
-  "exact-origin" | "exact-origin-session" | "mutation" | "public" | "session";
+export type HostApiScope = "exact-origin" | "mutation" | "public" | "session";

@@ -55,36 +55,33 @@ describe("Device settings placement", () => {
     }
   });
 
-  it("lets a remote Personal device disconnect only itself", () => {
+  it("shows remote access administration on a remote Personal device", () => {
     const html = renderSettings(placementFixtures()["personal-remote"], "/settings/devices");
 
-    expect(html).toContain("You’re using Mac mini from this device.");
+    expect(html).toContain('aria-label="Remote access"');
     expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
     expect(html).toContain("Nothing on Mac mini changes");
-    expect(html).not.toContain("Turning remote access off");
+    expect(html).toContain("Changing remote access");
     expect(html).not.toContain("Sign out");
   });
 
-  it("does not give a machine-owner browser controls that require the Desktop", () => {
+  it("gives a signed-in machine-owner browser the same remote access controls", () => {
     const context = { ...placementFixtures().browser, snapshot: machineOwnerSnapshot() };
     const html = renderSettings(context, "/settings/devices");
 
-    expect(html).toContain(
-      "To open Mac mini from your phone or another computer, turn on remote access in the Opensteer app on Mac mini.",
-    );
-    expect(html).not.toContain("Disconnecting ends");
-    expect(html).not.toContain("Remove");
-    expect(html).not.toContain("Turn remote access off");
+    expect(html).toContain('aria-label="Remote access"');
+    expect(html).toContain('value="private"');
+    expect(html).toContain("Changing remote access");
   });
 
-  it("lets a Personal remote browser disconnect its own routed session", () => {
+  it("shows administration to a Personal remote browser", () => {
     const context = {
       ...placementFixtures().browser,
       snapshot: { ...machineOwnerSnapshot(), sessionSurface: "personal-remote" as const },
     };
     const html = renderSettings(context, "/settings/devices");
 
-    expect(html).toContain("You’re using Mac mini from this device.");
+    expect(html).toContain('aria-label="Remote access"');
     expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
     expect(html).not.toContain("turn on remote access in the Opensteer app");
   });
@@ -104,7 +101,7 @@ describe("Settings identity honesty", () => {
       "Add to your Account",
     );
     const html = renderSettings({ ...context, deploymentAccess }, "/settings/devices");
-    expect(html).toContain("Opensteer Connect isn’t available yet");
+    expect(html).toContain("Loading remote access");
     expect(html).not.toContain('value="connect"');
     expect(html).toContain('value="private"');
   });
@@ -338,13 +335,9 @@ function accessSnapshot(
 function personalBridge(): OpensteerDesktopBridge {
   return {
     cancel: noOp,
-    configurePersonalRemoteAccess: noOp,
     getDeploymentAccessSnapshot: noOp,
-    getPersonalRemoteAccessStatus: () => new Promise(noOp),
-    issuePersonalPairingCode: noOp,
     linkPersonal: noOp,
     onDeploymentAccessSnapshotChanged: () => noOp,
-    onPersonalRemoteAccessStatusChanged: () => noOp,
     signIn: noOp,
     signOut: noOp,
     unlinkPersonal: noOp,

@@ -59,7 +59,7 @@ describe("NativePersonalHostControl bootstrap", () => {
     expect(requests.slice(1).every(({ credentials }) => credentials === "include")).toBe(true);
   });
 
-  it("re-establishes the machine-local owner session on restart", async () => {
+  it("re-establishes the desktop's owner session on restart", async () => {
     const requests: Request[] = [];
     const token = "a".repeat(43);
     const control = new NativePersonalHostControl({

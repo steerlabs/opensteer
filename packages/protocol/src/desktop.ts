@@ -45,11 +45,6 @@ import {
 export type { CloudDeploymentOperation } from "@opensteer/control-plane-protocol";
 import { AgentPhoneArtifactManifestSchema, agentPhoneApkMaxBytes } from "./android-phone.js";
 import { PersonalPairingCodeSchema } from "./personal-remote-access.js";
-import type {
-  DesktopConfigurePersonalRemoteAccessInput,
-  DesktopPersonalPairingCode,
-  DesktopPersonalRemoteAccessStatus,
-} from "./personal-remote-access.js";
 
 export {
   DesktopConfigurePersonalRemoteAccessInputSchema,
@@ -1649,9 +1644,6 @@ export interface OpensteerDesktopBridge {
   addDirect(input: DesktopAddDirectRouteInput): Promise<void>;
   cancel(): Promise<void>;
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
-  configurePersonalRemoteAccess(
-    input: DesktopConfigurePersonalRemoteAccessInput,
-  ): Promise<DesktopPersonalRemoteAccessStatus>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
   createPersonalDeployment(): Promise<void>;
   createCloudDeployment(input: CreateCloudDeploymentRequest): Promise<CloudDeploymentOperation>;
@@ -1661,7 +1653,6 @@ export interface OpensteerDesktopBridge {
   getDeploymentAccessSnapshot(): Promise<DeploymentAccessSnapshot>;
   listCloudDeployments(): Promise<ListCloudDeploymentsResponse>;
   getLocalExecutionStatus(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
-  getPersonalRemoteAccessStatus(): Promise<DesktopPersonalRemoteAccessStatus>;
   hostRequest(input: DesktopHostHttpRequest): Promise<DesktopHostResult<DesktopHostHttpResponse>>;
   hostBinaryOpen(
     input: DesktopHostBinaryOpenInput,
@@ -1682,9 +1673,6 @@ export interface OpensteerDesktopBridge {
   onLocalExecutionStatusChanged(
     listener: (status: DesktopLocalExecutionStatus) => void,
   ): () => void;
-  onPersonalRemoteAccessStatusChanged(
-    listener: (status: DesktopPersonalRemoteAccessStatus) => void,
-  ): () => void;
   onNotificationActivated(listener: (target: DesktopNotificationTarget) => void): () => void;
   getNotificationSupport(): Promise<DesktopNotificationSupport>;
   showNotification(input: DesktopNotificationTarget): Promise<DesktopNotificationResult>;
@@ -1702,7 +1690,14 @@ export interface OpensteerDesktopBridge {
   requestFullDiskAccess(): Promise<DesktopRequestFullDiskAccessResult>;
   /** From the panel: done, or not now. */
   closeFullDiskAccessPanel(): Promise<void>;
-  issuePersonalPairingCode(): Promise<DesktopPersonalPairingCode>;
+  issuePersonalAccountLinkChallenge?(
+    input: import("@opensteer/control-plane-protocol").IssuePersonalHostAccountLinkChallengeRequest,
+  ): Promise<
+    import("@opensteer/control-plane-protocol").IssuePersonalHostAccountLinkChallengeResponse
+  >;
+  completePersonalAccountLink?(
+    input: import("@opensteer/control-plane-protocol").CompletePersonalHostAccountLinkRequest,
+  ): Promise<import("@opensteer/control-plane-protocol").CompletePersonalHostAccountLinkResponse>;
   linkPersonal(): Promise<void>;
   reauthorize(): Promise<void>;
   /**

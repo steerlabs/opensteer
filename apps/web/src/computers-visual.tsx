@@ -181,7 +181,6 @@ function session(input: {
   readonly current?: boolean;
   readonly form: AuthSessionSummary["form"];
   readonly label: string;
-  readonly machineLocal?: boolean;
   readonly seen: number;
 }): AuthSessionSummary {
   return {
@@ -193,14 +192,13 @@ function session(input: {
     form: input.form,
     id: createId("authSession"),
     lastSeenAt: minutesAgo(input.seen),
-    machineLocal: input.machineLocal ?? false,
   };
 }
 
 /** The Mac mini's own app, signed in once per launch; it is that Mac, not a device. */
 const macMiniApp = [
-  session({ form: "computer", label: "Opensteer app on Mac", machineLocal: true, seen: 0 }),
-  session({ form: "computer", label: "Opensteer app on Mac", machineLocal: true, seen: 4_000 }),
+  session({ form: "computer", label: "Opensteer app on Mac", seen: 0 }),
+  session({ form: "computer", label: "Opensteer app on Mac", seen: 4_000 }),
 ];
 const phoneApp = session({ form: "mobile", label: "Opensteer app on iOS", seen: 95 });
 const officeChrome = session({ form: "computer", label: "Chrome on Windows", seen: 3 * 24 * 60 });
@@ -491,18 +489,7 @@ const scenarios: Readonly<Record<string, Scenario>> = {
   },
 };
 
-function fakeBridge(scenario: Scenario): OpensteerDesktopBridge {
-  const remote = {
-    deploymentId: null,
-    detail: null,
-    generation: 1,
-    mode: scenario.remoteAccess === "ready" ? "connect" : "off",
-    phase: scenario.remoteAccess === "ready" ? "ready" : "off",
-    retryable: false,
-    routeOrigin:
-      scenario.remoteAccess === "ready" ? "https://mac-mini.connect.opensteer.cloud" : null,
-    schemaVersion: 1,
-  };
+function fakeBridge(_scenario: Scenario): OpensteerDesktopBridge {
   return {
     // The visual build carries no Agent Phone app, as a development build without it.
     readAgentPhoneArtifact: async () => null,
@@ -511,15 +498,6 @@ function fakeBridge(scenario: Scenario): OpensteerDesktopBridge {
     checkFullDiskAccess: async () => ({ granted: true }),
     // The setup panel is macOS's other window; the page only asks for it.
     openComputerAppSetup: async () => ({ opened: true }),
-    configurePersonalRemoteAccess: async () => remote,
-    getPersonalRemoteAccessStatus: async () => remote,
-    issuePersonalPairingCode: async () => ({
-      code: "K7QX-4MRA",
-      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-      generation: 1,
-      routeOrigin: remote.routeOrigin,
-    }),
-    onPersonalRemoteAccessStatusChanged: () => () => undefined,
     onPasswordsStatusChanged: () => () => undefined,
     passwordsOpen: async () => undefined,
     passwordsStatus: async () => ({

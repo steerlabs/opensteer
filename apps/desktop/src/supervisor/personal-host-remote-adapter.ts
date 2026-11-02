@@ -13,7 +13,7 @@ import {
   type PersonalHostRuntimeSource,
 } from "./personal-host-runtime.js";
 
-/** Adapts machine-local owner APIs to the Connect coordinator. Account Host
+/** Adapts authenticated owner APIs to the desktop Connect executor. Account Host
  * credentials remain private to the Host for projection and revocation. */
 export class DesktopPersonalHostRemoteAdapter
   implements PersonalHostConnectRouteSource, PersonalHostConnectProjectionSink

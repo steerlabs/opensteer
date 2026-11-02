@@ -1,4 +1,5 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
+import { PersonalRemoteAccessStatusSchema } from "@opensteer/protocol";
 // @vitest-environment happy-dom
 
 import {
@@ -221,24 +222,43 @@ describe("ComputersPage", () => {
    */
   it("asks the hosting Mac to let other computers connect only while it cannot", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
-    const bridge = (phase: string) =>
-      ({
-        getPersonalRemoteAccessStatus: async () => ({ phase }),
-        onPersonalRemoteAccessStatusChanged: () => () => undefined,
-      }) as unknown as OpensteerDesktopBridge;
+    const bridge = {} as unknown as OpensteerDesktopBridge;
+    const onClient = new MockHostClient({ latencyMs: 0 });
+    const result = await onClient.rpc["personal.remoteAccess.get"]({});
+    if (!result.ok) throw new Error("Mock remote access status failed");
+    const authority = result.data.authorityEnvelope;
+    onClient.setPersonalRemoteAccessStatus(
+      PersonalRemoteAccessStatusSchema.parse({
+        accountLink: null,
+        generation: 1,
+        mode: "private",
+        schemaVersion: 2,
+        route: {
+          document: {
+            authority: authority.document,
+            documentVersion: 2,
+            purpose: "opensteer-personal-access-route",
+            route: { generation: 1, kind: "private", origin: "https://private.example" },
+          },
+          publicKey: authority.publicKey,
+          signature: authority.signature,
+          schemaVersion: 1,
+        },
+      }),
+    );
     const off = await interactivePage({
       client,
-      desktopBridge: bridge("off"),
+      desktopBridge: bridge,
       desktopDeploymentKind: "personal",
       onThisComputer: true,
       snapshot: client.getSnapshot(),
     });
     const on = await interactivePage({
-      client,
-      desktopBridge: bridge("ready"),
+      client: onClient,
+      desktopBridge: bridge,
       desktopDeploymentKind: "personal",
       onThisComputer: true,
-      snapshot: client.getSnapshot(),
+      snapshot: onClient.getSnapshot(),
     });
 
     await click(button(off.container, "Add a computer"));

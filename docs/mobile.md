@@ -6,7 +6,7 @@ The mobile app is a Deployment client; execution stays on Runners. It never inst
 or offers to install apps, including the separate [Agent Phone](agent-phone.md).
 Files and terminal remain web/desktop surfaces because each adds a protocol and UI
 to maintain. [Connections](connections.md) owns discovery and credentials;
-[Host boundaries](host-boundaries.md) owns compatibility and machine-local authority.
+[Host boundaries](host-boundaries.md) owns compatibility and session authority.
 
 A phone has no local desktop runtime and needs none. Saved-password consent uses
 the requester's Host session from any signed-in device; the native mobile app
