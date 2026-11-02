@@ -40,7 +40,8 @@ export function browserPictureMetadata(
     regionWidth: region.width,
     regionHeight: region.height,
     upscale: header.capture === undefined,
-    cornerRadius: header.capture ? browserCropCue.radius : 0,
+    // The view rounds only the corners where the picture floats free of it.
+    cornerRadius: browserCropCue.radius,
   };
 }
 

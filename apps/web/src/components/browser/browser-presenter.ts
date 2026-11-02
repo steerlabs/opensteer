@@ -5,7 +5,7 @@ import type {
 } from "@opensteer/client/host";
 import {
   browserFrameContentRect,
-  browserCropCue,
+  browserFrameCornerRadii,
   browserRasterDensity,
 } from "@opensteer/shared/browserPresentation";
 import { observeResize } from "@opensteer/shared/resizeObserver";
@@ -401,14 +401,11 @@ function layoutBrowserCanvas(
   const { header } = frame;
   const region = header.capture ?? { width: header.rasterWidth, height: header.rasterHeight };
   stage.style.setProperty("--browser-frame-aspect", `${region.width} / ${region.height}`);
-  stage.style.setProperty(
-    "--browser-region-radius",
-    `${header.capture ? browserCropCue.radius : 0}px`,
-  );
   stage.dataset.croppedRight = String(region.width < header.viewportWidth && !!header.capture);
   stage.dataset.croppedBottom = String(region.height < header.viewportHeight && !!header.capture);
+  const box = { left: 0, top: 0, width: stage.clientWidth, height: stage.clientHeight };
   const rect = browserFrameContentRect(
-    { left: 0, top: 0, width: stage.clientWidth, height: stage.clientHeight },
+    box,
     header.rasterWidth,
     header.rasterHeight,
     header.capture,
@@ -418,6 +415,12 @@ function layoutBrowserCanvas(
   if (!rect) return;
   for (const [key, value] of Object.entries(rect))
     stage.style.setProperty(`--browser-frame-${key}`, `${value}px`);
+  stage.style.setProperty(
+    "--browser-region-radius",
+    browserFrameCornerRadii(box, rect)
+      .map((radius) => `${radius}px`)
+      .join(" "),
+  );
   // The page is laid out in CSS pixels; ask for enough raster to fill what is shown.
   demand?.update(
     browserRasterDensity(

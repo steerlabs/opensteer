@@ -17,6 +17,7 @@ data class PictureRequest(
   val regionHeight: Double,
   /** A cropped capture keeps native size rather than growing past it. */
   val upscale: Boolean,
+  /** The radius of a corner where the picture floats free of the view. */
   val cornerRadius: Double,
 ) {
   /** Where the raster draws inside a view of this size, centred as [left, top, right, bottom]; null when either is empty. */
@@ -28,6 +29,15 @@ data class PictureRequest(
     val left = (viewWidth - fittedWidth) / 2
     val top = (viewHeight - fittedHeight) / 2
     return doubleArrayOf(left, top, left + fittedWidth, top + fittedHeight)
+  }
+
+  /**
+   * Mirrors browserFrameCornerRadii: centred, the picture's corners are round
+   * only while it is inset on both axes; one that meets an edge joins it square.
+   */
+  fun radius(viewWidth: Double, viewHeight: Double): Double {
+    val rect = rect(viewWidth, viewHeight) ?: return 0.0
+    return if (rect[0] >= 1 && rect[1] >= 1) cornerRadius else 0.0
   }
 }
 
