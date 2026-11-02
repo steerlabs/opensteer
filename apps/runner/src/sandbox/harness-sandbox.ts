@@ -56,7 +56,7 @@ export interface HarnessSandboxOptions {
   readonly stateDirectory: string;
   /**
    * Every Workspace backing root this Runner shares between users (the
-   * PortableFS root; the local-directory root when it is owner-scoped). Other
+   * local-directory root when it is owner-scoped). Other
    * users' Workspaces live under them, so they are masked like the data
    * directory and only this Run's roots are re-exposed. A single-owner root is
    * one person's and is not listed.

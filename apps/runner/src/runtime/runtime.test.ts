@@ -4392,53 +4392,6 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("interrupts active Workspace users before detaching the machine mount", async () => {
-    const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
-    const registry = new HarnessRegistry();
-    registry.registerDriver(driver);
-    const environmentId = createId("environment");
-    const command = executeCommand(environmentId, "blocking-driver");
-    await reconcile(registry, command);
-    const detach = vi.fn(async () => undefined);
-    const runtime = configuredRuntime({
-      environmentId,
-      registry,
-      workspaceMountRegistry: {
-        detach,
-        detachAll: async () => undefined,
-        inventory: () => [
-          {
-            enrollmentId: "enrollment-1",
-            volumeId: "workspace_volume",
-            workspaceId: command.context.workspaceId,
-          },
-        ],
-      },
-    });
-    const sink: RunnerMessageSink = { send: async () => undefined };
-    try {
-      await expect(runtime.handleCommand(command, sink)).resolves.toEqual({ status: "accepted" });
-      await waitUntil(() => driver.context !== undefined);
-      await expect(
-        runtime.handleCommand(
-          RunnerCommandSchema.parse({
-            commandId: createId("command"),
-            correlationId: CorrelationIdSchema.parse("detach-active-workspace"),
-            environmentId,
-            type: "workspace.detach",
-            volumeId: "workspace_volume",
-            workspaceId: command.context.workspaceId,
-          }),
-          sink,
-        ),
-      ).resolves.toEqual({ status: "accepted" });
-      expect(runtime.activeRunIds()).toEqual([]);
-      expect(detach).toHaveBeenCalledWith(command.context.workspaceId);
-    } finally {
-      await runtime.close();
-    }
-  });
-
   it("injects a steer into the active turn and reports it as one ordered event", async () => {
     const session = new SteerableHarnessSession();
     const driver = new FakeHarnessDriver("steerable-driver", () => session);
@@ -5873,9 +5826,6 @@ function configuredRuntime(input: {
   readonly workspacePrepare?: ConstructorParameters<
     typeof RunnerRuntime
   >[0]["workspaceManager"]["prepare"];
-  readonly workspaceMountRegistry?: ConstructorParameters<
-    typeof RunnerRuntime
-  >[0]["workspaceMountRegistry"];
   readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
@@ -5899,9 +5849,6 @@ function configuredRuntime(input: {
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
       ...(input.watchSupervisor ? { watchSupervisor: input.watchSupervisor } : {}),
-      ...(input.workspaceMountRegistry
-        ? { workspaceMountRegistry: input.workspaceMountRegistry }
-        : {}),
       workspaceManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare:

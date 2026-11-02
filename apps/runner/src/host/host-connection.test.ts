@@ -29,6 +29,7 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
+  type RunnerAgentsConnection,
   CausallyOrderedRunnerSink,
   WebSocketMessageSink,
   ReconnectingHostConnection,
@@ -713,7 +714,7 @@ describe("runnerWebSocketUrl", () => {
       nodeExecutable: process.execPath,
       runnerId,
       runnerKind: "main",
-      workspaceBackings: ["portablefs"],
+      workspaceBackings: ["local-directory"],
       workspaceNamespace: "owner-scoped",
       workspaceRoot: "/workspaces",
     };
@@ -730,15 +731,10 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
+        localWorkspaces: localStorageFixture(),
         runtime,
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: () => [
-          {
-            enrollmentId: "enrollment-1",
-            volumeId: "workspace_volume",
-            workspaceId: createId("workspace"),
-          },
-        ],
+        workspaceBackings: ["local-directory"],
+        workspaceMounts: () => [],
       },
       bootId,
       config,
@@ -765,14 +761,9 @@ describe("runnerWebSocketUrl", () => {
               environmentIds: [environmentId],
               computerTool: 1,
               harnessDrivers: [],
-              localStorage: null,
-              workspaceBackings: ["portablefs"],
-              workspaceMounts: [
-                expect.objectContaining({
-                  enrollmentId: "enrollment-1",
-                  volumeId: "workspace_volume",
-                }),
-              ],
+              localStorage: expect.objectContaining({ bindings: [], truncated: false }),
+              workspaceBackings: ["local-directory"],
+              workspaceMounts: [],
             },
           },
           runnerId,
@@ -1716,7 +1707,12 @@ describe("runnerWebSocketUrl", () => {
       version: 3 as const,
     };
     const connection = new ReconnectingHostConnection({
-      agents: { runtime, workspaceBackings: ["portablefs"], workspaceMounts: () => [] },
+      agents: {
+        localWorkspaces: localStorageFixture(),
+        runtime,
+        workspaceBackings: ["local-directory"],
+        workspaceMounts: () => [],
+      },
       bootId,
       config: {
         browserBridge: undefined,
@@ -1737,7 +1733,7 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         workspaceNamespace: "owner-scoped",
         workspaceRoot: "/workspaces",
       },
@@ -1826,5 +1822,13 @@ function terminalEvent(ids: {
       workspaceId: createId("workspace"),
     },
     type: "runner.event",
+  };
+}
+
+function localStorageFixture(): NonNullable<RunnerAgentsConnection["localWorkspaces"]> {
+  const storageAuthorityId = createId("storageAuthority");
+  return {
+    inventory: async () => ({ bindings: [], storageAuthorityId, truncated: false }),
+    service: {} as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
   };
 }

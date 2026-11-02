@@ -83,7 +83,6 @@ import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
 import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-manager.js";
-import type { WorkspaceMountRegistry } from "../workspace/workspace-mount-registry.js";
 import { HttpAgentControlClient } from "../agent/agent-control-client.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
@@ -183,10 +182,6 @@ export interface RunnerRuntimeOptions {
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
-  >;
-  readonly workspaceMountRegistry?: Pick<
-    WorkspaceMountRegistry,
-    "detach" | "detachAll" | "inventory"
   >;
 }
 
@@ -405,7 +400,6 @@ export class RunnerRuntime {
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
   readonly #workspaceManager: WorkspaceAccessManager;
-  readonly #workspaceMountRegistry: RunnerRuntimeOptions["workspaceMountRegistry"];
   readonly #watchSupervisor: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
@@ -496,7 +490,6 @@ export class RunnerRuntime {
     this.#programExecutor =
       options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
     this.#workspaceManager = options.workspaceManager;
-    this.#workspaceMountRegistry = options.workspaceMountRegistry;
     this.#watchSupervisor =
       options.watchSupervisor ??
       new WatchSupervisor({
@@ -1903,7 +1896,6 @@ export class RunnerRuntime {
     await settlesWithin([...this.#driverInstallationInspections.values()], runtimeTaskStopWaitMs);
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
-    await this.#workspaceMountRegistry?.detachAll();
     await this.#harnesses.close();
   }
 
@@ -3289,44 +3281,9 @@ export class RunnerRuntime {
   }
 
   async #detachWorkspace(
-    command: Extract<RunnerCommand, { readonly type: "workspace.detach" }>,
+    _command: Extract<RunnerCommand, { readonly type: "workspace.detach" }>,
   ): Promise<CommandDecision> {
-    const registry = this.#workspaceMountRegistry;
-    if (!registry) return { status: "accepted" };
-    const mounted = registry.inventory().find((entry) => entry.workspaceId === command.workspaceId);
-    if (mounted && mounted.volumeId !== command.volumeId) {
-      return reject(
-        "conflict",
-        `Workspace ${command.workspaceId} is mounted from volume ${mounted.volumeId}, not requested volume ${command.volumeId}`,
-        true,
-      );
-    }
-
-    await this.#warm.evict((engine) => engine.workspaceId === command.workspaceId);
-    const tasks: Promise<void>[] = [];
-    for (const active of this.#runs.values()) {
-      if (!active.workspaceIds.has(command.workspaceId)) continue;
-      active.abort.abort(new Error("Workspace access was detached"));
-      if (active.task) tasks.push(active.task);
-    }
-    for (const active of this.#triggerPrograms.values()) {
-      if (!active.workspaceIds.has(command.workspaceId)) continue;
-      active.abort.abort(new Error("Workspace access was detached"));
-      if (active.task) tasks.push(active.task);
-    }
-    if (!(await settlesWithin(tasks, runtimeTaskStopWaitMs))) {
-      return reject(
-        "conflict",
-        "Active Workspace users did not stop before the detach deadline",
-        true,
-      );
-    }
-    try {
-      await registry.detach(command.workspaceId);
-      return { status: "accepted" };
-    } catch (error) {
-      return reject("conflict", safeMessage(error, safeMessageOptions), true);
-    }
+    return reject("conflict", "Workspace storage is unavailable: relocation-required", false);
   }
 
   /**

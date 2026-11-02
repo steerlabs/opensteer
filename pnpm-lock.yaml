@@ -1036,9 +1036,6 @@ importers:
       '@opensteer/workspace-local':
         specifier: workspace:*
         version: link:../../packages/workspace-local
-      '@opensteer/workspace-portablefs':
-        specifier: workspace:*
-        version: link:../../packages/workspace-portablefs
       opencode-ai:
         specifier: 'catalog:'
         version: 1.18.32

@@ -5,7 +5,7 @@ import { createId, type EnvironmentId } from "@opensteer/core";
 import type { PortableFsWorkspaceExecutionAccessPlan } from "@opensteer/workspace";
 import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
 import { LocalWorkspaceAuthority } from "@opensteer/workspace-local";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { RunWorkspaceManager } from "./mount-manager.js";
 
 const temporaryDirectories: string[] = [];
@@ -110,43 +110,16 @@ describe("RunWorkspaceManager", () => {
     ).rejects.toThrow("has been replaced");
   });
 
-  it("routes mixed backings without running PortableFS preflight for a local-only Runner", async () => {
+  it("rejects retired storage without mounting or changing files", async () => {
     const fixture = await localFixture();
-    const portableWorkspacePath = join(fixture.basePath, "portablefs-mounted");
-    const portableFs = {
-      ensureMounted: vi.fn(async () => ({ path: portableWorkspacePath })),
-      namespaceRoot: vi.fn(() => fixture.root),
-      preflight: vi.fn(async () => ({ portableFsVersion: "3.0.0-test" })),
-      workspaceInstructionReader: unusedInstructionReader(),
-    };
-    const localOnly = localManager(fixture.driver, fixture.environmentId, fixture.root);
-
-    await expect(localOnly.preflight()).resolves.toEqual({
-      workspaceBackings: ["local-directory"],
-    });
-    expect(portableFs.preflight).not.toHaveBeenCalled();
-
-    const mixed = new RunWorkspaceManager({
-      local: {
-        environmentId: fixture.environmentId,
-        namespace: "single-owner",
-        resolver: fixture.driver,
-        root: fixture.root,
-        workspaceInstructionReader: unusedInstructionReader(),
-      },
-      portableFs,
-    });
-    await expect(mixed.preflight()).resolves.toEqual({
-      portableFsVersion: "3.0.0-test",
-      workspaceBackings: ["local-directory", "portablefs"],
-    });
-    const access = await mixed.prepare({
-      instructionsPath: null,
-      plan: portableFsPlan(),
-      signal: new AbortController().signal,
-    });
-    expect(access.path).toBe(portableWorkspacePath);
-    expect(portableFs.ensureMounted).toHaveBeenCalledOnce();
+    const manager = localManager(fixture.driver, fixture.environmentId, fixture.root);
+    await expect(
+      manager.prepare({
+        instructionsPath: null,
+        plan: portableFsPlan(),
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("relocation-required");
   });
 });
 

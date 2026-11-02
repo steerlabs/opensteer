@@ -138,7 +138,7 @@ async function boot(input: Boot) {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
       runtime,
-      workspaceBackings: config.workspaceBackings,
+      workspaceBackings: ["local-directory"],
       workspaceMounts: () => [],
     },
   });

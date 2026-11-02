@@ -30,7 +30,6 @@ import {
   type RunnerLocalStorageInventory,
   type RunnerOperationalReport,
   type RunnerToHostMessage,
-  type RunnerWorkspaceMount,
 } from "@opensteer/protocol";
 import { maxBrowserRelayEnvelopeBytes } from "@opensteer/protocol/browser-relay";
 import {
@@ -221,10 +220,8 @@ export interface RunnerAgentsConnection {
     readonly service: LocalWorkspaceService;
   };
   readonly runtime: RunnerRuntime;
-  /** What this Runner can actually reach, which is not always what it was
-   * configured to want: a missing PortableFS mount degrades to local-only. */
-  readonly workspaceBackings: readonly ("local-directory" | "portablefs")[];
-  readonly workspaceMounts: () => readonly RunnerWorkspaceMount[];
+  readonly workspaceBackings: readonly import("@opensteer/workspace").WorkspaceExecutionAccessPlan["kind"][];
+  readonly workspaceMounts: () => readonly import("@opensteer/protocol").RunnerWorkspaceMount[];
 }
 
 export interface ReconnectingHostConnectionOptions {
