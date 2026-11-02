@@ -1275,11 +1275,58 @@ describeStore("PostgreSQL store", (it) => {
     });
     await expect(platform.listInstallations()).resolves.toEqual([]);
 
+    await expect(
+      platform.install({
+        ...material,
+        actorUserId: fixture.userId,
+        requestId: "revoked-computer-catalog-install",
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect(await platform.listInstallations()).toEqual([]);
+
+    const access = await platform.requests.createIntegrationAccessRequest({
+      access: "read",
+      callId: "revoked-install-access",
+      installationId: null,
+      manifest: approvalManifest,
+      originatingRunId: fixture.run.id,
+      originatingThreadId: fixture.thread.id,
+      originatingWorkspaceId: fixture.workspace.id,
+      reason: "Use the reviewed integration",
+      requestedBy: fixture.userId,
+      requestedServerId: null,
+      targetWorkspaceId: fixture.workspace.id,
+    });
+    await expect(
+      platform.requests.installForIntegrationAccessRequest({
+        preparedFulfillment: { approvalManifest, material },
+        requestId: access.request.id,
+        resolvedBy: fixture.userId,
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect(await platform.listInstallations()).toEqual([]);
+    expect((await platform.requests.get(access.request.id))?.payload).toMatchObject({
+      installationId: null,
+    });
+
     const resolved = await platform.requests.resolveIntegrationInstallRequest({
       preparedFulfillment: { approvalManifest, material },
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
       response: { kind: "choice", optionId: "installed" },
+    });
+
+    await expect(
+      platform.requests.tryBindExistingIntegrationAccessInstallation({
+        requestId: access.request.id,
+        resolvedBy: fixture.userId,
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect((await platform.requests.get(access.request.id))?.payload).toMatchObject({
+      installationId: null,
     });
 
     expect(resolved).toMatchObject({
@@ -1537,6 +1584,17 @@ describeStore("PostgreSQL store", (it) => {
       callId: "integration-access-specialized-target",
       requestedServerId: null,
       targetWorkspaceId: specialized.id,
+    });
+    await expect(
+      platform.requests.selectIntegrationAccessServer({
+        requestId: specializedRequest.request.id,
+        requestedServerId: serverId,
+        resolvedBy: fixture.userId,
+        settlementSessionId: createId("authSession"),
+      }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect((await platform.requests.get(specializedRequest.request.id))?.payload).toMatchObject({
+      requestedServerId: null,
     });
     await platform.requests.selectIntegrationAccessServer({
       requestId: specializedRequest.request.id,

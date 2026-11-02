@@ -1,4 +1,4 @@
-import { requestSettlementProvenance } from "./request-settlement.js";
+import { requestSettlementActor, requestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
@@ -1001,11 +1001,13 @@ export class RequestStore {
           .executeTakeFirst();
         if (!current || !installedIntegrationMatchesReviewedManifest(current, manifest))
           return null;
-        return bindIntegrationAccessInstallation(transaction, {
+        const bound = await bindIntegrationAccessInstallation(transaction, {
           installation: integrationInstallationFromRequestRow(current),
           requestEvents: [],
           requestId: input.requestId,
         });
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+        return bound;
       },
     );
   }
@@ -1152,11 +1154,13 @@ export class RequestStore {
               actorUserId: input.resolvedBy,
               requestId: input.requestId,
             });
-        return bindIntegrationAccessInstallation(transaction, {
+        const bound = await bindIntegrationAccessInstallation(transaction, {
           installation: installationMutation.installation,
           requestEvents: installationMutation.requestEvents,
           requestId: input.requestId,
         });
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+        return bound;
       },
     );
   }
@@ -1249,6 +1253,7 @@ export class RequestStore {
             message: "Integration server selection is no longer available",
           });
         }
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         const previous = requestFromRow(row);
         if (previous.payload.kind !== "integration.access")
           throw new Error("Invalid Request payload");

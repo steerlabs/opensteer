@@ -1,3 +1,4 @@
+import { requestSettlementActor } from "./request-settlement.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -182,6 +183,7 @@ export class LocalMcpServerStore {
    */
   async approve(input: {
     readonly actorUserId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly now?: Date;
     readonly runnerId: RunnerId;
     readonly setupRequestId: string;
@@ -210,6 +212,7 @@ export class LocalMcpServerStore {
   /** The computer's owner declined one server there; it is not asked about again. */
   async decline(input: {
     readonly actorUserId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly now?: Date;
     readonly runnerId: RunnerId;
     readonly setupRequestId: string;
@@ -351,6 +354,7 @@ async function answeredRequest(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly actorUserId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly now: Date;
     readonly runnerId: RunnerId;
     readonly setupRequestId: string;
@@ -405,6 +409,7 @@ async function answeredRequest(
       message: "This server changed since the computer was asked about it; it will be asked again.",
     });
   }
+  await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
   return { request, server };
 }
 

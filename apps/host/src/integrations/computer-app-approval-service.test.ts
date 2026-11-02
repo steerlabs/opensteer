@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { IntegrationPlatformStore } from "@opensteer/database";
 import type { RunnerId, UserId } from "@opensteer/core";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import type { ComputerAppSetupRequest } from "@opensteer/integration-core";
 import {
   ComputerAppApprovalService,
@@ -42,10 +43,12 @@ function fixture(pending = request) {
       decline: vi.fn(),
     },
     setComputerConnection: vi.fn(),
+    setComputerUsePolicy: vi.fn(),
     cancelComputerAppSetup: vi.fn(async () => ({ requestEvents: [] })),
     requests: { declineComputerAppAccessRequest: vi.fn(async () => ({ events: [], request: {} })) },
   };
   const computerUse = {
+    eligibleMachines: vi.fn(async () => [{ runnerId }]),
     resolveApp: vi.fn(async () => ({
       identity: app,
       allowed: true,
@@ -105,6 +108,61 @@ describe("owner-session computer app approvals", () => {
     });
     expect(store.requests.declineComputerAppAccessRequest).toHaveBeenCalledWith(
       expect.objectContaining({ settlementSessionId: "session", actorUserId: ownerUserId }),
+    );
+  });
+  it.each(["allow", "deny"] as const)(
+    "passes the owner session into an MCP %s transaction",
+    async (decision) => {
+      const { service, store } = fixture({ ...request, kind: "server", app: null });
+      await service.respondComputerAppSetup({
+        ...answer,
+        decision,
+        settlementSessionId: "session",
+      });
+      expect(
+        decision === "allow" ? store.localMcp.approve : store.localMcp.decline,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ settlementSessionId: "session", actorUserId: ownerUserId }),
+      );
+    },
+  );
+  it("passes the owner session into the automatic-policy transaction", async () => {
+    const { service, store } = fixture({
+      ...request,
+      kind: "policy",
+      app: null,
+      policyAppApproval: "automatic",
+    });
+    store.listInstallations.mockResolvedValue([
+      {
+        status: "active",
+        provenance: {
+          definitionId: "macos-app",
+          definitionDigest: integrationDefinitionDigest(
+            integrationDefinitions.find(({ id }) => id === "macos-app")!,
+          ),
+        },
+      },
+    ] as never);
+    await service.respondComputerAppSetup({ ...answer, settlementSessionId: "session" });
+    expect(store.setComputerUsePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ settlementSessionId: "session", ownerUserId }),
+    );
+  });
+  it("keeps the approving session on the first catalog installation", async () => {
+    const { service, install } = fixture({
+      ...request,
+      kind: "policy",
+      app: null,
+      policyAppApproval: "automatic",
+    });
+    await service.respondComputerAppSetup({
+      ...answer,
+      isAdministrator: true,
+      settlementSessionId: "session",
+    });
+    expect(install).toHaveBeenCalledWith(
+      expect.objectContaining({ actorUserId: ownerUserId, settlementSessionId: "session" }),
     );
   });
   it("verifies the current owner's app through the target helper", async () => {

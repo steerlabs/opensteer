@@ -1339,7 +1339,7 @@ export async function createHostServer(
         threadId: input.threadId,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(page);
+      return rpcSuccess(hostApi["thread.events.list"].success.parse(page));
     },
     "thread.messages.list": async (input, context) => {
       const page = await dependencies.store.threadMessagePageForOwner({

@@ -130,6 +130,7 @@ export async function handleIntegrationPlatformCommand(
         type: command.type,
         ...(await options.platform.computerAppApprovals.setComputerUsePolicy({
           ...command.input,
+          settlementSessionId: session.id,
           ownerUserId: session.user.id,
           requestId: context.requestId,
         })),

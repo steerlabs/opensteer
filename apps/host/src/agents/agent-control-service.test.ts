@@ -53,7 +53,10 @@ const testModelSelection = ModelSelectionSchema.parse({
 describe("AgentControlService", () => {
   it("lists exactly the Requests visible to the current Thread and Workspace", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
-    const pending = pendingRequest();
+    const pending = {
+      ...pendingRequest(),
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    };
     const visiblePage = vi.fn(async () => ({
       requests: [pending],
       window: {
@@ -71,15 +74,17 @@ describe("AgentControlService", () => {
       threads: [current],
     });
 
-    await expect(
-      service.handle("run-token", {
-        before: "current_request_page",
-        limit: 1,
-        requestId: crypto.randomUUID(),
-        type: "request.list",
-      }),
-    ).resolves.toMatchObject({
-      requests: [{ id: pending.id, status: "pending" }],
+    const response = await service.handle("run-token", {
+      before: "current_request_page",
+      limit: 1,
+      requestId: crypto.randomUUID(),
+      type: "request.list",
+    });
+    expect(JSON.stringify(response)).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+    expect(response).toMatchObject({
+      requests: [
+        { id: pending.id, status: "pending", settlementProvenance: { deviceLabel: "iPhone" } },
+      ],
       type: "request.list.result",
       window: { hasMore: true, nextBefore: "next_request_page" },
     });

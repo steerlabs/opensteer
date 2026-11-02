@@ -1319,6 +1319,7 @@ export class IntegrationPlatformService {
   }
 
   async installCatalogDefinition(input: {
+    readonly settlementSessionId?: string | undefined;
     readonly actorUserId: UserId;
     readonly definitionId: string;
     readonly digest: string;
@@ -1350,6 +1351,7 @@ export class IntegrationPlatformService {
       return current;
     }
     return this.#materializeCatalogDefinition({
+      settlementSessionId: input.settlementSessionId,
       actorUserId: input.actorUserId,
       ...(current ? { current } : {}),
       definition,
@@ -1452,6 +1454,7 @@ export class IntegrationPlatformService {
   }
 
   async #materializeCatalogDefinition(input: {
+    readonly settlementSessionId?: string | undefined;
     readonly actorUserId: UserId | null;
     readonly current?: IntegrationInstallation;
     readonly definition: IntegrationDefinition;
@@ -1460,6 +1463,7 @@ export class IntegrationPlatformService {
     const prepared = await this.#prepareCatalogDefinition(input);
     const mutation = await this.#store.install({
       ...prepared,
+      settlementSessionId: input.settlementSessionId,
       actorUserId: input.actorUserId,
       requestId: input.requestId,
     });

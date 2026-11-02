@@ -481,6 +481,7 @@ abstract class IntegrationPlatformStoreBase {
 }
 
 export interface InstallIntegrationInput {
+  readonly settlementSessionId?: string | undefined;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
   readonly actorUserId: UserId | null;
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
@@ -1338,7 +1339,12 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     return withRequestWorkspaceLocks(
       this.database,
       (transaction) => discoverInstallationRequestWorkspaces(transaction, input.installation),
-      (transaction) => installIntegrationInTransaction(transaction, input),
+      async (transaction) => {
+        const mutation = await installIntegrationInTransaction(transaction, input);
+        if (input.actorUserId !== null)
+          await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
+        return mutation;
+      },
     );
   }
 
@@ -2027,6 +2033,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
 
   async setComputerUsePolicy(
     input: {
+      readonly settlementSessionId?: string | undefined;
       readonly runnerId: RunnerId;
       readonly ownerUserId: UserId;
       readonly requestId: string;
@@ -2117,6 +2124,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
             workspaceId: null,
           })
           .execute();
+        await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
         return { appApproval: input.appApproval, revision };
       },
     );

@@ -152,6 +152,7 @@ export interface ComputerAppApprovalServiceOptions {
   readonly deploymentName: string | null;
   /** Materialises a catalog definition an administrator's first approval needs. */
   readonly installCatalogDefinition: (input: {
+    readonly settlementSessionId?: string | undefined;
     readonly actorUserId: UserId;
     readonly definitionId: string;
     readonly digest: string;
@@ -294,6 +295,7 @@ export class ComputerAppApprovalService {
       const approved = await this.#computerApps.withRunnerAdmission(request.runnerId, async () => {
         await input.authorize();
         const answer = {
+          settlementSessionId: input.settlementSessionId,
           actorUserId: input.actorUserId,
           runnerId: request.runnerId,
           setupRequestId: request.id,
@@ -519,6 +521,7 @@ export class ComputerAppApprovalService {
       }
       await options.authorize?.();
       await this.#installCatalogDefinition({
+        settlementSessionId: input.settlementSessionId,
         actorUserId: input.actorUserId,
         definitionId: definition.id,
         digest,
@@ -532,6 +535,7 @@ export class ComputerAppApprovalService {
       await this.#computerApps.withRunnerAdmission(input.runnerId, async () => {
         await options.authorize?.();
         return this.#store.setComputerUsePolicy({
+          settlementSessionId: input.settlementSessionId,
           runnerId: input.runnerId,
           ownerUserId: input.actorUserId,
           requestId: input.requestId,
@@ -673,6 +677,7 @@ export class ComputerAppApprovalService {
 
   /** Turning automatic off works from anywhere; turning it on consumes a setup request. */
   async setComputerUsePolicy(input: {
+    readonly settlementSessionId?: string | undefined;
     runnerId: RunnerId;
     ownerUserId: UserId;
     requestId: string;

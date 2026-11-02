@@ -1,4 +1,5 @@
-import { createId, zeroSequence } from "@opensteer/core";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { createId, DeclinedRequestSchema, SequenceSchema, zeroSequence } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   HostToClientMessageSchema,
@@ -50,6 +51,85 @@ describe("realtime version negotiation", () => {
         }),
       );
       expect(await frame).not.toContain("PRIVATE-HOST-VALUE");
+    } finally {
+      await close();
+    }
+  });
+
+  it("keeps settlement sessions out of raw resolution subscription frames", async () => {
+    const workspaceId = createId("workspace");
+    const threadId = createId("thread");
+    const ownerId = createId("user");
+    const createdAt = new Date().toISOString();
+    const request = DeclinedRequestSchema.parse({
+      callId: "settlement-projection",
+      id: createId("request"),
+      createdAt,
+      kind: "browser.access",
+      mode: "durable",
+      originatingOccurrenceId: null,
+      originatingRunId: createId("run"),
+      originatingThreadId: threadId,
+      originatingWorkspaceId: workspaceId,
+      targetWorkspaceId: workspaceId,
+      payload: {
+        kind: "browser.access",
+        reason: "Choose browser access",
+        suggestion: { kind: "user_choice" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Browser access",
+        subject: { id: workspaceId, kind: "workspace" },
+      },
+      requestedBy: ownerId,
+      requiredActor: "requester",
+      cancellationReason: null,
+      resolvedAt: createdAt,
+      resolvedBy: ownerId,
+      status: "declined",
+      response: { kind: "external", value: { decision: "declined" } },
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    });
+    const { close, socket } = await realtimeSocket(async ({ sink }) => {
+      await sink.send({
+        type: "host.events",
+        events: [
+          {
+            createdAt,
+            data: { request },
+            environmentId: createId("environment"),
+            eventId: createId("event"),
+            runId: request.originatingRunId,
+            sequence: SequenceSchema.parse("1"),
+            threadId,
+            type: "request.resolved",
+            workspaceId,
+          },
+        ],
+      });
+      return () => undefined;
+    });
+    try {
+      const frame = new Promise<string>((resolve) =>
+        socket.once("message", (value) => resolve(value.toString())),
+      );
+      socket.send(
+        JSON.stringify({
+          type: "client.subscribe",
+          apiVersion: hostApiVersion,
+          workspaceId,
+          threadId,
+          afterSequence: zeroSequence,
+        }),
+      );
+      const raw = await withTimeout(frame, 2_000, {
+        timeoutError: () => new Error("Resolution event never reached the subscriber"),
+      });
+      expect(raw).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+      expect(JSON.parse(raw).events[0].data.request.settlementProvenance).toEqual({
+        deviceLabel: "iPhone",
+      });
     } finally {
       await close();
     }

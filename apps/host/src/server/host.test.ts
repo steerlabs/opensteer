@@ -13,6 +13,7 @@ import {
   personalRemoteAuthorizationScheme,
   rememberExecutionChoice,
   ThreadAccessModeSchema,
+  ThreadViewSchema,
   type AuthenticatedSession,
   type EnvironmentId,
   type ExecutionChoice,
@@ -2168,19 +2169,83 @@ describe("Workspace invitation issuance", () => {
 });
 
 describe("thread event history route", () => {
+  it("projects settlement provenance in raw request list responses", async () => {
+    const request = {
+      ...pendingRequestFixture("browser.access"),
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    };
+    const app = await requestRouteServer({ ownerId: request.requestedBy, request });
+    try {
+      const response = await injectRpcRequest(app, "thread.requests.list", {
+        threadId: request.originatingThreadId,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+      expect(response.json().data.requests[0].settlementProvenance).toEqual({
+        deviceLabel: "iPhone",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("serves the durable event page and 404s when the Thread is not accessible", async () => {
     const ownerId = createId("user");
     const threadId = createId("thread");
+    const pending = pendingRequestFixture("browser.access");
+    const request = {
+      ...pending,
+      originatingThreadId: threadId,
+      status: "declined" as const,
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: ownerId,
+      response: { kind: "external" as const, value: { decision: "declined" } },
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    };
     const page = {
-      events: [],
+      thread: ThreadViewSchema.parse({
+        accessMode: "full-access",
+        capabilityProfileId: "main",
+        continuationIdentity: null,
+        createdAt: request.createdAt,
+        updatedAt: request.createdAt,
+        createdBy: ownerId,
+        environmentId: createId("environment"),
+        harnessInstanceId: createId("harnessInstance"),
+        id: threadId,
+        lineageRootThreadId: threadId,
+        inputQueuePaused: false,
+        listed: true,
+        modelSelection: { modelId: "gpt-5.6-sol", options: {}, providerId: "openai" },
+        parentThreadId: null,
+        pendingRequests: 0,
+        role: "work",
+        status: "idle",
+        title: "History",
+        workspaceId: request.originatingWorkspaceId,
+      }),
+      readState: { threadId, readSequence: null, unreadSequence: null, asOfSequence: "1" },
+      events: [
+        {
+          createdAt: request.resolvedAt,
+          data: { request },
+          environmentId: createId("environment"),
+          eventId: createId("event"),
+          runId: request.originatingRunId,
+          sequence: "1",
+          threadId,
+          type: "request.resolved" as const,
+          workspaceId: request.originatingWorkspaceId,
+        },
+      ],
       threadId,
       window: {
         byteCount: 2,
         hasMore: false,
-        itemCount: 0,
+        itemCount: 1,
         nextBefore: null,
         threadId,
-        totalItems: 0,
+        totalItems: 1,
       },
     };
     let result: typeof page | null = page;
@@ -2211,7 +2276,21 @@ describe("thread event history route", () => {
         threadId,
       });
       expect(ok.statusCode).toBe(200);
-      expect(rpcData(ok)).toEqual(page);
+      expect(ok.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+      expect(rpcData(ok)).toEqual({
+        ...page,
+        events: [
+          {
+            ...page.events[0],
+            data: {
+              request: {
+                ...request,
+                settlementProvenance: { deviceLabel: "iPhone" },
+              },
+            },
+          },
+        ],
+      });
       expect(threadEventPageForOwner).toHaveBeenCalledWith({
         before: "17",
         maxItems: 100,

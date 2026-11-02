@@ -3,6 +3,7 @@ import {
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -4384,6 +4385,135 @@ integration.sequential("PostgreSQL computer app connections", () => {
       }
     },
   );
+
+  for (const decision of ["automatic-policy", "policy-off", "mcp-allow", "mcp-deny"] as const) {
+    it(`rejects a ${decision} decision revoked while its transaction is held, without committing authority`, async ({
+      storeFixture,
+    }) => {
+      const { database, guiFixture, guiDigest, platform } = storeFixture;
+      const setup = await guiFixture(`revoked-${decision}`);
+      const sessionId = createId("authSession");
+      const now = new Date();
+      const session = {
+        id: sessionId,
+        userId: setup.ownerUserId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "iPhone",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await database.insertInto("authSessions").values(session).execute();
+      let setupRequestId: string;
+      if (decision.startsWith("mcp-")) {
+        await database
+          .updateTable("integrationServers")
+          .set({
+            transport: jsonValue({
+              type: "runner",
+              runnerId: setup.runnerId,
+              launch: {
+                type: "stdio",
+                command: "sh",
+                args: ["-c", "true"],
+                cwd: "/tmp",
+                env: {},
+              },
+            }),
+          })
+          .where("id", "=", setup.gui.serverId)
+          .execute();
+        await platform.localMcp.requestApprovals();
+        setupRequestId = (await platform.listComputerAppSetupRequests(setup.ownerUserId))[0]!.id;
+      } else {
+        const pending = await platform.requestComputerAppSetup({
+          kind: "policy",
+          appApproval: "automatic",
+          actorUserId: setup.ownerUserId,
+          runnerId: setup.runnerId,
+          definitionDigest: guiDigest,
+        });
+        setupRequestId = pending.request.id;
+      }
+      const before = await database
+        .selectFrom("integrationServers")
+        .selectAll()
+        .where("id", "=", setup.gui.serverId)
+        .executeTakeFirstOrThrow();
+      const barrier = pauseAfterLock(
+        database,
+        (node) => /"name":"runners"/u.test(node) && node.includes("NoKeyUpdate"),
+      );
+      const held = new IntegrationPlatformStore(barrier.database);
+      const input = {
+        actorUserId: setup.ownerUserId,
+        runnerId: setup.runnerId,
+        setupRequestId,
+        settlementSessionId: sessionId,
+      };
+      const decide = () =>
+        decision === "mcp-allow"
+          ? held.localMcp.approve(input)
+          : decision === "mcp-deny"
+            ? held.localMcp.decline(input)
+            : held.setComputerUsePolicy({
+                ownerUserId: setup.ownerUserId,
+                runnerId: setup.runnerId,
+                requestId: `revoked-${decision}`,
+                settlementSessionId: sessionId,
+                ...(decision === "policy-off"
+                  ? { appApproval: "ask" as const }
+                  : {
+                      appApproval: "automatic" as const,
+                      setupRequestId,
+                      definitionDigest: guiDigest,
+                    }),
+              });
+      const outcome = decide().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Approval never acquired the computer lock"),
+        });
+        await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+        barrier.release();
+        expect(await outcome).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+        expect(await platform.getComputerAppSetupRequest({ setupRequestId })).not.toBeNull();
+        expect(
+          await platform.getComputerUsePolicy({
+            runnerId: setup.runnerId,
+            ownerUserId: setup.ownerUserId,
+          }),
+        ).toEqual({ appApproval: "ask", revision: 0 });
+        expect(
+          await database
+            .selectFrom("integrationServers")
+            .selectAll()
+            .where("id", "=", setup.gui.serverId)
+            .executeTakeFirstOrThrow(),
+        ).toEqual(before);
+        expect(
+          await database
+            .selectFrom("integrationConnections")
+            .select("id")
+            .where("runnerId", "=", setup.runnerId)
+            .execute(),
+        ).toEqual([]);
+        await database.insertInto("authSessions").values(session).execute();
+        await decide();
+        expect(await platform.getComputerAppSetupRequest({ setupRequestId })).toBeNull();
+      } finally {
+        barrier.release();
+        await outcome;
+      }
+    });
+  }
 
   it("requires the pending policy request, consumes it once, and keeps connections when switched off", async ({
     storeFixture,
