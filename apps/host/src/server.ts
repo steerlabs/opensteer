@@ -1297,6 +1297,7 @@ export async function createHostServer(
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         ...(input.before ? { before: input.before } : {}),
         ...(input.placeEvents ? { placeEvents: input.placeEvents } : {}),
+        ...(input.view ? { view: input.view } : {}),
         ...(input.turns === undefined
           ? { maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems) }
           : { maxTurns: input.turns }),
@@ -3187,6 +3188,7 @@ export function advertisedCapabilities(
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",
+    "history-conversation-v1",
     "place-events-v1",
     "shared-task-done-v1",
     "harness-update-v1",

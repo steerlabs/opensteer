@@ -1,3 +1,4 @@
+import { quietRunPredicate, recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -350,9 +351,10 @@ export async function recoverThreadWorkQueues(
         await lockThreadRow(transaction, run.threadId);
         await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
         const now = new Date();
+        await recordPersonWaited(transaction, run.id);
         await transaction
           .updateTable("runs")
-          .set({ status: "interrupted", completedAt: now })
+          .set({ status: "interrupted", completedAt: now, quiet: quietRunPredicate })
           .where("id", "=", run.id)
           .execute();
         await transaction

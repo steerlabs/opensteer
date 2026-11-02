@@ -625,6 +625,7 @@ export async function threadEventPageForOwner(
   database: Kysely<DatabaseSchema>,
   notificationState: NotificationStateStore,
   input: {
+    readonly view?: "conversation";
     readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;
     readonly before?: string;
@@ -678,32 +679,47 @@ export async function threadEventPageForOwner(
         .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread) return null;
-      const [{ events, hasMore }, countRow] = await Promise.all([
+      const conversation =
+        input.view === "conversation" &&
+        input.maxTurns !== undefined &&
+        !input.aroundMessageId &&
+        thread.role === "conversation";
+      const [page, countRow] = await Promise.all([
         input.aroundMessageId
           ? eventsAroundMessage(transaction, input.threadId, input.aroundMessageId, {
               maxBytes,
               maxItems,
               placeEvents: input.placeEvents,
             })
-          : newestTurns(transaction, input.threadId, anchor, {
-              maxBytes,
-              maxItems,
-              maxTurns,
-              placeEvents: input.placeEvents,
-            }),
-        transaction
-          .selectFrom("workspaceEvents")
-          .select(({ fn }) => fn.countAll<string>().as("count"))
-          .where("threadId", "=", input.threadId)
-          .where(
-            "type",
-            "not in",
-            input.placeEvents === "include"
-              ? legacyLiveEventTypes
-              : [...legacyLiveEventTypes, "place.entered"],
-          )
-          .executeTakeFirstOrThrow(),
+          : conversation
+            ? conversationTurns(transaction, input.threadId, anchor, {
+                maxBytes,
+                maxItems,
+                maxTurns,
+                placeEvents: input.placeEvents,
+              })
+            : newestTurns(transaction, input.threadId, anchor, {
+                maxBytes,
+                maxItems,
+                maxTurns,
+                placeEvents: input.placeEvents,
+              }),
+        conversation
+          ? null
+          : transaction
+              .selectFrom("workspaceEvents")
+              .select(({ fn }) => fn.countAll<string>().as("count"))
+              .where("threadId", "=", input.threadId)
+              .where(
+                "type",
+                "not in",
+                input.placeEvents === "include"
+                  ? legacyLiveEventTypes
+                  : [...legacyLiveEventTypes, "place.entered"],
+              )
+              .executeTakeFirstOrThrow(),
       ]);
+      const { events, hasMore } = page;
       const oldest = events.at(0);
       return {
         readState: await notificationState.getReadState({
@@ -718,14 +734,111 @@ export async function threadEventPageForOwner(
           byteCount: serializedArrayBytes(events),
           hasMore,
           itemCount: events.length,
-          nextBefore: hasMore && oldest ? oldest.sequence : null,
+          nextBefore:
+            "nextBefore" in page
+              ? (page.nextBefore as string | null)
+              : hasMore && oldest
+                ? oldest.sequence
+                : null,
           threadId: input.threadId,
-          totalItems: safeCount(countRow.count),
+          ...(countRow ? { totalItems: safeCount(countRow.count) } : {}),
         },
       };
     },
     "repeatable read",
   );
+}
+
+/** Bound raw work even when a long automatic span yields no visible events. */
+export const conversationHistoryScanCap = 8192;
+
+/** The bounded metadata scan; exported for PostgreSQL plan verification. */
+export function conversationHistoryMetadata(
+  transaction: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  before: Sequence | null,
+  placeEvents?: "include",
+) {
+  // Absolute Thread state comes from the envelope at the read cut. Execution
+  // updates stay: the transcript renders their engine-selection row.
+  const omitted = sql<boolean>`(
+    type in ('thread.state-changed', 'thread.input-queue-updated', 'thread.created', 'thread.listed')
+    or exists (select 1 from runs quiet_run where quiet_run.id = workspace_events.run_id and quiet_run.quiet)
+    or (type in ('message.created', 'message.placed', 'thread-input.updated', 'message.injected')
+      and exists (select 1 from messages input join runs quiet_run
+        on (quiet_run.id = input.run_id or (input.run_id is null and quiet_run.seed_input_id = input.id))
+        where quiet_run.quiet and input.kind = 'input' and input.id = case
+          when type in ('message.created', 'message.placed') then data #>> '{message,id}'
+          when type = 'thread-input.updated' then data #>> '{input,messageId}'
+          else data ->> 'messageId' end))
+    or type in (${sql.join(
+      placeEvents === "include" ? legacyLiveEventTypes : [...legacyLiveEventTypes, "place.entered"],
+    )})
+  )`;
+  let query = transaction
+    .selectFrom("workspaceEvents")
+    .select([
+      "sequence",
+      omitted.as("omitted"),
+      turnStartSelection.as("turnStart"),
+      sql<number>`case when ${omitted} then 0 else octet_length(replace(replace(data::text, ', ', ','), ': ', ':')) end`.as(
+        "bytes",
+      ),
+    ])
+    .where("threadId", "=", threadId);
+  if (before !== null) query = query.where("sequence", "<", before);
+  return query;
+}
+
+async function conversationTurns(
+  transaction: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+  before: Sequence | null,
+  bounds: {
+    readonly maxBytes: number;
+    readonly maxItems: number;
+    readonly maxTurns: number;
+    readonly placeEvents?: "include" | undefined;
+  },
+): Promise<{ events: AgentEvent[]; hasMore: boolean; nextBefore: string | null }> {
+  const raw = await conversationHistoryMetadata(transaction, threadId, before, bounds.placeEvents)
+    .orderBy("sequence", "desc")
+    .limit(conversationHistoryScanCap + 1)
+    .execute();
+  const scanned = raw.slice(0, conversationHistoryScanCap);
+  const visible = scanned.filter((row) => !row.omitted);
+  const estimated = historyPageLength(visible, bounds);
+  const selected = visible.slice(0, estimated);
+  const rows =
+    selected.length === 0
+      ? []
+      : await transaction
+          .selectFrom("workspaceEvents")
+          .selectAll()
+          .where("threadId", "=", threadId)
+          .where(
+            "sequence",
+            "in",
+            selected.map((row) => row.sequence),
+          )
+          .orderBy("sequence", "desc")
+          .execute();
+  const candidates = rows.map(eventFromRow);
+  const kept = historyPageLength(
+    candidates.map((event, index) => ({
+      bytes: Buffer.byteLength(JSON.stringify(event), "utf8"),
+      turnStart: selected[index]!.turnStart,
+    })),
+    bounds,
+  );
+  // Stop at the last returned event if a bound trimmed anything; do not jump over it.
+  const stopped = kept < visible.length ? selected[kept - 1]?.sequence : scanned.at(-1)?.sequence;
+  const hasMore = kept < visible.length || raw.length > scanned.length;
+  return {
+    events: candidates.slice(0, kept).reverse(),
+    hasMore,
+    nextBefore: hasMore ? (stopped ?? null) : null,
+  };
 }
 
 /**

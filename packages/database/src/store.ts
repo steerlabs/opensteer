@@ -2081,6 +2081,7 @@ export class OpensteerStore {
   }
 
   async threadEventPageForOwner(input: {
+    readonly view?: "conversation";
     readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;
     readonly before?: string;

@@ -1,3 +1,4 @@
+import { recordPersonWaited } from "./run-visibility.js";
 import { z } from "zod";
 import { isPlaceContentPart } from "@opensteer/core";
 import { lockRunProjectionRows, lockThreadProjectionParents } from "./run-projection-locks.js";
@@ -405,6 +406,7 @@ async function claimFollowUps(
       .set({ runId: run.id })
       .where("id", "=", messageId)
       .execute();
+    await recordPersonWaited(transaction, run.id);
     events.push(
       await placeQueuedMessage(transaction, thread, messageId, run.id),
       await inputUpdatedEvent(transaction, thread, taken),
@@ -903,6 +905,7 @@ export async function steerThreadInputInTransaction(
     .set({ runId: run.id })
     .where("id", "=", row.messageId)
     .execute();
+  await recordPersonWaited(transaction, run.id);
   const placed = await placeQueuedMessage(transaction, thread, row.messageId, run.id);
   const event = await appendHostWorkspaceEvent(transaction, {
     data: { input: threadInputFromRow(promoted) },
@@ -1263,6 +1266,7 @@ export async function claimRunInputBatch(
   if (claimed.length !== selected.length)
     throw new OpensteerError({ code: "conflict", message: "Run context changed while claiming" });
   await transaction.updateTable("messages").set({ runId }).where("id", "in", selected).execute();
+  await recordPersonWaited(transaction, runId);
   let initialContext: {
     readonly messageIds: readonly MessageId[];
     readonly omittedCount: number;
@@ -3187,6 +3191,7 @@ export async function ensureQueuedRun(
       status: "queued",
       threadId: thread.id,
       seedInputId: seed.messageId,
+      personWaited: sql<boolean>`exists (select 1 from messages where id = ${seed.messageId} and author->>'kind' = 'human')`,
     })
     .returningAll()
     .executeTakeFirstOrThrow();
