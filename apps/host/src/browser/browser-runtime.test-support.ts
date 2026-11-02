@@ -3,6 +3,7 @@ import {
   BrowserAttachTicketClaimsSchema,
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
+  RunnerAuxiliaryLeaseRenewedSchema,
   RunnerBootIdSchema,
   RunnerDescriptorSchema,
   type RunnerAuxiliaryFrameFence,
@@ -43,6 +44,8 @@ export async function startBrowserRuntime(
     readonly editing?: boolean;
     /** Relay the real Chromium runtime instead of synthesizing its messages. */
     readonly runtimeUrl?: string;
+    /** Keep the auxiliary lease live during long benchmark/journey workloads. */
+    readonly keepAlive?: boolean;
     /** Attach a browser stream to the already enrolled Personal Main identity. */
     readonly primary?: PrimaryConnection;
     readonly targetedStreaming?: boolean;
@@ -161,11 +164,23 @@ export async function startBrowserRuntime(
   const waiters: Array<(command: Record<string, unknown>) => void> = [];
   const send = (message: Record<string, unknown>) =>
     auxiliary.send(JSON.stringify({ ...fence, ...message }));
+  const heartbeat = options.keepAlive
+    ? setInterval(() => {
+        if (auxiliary.readyState === WebSocket.OPEN)
+          send({ type: "runner.auxiliary.heartbeat", sentAt: new Date().toISOString() });
+      }, streamWelcome.heartbeatIntervalMs)
+    : undefined;
+  heartbeat?.unref();
+  auxiliary.once("close", () => {
+    if (heartbeat) clearInterval(heartbeat);
+  });
 
   auxiliary.on("message", (raw, isBinary) => {
     if (isBinary) return;
+    const value: unknown = JSON.parse(raw.toString());
+    if (options.keepAlive && RunnerAuxiliaryLeaseRenewedSchema.safeParse(value).success) return;
     const schema = HostToBrowserRelayMessageSchema;
-    const parsed = schema.safeParse(JSON.parse(raw.toString()));
+    const parsed = schema.safeParse(value);
     if (!parsed.success) {
       protocolErrors.push(parsed.error.message);
       auxiliary.close(1011, "Invalid Host browser frame");
@@ -352,6 +367,7 @@ export async function startBrowserRuntime(
   return {
     runnerId,
     close: async () => {
+      if (heartbeat) clearInterval(heartbeat);
       for (const engine of engineSockets.values()) engine.terminate();
       engineSockets.clear();
       auxiliary.terminate();
