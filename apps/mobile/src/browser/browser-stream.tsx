@@ -537,6 +537,8 @@ export function BrowserStream({
         else send({ type: "input.cancel", surfaceId: tap.point.surfaceId });
       },
       onPanResponderTerminate: () => {
+        // Contacts send no remote press until a completed tap; cancellation must
+        // discard the deferred tap rather than manufacture a mouse release.
         held.current = null;
       },
     });

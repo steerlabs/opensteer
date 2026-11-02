@@ -7,6 +7,7 @@ import {
   type BrowserClientMessage,
 } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import {
@@ -16,6 +17,7 @@ import {
 import {
   FakeBrowserCdpBackend,
   FakeContext,
+  FakeCdpSession,
   FakePage,
   FakeSink,
   flushMicrotasks,
@@ -1749,6 +1751,305 @@ describe("BrowserController", () => {
     await controller.close();
     await ledger.close();
   });
+
+  it.each(["cancel", "resize", "takeover", "close"] as const)(
+    "cancels HTML dragging before cleanup releases a held pointer (%s)",
+    async (cleanup) => {
+      const controller = createController();
+      await controller.start();
+      const surfaceId = activeSurfaceId();
+      const press = {
+        type: "input.pointer",
+        action: "down",
+        button: "left",
+        surfaceId,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        x: 0.25,
+        y: 0.25,
+        producerId: "00000000-0000-4000-8000-000000000001",
+      } as const;
+      try {
+        await controller.handle(press);
+        const start = page.cdpSession.sent.length;
+        if (cleanup === "cancel")
+          await controller.handle({
+            type: "input.cancel",
+            surfaceId,
+            producerId: press.producerId,
+          });
+        else if (cleanup === "resize")
+          await controller.handle({ type: "viewport.set", surfaceId, width: 900, height: 600 });
+        else if (cleanup === "takeover")
+          await controller.handle({ ...press, producerId: "00000000-0000-4000-8000-000000000002" });
+        else await controller.close();
+        expect(
+          page.cdpSession.sent.slice(start).filter((entry) => entry.method.startsWith("Input.")),
+        ).toMatchObject([
+          { method: "Input.cancelDragging" },
+          { method: "Input.dispatchMouseEvent", parameters: { type: "mouseReleased" } },
+          ...(cleanup === "takeover"
+            ? [{ method: "Input.dispatchMouseEvent", parameters: { type: "mousePressed" } }]
+            : []),
+        ]);
+        if (cleanup === "takeover") {
+          const count = page.cdpSession.sent.length;
+          await controller.handle({ type: "input.cancel", producerId: press.producerId });
+          expect(page.cdpSession.sent).toHaveLength(count);
+        }
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
+  it("refuses detach without hanging or reporting success when a dialog blocks pointer cleanup", async () => {
+    const controller = createController();
+    await controller.start();
+    const attachId = crypto.randomUUID();
+    const press = gate({ label: "dialog-held press", deadlineMs: 2000 });
+    let pending: Promise<void> | undefined;
+    try {
+      await controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        command: {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        },
+      });
+      const attached = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (attached?.type !== "cdp.result") throw new Error("Agent attachment never completed.");
+      const { sessionId } = attached.result as { sessionId: string };
+      page.cdpSession.responses.set(
+        "Input.dispatchMouseEvent",
+        async (parameters: Record<string, unknown> | undefined) => {
+          if (parameters?.type === "mousePressed") await press.enter();
+          return {};
+        },
+      );
+      pending = controller.handle({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: {
+          method: "Input.dispatchMouseEvent",
+          sessionId,
+          parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+        },
+      });
+      await press.entered;
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Held", type: "alert" });
+      const detachId = crypto.randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: detachId,
+          command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+        }),
+        1000,
+        { timeoutError: () => new Error("Detach waited behind the dialog-held press.") },
+      );
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.error", requestId: detachId }),
+      );
+      expect(cdpRouter.attachedTargetId(validClaims().sessionId, sessionId)).toBe(
+        await page.targetId(),
+      );
+      press.release();
+      await pending;
+      await controller.handle({ type: "input.cancel" });
+    } finally {
+      press.release();
+      await pending;
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("clears only the producer's own hover and never interrupts a held drag", async () => {
+    const controller = createController();
+    await controller.start();
+    const point = {
+      type: "input.pointer",
+      button: "none",
+      surfaceId: activeSurfaceId(),
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      x: 0.5,
+      y: 0.5,
+    } as const;
+    const first = "00000000-0000-4000-8000-000000000001";
+    const second = "00000000-0000-4000-8000-000000000002";
+    try {
+      await controller.handle({ ...point, action: "move", producerId: first });
+      await controller.handle({ ...point, action: "leave", producerId: second });
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      await controller.handle({ ...point, action: "leave", producerId: first });
+      expect(commandsNamed("Input.dispatchMouseEvent", page).at(-1)?.parameters).toMatchObject({
+        type: "mouseMoved",
+        button: "none",
+        buttons: 0,
+        x: -1,
+        y: -1,
+      });
+      await controller.handle({ ...point, action: "down", button: "left", producerId: first });
+      const count = commandsNamed("Input.dispatchMouseEvent", page).length;
+      await controller.handle({ ...point, action: "leave", producerId: first });
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(count);
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("shares overlapping resize and takeover cleanup before admitting the replacement press", async () => {
+    const controller = createController();
+    await controller.start();
+    const surfaceId = activeSurfaceId();
+    const press = {
+      type: "input.pointer",
+      action: "down",
+      button: "left",
+      surfaceId,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      x: 0.25,
+      y: 0.25,
+      producerId: "00000000-0000-4000-8000-000000000001",
+    } as const;
+    const cancellation = gate({ label: "overlapping drag cleanup", deadlineMs: 2000 });
+    page.cdpSession.responses.set("Input.cancelDragging", () => cancellation.enter());
+    let resize: Promise<void> | undefined;
+    let takeover: Promise<void> | undefined;
+    try {
+      await controller.handle(press);
+      resize = controller.prepareResize(surfaceId);
+      await cancellation.entered;
+      takeover = controller.handle({
+        ...press,
+        producerId: "00000000-0000-4000-8000-000000000002",
+      });
+      await flushMicrotasks();
+      expect(commandsNamed("Input.cancelDragging", page)).toHaveLength(1);
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      cancellation.release();
+      await Promise.all([resize, takeover]);
+      expect(
+        commandsNamed("Input.dispatchMouseEvent", page).map((entry) => entry.parameters?.type),
+      ).toEqual(["mousePressed", "mouseReleased", "mousePressed"]);
+    } finally {
+      cancellation.release();
+      await Promise.all([resize, takeover]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("awaits drag cancellation and fences takeover when cancellation fails", async () => {
+    const controller = createController();
+    await controller.start();
+    const surfaceId = activeSurfaceId();
+    const press = {
+      type: "input.pointer",
+      action: "down",
+      button: "left",
+      surfaceId,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      x: 0.25,
+      y: 0.25,
+      producerId: "00000000-0000-4000-8000-000000000001",
+    } as const;
+    const cancellation = gate({ label: "drag cancellation", deadlineMs: 2000 });
+    page.cdpSession.responses.set("Input.cancelDragging", async () => {
+      await cancellation.enter();
+      throw new Error("cancel failed");
+    });
+    try {
+      await controller.handle(press);
+      const takeover = controller.handle({
+        ...press,
+        producerId: "00000000-0000-4000-8000-000000000002",
+      });
+      await cancellation.entered;
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      cancellation.release();
+      await takeover;
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      expect(sink.messages).toContainEqual(expect.objectContaining({ type: "browser.error" }));
+      page.cdpSession.responses.delete("Input.cancelDragging");
+      await controller.handle({ ...press, producerId: "00000000-0000-4000-8000-000000000002" });
+      expect(commandsNamed("Input.dispatchMouseEvent", page).at(-1)?.parameters?.type).toBe(
+        "mousePressed",
+      );
+    } finally {
+      cancellation.release();
+      page.cdpSession.responses.delete("Input.cancelDragging");
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it.each(["resize", "detach"] as const)(
+    "cleans up an agent drag on its originating CDP session (%s)",
+    async (cleanup) => {
+      const agent = new FakeCdpSession();
+      vi.spyOn(page, "agentCdp").mockResolvedValue(agent);
+      const controller = createController();
+      await controller.start();
+      const attachId = crypto.randomUUID();
+      try {
+        await controller.handle({
+          type: "cdp.command",
+          requestId: attachId,
+          command: {
+            method: "Target.attachToTarget",
+            parameters: { targetId: await page.targetId(), flatten: true },
+          },
+        });
+        const attached = sink.messages.find(
+          (message) => message.type === "cdp.result" && message.requestId === attachId,
+        );
+        if (attached?.type !== "cdp.result") throw new Error("Agent attachment never completed.");
+        const { sessionId } = attached.result as { sessionId: string };
+        await controller.handle({
+          type: "cdp.command",
+          requestId: crypto.randomUUID(),
+          command: {
+            method: "Input.dispatchMouseEvent",
+            sessionId,
+            parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+          },
+        });
+        if (cleanup === "resize")
+          await controller.handle({
+            type: "viewport.set",
+            surfaceId: activeSurfaceId(),
+            width: 900,
+            height: 600,
+          });
+        else
+          await controller.handle({
+            type: "cdp.command",
+            requestId: crypto.randomUUID(),
+            command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+          });
+        expect(agent.sent.filter((entry) => entry.method.startsWith("Input."))).toMatchObject([
+          { method: "Input.dispatchMouseEvent", parameters: { type: "mousePressed" } },
+          { method: "Input.cancelDragging" },
+          { method: "Input.dispatchMouseEvent", parameters: { type: "mouseReleased" } },
+        ]);
+        expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(0);
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
 
   it("ends a held pointer gesture before another viewer resizes", async () => {
     const controller = createController();

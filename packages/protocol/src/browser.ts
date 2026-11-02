@@ -492,7 +492,8 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       /** Host-issued in editing sessions: names the controller a page write or menu this input causes belongs to. */
       consumerToken: z.uuid().optional(),
-      action: z.enum(["down", "move", "up"]),
+      /** Leave clears this producer's hover only, without ending a held drag. */
+      action: z.enum(["down", "move", "up", "leave"]),
       button: z.enum(["none", "left", "middle", "right"]),
       clickCount: z.number().int().min(1).max(3).optional(),
       surfaceId: BrowserSurfaceIdSchema,

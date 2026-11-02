@@ -189,6 +189,151 @@ describe("browser text entry through the presented page", async () => {
       ),
     ).toMatchObject({ Paste: false, Copy: true, Cut: true });
   });
+  it.each(["pointercancel", "lostpointercapture"])(
+    "cancels a held drag without flushing a pending move on %s",
+    async (ending) => {
+      const { commands, container, present } = await setup();
+      const viewport = container.querySelector<HTMLElement>(".browser-canvas")!;
+      Object.assign(viewport, { setPointerCapture: vi.fn() });
+      vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({
+        width: 400,
+        height: 300,
+        top: 0,
+        left: 0,
+      } as DOMRect);
+      const pointer = (type: string, x = 200) =>
+        act(() => {
+          viewport.dispatchEvent(
+            new PointerEvent(type, {
+              bubbles: true,
+              button: 0,
+              buttons: type === "pointerup" ? 0 : 1,
+              clientX: x,
+              clientY: 150,
+              pointerId: 1,
+              pointerType: "mouse",
+            }),
+          );
+        });
+      pointer("pointerdown");
+      commands.length = 0;
+      pointer("pointermove", 220);
+      pointer(ending, 220);
+      await present();
+      const inputCommands = () => commands.filter((command) => command.type.startsWith("input."));
+      expect(inputCommands()).toEqual([{ type: "input.cancel", surfaceId: firstSurface }]);
+      pointer("pointerup", 220);
+      expect(inputCommands()).toHaveLength(1);
+      pointer("pointerdown");
+      expect(commands.at(-1)).toMatchObject({
+        type: "input.pointer",
+        action: "down",
+        clickCount: 1,
+      });
+    },
+  );
+
+  it("clears remote hover on leave while preserving captured drags and resetting dragged click chains", async () => {
+    const { commands, container, present } = await setup();
+    const viewport = container.querySelector<HTMLElement>(".browser-canvas")!;
+    Object.assign(viewport, { setPointerCapture: vi.fn() });
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({
+      width: 400,
+      height: 300,
+      top: 0,
+      left: 0,
+    } as DOMRect);
+    const pointer = (type: string, x = 200) =>
+      act(() => {
+        viewport.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            button: 0,
+            clientX: x,
+            clientY: 150,
+            pointerId: 1,
+            pointerType: "mouse",
+          }),
+        );
+      });
+    pointer("pointermove");
+    await present();
+    pointer("pointerout", 410);
+    expect(commands.at(-1)).toMatchObject({
+      type: "input.pointer",
+      action: "leave",
+      button: "none",
+    });
+    pointer("pointerdown");
+    pointer("pointermove", 220);
+    const count = commands.length;
+    pointer("pointerout", 410);
+    expect(commands).toHaveLength(count);
+    pointer("pointerup", 220);
+    pointer("lostpointercapture", 220);
+    expect(commands.at(-1)).toMatchObject({ type: "input.pointer", action: "up", clickCount: 1 });
+    pointer("pointerdown");
+    expect(commands.at(-1)).toMatchObject({ type: "input.pointer", action: "down", clickCount: 1 });
+    pointer("pointermove", 410);
+    pointer("pointerup", 410);
+    expect(commands.filter((command) => command.type.startsWith("input.")).slice(-2)).toMatchObject(
+      [
+        { type: "input.pointer", action: "up" },
+        { type: "input.pointer", action: "leave", button: "none" },
+      ],
+    );
+  });
+
+  it("keeps click counts on their press and resets them when the target changes", async () => {
+    const { commands, container, render, receive, present } = await setup();
+    const viewport = container.querySelector<HTMLElement>(".browser-canvas")!;
+    Object.assign(viewport, { setPointerCapture: vi.fn() });
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({
+      width: 400,
+      height: 300,
+      top: 0,
+      left: 0,
+    } as DOMRect);
+    const click = (button = 0) =>
+      act(() => {
+        for (const type of ["pointerdown", "pointerup"])
+          viewport.dispatchEvent(
+            new PointerEvent(type, {
+              bubbles: true,
+              button,
+              clientX: 200,
+              clientY: 150,
+              pointerId: 1,
+              pointerType: "mouse",
+            }),
+          );
+      });
+    click();
+    click();
+    click(2);
+    expect(
+      commands.flatMap((command) =>
+        command.type === "input.pointer" && command.action === "up" ? [command.clickCount] : [],
+      ),
+    ).toEqual([1, 2, 1]);
+    void act(() =>
+      viewport.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, pointerId: 1, clientX: 410, clientY: 150 }),
+      ),
+    );
+    expect(commands.at(-1)).toMatchObject({ type: "input.pointer", action: "leave" });
+    render({ activeSurfaceId: secondSurface });
+    receive(frame(secondSurface));
+    await present();
+    click();
+    expect(commands.at(-1)).toMatchObject({
+      type: "input.pointer",
+      action: "up",
+      surfaceId: secondSurface,
+      clickCount: 1,
+    });
+  });
+
   it("focuses native text entry on a page click while preserving frame coordinates", async () => {
     const { commands, container } = await setup();
     const viewport = container.querySelector<HTMLElement>(".browser-canvas")!;

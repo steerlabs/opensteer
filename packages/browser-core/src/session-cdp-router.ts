@@ -29,6 +29,8 @@ export interface CdpEvent {
 }
 
 export interface CdpChannel {
+  /** Trusted runtime cleanup, including on an agent channel; never an agent command. */
+  cancelDragging?(): Promise<unknown>;
   close(): Promise<void>;
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void;
   send(method: string, parameters?: CdpParameters): Promise<unknown>;
@@ -271,6 +273,14 @@ export class SessionCdpRouter {
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
   attachedTargetId(sessionId: string, cdpSessionId: string): string | null {
     return this.#sessions.get(sessionId)?.channels.get(cdpSessionId)?.physicalTargetId ?? null;
+  }
+
+  /** Retains the actual Input handler for cleanup after an admitted agent press. */
+  inputChannel(sessionId: string, command: CdpCommand): CdpChannel {
+    this.#assertOpen();
+    const state = this.#requireSession(sessionId);
+    validateCommand(command, this.#limits.maxCommandBytes);
+    return this.#admitAttachedCommand(state, command).channel;
   }
 
   /**

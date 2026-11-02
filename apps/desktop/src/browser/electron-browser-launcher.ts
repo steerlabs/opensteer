@@ -1937,11 +1937,12 @@ class ElectronDebuggerHub {
     channel: ElectronCdpChannel,
     method: string,
     parameters?: Record<string, unknown>,
+    cleanup = false,
   ): Promise<unknown> {
     const command = Promise.withResolvers<unknown>();
     this.#pending.add(command.reject);
     try {
-      void this.#send(channel, method, parameters).then(command.resolve, command.reject);
+      void this.#send(channel, method, parameters, cleanup).then(command.resolve, command.reject);
     } catch (error) {
       command.reject(error);
     }
@@ -1954,6 +1955,7 @@ class ElectronDebuggerHub {
     channel: ElectronCdpChannel,
     method: string,
     parameters?: Record<string, unknown>,
+    cleanup = false,
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
     if (this.#closed || !this.#channels.has(channel))
@@ -1968,7 +1970,8 @@ class ElectronDebuggerHub {
     if (
       method.startsWith("Input.") &&
       !agentCdpAllowlist.methods.has(method) &&
-      !(channel.role === "platform" && method === "Input.imeSetComposition")
+      !(channel.role === "platform" && method === "Input.imeSetComposition") &&
+      !(cleanup && method === "Input.cancelDragging")
     )
       return Promise.reject(new Error(`${method} is unavailable on an Electron page channel.`));
     // A first-document dialog can hold Runtime.enable or Page.enable. Its
@@ -2491,6 +2494,11 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
 
   retainRendering(): () => void {
     return this.#hub.retainRendering(this);
+  }
+
+  cancelDragging(): Promise<unknown> {
+    if (this.#closed) return Promise.reject(new Error("CDP channel is closed."));
+    return this.#hub.send(this, "Input.cancelDragging", undefined, true);
   }
 
   send<Result = unknown>(method: string, parameters?: Record<string, unknown>): Promise<Result> {
