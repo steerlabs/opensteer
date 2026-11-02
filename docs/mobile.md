@@ -224,8 +224,12 @@ platform software AVC decoder can retain pictures until more input arrives, and
 is optional. Continuous playback therefore does not qualify a lone or final still
 picture.
 
-Human and agent browser input remain concurrent; viewing scales a page, and only
-explicit Fit page resizes it. Dialog responses bind to the exact tab and dialog.
+Human and agent browser input remain concurrent; viewing and pinching scale a
+page on the phone alone, and only explicit Fit resizes it. Fit asks first when an
+agent sized the page. A place's bars sit beside the picture, never over it: a
+streamed page cannot leave room for chrome it does not know about, so anything
+over it would hide its own sticky controls. Dialog responses bind to the exact
+tab and dialog.
 Native editing needs a rebuilt custom client; its [adapter contract](../apps/mobile/modules/remote-text-input/README.md)
 owns composition and device qualification.
 

@@ -219,9 +219,9 @@ type Companion = { readonly kind: "thread"; readonly threadId: string } | { read
 const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 
 /**
- * One tab, app or phone, its bar, and — where a pair fits — a second pane.
- * Typing into the page puts the bar away until the keyboard is done, so the
- * page has the room.
+ * One tab, app or phone with its own bar, and — where a pair fits — a second
+ * pane. The place's view makes room for its own keyboard; this screen only
+ * hears that it is typing, so the pane being typed in is the one that lifts.
  */
 function Focused(props: {
   readonly active: boolean;
@@ -1170,7 +1170,7 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   // Laid out, so its native views and scroll position stay, but not drawn.
   outOfView: { left: 0, opacity: 0, position: "absolute", top: 0 },
-  // Alone, the page has the whole surface but the bar under it. It has no
+  // Alone, the page and its bar have the whole surface. It has no
   // floor: with the keyboard up on a short screen, a floor is what pushes the
   // page's own address field under the keyboard.
   pageAlone: { flex: 1, minHeight: 0 },

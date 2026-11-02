@@ -61,6 +61,8 @@ export const toolbar = {
 export const gestureHandler = {
   GestureDetector: (props: Children) => <>{props.children}</>,
   usePanGesture: () => ({}),
+  usePinchGesture: () => ({}),
+  useSimultaneousGestures: () => ({}),
 };
 
 export const worklets = {

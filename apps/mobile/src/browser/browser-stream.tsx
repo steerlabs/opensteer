@@ -76,6 +76,11 @@ export interface BrowserStreamProps {
   readonly onScroll?: () => void;
   readonly session: BrowserSessionSummary;
   readonly style?: StyleProp<ViewStyle>;
+  /**
+   * How far this phone has pinched the picture in. A drag is measured on the
+   * screen, so it scrolls the page by that much less at a larger zoom.
+   */
+  readonly zoom?: { readonly value: number };
 }
 
 interface FrameSlot {
@@ -121,6 +126,7 @@ export function BrowserStream({
   interactive = false,
   inputEnabled = true,
   tabId,
+  zoom,
 }: BrowserStreamProps) {
   // Asking again takes the feed anew: a fresh subscription, fresh pictures.
   const [attempt, setAttempt] = useState(0);
@@ -329,6 +335,7 @@ export function BrowserStream({
     onScroll,
     onTap,
     onPointerDown,
+    zoom,
   });
   input.current = {
     active,
@@ -340,6 +347,7 @@ export function BrowserStream({
     onScroll,
     onTap,
     onPointerDown,
+    zoom,
   };
   // The touch under the finger, aimed at the picture as it was drawn when it
   // began. A resize — a fold, a window narrowing, a pane appearing beside this
@@ -437,11 +445,13 @@ export function BrowserStream({
           input.current.onScroll?.();
         }
         if (!gesture.moved) return;
+        const pinched = Math.max(1, input.current.zoom?.value ?? 1);
+        const factor = gesture.scale / pinched;
         const scrolled = send({
           type: "input.wheel",
           ...gesture.point,
-          deltaX: Math.max(-100000, Math.min(100000, -(state.dx - gesture.dx) * gesture.scale)),
-          deltaY: Math.max(-100000, Math.min(100000, -(state.dy - gesture.dy) * gesture.scale)),
+          deltaX: Math.max(-100000, Math.min(100000, -(state.dx - gesture.dx) * factor)),
+          deltaY: Math.max(-100000, Math.min(100000, -(state.dy - gesture.dy) * factor)),
         });
         // A refused scroll ends the drag rather than replaying it on reconnection.
         if (!scrolled) {

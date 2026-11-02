@@ -37,7 +37,19 @@ import {
   View,
   type LayoutChangeEvent,
 } from "react-native";
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+import {
+  GestureDetector,
+  usePanGesture,
+  usePinchGesture,
+  useSimultaneousGestures,
+} from "react-native-gesture-handler";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+  type SharedValue,
+} from "react-native-reanimated";
 import type { EditingOperation } from "@opensteer/client/editing";
 import type { EditingCaret, EditingContext } from "@opensteer/protocol/editing";
 import { createMobileBrowserEditing } from "./browser-editing.js";
@@ -68,6 +80,8 @@ const refusedNotice = "The page is reconnecting. Try again in a moment.";
 const regularWidth = 600;
 /** Room left under a page narrower than its place that is worth offering Fit for. */
 const fitBand = 0.15;
+/** How far a page can be pinched in: enough to read a desktop page's small print. */
+const maxZoom = 4;
 
 /**
  * One browser page, used as Safari is used on a phone: the page as large as
@@ -227,12 +241,13 @@ export function BrowserPage(props: {
   const onStage = (event: LayoutChangeEvent) => {
     const { height, width: stageWidth } = event.nativeEvent.layout;
     setVisibleHeight(height);
-    if (!lifted)
-      setRoom((current) =>
-        current.height === height && current.width === stageWidth
-          ? current
-          : { height, width: stageWidth },
-      );
+    // A page opened straight into its address has no resting room yet: the
+    // first measure stands for it until the keyboard goes.
+    setRoom((current) =>
+      (lifted && current.height > 0) || (current.height === height && current.width === stageWidth)
+        ? current
+        : { height, width: stageWidth },
+    );
   };
   const picture = pictureBox(room, aspect);
 
@@ -502,7 +517,14 @@ export function BrowserPage(props: {
   useEffect(() => {
     slide.value = withTiming(slideTo, { duration: duration.enter });
   }, [slide, slideTo]);
-  const slid = useAnimatedStyle(() => ({ transform: [{ translateY: slide.value }] }));
+  const zoom = usePageZoom(picture, keyboardOpen || addressOpen);
+  const placed = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: zoom.x.value },
+      { translateY: zoom.y.value + slide.value },
+      { scale: zoom.scale.value },
+    ],
+  }));
 
   const label = site === null ? title : `${title}, ${site}`;
   return (
@@ -522,148 +544,155 @@ export function BrowserPage(props: {
         onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
       />
       {regular ? (addressOpen ? editor : bar) : null}
-      <View onLayout={onStage} style={styles.stage}>
-        <Animated.View
-          style={[
-            styles.picture,
-            { height: picture.height, left: picture.left, width: picture.width },
-            slid,
-          ]}
-        >
-          <BrowserStream
-            active={props.active}
-            tabId={tabId}
-            hostClient={hostClient}
-            interactive
-            inputEnabled={closeReview === null && !addressOpen}
-            label={label}
-            onPageSize={onPageSize}
-            onPointerDown={() => proxy.current?.interrupt()}
-            onScroll={() => setMayType(false)}
-            onTap={() => {
-              // A page that reports its fields keeps the keyboard up from one
-              // field to the next and puts it away when nothing has focus.
-              if (!editing.get().negotiated) setTyping(false);
-              setMayType(true);
-            }}
-            session={session}
-          />
-        </Animated.View>
-        {offerFit ? (
+      <GestureDetector gesture={zoom.gesture}>
+        <View onLayout={onStage} style={styles.stage}>
           <Animated.View
-            entering={appear}
-            exiting={exit}
-            pointerEvents="box-none"
-            style={[styles.fitBand, { height: bandBelow, top: picture.height }]}
+            style={[
+              styles.picture,
+              { height: picture.height, left: picture.left, width: picture.width },
+              placed,
+            ]}
           >
-            <Pressable
-              accessibilityHint="Resizes the page to fill your screen"
-              accessibilityLabel="Fit to screen"
-              accessibilityRole="button"
-              onPress={fit}
-              style={({ pressed }) => pressed && styles.pressed}
-            >
-              <GlassSurface interactive shape="capsule" style={styles.fitChip}>
-                <Symbol
-                  name="arrow.up.left.and.arrow.down.right"
-                  size={14}
-                  tint={color.ember}
-                  weight="semibold"
-                />
-                <AppText role="secondaryMedium">Fit to screen</AppText>
-              </GlassSurface>
-            </Pressable>
+            <BrowserStream
+              active={props.active}
+              tabId={tabId}
+              hostClient={hostClient}
+              interactive
+              inputEnabled={closeReview === null && !addressOpen}
+              label={label}
+              onPageSize={onPageSize}
+              onPointerDown={() => proxy.current?.interrupt()}
+              zoom={zoom.scale}
+              onScroll={() => setMayType(false)}
+              onTap={() => {
+                // A page that reports its fields keeps the keyboard up from one
+                // field to the next and puts it away when nothing has focus.
+                if (!editing.get().negotiated) setTyping(false);
+                setMayType(true);
+              }}
+              session={session}
+            />
           </Animated.View>
-        ) : null}
-        {addressOpen ? (
-          <Pressable
-            accessibilityLabel="Keep this page"
-            accessibilityRole="button"
-            onPress={() => {
-              setAddressDraft(null);
-              setAddressOpen(false);
-            }}
-            style={styles.dim}
-          />
-        ) : null}
-        {pageProblem === null && !refused && !feed.inputError && !passkey ? null : (
-          <View pointerEvents="box-none" style={styles.top}>
-            {passkey ? (
-              <View style={styles.card}>
-                <AppText role="secondary">{passkeyNotice}</AppText>
-              </View>
-            ) : null}
-            {pageProblem !== null || refused ? (
-              <Notice
-                detail={pageProblem ?? refusedNotice}
-                title="Page unavailable"
-                tone="neutral"
-              />
-            ) : feed.inputError ? (
-              // The page refused a touch or key, and says why; the next one clears it.
-              <Notice detail={feed.inputError} title="That didn’t reach the page" tone="neutral" />
-            ) : null}
-          </View>
-        )}
-        {dialog === null ? null : (
-          <PageDialog
-            channelReady={channelReady}
-            dialog={dialog}
-            onAnswer={(accept) =>
-              send({
-                type: "dialog.respond",
-                accept,
-                dialogId: dialog.id,
-                ...(accept && dialog.type === "prompt" ? { promptText } : {}),
-              })
-            }
-            onPrompt={(text) => setPrompt({ id: dialog.id, text })}
-            promptText={promptText}
-            site={site}
-          />
-        )}
-        {signingIn && signInSite !== null && tab !== undefined ? (
-          <View style={[styles.card, styles.bottom]}>
-            <View style={styles.row}>
-              <View style={styles.grow}>
-                <ChromeSignInAction
-                  connected={props.connected}
-                  hostClient={hostClient}
-                  key={`${session.id}:${signInSite}`}
-                  sessionId={session.id}
-                  tabId={tabId}
-                  site={signInSite}
-                  url={tab.url}
-                  workspaceName={props.workspaceName}
-                />
-              </View>
+          {offerFit ? (
+            <Animated.View
+              entering={appear}
+              exiting={exit}
+              pointerEvents="box-none"
+              style={[styles.fitBand, { height: bandBelow, top: picture.height }]}
+            >
               <Pressable
-                accessibilityLabel="Close"
+                accessibilityHint="Resizes the page to fill your screen"
+                accessibilityLabel="Fit to screen"
                 accessibilityRole="button"
-                hitSlop={space[8]}
-                onPress={() => setSigningIn(false)}
-                style={styles.iconButton}
+                onPress={fit}
+                style={({ pressed }) => pressed && styles.pressed}
               >
-                <Symbol name="xmark" size={13} tint={color.muted} weight="semibold" />
+                <GlassSurface interactive shape="capsule" style={styles.fitChip}>
+                  <Symbol
+                    name="arrow.up.left.and.arrow.down.right"
+                    size={14}
+                    tint={color.ember}
+                    weight="semibold"
+                  />
+                  <AppText role="secondaryMedium">Fit to screen</AppText>
+                </GlassSurface>
               </Pressable>
-            </View>
-          </View>
-        ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
-          <Animated.View entering={appear} exiting={exit} style={styles.keyboard}>
+            </Animated.View>
+          ) : null}
+          {addressOpen ? (
             <Pressable
-              accessibilityHint="Types into the page"
-              accessibilityLabel="Keyboard"
+              accessibilityLabel="Keep this page"
               accessibilityRole="button"
-              onPress={() => setTyping(true)}
-              style={({ pressed }) => pressed && styles.pressed}
-            >
-              <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
-                <Symbol name="keyboard" size={19} tint={color.text} />
-              </GlassSurface>
-            </Pressable>
-          </Animated.View>
-        ) : null}
-      </View>
+              onPress={() => {
+                setAddressDraft(null);
+                setAddressOpen(false);
+              }}
+              style={styles.dim}
+            />
+          ) : null}
+          {pageProblem === null && !refused && !feed.inputError && !passkey ? null : (
+            <View pointerEvents="box-none" style={styles.top}>
+              {passkey ? (
+                <View style={styles.card}>
+                  <AppText role="secondary">{passkeyNotice}</AppText>
+                </View>
+              ) : null}
+              {pageProblem !== null || refused ? (
+                <Notice
+                  detail={pageProblem ?? refusedNotice}
+                  title="Page unavailable"
+                  tone="neutral"
+                />
+              ) : feed.inputError ? (
+                // The page refused a touch or key, and says why; the next one clears it.
+                <Notice
+                  detail={feed.inputError}
+                  title="That didn’t reach the page"
+                  tone="neutral"
+                />
+              ) : null}
+            </View>
+          )}
+          {dialog === null ? null : (
+            <PageDialog
+              channelReady={channelReady}
+              dialog={dialog}
+              onAnswer={(accept) =>
+                send({
+                  type: "dialog.respond",
+                  accept,
+                  dialogId: dialog.id,
+                  ...(accept && dialog.type === "prompt" ? { promptText } : {}),
+                })
+              }
+              onPrompt={(text) => setPrompt({ id: dialog.id, text })}
+              promptText={promptText}
+              site={site}
+            />
+          )}
+          {signingIn && signInSite !== null && tab !== undefined ? (
+            <View style={[styles.card, styles.bottom]}>
+              <View style={styles.row}>
+                <View style={styles.grow}>
+                  <ChromeSignInAction
+                    connected={props.connected}
+                    hostClient={hostClient}
+                    key={`${session.id}:${signInSite}`}
+                    sessionId={session.id}
+                    tabId={tabId}
+                    site={signInSite}
+                    url={tab.url}
+                    workspaceName={props.workspaceName}
+                  />
+                </View>
+                <Pressable
+                  accessibilityLabel="Close"
+                  accessibilityRole="button"
+                  hitSlop={space[8]}
+                  onPress={() => setSigningIn(false)}
+                  style={styles.iconButton}
+                >
+                  <Symbol name="xmark" size={13} tint={color.muted} weight="semibold" />
+                </Pressable>
+              </View>
+            </View>
+          ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
+            <Animated.View entering={appear} exiting={exit} style={styles.keyboard}>
+              <Pressable
+                accessibilityHint="Types into the page"
+                accessibilityLabel="Keyboard"
+                accessibilityRole="button"
+                onPress={() => setTyping(true)}
+                style={({ pressed }) => pressed && styles.pressed}
+              >
+                <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
+                  <Symbol name="keyboard" size={19} tint={color.text} />
+                </GlassSurface>
+              </Pressable>
+            </Animated.View>
+          ) : null}
+        </View>
+      </GestureDetector>
       {keyboardOpen ? (
         <PageTyping
           ref={proxy}
@@ -683,6 +712,85 @@ export function BrowserPage(props: {
       )}
     </View>
   );
+}
+
+/**
+ * Pinching the page in, on this phone alone: the page itself never changes,
+ * so the agent and every other screen keep seeing it as it is. Two fingers
+ * zoom and move the picture; one finger still scrolls and taps the page,
+ * through the picture as it is drawn. Let go near its own size and it
+ * settles back; it starts again at its own size whenever the page's shape
+ * changes or the keyboard comes up.
+ */
+function usePageZoom(
+  picture: { readonly height: number; readonly left: number; readonly width: number },
+  held: boolean,
+): {
+  readonly gesture: ReturnType<typeof useSimultaneousGestures>;
+  readonly scale: SharedValue<number>;
+  readonly x: SharedValue<number>;
+  readonly y: SharedValue<number>;
+} {
+  const { height, left, width } = picture;
+  const scale = useSharedValue(1);
+  const x = useSharedValue(0);
+  const y = useSharedValue(0);
+  const start = useSharedValue({ scale: 1, x: 0, y: 0 });
+  useEffect(() => {
+    scale.value = withSpring(1, settle);
+    x.value = withSpring(0, settle);
+    y.value = withSpring(0, settle);
+  }, [height, held, scale, width, x, y]);
+  const pinch = usePinchGesture({
+    enabled: !held && width > 0,
+    onActivate: () => {
+      "worklet";
+      start.value = { scale: scale.value, x: x.value, y: y.value };
+    },
+    onUpdate: (event) => {
+      "worklet";
+      const next = Math.min(maxZoom, Math.max(0.85, start.value.scale * event.scale));
+      // The point under the fingers stays under them as the page grows.
+      const ratio = next / start.value.scale;
+      scale.value = next;
+      // The fingers are measured from the page's place; the picture may be inset in it.
+      const focalX = event.focalX - left;
+      x.value = clampTo(focalX - (focalX - start.value.x) * ratio, width, next);
+      y.value = clampTo(event.focalY - (event.focalY - start.value.y) * ratio, height, next);
+    },
+    onDeactivate: () => {
+      "worklet";
+      if (scale.value < 1.05) {
+        scale.value = withSpring(1, settle);
+        x.value = withSpring(0, settle);
+        y.value = withSpring(0, settle);
+      }
+    },
+  });
+  const pan = usePanGesture({
+    enabled: !held && width > 0,
+    maxPointers: 2,
+    minPointers: 2,
+    onActivate: () => {
+      "worklet";
+      start.value = { scale: scale.value, x: x.value, y: y.value };
+    },
+    onUpdate: (event) => {
+      "worklet";
+      x.value = clampTo(start.value.x + event.translationX, width, scale.value);
+      y.value = clampTo(start.value.y + event.translationY, height, scale.value);
+    },
+  });
+  const gesture = useSimultaneousGestures(pinch, pan);
+  return { gesture, scale, x, y };
+}
+
+const settle = { damping: 24, stiffness: 240 } as const;
+
+/** Keeps a zoomed picture covering its own place: no gap opens at either edge. */
+function clampTo(offset: number, size: number, scale: number): number {
+  "worklet";
+  return Math.min(0, Math.max(size - size * Math.max(scale, 1), offset));
 }
 
 /**
@@ -931,7 +1039,8 @@ const styles = StyleSheet.create({
     width: touchTarget + space[4],
   },
   page: { flex: 1, minHeight: 0 },
-  picture: { position: "absolute", top: 0 },
+  // Zoom grows the picture from its top-leading corner, where its offset is measured from.
+  picture: { position: "absolute", top: 0, transformOrigin: "left top" },
   pressed: { opacity: 0.7 },
   row: { alignItems: "center", flexDirection: "row", gap: space[8] },
   stage: { backgroundColor: color.background, flex: 1, minHeight: 0, overflow: "hidden" },
