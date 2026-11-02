@@ -10,6 +10,8 @@ import { channelProviderCatalog } from "@opensteer/channel-core";
 import {
   AgentEventSchema,
   AssignmentIdSchema,
+  placeIdentityKey,
+  type EventData,
   AssignmentSummarySchema,
   AssignmentViewSchema,
   AttachmentSchema,
@@ -3480,6 +3482,7 @@ export class MockHostClient implements HostClient {
       (snapshot) => this.#state.updatePlaces(snapshot),
       options.now ?? (() => new Date()),
       (profileId) => this.browserHistory.changed(profileId),
+      (runId, threadId, data) => this.#state.enterPlace(runId, threadId, data),
     );
     this.#state.places = this.#places;
     this.#workspaceTabActivations = new WorkspaceTabActivations({
@@ -8624,6 +8627,37 @@ class MockHostState {
     const chosen = icon ?? defaultTaskSymbol;
     if (thread.icon !== chosen) this.publishThreadName(thread, { icon: chosen });
     return this.snapshot.threads.find(({ id }) => id === threadId)!;
+  }
+
+  /**
+   * As the Host records it: a Run began acting in a tab other than the one it
+   * entered last. Entering the same tab again records nothing.
+   */
+  enterPlace(runId: string, threadId: string, data: EventData<"place.entered">): void {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    if (!thread) return;
+    const transcript = this.snapshot.transcripts[threadId] ?? [];
+    const last = transcript.findLast((entry) => entry.kind === "place" && entry.runId === runId);
+    if (last?.kind === "place" && placeIdentityKey(last.place) === placeIdentityKey(data.place))
+      return;
+    const event = AgentEventSchema.parse({
+      createdAt: this.now().toISOString(),
+      data,
+      environmentId: thread.environmentId,
+      eventId: createId("event"),
+      runId,
+      sequence: String(++this.sequence),
+      threadId,
+      type: "place.entered",
+      workspaceId: thread.workspaceId,
+    });
+    this.update({
+      ...this.snapshot,
+      transcripts: {
+        ...this.snapshot.transcripts,
+        [threadId]: foldTranscriptEvent(transcript, event),
+      },
+    });
   }
 
   private publishThreadName(
