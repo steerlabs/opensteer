@@ -3189,6 +3189,7 @@ export function advertisedCapabilities(
     "snapshot-messages-omit-v1",
     "history-turns-v1",
     "place-events-v1",
+    "person-show-v1",
     "shared-task-done-v1",
     "harness-update-v1",
     "iphone-apps-v1",
@@ -4188,6 +4189,7 @@ function attachRealtimeSocket(
         unsubscribe = await realtime.subscribe({
           afterSequence: message.afterSequence,
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
+          ...(message.personShow ? { personShow: message.personShow } : {}),
           ...(message.snapshotMessages ? { snapshotMessages: message.snapshotMessages } : {}),
           sink,
           userId: session.user.id,

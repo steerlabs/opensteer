@@ -40,6 +40,7 @@ export * from "./workspace-icon-art.js";
 export * from "./workspace-storage.js";
 export * from "./thread-read-state.js";
 export * from "./places.js";
+export * from "./person-show.js";
 export * from "./place-agents.js";
 export * from "./task-marks.js";
 export * from "./place-activity.js";

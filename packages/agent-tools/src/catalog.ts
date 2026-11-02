@@ -10,6 +10,7 @@ import {
   MarkColorSchema,
   MessageIdSchema,
   PersonNotifyMessageSchema,
+  PersonShowTargetSchema,
   PlaceContentPartSchema,
   RequestIdSchema,
   ThreadIdSchema,
@@ -37,6 +38,7 @@ export const AgentToolIdSchema = z.enum([
   "thread.delegate",
   "thread.message",
   "person.notify",
+  "person.show",
   "thread.write",
   "assignment.cancel",
   "request.list",
@@ -66,6 +68,7 @@ export const AgentToolNameSchema = z.enum([
   "thread_delegate",
   "thread_message",
   "person_notify",
+  "person_show",
   "thread_write",
   "assignment_cancel",
   "request_list",
@@ -397,6 +400,20 @@ const definitions = [
     },
   },
   {
+    id: "person.show",
+    name: "person_show",
+    description:
+      "Send the person a request to open a saved tab or Thread while they are viewing this conversation. Use the tabId from browser_tab_read or a threadId. Returns connected-device delivery counts, without confirmation that they saw it.",
+    inputSchema: z.strictObject({ target: PersonShowTargetSchema }),
+    annotations: {
+      title: "Show Person",
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+    },
+  },
+  {
     annotations: {
       destructiveHint: false,
       idempotentHint: false,
@@ -516,7 +533,7 @@ const definitions = [
     name: "browser_tab_read",
     inputSchema: BrowserTabReadInputSchema,
     description:
-      "To find saved tabs (open or asleep) and groups, use browser_tab_read. tabId equals Browser Harness surfaceId from listTabs()/currentTab(). Follow nextCursor; every page includes all reachable groups' metadata and tabCount. To find a group's tabs, read all pages and filter groupId. profileId is null for Guest. Groups organize the sidebar and grant no access.",
+      "Find saved tabs, open or asleep, and their groups. query searches title, site, group and profile; matchedFields explains each match and totalMatches counts the results. Follow nextCursor with the same query. tabId is Browser Harness surfaceId and can be passed to person_show. Every page includes reachable groups and tabCount. profileId is null for Guest. Groups grant no access.",
     annotations: {
       readOnlyHint: true,
       idempotentHint: true,
@@ -764,6 +781,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.delegate",
       "thread.message",
       "person.notify",
+      "person.show",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -793,6 +811,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.delegate",
       "thread.message",
       "person.notify",
+      "person.show",
       "thread.write",
       "assignment.cancel",
       "request.list",
@@ -821,6 +840,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.delegate",
       "thread.message",
       "person.notify",
+      "person.show",
       "thread.write",
       "assignment.cancel",
       "request.list",

@@ -13897,7 +13897,11 @@ describe("HttpHostClient overnight transcript residency", () => {
     };
   }
 
-  async function residentFixture(hydrate = true, omitSnapshotMessages = false) {
+  async function residentFixture(
+    hydrate = true,
+    omitSnapshotMessages = false,
+    lifecycle?: ClientLifecycle,
+  ) {
     const workspace = makeWorkspace();
     const thread = makeThread(workspace.id);
     const other = makeThread(workspace.id);
@@ -13937,7 +13941,8 @@ describe("HttpHostClient overnight transcript residency", () => {
     let boot = bootstrap([workspace]);
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
-      capabilities: omitSnapshotMessages ? ["snapshot-messages-omit-v1"] : [],
+      ...(lifecycle ? { lifecycle } : {}),
+      capabilities: omitSnapshotMessages ? ["snapshot-messages-omit-v1", "person-show-v1"] : [],
       webSocketFactory: () => socket,
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
@@ -14014,11 +14019,44 @@ describe("HttpHostClient overnight transcript residency", () => {
         const subscription = parseSent(f.socket, 0);
         if (capable) expect(subscription).toHaveProperty("snapshotMessages", "omit");
         else expect(subscription).not.toHaveProperty("snapshotMessages");
+        if (capable) expect(subscription).toHaveProperty("personShow", "accept");
+        else expect(subscription).not.toHaveProperty("personShow");
       } finally {
         f.client.dispose();
       }
     },
   );
+
+  it("delivers show only while foregrounded and never retains it for a later listener", async () => {
+    const platform = fakeLifecycle();
+    const f = await residentFixture(false, true, platform.lifecycle);
+    const received = vi.fn();
+    const release = f.client.subscribePersonShow(received);
+    const message = {
+      type: "host.show" as const,
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      target: { threadId: f.other.id },
+    };
+    try {
+      f.socket.receive(message);
+      expect(received).toHaveBeenCalledExactlyOnceWith(message);
+      received.mockClear();
+      platform.enterBackground();
+      f.socket.receive(message);
+      expect(received).not.toHaveBeenCalled();
+      platform.enterForeground();
+      expect(received).not.toHaveBeenCalled();
+      release();
+      const later = vi.fn();
+      const releaseLater = f.client.subscribePersonShow(later);
+      expect(later).not.toHaveBeenCalled();
+      releaseLater();
+    } finally {
+      release();
+      f.client.dispose();
+    }
+  });
 
   it.each(["activate", "observe"] as const)(
     "leaves omitted history unloaded until %s reads its first durable page",

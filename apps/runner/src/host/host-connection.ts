@@ -1945,6 +1945,7 @@ function runnerCapabilities(): RunnerCapability[] {
     "thread-icon-v1",
     "task-done-v1",
     "person-notify-v1",
+    "person-show-v1",
   ];
 }
 

@@ -1,8 +1,10 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { autoPlacePart } from "./workspace/composer-context.js";
 import { destinationPlaceKey } from "./workspace/navigation.js";
 import { useBrowserTabStrip } from "@opensteer/client/react";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
+import { handlePersonShow } from "@opensteer/client/host";
 import { useDictation } from "./dictation.js";
 import {
   desktopWebLinksReady,
@@ -72,6 +74,7 @@ import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import {
   WorkspaceProvider,
+  useWorkspace,
   drawerQuery,
   type LocalMachine,
 } from "./workspace/workspace-context.js";
@@ -1041,6 +1044,7 @@ export function AppShell({
         openDrawer={openMobileNavigation}
         openWebLink={openWebLink}
       >
+        <PersonShowNavigation hostClient={hostClient} />
         {webLinkFailure ? (
           <DesktopWebLinkFailureNotice
             {...webLinkFailure}
@@ -1416,4 +1420,39 @@ export function DesktopWebLinkFailureNotice({
       </button>
     </div>
   );
+}
+
+function PersonShowNavigation({ hostClient }: { readonly hostClient: HostClient }): null {
+  const location = useLocation();
+  const { nav, work, phone, dock } = useWorkspace();
+  const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
+  personShowPort.current = (message) => {
+    const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+    const editing = document.activeElement?.closest(
+      "input, textarea, [contenteditable=true], iframe",
+    );
+    handlePersonShow(
+      hostClient.getSnapshot(),
+      message,
+      {
+        foreground: document.visibilityState === "visible" && document.hasFocus(),
+        threadId:
+          !editing && (!work || (!phone && dock.open)) && (match || location.pathname === "/")
+            ? match
+              ? decodeURIComponent(match[1]!)
+              : hostClient.getSnapshot().homeThreadId
+            : null,
+      },
+      (target) => {
+        if (target.kind === "place") nav.showPlace(target.destination);
+        else if (target.kind === "thread") nav.openConversation(nav.threadPath(target.threadId));
+        else if (target.kind === "chat") nav.openConversation("/");
+      },
+    );
+  };
+  useEffect(
+    () => hostClient.subscribePersonShow((message) => personShowPort.current(message)),
+    [hostClient],
+  );
+  return null;
 }

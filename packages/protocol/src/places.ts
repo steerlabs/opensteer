@@ -1,5 +1,19 @@
 import { z } from "zod";
-import { RunIdSchema, ThreadIdSchema, IsoDateTimeSchema } from "@opensteer/core";
+import {
+  RunIdSchema,
+  ThreadIdSchema,
+  IsoDateTimeSchema,
+  PersonShowTargetSchema,
+  WorkspaceIdSchema,
+} from "@opensteer/core";
+
+export const PersonShowMessageSchema = z.object({
+  type: z.literal("host.show"),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  target: PersonShowTargetSchema,
+});
+export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;
 
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export {

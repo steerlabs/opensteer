@@ -30,3 +30,4 @@ export * from "./browser-tab-order.js";
 export * from "./browser-tabs.js";
 
 export * from "./places.js";
+export * from "./person-show.js";

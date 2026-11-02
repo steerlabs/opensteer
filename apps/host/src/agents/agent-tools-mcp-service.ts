@@ -362,6 +362,8 @@ export class AgentToolsMcpService {
     ].filter(
       (definition) =>
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
+        (definition.name !== "person_show" ||
+          (input.scope === "run" && !lacks("person-show-v1"))) &&
         (definition.name !== "person_notify" ||
           (input.scope === "run" && !lacks("person-notify-v1"))),
     );
@@ -374,14 +376,17 @@ export class AgentToolsMcpService {
           !programAllowsTool(input.scope, anchor.capabilityProfileId, definition.id))
       )
         continue;
-      const inputSchema = toolInputSchema(definition, input.toolContractVersion);
+      const fullInputSchema = toolInputSchema(definition, input.toolContractVersion);
+      const inputSchema =
+        definition.name === "browser_tab_read" && lacks("person-show-v1")
+          ? fullInputSchema.omit({ query: true })
+          : fullInputSchema;
       const registration = {
         annotations: definition.annotations,
-        description: toolDescription(
-          definition.name,
-          definition.description,
-          input.toolContractVersion,
-        ),
+        description:
+          definition.name === "browser_tab_read" && lacks("person-show-v1")
+            ? "Find saved tabs, open or asleep, and their groups. Follow nextCursor to read every page. tabId is Browser Harness surfaceId. profileId is null for Guest. Groups organize the sidebar and grant no access."
+            : toolDescription(definition.name, definition.description, input.toolContractVersion),
         inputSchema,
         title: definition.annotations.title,
       };
@@ -603,6 +608,15 @@ export class AgentToolsMcpService {
         });
         if (response.type !== "person.notify.result") throw unexpectedToolResponse();
         return { messageId: response.messageId };
+      }
+      case "person_show": {
+        const response = await control.handle(token, {
+          type: "person.show",
+          requestId,
+          target: input.target,
+        });
+        if (response.type !== "person.show.result") throw unexpectedToolResponse();
+        return { status: response.status, connectedDevices: response.connectedDevices };
       }
       case "thread_message": {
         const response = await control.handle(token, {

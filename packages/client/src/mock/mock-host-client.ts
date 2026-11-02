@@ -1,3 +1,4 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
@@ -3415,6 +3416,20 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
+  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
+    this.#personShowListeners.add(listener);
+    return () => this.#personShowListeners.delete(listener);
+  }
+  /** A transient Host delivery for local demos, with the same lifecycle filter. */
+  receivePersonShow(message: PersonShowMessage): void {
+    if (
+      this.getSnapshot().session !== "authenticated" ||
+      this.#lifecycle?.getSnapshot().visibility === "background"
+    )
+      return;
+    for (const listener of this.#personShowListeners) listener(message);
+  }
   readonly browserPasskeys = new BrowserPasskeys();
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
@@ -4398,6 +4413,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();
     this.browserHistory.dispose();

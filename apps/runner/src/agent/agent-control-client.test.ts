@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
-import { createBrowserSessionId } from "@opensteer/protocol";
+import { AgentControlRequestSchema, createBrowserSessionId } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { HttpAgentControlClient } from "./agent-control-client.js";
 
@@ -334,4 +334,29 @@ it("maps a person notification to its exact durable message receipt", async () =
       new AbortController().signal,
     ),
   ).resolves.toEqual({ type: "person.notify.result", requestId, messageId });
+});
+
+it("returns an unconfirmed person show delivery receipt", async () => {
+  const requestId = randomUUID();
+  const receipt = {
+    type: "person.show.result",
+    requestId,
+    status: "sent-unconfirmed",
+    connectedDevices: 2,
+  };
+  const client = new HttpAgentControlClient({
+    plan,
+    transport: productionCloudTransport,
+    fetch: async () => Response.json(receipt),
+  });
+  await expect(
+    client.request(
+      AgentControlRequestSchema.parse({
+        type: "person.show",
+        requestId,
+        target: { tabId: "gmail" },
+      }),
+      new AbortController().signal,
+    ),
+  ).resolves.toEqual(receipt);
 });

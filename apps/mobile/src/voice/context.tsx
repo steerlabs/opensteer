@@ -1,6 +1,8 @@
 import { show } from "./navigation.js";
 import { voicePlaces } from "./places.js";
 import { VoiceController } from "@opensteer/client/voice";
+import { handlePersonShow } from "@opensteer/client/host";
+import { AppState, Keyboard } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useState, type ReactNode } from "react";
 import { paramsDestination } from "../browser/surface-route.js";
@@ -22,6 +24,31 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
   const hostClient = useSelectedHostClient();
   const dictation = useDictation();
   const [controller, setController] = useState<VoiceController | null>(null);
+  useEffect(() => {
+    if (!hostClient) return;
+    return hostClient.subscribePersonShow((message) => {
+      const route = navigationRef.getCurrentRoute();
+      const params = route?.params as { deploymentId?: string; threadId?: string } | undefined;
+      const snapshot = hostClient.getSnapshot();
+      handlePersonShow(
+        snapshot,
+        message,
+        {
+          foreground:
+            AppState.currentState === "active" &&
+            !Keyboard.isVisible() &&
+            params?.deploymentId === snapshot.deploymentId,
+          threadId:
+            route?.name === "Home"
+              ? snapshot.homeThreadId
+              : route?.name === "Thread"
+                ? (params?.threadId ?? null)
+                : null,
+        },
+        (target) => show(client.getSnapshot().selection.deploymentId, target),
+      );
+    });
+  }, [client, hostClient]);
   useEffect(() => {
     if (!hostClient) return;
     const created = new VoiceController({

@@ -7,11 +7,71 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { type HostToClientMessage, type WorkspaceSnapshot } from "@opensteer/protocol";
+import {
+  BrowserSurfaceIdSchema,
+  type HostToClientMessage,
+  type WorkspaceSnapshot,
+} from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
+  it("sends show once only to opted-in subscriptions of the requester and Workspace, without replay", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async (workspaceId: WorkspaceId, userId: UserId) =>
+          activeMembership(workspaceId, userId),
+        workspaceSnapshot: async (workspaceId: WorkspaceId) => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore,
+    });
+    const subscriptions = [
+      { userId, workspaceId, personShow: "accept" as const },
+      { userId, workspaceId },
+      { userId: createId("user"), workspaceId, personShow: "accept" as const },
+      { userId, workspaceId: createId("workspace"), personShow: "accept" as const },
+    ];
+    const sinks = subscriptions.map(() => new MemorySink());
+    const releases = await Promise.all(
+      subscriptions.map((subscription, index) =>
+        hub.subscribe({
+          ...subscription,
+          afterSequence: sequence("0"),
+          sink: sinks[index]!,
+        }),
+      ),
+    );
+    try {
+      const message = {
+        type: "host.show" as const,
+        workspaceId,
+        threadId: createId("thread"),
+        target: { tabId: BrowserSurfaceIdSchema.parse("gmail") },
+      };
+      expect(await hub.showToPerson(userId, message)).toBe(1);
+      for (const [index, sink] of sinks.entries())
+        expect(sink.messages.filter((message) => message.type === "host.show")).toEqual(
+          index === 0 ? [message] : [],
+        );
+      releases[0]!();
+      const reconnect = new MemorySink();
+      releases.push(
+        await hub.subscribe({
+          ...subscriptions[0]!,
+          afterSequence: sequence("0"),
+          sink: reconnect,
+        }),
+      );
+      expect(reconnect.messages.some((message) => message.type === "host.show")).toBe(false);
+      for (const release of releases) release();
+      expect(await hub.showToPerson(userId, message)).toBe(0);
+    } finally {
+      for (const release of releases) release();
+    }
+  });
+
   it.each([false, true])(
     "projects place events for opt-in %s without holding live progress or resetting the stream",
     async (opted) => {

@@ -1288,6 +1288,7 @@ export interface AgentControlRequestTable {
     | "thread.list"
     | "thread.message"
     | "person.notify"
+    | "person.show"
     | "thread.read"
     | "thread.write"
     | "trigger.read"
@@ -1298,6 +1299,7 @@ export interface AgentControlRequestTable {
     | "workspace.inspect"
     | "workspace.mount";
   actionClass:
+    | "person.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
