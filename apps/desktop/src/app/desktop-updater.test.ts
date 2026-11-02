@@ -1,36 +1,56 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const mocks = await vi.hoisted(async () => {
   const { EventEmitter } = await import("node:events");
   return {
-    app: { isPackaged: true, isInApplicationsFolder: () => true },
-    updater: Object.assign(new EventEmitter(), { checkForUpdates: vi.fn(), logger: null }),
+    app: {
+      isPackaged: true,
+      isInApplicationsFolder: (): boolean => true,
+      getVersion: () => "0.1.396",
+    },
+    updater: Object.assign(new EventEmitter(), {
+      checkForUpdates: vi.fn(),
+      downloadUpdate: vi.fn(),
+      logger: null,
+    }),
     native: new EventEmitter(),
   };
 });
 vi.mock("electron", () => ({ app: mocks.app, autoUpdater: mocks.native }));
 vi.mock("electron-updater", () => ({ autoUpdater: mocks.updater }));
 import { AppUpdater } from "electron-updater/out/AppUpdater.js";
-import { startDesktopUpdater } from "./desktop-updater.js";
+import {
+  DesktopUpdater,
+  desktopUpdateCheckIntervalMs,
+  desktopUpdateFirstCheckMs,
+} from "./desktop-updater.js";
+
+const insider = { owner: "steerlabs", repo: "opensteer", channel: "insider" } as const;
+const offer = (version: string) => ({ isUpdateAvailable: true, updateInfo: { version } });
+const current = { isUpdateAvailable: false, updateInfo: { version: "0.1.396" } };
+
+beforeEach(() => {
+  vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+  vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+  mocks.updater.checkForUpdates.mockReset();
+  mocks.updater.downloadUpdate.mockReset();
   mocks.updater.removeAllListeners();
   mocks.native.removeAllListeners();
 });
-it("sets the channel before refusing downgrades and waits for native staging, clearing readiness on errors", async () => {
-  vi.useFakeTimers();
-  vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-  vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
+
+it("sets the channel before refusing downgrades, and leaves downloading to the person", () => {
   const order: string[] = [];
-  const properties = {
-    channel: "",
-    allowDowngrade: true,
-    allowPrerelease: false,
-    autoDownload: false,
-    autoInstallOnAppQuit: false,
-  };
   const values: Record<string, unknown> = {};
-  for (const key of Object.keys(properties))
+  for (const key of [
+    "channel",
+    "allowDowngrade",
+    "allowPrerelease",
+    "autoDownload",
+    "autoInstallOnAppQuit",
+  ])
     Object.defineProperty(mocks.updater, key, {
       configurable: true,
       get: () => values[key],
@@ -44,15 +64,7 @@ it("sets the channel before refusing downgrades and waits for native staging, cl
           );
       },
     });
-  mocks.updater.checkForUpdates.mockResolvedValue({ downloadPromise: Promise.resolve([]) });
-  const controller = new AbortController();
-  const readinessChanged = vi.fn();
-  startDesktopUpdater({
-    updates: { owner: "steerlabs", repo: "opensteer", channel: "insider" },
-    signal: controller.signal,
-    log: vi.fn(),
-    readinessChanged,
-  });
+  new DesktopUpdater({ updates: insider, log: vi.fn() });
   expect(order).toEqual([
     "channel",
     "allowDowngrade",
@@ -65,41 +77,134 @@ it("sets the channel before refusing downgrades and waits for native staging, cl
     channel: "insider",
     allowDowngrade: false,
     allowPrerelease: true,
-    autoDownload: true,
+    autoDownload: false,
+    // Hands the finished download to Squirrel, which verifies and stages it.
     autoInstallOnAppQuit: true,
   });
-  await vi.advanceTimersByTimeAsync(30_000);
+});
+
+it("checks on its own, downloads when asked, and is ready only once Squirrel staged the bundle", async () => {
+  vi.useFakeTimers();
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  const statuses: string[] = [];
+  updater.subscribe((state) => statuses.push(state.status));
+  const controller = new AbortController();
+  updater.start(controller.signal);
+  mocks.updater.checkForUpdates.mockResolvedValue(current);
+  await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
   expect(mocks.updater.checkForUpdates).toHaveBeenCalledOnce();
+  // A background check never shows `checking`.
+  expect(statuses).toEqual(["up-to-date"]);
+
+  mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.397"));
+  await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
+  expect(updater.state()).toMatchObject({ status: "available", availableVersion: "0.1.397" });
+  // A failed background check keeps the offer.
+  mocks.updater.checkForUpdates.mockRejectedValue(new Error("offline"));
+  await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
+  expect(updater.state()).toMatchObject({ status: "available", availableVersion: "0.1.397" });
+  // A newer release replaces an offer nobody has downloaded yet.
+  mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.398"));
+  await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
+  expect(updater.state().availableVersion).toBe("0.1.398");
+
+  let finish!: () => void;
+  mocks.updater.downloadUpdate.mockImplementation(() => {
+    mocks.updater.emit("download-progress", { percent: 41.7 });
+    return new Promise<void>((resolve) => (finish = resolve));
+  });
+  const downloading = updater.download();
+  expect(updater.state()).toMatchObject({ status: "downloading", downloadPercent: 41 });
+  // Checks wait while the download runs and after it is ready.
+  await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+  finish();
+  await downloading;
+  // electron-updater's own event, and its resolved download, precede Squirrel's verification.
   mocks.updater.emit("update-downloaded");
-  expect(readinessChanged).not.toHaveBeenCalled();
+  expect(updater.state().status).toBe("downloading");
   mocks.native.emit("update-downloaded");
-  expect(readinessChanged).toHaveBeenLastCalledWith(true);
-  mocks.native.emit("error", new Error("private URL"));
-  expect(readinessChanged).toHaveBeenLastCalledWith(false);
-  mocks.updater.emit("error", new Error("private URL"));
-  expect(readinessChanged).toHaveBeenLastCalledWith(false);
-  mocks.updater.checkForUpdates.mockImplementation(async () => ({
-    downloadPromise: Promise.reject(new Error("download failed")),
-  }));
-  await vi.advanceTimersByTimeAsync(4 * 60 * 60 * 1000);
-  expect(readinessChanged).toHaveBeenLastCalledWith(false);
+  expect(updater.state()).toMatchObject({
+    status: "downloaded",
+    availableVersion: "0.1.398",
+    downloadPercent: null,
+  });
+  await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+  expect(await updater.check()).toMatchObject({ status: "downloaded" });
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+
   controller.abort();
   expect(vi.getTimerCount()).toBe(0);
 });
 
-// The gate's refusal journeys need the cause, but native messages carry URLs and paths.
-it("logs a fixed refusal reason and never the native message", async () => {
-  vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-  vi.spyOn(process, "arch", "get").mockReturnValue("arm64");
-  const log = vi.fn();
+it("reports the person's failed check, and runs it fresh after a background one", async () => {
+  vi.useFakeTimers();
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
   const controller = new AbortController();
-  startDesktopUpdater({
-    updates: { owner: "steerlabs", repo: "opensteer", channel: "latest" },
-    signal: controller.signal,
-    log,
-    readinessChanged: vi.fn(),
+  updater.start(controller.signal);
+  let answer!: (value: typeof current) => void;
+  mocks.updater.checkForUpdates.mockImplementationOnce(
+    () => new Promise((resolve) => (answer = resolve)),
+  );
+  await vi.advanceTimersByTimeAsync(desktopUpdateFirstCheckMs);
+  mocks.updater.checkForUpdates.mockRejectedValueOnce(new Error("offline"));
+  const checked = updater.check();
+  answer(current);
+  expect(await checked).toMatchObject({ status: "error", failed: "check" });
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(2);
+
+  mocks.updater.checkForUpdates.mockResolvedValueOnce(current);
+  const statuses: string[] = [];
+  updater.subscribe((state) => statuses.push(state.status));
+  expect(await updater.check()).toMatchObject({ status: "up-to-date", failed: null });
+  expect(statuses).toEqual(["checking", "up-to-date"]);
+  controller.abort();
+});
+
+it("lets the person retry a failed download, or one Squirrel refused or lost", async () => {
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.397"));
+  await updater.check();
+  mocks.updater.downloadUpdate.mockRejectedValueOnce(new Error("connection reset"));
+  await updater.download();
+  expect(updater.state()).toMatchObject({
+    status: "error",
+    failed: "download",
+    availableVersion: "0.1.397",
   });
-  mocks.native.emit(
+
+  mocks.updater.downloadUpdate.mockResolvedValue([]);
+  await updater.download();
+  expect(updater.state().status).toBe("downloading");
+  // A bad signature or a downgrade, refused after the zip was handed over.
+  mocks.native.emit("error", new Error("refused"));
+  expect(updater.state()).toMatchObject({ status: "error", failed: "download" });
+
+  await updater.download();
+  mocks.native.emit("update-downloaded");
+  expect(updater.state().status).toBe("downloaded");
+  mocks.native.emit("error", new Error("staging lost"));
+  expect(updater.state()).toMatchObject({ status: "error", failed: "download" });
+  expect(mocks.updater.downloadUpdate).toHaveBeenCalledTimes(3);
+});
+
+it("cannot update outside Applications, and never touches the updater there", async () => {
+  vi.spyOn(mocks.app, "isInApplicationsFolder").mockReturnValue(false);
+  const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
+  updater.start(new AbortController().signal);
+  expect(await updater.check()).toMatchObject({ status: "unavailable", currentVersion: "0.1.396" });
+  await updater.download();
+  expect(mocks.updater.checkForUpdates).not.toHaveBeenCalled();
+  expect(mocks.updater.listenerCount("error")).toBe(0);
+});
+
+// The gate's refusal journeys need the cause, but native messages carry URLs and paths.
+it("logs a fixed failure reason and never the native message", () => {
+  const log = vi.fn();
+  new DesktopUpdater({ updates: { ...insider, channel: "latest" }, log });
+  // electron-updater re-emits Squirrel's errors as its own.
+  mocks.updater.emit(
     "error",
     Object.assign(
       new Error(
@@ -108,7 +213,7 @@ it("logs a fixed refusal reason and never the native message", async () => {
       { code: -1, domain: "SQRLCodeSignatureErrorDomain" },
     ),
   );
-  mocks.native.emit(
+  mocks.updater.emit(
     "error",
     Object.assign(
       new Error(
@@ -123,5 +228,4 @@ it("logs a fixed refusal reason and never the native message", async () => {
     ["desktop.update.failed", { reason: "downgrade" }],
     ["desktop.update.failed", { reason: "other" }],
   ]);
-  controller.abort();
 });

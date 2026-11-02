@@ -1,3 +1,4 @@
+import { DesktopUpdateButton } from "./desktop-update-button.js";
 import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
 import { taskMark, taskMarkQuiet } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
@@ -1377,6 +1378,7 @@ function SidebarFooter({
   ];
   return (
     <div className="sidebar__footer">
+      <DesktopUpdateButton />
       <button
         aria-expanded={open}
         aria-haspopup="menu"

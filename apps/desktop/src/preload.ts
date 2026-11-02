@@ -12,9 +12,11 @@ import type { DictationPort } from "@opensteer/protocol/dictation";
 import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import {
   DesktopDownloadsSnapshotSchema,
+  DesktopUpdateStateSchema,
   DesktopDownloadActionResultSchema,
   DesktopDownloadTargetSchema,
   type DesktopDownloadsBridge,
+  type DesktopUpdatesBridge,
 } from "@opensteer/protocol/desktop";
 import { BrowserPresentationResultSchema } from "./bridge/browser-presentation-result.js";
 import {
@@ -391,6 +393,17 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.chooseUsbDevice,
       DesktopChooseUsbDeviceInputSchema.parse(input),
     ),
+  updates: {
+    get: async () => DesktopUpdateStateSchema.parse(await invoke(desktopBridgeChannels.getUpdate)),
+    onChanged: (listener) => {
+      const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
+        listener(DesktopUpdateStateSchema.parse(value));
+      ipcRenderer.on(desktopBridgeChannels.updateChanged, receive);
+      return () => ipcRenderer.removeListener(desktopBridgeChannels.updateChanged, receive);
+    },
+    download: () => invoke<void>(desktopBridgeChannels.downloadUpdate),
+    restart: () => invoke<void>(desktopBridgeChannels.restartToUpdate),
+  } satisfies DesktopUpdatesBridge,
   downloads: {
     get: async () =>
       DesktopDownloadsSnapshotSchema.parse(await invoke(desktopBridgeChannels.getDownloads)),

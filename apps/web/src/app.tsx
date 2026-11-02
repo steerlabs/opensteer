@@ -45,6 +45,7 @@ import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { consumeNativeOAuthQuery } from "./account/native-oauth-query.js";
 import { Icon } from "./components/icon.js";
 import { ToastProvider } from "./components/toast.js";
+import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { actionErrorMessage } from "./ui-utils.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
 import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
@@ -423,6 +424,7 @@ export function App({
 
   return (
     <ToastProvider>
+      <DesktopUpdateFeedback />
       <BrowserRouter>
         <Routes>
           <Route

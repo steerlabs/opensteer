@@ -5,7 +5,11 @@ import {
   type MenuItemConstructorOptions,
   type WebContents,
 } from "electron";
-import type { DesktopForwardedKey, DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
+import type {
+  DesktopForwardedKey,
+  DesktopUpdateState,
+  DesktopWorkspaceTabCommand,
+} from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "../bridge/desktop-bridge-channels.js";
 import { desktopQuitShortcut } from "./electron-window.js";
 
@@ -56,13 +60,56 @@ export function desktopBrowserAppFocusShortcut(input: DesktopForwardedKey): bool
   );
 }
 
+const desktopUpdateMenuIds = [
+  "check-for-updates",
+  "download-update",
+  "downloading-update",
+  "restart-to-update",
+] as const;
+
+/** The one update item the app menu shows for this state, and whether it is enabled. */
+export function desktopUpdateMenuItem(state: DesktopUpdateState): {
+  readonly id: (typeof desktopUpdateMenuIds)[number];
+  readonly enabled: boolean;
+} {
+  switch (state.status) {
+    case "available":
+      return { id: "download-update", enabled: true };
+    case "downloading":
+      return { id: "downloading-update", enabled: false };
+    case "downloaded":
+      return { id: "restart-to-update", enabled: true };
+    case "error":
+      return state.failed === "download"
+        ? { id: "download-update", enabled: true }
+        : { id: "check-for-updates", enabled: true };
+    default:
+      return { id: "check-for-updates", enabled: state.status !== "checking" };
+  }
+}
+
+/** Shows the state's update item in the app menu and hides the others. */
+export function showDesktopUpdateMenuItem(menu: Menu | null, state: DesktopUpdateState): void {
+  const shown = desktopUpdateMenuItem(state);
+  for (const id of desktopUpdateMenuIds) {
+    const item = menu?.getMenuItemById(id);
+    if (!item) continue;
+    item.visible = id === shown.id;
+    if (id !== "downloading-update") item.enabled = id === shown.id && shown.enabled;
+  }
+}
+
 /**
  * Workspace tab accelerators reach the workspace even when a field or live
  * page has focus. Browser accelerators run after Chromium gives the focused
  * page first refusal.
  */
 export function createDesktopApplicationMenu(options: {
-  readonly restartToUpdate?: () => void;
+  readonly updates?: {
+    readonly check: () => void;
+    readonly download: () => void;
+    readonly restart: () => void;
+  };
   readonly workspaceContents: (window: BaseWindow) => WebContents | null;
   readonly browserKey?: (key: DesktopForwardedKey) => void;
 }): Menu {
@@ -105,15 +152,32 @@ export function createDesktopApplicationMenu(options: {
       ? [
           {
             role: "appMenu" as const,
-            ...(options.restartToUpdate
+            ...(options.updates
               ? {
                   submenu: [
                     { role: "about" as const },
                     {
+                      id: "check-for-updates",
+                      label: "Check for Updates…",
+                      click: options.updates.check,
+                    },
+                    {
+                      id: "download-update",
+                      label: "Download Update…",
+                      visible: false,
+                      click: options.updates.download,
+                    },
+                    {
+                      id: "downloading-update",
+                      label: "Downloading Update…",
+                      visible: false,
+                      enabled: false,
+                    },
+                    {
                       id: "restart-to-update",
                       label: "Restart to Update",
                       visible: false,
-                      click: () => options.restartToUpdate?.(),
+                      click: options.updates.restart,
                     },
                     { type: "separator" as const },
                     { role: "services" as const },

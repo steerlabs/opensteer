@@ -1,6 +1,7 @@
 import type { DesktopWebLinks } from "../app/web-links.js";
 import type { DesktopPasskeyRequests } from "../passkeys/passkey-requests.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
+import type { DesktopUpdater } from "../app/desktop-updater.js";
 import type { DesktopBrowserPresentationManager } from "../browser/browser-presentation.js";
 import type { PasswordsSignInOperations } from "../passwords/sign-in-operations.js";
 import type { IpcMain, IpcMainInvokeEvent, NativeImage, WebContents, WebFrameMain } from "electron";
@@ -42,6 +43,10 @@ export interface DesktopBridgeOptions {
   readonly passkeys?: Pick<DesktopPasskeyRequests, "available" | "present">;
   readonly dictation?: import("../dictation/dictation-service.js").DictationService;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
+  readonly updates?: Pick<DesktopUpdater, "state" | "subscribe" | "download"> & {
+    /** Restarts into the downloaded version; does nothing before one is ready. */
+    restart(): void;
+  };
   readonly log?: (
     event: string,
     fields: Readonly<Record<string, string | number | boolean>>,
@@ -200,6 +205,7 @@ export interface DesktopBridgeOptions {
 
 export interface DesktopBridgeContext {
   readonly downloadsSenders: Set<WebContents>;
+  readonly updatesSenders: Set<WebContents>;
   readonly accessSenders: Set<WebContents>;
   readonly localExecutionSenders: Map<WebContents, DeploymentId>;
   readonly options: DesktopBridgeOptions;

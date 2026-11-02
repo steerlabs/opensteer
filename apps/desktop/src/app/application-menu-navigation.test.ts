@@ -6,10 +6,12 @@ import type {
   MenuItemConstructorOptions,
   WebContents,
 } from "electron";
+import type { DesktopUpdateState } from "@opensteer/protocol/desktop";
 import {
   workspaceTabCommand,
   desktopBrowserAppShortcut,
   createDesktopApplicationMenu,
+  showDesktopUpdateMenuItem,
 } from "./application-menu.js";
 
 const { build } = vi.hoisted(() => ({ build: vi.fn((template: unknown) => template) }));
@@ -68,5 +70,45 @@ describe("browser navigation menu", () => {
     } as Input;
     expect(workspaceTabCommand(input)).toEqual({ type });
     expect(desktopBrowserAppShortcut(input)).toBe(true);
+  });
+});
+
+describe("update menu", () => {
+  it("shows the one update item the state allows", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const updates = { check: vi.fn(), download: vi.fn(), restart: vi.fn() };
+    createDesktopApplicationMenu({ updates, workspaceContents: () => null });
+    const template = build.mock.calls.at(-1)![0] as MenuItemConstructorOptions[];
+    const items = (template[0]!.submenu as MenuItemConstructorOptions[]).filter((item) =>
+      item.id?.includes("update"),
+    );
+    const menu = {
+      getMenuItemById: (id: string) => items.find((item) => item.id === id) ?? null,
+    } as unknown as Parameters<typeof showDesktopUpdateMenuItem>[0];
+    const shown = (state: Partial<DesktopUpdateState>) => {
+      showDesktopUpdateMenuItem(menu, {
+        status: "idle",
+        currentVersion: "0.1.396",
+        availableVersion: null,
+        downloadPercent: null,
+        failed: null,
+        ...state,
+      });
+      return items
+        .filter((item) => item.visible !== false)
+        .map((item) => `${item.label}${item.enabled === false ? " (disabled)" : ""}`);
+    };
+    expect(shown({ status: "up-to-date" })).toEqual(["Check for Updates…"]);
+    expect(shown({ status: "checking" })).toEqual(["Check for Updates… (disabled)"]);
+    expect(shown({ status: "error", failed: "check" })).toEqual(["Check for Updates…"]);
+    expect(shown({ status: "available" })).toEqual(["Download Update…"]);
+    expect(shown({ status: "downloading" })).toEqual(["Downloading Update… (disabled)"]);
+    expect(shown({ status: "error", failed: "download" })).toEqual(["Download Update…"]);
+    expect(shown({ status: "downloaded" })).toEqual(["Restart to Update"]);
+    expect(shown({ status: "unavailable" })).toEqual(["Check for Updates…"]);
+    for (const item of items) (item.click as (() => void) | undefined)?.();
+    expect(updates.check).toHaveBeenCalledOnce();
+    expect(updates.download).toHaveBeenCalledOnce();
+    expect(updates.restart).toHaveBeenCalledOnce();
   });
 });

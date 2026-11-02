@@ -1197,6 +1197,12 @@ button.side-needs:hover {
   text-align: left;
 }
 
+/* A release ready to download or install; absent otherwise. */
+.sidebar__update {
+  width: 100%;
+  margin-bottom: var(--space-6);
+}
+
 /* ---- Agents' cursors ---- */
 
 .cursor-layer {

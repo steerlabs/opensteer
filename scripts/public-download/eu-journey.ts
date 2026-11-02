@@ -125,6 +125,13 @@ export async function githubJourney(c: {
     requests().filter(
       (x) => x.host === "release-assets.githubusercontent.com" && x.path?.endsWith(".zip"),
     ).length;
+  // The app checks on its own but downloads only when asked.
+  const download = async () => {
+    await c.wait("update offered", () => menu().includes("Download Update…"), 180);
+    c.script(
+      `tell application "System Events" to tell process "${product}" to click menu item "Download Update…" of menu 1 of menu bar item "${product}" of menu bar 1`,
+    );
+  };
   const noOffer = async (name: string) => {
     const before = c.readLog().length,
       count = downloads();
@@ -135,6 +142,7 @@ export async function githubJourney(c: {
       90,
     );
     assert.equal(downloads(), count);
+    assert(!menu().includes("Download Update…"));
     assert(!menu().includes("Restart to Update"));
     c.record(
       name,
@@ -144,6 +152,7 @@ export async function githubJourney(c: {
   const positive = async (method: string, label = c.scenario) => {
     feed(input.next.version);
     await restart();
+    await download();
     await c.wait("real restart menu available", () => menu().includes("Restart to Update"), 180);
     c.record(
       "restart action available; native event-source contract is covered by the updater unit test",
@@ -249,6 +258,7 @@ export async function githubJourney(c: {
     const started = Date.now();
     const before = c.readLog().length;
     await restart();
+    await download();
     await c.wait(
       `native rejects ${kind}`,
       () => updateFailures(c.readLog().slice(before)).some((f) => f.reason === kind),

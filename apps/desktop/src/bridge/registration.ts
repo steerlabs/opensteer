@@ -4,12 +4,14 @@ import { dictationHandlers } from "./methods/dictation.js";
 import { passkeyHandlers } from "./methods/passkeys.js";
 import { viewerClipboardHandlers } from "./methods/viewer-clipboard.js";
 import { downloadsHandlers } from "./methods/downloads.js";
+import { updatesHandlers } from "./methods/updates.js";
 import { browserPresentationHandlers } from "./methods/browser-presentation.js";
 import { z } from "zod";
 import { assertAuthorizedRenderer, trackRenderer } from "./context.js";
 import type { WebContents } from "electron";
 import {
   DesktopDownloadsSnapshotSchema,
+  DesktopUpdateStateSchema,
   DisplayClientDiagnosticSchema,
   DeploymentAccessSnapshotSchema,
   DesktopLocalExecutionStatusSchema,
@@ -115,6 +117,7 @@ import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
 export function registerDesktopBridge(options: DesktopBridgeOptions): () => void {
   const context: DesktopBridgeContext = {
     downloadsSenders: new Set(),
+    updatesSenders: new Set(),
     accessSenders: new Set(),
     localExecutionSenders: new Map(),
     options,
@@ -128,6 +131,14 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     for (const sender of context.downloadsSenders) {
       if (!sender.isDestroyed() && sender.mainFrame.url.startsWith("app://opensteer/")) {
         sender.send(desktopBridgeChannels.downloadsChanged, parsed);
+      }
+    }
+  });
+  const unsubscribeUpdates = options.updates?.subscribe((state) => {
+    const parsed = DesktopUpdateStateSchema.parse(state);
+    for (const sender of context.updatesSenders) {
+      if (!sender.isDestroyed() && sender.mainFrame.url.startsWith("app://opensteer/")) {
+        sender.send(desktopBridgeChannels.updateChanged, parsed);
       }
     }
   });
@@ -231,6 +242,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   for (const [channel, handler] of dictationHandlers(context)) register(channel, handler);
   for (const [channel, handler] of viewerClipboardHandlers(context)) register(channel, handler);
   for (const [channel, handler] of downloadsHandlers(context)) register(channel, handler);
+  for (const [channel, handler] of updatesHandlers(context)) register(channel, handler);
   for (const [channel, handler] of browserPresentationHandlers(context)) register(channel, handler);
 
   register(desktopBridgeChannels.useComputerViewOnThisMac, handleUseComputerViewOnThisMac(context));
@@ -361,6 +373,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     webLinkOwner?.dispose();
     unsubscribeDownloads();
     context.downloadsSenders.clear();
+    unsubscribeUpdates?.();
+    context.updatesSenders.clear();
     unsubscribeVisibility();
     visibilitySenders.clear();
     unsubscribeAccess();
