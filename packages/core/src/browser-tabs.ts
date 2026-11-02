@@ -52,9 +52,7 @@ export const BrowserTabReadInputSchema = z.strictObject({
     .min(1)
     .max(200)
     .optional()
-    .describe(
-      "Search title, site, group or profile; keep the same query when following nextCursor.",
-    ),
+    .describe("Search title, site, group or profile; keep it when following nextCursor."),
   cursor: z
     .string()
     .min(1)

@@ -403,7 +403,7 @@ const definitions = [
     id: "person.show",
     name: "person_show",
     description:
-      "Ask connected devices viewing this conversation to open a saved tab, Thread, or the place this Run is working in. Use {current: true} for 'show me what you're doing': the Host resolves this Run's latest tab, Mac app or Agent Phone; it fails if this Run has no current place. For a specific saved tab use tabId from browser_tab_read; for a Thread use threadId from thread_list. Returns delivery counts, without confirmation of navigation or viewing.",
+      "Open a saved tab (tabId from browser_tab_read), a Thread, or {current: true} (this Run's current tab, app or phone) on the person's devices showing this conversation. Delivery is unconfirmed.",
     inputSchema: z.strictObject({ target: PersonShowTargetSchema }),
     annotations: {
       title: "Show Person",
@@ -533,7 +533,7 @@ const definitions = [
     name: "browser_tab_read",
     inputSchema: BrowserTabReadInputSchema,
     description:
-      "Find saved tabs, open or asleep, and their groups. query searches title, site, group and profile; matchedFields explains each match and totalMatches counts the results. Follow nextCursor with the same query. tabId is Browser Harness surfaceId and can be passed to person_show. Every page includes reachable groups and tabCount. profileId is null for Guest. Groups grant no access.",
+      "Find saved tabs, open or asleep, and their groups. tabId is Browser Harness surfaceId. Every page includes reachable groups and tabCount. profileId is null for Guest. Groups grant no access.",
     annotations: {
       readOnlyHint: true,
       idempotentHint: true,
