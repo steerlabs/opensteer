@@ -38,6 +38,11 @@ Do not announce partial text, waveform or timer ticks to assistive technology.
 
 ## Native traps
 
+Readiness comes from `SpeechTranscriber.installedLocales`, not `AssetInventory`
+status or `reservedLocales`: on macOS 26, idle-killing the per-app speech service
+can leave the process's reservation view empty and reserve/release failing while
+installed models and recognition keep working. Reservations only retain downloaded models.
+
 `packages/apple-dictation` owns shared capture, model reservations and teardown.
 Serialize inventory operations even across suspended calls; equivalent ICU/BCP-47
 locales share a reservation. Terminal delivery may precede cleanup, but the next
