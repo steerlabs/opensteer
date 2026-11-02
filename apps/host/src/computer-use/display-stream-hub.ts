@@ -1132,7 +1132,6 @@ export class DisplayStreamHub {
     if (message.type !== "display.input" || "controlId" in message) return;
     if (!viewer.sharedInput || message.sequence <= viewer.inputSequence) return;
     viewer.inputSequence = message.sequence;
-    viewer.inputAt = this.#now();
     const extended = message.events.some(
       (event) => !["pointer", "scroll", "nav", "text"].includes(event.kind),
     );
@@ -1167,6 +1166,8 @@ export class DisplayStreamHub {
       });
       return;
     }
+    // Only accepted input makes a viewer the driver whose link sets the budget.
+    viewer.inputAt = this.#now();
     const sequence = stream.inputSequence++;
     if (editing)
       stream.pending.set(sequence, {
@@ -1687,14 +1688,13 @@ export class DisplayStreamHub {
       return false;
     stream.maxBitrate = cap;
     stream.bitrateAt = this.#now();
+    // The picture size follows the budget once it settles, through the same
+    // hysteresis as a viewer's own resize, whichever path changed the cap.
+    if (stream.target) stream.profileAt = this.#now() + macDisplayProfileHysteresisMs;
     return true;
   }
   #bitrate(stream: Stream): void {
-    if (!this.#updateBitrate(stream)) return;
-    // The picture size follows the budget once it settles, through the same
-    // hysteresis as a viewer's own resize.
-    if (stream.target) stream.profileAt = this.#now() + macDisplayProfileHysteresisMs;
-    this.#demand(stream);
+    if (this.#updateBitrate(stream)) this.#demand(stream);
   }
   #demand(stream: Stream): void {
     const sources = [

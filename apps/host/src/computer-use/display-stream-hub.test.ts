@@ -19,6 +19,7 @@ import {
   RunnerAuxiliaryFrameFenceSchema,
   type HostIntegrationsOperation,
   type HostIntegrationsDisplayStart,
+  macDisplayProfileHysteresisMs,
 } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -3184,7 +3185,7 @@ describe("viewer-driven phone bitrate", () => {
         f.sent
           .filter((m) => m.type === "host.integrations.display.demand")
           .map((m) => m.maxBitrate);
-      const driver = await f.macViewer(false, false, true);
+      const driver = await f.macViewer(true, false, true);
       await f.macViewer(false, false, true);
       const mac = await f.phone();
       await f.state();
@@ -3206,9 +3207,49 @@ describe("viewer-driven phone bitrate", () => {
         events: [{ kind: "mouse", phase: "down", button: "left", modifiers: [], x: 0.5, y: 0.5 }],
       });
       await driver.roundTrip();
+      expect(driver.json().filter((m) => m.type === "display.input.result")).toEqual([]);
       f.advance(2_000);
       await deliver();
       await until(() => caps().at(-1) === 8_000_000);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it("shrinks a Mac capture to what a low budget keeps legible and restores it", async () => {
+    let cap: number | null = 300_000;
+    const ack = vi.spyOn(DisplayLinkRate.prototype, "ack").mockImplementation(function (
+      this: DisplayLinkRate,
+    ) {
+      this.cap = cap;
+    });
+    try {
+      const f = await fixture(true, { mac: true, displayProfile: true });
+      const sides = () =>
+        f.sent
+          .filter((m) => m.type === "host.integrations.display.demand")
+          .map((m) => m.maxLongSide);
+      const viewer = await f.viewer(false, false, true);
+      const mac = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async () => {
+        sequence++;
+        mac.socket.send(f.frame(sequence, sequence === 1));
+        await viewer.received(() => viewer.media().length === sequence);
+        viewer.send({ type: "display.ack", sequence });
+        await viewer.roundTrip();
+      };
+      await deliver();
+      // 300 kbps keeps about 1,000 pixels of a 360x640 window's long side legible.
+      f.advance(macDisplayProfileHysteresisMs);
+      f.hub.sweep();
+      expect(sides().at(-1)).toBe(1_024);
+      cap = null;
+      f.advance(2_000);
+      await deliver();
+      f.advance(macDisplayProfileHysteresisMs);
+      f.hub.sweep();
+      expect(sides().at(-1)).toBe(1_280);
     } finally {
       ack.mockRestore();
     }

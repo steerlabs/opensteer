@@ -124,8 +124,11 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
           emitted.push({ at: performance.now(), bytes: payload.length });
           if (!start || producer?.readyState !== WebSocket.OPEN || stopped) return;
           const held = [...outstanding.values()];
+          // As the producer's credit: an empty lane takes any legal frame, so a
+          // large key is never refused into an endless request for another.
           if (
-            held.reduce((sum, f) => sum + f.bytes, 0) + payload.length > 1_048_576 ||
+            (held.length > 0 &&
+              held.reduce((sum, f) => sum + f.bytes, 0) + payload.length > 1_048_576) ||
             (held[0] && performance.now() - held[0].at >= 500)
           ) {
             producerCreditStalls++;
