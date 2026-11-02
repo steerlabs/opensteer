@@ -2860,6 +2860,16 @@ describe("a task", () => {
     expect(text(container)).toContain(waiting.body);
   });
 
+  it("says its messages are loading, not that nothing was said, while it opens", async () => {
+    const empty = snapshotFor({ entries: [], run: null, threadId: workId });
+    const host = fakeHost({ ...empty, threadLookups: { [workId]: "loading" } });
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Loading messages…");
+    expect(text(container)).not.toContain("What would you like to do?");
+    await act(async () => host.move(empty));
+    expect(text(container)).toContain("What would you like to do?");
+  });
+
   it("is paused by Stop and offers Resume", async () => {
     const task = taskAtWork();
     const waiting = said("Include the card fees", null);
