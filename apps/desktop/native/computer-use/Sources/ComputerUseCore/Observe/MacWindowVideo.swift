@@ -277,6 +277,9 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     /// What the encoder was last told; its cadence spaces admission.
     var plan: MacVideoRate.Plan?
     var cadenceRetry = false
+    /// Strictly increasing encoder timestamps: a refresh or retry re-encodes a
+    /// sample whose capture time the encoder has already seen.
+    var encodePts = CMTime.invalid
   }
 
   let id: String
@@ -444,6 +447,18 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     publication.withLock { diagnostic("rate", $0, reason: "\(plan.bitrate)@\(plan.fps)") }
   }
 
+  /// Nothing reached the peer for the newest picture: the encoder skipped it to
+  /// hold its budget, or its output was lost. Retry it in its next cadence slot
+  /// so a window that then goes still still shows its last change.
+  fileprivate func retryNewest() {
+    let wait = publication.withLock { state -> TimeInterval? in
+      guard state.open, state.visible, !state.ended, output.current?.closedFlag == false else { return nil }
+      state.samples.hold()
+      return 1 / Double(state.plan?.fps ?? MacVideoLimits.legacyMaxFps)
+    }
+    if let wait { scheduleCadenceRetry(after: wait) }
+  }
+
   /// A sample withheld only for its cadence slot is retried when the slot opens,
   /// so the last change of a window that then goes still is still delivered.
   private func scheduleCadenceRetry(after wait: TimeInterval) {
@@ -598,6 +613,36 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
 
   private struct EncoderFailure: Error {}
 
+  private static let encoderOutput: VTCompressionOutputCallback = { context, generation, status, flags, sample in
+    guard let context, let generation else { return }
+    let producer = Unmanaged<MacWindowVideoProducer>.fromOpaque(context).takeUnretainedValue()
+    defer {
+      // Keep the submission charged until its output has reserved
+      // peer bytes or recorded loss, including the next key decision.
+      producer.publication.withLock { $0.credit.returned() }
+      producer.schedulePendingSample()
+    }
+    let submitted = Int(bitPattern: generation)
+    let inputGeneration = submitted >> 1
+    guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
+    else { return }
+    guard status == noErr else {
+      producer.fail("encoder-failed")
+      return
+    }
+    if flags.contains(.frameDropped) {
+      producer.publication.withLock { $0.credit.dropped(key: submitted & 1 == 1) }
+      producer.retryNewest()
+      return
+    }
+    guard let sample else {
+      producer.publication.withLock { $0.credit.lost() }
+      producer.retryNewest()
+      return
+    }
+    producer.encoded(sample, generation: inputGeneration)
+  }
+
   private func prepareEncoder(width: Int, height: Int, advanceGeneration: Bool = false) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       queue.async { [self] in
@@ -615,68 +660,56 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
           }
           if let encoder { VTCompressionSessionInvalidate(encoder) }
           encoder = nil
-          var session: VTCompressionSession?
-          let status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault, width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
-            // Low-latency rate control tracks the budget by skipping frames
-            // rather than blurring text; it is Constrained High only.
-            encoderSpecification: [
-              kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
-              kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true,
-            ] as CFDictionary,
-            imageBufferAttributes: nil, compressedDataAllocator: nil,
-            outputCallback: { context, generation, status, flags, sample in
-              guard let context, let generation else { return }
-              let producer = Unmanaged<MacWindowVideoProducer>.fromOpaque(context)
-                .takeUnretainedValue()
-              defer {
-                // Keep the submission charged until its output has reserved
-                // peer bytes or recorded loss, including the next key decision.
-                producer.publication.withLock { $0.credit.returned() }
-                producer.schedulePendingSample()
-              }
-              let submitted = Int(bitPattern: generation)
-              let inputGeneration = submitted >> 1
-              guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
-              else { return }
-              guard status == noErr else {
-                producer.fail("encoder-failed")
-                return
-              }
-              if flags.contains(.frameDropped) {
-                producer.publication.withLock { $0.credit.dropped(key: submitted & 1 == 1) }
-                return
-              }
-              guard let sample else {
-                producer.publication.withLock { $0.credit.lost() }
-                return
-              }
-              producer.encoded(sample, generation: inputGeneration)
-            },
-            refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &session)
-          publication.withLock { diagnostic("encoder-create", $0, reason: String(status)) }
-          guard status == noErr, let session else {
-            throw EncoderFailure()
-          }
-          encoder = session
-          let plan = publication.withLock { state -> MacVideoRate.Plan in
+          let (mode, plan) = publication.withLock { state -> (MacVideoRate.Mode, MacVideoRate.Plan) in
             let plan = state.rate.plan(width: width, height: height)
             state.plan = plan
-            return plan
+            state.encodePts = .invalid
+            return (state.rate.mode, plan)
           }
-          // Keys are produced only on demand (start, refresh, loss): a periodic
-          // key on a scarce budget costs seconds of skipped frames.
-          for (key, value) in [
+          let legacy = mode == .legacy
+          // A negotiated stream prefers low-latency rate control, which tracks
+          // the budget by skipping frames rather than blurring text and is
+          // Constrained High only. An encoder without it keeps normal control.
+          var created: (session: VTCompressionSession, lowLatency: Bool)?
+          for lowLatency in legacy ? [false] : [true, false] {
+            var session: VTCompressionSession?
+            let status = VTCompressionSessionCreate(
+              allocator: kCFAllocatorDefault, width: Int32(width), height: Int32(height),
+              codecType: kCMVideoCodecType_H264,
+              encoderSpecification: [
+                kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
+                kVTVideoEncoderSpecification_EnableLowLatencyRateControl: lowLatency,
+              ] as CFDictionary,
+              imageBufferAttributes: nil, compressedDataAllocator: nil,
+              outputCallback: Self.encoderOutput,
+              refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &session)
+            publication.withLock {
+              diagnostic("encoder-create", $0, reason: "\(status):lowLatency=\(lowLatency)")
+            }
+            if status == noErr, let session {
+              created = (session, lowLatency)
+              break
+            }
+          }
+          guard let (session, lowLatency) = created else { throw EncoderFailure() }
+          encoder = session
+          var properties: [(CFString, CFTypeRef)] = [
             (kVTCompressionPropertyKey_RealTime, kCFBooleanTrue as CFTypeRef),
             (kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse as CFTypeRef),
             (
               kVTCompressionPropertyKey_ProfileLevel,
-              kVTProfileLevel_H264_ConstrainedHigh_AutoLevel as CFTypeRef
+              (legacy ? kVTProfileLevel_H264_Baseline_AutoLevel
+                : kVTProfileLevel_H264_ConstrainedHigh_AutoLevel) as CFTypeRef
             ),
             (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: plan.fps)),
             (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: plan.bitrate)),
-          ] {
+          ]
+          // A negotiated stream makes keys only on demand (start, refresh, loss):
+          // a periodic key on a scarce budget costs seconds of skipped frames.
+          if legacy || !lowLatency {
+            properties.append((kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: plan.fps * 2)))
+          }
+          for (key, value) in properties {
             guard VTSessionSetProperty(session, key: key, value: value) == noErr else {
               throw EncoderFailure()
             }
@@ -874,14 +907,14 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     guard sampleFence.accepts(sample.incarnation), eligible(), let encoder else { return }
     var cadenceWait: TimeInterval?
     defer { if let cadenceWait { scheduleCadenceRetry(after: cadenceWait) } }
-    let admitted: (Int, Bool)? = publication.withLock { state in
+    let admitted: (Int, Bool, CMTime)? = publication.withLock { state in
       guard state.open, !state.ended, state.generation == sample.generation,
         sampleFence.accepts(sample.incarnation)
       else { diagnostic("encode-rejected", state, reason: "closed"); return nil }
       state.samples.replace(sample)
       guard state.visible else { diagnostic("encode-rejected", state, reason: "warm"); return nil }
       let now = ProcessInfo.processInfo.systemUptime
-      let interval = state.plan.map { 1 / Double($0.fps) } ?? 0
+      let interval = state.rate.mode == .legacy ? 0 : state.plan.map { 1 / Double($0.fps) } ?? 0
       let admission = state.credit.admit(now: now, interval: interval)
       guard case .submit(let key) = admission else {
         state.samples.hold()
@@ -898,13 +931,15 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       }
       state.lastSubmissionAt = ProcessInfo.processInfo.systemUptime
       diagnostic("encode-submitted", state)
-      return (state.generation, key)
+      let next = CMTimeAdd(state.encodePts, CMTime(value: 1, timescale: 1_000))
+      state.encodePts = state.encodePts.isValid && CMTimeCompare(sample.pts, next) < 0 ? next : sample.pts
+      return (state.generation, key, state.encodePts)
     }
-    guard let (generation, key) = admitted else { return }
+    guard let (generation, key, pts) = admitted else { return }
     let properties = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     let status = VTCompressionSessionEncodeFrame(
       encoder, imageBuffer: sample.buffer,
-      presentationTimeStamp: sample.pts, duration: .invalid, frameProperties: properties,
+      presentationTimeStamp: pts, duration: .invalid, frameProperties: properties,
       // The refcon carries the generation and whether this submission asked for a key.
       sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation << 1 | (key ? 1 : 0)),
       infoFlagsOut: nil)
@@ -947,7 +982,11 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   private func encoded(_ sample: CMSampleBuffer, generation: Int) {
     var sent = false
     defer {
-      if !sent { publication.withLock { if $0.generation == generation { $0.credit.lost() } } }
+      if !sent, publication.withLock({ state in
+        guard state.generation == generation else { return false }
+        state.credit.lost()
+        return true
+      }) { retryNewest() }
     }
     guard eligible(), CMSampleBufferDataIsReady(sample),
       let format = CMSampleBufferGetFormatDescription(sample),

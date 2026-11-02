@@ -9,7 +9,7 @@ import Foundation
 /// Mac's own estimate of its link to the Host.
 struct MacVideoRate: Equatable {
   enum Mode: Equatable {
-    /// A Host without the negotiated profile: today's fixed budget.
+    /// A Host without the negotiated profile: the original encoder, unchanged.
     case legacy
     /// The Host's cap for its slowest visible viewer; nil while uncapped.
     case negotiated(cap: Int?)
@@ -50,6 +50,7 @@ struct MacVideoRate: Equatable {
   }
 
   func plan(width: Int, height: Int) -> Plan {
+    guard mode != .legacy else { return Plan(bitrate: Self.legacyBitrate, fps: maxFps) }
     let bitrate = min(ceiling(width: width, height: height), uplink.estimate ?? .max)
     let pixels = Double(max(1, width * height))
     let fps = Self.cadences.first {
@@ -61,7 +62,8 @@ struct MacVideoRate: Equatable {
   /// One Host acknowledgement of this producer's media, `delay` after sending.
   /// Returns whether the plan may have changed.
   mutating func acknowledged(delay: TimeInterval, now: TimeInterval, width: Int, height: Int) -> Bool {
-    uplink.acknowledged(delay: delay, now: now, ceiling: ceiling(width: width, height: height))
+    guard mode != .legacy else { return false }
+    return uplink.acknowledged(delay: delay, now: now, ceiling: ceiling(width: width, height: height))
   }
 }
 

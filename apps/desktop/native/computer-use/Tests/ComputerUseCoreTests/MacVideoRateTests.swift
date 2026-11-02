@@ -2,14 +2,13 @@ import XCTest
 @testable import ComputerUseCore
 
 final class MacVideoRateTests: XCTestCase {
-  /// A Host without the profile keeps today's budget and cadence ceiling.
-  func testLegacyStartKeepsTheFixedBudgetAndIgnoresCaps() {
+  /// A Host without the profile keeps the original fixed budget and cadence.
+  func testLegacyStartKeepsTheOriginalBudgetAndIgnoresCaps() {
     var rate = MacVideoRate(maxFps: 30, mode: .legacy)
     rate.setLinkCap(800_000)
+    XCTAssertFalse(rate.acknowledged(delay: 2, now: 5, width: 1920, height: 1248))
     XCTAssertEqual(rate.mode, .legacy)
-    XCTAssertEqual(rate.plan(width: 1280, height: 832).bitrate, MacVideoRate.legacyBitrate)
-    XCTAssertEqual(rate.plan(width: 1280, height: 832).fps, 30)
-    XCTAssertEqual(rate.plan(width: 1920, height: 1248).fps, 20, "Fewer sharp frames, not blur")
+    XCTAssertEqual(rate.plan(width: 1920, height: 1248), .init(bitrate: MacVideoRate.legacyBitrate, fps: 30))
   }
 
   /// Uncapped, the budget follows the picture size and the full cadence fits;
