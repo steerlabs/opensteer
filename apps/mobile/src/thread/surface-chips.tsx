@@ -197,7 +197,7 @@ function PlaceStop(props: {
   );
   if (page === null) return null;
   const acting = props.latest && page.acting && !page.ended;
-  const site = page.site?.replace(/^www\./u, "") || null;
+  const site = page.site;
   return (
     <Pressable
       accessibilityHint={page.ended ? "This page was closed" : "Opens this page"}

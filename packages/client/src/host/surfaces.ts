@@ -138,6 +138,11 @@ export function browserActingTabId(session: BrowserSessionSummary): string | nul
   return latest?.tabId ?? null;
 }
 
+/** A page's site as a person reads it: its host, without the "www." that says nothing. */
+export function pageSiteLabel(url: string): string | null {
+  return hostName(url)?.replace(/^www\./u, "") || null;
+}
+
 function hostName(url: string): string | null {
   if (!url || url === "about:blank") return null;
   try {
@@ -364,7 +369,7 @@ export function placePage(
   const { acting, ended, favicon } = session
     ? pageState(session, tabId, entry.runId, threadId)
     : { acting: false, ended: true, favicon: null };
-  const site = entry.site ? hostName(entry.site) : null;
+  const site = entry.site ? pageSiteLabel(entry.site) : null;
   return {
     acting,
     destination: { kind: "browser", sessionId, tabId },

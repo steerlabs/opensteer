@@ -8,7 +8,7 @@ import { BrowserCropCue } from "../browser/browser-crop-cue.js";
 import { browserFrameContentRect } from "@opensteer/shared/browserPresentation";
 import { memo, useEffect, useRef, useState } from "react";
 import {
-  browserSiteLabel,
+  pageSiteLabel,
   placeActivityPoint,
   type HostClient,
   type ThreadPlace,
@@ -119,8 +119,7 @@ export const Viewfinder = memo(function Viewfinder({
   // picture lets go of its watch until it is shown again. A hidden page only
   // pauses it in the client, which keeps the last picture.
   const live = inView && conversationShown;
-  // "www." says nothing a person reads a site by, and the line has little room.
-  const site = place.site ? browserSiteLabel(place.site).replace(/^www\./u, "") : null;
+  const site = place.site ? pageSiteLabel(place.site) : null;
   return (
     <button
       aria-label={`Open ${place.title}`}
