@@ -4,12 +4,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import type { DesktopUpdateState, DesktopUpdatesBridge } from "@opensteer/protocol/desktop";
-import { DesktopUpdateButton } from "./desktop-update-button.js";
+import { DesktopUpdateButton, DesktopUpdateFeedback } from "./desktop-update-button.js";
 import { ToastProvider } from "./toast.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-it("offers the download, its progress and the restart, and confirms the finished download", async () => {
+it("offers the download, its progress and the restart, and confirms a download finished while hidden", async () => {
   const state = (change: Partial<DesktopUpdateState>): DesktopUpdateState => ({
     status: "idle",
     currentVersion: "0.1.396",
@@ -33,13 +33,16 @@ it("offers the download, its progress and the restart, and confirms the finished
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      <ToastProvider>
-        <DesktopUpdateButton />
-      </ToastProvider>,
-    ),
-  );
+  const render = (sidebar: boolean) =>
+    act(async () =>
+      root.render(
+        <ToastProvider>
+          <DesktopUpdateFeedback />
+          {sidebar ? <DesktopUpdateButton /> : null}
+        </ToastProvider>,
+      ),
+    );
+  await render(true);
   expect(bridge.get).toHaveBeenCalledOnce();
   expect(container.querySelector("button")).toBeNull();
   const button = () => container.querySelector<HTMLButtonElement>(".sidebar__update")!;
@@ -56,7 +59,10 @@ it("offers the download, its progress and the restart, and confirms the finished
   expect(button().disabled).toBe(true);
   expect(container.textContent).not.toContain("Update downloaded");
 
+  // Settings or a collapsed sidebar hides the button while the download finishes.
+  await render(false);
   show({ status: "downloaded" });
+  await render(true);
   expect(button().textContent).toBe("Restart to update");
   expect(container.querySelector('[role="status"]')?.textContent).toBe(
     "Update downloaded. Restart to install it.",

@@ -1,13 +1,19 @@
 import { useSyncExternalStore } from "react";
 import { DesktopUpdateStateSchema, type DesktopUpdateState } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "./desktop-bridge.js";
+import { appWindowFocused } from "./window-focus.js";
 
 let state: DesktopUpdateState | null = null;
 let started = false;
 const listeners = new Set<() => void>();
+const downloaded = new Set<() => void>();
 
 function receive(value: DesktopUpdateState) {
+  const was = state?.status;
   state = DesktopUpdateStateSchema.parse(value);
+  if (was === "downloading" && state.status === "downloaded" && appWindowFocused()) {
+    for (const listener of downloaded) listener();
+  }
   for (const listener of listeners) listener();
 }
 
@@ -45,4 +51,13 @@ export function useDesktopUpdate(): DesktopUpdateState | null {
     () => state,
     () => null,
   );
+}
+
+/** A download finishing while this window has focus, whatever the page shows. */
+export function subscribeUpdateDownloaded(listener: () => void) {
+  downloaded.add(listener);
+  start();
+  return () => {
+    downloaded.delete(listener);
+  };
 }

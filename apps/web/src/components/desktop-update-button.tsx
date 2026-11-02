@@ -1,8 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import type { DesktopUpdateState } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
-import { useDesktopUpdate } from "../desktop/update-store.js";
-import { appWindowFocused } from "../desktop/window-focus.js";
+import { subscribeUpdateDownloaded, useDesktopUpdate } from "../desktop/update-store.js";
 import { Icon } from "./icon.js";
 import { useToast } from "./toast.js";
 
@@ -50,17 +49,23 @@ export function desktopUpdateButton(state: DesktopUpdateState): {
   }
 }
 
+/** Mounted for the app's life, so a sidebar hidden mid-download still confirms it. */
+export function DesktopUpdateFeedback() {
+  const toast = useToast();
+  useEffect(
+    () =>
+      desktopBridge()?.updates
+        ? subscribeUpdateDownloaded(() =>
+            toast.success("Update downloaded. Restart to install it."),
+          )
+        : undefined,
+    [toast],
+  );
+  return null;
+}
+
 export function DesktopUpdateButton() {
   const update = useDesktopUpdate();
-  const toast = useToast();
-  const status = update?.status;
-  const previous = useRef(status);
-  useEffect(() => {
-    const was = previous.current;
-    previous.current = status;
-    if (was === "downloading" && status === "downloaded" && appWindowFocused())
-      toast.success("Update downloaded. Restart to install it.");
-  }, [status, toast]);
   const bridge = desktopBridge()?.updates;
   const button = update && bridge ? desktopUpdateButton(update) : null;
   if (!button || !bridge) return null;
