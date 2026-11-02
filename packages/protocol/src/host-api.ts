@@ -1670,6 +1670,7 @@ export const hostApi = defineRpc({
       .strictObject({
         threadId: ThreadIdSchema,
         aroundMessageId: MessageIdSchema.optional(),
+        placeEvents: z.literal("include").optional(),
         /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
         turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
       })

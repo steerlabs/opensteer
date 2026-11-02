@@ -63,6 +63,7 @@ import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
+import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
 import { homeThreadKind, useTaskDirectory } from "./workspace/task-directory.js";
@@ -1067,7 +1068,6 @@ function ThreadView({
                 threadId={thread.id}
                 unreadBoundarySequence={unreadBoundarySequence}
                 viewerUserId={snapshot.user?.id ?? null}
-                pictures={hostClient}
                 workspaces={snapshot.workspaces}
               />
             </div>
@@ -1142,6 +1142,14 @@ function ThreadView({
       ) : null}
 
       <div className="composer-dock">
+        {stopTarget ? (
+          <LivePlace
+            hostClient={hostClient}
+            key={stopTarget.id}
+            runId={stopTarget.id}
+            threadId={thread.id}
+          />
+        ) : null}
         <InputSurface
           autoContext={home}
           voice={home}

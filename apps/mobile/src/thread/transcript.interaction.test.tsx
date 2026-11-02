@@ -8,6 +8,8 @@ import {
   groupTranscriptEntries,
   type DelegationEntry,
   type MessageEntry,
+  type PlaceEntry,
+  type BrowserSessionSummary,
   type ReasoningEntry,
   type RunEntry,
   type ToolEntry,
@@ -15,6 +17,9 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { mockComputerUseToolRefs, mockComputerUseTurn } from "@opensteer/client/mock";
+import { MockHostClient } from "@opensteer/client/mock";
+import { BrowserSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
+import { TranscriptSurfacesContext, TracePlace, type TranscriptSurfaces } from "./surface-chips.js";
 import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
 
 // Exercise the actual native renderer's state and hierarchy with DOM hosts.
@@ -34,7 +39,9 @@ vi.mock("react-native", () => ({
       {children}
     </div>
   ),
+  Image: () => <img alt="" />,
   Pressable: ({
+    disabled,
     children,
     onPress,
     accessibilityState,
@@ -42,10 +49,12 @@ vi.mock("react-native", () => ({
   }: {
     children?: ReactNode;
     onPress?: () => void;
-    accessibilityState?: { expanded?: boolean };
+    disabled?: boolean;
+    accessibilityState?: { expanded?: boolean; disabled?: boolean };
     accessibilityLabel?: string;
   }) => (
     <button
+      disabled={disabled}
       aria-expanded={accessibilityState?.expanded}
       aria-label={accessibilityLabel}
       onClick={onPress}
@@ -171,7 +180,7 @@ function PaneRow(
   );
 }
 
-function setup(conversation = false) {
+function setup(conversation = false, surfaces: TranscriptSurfaces | null = null) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -194,19 +203,21 @@ function setup(conversation = false) {
       if (!group) throw new Error("Missing turn");
       void act(() =>
         root.render(
-          <PaneRow
-            activityKey={replyActivityKeys(groups).get(group.key) ?? null}
-            conversation={conversation}
-            group={group}
-            highlightRequestId={null}
-            onOpenActivity={onOpenActivity}
-            onOpenStep={onOpenStep}
-            onOpenThread={onOpenThread}
-            spacingTop={0}
-            homeThreadId={null}
-            viewerUserId={null}
-            workspaces={workspaces}
-          />,
+          <TranscriptSurfacesContext value={surfaces}>
+            <PaneRow
+              activityKey={replyActivityKeys(groups).get(group.key) ?? null}
+              conversation={conversation}
+              group={group}
+              highlightRequestId={null}
+              onOpenActivity={onOpenActivity}
+              onOpenStep={onOpenStep}
+              onOpenThread={onOpenThread}
+              spacingTop={0}
+              homeThreadId={null}
+              viewerUserId={null}
+              workspaces={workspaces}
+            />
+          </TranscriptSurfacesContext>,
         ),
       );
     },
@@ -710,4 +721,136 @@ it("renders an addressed message as an assistant message in its own row", () => 
   const view = setup();
   view.render([{ ...note, id: "notice", addressedToUserId: "person", body: "Milestone passed." }]);
   expect(view.container.textContent).toContain("Milestone passed.");
+});
+
+describe("native page rail", () => {
+  function fixture() {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const original = client
+      .getSnapshot()
+      .browserSessions.find((session) => session.tabCatalog?.tabs.length)!;
+    const tab = original.tabCatalog!.tabs[0]!;
+    const threadId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001");
+    const session: BrowserSessionSummary = {
+      ...original,
+      attachedRunIds: [run.runId!],
+      uses: [
+        {
+          runId: run.runId!,
+          threadId,
+          tabId: tab.id,
+          firstUsedAt: run.createdAt,
+          lastUsedAt: run.createdAt,
+        },
+      ],
+      tabCatalog: {
+        ...original.tabCatalog!,
+        tabs: [
+          {
+            ...tab,
+            occupants: [
+              { threadId, home: false, holding: true, acting: true, lastActiveAt: run.createdAt },
+            ],
+          },
+        ],
+      },
+    };
+    const stop: PlaceEntry = {
+      kind: "place",
+      id: "stop",
+      createdAt: run.createdAt,
+      runId: run.runId!,
+      title: "Recorded page",
+      site: "https://recorded.example",
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(session.id),
+        surfaceId: tab.id,
+      },
+    };
+    vi.spyOn(client, "getSnapshot").mockReturnValue({
+      ...client.getSnapshot(),
+      browserSessions: [session],
+    });
+    const open = vi.fn();
+    return { client, session, stop, open, surfaces: { hostClient: client, threadId, open } };
+  }
+  it("presses the exact destination, marks only the newest stop live, and disables an ended stop", () => {
+    const f = fixture();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const draw = () =>
+      act(() =>
+        root.render(
+          <TranscriptSurfacesContext value={f.surfaces}>
+            <TracePlace entry={f.stop} latest={false} />
+            <TracePlace entry={{ ...f.stop, id: "newest" }} latest />
+          </TranscriptSurfacesContext>,
+        ),
+      );
+    try {
+      draw();
+      const stops = container.querySelectorAll("button");
+      expect(stops[0]!.getAttribute("aria-label")).not.toContain("agent working");
+      expect(stops[1]!.getAttribute("aria-label")).toContain("agent working");
+      act(() => stops[1]!.click());
+      expect(f.open).toHaveBeenCalledExactlyOnceWith({
+        kind: "browser",
+        sessionId: f.session.id,
+        tabId: f.session.tabCatalog!.tabs[0]!.id,
+      });
+      vi.mocked(f.client.getSnapshot).mockReturnValue({
+        ...f.client.getSnapshot(),
+        browserSessions: [{ ...f.session, state: "closed" }],
+      });
+      draw();
+      expect(container.querySelectorAll("button:disabled")).toHaveLength(2);
+      act(() => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(f.open).toHaveBeenCalledTimes(1);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("removes the live stop mark when a completed task is reopened", () => {
+    const f = fixture();
+    try {
+      const view = setup(false, f.surfaces);
+      view.render([run, f.stop]);
+      expect(
+        view.container.querySelector('[aria-label^="Recorded page"]')?.getAttribute("aria-label"),
+      ).toContain("agent working");
+      view.render([{ ...run, status: "completed" }, f.stop]);
+      press(view.container, "Worked");
+      expect(
+        view.container.querySelector('[aria-label^="Recorded page"]')?.getAttribute("aria-label"),
+      ).not.toContain("agent working");
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it.each([false, true])(
+    "keeps chips out of working replies until settled (Chat: %s)",
+    (conversation) => {
+      const f = fixture();
+      try {
+        const view = setup(conversation, f.surfaces);
+        view.render([run, command, note]);
+        expect(
+          view.container.querySelector(
+            `button[aria-label^="${f.session.tabCatalog!.tabs[0]!.title}"]`,
+          ),
+        ).toBeNull();
+        view.render([{ ...run, status: "completed", replyMessageId: note.id }, command, note]);
+        expect(
+          view.container.querySelector(
+            `button[aria-label^="${f.session.tabCatalog!.tabs[0]!.title}"]`,
+          ),
+        ).not.toBeNull();
+      } finally {
+        f.client.dispose();
+      }
+    },
+  );
 });

@@ -2244,7 +2244,7 @@ describe("a reply at work on a Mac", () => {
     expect(container.textContent).not.toContain("Stopped using Mac mini");
   }, 10000);
 
-  it("keeps the reader's own Mac's line with Stop and its app's chip, then the Stop it leaves for three seconds, then closes the gap", async () => {
+  it("keeps the reader's own Mac's line with Stop, then the Stop it leaves for three seconds, then closes the gap", async () => {
     const reply = joinedWhileClicking();
     const working = (machines: readonly MachineSummary[]) =>
       snapshotFor({
@@ -2267,21 +2267,10 @@ describe("a reply at work on a Mac", () => {
     ]);
     const line = () => container.querySelector(`[data-row="${lineRow}"]`)?.textContent ?? "";
     expect(line()).toContain("On Mac mini");
-    // The line has no Watch of its own: the app's chip under it is the one way
-    // to the app, and opens exactly the app the agent is using.
+    // While the reply works, its app is reached from the conversation's header,
+    // not from a chip or a Watch on the line.
     expect(hasButton(container, "Watch")).toBe(false);
-    await press(container, "Notes");
-    expect(harness.dispatch).toHaveBeenCalledWith({
-      name: "WorkspaceBrowser",
-      params: {
-        appKey: "com.apple.notes",
-        computerSessionId: session.sessionId,
-        deploymentId,
-        machineId: macMini?.id,
-        threadId: chatId,
-      },
-      type: "PUSH",
-    });
+    expect(hasButton(container, "Notes")).toBe(false);
 
     await press(container, "Stop using Mac");
     expect(host.stopComputerSession).toHaveBeenCalledWith(

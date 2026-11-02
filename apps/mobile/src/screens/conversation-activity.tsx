@@ -104,6 +104,7 @@ function ReplyActivity(props: {
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({
       hostClient,
+      threadId,
       open: (destination: SurfaceDestination) => {
         navigation.goBack();
         navigation.dispatch(

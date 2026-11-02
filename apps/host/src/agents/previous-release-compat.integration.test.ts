@@ -1,3 +1,4 @@
+import { AgentEventSchema, BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -137,6 +138,53 @@ integration.sequential("previous public release client journeys", () => {
           text: "History for the released subscriber",
           threadId,
           workspaceId: active.mainWorkspaceId,
+        });
+        const run = await active.host.store.database
+          .selectFrom("runs")
+          .selectAll()
+          .where("threadId", "=", threadId)
+          .orderBy("createdAt", "desc")
+          .executeTakeFirstOrThrow();
+        // Seed a real durable row even though this scripted engine may already have ended.
+        const placeEvent = AgentEventSchema.parse({
+          createdAt: new Date().toISOString(),
+          data: {
+            place: {
+              kind: "browser",
+              sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
+              surfaceId: BrowserSurfaceIdSchema.parse("compat"),
+            },
+            title: "Compatibility page",
+            site: "https://example.com",
+          },
+          environmentId: run.environmentId,
+          eventId: createId("event"),
+          runId: run.id,
+          sequence: "0",
+          threadId,
+          type: "place.entered",
+          workspaceId: active.mainWorkspaceId,
+        });
+        await active.host.store.database.transaction().execute(async (transaction) => {
+          const workspace = await transaction
+            .updateTable("workspaces")
+            .set({ eventSequence: sql<string>`event_sequence + 1` })
+            .where("id", "=", active.mainWorkspaceId)
+            .returning("eventSequence")
+            .executeTakeFirstOrThrow();
+          await transaction
+            .insertInto("workspaceEvents")
+            .values({
+              ...placeEvent,
+              createdAt: new Date(placeEvent.createdAt),
+              data: sql`${JSON.stringify(placeEvent.data)}::jsonb`,
+              sequence: workspace.eventSequence,
+              runnerId: null,
+              runnerBootId: null,
+              runnerOrdinal: null,
+              runnerBindingGeneration: null,
+            })
+            .execute();
         });
         const snapshots: WorkspaceSnapshot[] = [];
         const headers = { cookie: active.sessionCookie, origin: active.hostOrigin.origin };

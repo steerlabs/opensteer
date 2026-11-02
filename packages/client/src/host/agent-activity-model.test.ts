@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   createId,
   createToolArguments,
   ModelSelectionSchema,
@@ -9,6 +11,7 @@ import { computerUseActHeadline, formatComputerUseResultHead } from "@opensteer/
 import type {
   DelegationEntry,
   MessageEntry,
+  PlaceEntry,
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
@@ -2212,4 +2215,83 @@ it("marks an addressed message read beyond the active Run's intermediate message
       (group) => group.kind === "turn" && group.turn.run?.status === "running",
     ),
   ).toBe(true);
+});
+
+describe("page stops", () => {
+  const stop = (id: string, tab = "A"): PlaceEntry => ({
+    kind: "place",
+    id,
+    runId: "run-a",
+    createdAt: at(1),
+    title: tab,
+    site: null,
+    place: {
+      kind: "browser",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
+      surfaceId: BrowserSurfaceIdSchema.parse(tab),
+    },
+  });
+  it("splits command grouping and preserves every A to B to A stop", () => {
+    const a = stop("first"),
+      b = stop("second", "B"),
+      again = stop("third");
+    const rows = workRows([command("one"), a, command("two"), b, again, command("three")]);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "steps",
+      "place",
+      "steps",
+      "place",
+      "place",
+      "steps",
+    ]);
+    expect(rows.filter((row) => row.kind === "place").map((row) => row.entry)).toEqual([
+      a,
+      b,
+      again,
+    ]);
+    const turn = turns([run(), a])[0]!;
+    expect(turnOpen(turn, null)).toBe(false);
+    expect(turnWords(turn)).toEqual([]);
+  });
+  it("counts stops in the trace window and keeps an explicitly revealed stop", () => {
+    const rows = workRows(Array.from({ length: 35 }, (_, i) => stop(`stop-${i}`)));
+    expect(traceWindow(rows, { showAll: false, keep: null })).toEqual({
+      hidden: 5,
+      rows: rows.slice(5),
+    });
+    expect(traceWindow(rows, { showAll: false, keep: "stop-2" })).toEqual({
+      hidden: 2,
+      rows: rows.slice(2),
+    });
+    expect(traceWindow(rows, { showAll: true, keep: null })).toEqual({ hidden: 0, rows });
+  });
+  it("keeps a subagent's stop inside its own trace", () => {
+    const node: Extract<TranscriptEntry, { kind: "node" }> = {
+      kind: "node",
+      id: "child",
+      nodeId: "child",
+      parentNodeId: null,
+      runId: "run-a",
+      createdAt: at(1),
+      completedAt: null,
+      model: null,
+      originCallId: null,
+      prompt: "Research",
+      result: null,
+      status: "running",
+      title: "Research",
+    };
+    const parent = turns([run({ status: "running" }), node])[0]!;
+    const place = stop("child-stop");
+    const turn: Turn = {
+      ...parent,
+      subagentWork: { child: [command("one"), place, command("two")] },
+    };
+    expect(workRows(turn.work)).toMatchObject([{ kind: "subagent", entry: node }]);
+    expect(workRows(turn.subagentWork.child!)).toMatchObject([
+      { kind: "steps" },
+      { kind: "place", entry: place },
+      { kind: "steps" },
+    ]);
+  });
 });

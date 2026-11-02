@@ -9,7 +9,7 @@ import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.j
 import { browserTabTitle } from "./browser-presentation.js";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import type { Turn } from "./agent-activity-model.js";
-import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot, PlaceEntry } from "./client.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadsWaitingOnReader } from "./waiting-requests.js";
 
@@ -151,6 +151,11 @@ export function browserActingTabId(session: BrowserSessionSummary): string | nul
     }
   }
   return latest?.tabId ?? null;
+}
+
+/** A page's site as a person reads it: its host, without the "www." that says nothing. */
+export function pageSiteLabel(url: string): string | null {
+  return hostName(url)?.replace(/^www\./u, "") || null;
 }
 
 function hostName(url: string): string | null {
@@ -364,6 +369,57 @@ export function runPages(
   return usedPages(sessions, runIds).map(({ firstUsedAt: _firstUsedAt, ...page }) => page);
 }
 
+/**
+ * Where a Run entered a browser tab, as the reader can use it now: that exact
+ * tab while it is open, named as it was when the Run entered it.
+ */
+export function placePage(
+  entry: PlaceEntry,
+  sessions: readonly BrowserSessionSummary[],
+  threadId: string | null,
+): RunPage | null {
+  if (entry.place.kind !== "browser") return null;
+  const { sessionId, surfaceId: tabId } = entry.place;
+  const session = sessions.find((candidate) => candidate.id === sessionId);
+  const { acting, ended, favicon } = session
+    ? pageState(session, tabId, entry.runId, threadId)
+    : { acting: false, ended: true, favicon: null };
+  const site = entry.site ? pageSiteLabel(entry.site) : null;
+  return {
+    acting,
+    destination: { kind: "browser", sessionId, tabId },
+    ended,
+    favicon,
+    key: `${sessionId}:${tabId}`,
+    site,
+    title: entry.title.trim() || site || "Page",
+  };
+}
+
+/** A tab as a Run's page: whether it is gone, its icon, and whether the Run's agent acts there now. */
+function pageState(
+  session: BrowserSessionSummary,
+  tabId: string,
+  runId: string,
+  threadId: string | null,
+): { readonly acting: boolean; readonly ended: boolean; readonly favicon: string | null } {
+  const open = openBrowserStates.has(session.state);
+  const catalog = open ? session.tabCatalog : undefined;
+  const tab = catalog?.tabs.find((candidate) => candidate.id === tabId);
+  // A live browser's catalog lists every tab it has, so one missing from it was closed.
+  const ended = !open || (catalog != null && !tab);
+  return {
+    acting:
+      session.state === "ready" &&
+      session.attachedRunIds.includes(runId) &&
+      tab?.occupants.some((occupant) => occupant.threadId === threadId && occupant.acting) === true,
+    ended,
+    favicon: ended
+      ? null
+      : (session.tabs.find((candidate) => candidate.id === tabId)?.favicon ?? null),
+  };
+}
+
 function usedPages(
   sessions: readonly BrowserSessionSummary[],
   runIds: readonly string[],
@@ -377,13 +433,7 @@ function usedPages(
       const tabId = use.tabId;
       const key = `${session.id}:${tabId}`;
       const tab = catalog?.tabs.find((candidate) => candidate.id === tabId);
-      // A live browser's catalog lists every tab it has, so one missing from it was closed.
-      const ended = !openBrowserStates.has(session.state) || (catalog != null && !tab);
-      const acting =
-        session.state === "ready" &&
-        session.attachedRunIds.includes(use.runId) &&
-        tab?.occupants.some((occupant) => occupant.threadId === use.threadId && occupant.acting) ===
-          true;
+      const { acting, ended, favicon } = pageState(session, tabId, use.runId, use.threadId);
       const held = pages.get(key);
       if (held && held.firstUsedAt <= use.firstUsedAt) {
         if (acting) pages.set(key, { ...held, acting: true });
@@ -397,9 +447,7 @@ function usedPages(
         acting: acting || held?.acting === true,
         destination: { kind: "browser", sessionId: session.id, tabId },
         ended,
-        favicon: ended
-          ? null
-          : (session.tabs.find((candidate) => candidate.id === tabId)?.favicon ?? null),
+        favicon,
         firstUsedAt: use.firstUsedAt,
         key,
         site,

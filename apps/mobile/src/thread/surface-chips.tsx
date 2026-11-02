@@ -1,8 +1,10 @@
 import {
   messagePages,
+  placePage,
   replyPlaces,
   type HostClient,
   type HostSnapshot,
+  type PlaceEntry,
   type SurfaceDestination,
   type Turn,
 } from "@opensteer/client/host";
@@ -13,7 +15,7 @@ import { Image, Pressable, StyleSheet, View } from "react-native";
 import { color, material, radius, space } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { agentWorkingLabel } from "../browser/acting-dot.js";
+import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { AppMark } from "../computers/app-mark.js";
 
 /**
@@ -23,6 +25,8 @@ import { AppMark } from "../computers/app-mark.js";
  */
 export interface TranscriptSurfaces {
   readonly hostClient: HostClient;
+  /** The conversation on screen, whose agent a page's live dot is for. */
+  readonly threadId: string;
   /** Each stretch's turn key finds the gathered work of its owning reply. */
   readonly turns?: ReadonlyMap<string, SurfaceTurn>;
   /** Opens exactly this page or app; nothing stands in for one that has gone. */
@@ -165,6 +169,81 @@ function RunSurfaces(props: {
   );
 }
 
+/**
+ * Where the Run began acting in a browser tab: a stop on the trace's line, not
+ * a step. It names the page as it was then and opens that exact tab while it
+ * is open; a closed one stays, dimmed, and opens nothing. `latest` is whether
+ * it is the turn's newest stop, the only one its agent can be acting at now.
+ */
+export function TracePlace(props: {
+  readonly entry: PlaceEntry;
+  readonly latest: boolean;
+}): ReactNode {
+  const surfaces = useContext(TranscriptSurfacesContext);
+  if (surfaces === null) return null;
+  return <PlaceStop entry={props.entry} latest={props.latest} surfaces={surfaces} />;
+}
+
+function PlaceStop(props: {
+  readonly entry: PlaceEntry;
+  readonly latest: boolean;
+  readonly surfaces: TranscriptSurfaces;
+}): ReactNode {
+  const { surfaces } = props;
+  const sessions = useHostSelector(surfaces.hostClient, selectBrowserSessions);
+  const page = useMemo(
+    () => placePage(props.entry, sessions, surfaces.threadId),
+    [props.entry, sessions, surfaces.threadId],
+  );
+  if (page === null) return null;
+  const acting = props.latest && page.acting && !page.ended;
+  const site = page.site;
+  return (
+    <Pressable
+      accessibilityHint={page.ended ? "This page was closed" : "Opens this page"}
+      accessibilityLabel={[
+        page.title,
+        site,
+        page.ended ? "closed" : acting ? agentWorkingLabel.toLowerCase() : null,
+      ]
+        .filter((part): part is string => part !== null && part !== "")
+        .join(", ")}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: page.ended }}
+      disabled={page.ended}
+      onPress={() => surfaces.open(page.destination)}
+      style={({ pressed }) => [
+        styles.stop,
+        pressed && styles.stopPressed,
+        page.ended && styles.ended,
+      ]}
+    >
+      <View style={styles.stopMark}>
+        <View style={[styles.stopLine, styles.stopLineAbove]} />
+        {page.favicon !== null ? (
+          <Image
+            accessibilityIgnoresInvertColors
+            source={{ uri: page.favicon }}
+            style={styles.favicon}
+          />
+        ) : (
+          <Symbol name="globe" size={12} tint={color.muted} />
+        )}
+        <View style={[styles.stopLine, styles.stopLineBelow]} />
+      </View>
+      <AppText numberOfLines={1} role="caption" style={styles.title} tone="soft">
+        {page.title}
+      </AppText>
+      {site === null || site === page.title ? null : (
+        <AppText numberOfLines={1} role="caption" style={styles.site} tone="muted">
+          {`· ${site}`}
+        </AppText>
+      )}
+      {acting ? <ActingDot grouped /> : null}
+    </Pressable>
+  );
+}
+
 interface Chip {
   readonly acting: boolean;
   readonly destination: SurfaceDestination | null;
@@ -273,6 +352,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[10] - (1 - StyleSheet.hairlineWidth),
   },
   ended: { opacity: 0.55 },
+  /** A stop sits in the step icons' column, on a hairline that fades both ways. */
+  stop: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    borderRadius: radius.sm,
+    flexDirection: "row",
+    gap: space[8],
+    marginHorizontal: -space[8],
+    maxWidth: "100%",
+    minHeight: 36,
+    paddingHorizontal: space[8],
+  },
+  stopLine: {
+    backgroundColor: color.lineStrong,
+    flex: 1,
+    width: StyleSheet.hairlineWidth,
+  },
+  stopLineAbove: { marginBottom: space[4], opacity: 0.6 },
+  stopLineBelow: { marginTop: space[4], opacity: 0.6 },
+  stopMark: { alignItems: "center", alignSelf: "stretch", width: space[20] },
+  stopPressed: { ...material.platePressed },
   // The message's column places these, so a person's own page stands at the end with their bubble.
   pages: { flexDirection: "row", flexWrap: "wrap", gap: space[6], justifyContent: "flex-end" },
   pressed: { ...material.platePressed },

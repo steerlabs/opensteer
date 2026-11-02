@@ -171,6 +171,7 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     apiVersion: z.number().int().positive().optional(),
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
+    placeEvents: z.literal("include").optional(),
     threadId: ThreadIdSchema.nullable(),
     workspaceId: WorkspaceIdSchema,
   }),
@@ -264,7 +265,23 @@ export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 export const ThreadEventPageSchema = z.object({
   readState: ThreadReadStateSchema,
   thread: ThreadViewSchema,
-  events: z.array(AgentEventViewSchema).max(turnPageMaxItems),
+  events: z
+    .array(z.unknown())
+    .max(turnPageMaxItems)
+    .transform((events) =>
+      events.flatMap((event) => {
+        const header = z.object({ type: z.string() }).safeParse(event);
+        if (
+          header.success &&
+          !AgentEventViewSchema.options.some(
+            (variant) => variant.shape.type.value === header.data.type,
+          )
+        )
+          return [];
+        return [event];
+      }),
+    )
+    .pipe(z.array(AgentEventViewSchema)),
   threadId: ThreadIdSchema,
   window: ThreadMessageWindowSchema,
 });

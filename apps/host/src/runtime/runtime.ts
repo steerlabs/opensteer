@@ -1639,6 +1639,9 @@ export async function createHostRuntime(
             },
             event,
           );
+          if (["run.completed", "run.failed", "run.interrupted"].includes(event.type)) {
+            await browser.drainRunPlaces(event.runId);
+          }
           const committed = await store.commitRunnerEvent({
             environmentId: event.environmentId,
             event,

@@ -890,14 +890,6 @@ button.surface-chip:hover {
   color: var(--muted);
 }
 
-/* The place the reply's live picture shows, highlighted where it stands. */
-.surface-chip--active {
-  border-color: var(--rim-selected);
-  background: var(--sheen) var(--fill-plate-hover);
-  color: var(--text);
-  box-shadow: var(--edge-plate);
-}
-
 .surface-chips__list {
   display: grid;
   gap: var(--space-6);

@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { BrowserSurfaceIdSchema, ThreadIdSchema, type ThreadStatus } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  ThreadIdSchema,
+  type ThreadStatus,
+} from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { BrowserSessionSummary, HostSnapshot, TaskEntry } from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot, PlaceEntry, TaskEntry } from "./client.js";
 import {
   conversationSurfaces,
   sameConversationSurfaceSource,
   surfaceDestination,
   liveWork,
   runPages,
+  placePage,
 } from "./surfaces.js";
 
 const base = new MockHostClient({ latencyMs: 0 }).getSnapshot();
@@ -179,6 +185,64 @@ describe("runPages", () => {
         threadId: threadId(1),
       },
     ],
+  });
+
+  const stop = (overrides: Partial<PlaceEntry> = {}): PlaceEntry => ({
+    kind: "place",
+    id: "stop",
+    createdAt: "2026-10-15T10:00:00Z",
+    runId: run,
+    place: {
+      kind: "browser",
+      sessionId: BrowserSessionIdSchema.parse(twoTabs("ready").id),
+      surfaceId: BrowserSurfaceIdSchema.parse("tab-b"),
+    },
+    title: "Recorded title",
+    site: "https://recorded.example/path",
+    ...overrides,
+  });
+
+  it("resolves an exact stop with recorded identity and activity for only its run and thread", () => {
+    const session = twoTabs("ready");
+    expect(placePage(stop(), [session], threadId(1))).toMatchObject({
+      title: "Recorded title",
+      site: "recorded.example",
+      acting: true,
+      ended: false,
+      destination: { kind: "browser", sessionId: session.id, tabId: "tab-b" },
+    });
+    expect(placePage(stop({ runId: "other-run" }), [session], threadId(1))?.acting).toBe(false);
+    expect(placePage(stop(), [session], threadId(2))?.acting).toBe(false);
+    const a = stop({
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(session.id),
+        surfaceId: BrowserSurfaceIdSchema.parse("tab-a"),
+      },
+    });
+    expect(placePage(a, [session], threadId(1))).toMatchObject({ favicon: icon, acting: false });
+  });
+
+  it.each(["closed", "failed", "missing", "tab-closed"] as const)(
+    "ends a stop when %s",
+    (state) => {
+      const session = twoTabs(state === "closed" || state === "failed" ? state : "ready");
+      if (state === "tab-closed") session.tabCatalog = { ...session.tabCatalog!, tabs: [] };
+      expect(placePage(stop(), state === "missing" ? [] : [session], threadId(1))).toMatchObject({
+        ended: true,
+        acting: false,
+        favicon: null,
+        title: "Recorded title",
+      });
+    },
+  );
+
+  it("falls back from a blank title to its recorded site then Page, and ignores unknown kinds", () => {
+    expect(placePage(stop({ title: "  " }), [], null)?.title).toBe("recorded.example");
+    expect(placePage(stop({ title: "", site: null }), [], null)?.title).toBe("Page");
+    expect(
+      placePage(stop({ place: { kind: "future" } as unknown as PlaceEntry["place"] }), [], null),
+    ).toBeNull();
   });
 
   it("lists every page in tab order with exact activity, identity and destination", () => {

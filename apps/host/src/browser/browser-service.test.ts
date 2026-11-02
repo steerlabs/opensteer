@@ -2870,7 +2870,9 @@ describe("BrowserService", () => {
     expect(Buffer.byteLength(JSON.stringify(catalog))).toBeLessThan(128 * 1024);
   });
 
-  async function actorAdmissionFixture(options: { readonly holdAnswers?: boolean } = {}) {
+  async function actorAdmissionFixture(
+    options: { readonly holdAnswers?: boolean; readonly onError?: (error: unknown) => void } = {},
+  ) {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
@@ -2881,7 +2883,13 @@ describe("BrowserService", () => {
     const threadId = createId("thread");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const backing: BrowserSessionRepository = repository;
-    const service = freshService({ keys, repository, runtime, actorMetadataTimeoutMs: 25 });
+    const service = freshService({
+      keys,
+      repository,
+      runtime,
+      actorMetadataTimeoutMs: 25,
+      ...(options.onError ? { onError: options.onError } : {}),
+    });
     const authority = { agentBindingId: `run:${runId}`, ownerId, workspaceId };
     const opened = await service.openAgentSession({ ...authority, fresh: true });
     const cdp = await service.attachCdpForAgent(
@@ -2916,6 +2924,7 @@ describe("BrowserService", () => {
     const answer = (requestId: string, result: Record<string, unknown>) =>
       runtime.sendServer({ type: "cdp.result", requestId, result });
     return {
+      runtime,
       answer,
       authority,
       audience,
@@ -2926,6 +2935,118 @@ describe("BrowserService", () => {
       sessionId: opened.session.id,
     };
   }
+
+  async function runPlaceFixture() {
+    const onError = vi.fn();
+    const f = await actorAdmissionFixture({ onError });
+    vi.useRealTimers();
+    vi.spyOn(f.backing, "resolvePlaceActors").mockResolvedValue(f.audience);
+    const acknowledge = () =>
+      withTimeout(f.cdp.request({ method: "Browser.getVersion" }), 1_000, {
+        timeoutError: () => new Error("Runtime did not acknowledge preceding place activity"),
+      });
+    await acknowledge();
+    const actorToken = f.forwarded[0]?.actorToken;
+    expect(actorToken).toEqual(expect.any(String));
+    f.runtime.sendServer({
+      type: "browser.surfaces.changed",
+      surfaces: ["page-1", "page-2"].map((id, index) => ({
+        id,
+        active: index === 0,
+        title: id,
+        url: "https://example.com",
+        geometryRevision: 1,
+      })),
+    });
+    await acknowledge();
+    let seq = 0;
+    return {
+      ...f,
+      onError,
+      record: vi.spyOn(f.backing, "recordRunPlace"),
+      activity: async (surfaceId: string) => {
+        f.runtime.sendServer({
+          type: "browser.activity",
+          actorToken,
+          surfaceId,
+          seq: ++seq,
+          geometryRevision: 1,
+          pointer: null,
+        });
+        await acknowledge();
+      },
+      drain: () =>
+        withTimeout(f.service.drainRunPlaces(f.audience[0]!.runId), 1_000, {
+          timeoutError: () => new Error("Pending Run place writes did not drain"),
+        }),
+    };
+  }
+
+  it("drains Run places without ending its browser binding or actor", async () => {
+    const f = await runPlaceFixture();
+    await f.activity("page-1");
+    await f.drain();
+    expect(f.record).toHaveBeenCalledTimes(1);
+    await f.activity("page-2");
+    await f.drain();
+    expect(f.record).toHaveBeenCalledTimes(2);
+    expect(f.record.mock.calls[1]?.[0]).toMatchObject({
+      runId: f.audience[0]!.runId,
+      data: { place: { surfaceId: "page-2" } },
+    });
+    expect(
+      await f.backing.listActiveBrowserSessionsForAgentBinding(f.authority.agentBindingId),
+    ).toHaveLength(1);
+    expect(f.forwarded.at(-1)?.actorToken).toBe(f.forwarded[0]?.actorToken);
+  });
+
+  it("drains rejected pending Run place writes without throwing", async () => {
+    const f = await runPlaceFixture();
+    const pending = Promise.withResolvers<AgentEvent | undefined>();
+    const failure = new Error("place write refused");
+    f.record.mockReturnValueOnce(pending.promise);
+    await f.activity("page-1");
+    expect(f.record).toHaveBeenCalledTimes(1);
+    const drained = f.drain();
+    const assertion = expect(drained).resolves.toBeUndefined();
+    pending.reject(failure);
+    await assertion;
+    expect(f.onError).toHaveBeenCalledWith(failure);
+  });
+
+  it("retries a failed Run place on the next action and gates repeated successful activity", async () => {
+    const f = await runPlaceFixture();
+    const failure = new Error("place write refused");
+    f.record.mockRejectedValueOnce(failure);
+    await f.activity("page-1");
+    expect(f.onError).toHaveBeenCalledWith(failure);
+    await f.activity("page-1");
+    expect(f.record).toHaveBeenCalledTimes(2);
+    await f.activity("page-1");
+    await f.activity("page-1");
+    expect(f.record).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a newer Run place transition when an older pending write fails", async () => {
+    const f = await runPlaceFixture();
+    const pending = Promise.withResolvers<AgentEvent | undefined>();
+    const failure = new Error("old place write refused");
+    f.record.mockReturnValueOnce(pending.promise);
+    try {
+      await f.activity("page-1");
+      await f.activity("page-2");
+      expect(f.record).toHaveBeenCalledTimes(1);
+      pending.reject(failure);
+      await f.activity("page-2");
+      expect(f.onError).toHaveBeenCalledWith(failure);
+      expect(f.record).toHaveBeenCalledTimes(2);
+      expect(f.record.mock.calls[1]?.[0]).toMatchObject({
+        data: { place: { surfaceId: "page-2" } },
+      });
+    } finally {
+      pending.resolve(undefined);
+    }
+  });
 
   it("versions restored holdings and repeated identical catalog reads", async () => {
     const f = await actorAdmissionFixture();
@@ -4897,6 +5018,10 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly page?: BrowserUsePage | null;
   }): Promise<readonly BrowserUsageCredit[]> {
     return this.#credit(input.sessionId, input.threadId, "person", input.tabId ?? null, input.page);
+  }
+
+  async recordRunPlace(): Promise<AgentEvent | undefined> {
+    return undefined;
   }
 
   async recordAgentBrowserUse(input: {

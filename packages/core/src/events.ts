@@ -1,3 +1,4 @@
+import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
 import { z } from "zod";
 import {
   DelegationIdSchema,
@@ -152,7 +153,24 @@ export type ExecutionNodeKind = z.infer<typeof ExecutionNodeKindSchema>;
 export const ExecutionNodeOutcomeSchema = z.enum(["completed", "failed", "interrupted"]);
 export type ExecutionNodeOutcome = z.infer<typeof ExecutionNodeOutcomeSchema>;
 
+const placeSiteSchema = z
+  .string()
+  .max(2048)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.origin !== "null" && url.origin === value;
+    } catch {
+      return false;
+    }
+  }, "Site must be an origin");
+
 const eventDataSchemas = {
+  "place.entered": z.strictObject({
+    place: PlaceIdentitySchema,
+    title: z.string().max(256),
+    site: placeSiteSchema.nullable(),
+  }),
   "assignment.created": z.strictObject({ assignment: AssignmentSummarySchema }),
   "assignment.updated": z.strictObject({ assignment: AssignmentSummarySchema }),
   "request.cancelled": z.strictObject({
@@ -365,8 +383,10 @@ const eventDataSchemas = {
  * message was a turn's or a completed Run's reply is read from the messages
  * the Host holds.
  */
+// Place entries are exclusively Host-authored.
+const { "place.entered": _hostPlaceEntered, ...runnerWritableEventDataSchemas } = eventDataSchemas;
 const runnerEventDataSchemas = {
-  ...eventDataSchemas,
+  ...runnerWritableEventDataSchemas,
   "run.completed": eventDataSchemas["run.completed"].omit({
     replyMessageId: true,
     startedAt: true,
@@ -408,6 +428,10 @@ const runnerEventDataSchemas = {
 } as const;
 
 const eventDataViewSchemas = {
+  "place.entered": z.object({
+    ...eventDataSchemas["place.entered"].shape,
+    place: PlaceIdentityViewSchema,
+  }),
   "assignment.created": z.object({ assignment: AssignmentSummarySchema }),
   "assignment.updated": z.object({ assignment: AssignmentSummarySchema }),
   "request.cancelled": z.object(eventDataSchemas["request.cancelled"].shape),
@@ -564,6 +588,7 @@ export const AgentEventSchema = z
     makeEventVariant("thread.state-changed"),
     makeEventVariant("thread.continuation-established"),
     makeEventVariant("thread.access-mode-updated"),
+    makeEventVariant("place.entered").extend({ runId: RunIdSchema }),
   ])
   .refine(
     (event) =>
@@ -607,6 +632,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("thread.state-changed"),
     makeEventViewVariant("thread.continuation-established"),
     makeEventViewVariant("thread.access-mode-updated"),
+    makeEventViewVariant("place.entered").extend({ runId: RunIdSchema }),
   ])
   .refine(
     (event) =>
@@ -620,6 +646,8 @@ export type AgentEvent = z.infer<typeof AgentEventSchema>;
 
 export type EventData<T extends AgentEventType> = z.infer<(typeof eventDataSchemas)[T]>;
 
-export type RunnerEventData<T extends AgentEventType> = z.infer<(typeof runnerEventDataSchemas)[T]>;
+export type RunnerEventData<T extends keyof typeof runnerEventDataSchemas> = z.infer<
+  (typeof runnerEventDataSchemas)[T]
+>;
 
 export { eventDataSchemas, runnerEventDataSchemas };
