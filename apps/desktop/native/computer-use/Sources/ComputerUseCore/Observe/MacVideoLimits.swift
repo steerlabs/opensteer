@@ -7,5 +7,7 @@ enum MacVideoLimits {
   static let warmMs = 30_000
   static let startupSeconds: TimeInterval = 30
   static let maxLongSide = 1_920
-  static let maxFps = 30
+  /// A start without the negotiated profile keeps the original cadence ceiling.
+  static let legacyMaxFps = 30
+  static let maxFps = 60
 }

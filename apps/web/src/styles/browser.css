@@ -446,10 +446,6 @@
   touch-action: none;
 }
 
-.browser-canvas:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--ember-line);
-}
-
 /* A page starts under its toolbar, centred across; input maps through the
    same box: see browserFrameContentRect. */
 .browser-canvas > canvas {
@@ -754,12 +750,6 @@
   overflow: hidden;
   font-size: var(--text-input);
   pointer-events: none;
-}
-
-/* The keyboard is in the page: say so plainly. */
-.browser-canvas:focus-within {
-  outline: 2px solid var(--ember);
-  outline-offset: -2px;
 }
 
 /* After a finger taps the page: the keyboard, when a field there wants it. */

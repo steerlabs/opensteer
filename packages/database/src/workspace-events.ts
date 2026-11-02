@@ -1,3 +1,4 @@
+import { recordPersonWaited } from "./run-visibility.js";
 import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import { markThreadStatePending } from "./thread-status.js";
 import {
@@ -271,10 +272,11 @@ export async function stampRunContext(
   )
     return data;
   if (runId === null) throw new Error("Run lifecycle event has no Run");
+  await recordPersonWaited(transaction, runId);
   const seed = await transaction
     .selectFrom("runs")
     .innerJoin("messages", "messages.id", "runs.seedInputId")
-    .select(["messages.author", "runs.createdAt"])
+    .select(["messages.author", "runs.createdAt", "runs.personWaited"])
     .select(
       sql<boolean>`exists (
       select 1 from messages input where input.run_id = runs.id
@@ -288,6 +290,6 @@ export async function stampRunContext(
     ...data,
     startedBy,
     startedAt: seed.createdAt.toISOString(),
-    personWaiting: startedBy.kind === "human" || seed.personWaiting,
+    personWaiting: startedBy.kind === "human" || seed.personWaiting || seed.personWaited,
   };
 }

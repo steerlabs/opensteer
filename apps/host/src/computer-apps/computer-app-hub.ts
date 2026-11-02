@@ -976,7 +976,8 @@ export class ComputerAppHub {
       ...(module.platform === "android" && module.sharedInput === 1
         ? { sharedInput: 1 as const }
         : {}),
-      ...(module.platform === "android" && module.displayProfile === 1
+      ...((module.platform === "android" || module.platform === "darwin") &&
+      module.displayProfile === 1
         ? { displayProfile: 1 as const }
         : {}),
       ...(module.platform === "android" && module.phoneOwnerControl === 1

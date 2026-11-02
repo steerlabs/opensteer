@@ -406,6 +406,7 @@ describe("ComputerAppHub", () => {
               protocolVersion: runnerIntegrationsProtocolVersion,
               computerUseVersion: 2 as const,
               macWindowVideoVersion: 1 as const,
+              displayProfile: 1 as const,
               ...(ownerViewVersion === undefined ? {} : { ownerViewVersion }),
             },
           },
@@ -422,12 +423,12 @@ describe("ComputerAppHub", () => {
 
     it("streams a Mac on the owner-view version Macs ship with", async () => {
       await attachMac(macOwnerViewVersion);
-      expect(hub.displayStream(runnerId)).toMatchObject({ mac: true });
+      expect(hub.displayStream(runnerId)).toMatchObject({ mac: true, displayProfile: 1 });
     });
 
     it("still streams a Mac on owner-view version 2", async () => {
       await attachMac(2);
-      expect(hub.displayStream(runnerId)).toMatchObject({ mac: true });
+      expect(hub.displayStream(runnerId)).toMatchObject({ mac: true, displayProfile: 1 });
     });
 
     it.each([undefined, 1, macOwnerViewVersion + 1])(

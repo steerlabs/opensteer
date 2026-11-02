@@ -2647,6 +2647,9 @@ describe("HttpHostClient durable realtime", () => {
         role?: "conversation" | "work";
         turnPages?: boolean;
         steps?: boolean;
+        emptyFirst?: boolean;
+        scanLimit?: number;
+        scanBytes?: number;
         exhausted?: boolean;
         stuck?: boolean;
         holdSecond?: boolean;
@@ -2762,6 +2765,17 @@ describe("HttpHostClient durable realtime", () => {
                     message: recent,
                   }),
                 ];
+            if (options.shown) {
+              for (let index = 0; index < 9; index += 1) {
+                const message = makeMessage(thread.id, "input", `Newer question ${index}`);
+                events.push(
+                  agentEvent(workspace.id, thread.id, message.runId, "6", "message.created", {
+                    input: makeThreadInput(message),
+                    message,
+                  }),
+                );
+              }
+            }
             return json({
               thread,
               threadId: thread.id,
@@ -2792,21 +2806,23 @@ describe("HttpHostClient durable realtime", () => {
             : options.longScan && !first
               ? []
               : first
-                ? options.steps || options.folded || options.cut
-                  ? [
-                      agentEvent(
-                        workspace.id,
-                        thread.id,
-                        options.folded || options.cut ? recent.runId : silentRun,
-                        "4",
-                        "reasoning.completed",
-                        {
-                          blockId: "older-step",
-                          text: "Older work without a reply",
-                        },
-                      ),
-                    ]
-                  : silent
+                ? options.emptyFirst
+                  ? []
+                  : options.steps || options.folded || options.cut
+                    ? [
+                        agentEvent(
+                          workspace.id,
+                          thread.id,
+                          options.folded || options.cut ? recent.runId : silentRun,
+                          "4",
+                          "reasoning.completed",
+                          {
+                            blockId: "older-step",
+                            text: "Older work without a reply",
+                          },
+                        ),
+                      ]
+                    : silent
                 : options.exhausted
                   ? []
                   : visible;
@@ -2815,20 +2831,23 @@ describe("HttpHostClient durable realtime", () => {
             threadId: thread.id,
             events,
             window: {
-              byteCount: 256,
+              byteCount: options.scanBytes ?? 256,
               itemCount: events.length,
               totalItems: 6,
               threadId: thread.id,
               hasMore:
                 !navigating &&
-                (first || (options.longScan ? requests.length < 5 : options.holdSecond === true)),
+                (first ||
+                  (options.longScan
+                    ? requests.length < (options.scanLimit ?? 5)
+                    : options.holdSecond === true)),
               nextBefore: navigating
                 ? null
                 : first
                   ? options.stuck
                     ? "recent"
                     : "silent"
-                  : options.holdSecond
+                  : options.holdSecond || options.longScan
                     ? `oldest-${requests.length}`
                     : null,
             },
@@ -2947,6 +2966,42 @@ describe("HttpHostClient durable realtime", () => {
         }
       },
     );
+
+    it.each([
+      [100, 256, 20],
+      [100, 700 * 1024, 3],
+    ])(
+      "bounds Earlier's invisible scan by pages and bytes (%s, %s)",
+      async (scanLimit, scanBytes, expectedReads) => {
+        const f = await setupHistory({ longScan: true, scanLimit, scanBytes });
+        try {
+          await f.client.loadEarlierTranscript(f.thread.id);
+          expect(f.requests).toHaveLength(expectedReads);
+          expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.hasMore).toBe(true);
+        } finally {
+          f.client.dispose();
+        }
+      },
+    );
+
+    it("keeps the Earlier anchor while an empty page advances its cursor", async () => {
+      const f = await setupHistory({ emptyFirst: true });
+      try {
+        const anchor = f.client.getSnapshot().transcripts[f.thread.id]?.at(-1)?.id;
+        await f.client.loadEarlierTranscript(f.thread.id);
+        expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
+        expect(f.client.getSnapshot().transcripts[f.thread.id]?.at(-1)?.id).toBe(anchor);
+        expect(
+          f.client
+            .getSnapshot()
+            .transcripts[f.thread.id]?.some(
+              (entry) => entry.kind === "message" && entry.body === "Earlier question",
+            ),
+        ).toBe(true);
+      } finally {
+        f.client.dispose();
+      }
+    });
 
     it("does not count a live human message as older-page progress", async () => {
       const f = await setupHistory({ holdFirst: true, shown: "active" });
@@ -3170,11 +3225,21 @@ describe("HttpHostClient durable realtime", () => {
   describe("opening a Thread", () => {
     async function openThread(
       role: "conversation" | "work",
-      capabilities: readonly "history-turns-v1"[],
-      options: { empty?: boolean; stuck?: boolean; earlier?: boolean } = {},
+      capabilities: readonly ("history-turns-v1" | "history-conversation-v1")[],
+      options: {
+        empty?: boolean;
+        stuck?: boolean;
+        earlier?: boolean;
+        conversation?: boolean;
+        conversationRows?: number;
+        asOf?: string;
+        budget?: number;
+        scan?: boolean;
+      } = {},
     ) {
       const workspace = makeWorkspace();
       const thread = { ...makeThread(workspace.id), role };
+      workspace.homeThreadId = thread.id;
       const question = makeMessage(thread.id, "input", "Earlier question");
       const reply = {
         ...makeMessage(thread.id, "assistant", "Earlier reply"),
@@ -3229,6 +3294,25 @@ describe("HttpHostClient durable realtime", () => {
           nextBefore: null,
         };
       }
+      if (options.conversation) {
+        pages.newest = {
+          events: Array.from({ length: options.conversationRows ?? 10 }, (_, index) => {
+            const message = makeMessage(thread.id, "input", `Visible question ${index}`);
+            return agentEvent(
+              workspace.id,
+              thread.id,
+              message.runId,
+              String(index + 1),
+              "message.created",
+              {
+                input: makeThreadInput(message),
+                message,
+              },
+            );
+          }),
+          nextBefore: "older",
+        };
+      }
       let viewerId = ownerId;
       const olderAsked = Promise.withResolvers<void>();
       const olderAnswer = Promise.withResolvers<void>();
@@ -3251,17 +3335,19 @@ describe("HttpHostClient durable realtime", () => {
               timeoutError: () => new Error("The held opening page was never released."),
             });
           }
-          const page = pages[before]!;
+          const page = options.scan
+            ? { events: [], nextBefore: requests.length < 30 ? String(requests.length) : null }
+            : pages[before]!;
           return json({
             thread,
             threadId: thread.id,
             events: page.events,
             readState: {
               ...defaultReadState(thread.id),
-              asOfSequence: page.events.at(-1)?.sequence ?? "5",
+              asOfSequence: options.asOf ?? page.events.at(-1)?.sequence ?? "5",
             },
             window: {
-              byteCount: 256,
+              byteCount: options.budget ?? 256,
               itemCount: page.events.length,
               totalItems: 5,
               threadId: thread.id,
@@ -3295,6 +3381,139 @@ describe("HttpHostClient durable realtime", () => {
         },
       };
     }
+
+    it("requests a conversation view and fills ten rows in one read", async () => {
+      const f = await openThread("conversation", ["history-turns-v1", "history-conversation-v1"], {
+        conversation: true,
+      });
+      try {
+        await finishOpening(f);
+        expect(f.requests).toHaveLength(1);
+        expect(f.requests[0]).toMatchObject({ turns: 10, view: "conversation" });
+        expect(openingRows(f)).toHaveLength(10);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("installs a conversation view's first page that draws less than a screen", async () => {
+      const f = await openThread("conversation", ["history-turns-v1", "history-conversation-v1"], {
+        conversation: true,
+        conversationRows: 3,
+      });
+      try {
+        // The Host already counted only turns that show; reading on would cost
+        // a round trip each time before anything paints.
+        await finishOpening(f);
+        expect(f.requests).toHaveLength(1);
+        expect(openingRows(f)).toHaveLength(3);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("older");
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it.each([[["history-turns-v1"] as const], [[] as const]])(
+      "bounds empty advancing pages on older Hosts (%j)",
+      async (capabilities) => {
+        const f = await openThread("conversation", capabilities, {
+          scan: true,
+          budget: 700 * 1024,
+        });
+        try {
+          await finishOpening(f);
+          expect(f.requests).toHaveLength(3);
+          expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("3");
+          expect(f.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+            status: "window",
+            latest: false,
+          });
+          expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
+        } finally {
+          f.client.dispose();
+        }
+      },
+    );
+
+    it("does not certify saved Home from an older Host's opening that stopped short of a screen", async () => {
+      const f = await openThread("conversation", ["history-turns-v1"]);
+      try {
+        f.pages["4"]!.nextBefore = "x";
+        f.pages.x = { events: [], nextBefore: "y" };
+        f.pages.y = { events: [], nextBefore: "z" };
+        await finishOpening(f);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "x", "y"]);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
+        expect(f.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+          status: "window",
+          latest: false,
+        });
+        expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("caps a scan of small empty pages by page count", async () => {
+      const f = await openThread("conversation", [], { scan: true });
+      try {
+        await finishOpening(f);
+        expect(f.requests).toHaveLength(20);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("20");
+        expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it.each([[["history-turns-v1"] as const], [[] as const]])(
+      "continues after an older Host returns some visible rows until history ends (%j)",
+      async (capabilities) => {
+        const f = await openThread("conversation", capabilities);
+        try {
+          f.pages["4"]!.nextBefore = "1";
+          const message = makeMessage(f.thread.id, "input", "Oldest visible");
+          f.pages["1"] = {
+            events: [
+              agentEvent(f.workspace.id, f.thread.id, message.runId, "0", "message.created", {
+                input: makeThreadInput(message),
+                message,
+              }),
+            ],
+            nextBefore: null,
+          };
+          await finishOpening(f);
+          expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "1"]);
+          expect(openingRows(f)).toEqual(["Oldest visible", "Earlier question", "Earlier reply"]);
+        } finally {
+          f.olderAnswer.resolve();
+          f.client.dispose();
+        }
+      },
+    );
+
+    it("does not replay deliberately omitted events at the snapshot cut", async () => {
+      const f = await heldOpening({ asOf: "8" });
+      try {
+        for (const sequence of ["7", "8", "9"]) {
+          const message = makeMessage(f.thread.id, "input", `Buffered ${sequence}`);
+          f.socket.receive({
+            type: "host.events",
+            events: [
+              agentEvent(f.workspace.id, f.thread.id, message.runId, sequence, "message.created", {
+                input: makeThreadInput(message),
+                message,
+              }),
+            ],
+          });
+        }
+        await finishOpening(f);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Buffered 9"]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
 
     it.each([[["history-turns-v1"] as const], [[] as const]])(
       "shows Chat's latest exchange behind its silent background Runs (capabilities %j)",
@@ -3436,7 +3655,7 @@ describe("HttpHostClient durable realtime", () => {
               message: fresh,
             }),
           ],
-          nextBefore: "fresh",
+          nextBefore: null,
         };
         f.socket.receive({
           type: "host.snapshot",
@@ -3445,7 +3664,7 @@ describe("HttpHostClient durable realtime", () => {
         await finishOpening(f);
         expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", undefined]);
         expect(openingRows(f)).toEqual(["Fresh question"]);
-        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("fresh");
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBeNull();
       } finally {
         f.olderAnswer.resolve();
         f.client.dispose();
@@ -3474,11 +3693,11 @@ describe("HttpHostClient durable realtime", () => {
       }
     });
 
-    it("continues Earlier from the oldest page reached while opening", async () => {
+    it("opening fills through the oldest page before Earlier is needed", async () => {
       const f = await heldOpening({ earlier: true });
       try {
         await finishOpening(f);
-        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("1");
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBeNull();
         await withTimeout(f.client.loadEarlierTranscript(f.thread.id), 1000, {
           timeoutError: () => new Error("Earlier did not finish."),
         });

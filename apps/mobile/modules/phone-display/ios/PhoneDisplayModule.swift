@@ -299,7 +299,6 @@ final class PhoneDisplayPictureView: ExpoView {
       if self?.undrawn === receipt { self?.undrawn = nil }
     }
     picture.contents = image
-    picture.cornerRadius = request.cornerRadius
     place()
     CATransaction.commit()
   }
@@ -310,5 +309,6 @@ final class PhoneDisplayPictureView: ExpoView {
     }
     picture.isHidden = false
     picture.frame = rect
+    picture.cornerRadius = shown.radius(in: bounds.size)
   }
 }

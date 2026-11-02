@@ -528,8 +528,10 @@ function Journey() {
       await readyE3;
       await check("video-base64-key", center([0, 255, 0], "lime key via base64"));
       // Mac encoder geometry, reference loss, static refresh and generation changes.
+      // A Mac that negotiated the video profile encodes Constrained High.
       for (const [name, width, height] of [
         ["mac", 1512, 982],
+        ["mac-high", 1512, 982],
         ["resized", 1280, 800],
       ] as const) {
         const units = accessUnits(await fixture(`${name}.h264`));

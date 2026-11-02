@@ -17,7 +17,7 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import { conversationHistoryHost, MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import {
   AssignmentSummarySchema,
   BrowserPageContentPartSchema,
@@ -4188,4 +4188,28 @@ describe("the Run's live place over the composer", () => {
     await act(() => root.render(pane(() => undefined)));
     expect(card(container)).toBeNull();
   });
+});
+
+it("opens Chat behind silent automatic Runs with a full conversation page in one read", async () => {
+  const source = new MockHostClient({ latencyMs: 0 });
+  await source.load();
+  const fixture = conversationHistoryHost(source);
+  try {
+    await fixture.client.load();
+    const { container } = await mount(fixture, source.getSnapshot().homeThreadId!);
+    await vi.waitFor(
+      () => {
+        for (let index = 0; index < 10; index += 1)
+          expect(text(container), "Chat did not draw the filtered history").toContain(
+            `Visible conversation question ${index}`,
+          );
+      },
+      { timeout: 1000 },
+    );
+    expect(fixture.requests).toHaveLength(1);
+    expect(fixture.requests[0]).toMatchObject({ turns: 10, view: "conversation" });
+  } finally {
+    fixture.client.dispose();
+    source.dispose();
+  }
 });

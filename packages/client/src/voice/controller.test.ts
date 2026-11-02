@@ -770,3 +770,48 @@ it("hands off exactly the words that were said and the page shown while saying t
   );
   f.dispose();
 });
+
+it.each(["completed", "failed", "interrupted"] as const)(
+  "settles an agent voice hand-off from its terminal human Run (%s)",
+  async (status) => {
+    const f = agentSetup();
+    try {
+      await f.controller.start();
+      f.emit({ type: "heard", turnId: "human", text: "Help me" });
+      f.tool({
+        id: "human-send",
+        tool: "send_to_chat",
+        input: { messages: 1 },
+        heard: ["Help me"],
+      });
+      await settle();
+      f.emit({ type: "speaking", text: "Sent to Chat." });
+      f.emit({ type: "spoke" });
+      const receipt = await f.dispatch.mock.results[0]!.value;
+      if (receipt.type !== "thread.sendMessage")
+        throw new Error("Voice send did not return its receipt");
+      const id = f.host.getSnapshot().homeThreadId!;
+      const entries = f.host.getSnapshot().transcripts[id] ?? [];
+      expect(
+        entries.some(
+          (entry) =>
+            entry.kind === "message" && entry.author.kind === "human" && entry.body === "Help me",
+        ),
+      ).toBe(true);
+      expect(f.controller.getSnapshot().phase).toBe("thinking");
+      const run: RunEntry = {
+        kind: "run",
+        id: "terminal-human-run",
+        runId: receipt.run?.id ?? receipt.input.runId,
+        createdAt: new Date(voiceTestNow + 1).toISOString(),
+        error: null,
+        replyMessageId: null,
+        status,
+      };
+      f.publish({ transcripts: { [id]: [...entries, run] } });
+      expect(f.controller.getSnapshot().phase).toBe("listening");
+    } finally {
+      f.dispose();
+    }
+  },
+);

@@ -299,7 +299,10 @@ export const ThreadEventPageSchema = z.object({
     )
     .pipe(z.array(AgentEventViewSchema)),
   threadId: ThreadIdSchema,
-  window: ThreadMessageWindowSchema,
+  /** A conversation view (`history-conversation-v1`) omits `totalItems`. */
+  window: ThreadMessageWindowSchema.extend({
+    totalItems: ThreadMessageWindowSchema.shape.totalItems.optional(),
+  }),
 });
 export type ThreadEventPage = z.infer<typeof ThreadEventPageSchema>;
 

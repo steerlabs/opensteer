@@ -77,7 +77,11 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
     });
     expect(harness.received[0]).toMatchObject({
       method: "hello",
-      params: { clientVersion: "9.9.9", protocolVersion: computerUseHelperProtocolVersion },
+      params: {
+        clientVersion: "9.9.9",
+        protocolVersion: computerUseHelperProtocolVersion,
+        videoProfile: 1,
+      },
     });
     expect(harness.received[1]).toMatchObject({ method: "permissions.get" });
     // A request whose caller named no deadline still carries one, which the
@@ -130,6 +134,72 @@ describe.runIf(process.platform === "darwin")("ComputerUseHelperClient", () => {
             streamId: "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           }),
         ).rejects.toMatchObject({ code: "unsupported" });
+    },
+  );
+
+  it.each([undefined, 1, 2] as const)(
+    "projects video for helper profile %s",
+    async (videoProfile) => {
+      const hello: Record<string, unknown> = {
+        helperVersion: "test",
+        minProtocolVersion: 10,
+        protocolVersion: 10,
+        permissions: { accessibility: "granted", screenRecording: "granted" },
+        ...(videoProfile === undefined ? {} : { videoProfile }),
+      };
+      const h = await helperHarness({ hello });
+      h.reply("display.start", () => ({ attachmentToken: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }));
+      h.reply("display.demand", () => ({}));
+      const streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const start = {
+        streamId,
+        target: { kind: "mac-window", bindingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+        sources: [],
+        maxLongSide: 1280,
+        maxFps: 60,
+        maxBitrate: null,
+      };
+      const attachment = await h.client.attachDisplay(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        () => {},
+        () => {},
+      );
+      expect(
+        h.received.filter((f) => (f as { method?: string }).method === "hello").at(-1),
+      ).toMatchObject({
+        params: { protocolVersion: 10, ownerViewVersion: 3, clientVersion: "9.9.9" },
+      });
+      expect(
+        (
+          h.received.filter((f) => (f as { method?: string }).method === "hello").at(-1) as {
+            params: unknown;
+          }
+        ).params,
+      ).not.toHaveProperty("videoProfile");
+      attachment.close();
+      await h.client.request("display.start", start);
+      expect((h.received.at(-1) as { params: unknown }).params).toEqual(
+        videoProfile === 1 ? start : { ...start, maxFps: 30, maxBitrate: undefined },
+      );
+      await h.client.request("display.demand", {
+        streamId,
+        revision: 1,
+        sources: [],
+        maxBitrate: null,
+      });
+      expect((h.received.at(-1) as { params: unknown }).params).toEqual({
+        streamId,
+        revision: 1,
+        sources: [],
+        ...(videoProfile === 1 ? { maxBitrate: null } : {}),
+      });
+      hello.videoProfile = videoProfile === 1 ? 2 : 1;
+      await h.client.disconnect();
+      await h.client.request("display.start", start);
+      const next = (h.received.at(-1) as { params: unknown }).params;
+      expect(next).toMatchObject({ maxFps: videoProfile === 1 ? 30 : 60 });
+      if (videoProfile === 1) expect(next).not.toHaveProperty("maxBitrate");
+      else expect(next).toHaveProperty("maxBitrate", null);
     },
   );
 

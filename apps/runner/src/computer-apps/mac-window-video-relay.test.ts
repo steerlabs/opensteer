@@ -45,6 +45,7 @@ const bindingId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const attachmentToken = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 it.each([
+  "unconfirmed-profile",
   "previous-desktop",
   "previous-helper",
   "current",
@@ -175,6 +176,7 @@ it.each([
               return;
             }
             answer({
+              ...(peer === "current" || peer === "unconfirmed-profile" ? { videoProfile: 1 } : {}),
               computerUseVersion: 2,
               ownerViewVersion: 3,
               ...(supported && !legacy && request.headers["x-opensteer-mac-owner-input"] === "2"
@@ -290,13 +292,40 @@ it.each([
           target: { kind: "mac-window", bindingId },
           sources: [source],
           maxLongSide: 1280,
-          maxFps: 30,
+          maxFps: 60,
+          ...(peer !== "unconfirmed-profile" ? { displayProfile: 1, maxBitrate: null } : {}),
           timeoutMs: 5_000,
           dataTicket: "fixture.ticket.value",
         }),
       );
       await expect.poll(() => received.length).toBe(1);
       expect(received[0]?.equals(Buffer.from(media))).toBe(true);
+      const started = requests.find((r) => r.method === "display.start");
+      expect(started?.params).toMatchObject({ maxFps: peer === "current" ? 60 : 30 });
+      if (peer === "current") expect(started?.params).toHaveProperty("maxBitrate", null);
+      else expect(started?.params).not.toHaveProperty("maxBitrate");
+      for (const maxBitrate of [900_000, null]) {
+        const count = requests.filter((r) => r.method === "display.demand").length;
+        relay.handle(
+          HostIntegrationsDisplayDemandSchema.parse({
+            ...fence,
+            type: "host.integrations.display.demand",
+            streamId,
+            display: "main",
+            revision: 1,
+            sources: [source],
+            maxBitrate,
+          }),
+        );
+        await vi.waitFor(
+          () =>
+            expect(requests.filter((r) => r.method === "display.demand")).toHaveLength(count + 1),
+          { timeout: 2_000 },
+        );
+        const params = requests.filter((r) => r.method === "display.demand").at(-1)?.params;
+        if (peer === "current") expect(params).toHaveProperty("maxBitrate", maxBitrate);
+        else expect(params).not.toHaveProperty("maxBitrate");
+      }
       await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
       if (peer.startsWith("uncached-")) expect(handler.ownerViewVersion()).toBeUndefined();
       if (peer === "current") {

@@ -437,6 +437,19 @@ authorize an agent action. Window video captures neither audio nor the system cu
 Diagnostics contain IDs, typed reasons and native domain/code, never media, window text,
 typed input, URLs or native error user-info dictionaries.
 
+Mac video profiles negotiate independently between Electron and the helper, and between
+Electron and the Runner; the Host confirms the Runner’s advertised display profile.
+Without confirmation at every hop, starts keep the legacy shape: Baseline, 30 fps, a fixed
+2.5 Mbps and periodic keys. A negotiated stream prefers low-latency Constrained High and makes
+keys only on demand, because a periodic key on a scarce budget costs seconds of skipped
+frames; recovery therefore stays explicit (viewer key requests, Host refresh, bounded replay).
+The helper keeps the first encoder configuration the hardware fully supports, since a virtual
+machine's encoder lacks some. The Host measures each viewer's link
+(`apps/host/src/computer-use/display-link-rate.ts`) and caps the shared encoder by the viewer
+driving the window, else the slowest visible one; a viewer too old to report its link holds
+the legacy rate. The capture shrinks with the cap, since a full-size window cannot meet a low
+budget and the queue it builds costs more than the pixels.
+
 ### Negotiated Mac owner input
 
 Every hop negotiates owner input; legacy version 1 parses tolerantly and enables none.

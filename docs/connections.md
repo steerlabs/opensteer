@@ -123,6 +123,22 @@ continuations never establish a conversation read position. Input/Run associatio
 survives history boundaries. See
 [`host-session-client.ts`](../packages/client/src/host/host-session-client.ts).
 
+## Conversation history
+
+A conversation's turns are mostly automatic Runs it never draws, so its pages
+(`view: "conversation"`) count and send only turns that can show. The Host's
+quiet set must stay strictly inside what clients hide: a Run is quiet only once
+terminal, from facts frozen then, and a person who ever waited on it keeps it
+shown even after their input moves elsewhere. Getting this backwards hides a
+reply; the reverse only costs a row the client filters. Pages are sparse, so a
+page's coverage is its `readState.asOfSequence`, never its last event: replaying
+buffered events against the last event resurrects what was omitted. Message
+jumps (`aroundMessageId`) stay unfiltered so every search or notification target
+opens. Automatic inputs never count as unread in a conversation, for the same
+reason they are never drawn. See
+[`run-visibility.ts`](../packages/database/src/run-visibility.ts) and
+[`snapshot-store.ts`](../packages/database/src/snapshot-store.ts).
+
 ## Personal process recovery and diagnostics
 
 Live route access does not establish local supervision: a stopped Personal stack

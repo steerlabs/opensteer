@@ -1913,6 +1913,33 @@ describe("quiet Chat", () => {
   const startedBy = { kind: "platform" as const, cause: "assignment-result" };
   const rows = (entries: TranscriptEntry[], atComputer = false) =>
     conversationRows(groupTranscriptEntries(entries), { live: true, atComputer: () => atComputer });
+  it("does not count hidden automatic inputs as incoming Chat messages", () => {
+    const hidden = input({ author: startedBy, sequence: "10" });
+    const entries = [hidden, run({ startedBy })];
+    expect(rows(entries)).toEqual([]);
+    expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([]);
+    expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([hidden]);
+    const reply = message({ id: "reply", sequence: "11" });
+    expect(
+      incomingTranscriptMessages(
+        [hidden, run({ startedBy, replyMessageId: reply.id }), reply],
+        "viewer",
+        true,
+      ),
+    ).toEqual([reply]);
+  });
+  it("never counts an automatic input as incoming, claimed or joined into a person's turn", () => {
+    const unclaimed = input({ author: startedBy, sequence: "10", runId: null });
+    const question = input({ sequence: "11" });
+    const joined = input({ author: startedBy, sequence: "12" });
+    const entries = [unclaimed, question, joined, run()];
+    expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([question]);
+    expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([
+      unclaimed,
+      question,
+      joined,
+    ]);
+  });
   it("keeps the same drawn row when an older page prepends folded steps", () => {
     const reply = message();
     const completed = run({ replyMessageId: reply.id });

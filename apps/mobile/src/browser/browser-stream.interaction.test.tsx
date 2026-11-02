@@ -684,7 +684,7 @@ describe("native browser picture presenter", () => {
       {
         bytes: [0xff, 0xd8, 0xff],
         metadata: {
-          cornerRadius: 0,
+          cornerRadius: 15,
           fence: `${surfaceId}:800:600:8:`,
           generation: native.generation,
           height: 600,

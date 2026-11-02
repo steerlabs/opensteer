@@ -156,6 +156,10 @@ import {
 const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
 const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
+const historyScanMaxPages = 20;
+const historyScanMaxBytes = 2 * 1024 * 1024;
+/** Pages an older Host's opening may read to fill a screen once something draws. */
+const historyFillMaxPages = 4;
 const defaultReconnectBaseDelayMs = 300;
 /** How long a missed live frame waits before its Thread's streams are reread. */
 const liveRefreshDelayMs = 250;
@@ -2683,12 +2687,11 @@ export class HttpHostClient {
       }
       if (overtaken())
         throw new Error("The connection changed while loading this conversation. Try again.");
-      const { history, page, window } = latest;
+      const { history, page, window, complete } = latest;
       this.#allowWorkspace(page.thread.workspaceId, generation);
       let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
-      const pageMax = page.events.at(-1)?.sequence;
       const replayed = buffer.filter(
-        (event) => pageMax === undefined || compareSequence(event.sequence, pageMax) > 0,
+        (event) => compareSequence(event.sequence, page.readState.asOfSequence) > 0,
       );
       for (const event of replayed) entries = foldTranscriptEvent(entries, event);
       // The page is durable history only; whatever the Thread's Runs are
@@ -2725,7 +2728,13 @@ export class HttpHostClient {
       if (workspaceId) this.#ensureWorkspaceChannel(workspaceId);
       if (this.#observedThreads.has(threadId)) this.#ensureRequests(threadId);
       this.#applyReadStates([page.readState], markers);
-      if (this.#acceptHomeWindow(threadId, workspaceId, !this.#historicalThreads.has(threadId)))
+      if (
+        this.#acceptHomeWindow(
+          threadId,
+          workspaceId,
+          complete && !this.#historicalThreads.has(threadId),
+        )
+      )
         this.#update(this.#snapshot);
     } catch (error) {
       // A worker the Host will not show this viewer takes its tasks with it.
@@ -2742,9 +2751,9 @@ export class HttpHostClient {
   }
 
   /**
-   * The newest history page, and as many pages before it as it takes to reach
-   * something the Thread draws: its newest turns can all be ones it does not,
-   * such as Chat's silent background Runs. Null once the viewer has changed.
+   * Fill Chat's opening window despite silent automatic Runs, within a bounded
+   * scan. A capped window remains readable but cannot certify saved Home.
+   * Null once the viewer has changed.
    */
   async #readLatestHistory(threadId: string, generation: number, userId: string | undefined) {
     const page = await this.#readThreadHistory(threadId);
@@ -2760,13 +2769,34 @@ export class HttpHostClient {
     // silent stretch is not folded again for every page read.
     let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
     let assignments = withAssignmentsFrom(this.#snapshot.assignments, history);
-    while (window.hasMore && this.#drawnRowCount(thread, entries, assignments) === 0) {
+    // A conversation view already counts only turns that can show, so it reads
+    // on only while nothing draws. An older Host pages every turn: it also fills
+    // a screen, within a few pages so the first paint never waits long.
+    const conversationView = this.#capabilities?.includes("history-conversation-v1") === true;
+    const fillRows = thread.role === "conversation" && !conversationView ? historyPageTurns : 1;
+    let pages = 1;
+    let bytes = window.byteCount;
+    const cursors = new Set<string>();
+    const wantsMore = () => {
+      const drawn = this.#drawnRowCount(thread, entries, assignments);
+      return drawn === 0 || (drawn < fillRows && pages < historyFillMaxPages);
+    };
+    while (
+      window.hasMore &&
+      pages < historyScanMaxPages &&
+      bytes < historyScanMaxBytes &&
+      wantsMore()
+    ) {
       const before = window.nextBefore;
-      if (!before) throw new Error("Thread event page is missing its continuation cursor.");
+      if (!before || cursors.has(before))
+        throw new Error("Thread event page is missing its continuation cursor.");
+      cursors.add(before);
       const older = await this.#readThreadHistory(threadId, before);
       if (!this.#viewerStillCurrent(generation, userId)) return null;
       if (older.window.hasMore && older.window.nextBefore === before)
         throw new Error("Thread event page is missing its continuation cursor.");
+      pages += 1;
+      bytes += older.window.byteCount;
       history = [...older.events, ...history];
       window = older.window;
       entries = mergeTranscriptSegments(
@@ -2775,7 +2805,16 @@ export class HttpHostClient {
       );
       assignments = withAssignmentsFrom(assignments, older.events);
     }
-    return { history, page, window };
+    if (window.hasMore && (!window.nextBefore || cursors.has(window.nextBefore)))
+      throw new Error("Thread event page is missing its continuation cursor.");
+    return {
+      history,
+      page,
+      window,
+      // Only a window that reached its target may stand in for the Thread in
+      // the saved Home; a budget-capped scan must not replace a fuller one.
+      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) >= fillRows,
+    };
   }
 
   /** How many rows a Thread's transcript draws once its history is settled. */
@@ -2800,7 +2839,15 @@ export class HttpHostClient {
           : {}),
         ...(before ? { before } : {}),
         threadId,
-        ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
+        ...(this.#capabilities?.includes("history-turns-v1") ||
+        this.#capabilities?.includes("history-conversation-v1")
+          ? {
+              turns: historyPageTurns,
+              ...(this.#capabilities?.includes("history-conversation-v1")
+                ? { view: "conversation" as const }
+                : {}),
+            }
+          : {}),
       }),
     );
     if (page.threadId !== threadId || page.thread.id !== threadId)
@@ -5648,12 +5695,25 @@ export class HttpHostClient {
         ? this.#drawnRowCount(thread, snapshot.transcripts[threadId] ?? [], snapshot.assignments)
         : 0;
     };
-    while (!scan.retired && this.#viewerStillCurrent(generation, userId)) {
+    let pages = 0;
+    let bytes = 0;
+    const cursors = new Set<string>();
+    while (
+      !scan.retired &&
+      this.#viewerStillCurrent(generation, userId) &&
+      pages < historyScanMaxPages &&
+      bytes < historyScanMaxBytes
+    ) {
       const thread = this.#snapshot.threads.find((item) => item.id === threadId);
       const currentWindow = this.#snapshot.transcriptWindows[threadId];
       if (!thread || currentWindow?.hasMore === false) return;
       const before = currentWindow?.nextBefore ?? undefined;
+      if (before && cursors.has(before))
+        throw new Error("Thread event page is missing its continuation cursor.");
+      if (before) cursors.add(before);
       const page = await this.#readThreadHistory(threadId, before);
+      pages += 1;
+      bytes += page.window.byteCount;
       if (scan.retired || !this.#viewerStillCurrent(generation, userId)) return;
       if (!this.#snapshot.threads.some((item) => item.id === threadId)) return;
       // A reconnect hydration may have replaced the window during this read.
@@ -5694,7 +5754,7 @@ export class HttpHostClient {
       };
       const drawnAfter = drawnRows(merged);
       this.#update(merged);
-      if (page.window.hasMore && (!page.window.nextBefore || page.window.nextBefore === before))
+      if (page.window.hasMore && (!page.window.nextBefore || cursors.has(page.window.nextBefore)))
         throw new Error("Thread event page is missing its continuation cursor.");
       // Rows are counted, not named: an older page can rename the turn it
       // reaches into without drawing anything new.

@@ -84,17 +84,27 @@ struct MacVideoCredit {
   private(set) var inFlight = 0
   var needsKey = true
   private(set) var outstanding: [(sequence: Int, bytes: Int, sentAt: TimeInterval)] = []
+  private var submittedAt: TimeInterval?
 
   var outstandingBytes: Int { outstanding.reduce(0) { $0 + $1.bytes } }
 
-  mutating func admit(now: TimeInterval) -> Admission {
+  /// How long a sample must still wait for its cadence slot. Half a 60 Hz
+  /// capture period of slack keeps capture jitter from skipping a slot.
+  func cadenceWait(now: TimeInterval, interval: TimeInterval) -> TimeInterval {
+    guard let submittedAt, interval > 0 else { return 0 }
+    return max(0, submittedAt + interval - min(interval / 4, 1.0 / 120) - now)
+  }
+
+  mutating func admit(now: TimeInterval, interval: TimeInterval = 0) -> Admission {
     let reason: String? =
       inFlight >= Self.maxInFlight ? "inFlight"
       : outstandingBytes >= Self.maxOutstandingBytes ? "bytes"
-      : outstanding.first.map({ now - $0.sentAt >= Self.maxAckAge }) == true ? "ack-age" : nil
+      : outstanding.first.map({ now - $0.sentAt >= Self.maxAckAge }) == true ? "ack-age"
+      : cadenceWait(now: now, interval: interval) > 0 ? "cadence" : nil
     // A withheld sample never reaches the encoder, so the reference chain is intact.
     if let reason { return .withheld(reason) }
     inFlight += 1
+    submittedAt = now
     defer { needsKey = false }
     return .submit(key: needsKey)
   }
@@ -104,8 +114,10 @@ struct MacVideoCredit {
   mutating func drained() { inFlight = 0 }
 
   /// Reserves peer credit before enqueueing: the media peer can acknowledge immediately.
+  /// An empty lane takes any legal envelope: refusing a large key would only
+  /// request another key of the same size, so a detailed window never showed.
   mutating func reserve(sequence: Int, bytes: Int, now: TimeInterval) -> Bool {
-    guard outstandingBytes + bytes <= Self.maxOutstandingBytes else {
+    guard outstanding.isEmpty || outstandingBytes + bytes <= Self.maxOutstandingBytes else {
       needsKey = true
       return false
     }
@@ -113,16 +125,20 @@ struct MacVideoCredit {
     return true
   }
 
+  /// The encoder chose not to encode a submitted sample. Nothing was emitted,
+  /// so the peer's references are intact; only a requested key is asked again.
+  mutating func dropped(key: Bool) { if key { needsKey = true } }
+
   /// Encoded output that will not reach the peer breaks its reference chain.
   mutating func lost(_ sequence: Int? = nil) {
     if let sequence { outstanding.removeAll { $0.sequence == sequence } }
     needsKey = true
   }
 
-  mutating func acknowledge(_ sequence: Int) -> Bool {
-    guard outstanding.first?.sequence == sequence else { return false }
-    outstanding.removeFirst()
-    return true
+  /// Returns when the acknowledged envelope was sent, or nil when out of order.
+  mutating func acknowledge(_ sequence: Int) -> TimeInterval? {
+    guard outstanding.first?.sequence == sequence else { return nil }
+    return outstanding.removeFirst().sentAt
   }
 
   /// A new generation or closed publication starts over from a key.
@@ -199,6 +215,9 @@ protocol MacVideoProducing: AnyObject, Sendable {
   var inputVisible: Bool { get }
   func start(maxLongSide: Int, maxFps: Int) async
   func resume(maxLongSide: Int, maxFps: Int) async
+  /// Set once before start; `setLinkCap` then follows the Host's viewer cap.
+  func configureRate(maxFps: Int, mode: MacVideoRate.Mode)
+  func setLinkCap(_ cap: Int?)
   func attach(_ connection: IPCConnection) throws
   func acknowledge(_ sequence: Int)
   func refresh()
@@ -254,6 +273,13 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     var composition: WindowCapture.Composition?
     var fps = 0
     var sourceRect = CGRect.zero
+    var rate = MacVideoRate(maxFps: MacVideoLimits.legacyMaxFps, mode: .legacy)
+    /// What the encoder was last told; its cadence spaces admission.
+    var plan: MacVideoRate.Plan?
+    var cadenceRetry = false
+    /// Strictly increasing encoder timestamps: a refresh or retry re-encodes a
+    /// sample whose capture time the encoder has already seen.
+    var encodePts = CMTime.invalid
   }
 
   let id: String
@@ -379,12 +405,70 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   }
 
   func acknowledge(_ sequence: Int) {
-    let accepted = publication.withLock { state in
-      guard state.credit.acknowledge(sequence) else { diagnostic("ack-rejected", state); return false }
+    let now = ProcessInfo.processInfo.systemUptime
+    let (accepted, replan) = publication.withLock { state -> (Bool, Bool) in
+      guard let sentAt = state.credit.acknowledge(sequence) else {
+        diagnostic("ack-rejected", state)
+        return (false, false)
+      }
       diagnostic("ack", state)
-      return true
+      return (true, state.rate.acknowledged(
+        delay: now - sentAt, now: now, width: state.width, height: state.height))
     }
+    if replan { queue.async { [self] in applyRate() } }
     if accepted { schedulePendingSample() }
+  }
+
+  func configureRate(maxFps: Int, mode: MacVideoRate.Mode) {
+    publication.withLock { $0.rate = MacVideoRate(maxFps: maxFps, mode: mode) }
+  }
+
+  func setLinkCap(_ cap: Int?) {
+    publication.withLock { $0.rate.setLinkCap(cap) }
+    queue.async { [self] in applyRate() }
+  }
+
+  /// On the encoding queue: retarget a live encoder without a new session.
+  private func applyRate() {
+    guard let encoder else { return }
+    let plan = publication.withLock { state -> MacVideoRate.Plan? in
+      guard state.width > 0, !state.ended else { return nil }
+      let plan = state.rate.plan(width: state.width, height: state.height)
+      guard plan != state.plan else { return nil }
+      state.plan = plan
+      return plan
+    }
+    guard let plan else { return }
+    guard MacVideoEncoder.retarget(encoder, plan) else { fail("encoder-failed"); return }
+    publication.withLock { diagnostic("rate", $0, reason: "\(plan.bitrate)@\(plan.fps)") }
+  }
+
+  /// Nothing reached the peer for the newest picture: the encoder skipped it to
+  /// hold its budget, or its output was lost. Retry it in its next cadence slot
+  /// so a window that then goes still still shows its last change.
+  fileprivate func retryNewest() {
+    // Read apart from the publication lock: attach holds output while reading it.
+    guard output.current?.closedFlag == false else { return }
+    let wait = publication.withLock { state -> TimeInterval? in
+      guard state.open, state.visible, !state.ended else { return nil }
+      state.samples.hold()
+      return 1 / Double(state.plan?.fps ?? MacVideoLimits.legacyMaxFps)
+    }
+    if let wait { scheduleCadenceRetry(after: wait) }
+  }
+
+  /// A sample withheld only for its cadence slot is retried when the slot opens,
+  /// so the last change of a window that then goes still is still delivered.
+  private func scheduleCadenceRetry(after wait: TimeInterval) {
+    guard publication.withLock({ state in
+      guard !state.cadenceRetry else { return false }
+      state.cadenceRetry = true
+      return true
+    }) else { return }
+    queue.asyncAfter(deadline: .now() + wait) { [self] in
+      publication.withLock { $0.cadenceRetry = false }
+      schedulePendingSample()
+    }
   }
 
   private func schedulePendingSample() {
@@ -424,7 +508,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
       if #available(macOS 15.0, *) { config.captureDynamicRange = .SDR }
       operation = "encoder"
-      try await prepareEncoder(width: config.width, height: config.height, fps: maxFps)
+      try await prepareEncoder(width: config.width, height: config.height)
       guard !ended, valid() else { return }
       let afterPlan = try await binding.window.group()
       publication.withLock {
@@ -527,7 +611,37 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
 
   private struct EncoderFailure: Error {}
 
-  private func prepareEncoder(width: Int, height: Int, fps: Int, advanceGeneration: Bool = false) async throws {
+  private static let encoderOutput: VTCompressionOutputCallback = { context, generation, status, flags, sample in
+    guard let context, let generation else { return }
+    let producer = Unmanaged<MacWindowVideoProducer>.fromOpaque(context).takeUnretainedValue()
+    defer {
+      // Keep the submission charged until its output has reserved
+      // peer bytes or recorded loss, including the next key decision.
+      producer.publication.withLock { $0.credit.returned() }
+      producer.schedulePendingSample()
+    }
+    let submitted = Int(bitPattern: generation)
+    let inputGeneration = submitted >> 1
+    guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
+    else { return }
+    guard status == noErr else {
+      producer.fail("encoder-failed")
+      return
+    }
+    if flags.contains(.frameDropped) {
+      producer.publication.withLock { $0.credit.dropped(key: submitted & 1 == 1) }
+      producer.retryNewest()
+      return
+    }
+    guard let sample else {
+      producer.publication.withLock { $0.credit.lost() }
+      producer.retryNewest()
+      return
+    }
+    producer.encoded(sample, generation: inputGeneration)
+  }
+
+  private func prepareEncoder(width: Int, height: Int, advanceGeneration: Bool = false) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       queue.async { [self] in
         do {
@@ -544,69 +658,23 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
           }
           if let encoder { VTCompressionSessionInvalidate(encoder) }
           encoder = nil
-          var session: VTCompressionSession?
-          let status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault, width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
-            encoderSpecification: [
-              kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true
-            ] as CFDictionary,
-            imageBufferAttributes: nil, compressedDataAllocator: nil,
-            outputCallback: { context, generation, status, flags, sample in
-              guard let context, let generation else { return }
-              let producer = Unmanaged<MacWindowVideoProducer>.fromOpaque(context)
-                .takeUnretainedValue()
-              defer {
-                // Keep the submission charged until its output has reserved
-                // peer bytes or recorded loss, including the next key decision.
-                producer.publication.withLock { $0.credit.returned() }
-                producer.schedulePendingSample()
-              }
-              let inputGeneration = Int(bitPattern: generation)
-              guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
-              else { return }
-              guard status == noErr else {
-                producer.fail("encoder-failed")
-                return
-              }
-              guard !flags.contains(.frameDropped), let sample else {
-                producer.publication.withLock { $0.credit.lost() }
-                return
-              }
-              producer.encoded(sample, generation: inputGeneration)
-            },
-            refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &session)
-          publication.withLock { diagnostic("encoder-create", $0, reason: String(status)) }
-          guard status == noErr, let session else {
-            throw EncoderFailure()
+          let (mode, plan) = publication.withLock { state -> (MacVideoRate.Mode, MacVideoRate.Plan) in
+            let plan = state.rate.plan(width: width, height: height)
+            state.plan = plan
+            state.encodePts = .invalid
+            return (state.rate.mode, plan)
           }
-          encoder = session
-          for (key, value) in [
-            (kVTCompressionPropertyKey_RealTime, kCFBooleanTrue as CFTypeRef),
-            (kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse as CFTypeRef),
-            (
-              kVTCompressionPropertyKey_ProfileLevel,
-              kVTProfileLevel_H264_Baseline_AutoLevel as CFTypeRef
-            ),
-            (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: fps)),
-            (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: 2_500_000)),
-            (kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: fps * 2)),
-          ] {
-            guard VTSessionSetProperty(session, key: key, value: value) == noErr else {
-              throw EncoderFailure()
+          let refcon = Unmanaged.passUnretained(self).toOpaque()
+          guard let session = MacVideoEncoder.configurations(mode).lazy.compactMap({ configuration in
+            let session = MacVideoEncoder.make(width: width, height: height, plan: plan,
+              configuration: configuration, output: Self.encoderOutput, refcon: refcon)
+            self.publication.withLock {
+              self.diagnostic("encoder-create", $0, reason: "lowLatency=\(configuration.lowLatency):"
+                + "profile=\(configuration.profile):\(session != nil)")
             }
-          }
-          guard VTCompressionSessionPrepareToEncodeFrames(session) == noErr else {
-            throw EncoderFailure()
-          }
-          var hardware: Unmanaged<CFTypeRef>?
-          let hardwareStatus = withUnsafeMutablePointer(to: &hardware) { pointer in
-            VTSessionCopyProperty(
-              session, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
-              allocator: kCFAllocatorDefault, valueOut: UnsafeMutableRawPointer(pointer))
-          }
-          let usingHardware = hardware?.takeRetainedValue() as? Bool
-          guard hardwareStatus == noErr, usingHardware == true else { throw EncoderFailure() }
+            return session
+          }).first else { throw EncoderFailure() }
+          encoder = session
           publication.withLock {
             $0.width = width
             $0.height = height
@@ -787,16 +855,23 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
 
   private func encode(_ sample: CapturedSample) {
     guard sampleFence.accepts(sample.incarnation), eligible(), let encoder else { return }
-    let admitted: (Int, Bool)? = publication.withLock { state in
+    var cadenceWait: TimeInterval?
+    defer { if let cadenceWait { scheduleCadenceRetry(after: cadenceWait) } }
+    let admitted: (Int, Bool, CMTime)? = publication.withLock { state in
       guard state.open, !state.ended, state.generation == sample.generation,
         sampleFence.accepts(sample.incarnation)
       else { diagnostic("encode-rejected", state, reason: "closed"); return nil }
       state.samples.replace(sample)
       guard state.visible else { diagnostic("encode-rejected", state, reason: "warm"); return nil }
-      let admission = state.credit.admit(now: ProcessInfo.processInfo.systemUptime)
+      let now = ProcessInfo.processInfo.systemUptime
+      let interval = state.rate.mode == .legacy ? 0 : state.plan.map { 1 / Double($0.fps) } ?? 0
+      let admission = state.credit.admit(now: now, interval: interval)
       guard case .submit(let key) = admission else {
         state.samples.hold()
-        if case .withheld(let reason) = admission { diagnostic("encode-rejected", state, reason: reason) }
+        if case .withheld(let reason) = admission {
+          diagnostic("encode-rejected", state, reason: reason)
+          if reason == "cadence" { cadenceWait = state.credit.cadenceWait(now: now, interval: interval) }
+        }
         return nil
       }
       if state.stallReported {
@@ -806,14 +881,18 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       }
       state.lastSubmissionAt = ProcessInfo.processInfo.systemUptime
       diagnostic("encode-submitted", state)
-      return (state.generation, key)
+      let next = CMTimeAdd(state.encodePts, CMTime(value: 1, timescale: 1_000))
+      state.encodePts = state.encodePts.isValid && CMTimeCompare(sample.pts, next) < 0 ? next : sample.pts
+      return (state.generation, key, state.encodePts)
     }
-    guard let (generation, key) = admitted else { return }
+    guard let (generation, key, pts) = admitted else { return }
     let properties = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
     let status = VTCompressionSessionEncodeFrame(
       encoder, imageBuffer: sample.buffer,
-      presentationTimeStamp: sample.pts, duration: .invalid, frameProperties: properties,
-      sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation), infoFlagsOut: nil)
+      presentationTimeStamp: pts, duration: .invalid, frameProperties: properties,
+      // The refcon carries the generation and whether this submission asked for a key.
+      sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation << 1 | (key ? 1 : 0)),
+      infoFlagsOut: nil)
     if status != noErr {
       publication.withLock { $0.credit.returned() }
       fail("encoder-failed")
@@ -853,7 +932,11 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   private func encoded(_ sample: CMSampleBuffer, generation: Int) {
     var sent = false
     defer {
-      if !sent { publication.withLock { if $0.generation == generation { $0.credit.lost() } } }
+      if !sent, publication.withLock({ state in
+        guard state.generation == generation else { return false }
+        state.credit.lost()
+        return true
+      }) { retryNewest() }
     }
     guard eligible(), CMSampleBufferDataIsReady(sample),
       let format = CMSampleBufferGetFormatDescription(sample),
@@ -947,6 +1030,11 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     withUnsafeBytes(of: &size) { envelope.append(contentsOf: $0) }
     envelope.append(json)
     envelope.append(annex)
+    // One IPC frame carries the whole envelope; a larger one could never be sent.
+    guard envelope.count <= Frame.maxBytes else {
+      fail("encoder-failed")
+      return
+    }
     let reserved = publication.withLock { state in
       guard state.open, state.visible, !state.ended, state.generation == generation else {
         return false
@@ -1068,6 +1156,23 @@ struct MacVideoResolved {
   let allowed: @Sendable () -> Bool
 }
 
+/// Bounds for one window-video request, by whether the control connection
+/// negotiated the profile and whether this start carries it.
+enum MacVideoRegistryLimits {
+  static func validCap(_ cap: Int?) -> Bool {
+    cap.map { (MacVideoRate.minBitrate...MacVideoRate.maxBitrate).contains($0) } ?? true
+  }
+
+  static func valid(_ params: MacWindowVideoRegistry.StartParams, videoProfile: Int?) -> Bool {
+    switch params.rate {
+    case .legacy:
+      return (1...MacVideoLimits.legacyMaxFps).contains(params.maxFps)
+    case .negotiated(let cap):
+      return videoProfile == 1 && (1...MacVideoLimits.maxFps).contains(params.maxFps) && validCap(cap)
+    }
+  }
+}
+
 /// Control-plane ownership stays on the helper's main actor. The admission
 /// lane holds at most one unsettled OS start across all watched windows.
 @MainActor
@@ -1087,16 +1192,19 @@ final class MacWindowVideoRegistry {
     var startupSettled = false
     var maxLongSide: Int
     let maxFps: Int
+    let negotiated: Bool
 
     init(
       id: String, resolved: MacVideoResolved, sources: [MacVideoSource], control: IPCConnection,
-      maxLongSide: Int, maxFps: Int, deadline: TimeInterval, sleeping: Locked<Bool>, makeProducer: ProducerFactory
+      maxLongSide: Int, maxFps: Int, rate: MacVideoRate.Mode, deadline: TimeInterval,
+      sleeping: Locked<Bool>, makeProducer: ProducerFactory
     ) {
       self.deadline = deadline
       self.sources = sources
       self.control = control
       self.maxLongSide = maxLongSide
       self.maxFps = maxFps
+      negotiated = rate != .legacy
       let valid = Locked<[@Sendable () -> Bool]>([])
       self.valid = valid
       producer = makeProducer(
@@ -1108,6 +1216,7 @@ final class MacWindowVideoRegistry {
       producer.setDiagnosticHandler { diagnostic in
         control.send(event: EventEnvelope(event: "display.diagnostic", params: diagnostic))
       }
+      producer.configureRate(maxFps: maxFps, mode: rate)
     }
   }
   typealias ProducerFactory = (
@@ -1167,6 +1276,24 @@ final class MacWindowVideoRegistry {
     let sources: [MacVideoSource]
     let maxLongSide: Int
     let maxFps: Int
+    /// A Host that confirmed the profile always sends `maxBitrate`, null while
+    /// uncapped; its absence is a legacy start.
+    let rate: MacVideoRate.Mode
+
+    private enum CodingKeys: String, CodingKey {
+      case streamId, target, sources, maxLongSide, maxFps, maxBitrate
+    }
+
+    init(from decoder: any Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      streamId = try container.decode(String.self, forKey: .streamId)
+      target = try container.decode(MacVideoTarget.self, forKey: .target)
+      sources = try container.decode([MacVideoSource].self, forKey: .sources)
+      maxLongSide = try container.decode(Int.self, forKey: .maxLongSide)
+      maxFps = try container.decode(Int.self, forKey: .maxFps)
+      rate = container.contains(.maxBitrate)
+        ? .negotiated(cap: try container.decodeIfPresent(Int.self, forKey: .maxBitrate)) : .legacy
+    }
   }
   struct StartResult: Encodable { let attachmentToken: String }
   struct WarmDemand: Decodable {
@@ -1179,6 +1306,32 @@ final class MacWindowVideoRegistry {
     let sources: [MacVideoSource]
     let warm: WarmDemand?
     let maxLongSide: Int?
+    /// Absent: unchanged. Present: the viewer cap, null when uncapped.
+    let maxBitrate: Int??
+
+    private enum CodingKeys: String, CodingKey {
+      case streamId, revision, sources, warm, maxLongSide, maxBitrate
+    }
+
+    init(from decoder: any Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      streamId = try container.decode(String.self, forKey: .streamId)
+      revision = try container.decode(Int.self, forKey: .revision)
+      sources = try container.decode([MacVideoSource].self, forKey: .sources)
+      warm = try container.decodeIfPresent(WarmDemand.self, forKey: .warm)
+      maxLongSide = try container.decodeIfPresent(Int.self, forKey: .maxLongSide)
+      maxBitrate = container.contains(.maxBitrate)
+        ? .some(try container.decodeIfPresent(Int.self, forKey: .maxBitrate)) : .none
+    }
+
+    /// Validated against the stream's negotiated mode.
+    func linkCap(negotiated: Bool) throws -> Int?? {
+      guard case .some(let cap) = maxBitrate else { return .none }
+      guard negotiated, MacVideoRegistryLimits.validCap(cap) else {
+        throw HelperError(.failed, "Invalid video bitrate.")
+      }
+      return .some(cap)
+    }
   }
   struct StreamParams: Decodable { let streamId: String }
   struct AttachParams: Decodable { let token: String }
@@ -1199,6 +1352,7 @@ final class MacWindowVideoRegistry {
     let continuation: CheckedContinuation<StartResult, Error>
     var sources: [MacVideoSource]
     var maxLongSide: Int
+    var rate: MacVideoRate.Mode
     var revision = 0
     init(_ params: StartParams, _ control: IPCConnection, _ deadline: TimeInterval,
          _ continuation: CheckedContinuation<StartResult, Error>) {
@@ -1208,6 +1362,7 @@ final class MacWindowVideoRegistry {
       self.continuation = continuation
       sources = params.sources
       maxLongSide = params.maxLongSide
+      rate = params.rate
     }
   }
   private var pending: Pending?
@@ -1230,7 +1385,8 @@ final class MacWindowVideoRegistry {
     let params = try envelope.decodeParams(StartParams.self, method: envelope.method)
     guard params.target.kind == "mac-window",
       (320...MacVideoLimits.maxLongSide).contains(params.maxLongSide),
-      (1...MacVideoLimits.maxFps).contains(params.maxFps), !params.sources.isEmpty,
+      MacVideoRegistryLimits.valid(params, videoProfile: connection.negotiatedVideoProfile),
+      !params.sources.isEmpty,
       params.sources.count <= 8, params.streamId.hasPrefix("dsp_"),
       UUID(uuidString: String(params.streamId.dropFirst(4))) != nil
     else { throw HelperError(.failed, "That window-video request is invalid.") }
@@ -1295,7 +1451,7 @@ final class MacWindowVideoRegistry {
     let entry = Entry(
       id: current.params.streamId, resolved: first, sources: current.sources,
       control: current.control, maxLongSide: current.maxLongSide, maxFps: current.params.maxFps,
-      deadline: current.deadline, sleeping: sleeping, makeProducer: makeProducer)
+      rate: current.rate, deadline: current.deadline, sleeping: sleeping, makeProducer: makeProducer)
     entry.revision = current.revision
     entry.valid.withLock { $0 = resolved.map(\.allowed) }
     streams[current.params.streamId] = entry
@@ -1339,12 +1495,14 @@ final class MacWindowVideoRegistry {
       if let current = pending, current.params.streamId == params.streamId,
         current.control === connection {
         guard params.revision > current.revision, params.sources.count <= 8 else { return Wire.EmptyResult() }
+        let cap = try params.linkCap(negotiated: current.rate != .legacy)
         if let size = params.maxLongSide {
           guard (320...MacVideoLimits.maxLongSide).contains(size) else {
             throw HelperError(.failed, "Invalid video size.")
           }
           current.maxLongSide = size
         }
+        if case .some(let cap) = cap { current.rate = .negotiated(cap: cap) }
         current.sources = params.sources
         current.revision = params.revision
         admitPending()
@@ -1354,7 +1512,10 @@ final class MacWindowVideoRegistry {
       guard params.revision > entry.revision, params.sources.count <= 8 else {
         return Wire.EmptyResult()
       }
+      let cap = try params.linkCap(negotiated: entry.negotiated)
       entry.revision = params.revision
+      // A bitrate change is live; it never restarts capture.
+      if case .some(let cap) = cap { entry.producer.setLinkCap(cap) }
       if params.sources.isEmpty, let warm = params.warm {
         guard (1...MacVideoLimits.warmMs).contains(warm.durationMs), !warm.sources.isEmpty,
           warm.sources.count <= 8

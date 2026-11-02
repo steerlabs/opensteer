@@ -32,6 +32,11 @@ public final class IPCConnection: @unchecked Sendable {
   var negotiatedOwnerInputVersion: Int? {
     lock.lock(); defer { lock.unlock() }; return clientOwnerInputVersion
   }
+  private var clientVideoProfile: Int?
+  /// Mac window video taking a viewer bitrate cap and up to 60 fps.
+  var negotiatedVideoProfile: Int? {
+    lock.lock(); defer { lock.unlock() }; return clientVideoProfile
+  }
 
   var negotiatedOwnerViewVersion: Int? {
     lock.lock()
@@ -119,12 +124,19 @@ public final class IPCConnection: @unchecked Sendable {
     writeQueue.async { [self] in writeFramed(framed) }
   }
 
+  /// Queued media is bounded, but an empty queue takes any legal frame, as
+  /// producer credit does; otherwise a large key could never be written.
+  static func mediaAdmits(queued: Int, framed: Int) -> Bool {
+    queued == 0 || queued + framed <= 1_048_576
+  }
+
   /// Used only on the separately authenticated media attachment. The short
   /// reservation bounds queued writes; rechecking the gate drops late samples.
   func sendMedia(_ payload: Data, allowed: @escaping @Sendable () -> Bool) -> Bool {
     guard let framed = try? Frame.encode(payload) else { return false }
     lock.lock()
-    let admitted = !isClosed && mediaReady && mediaQueuedBytes + framed.count <= 1_048_576
+    let admitted = !isClosed && mediaReady
+      && Self.mediaAdmits(queued: mediaQueuedBytes, framed: framed.count)
     if admitted { mediaQueuedBytes += framed.count }
     lock.unlock()
     guard admitted else { return false }
@@ -168,13 +180,17 @@ public final class IPCConnection: @unchecked Sendable {
     return clientProtocolVersion
   }
 
-  func markGreeted(protocolVersion: Int, ownerViewVersion: Int? = nil, loginText: Int? = nil, ownerInputVersion: Int? = nil) {
+  func markGreeted(
+    protocolVersion: Int, ownerViewVersion: Int? = nil, loginText: Int? = nil,
+    ownerInputVersion: Int? = nil, videoProfile: Int? = nil
+  ) {
     lock.lock()
     guard !isClosed, clientProtocolVersion == nil else { lock.unlock(); return }
     if loginText == 1 { loginTextReceiver = LoginTextReceiver() }
     clientProtocolVersion = protocolVersion
     clientOwnerViewVersion = ownerViewVersion
     clientOwnerInputVersion = ownerInputVersion
+    clientVideoProfile = videoProfile
     lock.unlock()
   }
 

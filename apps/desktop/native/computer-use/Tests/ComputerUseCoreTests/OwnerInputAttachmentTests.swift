@@ -26,11 +26,14 @@ final class OwnerInputAttachmentTests: XCTestCase {
       let connection = IPCConnection(id: 42, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in })
       defer { connection.close(); Darwin.close(pair[1]) }
       var params: [String: Any] = ["protocolVersion": 10, "ownerViewVersion": 3]
-      if let offer { params["ownerInputVersion"] = offer }
+      if let offer { params["ownerInputVersion"] = offer; params["videoProfile"] = offer }
       let frame = try JSONSerialization.data(withJSONObject: ["id": 0, "method": "hello", "params": params])
       await runtime.handle(connection: connection, frame: frame)
       let hello = try readResponse(pair[1])
       XCTAssertEqual((hello["result"] as? [String: Any])?["ownerInputVersion"] as? Int, offer == 2 ? 2 : nil)
+      // An older desktop's strict reader must never see an unoffered capability.
+      XCTAssertEqual((hello["result"] as? [String: Any])?["videoProfile"] as? Int, offer == 1 ? 1 : nil)
+      XCTAssertEqual(connection.negotiatedVideoProfile, offer == 1 ? 1 : nil)
       XCTAssertTrue(connection.isGreeted)
       XCTAssertFalse(connection.closedFlag)
       XCTAssertEqual(connection.negotiatedOwnerViewVersion, 3)

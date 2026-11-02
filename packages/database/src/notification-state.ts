@@ -14,7 +14,7 @@ import {
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import { publishedMessagePredicate } from "./message-visibility.js";
+import { conversationUnreadPredicate, publishedMessagePredicate } from "./message-visibility.js";
 import type { DatabaseSchema } from "./schema.js";
 
 interface ReadRow {
@@ -63,7 +63,7 @@ export class NotificationStateStore {
       const rows = await sql<ReadRow>`
       select thread.id as thread_id,
         marker.sequence::text as read_sequence,
-        unread.sequence::text as unread_sequence,
+        coalesce(conversation_unread.sequence, work_unread.sequence)::text as unread_sequence,
         workspace.event_sequence::text as as_of_sequence,
         (thread.done_at is not null) as done
       from public.threads thread
@@ -79,14 +79,29 @@ export class NotificationStateStore {
         select message.sequence
         from public.messages message
         left join public.thread_inputs inbox on inbox.message_id = message.id
-        where message.thread_id = thread.id
+        where thread.role = 'conversation'
+          and message.thread_id = thread.id
+          and message.sequence > coalesce(marker.sequence, -1)
+          and ${visibleMessage}
+          and ${conversationUnreadPredicate("message")}
+          and (message.author->>'kind' <> 'human'
+            or coalesce(message.author->>'userId', inbox.requested_by) is distinct from ${input.userId})
+        order by message.sequence desc
+        limit 1
+      ) conversation_unread on true
+      left join lateral (
+        select message.sequence
+        from public.messages message
+        left join public.thread_inputs inbox on inbox.message_id = message.id
+        where thread.role <> 'conversation'
+          and message.thread_id = thread.id
           and message.sequence > coalesce(marker.sequence, -1)
           and ${visibleMessage}
           and (message.author->>'kind' <> 'human'
             or coalesce(message.author->>'userId', inbox.requested_by) is distinct from ${input.userId})
         order by message.sequence desc
         limit 1
-      ) unread on true
+      ) work_unread on true
       where thread.id in (${sql.join(batch)})
     `.execute(input.database ?? this.#database);
       for (const row of rows.rows) {

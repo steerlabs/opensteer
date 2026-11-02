@@ -19,6 +19,7 @@ import {
   RunnerAuxiliaryFrameFenceSchema,
   type HostIntegrationsOperation,
   type HostIntegrationsDisplayStart,
+  macDisplayProfileHysteresisMs,
 } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -26,6 +27,8 @@ import WebSocket from "ws";
 import { normalizeHostError } from "../server/http-errors.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { ComputerUseError } from "./computer-use-service.js";
 import { registerComputerUseDisplayRoutes } from "./computer-use-display-routes.js";
@@ -376,9 +379,9 @@ async function fixture(
     app,
     base,
     macSource,
-    macViewer: (editing = false, phoneOwnerControl = false) =>
+    macViewer: (editing = false, phoneOwnerControl = false, displayWindow = false) =>
       connect(
-        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}${phoneOwnerControl ? "&phoneOwnerControl=1&displayCut=1" : ""}`,
+        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}${phoneOwnerControl ? "&phoneOwnerControl=1&displayCut=1" : ""}${displayWindow ? "&displayWindow=1" : ""}`,
         "owner",
       ),
     serverViewers,
@@ -1434,6 +1437,10 @@ describe("phone display Host sockets", () => {
     await delay(20);
     f.hub.sweep();
     expect(refreshes()).toHaveLength(1);
+    // Nothing periodic repairs a key that never arrived, so the viewer may ask again.
+    f.advance(1_000);
+    viewer.send({ type: "display.keyframe" });
+    await until(() => refreshes().length === 2);
     phone.socket.send(f.frame(1));
     phone.socket.send(f.frame(2, true));
     await until(() => viewer.media().length === 1);
@@ -3061,6 +3068,215 @@ it("does not create a phone producer when owner input authorization finishes aft
 });
 
 describe("viewer-driven phone bitrate", () => {
+  it("sends small decreases immediately while gating increases", async () => {
+    let cap: number | null = 2_000_000;
+    const ack = vi.spyOn(DisplayViewerBitrate.prototype, "ack").mockImplementation(function (
+      this: DisplayViewerBitrate,
+    ) {
+      this.cap = cap;
+    });
+    try {
+      const f = await fixture(true, { displayProfile: true });
+      const viewer = await f.viewer(false, false, true);
+      const phone = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async (next: number | null, expected: number | null) => {
+        cap = next;
+        sequence++;
+        phone.socket.send(f.frame(sequence, sequence === 1));
+        await viewer.received(() => viewer.media().length === sequence);
+        f.advance(10);
+        viewer.send({ type: "display.ack", sequence });
+        await viewer.roundTrip();
+        expect(
+          f.sent.filter((m) => m.type === "host.integrations.display.demand").at(-1),
+        ).toMatchObject({ maxBitrate: expected });
+      };
+      await deliver(2_000_000, 2_000_000);
+      await deliver(1_900_000, 1_900_000);
+      await deliver(2_500_000, 1_900_000);
+      f.advance(2_000);
+      await deliver(2_000_000, 1_900_000);
+      await deliver(2_500_000, 2_500_000);
+      await deliver(null, 2_500_000);
+      f.advance(2_000);
+      await deliver(null, null);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it.each([false, true])(
+    "negotiates Mac video profile %s without phone-only capabilities",
+    async (profile) => {
+      const f = await fixture(true, {
+        mac: true,
+        displayProfile: profile,
+        sharedInput: true,
+        displayCut: true,
+        phoneOwnerControl: true,
+      });
+      await f.viewer(false, false, true);
+      expect(f.start()).toMatchObject({ maxFps: profile ? 60 : 30 });
+      // An unmeasured Mac viewer starts moderate rather than flooding a cellular link.
+      if (profile)
+        expect(f.start()).toMatchObject({
+          displayProfile: 1,
+          maxBitrate: macLinkRate.initialBitrate,
+        });
+      else expect(f.start()).not.toHaveProperty("maxBitrate");
+      expect(f.start()).not.toHaveProperty("sharedInput");
+      expect(f.start()).not.toHaveProperty("displayCut");
+      expect(f.start()).not.toHaveProperty("phoneOwnerControl");
+    },
+  );
+  it("keeps the original Mac budget while a viewer that cannot report its link watches", async () => {
+    // The reporting viewer's link has measured room for 8 Mbps.
+    const ack = vi.spyOn(DisplayLinkRate.prototype, "ack").mockImplementation(function (
+      this: DisplayLinkRate,
+    ) {
+      this.cap = 8_000_000;
+    });
+    try {
+      const f = await fixture(true, { mac: true, displayProfile: true });
+      const caps = () =>
+        f.sent
+          .filter((m) => m.type === "host.integrations.display.demand")
+          .map((m) => m.maxBitrate);
+      const reporting = await f.viewer(false, false, true);
+      const legacy = await f.viewer();
+      const mac = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async () => {
+        sequence++;
+        mac.socket.send(f.frame(sequence, sequence === 1));
+        await reporting.received(() => reporting.media().length === sequence);
+        reporting.send({ type: "display.ack", sequence });
+        await reporting.roundTrip();
+      };
+      f.advance(2_000);
+      await deliver();
+      expect(caps().at(-1) ?? macLinkRate.initialBitrate).toBe(2_500_000);
+      // The server confirms the close once it has dropped the viewer.
+      await new Promise((resolve) => {
+        legacy.socket.once("close", resolve);
+        legacy.socket.close();
+      });
+      // Lifting the cap is an increase, which waits out the update interval.
+      f.advance(2_000);
+      await deliver();
+      await until(() => caps().at(-1) === 8_000_000);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it("lets the person driving a Mac window set its budget over a slower spectator", async () => {
+    // Only the driver acknowledges, and its link has measured room for 8 Mbps;
+    // the spectator stays at the unmeasured start.
+    const ack = vi.spyOn(DisplayLinkRate.prototype, "ack").mockImplementation(function (
+      this: DisplayLinkRate,
+    ) {
+      this.cap = 8_000_000;
+    });
+    try {
+      const f = await fixture(true, { mac: true, displayProfile: true });
+      const caps = () =>
+        f.sent
+          .filter((m) => m.type === "host.integrations.display.demand")
+          .map((m) => m.maxBitrate);
+      const driver = await f.macViewer(true, false, true);
+      await f.macViewer(false, false, true);
+      const mac = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async () => {
+        sequence++;
+        mac.socket.send(f.frame(sequence, sequence === 1));
+        await driver.received(() => driver.media().length === sequence);
+        driver.send({ type: "display.ack", sequence });
+        await driver.roundTrip();
+      };
+      f.advance(2_000);
+      await deliver();
+      expect(caps().at(-1) ?? macLinkRate.initialBitrate).toBe(macLinkRate.initialBitrate);
+      driver.send({
+        type: "display.input",
+        geometry: 1,
+        sequence: 1,
+        events: [{ kind: "mouse", phase: "down", button: "left", modifiers: [], x: 0.5, y: 0.5 }],
+      });
+      await driver.roundTrip();
+      expect(driver.json().filter((m) => m.type === "display.input.result")).toEqual([]);
+      f.advance(2_000);
+      await deliver();
+      await until(() => caps().at(-1) === 8_000_000);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it("shrinks a Mac capture to what a low budget keeps legible and restores it", async () => {
+    let cap: number | null = 300_000;
+    const ack = vi.spyOn(DisplayLinkRate.prototype, "ack").mockImplementation(function (
+      this: DisplayLinkRate,
+    ) {
+      this.cap = cap;
+    });
+    try {
+      const f = await fixture(true, { mac: true, displayProfile: true });
+      const sides = () =>
+        f.sent
+          .filter((m) => m.type === "host.integrations.display.demand")
+          .map((m) => m.maxLongSide);
+      const viewer = await f.viewer(false, false, true);
+      const mac = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async () => {
+        sequence++;
+        mac.socket.send(f.frame(sequence, sequence === 1));
+        await viewer.received(() => viewer.media().length === sequence);
+        viewer.send({ type: "display.ack", sequence });
+        await viewer.roundTrip();
+      };
+      await deliver();
+      // 300 kbps keeps about 1,000 pixels of a 360x640 window's long side legible.
+      f.advance(macDisplayProfileHysteresisMs);
+      f.hub.sweep();
+      expect(sides().at(-1)).toBe(1_024);
+      cap = null;
+      f.advance(2_000);
+      await deliver();
+      f.advance(macDisplayProfileHysteresisMs);
+      f.hub.sweep();
+      expect(sides().at(-1)).toBe(1_280);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it("replays a Mac join from an unmeasured link only when the chain is short", async () => {
+    const f = await fixture(true, { mac: true, displayProfile: true });
+    await f.viewer(false, false, true);
+    const mac = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    // Both replayed frames fit an unmeasured link's in-flight credit.
+    const chunk = new Uint8Array(60_000);
+    mac.socket.send(f.frame(1, true, 1, chunk));
+    mac.socket.send(f.frame(2, false, 1, chunk));
+    await mac.received(() => mac.json().length === 2);
+    const short = await f.viewer(false, false, true);
+    await until(() => short.media().length === 2);
+    expect(refreshes()).toHaveLength(0);
+    // Keys come only on demand, so a long chain would take seconds on a slow link.
+    for (let sequence = 3; sequence <= 9; sequence++)
+      mac.socket.send(f.frame(sequence, false, 1, chunk));
+    await mac.received(() => mac.json().length === 9);
+    const long = await f.viewer(false, false, true);
+    await until(() => refreshes().length === 1);
+    await long.roundTrip();
+    expect(long.media()).toHaveLength(0);
+  });
   it.each([650, 1_200])(
     "does not cap a %i ms receiver pause through credit age, sweep or the late ACK burst",
     async (pause) => {
@@ -3272,10 +3488,12 @@ describe("viewer-driven phone bitrate", () => {
     for (let index = 1; index < updates.length; index++) {
       const previous = updates[index - 1]!;
       const next = updates[index]!;
-      expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
-      if (previous.cap !== null && next.cap !== null)
+      const decreasing = next.cap !== null && (previous.cap === null || next.cap < previous.cap);
+      if (!decreasing) expect(next.at - previous.at).toBeGreaterThanOrEqual(2_000);
+      if (!decreasing && previous.cap !== null && next.cap !== null)
         expect(Math.abs(next.cap - previous.cap) / previous.cap).toBeGreaterThanOrEqual(0.15);
     }
+    expect(updates.every(({ cap }) => cap === null || cap <= 4_000_000)).toBe(true);
     const removed = once(f.serverViewers[0]!, "close", { signal: AbortSignal.timeout(3_000) });
     slow.socket.close();
     await removed;

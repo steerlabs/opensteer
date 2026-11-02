@@ -887,6 +887,8 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
+  personWaited: Generated<boolean>;
+  quiet: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
   assignmentId: Generated<AssignmentId | null>;
   initialContext: ColumnType<

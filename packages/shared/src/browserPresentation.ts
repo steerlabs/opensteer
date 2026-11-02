@@ -47,6 +47,29 @@ export function browserFrameContentRect(
   };
 }
 
+/**
+ * Corner radii, clockwise from top left, for a picture at `rect` in `container`.
+ * A corner is round only where the picture floats free of the container on
+ * both of its sides; where the picture meets an edge, such as the toolbar
+ * above it, it stays square and joins that edge without a notch.
+ */
+export function browserFrameCornerRadii(
+  container: BrowserFrameRect,
+  rect: BrowserFrameRect,
+): readonly [number, number, number, number] {
+  const top = rect.top - container.top >= 1;
+  const left = rect.left - container.left >= 1;
+  const right = container.left + container.width - (rect.left + rect.width) >= 1;
+  const bottom = container.top + container.height - (rect.top + rect.height) >= 1;
+  const r = browserCropCue.radius;
+  return [
+    top && left ? r : 0,
+    top && right ? r : 0,
+    bottom && right ? r : 0,
+    bottom && left ? r : 0,
+  ];
+}
+
 /** Choose the smallest supported raster density that covers the displayed pixels. */
 export function browserRasterDensity(
   displayedWidth: number,

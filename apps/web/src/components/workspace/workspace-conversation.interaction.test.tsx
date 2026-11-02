@@ -1,3 +1,4 @@
+import { conversationHistoryHost } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -757,4 +758,25 @@ describe("task titles", () => {
     );
     expect(document.querySelector('[data-action="rename"]')).toBeNull();
   });
+});
+
+it("opens Chat behind silent automatic Runs with a full conversation page in one read", async () => {
+  let fixture!: ReturnType<typeof conversationHistoryHost>;
+  await mount("/", {
+    hostClient: (source) => {
+      fixture = conversationHistoryHost(source);
+      return fixture.client;
+    },
+  });
+  await vi.waitFor(
+    () => {
+      for (let index = 0; index < 10; index += 1)
+        expect(document.body.textContent, "Chat did not draw the filtered history").toContain(
+          `Visible conversation question ${index}`,
+        );
+    },
+    { timeout: 1000 },
+  );
+  expect(fixture.requests).toHaveLength(1);
+  expect(fixture.requests[0]).toMatchObject({ turns: 10, view: "conversation" });
 });

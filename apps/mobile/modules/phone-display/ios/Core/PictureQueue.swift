@@ -22,6 +22,7 @@ struct PictureRequest: Equatable {
   var regionHeight: Double
   /// A cropped capture keeps native size rather than growing past it.
   var upscale: Bool
+  /// The radius of a corner where the picture floats free of the view.
   var cornerRadius: Double
 
   /// Where the raster draws inside a view of `size`, centred; nil when either is empty.
@@ -31,6 +32,13 @@ struct PictureRequest: Equatable {
     let scale = min(upscale ? .infinity : 1, Double(size.width) / regionWidth, Double(size.height) / regionHeight)
     let fitted = CGSize(width: regionWidth * scale, height: regionHeight * scale)
     return CGRect(x: (size.width - fitted.width) / 2, y: (size.height - fitted.height) / 2, width: fitted.width, height: fitted.height)
+  }
+
+  /// Mirrors browserFrameCornerRadii: centred, the picture's corners are round
+  /// only while it is inset on both axes; one that meets an edge joins it square.
+  func radius(in size: CGSize) -> Double {
+    guard let rect = rect(in: size), rect.minX >= 1, rect.minY >= 1 else { return 0 }
+    return cornerRadius
   }
 }
 

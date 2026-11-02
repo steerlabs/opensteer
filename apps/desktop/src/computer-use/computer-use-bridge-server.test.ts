@@ -41,6 +41,59 @@ afterEach(async () => {
 });
 
 describe("ComputerUseBridgeServer", () => {
+  it.each([
+    [undefined, 1],
+    [1, undefined],
+    [1, 2],
+    [1, 1],
+  ] as const)("negotiates helper %s and Runner %s video profiles", async (videoProfile, offer) => {
+    const h = await bridgeHarness({ videoProfile });
+    const socket = await h.connect(h.token, undefined, offer);
+    const call = async (...args: Parameters<typeof socket.call>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          socket.call(...args),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Bridge never answered ${args[1]}`)), 2_500);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const negotiated = videoProfile === 1 && offer === 1;
+    expect(await call(1, "permissions.get", {}, 2_000)).toMatchObject({
+      result: {
+        permissions: { accessibility: "denied", screenRecording: "denied" },
+        ...(negotiated ? { videoProfile: 1 } : {}),
+      },
+    });
+    const readiness = await call(2, "permissions.get", {}, 2_000);
+    if (!negotiated) expect(readiness).not.toHaveProperty("result.videoProfile");
+    const streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await call(
+      3,
+      "display.start",
+      {
+        streamId,
+        target: { kind: "mac-window", bindingId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+        sources: [],
+        maxLongSide: 1280,
+        maxFps: 60,
+        maxBitrate: null,
+      },
+      2_000,
+    );
+    expect(h.calls.at(-1)?.[1]).toMatchObject({ maxFps: negotiated ? 60 : 30 });
+    if (negotiated) expect(h.calls.at(-1)?.[1]).toHaveProperty("maxBitrate", null);
+    else expect(h.calls.at(-1)?.[1]).not.toHaveProperty("maxBitrate");
+    for (const maxBitrate of [900_000, null]) {
+      await call(4, "display.demand", { streamId, revision: 1, sources: [], maxBitrate }, 2_000);
+      if (negotiated) expect(h.calls.at(-1)?.[1]).toHaveProperty("maxBitrate", maxBitrate);
+      else expect(h.calls.at(-1)?.[1]).not.toHaveProperty("maxBitrate");
+    }
+  });
   it.each(["display.input-reset", "display.input"] as const)(
     "refuses %s before the helper when the connection did not opt in",
     async (method) => {
@@ -995,7 +1048,11 @@ function openAnswer(params: unknown): unknown {
 }
 
 async function bridgeHarness(
-  options: { readonly graceMs?: number; readonly ownerInputVersion?: 2 | undefined } = {},
+  options: {
+    readonly graceMs?: number;
+    readonly ownerInputVersion?: 2 | undefined;
+    readonly videoProfile?: 1 | undefined;
+  } = {},
 ) {
   const calls: [string, unknown][] = [];
   const requestOptions = new Map<string, ComputerUseHelperRequestOptions | undefined>();
@@ -1020,6 +1077,7 @@ async function bridgeHarness(
   };
   const helper: ComputerUseBridgeHelperPort = {
     ...(options.ownerInputVersion === 2 ? { ownerInputVersion: () => 2 as const } : {}),
+    videoProfile: () => options.videoProfile,
     onDisconnect: (listener) => {
       disconnectListeners.add(listener);
       return () => disconnectListeners.delete(listener);
@@ -1081,9 +1139,17 @@ async function bridgeHarness(
     for (const client of clients) client.close();
     for (const server of servers.reverse()) await server.close();
   });
-  const connect = async (url: URL, token: string | null, ownerInputVersion?: number) => {
+  const connect = async (
+    url: URL,
+    token: string | null,
+    ownerInputVersion?: number,
+    videoProfile?: number,
+  ) => {
     const socket = new WebSocket(url, {
       headers: {
+        ...(videoProfile === undefined
+          ? {}
+          : { "x-opensteer-mac-video-profile": String(videoProfile) }),
         ...(token === null ? {} : { authorization: `Bearer ${token}` }),
         ...(ownerInputVersion === undefined
           ? {}
@@ -1133,8 +1199,8 @@ async function bridgeHarness(
   return {
     calls,
     closedSockets: () => closedSockets,
-    connect: async (token: string | null, ownerInputVersion?: number) =>
-      await connect(firstBridge.url, token, ownerInputVersion),
+    connect: async (token: string | null, ownerInputVersion?: number, videoProfile?: number) =>
+      await connect(firstBridge.url, token, ownerInputVersion, videoProfile),
     /** A bridge on the same helper that has not started. */
     createBridge,
     emit: (event: ComputerUseHelperEvent) => {

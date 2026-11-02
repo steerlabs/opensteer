@@ -30,6 +30,9 @@ import VideoToolbox
     let frame = try await peer.nextGeneration()
     let (headerData, header, annex) = try media(frame)
     try require(header["key"] as? Bool == true, "First task-video sample is not an IDR")
+    // Hardware Macs emit Constrained High; a virtual machine's encoder may keep
+    // a configuration it supports, so the codec is evidence, not a requirement.
+    let codec = try (header["codec"] as? String).unwrap("Negotiated key codec")
     try annex.write(to: out.appendingPathComponent("N1-task.h264"))
     try headerData.write(to: out.appendingPathComponent("N1-video-header.json"))
     let image = try decode(annex)
@@ -45,9 +48,16 @@ import VideoToolbox
     else { throw JourneyFailure.failed("N1 screenshot missing") }
     let error = try pixelDifference(screenshot, image)
     try require(error < 0.047, "Decoded H.264 differs from screenshot pixels: \(error)")
+    // A viewer cap retargets the live encoder; a refreshed key at that cap
+    // still decodes to the window.
+    try await peer.cap(1_000_000)
+    let capped = try media(try await peer.nextKey())
+    let cappedError = try pixelDifference(screenshot, decode(capped.2))
+    try require(cappedError < 0.047, "A capped refresh differs from the window: \(cappedError)")
     try JSONSerialization.data(
       withJSONObject: [
-        "meanAbsoluteRGBError": error, "width": image.width, "height": image.height, "passed": true,
+        "meanAbsoluteRGBError": error, "cappedMeanAbsoluteRGBError": cappedError, "codec": codec,
+        "width": image.width, "height": image.height, "passed": true,
       ], options: [.prettyPrinted]
     ).write(to: out.appendingPathComponent("N1-video-comparison.json"))
     if recover {
@@ -188,6 +198,7 @@ import VideoToolbox
   private let control: WireJourney
   private let media: WireJourney
   private let producer = Locked<MacWindowVideoProducer?>(nil)
+  private var stream: (id: String, source: [String: Any], revision: Int)?
 
   init(out: URL, states: Locked<[MacVideoState]>) throws {
     let control = try WireJourney(out: out.appendingPathComponent("wire"))
@@ -216,16 +227,36 @@ import VideoToolbox
     let identity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(app))
     let view = "cvw_" + UUID().uuidString.lowercased()
     let source: [String: Any] = ["kind": "owner-view", "viewId": view, "generation": 1]
-    try await control.hello()
+    try await control.hello(videoProfile: true)
     _ = try await control.request("view.open", ["viewId": view, "generation": 1,
       "leaseDurationMs": 300_000, "target": ["kind": "app", "app": identity, "window": window]])
     let resolved = try await control.request("display.resolve", ["source": source])
     let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
-    let started = try await control.request("display.start", ["streamId": "dsp_" + UUID().uuidString.lowercased(),
-      "target": target, "sources": [source], "maxLongSide": 1280, "maxFps": 15])
+    let id = "dsp_" + UUID().uuidString.lowercased()
+    // A Host that confirmed the profile starts uncapped at 60 fps.
+    let started = try await control.request("display.start", ["streamId": id,
+      "target": target, "sources": [source], "maxLongSide": 1280, "maxFps": 60, "maxBitrate": NSNull()])
+    stream = (id, source, 0)
     try await media.hello()
     _ = try await media.request("display.attach", ["token": started["attachmentToken"]!])
     return try producer.current.unwrap("production video producer")
+  }
+
+  func cap(_ bitrate: Int) async throws {
+    guard var current = stream else { throw JourneyFailure.failed("No started video stream") }
+    current.revision += 1
+    stream = current
+    _ = try await control.request("display.demand", ["streamId": current.id, "revision": current.revision,
+      "sources": [current.source], "maxBitrate": bitrate])
+    _ = try await control.request("display.refresh", ["streamId": current.id])
+  }
+
+  func nextKey() async throws -> Data {
+    let deadline = DispatchTime.now().uptimeNanoseconds + 12_000_000_000
+    while let frame = try await media.nextMediaFrame(until: deadline) {
+      if frame.header["key"] as? Bool == true { return frame.frame }
+    }
+    throw JourneyFailure.failed("No refreshed key frame from the capped producer")
   }
 
   func nextGeneration(after generation: Int = 0) async throws -> Data {

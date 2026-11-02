@@ -121,6 +121,10 @@ const reserved = new Set([
   ";",
   "union",
   "values",
+  // `insert into t select ...` / `default values` / `overriding`: no alias.
+  "select",
+  "default",
+  "overriding",
 ]);
 function relation(ts: readonly Token[], start: number): Target | undefined {
   let i = start;
