@@ -1,21 +1,21 @@
 import {
-  createId,
-  ModelSelectionSchema,
-  OpensteerError,
-  type EnvironmentId,
-  type Message,
-  type Run,
-  type Thread,
-  type ThreadInput,
-  type Workspace,
+createId,
+ModelSelectionSchema,
+OpensteerError,
+type EnvironmentId,
+type Message,
+type Run,
+type Thread,
+type ThreadInput,
+type Workspace,
 } from "@opensteer/core";
-import type { OpensteerStore, TriggerControlAdmissionResult } from "@opensteer/database";
+import type { OpensteerStore,TriggerControlAdmissionResult } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import type { TriggerControlInput } from "@opensteer/triggers";
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 import {
-  TriggerControlService,
-  type TriggerControlTokenService,
+TriggerControlService,
+type TriggerControlTokenService,
 } from "./trigger-control-service.js";
 
 const now = "2026-08-12T12:00:00.000Z";
@@ -148,12 +148,7 @@ describe("TriggerControlService", () => {
     const selectedHarnessId = createId("harnessInstance");
     const targetWorkspace = {
       ...workspace(workspaceId, "Portable workspace"),
-      backing: {
-        generation: 1,
-        kind: "portablefs" as const,
-        serviceId: "test-portablefs",
-        volumeId: `pfs_${workspaceId}`,
-      },
+      backing: { kind: "local-directory" as const, generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,
@@ -416,7 +411,7 @@ function makeService(options: {
       defaultWorkspaceBacking: "local-directory",
       canRunHarness: () => true,
       commands,
-      environmentWorkspaceBackings: () => ["portablefs"] as const,
+      environmentWorkspaceBackings: () => ["local-directory"] as const,
       isEnvironmentConnected: () => true,
       store,
       tokens,

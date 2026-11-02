@@ -680,9 +680,6 @@ importers:
       '@opensteer/workspace-local':
         specifier: workspace:*
         version: link:../../packages/workspace-local
-      '@opensteer/workspace-portablefs':
-        specifier: workspace:*
-        version: link:../../packages/workspace-portablefs
       fastify:
         specifier: 'catalog:'
         version: 5.12.6

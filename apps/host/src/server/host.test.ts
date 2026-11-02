@@ -1,74 +1,67 @@
 import {
-  BootstrapNoticeDiagnostics,
-  bootstrapDiagnosticHeader,
-} from "@opensteer/shared/bootstrapDiagnostics";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { generateKeyPairSync } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  createId,
-  emptyExecutionPreferences,
-  OpensteerError,
-  personalRemoteAuthorizationScheme,
-  rememberExecutionChoice,
-  ThreadAccessModeSchema,
-  type AuthenticatedSession,
-  type EnvironmentId,
-  type ExecutionChoice,
-  type ExecutionPreferences,
-  type Request as OpensteerRequest,
-  type RunnerId,
-  type ThreadAccessMode,
-  type UserId,
-  type Workspace,
+createId,
+emptyExecutionPreferences,
+OpensteerError,
+personalRemoteAuthorizationScheme,
+rememberExecutionChoice,
+ThreadAccessModeSchema,
+type AuthenticatedSession,
+type EnvironmentId,
+type ExecutionChoice,
+type ExecutionPreferences,
+type Request as OpensteerRequest,
+type RunnerId,
+type ThreadAccessMode,
+type UserId,
+type Workspace,
 } from "@opensteer/core";
-import type { OpensteerStore, WorkspaceFilesAdmission } from "@opensteer/database";
+import type { OpensteerStore,WorkspaceFilesAdmission } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
-  HarnessInstanceCatalogSchema,
-  agentToolPayloadMaxSerializedBytes,
-  hostApiVersionHeader,
-  ShellSessionIdSchema,
-  type HarnessAuthenticationState,
-  type HarnessInstanceCatalog,
-  type RunnerHarnessDriver,
+agentToolPayloadMaxSerializedBytes,
+HarnessInstanceCatalogSchema,
+hostApiVersionHeader,
+ShellSessionIdSchema,
+type HarnessAuthenticationState,
+type HarnessInstanceCatalog,
+type RunnerHarnessDriver,
 } from "@opensteer/protocol";
-import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import {
-  PortableFsControlPlaneError,
-  PortableFsWorkspaceLifecycleDriver,
-  type PortableFsControlPlane,
-  type PortableFsManagerVolume,
-} from "@opensteer/workspace-portablefs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+bootstrapDiagnosticHeader,
+BootstrapNoticeDiagnostics,
+} from "@opensteer/shared/bootstrapDiagnostics";
+import type { FastifyInstance,LightMyRequestResponse } from "fastify";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp,readFile,rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach,describe,expect,it,vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
+import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
+import {
+loadOrCreateHostKeys,
+SignedTokenClaimsSchema,
+SignedTokenService,
+signHostDiscovery,
+} from "../identity/host-keys.js";
+import {
+advertisedCapabilities,
+createHostServer as createProductionHostServer,
+RunnerChallengeAdmission,
+} from "../server.js";
+import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
+import {
+hostServerTestDependencies,
+type HostServerTestOverrides,
+} from "./host-server-test-harness.js";
+import { hostInternalRoutePaths } from "./internal-routes.js";
+import { injectRpcRequest } from "./test-host-api-request.js";
 
 type StringDriverKind<T> = T extends { readonly driverKind: unknown }
   ? Omit<T, "driverKind"> & { readonly driverKind: string }
   : never;
 type TestRunnerHarnessDriver = StringDriverKind<RunnerHarnessDriver>;
-import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import {
-  hostServerTestDependencies,
-  type HostServerTestOverrides,
-} from "./host-server-test-harness.js";
-import { injectRpcRequest } from "./test-host-api-request.js";
-import {
-  loadOrCreateHostKeys,
-  signHostDiscovery,
-  SignedTokenClaimsSchema,
-  SignedTokenService,
-} from "../identity/host-keys.js";
-import {
-  createHostServer as createProductionHostServer,
-  RunnerChallengeAdmission,
-  advertisedCapabilities,
-} from "../server.js";
-import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
-import { WorkspaceService } from "../workspace/workspace-service.js";
-import { hostInternalRoutePaths } from "./internal-routes.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -184,11 +177,6 @@ const testDiscovery = signHostDiscovery(testDiscoveryKeys, {
     kind: "server" as const,
   },
 });
-/** The PortableFS shape, which a server may only claim alongside its services. */
-const portableFsDiscovery = signHostDiscovery(testDiscoveryKeys, {
-  ...testDiscovery.document,
-  deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
-});
 const personalDiscovery = signHostDiscovery(testDiscoveryKeys, {
   ...testDiscovery.document,
   canonicalOrigin: "http://127.0.0.1:47821",
@@ -206,33 +194,6 @@ describe("public Runner challenge admission", () => {
     first?.();
     first?.();
     expect(admission.acquire()).toBeTypeOf("function");
-  });
-});
-
-describe("PortableFS server assembly", () => {
-  const portableFsServices = {
-    mountExchange: {} as never,
-    workspaceActivity: { note: () => undefined },
-    workspaceWake: { wake: async () => undefined },
-  };
-
-  it("accepts each shape only with the services that shape implies", async () => {
-    const local = await createHostServer({ discovery: testDiscovery });
-    await local.close();
-    const portableFs = await createHostServer({
-      discovery: portableFsDiscovery,
-      portablefs: portableFsServices,
-    });
-    await portableFs.close();
-  });
-
-  it("refuses a shape and a service record that disagree", async () => {
-    await expect(createHostServer({ discovery: portableFsDiscovery })).rejects.toThrow(
-      /must be declared together/u,
-    );
-    await expect(
-      createHostServer({ discovery: testDiscovery, portablefs: portableFsServices }),
-    ).rejects.toThrow(/must be declared together/u);
   });
 });
 
@@ -1874,7 +1835,7 @@ describe("Optional subsystem registration", () => {
 describe("Workspace route projections", () => {
   it("does not expose internal storage authority when retrying storage", async () => {
     const ownerId = createId("user");
-    const workspace = portableFsWorkspace(ownerId, {
+    const workspace = localWorkspaceFixture(ownerId, {
       name: "Research",
       volumeId: "workspace-retry-projection",
     });
@@ -1924,7 +1885,7 @@ describe("Workspace route projections", () => {
 describe("Personal sharing boundary", () => {
   it("declares sharing unavailable and rejects issue, exchange, and acceptance", async () => {
     const ownerId = createId("user");
-    const workspace = portableFsWorkspace(ownerId, {
+    const workspace = localWorkspaceFixture(ownerId, {
       name: "Private",
       volumeId: "workspace-personal-private",
     });
@@ -2578,7 +2539,7 @@ describe("durable harness catalogs", () => {
     /** An existing-CLI profile belongs to the machine; a private one does not. */
     readonly stateKind?: "ambient" | "isolated";
   }) {
-    const workspace = portableFsWorkspace(ownerId, { volumeId: "workspace-catalog" });
+    const workspace = localWorkspaceFixture(ownerId, { volumeId: "workspace-catalog" });
     const runnerId = createId("runner");
     const environment = {
       capabilities: [],
@@ -4205,316 +4166,6 @@ describe("Workspace Files routes", () => {
   });
 });
 
-describe("Workspace provisioning", () => {
-  it("persists provisioning before the external mutation and reaches ready", async () => {
-    const owner = createId("user");
-    const calls: string[] = [];
-    let workspace: Workspace | undefined;
-    const store = {
-      async createWorkspace(input: Parameters<OpensteerStore["createWorkspace"]>[0]) {
-        calls.push("database");
-        workspace = {
-          backing: input.backing,
-          capacityPolicy: input.capacityPolicy,
-          createdAt: new Date().toISOString(),
-          createdBy: input.createdBy,
-          homeThreadId: null,
-          icon: null,
-          id: input.id ?? createId("workspace"),
-          kind: input.kind ?? "main",
-          name: input.name,
-          status: input.status ?? "provisioning",
-          storageIssue: null,
-          updatedAt: new Date().toISOString(),
-        };
-        return workspace;
-      },
-      async listWorkspacesByStatus() {
-        return [];
-      },
-      async setWorkspaceProvisioningResult(input: {
-        backing: Workspace["backing"];
-        status: Workspace["status"];
-      }) {
-        if (!workspace) throw new Error("missing workspace");
-        workspace = {
-          ...workspace,
-          backing: input.backing,
-          status: input.status,
-        };
-        return workspace;
-      },
-    };
-    const controlPlane = {
-      async createVolume() {
-        calls.push("portablefs");
-        return volume("00000000-0000-4000-8000-000000000001", "READY");
-      },
-    } as unknown as PortableFsControlPlane;
-    const service = portableFsWorkspaceService(store, controlPlane);
-    const result = await service.create({
-      kind: "main",
-      createdBy: owner,
-      idempotencyKey: "create-1",
-      name: "Client",
-    });
-    expect(calls).toEqual(["database", "portablefs"]);
-    expect(result.capacityPolicy).toEqual({
-      blockHardLimitBytes: 512 * 1_024 * 1_024,
-      inodeHardLimit: 50_000,
-      kind: "hard-quota",
-    });
-    expect(result.status).toBe("ready");
-    expect(result.backing).toMatchObject({
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: "00000000-0000-4000-8000-000000000001",
-    });
-  });
-
-  it("marks retryable control-plane failures unavailable", async () => {
-    const owner = createId("user");
-    let workspace: Workspace | undefined;
-    const statuses: Workspace["status"][] = [];
-    const store = {
-      async createWorkspace(input: Parameters<OpensteerStore["createWorkspace"]>[0]) {
-        workspace = {
-          backing: input.backing,
-          capacityPolicy: input.capacityPolicy,
-          createdAt: new Date().toISOString(),
-          createdBy: input.createdBy,
-          homeThreadId: null,
-          icon: null,
-          id: input.id ?? createId("workspace"),
-          kind: input.kind ?? "main",
-          name: input.name,
-          status: "provisioning",
-          storageIssue: null,
-          updatedAt: new Date().toISOString(),
-        };
-        return workspace;
-      },
-      async listWorkspacesByStatus() {
-        return [];
-      },
-      async setWorkspaceStorageState(input: {
-        issue: Workspace["storageIssue"];
-        status: Workspace["status"];
-      }) {
-        statuses.push(input.status);
-        if (!workspace) throw new Error("missing workspace");
-        workspace = { ...workspace, status: input.status, storageIssue: input.issue };
-        return workspace;
-      },
-      async setWorkspaceProvisioningResult() {
-        throw new Error("unexpected provisioning result");
-      },
-    };
-    const controlPlane = {
-      async createVolume() {
-        throw new PortableFsControlPlaneError({
-          message: "offline",
-          operation: "create-volume",
-          retryable: true,
-        });
-      },
-    } as unknown as PortableFsControlPlane;
-    const service = portableFsWorkspaceService(store, controlPlane);
-    const result = await service.create({
-      kind: "main",
-      createdBy: owner,
-      idempotencyKey: "create-2",
-      name: "Client",
-    });
-    expect(result).toMatchObject({
-      status: "unavailable",
-      storageIssue: { code: "manager-unavailable", retryable: true },
-    });
-    expect(statuses).toEqual(["unavailable"]);
-  });
-
-  it("downgrades stale ready storage when Manager health is unavailable", async () => {
-    const owner = createId("user");
-    let workspace: Workspace = portableFsWorkspace(owner, {
-      kind: "main",
-      volumeId: "00000000-0000-4000-8000-000000000007",
-    });
-    const store = {
-      async listWorkspaces() {
-        return [workspace];
-      },
-      async listWorkspacesByStatus(status: Workspace["status"]) {
-        return workspace.status === status ? [workspace] : [];
-      },
-      async setWorkspaceStorageState(input: {
-        issue: Workspace["storageIssue"];
-        status: Workspace["status"];
-      }) {
-        workspace = { ...workspace, status: input.status, storageIssue: input.issue };
-        return workspace;
-      },
-    };
-    const controlPlane = {
-      async health() {
-        throw new PortableFsControlPlaneError({
-          message: "offline",
-          operation: "manager-health",
-          retryable: true,
-        });
-      },
-    } as unknown as PortableFsControlPlane;
-
-    const service = portableFsWorkspaceService(store, controlPlane);
-    // One Manager blip must not demote healthy Workspaces; only the third
-    // consecutive failed preflight does.
-    await service.reconcile();
-    await service.reconcile();
-    expect(workspace.status).toBe("ready");
-    await service.reconcile();
-
-    expect(workspace).toMatchObject({
-      status: "unavailable",
-      storageIssue: { code: "manager-unavailable", retryable: true },
-    });
-  });
-
-  it("retries the same durable Workspace instead of creating another one", async () => {
-    const owner = createId("user");
-    const workspaceId = createId("workspace");
-    let attempts = 0;
-    let workspace: Workspace = portableFsWorkspace(owner, {
-      id: workspaceId,
-      name: "Client",
-      status: "unavailable",
-      storageIssue: {
-        code: "manager-unavailable",
-        message: "Storage is offline.",
-        occurredAt: new Date().toISOString(),
-        retryable: true,
-      },
-      volumeId: `pending_${workspaceId}`,
-    });
-    const store = {
-      async getWorkspaceForOwner(id: Workspace["id"], requestedBy: typeof owner) {
-        return id === workspace.id && requestedBy === owner ? workspace : null;
-      },
-      async listWorkspacesByStatus() {
-        return [];
-      },
-      async setWorkspaceStorageState(input: {
-        issue: Workspace["storageIssue"];
-        status: Workspace["status"];
-      }) {
-        workspace = { ...workspace, status: input.status, storageIssue: input.issue };
-        return workspace;
-      },
-      async setWorkspaceProvisioningResult(input: {
-        backing: Workspace["backing"];
-        status: Workspace["status"];
-      }) {
-        workspace = {
-          ...workspace,
-          backing: input.backing,
-          status: input.status,
-          storageIssue: null,
-        };
-        return workspace;
-      },
-    };
-    const controlPlane = {
-      async createVolume() {
-        attempts += 1;
-        return volume("00000000-0000-4000-8000-000000000009", "READY");
-      },
-    } as unknown as PortableFsControlPlane;
-    const service = portableFsWorkspaceService(store, controlPlane);
-
-    const result = await service.retry(workspaceId, owner);
-
-    expect(attempts).toBe(1);
-    expect(result).toMatchObject({
-      backing: {
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "00000000-0000-4000-8000-000000000009",
-      },
-      id: workspaceId,
-      status: "ready",
-      storageIssue: null,
-    });
-  });
-
-  it("rejects a Workspace bound to another PortableFS authority without mutation", async () => {
-    const workspaceId = createId("workspace");
-    let workspace = portableFsWorkspace(createId("user"), {
-      id: workspaceId,
-      serviceId: "old-portablefs",
-      status: "unavailable",
-      volumeId: "old-volume",
-    });
-    const calls: string[] = [];
-    const store = {
-      async setWorkspaceStorageState(input: {
-        issue: Workspace["storageIssue"];
-        status: Workspace["status"];
-      }) {
-        workspace = { ...workspace, status: input.status, storageIssue: input.issue };
-        return workspace;
-      },
-    };
-    const controlPlane = {
-      async createVolume() {
-        calls.push("create");
-        return volume("new-volume", "READY");
-      },
-    } as unknown as PortableFsControlPlane;
-    const service = portableFsWorkspaceService(store, controlPlane, "current-portablefs");
-
-    const result = await service.provision(workspace);
-
-    expect(calls).toEqual([]);
-    expect(result).toMatchObject({
-      backing: { serviceId: "old-portablefs", volumeId: "old-volume" },
-      status: "failed",
-      storageIssue: { code: "manager-configuration-invalid", retryable: false },
-    });
-  });
-
-  it("never silently rebinds a ready Workspace during a readiness check", async () => {
-    let workspace = portableFsWorkspace(createId("user"), {
-      serviceId: "old-portablefs",
-      volumeId: "old-volume",
-    });
-    const store = {
-      async setWorkspaceStorageState(input: {
-        issue: Workspace["storageIssue"];
-        status: Workspace["status"];
-      }) {
-        workspace = { ...workspace, status: input.status, storageIssue: input.issue };
-        return workspace;
-      },
-    };
-    const controlPlane = {
-      async createVolume() {
-        throw new Error("must not allocate");
-      },
-    } as unknown as PortableFsControlPlane;
-    const service = portableFsWorkspaceService(store, controlPlane, "current-portablefs");
-
-    await expect(service.ensureExecutionReady(workspace)).rejects.toThrow(
-      /rejected|binding|ready/i,
-    );
-
-    expect(workspace.backing).toEqual({
-      generation: 1,
-      kind: "portablefs",
-      serviceId: "old-portablefs",
-      volumeId: "old-volume",
-    });
-    expect(workspace.status).toBe("failed");
-  });
-});
-
 async function requestRouteServer(options: {
   readonly browser?: object;
   readonly continuations?: object;
@@ -4628,12 +4279,7 @@ function projectWorkspace(ownerId: Workspace["createdBy"]): Workspace {
   const now = new Date().toISOString();
   const id = createId("workspace");
   return {
-    backing: {
-      generation: 1,
-      kind: "portablefs",
-      serviceId: "portablefs-test",
-      volumeId: `volume_${id}`,
-    },
+    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
     capacityPolicy: {
       blockHardLimitBytes: 512 * 1_024 * 1_024,
       inodeHardLimit: 50_000,
@@ -4652,7 +4298,7 @@ function projectWorkspace(ownerId: Workspace["createdBy"]): Workspace {
   };
 }
 
-function portableFsWorkspace(
+function localWorkspaceFixture(
   ownerId: Workspace["createdBy"],
   overrides: {
     readonly id?: Workspace["id"];
@@ -4666,12 +4312,7 @@ function portableFsWorkspace(
 ): Workspace {
   const now = new Date().toISOString();
   return {
-    backing: {
-      generation: 1,
-      kind: "portablefs",
-      serviceId: overrides.serviceId ?? "test-portablefs",
-      volumeId: overrides.volumeId,
-    },
+    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
     capacityPolicy: {
       blockHardLimitBytes: 512 * 1_024 * 1_024,
       inodeHardLimit: 50_000,
@@ -4687,53 +4328,6 @@ function portableFsWorkspace(
     status: overrides.status ?? "ready",
     storageIssue: overrides.storageIssue ?? null,
     updatedAt: now,
-  };
-}
-
-function portableFsWorkspaceService(
-  store: object,
-  controlPlane: PortableFsControlPlane,
-  serviceId = "test-portablefs",
-): WorkspaceService {
-  return new WorkspaceService({
-    capacityPolicy: {
-      blockHardLimitBytes: 512 * 1_024 * 1_024,
-      inodeHardLimit: 50_000,
-      kind: "hard-quota",
-    },
-    capacityPolicyCeiling: {
-      blockHardLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-      inodeHardLimit: 10_000_000,
-      kind: "hard-quota",
-    },
-    drivers: { portableFs: new PortableFsWorkspaceLifecycleDriver({ controlPlane, serviceId }) },
-    shape: {
-      defaultWorkspaceBacking: "portablefs",
-      kind: "server" as const,
-    },
-    store: store as never,
-  });
-}
-
-function volume(
-  volumeId: string,
-  state: PortableFsManagerVolume["state"],
-): PortableFsManagerVolume {
-  const now = Math.floor(Date.now() / 1_000);
-  return {
-    authority_endpoint: "127.0.0.1:9443",
-    authority_generation: 1,
-    authority_server_name: "authority.test",
-    cell_id: "00000000-0000-4000-8000-000000000002",
-    created_unix: now,
-    id: volumeId,
-    owner: "owner-test",
-    product_issuer: "opensteer-test",
-    project_id: 1,
-    quota_bytes: 100 * 1_024 * 1_024 * 1_024,
-    quota_inodes: 1_000_000,
-    state,
-    updated_unix: now,
   };
 }
 

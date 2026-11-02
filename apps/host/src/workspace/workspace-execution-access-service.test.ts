@@ -1,6 +1,6 @@
-import { createId, type EnvironmentId, type Workspace } from "@opensteer/core";
+import { createId,type EnvironmentId,type Workspace } from "@opensteer/core";
+import { describe,expect,it,vi } from "vitest";
 import type { RunnerLocalWorkspaceDriver } from "./runner-local-workspace-driver.js";
-import { describe, expect, it, vi } from "vitest";
 import { WorkspaceExecutionAccessService } from "./workspace-execution-access-service.js";
 
 describe("WorkspaceExecutionAccessService", () => {
@@ -40,7 +40,7 @@ describe("WorkspaceExecutionAccessService", () => {
 
     await expect(
       service.plan(
-        planInput({ environmentId, runnerWorkspaceBackings: ["portablefs"], workspace }),
+        planInput({ environmentId, runnerWorkspaceBackings: [], workspace }),
       ),
     ).rejects.toThrow(/Runner does not support local-directory Workspace access/u);
     expect(planExecutionAccess).not.toHaveBeenCalled();
@@ -63,38 +63,7 @@ describe("WorkspaceExecutionAccessService", () => {
     expect(planExecutionAccess).not.toHaveBeenCalled();
   });
 
-  it("holds local and shared access together, but gates PortableFS on the Deployment default", () => {
-    const local = { planExecutionAccess: vi.fn() } as Pick<
-      RunnerLocalWorkspaceDriver,
-      "planExecutionAccess"
-    >;
 
-    expect(
-      () =>
-        new WorkspaceExecutionAccessService({
-          local,
-          portableFs: {} as never,
-          shape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
-        }),
-    ).not.toThrow();
-    expect(
-      () =>
-        new WorkspaceExecutionAccessService({
-          local,
-          portableFs: {} as never,
-          shape: {
-            defaultWorkspaceBacking: "local-directory",
-            kind: "personal" as const,
-          },
-        }),
-    ).toThrow(/requires a PortableFS Deployment default/u);
-    expect(
-      () =>
-        new WorkspaceExecutionAccessService({
-          shape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
-        }),
-    ).toThrow(/requires at least one driver/u);
-  });
 });
 
 function localService(

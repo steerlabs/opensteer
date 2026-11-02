@@ -1,16 +1,16 @@
 import {
-  CompleteHostAccountAdoptionResponseSchema,
-  ConsumeHostAccountAdoptionProofResponseSchema,
-  HostAccountAdoptionCompletionGrantClaimsSchema,
-  IssueHostAccountAdoptionProofResponseSchema,
+CompleteHostAccountAdoptionResponseSchema,
+ConsumeHostAccountAdoptionProofResponseSchema,
+HostAccountAdoptionCompletionGrantClaimsSchema,
+IssueHostAccountAdoptionProofResponseSchema,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
-import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
+import { createDatabase,migrateToLatest,OpensteerStore } from "@opensteer/database";
 import { IdentityService } from "@opensteer/identity";
 import Fastify from "fastify";
+import { exportJWK,generateKeyPair,SignJWT } from "jose";
 import { sql } from "kysely";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { registerIdentityRoutes } from "../identity/identity-routes.js";
 import { RemoteAccountAdoptionGrantVerifier } from "./account-adoption-grant-verifier.js";
@@ -50,7 +50,7 @@ integration("Host Account adoption routes", () => {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     });

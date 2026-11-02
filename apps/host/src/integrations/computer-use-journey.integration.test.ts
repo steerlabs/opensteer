@@ -1,97 +1,97 @@
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { placeList,type HostSnapshot } from "@opensteer/client/host";
 import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  placeInputFailure,
-  SequenceSchema,
-  ThreadAccessModeSchema,
-  type AgentEventView as AgentEvent,
-  type ContentPart,
-  type EnvironmentId,
-  type HarnessInstanceId,
-  type RunId,
-  type RunnerId,
-  type ThreadId,
-  type UserId,
-  type WorkspaceId,
+createId,
+HarnessIdSchema,
+ModelSelectionSchema,
+placeInputFailure,
+SequenceSchema,
+ThreadAccessModeSchema,
+type AgentEventView as AgentEvent,
+type ContentPart,
+type EnvironmentId,
+type HarnessInstanceId,
+type RunId,
+type RunnerId,
+type ThreadId,
+type UserId,
+type WorkspaceId,
 } from "@opensteer/core";
 import {
-  createDatabase,
-  IntegrationPlatformStore,
-  IntegrationStore,
-  OpensteerStore,
+createDatabase,
+IntegrationPlatformStore,
+IntegrationStore,
+OpensteerStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import { type ComputerAppIdentity, type IntegrationDefinition } from "@opensteer/integration-core";
+import { type ComputerAppIdentity,type IntegrationDefinition } from "@opensteer/integration-core";
 import {
-  CommandService,
-  KeyedAdmissionQueue,
-  RealtimeHub,
-  type RealtimeSink,
-  type RunnerAuxiliaryStream,
+CommandService,
+KeyedAdmissionQueue,
+RealtimeHub,
+type RealtimeSink,
+type RunnerAuxiliaryStream,
 } from "@opensteer/orchestration";
 import {
-  BrowserSurfaceIdSchema,
-  ComputerUseObservationSchema,
-  ComputerUseSessionIdSchema,
-  createBrowserSessionId,
-  readComputerUseResultHeadline,
-  RunnerAuxiliaryStreamIdSchema,
-  RunnerBootIdSchema,
-  RunnerConnectionIdSchema,
-  RunnerConnectionLeaseIdSchema,
-  WindowInfoSchema,
-  type BrowserSessionId,
-  type BrowserSessionOpenerRecord,
-  type BrowserTabOpenBinding,
-  type ComputerAppApprovalAnswer,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcome,
-  type ComputerUseErrorCode,
-  type ComputerUseSessionId,
-  type ComputerViewNativeResult,
-  type HostIntegrationsComputerUse,
-  type HostIntegrationsComputerView,
-  type HostIntegrationsOperation,
-  type PendingAgentEvent,
-  type RunnerAuxiliaryFrameFence,
-  type RunnerDescriptor,
+BrowserSurfaceIdSchema,
+ComputerUseObservationSchema,
+ComputerUseSessionIdSchema,
+createBrowserSessionId,
+readComputerUseResultHeadline,
+RunnerAuxiliaryStreamIdSchema,
+RunnerBootIdSchema,
+RunnerConnectionIdSchema,
+RunnerConnectionLeaseIdSchema,
+WindowInfoSchema,
+type BrowserSessionId,
+type BrowserSessionOpenerRecord,
+type BrowserTabOpenBinding,
+type ComputerAppApprovalAnswer,
+type ComputerAppApprovalList,
+type ComputerAppApprovalOutcome,
+type ComputerUseErrorCode,
+type ComputerUseSessionId,
+type ComputerViewNativeResult,
+type HostIntegrationsComputerUse,
+type HostIntegrationsComputerView,
+type HostIntegrationsOperation,
+type PendingAgentEvent,
+type RunnerAuxiliaryFrameFence,
+type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { createComputerAppApproval } from "@opensteer/runner-auth";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
+import { mkdir,mkdtemp,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import { AgentControlService } from "../agents/agent-control-service.js";
 import {
-  continuationMessage,
-  type IntegrationInventorySource,
+continuationMessage,
+type IntegrationInventorySource,
 } from "../agents/continuation-service.js";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
-import { ComputerAppHub, type ComputerAppControlPeer } from "../computer-apps/computer-app-hub.js";
+import { ComputerAppHub,type ComputerAppControlPeer } from "../computer-apps/computer-app-hub.js";
 import {
-  computerUseBusyNextStep,
-  ComputerUseService,
+computerUseBusyNextStep,
+ComputerUseService,
 } from "../computer-use/computer-use-service.js";
 import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import {
-  createMachineAccessDatabase,
-  resetMachineAccessDatabase,
-  startMachineAccessHost,
+createMachineAccessDatabase,
+resetMachineAccessDatabase,
+startMachineAccessHost,
 } from "../runtime/machine-access.test-support.js";
 import { projectMachines } from "../runtime/machines.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { createHostServer } from "../server.js";
 import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
-import { injectRpcRequest, testRpcData } from "../server/test-host-api-request.js";
+import { injectRpcRequest,testRpcData } from "../server/test-host-api-request.js";
 import { notifyComputerPresence } from "../shell/machine-access-events.js";
 import { IntegrationPlatformService } from "./integration-platform-service.js";
 
@@ -1721,8 +1721,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         browser: {} as never,
         canRunHarness: () => true,
         commands,
-        defaultWorkspaceBacking: "portablefs",
-        environmentWorkspaceBackings: () => ["portablefs"],
+        defaultWorkspaceBacking: "local-directory",
+        environmentWorkspaceBackings: () => ["local-directory"],
         isEnvironmentConnected: () => true,
         onWorkspaceEvent: () => undefined,
         store,
@@ -5690,12 +5690,7 @@ async function createWorkspace(
   name = `Workspace ${suffix}`,
 ) {
   return store.createWorkspace({
-    backing: {
-      generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `wsp_${suffix.replaceAll("-", "_")}`,
-    },
+    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
     capacityPolicy: { blockHardLimitBytes: 10_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
@@ -5724,7 +5719,7 @@ async function createOwner(
   if (!(await store.getDeployment())) {
     await store.ensureDeployment({
       canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" as const },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
       hostInstanceId: createId("hostInstance"),
     });
   }
@@ -5772,7 +5767,7 @@ async function createOwner(
         localStorage: null,
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         workspaceMounts: [],
       },
     },

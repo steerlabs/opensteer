@@ -1,16 +1,16 @@
-import { createId, type Workspace } from "@opensteer/core";
+import { createId,type Workspace } from "@opensteer/core";
 import {
-  MachineSummarySchema,
-  mintComputerUseSessionId,
-  type ComputerUseSessionSummary,
-  type MachineAppStatus,
-  type MachineModuleSummary,
+MachineSummarySchema,
+mintComputerUseSessionId,
+type ComputerUseSessionSummary,
+type MachineAppStatus,
+type MachineModuleSummary,
 } from "@opensteer/protocol";
-import { describe, expect, it } from "vitest";
+import { describe,expect,it } from "vitest";
 import {
-  projectMachines,
-  type MachinePendingRunnerInput,
-  type MachineRunnerInput,
+projectMachines,
+type MachinePendingRunnerInput,
+type MachineRunnerInput,
 } from "./machines.js";
 
 const ready: MachineModuleSummary = { checkedAt: null, detail: null, readiness: "ready" };
@@ -32,7 +32,7 @@ function runner(overrides: Partial<MachineRunnerInput> = {}): MachineRunnerInput
         localStorage: null,
         maxConcurrentRuns: 2,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
+        workspaceBackings: ["local-directory"],
         workspaceMounts: [],
       },
     },

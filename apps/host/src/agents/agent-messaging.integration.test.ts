@@ -1,47 +1,47 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
-  createId,
-  SequenceSchema,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  provisionalThreadTitle,
-  OpensteerError,
-  ThreadAccessModeSchema,
-  type AgentEvent,
-  type Message,
-  type Run,
-  type Thread,
-  type UserId,
+createId,
+HarnessIdSchema,
+ModelSelectionSchema,
+OpensteerError,
+provisionalThreadTitle,
+SequenceSchema,
+ThreadAccessModeSchema,
+type AgentEvent,
+type Message,
+type Run,
+type Thread,
+type UserId,
 } from "@opensteer/core";
 import {
-  BrowserTabGroupStore,
-  WorkspaceTabStore,
-  createDatabase,
-  migrateToLatest,
-  OpensteerStore,
+BrowserTabGroupStore,
+createDatabase,
+migrateToLatest,
+OpensteerStore,
+WorkspaceTabStore,
 } from "@opensteer/database";
-import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
+import { CommandService,KeyedAdmissionQueue,RealtimeHub } from "@opensteer/orchestration";
 import {
-  BrowserSurfaceIdSchema,
-  createBrowserSessionId,
-  HarnessInputSchema,
-  ComputerUseSessionSummarySchema,
-  mintComputerUseSessionId,
-  type RunnerDescriptor,
+BrowserSurfaceIdSchema,
+ComputerUseSessionSummarySchema,
+createBrowserSessionId,
+HarnessInputSchema,
+mintComputerUseSessionId,
+type RunnerDescriptor,
 } from "@opensteer/protocol";
-import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
-import { BrowserService } from "../browser/browser-service.js";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
+import { mkdir,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import { BrowserService } from "../browser/browser-service.js";
+import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import {
-  AgentControlService,
-  type AgentControlRunScope,
-  type AgentControlTokenService,
+AgentControlService,
+type AgentControlRunScope,
+type AgentControlTokenService,
 } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 
@@ -130,8 +130,8 @@ integration("agent-to-agent messaging round trip", () => {
         return claims;
       },
     } as unknown as AgentControlTokenService,
-    defaultWorkspaceBacking: "portablefs",
-    environmentWorkspaceBackings: () => ["portablefs"],
+    defaultWorkspaceBacking: "local-directory",
+    environmentWorkspaceBackings: () => ["local-directory"],
     workspaceMounts: {
       mount: async ({ workspace }) => ({ path: `/Main/Projects/${workspace.slug}` }),
     },
@@ -139,12 +139,7 @@ integration("agent-to-agent messaging round trip", () => {
       create: async (input) =>
         store.createWorkspace({
           ...input,
-          backing: {
-            generation: 1,
-            kind: "portablefs",
-            serviceId: "test-portablefs",
-            volumeId: randomUUID(),
-          },
+          backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
           capacityPolicy: {
             kind: "hard-quota",
             blockHardLimitBytes: 10_000_000,
@@ -199,12 +194,7 @@ integration("agent-to-agent messaging round trip", () => {
       idempotencyKey: randomUUID(),
       name: "Private",
       status: "ready",
-      backing: {
-        kind: "portablefs",
-        generation: 1,
-        serviceId: "test-portablefs",
-        volumeId: randomUUID(),
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 1000000, inodeHardLimit: 1000 },
     });
     const otherThreadId = createId("thread");
@@ -967,12 +957,7 @@ integration("agent-to-agent messaging round trip", () => {
     async (mode) => {
       const fixture = await createMessagingFixture();
       const workspace = await store.createWorkspace({
-        backing: {
-          generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: randomUUID(),
-        },
+        backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
         capacityPolicy: {
           blockHardLimitBytes: 10_000_000,
           inodeHardLimit: 10_000,
@@ -1311,12 +1296,7 @@ integration("agent-to-agent messaging round trip", () => {
     const environmentId = createId("environment");
     await enrollTestRunner({ createdBy: userId, environmentId, runnerId });
     const mainWorkspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_main_${randomUUID()}`,
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,
@@ -1486,7 +1466,7 @@ integration("agent-to-agent messaging round trip", () => {
         canonicalOrigin: "https://agent-messaging.opensteer.test",
         hostInstanceId: createId("hostInstance"),
         deploymentShape: {
-          defaultWorkspaceBacking: "portablefs",
+          defaultWorkspaceBacking: "local-directory",
           kind: "server" as const,
         },
       });
@@ -1521,7 +1501,7 @@ integration("agent-to-agent messaging round trip", () => {
           localStorage: null,
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
+          workspaceBackings: ["local-directory"],
           workspaceMounts: [],
         },
       },

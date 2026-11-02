@@ -1,70 +1,67 @@
-import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
-import { createHash, randomBytes } from "node:crypto";
 import {
-  placeInputFailure,
-  type AgentEvent,
-  ModelSelectionSchema,
-  OpensteerError,
-  RequestIdSchema,
-  RequestResponseSchema,
-  RunIdSchema,
-  SequenceSchema,
-  ThreadIdSchema,
-  type WorkspaceId,
-  workspaceWakesOnDemand,
+ModelSelectionSchema,
+OpensteerError,
+placeInputFailure,
+RequestIdSchema,
+RequestResponseSchema,
+RunIdSchema,
+SequenceSchema,
+ThreadIdSchema,
+type AgentEvent,
+type WorkspaceId
 } from "@opensteer/core";
 import type {
-  AttachmentStore,
-  OpensteerStore,
-  CommandRow,
-  PendingCommandRow,
-  TriggerStore,
+AttachmentStore,
+CommandRow,
+OpensteerStore,
+PendingCommandRow,
+TriggerStore,
 } from "@opensteer/database";
 import {
-  CorrelationIdSchema,
-  HarnessInputSchema,
-  RunInitialContextSchema,
-  type HarnessInstanceCatalog,
-  type MachineAccessRunContext,
-  type RunnerCommand,
-} from "@opensteer/protocol";
-import {
-  initialContinuationContextFits,
-  initialContinuationHistoryBudget,
-  isRetryableHarnessCatalogStatus,
-  selectInitialContinuationContext,
+initialContinuationContextFits,
+initialContinuationHistoryBudget,
+isRetryableHarnessCatalogStatus,
+selectInitialContinuationContext,
 } from "@opensteer/harness";
 import {
-  CommandDispatchError,
-  type DurableCommandDispatcher,
-  type RunnerRegistry,
+CommandDispatchError,
+type DurableCommandDispatcher,
+type RunnerRegistry,
 } from "@opensteer/orchestration";
-import type { EgressService } from "../server/egress-service.js";
 import {
-  harnessInspectionDefinition,
-  inspectAndRecordHarnessCatalogs,
-} from "./harness-catalogs.js";
-import type { AgentControlTokenService } from "./agent-control-service.js";
-import type { RunCapabilityTokenService } from "./run-capability.js";
-import {
-  matchModelSelection,
-  modelOptionUnavailableMessage,
-  runModelSelection,
-} from "./model-selection.js";
-import type { IntegrationToolsTokenService } from "../integrations/integration-tools-mcp-service.js";
-import type { IntegrationSkillsTokenService } from "../integrations/integration-skill-bundle-service.js";
-import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
-import type { TriggerIntegrationToolsTokenService } from "../integrations/integration-tools-mcp-service.js";
-import type { BrowserService } from "../browser/browser-service.js";
-import type { WorkspaceService } from "../workspace/workspace-service.js";
-import type { WorkspaceWakeService } from "../workspace/workspace-wake-service.js";
-import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import { computeMachineAccess } from "../shell/machine-access-run-context.js";
-import {
-  openRequestResponse,
-  type RequestResponseVault,
-} from "../identity/request-response-vault.js";
+CorrelationIdSchema,
+HarnessInputSchema,
+RunInitialContextSchema,
+type HarnessInstanceCatalog,
+type MachineAccessRunContext,
+type RunnerCommand,
+} from "@opensteer/protocol";
+import { createHash,randomBytes } from "node:crypto";
 import { z } from "zod";
+import type { BrowserService } from "../browser/browser-service.js";
+import {
+openRequestResponse,
+type RequestResponseVault,
+} from "../identity/request-response-vault.js";
+import type { IntegrationSkillsTokenService } from "../integrations/integration-skill-bundle-service.js";
+import type { IntegrationToolsTokenService,TriggerIntegrationToolsTokenService } from "../integrations/integration-tools-mcp-service.js";
+import type { EgressService } from "../server/egress-service.js";
+import { computeMachineAccess } from "../shell/machine-access-run-context.js";
+import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
+import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
+import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
+import type { WorkspaceService } from "../workspace/workspace-service.js";
+import type { AgentControlTokenService } from "./agent-control-service.js";
+import {
+harnessInspectionDefinition,
+inspectAndRecordHarnessCatalogs,
+} from "./harness-catalogs.js";
+import {
+matchModelSelection,
+modelOptionUnavailableMessage,
+runModelSelection,
+} from "./model-selection.js";
+import type { RunCapabilityTokenService } from "./run-capability.js";
 
 const ControlPayloadSchema = z.discriminatedUnion("type", [
   z
@@ -130,7 +127,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
   readonly #triggers: TriggerStore;
   readonly #workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
-  readonly #workspaceWake: Pick<WorkspaceWakeService, "wake"> | undefined;
   readonly #workspaceAccess: WorkspaceExecutionAccessService;
 
   constructor(options: {
@@ -153,7 +149,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
-    readonly workspaceWake?: Pick<WorkspaceWakeService, "wake">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
   }) {
     this.#attachmentRunTokens = options.attachmentRunTokens;
@@ -186,7 +181,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#triggerIntegrationToolsTokens = options.triggerIntegrationToolsTokens;
     this.#triggers = options.triggers;
     this.#workspaces = options.workspaces;
-    this.#workspaceWake = options.workspaceWake;
     this.#workspaceAccess = options.workspaceAccess;
   }
 
@@ -229,10 +223,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       : null;
     if (context.run.assignmentId && (!assignment || assignment.status !== "open")) {
       throw new CommandDispatchError("This task assignment is no longer open.", "failed");
-    }
-    if (workspaceWakesOnDemand(context.workspace.status)) {
-      void this.#workspaceWake?.wake(context.workspace.id, "run-dispatch");
-      throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
     }
     if (context.workspace.status !== "ready") {
       throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
@@ -728,10 +718,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "Update this Runner to the current execution protocol.",
         "failed",
       );
-    }
-    if (workspaceWakesOnDemand(initial.workspace.status)) {
-      void this.#workspaceWake?.wake(initial.workspace.id, "trigger-dispatch");
-      throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
     }
     if (initial.workspace.status !== "ready") {
       throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");

@@ -1,77 +1,76 @@
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
-import type { HostConfig, RunnerConfig } from "@opensteer/config";
+import type { HostConfig,RunnerConfig } from "@opensteer/config";
 import {
-  HarnessIdSchema,
-  createId,
-  zeroSequence,
-  type AgentEventView as AgentEvent,
-  type ArtifactContentPart,
-  type Attachment,
-  type EnvironmentId,
-  type HarnessInstanceId,
-  type MessageId,
-  type ModelSelection,
-  type NotificationView,
-  type ProviderSessionId,
-  type RunId,
-  type ThreadAccessMode,
-  type ThreadId,
-  type WorkspaceId,
+HarnessIdSchema,
+createId,
+zeroSequence,
+type AgentEventView as AgentEvent,
+type ArtifactContentPart,
+type Attachment,
+type EnvironmentId,
+type HarnessInstanceId,
+type MessageId,
+type ModelSelection,
+type NotificationView,
+type ProviderSessionId,
+type RunId,
+type ThreadAccessMode,
+type ThreadId,
+type WorkspaceId,
 } from "@opensteer/core";
 import {
-  cloneTestDatabase,
-  failDatabaseContainment,
-  type TestDatabase,
+cloneTestDatabase,
+failDatabaseContainment,
+type TestDatabase,
 } from "@opensteer/database/test-support/database";
-import { hostApiVersion, hostKeyFingerprint } from "@opensteer/deployment-authority";
-import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
+import { hostApiVersion,hostKeyFingerprint } from "@opensteer/deployment-authority";
+import type { HarnessRegistry,HarnessRuntimeBoundary } from "@opensteer/harness";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import {
-  HostToClientMessageSchema,
-  RunnerBootIdSchema,
-  hostApiVersionHeader,
-  type HarnessInstanceCatalogView,
-  type HarnessModelDescriptor,
-  type HostApiClient,
-  type HostToClientMessage,
+HostToClientMessageSchema,
+RunnerBootIdSchema,
+hostApiVersionHeader,
+type HarnessInstanceCatalogView,
+type HarnessModelDescriptor,
+type HostApiClient,
+type HostToClientMessage,
 } from "@opensteer/protocol";
 import {
-  AttachmentCache,
-  ExecutionContainment,
-  FileRunnerIdentityStore,
-  ReconnectingHostConnection,
-  RunnerRuntime,
-  executionScopeVariable,
-  providerContinuationIdentityProjector,
-  type PreparedIntegrationsModule,
-  type RunWorkspaceManager,
-  type RunnerAgentsConnection,
-  type RunnerLogger,
-  type RunnerRuntimeOptions,
+AttachmentCache,
+ExecutionContainment,
+FileRunnerIdentityStore,
+ReconnectingHostConnection,
+RunnerRuntime,
+executionScopeVariable,
+providerContinuationIdentityProjector,
+type PreparedIntegrationsModule,
+type RunWorkspaceManager,
+type RunnerAgentsConnection,
+type RunnerLogger,
+type RunnerRuntimeOptions,
 } from "@opensteer/runner";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { LocalWorkspaceAuthority, NativeFsHelper } from "@opensteer/workspace-local";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { LocalWorkspaceAuthority,NativeFsHelper } from "@opensteer/workspace-local";
+import { generateKeyPairSync,randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir,mkdtemp,realpath,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { TestRunner } from "vitest";
-import WebSocket, { type RawData } from "ws";
+import WebSocket,{ type RawData } from "ws";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
 import { nativeFsHelperBinary } from "../runtime/machine-access.test-support.js";
-import { startPortableFsManagerFake } from "../runtime/portablefs-manager.test-support.js";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+import { createHostRuntime,type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { NetworkPartition } from "./network-partition.test-support.js";
 import { forkRunnerChild } from "./runner-child.test-support.js";
-import { runnerReady, type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
-import { RunnerWire, type RunnerWireOptions } from "./runner-wire.test-support.js";
+import { runnerReady,type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
+import { RunnerWire,type RunnerWireOptions } from "./runner-wire.test-support.js";
 
 /*
  * A whole deployment in one process: a Host on a temporary database, one
@@ -240,7 +239,6 @@ export interface VerticalStack {
   readonly runnerDataDirectory: string;
   readonly mountCalls: readonly Parameters<RunWorkspaceManager["prepare"]>[0][];
   readonly mountCleanupCalls: () => number;
-  readonly portableFsCreateCalls: () => number;
   readonly close: () => Promise<void>;
   readonly createWorkspace: (
     name: string,
@@ -469,8 +467,6 @@ async function startWithin(
     mkdir(runnerDataDirectory, { mode: 0o700, recursive: true }),
     mkdir(mountedWorkspacePath, { mode: 0o700, recursive: true }),
   ]);
-  const portableFs = await startPortableFsManagerFake();
-  cleanups.push({ label: "PortableFS", run: () => portableFs.close() });
   const hostPort = await freePort();
   const hostOrigin = new URL(`http://127.0.0.1:${hostPort}`);
   const publicOrigin = options.publicOrigin ?? hostOrigin;
@@ -496,7 +492,7 @@ async function startWithin(
           databaseUrl: temporaryDatabase.url,
           executionLeaseMs: options.executionLeaseMs ?? 90_000,
           hostOrigin,
-          portableFsUrl: portableFs.url,
+          environmentId,
           publicOrigin,
         }),
         ...(options.personal
@@ -561,7 +557,6 @@ async function startWithin(
               }),
             }
           : { level: "warn" },
-        ...(!options.personal ? { portableFsMountManagerEndpoint: portableFs.mountEndpoint } : {}),
         ...(options.runCapabilityNow ? { runCapabilityNow: options.runCapabilityNow } : {}),
         ...(options.runCapabilityLifetimeSeconds
           ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
@@ -661,22 +656,20 @@ async function startWithin(
   };
   const runnerDeploymentProfile = options.personal
     ? { defaultWorkspaceBacking: "local-directory" as const, kind: "personal" as const }
-    : { defaultWorkspaceBacking: "portablefs" as const, kind: "server" as const };
+    : { defaultWorkspaceBacking: "local-directory" as const, kind: "server" as const };
   const workspaceBackings = options.personal
     ? ["local-directory" as const]
-    : ["portablefs" as const];
+    : ["local-directory" as const];
   const filesystem = new NativeFsHelper({
     binary: nativeFsHelperBinary,
     rootPolicy: "managed-local",
   });
-  const localAuthority = options.personal
-    ? new LocalWorkspaceAuthority({
+  const localAuthority = new LocalWorkspaceAuthority({
         filesystemAuthority: filesystem,
         namespace: { kind: "single-owner", ownerEnvironmentId: environmentId },
         registryFilePath: join(runnerDataDirectory, "local-workspaces.json"),
         visibleRootPath: join(temporaryRoot, "local-workspaces"),
-      })
-    : undefined;
+      });
   // A real Runner derives this from its persisted identity key, so it survives a restart.
   const continuationKey = generateKeyPairSync("ed25519").privateKey;
   const runnerStarts = new Set<Promise<unknown>>();
@@ -1305,7 +1298,6 @@ async function startWithin(
     runnerDataDirectory,
     mountCalls,
     mountCleanupCalls: () => mountCleanupCalls,
-    portableFsCreateCalls: () => portableFs.createCalls,
     close,
     notifications,
     configureModel: async (nativeModelId, settings) => {
@@ -1586,8 +1578,8 @@ function hostConfig(input: {
   readonly databaseUrl: string;
   readonly executionLeaseMs: number;
   readonly hostOrigin: URL;
-  readonly portableFsUrl: URL;
   readonly publicOrigin: URL;
+  readonly environmentId: EnvironmentId;
 }): HostConfig {
   return {
     acceptsExternalRunners: true,
@@ -1616,27 +1608,10 @@ function hostConfig(input: {
     workspace: {
       deletionRetentionDays: 14,
       shape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
-      storage: {
-        archiveAfterDays: 7,
-        authorizationDomain: "opensteer-test",
-        defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-        defaultInodeLimit: 1_000_000,
-        filesServiceUrl: new URL("http://127.0.0.1:4315"),
-        kind: "portablefs",
-        maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-        maxInodeLimit: 10_000_000,
-        managerCaPath: undefined,
-        managerCertPath: undefined,
-        managerKeyPath: undefined,
-        managerServerName: undefined,
-        managerUrl: input.portableFsUrl,
-        productIssuer: "opensteer-test",
-        productPrivateKeyPath: undefined,
-        serviceId: "test-portablefs",
-      },
+      storage: { kind: "local-directory", ownerEnvironmentId: input.environmentId },
     },
   };
 }

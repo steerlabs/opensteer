@@ -1,7 +1,7 @@
-import { createId, type AgentEvent } from "@opensteer/core";
+import { createId,type AgentEvent } from "@opensteer/core";
 import type { SecurityEffectRecord } from "@opensteer/database";
 import type { RunnerIdentity } from "@opensteer/orchestration";
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 import { SecurityEffectService } from "./security-effect-service.js";
 
 describe("SecurityEffectService", () => {
@@ -109,7 +109,6 @@ describe("SecurityEffectService", () => {
       .mockResolvedValue(recovery([]));
     const completeSecurityEffect = vi.fn().mockResolvedValue(undefined);
     const publish = vi.fn();
-    const reconcileMounts = vi.fn().mockResolvedValue(undefined);
     const revokeBrowser = vi.fn().mockResolvedValue(undefined);
     const closeRealtime = vi.fn();
     const publishViewerTasksChanged = vi.fn();
@@ -122,7 +121,6 @@ describe("SecurityEffectService", () => {
       publish,
       realtime: { closeUserWorkspace: closeRealtime, publishViewerTasksChanged },
       runners: { dispatch, identityForEnvironment: () => runner, revokeRuns },
-      mounts: { revokeForMembership: reconcileMounts },
       store: {
         claimSecurityEffects: vi.fn().mockResolvedValueOnce(effects).mockResolvedValueOnce([]),
         completeSecurityEffect,
@@ -146,8 +144,6 @@ describe("SecurityEffectService", () => {
     expect(publishViewerTasksChanged).toHaveBeenCalledWith(userId);
     expect(failActiveRunsForMembershipRevocation).toHaveBeenCalledTimes(3);
     expect(publish).toHaveBeenCalledWith(terminal);
-    expect(reconcileMounts).toHaveBeenCalledOnce();
-    expect(reconcileMounts).toHaveBeenCalledWith(workspaceId, userId);
     expect(revokeBrowser).toHaveBeenCalledWith(userId, workspaceId);
     expect(revokeTriggers).toHaveBeenCalledWith({
       membershipGeneration: 2,
@@ -266,9 +262,6 @@ describe("SecurityEffectService", () => {
       onWatchDesiredChanged: vi.fn(),
       publish: vi.fn(),
       realtime: { closeUserWorkspace: vi.fn(), publishViewerTasksChanged: vi.fn() },
-      mounts: {
-        revokeForMembership: vi.fn(async () => void order.push("mounts")),
-      },
       runners: { dispatch: vi.fn(), identityForEnvironment: () => runner, revokeRuns },
       store: {
         claimSecurityEffects: vi.fn().mockResolvedValueOnce([effect]).mockResolvedValueOnce([]),

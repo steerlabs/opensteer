@@ -1,34 +1,34 @@
 import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  OpensteerError,
-  PendingRequestSchema,
-  type AgentEvent,
-  type EnvironmentId,
-  type HarnessInstanceId,
-  type Message,
-  type Run,
-  type Thread,
-  type ThreadInput,
-  type Workspace,
+createId,
+HarnessIdSchema,
+ModelSelectionSchema,
+OpensteerError,
+PendingRequestSchema,
+type AgentEvent,
+type EnvironmentId,
+type HarnessInstanceId,
+type Message,
+type Run,
+type Thread,
+type ThreadInput,
+type Workspace,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  AgentControlRequestSchema,
-  createBrowserSessionId,
-  HarnessInstanceCatalogSchema,
-  type HarnessInstanceCatalog,
+AgentControlRequestSchema,
+createBrowserSessionId,
+HarnessInstanceCatalogSchema,
+type HarnessInstanceCatalog,
 } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import {
-  AgentControlService,
-  type AgentControlTokenService,
-  type AgentTriggerManager,
-  type AgentWorkspaceMountService,
+AgentControlService,
+type AgentControlTokenService,
+type AgentTriggerManager,
+type AgentWorkspaceMountService,
 } from "./agent-control-service.js";
 
 const now = "2026-08-09T09:00:00.000Z";
@@ -1892,8 +1892,8 @@ function makeService(options: {
       store,
       tokens,
       ...(options.triggers === undefined ? {} : { triggers: options.triggers }),
-      defaultWorkspaceBacking: "portablefs",
-      environmentWorkspaceBackings: () => ["portablefs"] as const,
+      defaultWorkspaceBacking: "local-directory",
+      environmentWorkspaceBackings: () => ["local-directory"] as const,
       workspaceMounts: {
         mount:
           options.mountWorkspace ??
@@ -2044,12 +2044,7 @@ function workspace(
   createdBy: Workspace["createdBy"] = ownerId,
 ): Workspace {
   return {
-    backing: {
-      generation: 1,
-      kind: "portablefs",
-      serviceId: "test-portablefs",
-      volumeId: `pfs_${id}`,
-    },
+    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
     capacityPolicy: {
       blockHardLimitBytes: 10_000_000,
       inodeHardLimit: 10_000,

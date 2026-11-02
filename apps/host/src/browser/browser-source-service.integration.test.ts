@@ -2,62 +2,62 @@ import websocket from "@fastify/websocket";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
 import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  OpensteerError,
-  ThreadAccessModeSchema,
-  type RunnerId,
-  type UserId,
-  type WorkspaceId,
+createId,
+HarnessIdSchema,
+ModelSelectionSchema,
+OpensteerError,
+ThreadAccessModeSchema,
+type RunnerId,
+type UserId,
+type WorkspaceId,
 } from "@opensteer/core";
 import {
-  BrowserSourceStore,
-  createDatabase,
-  migrateToLatest,
-  OpensteerStore,
+BrowserSourceStore,
+createDatabase,
+migrateToLatest,
+OpensteerStore,
 } from "@opensteer/database";
 import { takeTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
 import {
-  browserSourceChallengeBytes,
-  browserSourcePairChallengeBytes,
-  browserSourceRouteChangedBytes,
+browserSourceChallengeBytes,
+browserSourcePairChallengeBytes,
+browserSourceRouteChangedBytes,
 } from "@opensteer/deployment-authority";
 import type {
-  BrowserClientMessage,
-  LoginAuthorizationOutcome,
-  PasswordSignInAuthorityCommand,
-  PasswordSignInAuthorityEvent,
-  PasswordSignInAuthorityResult,
-  PendingAgentEvent,
-  RunnerDescriptor,
+BrowserClientMessage,
+LoginAuthorizationOutcome,
+PasswordSignInAuthorityCommand,
+PasswordSignInAuthorityEvent,
+PasswordSignInAuthorityResult,
+PendingAgentEvent,
+RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
-  browserSourceProtocolVersion,
-  type BrowserSourceStatus,
+browserSourceProtocolVersion,
+type BrowserSourceStatus,
 } from "@opensteer/protocol/browser-sources";
 import Fastify from "fastify";
 import { sql } from "kysely";
 import {
-  createHash,
-  generateKeyPairSync,
-  randomBytes,
-  randomUUID,
-  sign,
-  verify,
+createHash,
+generateKeyPairSync,
+randomBytes,
+randomUUID,
+sign,
+verify,
 } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createServer, request as httpRequest } from "node:http";
+import { createServer,request as httpRequest } from "node:http";
 import { connect as connectTcp } from "node:net";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import WebSocket, { WebSocketServer } from "ws";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import WebSocket,{ WebSocketServer } from "ws";
 import { registerBrowserSourceWire } from "../server/browser-source-registration.js";
 import { normalizeHostError } from "../server/http-errors.js";
 import {
-  BrowserService,
-  type BrowserConsumerPeer,
-  type BrowserRuntimeConnection,
+BrowserService,
+type BrowserConsumerPeer,
+type BrowserRuntimeConnection,
 } from "./browser-service.js";
 import { BrowserSourceService } from "./browser-source-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
@@ -629,7 +629,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
           localStorage: null,
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
+          workspaceBackings: ["local-directory"],
           workspaceMounts: [],
         },
       },
@@ -728,17 +728,12 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const ownerId = await store.createUser("Chrome owner");
     await store.ensureDeployment({
       canonicalOrigin: sourceOrigin,
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       hostInstanceId: createId("hostInstance"),
     });
     const workspace = await store.createWorkspace({
       kind: "project",
-      backing: {
-        kind: "portablefs",
-        generation: 1,
-        serviceId: "test-portablefs",
-        volumeId: `test-${randomUUID()}`,
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,

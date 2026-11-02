@@ -1,29 +1,29 @@
 import type { HostConfig } from "@opensteer/config";
-import { createDatabase, migrateToLatest } from "@opensteer/database";
+import { createId } from "@opensteer/core";
+import { createDatabase,migrateToLatest } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  BrowserServerMessageSchema,
-  decodeBrowserFrameEnvelope,
-  hostApiVersionHeader,
-  type BrowserClientMessage,
-  type BrowserServerMessage,
+BrowserServerMessageSchema,
+decodeBrowserFrameEnvelope,
+hostApiVersionHeader,
+type BrowserClientMessage,
+type BrowserServerMessage,
 } from "@opensteer/protocol";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { sql } from "kysely";
-import { fork, type ChildProcess } from "node:child_process";
+import { fork,type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir,mkdtemp,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach,beforeEach,describe,expect,it } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { ownChild } from "../agents/owned-child.test-support.js";
-import { startPortableFsManagerFake as startPortableFsController } from "../runtime/portablefs-manager.test-support.js";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+import { createHostRuntime,type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
@@ -34,7 +34,6 @@ const accessToken = "browser-access-".padEnd(40, "a");
 integration("Host and Chromium editing contract", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
   let dataDirectory: string | undefined;
-  let portableFs: Awaited<ReturnType<typeof startPortableFsController>> | undefined;
   let runtime: HostRuntime | undefined;
   const sockets: WebSocket[] = [];
   let engineProcess: ChildProcess | undefined;
@@ -84,7 +83,6 @@ integration("Host and Chromium editing contract", () => {
         }),
       () => browserRuntime?.close(),
       () => runtime?.close(),
-      () => portableFs?.close(),
       async () => {
         fixture?.closeAllConnections();
         if (fixture) await new Promise<void>((resolve) => fixture!.close(() => resolve()));
@@ -101,7 +99,6 @@ integration("Host and Chromium editing contract", () => {
   });
 
   it("projects old viewers and attributes native clipboard over the real Host route", async () => {
-    portableFs = await startPortableFsController();
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-browser-host-integration-"));
     const hostPort = await freePort();
     const config: HostConfig = {
@@ -131,27 +128,10 @@ integration("Host and Chromium editing contract", () => {
       workspace: {
         deletionRetentionDays: 14,
         shape: {
-          defaultWorkspaceBacking: "portablefs",
+          defaultWorkspaceBacking: "local-directory",
           kind: "server" as const,
         },
-        storage: {
-          archiveAfterDays: 7,
-          authorizationDomain: "opensteer-test",
-          defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-          defaultInodeLimit: 1_000_000,
-          filesServiceUrl: new URL("http://127.0.0.1:4315"),
-          kind: "portablefs",
-          maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-          maxInodeLimit: 10_000_000,
-          managerCaPath: undefined,
-          managerCertPath: undefined,
-          managerKeyPath: undefined,
-          managerServerName: undefined,
-          managerUrl: portableFs.url,
-          productIssuer: "opensteer-test",
-          productPrivateKeyPath: undefined,
-          serviceId: "test-portablefs",
-        },
+        storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
       },
     };
     runtime = await createHostRuntime(config);

@@ -8,40 +8,40 @@
  *
  * Requires OPENSTEER_TEST_DATABASE_URL; it skips without one.
  */
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { slackChannelProviderManifest, type ChannelDeliveryId } from "@opensteer/channel-core";
+import { slackChannelProviderManifest,type ChannelDeliveryId } from "@opensteer/channel-core";
 import {
-  RuntimeChannelRequestSchema,
-  type RuntimeChannelRequest,
+RuntimeChannelRequestSchema,
+type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
-import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
 import {
-  HarnessIdSchema,
-  MessageContentSchema,
-  RunnerIdSchema,
-  ThreadAccessModeSchema,
-  createId,
-  type RunId,
-  type RunnerId,
-  type ThreadId,
-  type UserId,
-  type WorkspaceId,
+HarnessIdSchema,
+MessageContentSchema,
+RunnerIdSchema,
+ThreadAccessModeSchema,
+createId,
+type RunId,
+type RunnerId,
+type ThreadId,
+type UserId,
+type WorkspaceId,
 } from "@opensteer/core";
+import { ChannelStore,OpensteerStore,createDatabase,migrateToLatest } from "@opensteer/database";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
-  HarnessInstanceCatalogSchema,
-  RunnerAuxiliaryFrameFenceSchema,
-  RunnerBootIdSchema,
-  RunnerConnectionIdSchema,
-  RunnerConnectionLeaseIdSchema,
-  type PendingAgentEvent,
-  type RunnerDescriptor,
+HarnessInstanceCatalogSchema,
+RunnerAuxiliaryFrameFenceSchema,
+RunnerBootIdSchema,
+RunnerConnectionIdSchema,
+RunnerConnectionLeaseIdSchema,
+type PendingAgentEvent,
+type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ChannelService } from "./channel-service.js";
-import { MessagingRelayHub, type MessagingRelayPeer } from "./messaging-relay-hub.js";
+import { createHash,generateKeyPairSync,randomBytes,randomUUID } from "node:crypto";
+import { afterAll,beforeAll,describe,expect,it,vi } from "vitest";
 import { CredentialService } from "../identity/credential-service.js";
+import { ChannelService } from "./channel-service.js";
+import { MessagingRelayHub,type MessagingRelayPeer } from "./messaging-relay-hub.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -706,12 +706,7 @@ integration("messaging pipeline", () => {
     });
 
     const roomWorkspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_pipeline_route_room",
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,
@@ -1183,12 +1178,7 @@ integration("messaging pipeline", () => {
       .executeTakeFirst();
     if (existing) return existing.id;
     const created = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_pipeline_home",
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,
@@ -1243,12 +1233,7 @@ integration("messaging pipeline", () => {
     const workspace = input.workspaceId
       ? { id: input.workspaceId }
       : await store.createWorkspace({
-          backing: {
-            generation: 1,
-            kind: "portablefs",
-            serviceId: "test-portablefs",
-            volumeId: `wsp_pipeline_${input.suffix.toLowerCase()}`,
-          },
+          backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
           capacityPolicy: {
             blockHardLimitBytes: 10_000_000,
             inodeHardLimit: 10_000,
@@ -1464,7 +1449,7 @@ integration("messaging pipeline", () => {
       await store.ensureDeployment({
         canonicalOrigin,
         hostInstanceId: createId("hostInstance"),
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       });
     }
     const pair = generateKeyPairSync("ed25519");
@@ -1512,7 +1497,7 @@ integration("messaging pipeline", () => {
             localStorage: null,
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
+            workspaceBackings: ["local-directory"],
             workspaceMounts: [],
           },
         },

@@ -3,49 +3,49 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { assignmentPresentation } from "@opensteer/client/host";
 import {
-  assignmentResultMaxBytes,
-  createId,
-  HarnessIdSchema,
-  MessageContentSchema,
-  ModelSelectionSchema,
-  PendingRequestSchema,
-  SequenceSchema,
-  ThreadAccessModeSchema,
-  WorkspaceIdSchema,
-  type AssignmentId,
-  type EnvironmentId,
-  type RequestId,
-  type RunId,
-  type RunnerId,
-  type ThreadId,
-  type UserId,
-  type WorkspaceId,
+assignmentResultMaxBytes,
+createId,
+HarnessIdSchema,
+MessageContentSchema,
+ModelSelectionSchema,
+PendingRequestSchema,
+SequenceSchema,
+ThreadAccessModeSchema,
+WorkspaceIdSchema,
+type AssignmentId,
+type EnvironmentId,
+type RequestId,
+type RunId,
+type RunnerId,
+type ThreadId,
+type UserId,
+type WorkspaceId,
 } from "@opensteer/core";
 import {
-  createDatabase,
-  migrateToLatest,
-  migrationProvider,
-  OpensteerStore,
+createDatabase,
+migrateToLatest,
+migrationProvider,
+OpensteerStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
-import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
+import { CommandService,KeyedAdmissionQueue } from "@opensteer/orchestration";
 import {
-  AgentControlResponseSchema,
-  EnvironmentDiscoverySchema,
-  HarnessInstanceCatalogSchema,
-  type HarnessInstanceCatalog,
-  type RunnerCommand,
-  type RunnerDescriptor,
+AgentControlResponseSchema,
+EnvironmentDiscoverySchema,
+HarnessInstanceCatalogSchema,
+type HarnessInstanceCatalog,
+type RunnerCommand,
+type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import {
-  AgentControlService,
-  type AgentControlRunScope,
-  type AgentControlTokenService,
+AgentControlService,
+type AgentControlRunScope,
+type AgentControlTokenService,
 } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import { ContinuationService } from "./continuation-service.js";
@@ -126,8 +126,8 @@ integration("cross-environment delegation reaches the Runner", () => {
         return claims;
       },
     } as unknown as AgentControlTokenService,
-    defaultWorkspaceBacking: "portablefs",
-    environmentWorkspaceBackings: () => ["portablefs"],
+    defaultWorkspaceBacking: "local-directory",
+    environmentWorkspaceBackings: () => ["local-directory"],
     workspaceMounts: { mount: unexpected },
     workspaces: { create: unexpected },
   });
@@ -2516,12 +2516,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const workspace = await store.createWorkspace({
       kind: options.project ? "project" : "main",
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_main_${randomUUID()}`,
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,
@@ -3048,12 +3043,7 @@ integration("cross-environment delegation reaches the Runner", () => {
 
   function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
     return store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: `wsp_worker_${randomUUID()}`,
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
         inodeHardLimit: 10_000,
@@ -3167,7 +3157,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       await store.ensureDeployment({
         canonicalOrigin: "https://delegation.opensteer.test",
         hostInstanceId: createId("hostInstance"),
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       });
     }
     const pair = generateKeyPairSync("ed25519");
@@ -3198,7 +3188,7 @@ integration("cross-environment delegation reaches the Runner", () => {
           maxConcurrentRuns: 4,
           // A lent computer is single-user, so it may offer the person's own CLI.
           providerStateModes: input.runnerKind === "local" ? ["ambient", "isolated"] : ["isolated"],
-          workspaceBackings: ["portablefs"],
+          workspaceBackings: ["local-directory"],
           workspaceMounts: [],
         },
       },

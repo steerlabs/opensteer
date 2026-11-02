@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir,mkdtemp,readFile,stat,symlink,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { describe,expect,it } from "vitest";
 import { stageManagedSecrets } from "./stage-managed-secrets-main.js";
 
 const names = [
@@ -10,10 +10,6 @@ const names = [
   "credential.key",
   "host-private.pem",
   "host-public.pem",
-  "portablefs-ca.pem",
-  "portablefs-client.pem",
-  "portablefs-client-key.pem",
-  "portablefs-product.pem",
 ] as const;
 
 describe("managed secret staging", () => {

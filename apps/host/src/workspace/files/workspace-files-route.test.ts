@@ -1,17 +1,17 @@
-import { generateKeyPairSync } from "node:crypto";
-import { createId, type Workspace, type WorkspaceMembershipId } from "@opensteer/core";
+import { createId,type Workspace,type WorkspaceMembershipId } from "@opensteer/core";
 import type {
-  WorkspaceFilesAdmission,
-  WorkspaceMembershipChangeListener,
-  WorkspaceMembershipRecord,
+WorkspaceFilesAdmission,
+WorkspaceMembershipChangeListener,
+WorkspaceMembershipRecord,
 } from "@opensteer/database";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
+import { afterEach,describe,expect,it,vi } from "vitest";
 import { signHostDiscovery } from "../../identity/host-keys.js";
-import {
-  hostServerTestDependencies,
-  type HostServerTestOverrides,
-} from "../../server/host-server-test-harness.js";
 import { createHostServer as createProductionHostServer } from "../../server.js";
+import {
+hostServerTestDependencies,
+type HostServerTestOverrides,
+} from "../../server/host-server-test-harness.js";
 import { WorkspaceFilesService } from "./workspace-files-service.js";
 
 const discoveryKeys = generateKeyPairSync("ed25519");
@@ -23,7 +23,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Workspace Files route streaming authorization", () => {
-  it.each(["local-directory", "portablefs"] as const)(
+  it.each(["local-directory"] as const)(
     "terminates an active HTTP %s download as soon as membership is revoked",
     async (backingKind) => {
       const workspace = readyWorkspace(backingKind);
@@ -50,9 +50,7 @@ describe("Workspace Files route streaming authorization", () => {
           ),
       );
       const files = new WorkspaceFilesService({
-        ...(backingKind === "local-directory"
-          ? { local: { download } as never }
-          : { portableFs: { download } as never }),
+        local: { download } as never,
         memberships: membership.repository,
       });
       const app = await createHostServer({
@@ -67,16 +65,6 @@ describe("Workspace Files route streaming authorization", () => {
         egress: {} as never,
         files,
         harnessAuthenticationCoordinator: {} as never,
-        // A PortableFS shape is only ever assembled with its own services.
-        ...(backingKind === "portablefs"
-          ? {
-              portablefs: {
-                mountExchange: {} as never,
-                workspaceActivity: { note: () => undefined },
-                workspaceWake: { wake: async () => undefined },
-              },
-            }
-          : {}),
         realtime: {} as never,
         runnerAuthenticator: {} as never,
         runners: {} as never,
@@ -106,7 +94,7 @@ describe("Workspace Files route streaming authorization", () => {
   );
 });
 
-function discoveryFor(defaultWorkspaceBacking: "local-directory" | "portablefs") {
+function discoveryFor(defaultWorkspaceBacking: "local-directory" | "local-directory") {
   return signHostDiscovery(discoveryKeys, {
     canonicalOrigin: "https://files-route.opensteer.test",
     deploymentId: createId("deployment"),
@@ -173,7 +161,7 @@ function membershipRepository(workspace: Workspace) {
   };
 }
 
-function readyWorkspace(backingKind: "local-directory" | "portablefs"): Workspace {
+function readyWorkspace(backingKind: "local-directory" | "local-directory"): Workspace {
   const now = new Date().toISOString();
   const owner = createId("user");
   return {
@@ -186,12 +174,7 @@ function readyWorkspace(backingKind: "local-directory" | "portablefs"): Workspac
             ownerEnvironmentId: createId("environment"),
             storageAuthorityId: createId("storageAuthority"),
           }
-        : {
-            generation: 1,
-            kind: "portablefs",
-            serviceId: "files-route-test",
-            volumeId: "volume_files_route_test",
-          },
+        : { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
     capacityPolicy:
       backingKind === "local-directory"
         ? { kind: "host-filesystem" }

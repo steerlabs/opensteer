@@ -3,74 +3,74 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  OpensteerError,
-  ThreadAccessModeSchema,
-  type Run,
-  type Thread,
-  type ThreadId,
-  type TriggerId,
-  type UserId,
-  type Workspace,
+createId,
+HarnessIdSchema,
+ModelSelectionSchema,
+OpensteerError,
+ThreadAccessModeSchema,
+type Run,
+type Thread,
+type ThreadId,
+type TriggerId,
+type UserId,
+type Workspace,
 } from "@opensteer/core";
 import {
-  createDatabase,
-  migrateToLatest,
-  migrationProvider,
-  OpensteerStore,
-  TriggerStore,
+createDatabase,
+migrateToLatest,
+migrationProvider,
+OpensteerStore,
+TriggerStore,
 } from "@opensteer/database";
 import { recordedTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import {
-  CommandService,
-  ExecutionCoordinator,
-  KeyedAdmissionQueue,
-  type RunnerIdentity,
-  type RunnerRegistry,
+CommandService,
+ExecutionCoordinator,
+KeyedAdmissionQueue,
+type RunnerIdentity,
+type RunnerRegistry,
 } from "@opensteer/orchestration";
 import {
-  AgentControlResponseSchema,
-  hostApi,
-  type AgentControlResponse,
-  type HostApiServerContext,
-  type RunnerDescriptor,
+AgentControlResponseSchema,
+hostApi,
+type AgentControlResponse,
+type HostApiServerContext,
+type RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
-  TriggerControlInputSchema,
-  TriggerRevisionSchema,
-  TriggerSchema,
-  type TriggerOccurrence,
-  type TriggerProgram,
-  type TriggerSource,
+TriggerControlInputSchema,
+TriggerRevisionSchema,
+TriggerSchema,
+type TriggerOccurrence,
+type TriggerProgram,
+type TriggerSource,
 } from "@opensteer/triggers";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
+import { mkdir,writeFile } from "node:fs/promises";
+import { createServer,type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import { z } from "zod";
 import {
-  AgentControlService,
-  type AgentControlRunScope,
-  type AgentControlTokenService,
+AgentControlService,
+type AgentControlRunScope,
+type AgentControlTokenService,
 } from "../agents/agent-control-service.js";
 import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import {
-  TriggerControlService,
-  type TriggerControlScope,
-  type TriggerControlTokenService,
+TriggerControlService,
+type TriggerControlScope,
+type TriggerControlTokenService,
 } from "./trigger-control-service.js";
-import { createTriggerRpcHandlers, handleTriggerCommand } from "./trigger-routes.js";
+import { createTriggerRpcHandlers,handleTriggerCommand } from "./trigger-routes.js";
 import { TriggerService } from "./trigger-service.js";
-import type { WatchControlScope, WatchControlTokenService } from "./watch-capability.js";
+import type { WatchControlScope,WatchControlTokenService } from "./watch-capability.js";
 import { WatchControlService } from "./watch-control-service.js";
-import { WatchService, type WatchServiceOptions } from "./watch-service.js";
+import { WatchService,type WatchServiceOptions } from "./watch-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -116,11 +116,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const occurrenceClaims = new Map<string, TriggerControlScope>();
   const watchClaims = new Map<string, WatchControlScope>();
   const workspaceAccess = new WorkspaceExecutionAccessService({
-    shape: { kind: "server", defaultWorkspaceBacking: "portablefs" },
-    portableFs: {
-      exchange: { issue: async () => "trigger-compatibility-exchange" } as never,
-      exchangeUrl: "https://trigger-authority.opensteer.test/mount-exchange",
-    },
+    shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    local: { planExecutionAccess: ({ workspace }: { workspace: Workspace }) => ({ ...workspace.backing, workspaceId: workspace.id }) } as never,
   });
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
@@ -152,8 +149,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const services = {
     canRunHarness: () => true,
     commands,
-    defaultWorkspaceBacking: "portablefs" as const,
-    environmentWorkspaceBackings: () => ["portablefs"] as const,
+    defaultWorkspaceBacking: "local-directory" as const,
+    environmentWorkspaceBackings: () => ["local-directory"] as const,
     isEnvironmentConnected: () => true,
     store,
     workspaces: {
@@ -1645,7 +1642,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         bootId: "authority-boot",
         connectionGeneration: 1,
         capabilities: ["execution-plane-v2"],
-        modules: { agents: { workspaceBackings: ["portablefs"] } },
+        modules: { agents: { workspaceBackings: ["local-directory"] } },
       } as unknown as RunnerIdentity;
       const dispatch = vi.fn<RunnerRegistry["dispatch"]>(async (command) => ({
         type: "runner.command-accepted",
@@ -1822,7 +1819,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         runnerId: f.runnerId,
         bootId: "authority-boot",
         connectionGeneration: 1,
-        modules: { agents: { workspaceBackings: ["portablefs"] } },
+        modules: { agents: { workspaceBackings: ["local-directory"] } },
       } as unknown as RunnerIdentity;
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
@@ -2177,12 +2174,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
   }) {
     return store.createWorkspace({
       ...input,
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: randomUUID(),
-      },
+      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
       capacityPolicy: {
         kind: "hard-quota",
         blockHardLimitBytes: 10_000_000,
@@ -2206,7 +2198,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await store.ensureDeployment({
       canonicalOrigin: "https://trigger-authority.opensteer.test",
       hostInstanceId: createId("hostInstance"),
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     });
     const pair = generateKeyPairSync("ed25519");
     const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
@@ -2238,7 +2230,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           localStorage: null,
           maxConcurrentRuns: 16,
           providerStateModes: ["isolated"],
-          workspaceBackings: ["portablefs"],
+          workspaceBackings: ["local-directory"],
           workspaceMounts: [],
         },
       },

@@ -1,7 +1,7 @@
-import { createId, type Workspace } from "@opensteer/core";
-import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
+import { createId,type Workspace } from "@opensteer/core";
+import { createDatabase,migrateToLatest,OpensteerStore } from "@opensteer/database";
 import { sql } from "kysely";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import { WorkspaceFilesService } from "./workspace-files-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -23,7 +23,7 @@ integration("Workspace Files membership generation", () => {
 
   afterAll(async () => database.destroy());
 
-  it.each(["local-directory", "portablefs"] as const)(
+  it.each(["local-directory"] as const)(
     "stops an in-flight %s download when the admitted member is revoked",
     async (backingKind) => {
       await store.ensureDeployment({
@@ -52,12 +52,7 @@ integration("Workspace Files membership generation", () => {
                 ownerEnvironmentId,
                 storageAuthorityId: createId("storageAuthority"),
               }
-            : {
-                generation: 1,
-                kind: "portablefs",
-                serviceId: "files-membership-test",
-                volumeId: `volume_${createId("workspace")}`,
-              },
+            : { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
         capacityPolicy:
           backingKind === "local-directory"
             ? { kind: "host-filesystem" }
@@ -112,9 +107,7 @@ integration("Workspace Files membership generation", () => {
         },
       );
       const files = new WorkspaceFilesService({
-        ...(backingKind === "local-directory"
-          ? { local: { download } as never }
-          : { portableFs: { download } as never }),
+        local: { download } as never,
         memberships: store,
       });
       try {

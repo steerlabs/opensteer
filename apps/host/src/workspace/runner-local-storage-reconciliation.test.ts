@@ -1,16 +1,16 @@
 import {
-  createId,
-  type EnvironmentId,
-  type StorageAuthorityId,
-  type Workspace,
-  type WorkspaceBindingId,
+createId,
+type EnvironmentId,
+type StorageAuthorityId,
+type Workspace,
+type WorkspaceBindingId,
 } from "@opensteer/core";
 import type { RunnerLocalStorageInventory } from "@opensteer/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { describe,expect,it,vi } from "vitest";
 import {
-  reconcileLocalStorageInventory,
-  reconcileRunnerLocalStorage,
-  unlinkedLocalBindingCount,
+reconcileLocalStorageInventory,
+reconcileRunnerLocalStorage,
+unlinkedLocalBindingCount,
 } from "./runner-local-storage-reconciliation.js";
 
 const environmentId = createId("environment");
@@ -185,7 +185,7 @@ function agentsModule(localStorage: RunnerLocalStorageInventory | null) {
     localStorage,
     maxConcurrentRuns: 2,
     providerStateModes: ["isolated" as const],
-    workspaceBackings: [localStorage ? ("local-directory" as const) : ("portablefs" as const)],
+    workspaceBackings: [localStorage ? ("local-directory" as const) : ("local-directory" as const)],
     workspaceMounts: [],
   };
 }

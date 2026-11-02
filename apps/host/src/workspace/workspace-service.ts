@@ -1,38 +1,36 @@
-import { posix, win32 } from "node:path";
-import { createHash } from "node:crypto";
 import {
-  OpensteerError,
-  WorkspaceIdSchema,
-  type DeploymentShape,
-  type EnvironmentId,
-  type UserId,
-  type Workspace,
-  type WorkspaceCapacityPolicy,
-  type WorkspaceIconName,
-  type MarkColor,
-  type WorkspaceId,
-  type WorkspaceKind,
+OpensteerError,
+WorkspaceIdSchema,
+type DeploymentShape,
+type EnvironmentId,
+type MarkColor,
+type UserId,
+type Workspace,
+type WorkspaceCapacityPolicy,
+type WorkspaceIconName,
+type WorkspaceId,
+type WorkspaceKind,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import {
-  WorkspaceViewSchema,
-  workspaceViewFromWorkspace,
-  type WorkspaceView,
+WorkspaceViewSchema,
+workspaceViewFromWorkspace,
+type WorkspaceView,
 } from "@opensteer/protocol";
 import {
-  WorkspaceAuthorityUnreachableError,
-  assertBackingAllowedByDeployment,
-  type WorkspaceBackingHealth,
-  type WorkspaceBackingLifecycleDriver,
-  type WorkspaceBackingReadiness,
-  workspaceUsesBacking,
+WorkspaceAuthorityUnreachableError,
+assertBackingAllowedByDeployment,
+workspaceUsesBacking,
+type WorkspaceBackingHealth,
+type WorkspaceBackingLifecycleDriver,
 } from "@opensteer/workspace";
+import { createHash } from "node:crypto";
+import { posix,win32 } from "node:path";
 
 const mainWorkspaceName = "Main";
 
 interface WorkspaceLifecycleDrivers {
   readonly local?: WorkspaceBackingLifecycleDriver<"local-directory">;
-  readonly portableFs?: WorkspaceBackingLifecycleDriver<"portablefs">;
 }
 
 type WorkspaceStore = Pick<
@@ -62,14 +60,11 @@ interface WorkspaceReconciliationResult {
  */
 export class WorkspaceService {
   readonly #active = new Map<WorkspaceId, Promise<Workspace>>();
-  readonly #capacityPolicy: WorkspaceCapacityPolicy | undefined;
-  readonly #capacityPolicyCeiling: WorkspaceCapacityPolicy | undefined;
   readonly #drivers: WorkspaceLifecycleDrivers;
   readonly #shape: DeploymentShape;
   readonly #restoreProgress = new Map<WorkspaceId, number>();
   readonly #resolveOwnerEnvironmentId: ((ownerId: UserId) => Promise<EnvironmentId>) | undefined;
   readonly #store: WorkspaceStore;
-  #consecutiveFailedPreflights = 0;
 
   constructor(options: {
     readonly capacityPolicy?: WorkspaceCapacityPolicy;
@@ -79,29 +74,13 @@ export class WorkspaceService {
     readonly resolveOwnerEnvironmentId?: (ownerId: UserId) => Promise<EnvironmentId>;
     readonly store: WorkspaceStore;
   }) {
-    if (!options.drivers.local && !options.drivers.portableFs) {
-      throw new TypeError("Workspace storage requires at least one lifecycle driver");
-    }
-    if ((options.drivers.portableFs !== undefined) !== (options.capacityPolicy !== undefined)) {
-      throw new TypeError("PortableFS Workspace storage requires its quota policy");
-    }
-    if (options.capacityPolicy?.kind !== options.capacityPolicyCeiling?.kind) {
-      throw new TypeError("Workspace capacity policy and ceiling do not match");
-    }
-    if (
-      options.capacityPolicy?.kind === "hard-quota" &&
-      options.capacityPolicyCeiling?.kind === "hard-quota"
-    ) {
-      assertHardQuotaPolicy(options.capacityPolicy, options.capacityPolicyCeiling);
-    }
+    if (!options.drivers.local) throw new TypeError("Local Workspace storage requires a driver");
     if (
       options.shape.defaultWorkspaceBacking === "local-directory" &&
       !options.resolveOwnerEnvironmentId
     ) {
       throw new TypeError("A local-directory default requires an owning environment resolver");
     }
-    this.#capacityPolicy = options.capacityPolicy;
-    this.#capacityPolicyCeiling = options.capacityPolicyCeiling;
     this.#drivers = options.drivers;
     this.#shape = options.shape;
     this.#resolveOwnerEnvironmentId = options.resolveOwnerEnvironmentId;
@@ -142,7 +121,7 @@ export class WorkspaceService {
         retryable: true,
       });
     }
-    const backingKind = main ? "local-directory" : this.#shape.defaultWorkspaceBacking;
+    const backingKind = "local-directory";
     const capacityPolicy = this.#effectiveCapacityPolicy(backingKind, input.capacityPolicy);
     const base = {
       backingKind,
@@ -153,17 +132,10 @@ export class WorkspaceService {
       name: input.name,
       workspaceId: id,
     } as const;
-    const backing =
-      backingKind === "local-directory"
-        ? this.#requiredLocal().initialBacking({
-            ...base,
-            backingKind: "local-directory",
-            ownerEnvironmentId:
-              main?.backing.kind === "local-directory"
-                ? main.backing.ownerEnvironmentId
-                : await this.#ownerEnvironmentId(input.createdBy),
-          })
-        : this.#requiredPortableFs().initialBacking({ ...base, backingKind: "portablefs" });
+    const backing = this.#requiredLocal().initialBacking({
+      ...base, backingKind: "local-directory",
+      ownerEnvironmentId: main?.backing.kind === "local-directory" ? main.backing.ownerEnvironmentId : await this.#ownerEnvironmentId(input.createdBy),
+    });
     if (
       main?.backing.kind === "local-directory" &&
       backing.kind === "local-directory" &&
@@ -364,16 +336,6 @@ export class WorkspaceService {
     });
   }
 
-  async recordControlPlaneFailure(workspaceId: WorkspaceId, error: unknown): Promise<Workspace> {
-    this.#restoreProgress.delete(workspaceId);
-    const issue = this.#requiredPortableFs().issueFromError(error);
-    return this.#store.setWorkspaceStorageState({
-      issue,
-      status: issue.retryable ? "unavailable" : "failed",
-      workspaceId,
-    });
-  }
-
   workspaceView(workspace: Workspace): Promise<WorkspaceView> {
     return this.decorateWorkspaceView(workspaceViewFromWorkspace(workspace));
   }
@@ -409,7 +371,11 @@ export class WorkspaceService {
   }
 
   async validateDeploymentCompatibility(): Promise<void> {
-    for (const workspace of await this.#store.listWorkspaces()) this.#assertWorkspace(workspace);
+    for (const workspace of await this.#store.listWorkspaces()) {
+      if (workspace.backing.kind !== "local-directory" && !["deleting", "deleted"].includes(workspace.status)) {
+        await this.#store.setWorkspaceStorageState({ workspaceId: workspace.id, status: "failed", issue: relocationIssue() });
+      }
+    }
   }
 
   async reconcile(): Promise<WorkspaceReconciliationResult> {
@@ -424,7 +390,7 @@ export class WorkspaceService {
         continue;
       const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
       if (
-        workspace.backing.kind === "portablefs" ||
+        workspace.backing.kind !== "local-directory" ||
         (main &&
           (workspace.backing.kind !== "local-directory" ||
             main.backing.kind !== "local-directory" ||
@@ -440,56 +406,13 @@ export class WorkspaceService {
           });
       }
     }
-    // Only a shared authority can be globally unavailable. Runner-owned local
-    // storage has no such authority: one sleeping laptop is not an outage.
-    const shared = this.#drivers.portableFs;
-    let detail = "Each machine answers for the directories it holds.";
-    if (shared) {
-      let readiness: WorkspaceBackingReadiness;
-      try {
-        readiness = await shared.preflight();
-      } catch (error) {
-        const issue = shared.issueFromError(error);
-        await this.#recordFailedPreflight(issue);
-        return {
-          available: false,
-          detail: issue.message,
-          issue,
-          ...(!issue.retryable ? { severity: "alert" as const } : {}),
-        };
-      }
-      if (!readiness.available) {
-        const issue = shared.issueFromError(new Error(readiness.detail));
-        await this.#recordFailedPreflight(issue);
-        return {
-          available: false,
-          detail: readiness.detail,
-          issue,
-          ...(!issue.retryable ? { severity: "alert" as const } : {}),
-        };
-      }
-      detail = readiness.detail;
-    }
-    this.#consecutiveFailedPreflights = 0;
-    let admitsCreates = true;
-    let createsPausedDetail =
-      "PortableFS product-pool capacity has no create headroom, so pending volume creates were skipped.";
-    if (shared?.admitsCreates) {
-      try {
-        admitsCreates = await shared.admitsCreates();
-      } catch (error) {
-        admitsCreates = false;
-        createsPausedDetail = `Create admission check is unavailable (${errorDetail(error)}), so creates are paused.`;
-      }
-    }
+    const detail = "Each machine answers for the directories it holds.";
     for (const status of ["provisioning", "unavailable"] as const) {
       await this.#forEachStatus(status, (workspace) => {
         if (workspace.storageIssue?.retryable === false) return Promise.resolve();
         if (workspace.storageIssue?.code === "relocation-pending")
           return this.ensureExecutionReady(workspace);
-        return admitsCreates || !workspaceNeedsVolumeCreate(workspace)
-          ? this.provision(workspace)
-          : Promise.resolve();
+        return this.provision(workspace);
       });
     }
     // `archiving` is inspected alongside `ready` because it is the one status
@@ -514,13 +437,6 @@ export class WorkspaceService {
           });
         }
       });
-    }
-    if (!admitsCreates) {
-      return {
-        available: true,
-        detail: `${detail}; ${createsPausedDetail}`,
-        severity: "alert",
-      };
     }
     return { available: true, detail };
   }
@@ -557,20 +473,18 @@ export class WorkspaceService {
     if (workspaceUsesBacking(workspace, "local-directory")) {
       return this.#requiredLocal().provision({ idempotencyKey, workspace });
     }
-    if (workspaceUsesBacking(workspace, "portablefs")) {
-      return this.#requiredPortableFs().provision({ idempotencyKey, workspace });
-    }
     throw new Error("Workspace backing does not match the configured driver");
   }
 
   async #inspect(workspace: Workspace): Promise<WorkspaceBackingHealth> {
     let health: WorkspaceBackingHealth;
+    if (workspace.backing.kind !== "local-directory") return { status: "failed", issue: relocationIssue() };
     if (workspace.storageIssue?.code === "relocation-required")
       return { status: "failed", issue: workspace.storageIssue };
     if (workspace.kind === "project" && workspace.slug) {
       const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
       if (
-        workspace.backing.kind === "portablefs" ||
+        workspace.backing.kind !== "local-directory" ||
         (main &&
           (workspace.backing.kind !== "local-directory" ||
             main.backing.kind !== "local-directory" ||
@@ -581,7 +495,7 @@ export class WorkspaceService {
           status: "failed",
           issue: {
             code: "relocation-required",
-            message: `Move this Project from ${this.#drivers.local?.storageLocation?.(workspace) ?? (workspace.backing.kind === "local-directory" ? `computer ${workspace.backing.ownerEnvironmentId}, folder ${workspace.id}` : `PortableFS volume ${workspace.backing.volumeId}`)} to ${(main ? this.#drivers.local?.storageLocation?.(main) : null) ?? "<Main>"}/Projects/${workspace.slug}, then confirm “I moved it”.`,
+            message: `Move this Project from ${this.#drivers.local?.storageLocation?.(workspace) ?? (workspace.backing.kind === "local-directory" ? `computer ${workspace.backing.ownerEnvironmentId}, folder ${workspace.id}` : "its previous storage")} to ${(main ? this.#drivers.local?.storageLocation?.(main) : null) ?? "<Main>"}/Projects/${workspace.slug}, then confirm “I moved it”.`,
             occurredAt: new Date().toISOString(),
             retryable: false,
           },
@@ -612,8 +526,6 @@ export class WorkspaceService {
     }
     if (workspaceUsesBacking(workspace, "local-directory")) {
       health = await this.#requiredLocal().inspect(workspace);
-    } else if (workspaceUsesBacking(workspace, "portablefs")) {
-      health = await this.#requiredPortableFs().inspect(workspace);
     } else {
       throw new Error("Workspace backing does not match the configured driver");
     }
@@ -624,7 +536,7 @@ export class WorkspaceService {
   #issueFor(workspace: Workspace, error: unknown): NonNullable<Workspace["storageIssue"]> {
     return workspace.backing.kind === "local-directory"
       ? this.#requiredLocal().issueFromError(error)
-      : this.#requiredPortableFs().issueFromError(error);
+      : relocationIssue();
   }
 
   #requiredLocal(): WorkspaceBackingLifecycleDriver<"local-directory"> {
@@ -636,15 +548,6 @@ export class WorkspaceService {
     });
   }
 
-  #requiredPortableFs(): WorkspaceBackingLifecycleDriver<"portablefs"> {
-    const portableFs = this.#drivers.portableFs;
-    if (portableFs) return portableFs;
-    throw new OpensteerError({
-      code: "conflict",
-      message: "This Deployment has no shared Workspace storage",
-    });
-  }
-
   #recordRestoreProgress(workspaceId: WorkspaceId, progress: number | undefined): void {
     if (progress === undefined) this.#restoreProgress.delete(workspaceId);
     else this.#restoreProgress.set(workspaceId, progress);
@@ -653,71 +556,18 @@ export class WorkspaceService {
   #assertWorkspace(workspace: Workspace): void {
     assertBackingAllowedByDeployment(this.#shape, workspace.backing);
     if (workspace.backing.kind === "local-directory") this.#requiredLocal();
-    else this.#requiredPortableFs();
+
   }
 
-  /**
-   * A local directory is bounded by the machine's own disk, so it never carries
-   * a quota. Only shared storage does, and only there can a caller ask for one.
-   */
-  #effectiveCapacityPolicy(
-    backingKind: "local-directory" | "portablefs",
-    override: WorkspaceCapacityPolicy | undefined,
-  ): WorkspaceCapacityPolicy {
-    if (backingKind === "local-directory") {
-      if (override && override.kind !== "host-filesystem") {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "A Workspace on a machine's own disk cannot carry a storage quota",
-        });
-      }
-      return { kind: "host-filesystem" };
-    }
-    const configured = this.#capacityPolicy;
-    const ceiling = this.#capacityPolicyCeiling;
-    if (!configured || !ceiling) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This Deployment has no shared Workspace storage",
-      });
-    }
-    if (!override) return configured;
-    if (override.kind !== configured.kind) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Workspace capacity policy is unsupported by this Deployment",
-      });
-    }
-    if (override.kind === "hard-quota" && ceiling.kind === "hard-quota") {
-      assertHardQuotaPolicy(override, ceiling);
-    }
-    return override;
+  #effectiveCapacityPolicy(_backingKind: "local-directory", override: WorkspaceCapacityPolicy | undefined): WorkspaceCapacityPolicy {
+    if (override && override.kind !== "host-filesystem") throw new OpensteerError({code: "bad_request", message: "A Workspace on a machine's own disk cannot carry a storage quota"});
+    return {kind: "host-filesystem"};
   }
 
   async #ownerEnvironmentId(ownerId: UserId): Promise<EnvironmentId> {
     const resolver = this.#resolveOwnerEnvironmentId;
     if (!resolver) throw new Error("Local Workspace owner environment resolver is unavailable");
     return resolver(ownerId);
-  }
-
-  async #markGlobalUnavailable(issue: NonNullable<Workspace["storageIssue"]>): Promise<void> {
-    for (const status of ["provisioning", "ready", "unavailable"] as const) {
-      await this.#forEachStatus(status, (workspace) =>
-        this.#store
-          .setWorkspaceStorageState({
-            issue,
-            status: "unavailable",
-            workspaceId: workspace.id,
-          })
-          .then(() => undefined),
-      );
-    }
-  }
-
-  async #recordFailedPreflight(issue: NonNullable<Workspace["storageIssue"]>): Promise<void> {
-    const reachedDemotionThreshold = this.#consecutiveFailedPreflights === 2;
-    this.#consecutiveFailedPreflights = Math.min(3, this.#consecutiveFailedPreflights + 1);
-    if (reachedDemotionThreshold) await this.#markGlobalUnavailable(issue);
   }
 
   async #forEachStatus(
@@ -738,46 +588,8 @@ export class WorkspaceService {
   }
 }
 
-function assertHardQuotaPolicy(
-  policy: Extract<WorkspaceCapacityPolicy, { readonly kind: "hard-quota" }>,
-  ceiling: Extract<WorkspaceCapacityPolicy, { readonly kind: "hard-quota" }>,
-): void {
-  if (
-    !Number.isSafeInteger(policy.blockHardLimitBytes) ||
-    policy.blockHardLimitBytes <= 0 ||
-    policy.blockHardLimitBytes % 1_024 !== 0
-  ) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Workspace byte quota must be a positive multiple of 1024",
-    });
-  }
-  if (!Number.isSafeInteger(policy.inodeHardLimit) || policy.inodeHardLimit <= 0) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Workspace inode quota must be a positive integer",
-    });
-  }
-  if (
-    policy.blockHardLimitBytes > ceiling.blockHardLimitBytes ||
-    policy.inodeHardLimit > ceiling.inodeHardLimit
-  ) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Workspace quota exceeds this Deployment's configured ceiling",
-    });
-  }
-}
-
-function workspaceNeedsVolumeCreate(workspace: Workspace): boolean {
-  return (
-    workspace.backing.kind === "portablefs" &&
-    workspace.backing.volumeId === `pending_${workspace.id}`
-  );
-}
-
-function errorDetail(error: unknown): string {
-  return (error instanceof Error ? error.message : "unknown Manager response").slice(0, 500);
+function relocationIssue(): NonNullable<Workspace["storageIssue"]> {
+  return { code: "relocation-required", message: "Move this Workspace to a local directory before using it.", occurredAt: new Date().toISOString(), retryable: false };
 }
 
 function workspaceProvisioningKey(workspaceId: WorkspaceId): string {

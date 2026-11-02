@@ -1,66 +1,66 @@
 import type { HostConfig } from "@opensteer/config";
 import {
-  createId,
-  PendingRequestSchema,
-  zeroSequence,
-  type EnvironmentId,
-  type RequestId,
-  type RunId,
-  type RunnerId,
-  type ThreadId,
-  type UserId,
-  type WorkspaceId,
+createId,
+PendingRequestSchema,
+zeroSequence,
+type EnvironmentId,
+type RequestId,
+type RunId,
+type RunnerId,
+type ThreadId,
+type UserId,
+type WorkspaceId,
 } from "@opensteer/core";
-import { createDatabase, migrateToLatest, type OpensteerStore } from "@opensteer/database";
+import { createDatabase,migrateToLatest,type OpensteerStore } from "@opensteer/database";
 import {
-  cloneTestDatabase,
-  failDatabaseContainment,
-  ownTestDatabaseProducer,
+cloneTestDatabase,
+failDatabaseContainment,
+ownTestDatabaseProducer,
 } from "@opensteer/database/test-support/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import {
-  HarnessInstanceCatalogSchema,
-  hostApiVersionHeader,
-  RunnerAuxiliaryChallengeSchema,
-  RunnerAuxiliaryWelcomeSchema,
-  RunnerBootIdSchema,
-  RunnerChallengeSchema,
-  RunnerDescriptorSchema,
-  RunnerEnrollmentCredentialSchema,
-  runnerProofFormatVersion,
-  ShellSessionIdSchema,
-  type HostToRunnerMessage,
-  type MachineAccessPolicy,
-  type MachineAccessRunContext,
-  type RunnerBootId,
-  type RunnerConnectionFence,
-  type RunnerDescriptor,
-  type RunnerModuleName,
-  type RunnerProof,
+HarnessInstanceCatalogSchema,
+hostApiVersionHeader,
+RunnerAuxiliaryChallengeSchema,
+RunnerAuxiliaryWelcomeSchema,
+RunnerBootIdSchema,
+RunnerChallengeSchema,
+RunnerDescriptorSchema,
+RunnerEnrollmentCredentialSchema,
+runnerProofFormatVersion,
+ShellSessionIdSchema,
+type HostToRunnerMessage,
+type MachineAccessPolicy,
+type MachineAccessRunContext,
+type RunnerBootId,
+type RunnerConnectionFence,
+type RunnerDescriptor,
+type RunnerModuleName,
+type RunnerProof,
 } from "@opensteer/protocol";
 import {
-  isMachineAccessRoutes,
-  isMachineAccessSetup,
-  machineAccessTargets,
-  planMachineAccess,
-  prepareShellModule,
-  setupMachineAccess,
-  ShellModuleHandler,
-  type MachineAccessSetup,
-  type PreparedShellModule,
+isMachineAccessRoutes,
+isMachineAccessSetup,
+machineAccessTargets,
+planMachineAccess,
+prepareShellModule,
+setupMachineAccess,
+ShellModuleHandler,
+type MachineAccessSetup,
+type PreparedShellModule,
 } from "@opensteer/runner";
 import {
-  createRunnerAuthenticationSignature,
-  createRunnerAuxiliarySignature,
-  createRunnerEnrollmentSignature,
+createRunnerAuthenticationSignature,
+createRunnerAuxiliarySignature,
+createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
-import { execFile, spawn } from "node:child_process";
-import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile,spawn } from "node:child_process";
+import { generateKeyPairSync,randomUUID,type KeyObject } from "node:crypto";
+import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,8 +68,7 @@ import { promisify } from "node:util";
 import WebSocket from "ws";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
-import { startPortableFsManagerFake } from "./portablefs-manager.test-support.js";
-import { createHostRuntime, type HostRuntime } from "./runtime.js";
+import { createHostRuntime,type HostRuntime } from "./runtime.js";
 
 const executeFile = promisify(execFile);
 
@@ -360,14 +359,13 @@ async function createMachineAccessHost(
   databaseUrl: string,
   options: NonNullable<Parameters<typeof startMachineAccessHost>[1]>,
 ): Promise<MachineAccessHost> {
-  const portableFs = await startPortableFsManagerFake();
   const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-ma-host-"));
   const hostPort = await freePort();
   const config = {
     ...machineAccessHostConfig(
       hostPort,
       dataDirectory,
-      portableFs.url,
+      new URL("http://127.0.0.1:9"),
       databaseUrl,
       options.signupPolicy ?? "invite-only",
     ),
@@ -384,7 +382,6 @@ async function createMachineAccessHost(
               `Machine-access Host shutdown stalled at ${runtime?.closingStep() ?? "startup"}`,
             ),
         }),
-      () => portableFs.close(),
       () => rm(dataDirectory, { force: true, recursive: true }),
     ]) {
       try {
@@ -433,7 +430,7 @@ async function createMachineAccessHost(
 export function machineAccessHostConfig(
   hostPort: number,
   hostDataDirectory: string,
-  portableFsManagerUrl: URL,
+  _storageUrl: URL,
   databaseUrl: string,
   signupPolicy: "closed" | "invite-only" | "open",
   /**
@@ -470,25 +467,8 @@ export function machineAccessHostConfig(
     runtimeOrigin: publicOrigin,
     workspace: {
       deletionRetentionDays: 14,
-      shape: { defaultWorkspaceBacking: "portablefs", kind: "server" as const },
-      storage: {
-        archiveAfterDays: 7,
-        authorizationDomain: "opensteer-test",
-        defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-        defaultInodeLimit: 1_000_000,
-        filesServiceUrl: new URL("http://127.0.0.1:4315"),
-        kind: "portablefs",
-        managerCaPath: undefined,
-        managerCertPath: undefined,
-        managerKeyPath: undefined,
-        managerServerName: undefined,
-        managerUrl: portableFsManagerUrl,
-        maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-        maxInodeLimit: 10_000_000,
-        productIssuer: "opensteer-test",
-        productPrivateKeyPath: undefined,
-        serviceId: "test-portablefs",
-      },
+      shape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
+      storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
     },
   };
 }
@@ -813,7 +793,7 @@ export async function connectTargetMachine(
                 localStorage: null,
                 maxConcurrentRuns: 2,
                 providerStateModes: ["isolated"],
-                workspaceBackings: ["portablefs"],
+                workspaceBackings: ["local-directory"],
                 workspaceMounts: [],
               },
             }
@@ -1120,7 +1100,7 @@ export async function connectCallerMachine(
         localStorage: disk?.inventory ?? null,
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
         providerStateModes: ["ambient", "isolated"],
-        workspaceBackings: disk ? ["local-directory"] : ["portablefs"],
+        workspaceBackings: disk ? ["local-directory"] : ["local-directory"],
         workspaceMounts: [],
       },
     },

@@ -1,11 +1,11 @@
-import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
-import type { CommandRow, OpensteerStore } from "@opensteer/database";
+import { AesGcmSecretVault,StaticEncryptionKeyProvider } from "@opensteer/access/host";
+import { ModelSelectionSchema,OpensteerError,createId,type Message } from "@opensteer/core";
+import type { CommandRow,OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
-import { HarnessModelDescriptorSchema, type RunnerCommand } from "@opensteer/protocol";
-import { describe, expect, it, vi } from "vitest";
-import { HostCommandDispatcher } from "./dispatcher.js";
+import { HarnessModelDescriptorSchema,type RunnerCommand } from "@opensteer/protocol";
+import { describe,expect,it,vi } from "vitest";
 import { sealRequestResponse } from "../identity/request-response-vault.js";
+import { HostCommandDispatcher } from "./dispatcher.js";
 
 describe("HostCommandDispatcher Request responses", () => {
   it("decrypts the sealed response only at Runner dispatch", async () => {
@@ -193,7 +193,6 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
     "starts a wake for a %s Workspace and returns a retryable dispatch error",
     async (status) => {
       const workspaceId = createId("workspace");
-      const wake = vi.fn(async () => undefined);
       const dispatcher = new HostCommandDispatcher({
         executionLeaseMs: 90_000,
         attachmentRunTokens: { issue: () => "attachment-token" } as never,
@@ -230,7 +229,6 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
         triggerIntegrationToolsTokens: {} as never,
         triggers: {} as never,
         workspaceAccess: {} as never,
-        workspaceWake: { wake },
         workspaces: {} as never,
       });
       const command = {
@@ -242,7 +240,7 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
       await expect(
         dispatcher.dispatch(command, new AbortController().signal),
       ).rejects.toMatchObject({ disposition: "retry" });
-      expect(wake).toHaveBeenCalledWith(workspaceId, "run-dispatch");
+
     },
   );
 });
