@@ -24,7 +24,11 @@ describeStore("durable browser place entries", (it) => {
     const input = {
       runId: f.run.id,
       bindingGeneration: f.bindingGeneration,
-      data: { place: a, title: "A", site: "https://example.com" },
+      data: {
+        place: a,
+        title: ("A".repeat(255) + "😀").slice(0, 256),
+        site: "https://example.com",
+      },
     };
     const first = await store.recordRunPlace(input);
     expect(first).toMatchObject({
@@ -73,6 +77,14 @@ describeStore("durable browser place entries", (it) => {
       maxItems: 2,
     });
     expect(older!.events).toContainEqual(first);
+    const storedPlace = older!.events.find((event) => event.eventId === first!.eventId);
+    expect(storedPlace).toMatchObject({
+      type: "place.entered",
+      data: { title: "A".repeat(255) + "\uFFFD" },
+    });
+    if (storedPlace?.type !== "place.entered")
+      throw new Error("Stored place event was not returned");
+    expect(storedPlace.data.title.isWellFormed()).toBe(true);
     const delegated = await store.delegateThread({
       accessMode: "auto",
       createdBy: f.userId,
