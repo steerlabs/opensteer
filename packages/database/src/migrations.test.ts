@@ -137,6 +137,7 @@ const releasedMigrationNames = [
   "0127_person_show",
   "0128_projects",
   "0129_project_slugs",
+  "0130_project_relocation",
 ];
 
 describe("migration names", () => {

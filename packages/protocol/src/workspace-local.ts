@@ -111,6 +111,13 @@ const ReadLocalWorkspaceFileSchema = z.strictObject({
 });
 
 export const HostWorkspaceLocalRequestSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...workspaceLocalRequestBase,
+    type: z.literal("host.workspace.local.relocate"),
+    slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,127}$/),
+    createdBy: UserIdSchema,
+    adopt: z.boolean(),
+  }),
   ProvisionLocalWorkspaceSchema,
   InspectLocalWorkspaceSchema,
   DestroyLocalWorkspaceSchema,
@@ -127,6 +134,10 @@ const workspaceLocalResultBase = {
 } as const;
 
 export const RunnerWorkspaceLocalResultSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...workspaceLocalResultBase,
+    type: z.literal("runner.workspace.local.relocated"),
+  }),
   z.strictObject({
     ...workspaceLocalResultBase,
     type: z.literal("runner.workspace.local.provisioned"),
@@ -187,6 +198,7 @@ export const RunnerLocalStorageInventorySchema = z.object({
       z.object({
         bindingId: WorkspaceBindingIdSchema,
         generation: positiveGeneration,
+        path: z.string().min(1).max(16_384).optional(),
         state: z.enum(["provisioning", "ready"]),
         workspaceId: WorkspaceIdSchema,
       }),

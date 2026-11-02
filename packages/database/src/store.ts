@@ -1267,6 +1267,7 @@ export class OpensteerStore {
   }
 
   async setWorkspaceProvisioningResult(input: {
+    readonly relocationConfirmed?: boolean;
     readonly backing: WorkspaceBacking;
     readonly expectedBacking: WorkspaceBacking;
     readonly status: Workspace["status"];

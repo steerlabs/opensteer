@@ -1170,3 +1170,32 @@ it("creates mock Projects beneath Main with distinct case-insensitive slugs", as
     client.dispose();
   }
 });
+
+it("explicitly adopts a relocated Project in the mock and clears its notice", async () => {
+  const client = createClient();
+  try {
+    await client.load();
+    const workspace = client.getSnapshot().workspaces.find((item) => item.kind === "project")!;
+    workspace.status = "failed";
+    workspace.storageIssue = {
+      code: "relocation-required",
+      message: "Move /source to /Main/Projects/research",
+      occurredAt: fixedNow.toISOString(),
+      retryable: false,
+    };
+    const result = await client.dispatch({
+      type: "workspace.adoptRelocated",
+      workspaceId: workspace.id,
+      idempotencyKey: "adopt",
+    });
+    expect(result).toMatchObject({
+      type: "workspace.adoptRelocated",
+      workspace: { id: workspace.id, status: "ready", storageIssue: null },
+    });
+    expect(
+      client.getSnapshot().workspaces.find((item) => item.id === workspace.id)?.storageIssue,
+    ).toBeNull();
+  } finally {
+    client.dispose();
+  }
+});

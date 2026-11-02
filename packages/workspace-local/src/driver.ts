@@ -76,6 +76,33 @@ export class LocalWorkspaceAuthority {
     return this.#registry.storageAuthority(signal);
   }
 
+  async relocationNeeded(binding: LocalWorkspaceBindingRequest, slug: string): Promise<boolean> {
+    await this.#assertAuthority(binding);
+    try {
+      const ready = await this.#registry.getReadyBinding(binding);
+      return ready.relativeSegments.at(-2) !== "Projects" || ready.relativeSegments.at(-1) !== slug;
+    } catch {
+      return true;
+    }
+  }
+
+  async relocate(
+    binding: LocalWorkspaceBindingRequest,
+    slug: string,
+    adopt: boolean,
+    createdBy: UserId,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.#assertAuthority(binding, signal);
+    await this.#registry.relocate({
+      ...binding,
+      slug,
+      adopt,
+      createdBy,
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   inventory(signal?: AbortSignal) {
     return this.#registry.inventory(signal);
   }

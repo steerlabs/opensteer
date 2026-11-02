@@ -255,6 +255,9 @@ describe("RunnerRuntime", () => {
         // Let the already-published terminal be consumed while naming stays held.
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(runtime.activeRunIds()).toContain(command.context.runId);
+        await expect(
+          runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
+        ).rejects.toThrow(/active Runs/);
         await runtime.handleCommand(
           {
             type: "run.interrupt",
@@ -5957,3 +5960,35 @@ import { stat } from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+it("refuses a Run while its Project is relocating and releases admission after failure", async () => {
+  const registry = new HarnessRegistry();
+  const environmentId = createId("environment");
+  const runtime = configuredRuntime({ environmentId, registry });
+  const command = executeCommand(environmentId);
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const moving = runtime.relocateWorkspace(command.context.workspaceId, async () => {
+    entered.resolve();
+    await finish.promise;
+    throw new Error("Move failed");
+  });
+  const failed = expect(moving).rejects.toThrow("Move failed");
+  try {
+    await entered.promise;
+    const decision = await runtime.handleCommand(command, { send: async () => undefined });
+    expect(decision).toMatchObject({
+      status: "rejected",
+      error: { message: "Project relocation is in progress" },
+    });
+    finish.resolve();
+    await failed;
+    await expect(
+      runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
+    ).resolves.toBeUndefined();
+  } finally {
+    finish.resolve();
+    await failed;
+    await runtime.close();
+  }
+});

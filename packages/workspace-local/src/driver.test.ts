@@ -499,6 +499,7 @@ describe("LocalWorkspaceAuthority", () => {
         {
           bindingId: fixture.binding.bindingId,
           generation: 1,
+          path: fixture.workspacePath,
           state: "ready",
           workspaceId: fixture.binding.workspaceId,
         },

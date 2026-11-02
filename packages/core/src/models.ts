@@ -151,6 +151,8 @@ export const WorkspaceStorageIssueSchema = z.object({
     "manager-protocol-error",
     "manager-unavailable",
     "manager-unknown-volume-state",
+    "relocation-required",
+    "relocation-pending",
     "local-directory-inaccessible",
     "local-directory-missing",
     "local-directory-replaced",

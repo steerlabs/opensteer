@@ -34,7 +34,7 @@ export type RunnerStorageRegistry = Pick<
 const requestTimeoutMs = 30_000;
 
 /**
- * The Host's side of Runner-owned local storage. It holds no paths and opens no
+ * The Host's side of Runner-owned local storage. It opens no
  * files: it derives the durable binding, addresses the machine that owns it, and
  * turns that machine's answer into Workspace state.
  */
@@ -123,6 +123,31 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
       signal,
     );
     return { backing: input.workspace.backing, status: "ready" };
+  }
+
+  storageLocation(workspace: Workspace): string | null {
+    if (workspace.backing.kind !== "local-directory") return null;
+    const identity = this.#runners.identityForEnvironment(workspace.backing.ownerEnvironmentId);
+    const inventory = identity?.modules.agents?.localStorage;
+    if (inventory?.storageAuthorityId !== workspace.backing.storageAuthorityId) return null;
+    return inventory.bindings.find((binding) => binding.workspaceId === workspace.id)?.path ?? null;
+  }
+
+  async relocate(workspace: LocalWorkspace, adopt = false): Promise<void> {
+    if (!workspace.slug) throw new Error("Project slug is missing");
+    await this.#request(
+      workspace.backing,
+      {
+        binding: bindingRef(workspace.backing, workspace.id),
+        operationId: `workspace:${workspace.id}:relocate:v1`,
+        requestId: randomUUID(),
+        type: "host.workspace.local.relocate",
+        slug: workspace.slug,
+        createdBy: workspace.createdBy,
+        adopt,
+      },
+      "runner.workspace.local.relocated",
+    );
   }
 
   async inspect(workspace: LocalWorkspace, signal?: AbortSignal): Promise<WorkspaceBackingHealth> {

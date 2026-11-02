@@ -704,7 +704,12 @@ export function workspaceHealth(
   }
   if (workspace.status === "failed" || workspace.storageIssue) {
     return {
-      action: <RetryStorage workspaceId={workspace.id} />,
+      action: (
+        <RetryStorage
+          workspaceId={workspace.id}
+          adopt={workspace.storageIssue?.code === "relocation-required"}
+        />
+      ),
       blocking: true,
       body:
         workspace.storageIssue?.message ??
@@ -899,7 +904,7 @@ function WorkspaceDeletionAction({
   );
 }
 
-function RetryStorage({ workspaceId }: { workspaceId: string }) {
+function RetryStorage({ workspaceId, adopt = false }: { workspaceId: string; adopt?: boolean }) {
   const { hostClient, reportActionError } = useShell();
   const [retrying, setRetrying] = useState(false);
   return (
@@ -911,7 +916,7 @@ function RetryStorage({ workspaceId }: { workspaceId: string }) {
         void hostClient
           .dispatch({
             idempotencyKey: mutationIdempotencyKey(`workspace-storage:${workspaceId}`),
-            type: "workspace.storage.retry",
+            type: adopt ? "workspace.adoptRelocated" : "workspace.storage.retry",
             workspaceId,
           })
           .catch(reportActionError)
@@ -919,7 +924,7 @@ function RetryStorage({ workspaceId }: { workspaceId: string }) {
       }}
       type="button"
     >
-      {retrying ? "Retrying…" : "Retry provisioning"}
+      {retrying ? "Checking…" : adopt ? "I moved it" : "Retry provisioning"}
     </button>
   );
 }

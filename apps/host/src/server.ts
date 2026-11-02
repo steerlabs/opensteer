@@ -1689,6 +1689,13 @@ export async function createHostServer(
           workspace: await workspaceView(dependencies.workspaces, workspace),
         };
       }
+      case "workspace.adoptRelocated": {
+        const workspace = await dependencies.workspaces.adoptRelocated(command.workspaceId, userId);
+        return {
+          type: command.type,
+          workspace: await workspaceView(dependencies.workspaces, workspace),
+        };
+      }
       case "workspace.storage.retry": {
         const workspace = await dependencies.workspaces.retry(command.workspaceId, userId);
         if (workspace.storageIssue) {

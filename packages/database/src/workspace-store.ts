@@ -1019,6 +1019,7 @@ export async function setWorkspaceStorageState(
 export async function setWorkspaceProvisioningResult(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly relocationConfirmed?: boolean;
     readonly backing: WorkspaceBacking;
     readonly expectedBacking: WorkspaceBacking;
     readonly status: Workspace["status"];
@@ -1026,20 +1027,26 @@ export async function setWorkspaceProvisioningResult(
   },
 ): Promise<Workspace> {
   if (
-    input.backing.kind !== input.expectedBacking.kind ||
-    input.backing.generation !== input.expectedBacking.generation ||
-    (input.backing.kind === "local-directory" &&
-      input.expectedBacking.kind === "local-directory" &&
-      (input.backing.bindingId !== input.expectedBacking.bindingId ||
-        input.backing.ownerEnvironmentId !== input.expectedBacking.ownerEnvironmentId)) ||
-    (input.backing.kind === "portablefs" &&
-      input.expectedBacking.kind === "portablefs" &&
-      input.backing.serviceId !== input.expectedBacking.serviceId)
+    !input.relocationConfirmed &&
+    (input.backing.kind !== input.expectedBacking.kind ||
+      input.backing.generation !== input.expectedBacking.generation ||
+      (input.backing.kind === "local-directory" &&
+        input.expectedBacking.kind === "local-directory" &&
+        (input.backing.bindingId !== input.expectedBacking.bindingId ||
+          input.backing.ownerEnvironmentId !== input.expectedBacking.ownerEnvironmentId)) ||
+      (input.backing.kind === "portablefs" &&
+        input.expectedBacking.kind === "portablefs" &&
+        input.backing.serviceId !== input.expectedBacking.serviceId))
   ) {
     throw new OpensteerError({
       code: "conflict",
       message: "Workspace provisioning cannot change storage authority",
     });
+  }
+  if (input.relocationConfirmed) {
+    const existing = await getWorkspace(database, input.workspaceId);
+    if (existing?.storageIssue?.code !== "relocation-required")
+      throw new OpensteerError({ code: "conflict", message: "Project is not awaiting relocation" });
   }
   const row = await database
     .updateTable("workspaces")
@@ -1053,6 +1060,9 @@ export async function setWorkspaceProvisioningResult(
       updatedAt: new Date(),
     })
     .where("id", "=", input.workspaceId)
+    .$if(input.relocationConfirmed === true, (query) =>
+      query.where("storageErrorCode", "=", "relocation-required"),
+    )
     .where("status", "not in", ["deleting", "deleted"])
     .where((expressions) =>
       expressions.or([

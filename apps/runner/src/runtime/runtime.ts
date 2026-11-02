@@ -380,6 +380,7 @@ export class RunnerRuntime {
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
+  readonly #relocating = new Set<WorkspaceId>();
   readonly #warm: WarmEnginePool;
   /**
    * Threads whose last execution left processes the Runner could not prove
@@ -516,6 +517,27 @@ export class RunnerRuntime {
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     return this.#voice.handle(userId, command);
+  }
+
+  async relocateWorkspace(workspaceId: WorkspaceId, move: () => Promise<void>): Promise<void> {
+    if (
+      this.#relocating.has(workspaceId) ||
+      [...this.#runs.values()].some((run) => run.command.context.workspaceId === workspaceId) ||
+      [...this.#triggerPrograms.values()].some(
+        (program) => program.command.context.workspaceId === workspaceId,
+      )
+    )
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: "Project relocation is waiting for its active Runs to finish",
+        retryable: true,
+      });
+    this.#relocating.add(workspaceId);
+    try {
+      await move();
+    } finally {
+      this.#relocating.delete(workspaceId);
+    }
   }
 
   activeRunIds(): readonly RunId[] {
@@ -1893,6 +1915,8 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "run.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    if (this.#relocating.has(command.context.workspaceId))
+      return reject("conflict", "Project relocation is in progress", true);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
@@ -2038,6 +2062,8 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    if (this.#relocating.has(command.context.workspaceId))
+      return reject("conflict", "Project relocation is in progress", true);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);

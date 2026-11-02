@@ -469,11 +469,13 @@ function localWorkspace(options: { readonly status?: Workspace["status"] } = {})
 function localService(
   store: ReturnType<typeof createStore>["store"],
   options: {
+    readonly relocate?: WorkspaceBackingLifecycleDriver<"local-directory">["relocate"];
     readonly inspect?: WorkspaceBackingLifecycleDriver<"local-directory">["inspect"];
     readonly provision?: WorkspaceBackingLifecycleDriver<"local-directory">["provision"];
   },
 ): WorkspaceService {
   const driver: WorkspaceBackingLifecycleDriver<"local-directory"> = {
+    ...(options.relocate ? { relocate: options.relocate } : {}),
     destroy: async () => undefined,
     initialBacking: (input) => ({
       bindingId: createId("workspaceBinding"),
@@ -518,6 +520,16 @@ function createStore(
     pages,
     stateChanges,
     store: {
+      async findMainWorkspaceForOwner(ownerId: Workspace["createdBy"]) {
+        return (
+          workspaces.find((item) => item.createdBy === ownerId && item.kind === "main") ?? null
+        );
+      },
+      async getWorkspaceForOwner(workspaceId: WorkspaceId, ownerId: Workspace["createdBy"]) {
+        return (
+          workspaces.find((item) => item.id === workspaceId && item.createdBy === ownerId) ?? null
+        );
+      },
       async getEnvironment(id: EnvironmentId) {
         const name = environments.get(id);
         return name === undefined ? null : { id, name };
@@ -642,3 +654,108 @@ function workspace(
     updatedAt: now,
   };
 }
+
+it("marks off-authority Projects relocation-required, blocks Runs and retries, and only the owner can adopt", async () => {
+  const main = { ...localWorkspace(), kind: "main" as const };
+  const project: Workspace = {
+    ...localWorkspace(),
+    kind: "project",
+    slug: "research",
+    createdBy: main.createdBy,
+  };
+  if (project.backing.kind !== "local-directory") throw new Error("Expected local");
+  project.backing = { ...project.backing, storageAuthorityId: createId("storageAuthority") };
+  const harness = createStore([main, project]);
+  const relocate = vi.fn(async () => undefined);
+  const service = localService(harness.store, { relocate });
+  await expect(service.ensureExecutionReady(project)).rejects.toThrow(/Move this Project/);
+  const blocked = harness.workspaces.find((item) => item.id === project.id)!;
+  expect(blocked.storageIssue).toMatchObject({ code: "relocation-required", retryable: false });
+  await expect(service.retry(project.id, project.createdBy)).rejects.toThrow(/Move this Project/);
+  await expect(service.adoptRelocated(project.id, createId("user"))).rejects.toThrow(/not found/);
+  expect(relocate).not.toHaveBeenCalled();
+  const adopted = await service.adoptRelocated(project.id, project.createdBy);
+  expect(relocate).toHaveBeenCalledWith(
+    expect.objectContaining({
+      id: project.id,
+      backing: expect.objectContaining({
+        bindingId: project.backing.bindingId,
+        storageAuthorityId: localStorageAuthorityId,
+      }),
+    }),
+    true,
+  );
+  expect(adopted.storageIssue).toBeNull();
+  expect(adopted.status).toBe("ready");
+});
+
+it("does not clear a relocation issue when the Runner refuses adoption", async () => {
+  const main = { ...localWorkspace(), kind: "main" as const };
+  const project: Workspace = {
+    ...localWorkspace(),
+    kind: "project",
+    slug: "research",
+    createdBy: main.createdBy,
+    status: "failed",
+    storageIssue: {
+      code: "relocation-required",
+      message: "Move source to target",
+      retryable: false,
+      occurredAt: new Date().toISOString(),
+    },
+  };
+  const harness = createStore([main, project]);
+  const service = localService(harness.store, {
+    relocate: async () => {
+      throw new Error("Target directory missing");
+    },
+  });
+  await expect(service.adoptRelocated(project.id, project.createdBy)).rejects.toThrow(/missing/);
+  expect(harness.workspaces.find((item) => item.id === project.id)?.storageIssue?.code).toBe(
+    "relocation-required",
+  );
+});
+
+it("resumes retryable relocation through inspection instead of provisioning", async () => {
+  const main = { ...localWorkspace(), kind: "main" as const };
+  const project = { ...localWorkspace(), slug: "research", createdBy: main.createdBy };
+  const harness = createStore([main, project]);
+  const relocate = vi
+    .fn(async () => undefined)
+    .mockRejectedValueOnce(new Error("Registry write interrupted"));
+  const provision = vi.fn<WorkspaceBackingLifecycleDriver<"local-directory">["provision"]>();
+  const service = localService(harness.store, { relocate, provision });
+  await expect(service.ensureExecutionReady(project)).rejects.toThrow();
+  expect(harness.workspaces.find((item) => item.id === project.id)?.storageIssue?.code).toBe(
+    "relocation-pending",
+  );
+  await service.reconcile();
+  expect(provision).not.toHaveBeenCalled();
+  expect(harness.workspaces.find((item) => item.id === project.id)).toMatchObject({
+    status: "ready",
+    storageIssue: null,
+  });
+});
+
+it("records PortableFS relocation even while the shared authority is unavailable", async () => {
+  const main = workspace();
+  const project: Workspace = {
+    ...workspace(),
+    kind: "project",
+    slug: "research",
+    createdBy: main.createdBy,
+  };
+  const harness = createStore([main, project]);
+  const service = createService(harness.store, {
+    preflight: async () => ({ available: false, detail: "Offline" }),
+  });
+  await service.reconcile();
+  expect(harness.workspaces.find((item) => item.id === project.id)?.storageIssue).toMatchObject({
+    code: "relocation-required",
+    retryable: false,
+    message: expect.stringContaining("PortableFS volume"),
+  });
+  await expect(
+    service.ensureExecutionReady(harness.workspaces.find((item) => item.id === project.id)!),
+  ).rejects.toThrow(/Move this Project/);
+});

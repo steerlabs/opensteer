@@ -1309,6 +1309,7 @@ class AgentsWorkSession implements RunnerWorkSession {
         return;
       }
       case "host.workspace.local.provision":
+      case "host.workspace.local.relocate":
       case "host.workspace.local.inspect":
       case "host.workspace.local.destroy":
       case "host.workspace.local.files.list":
@@ -1570,6 +1571,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
           });
           return;
         case "host.workspace.local.provision":
+        case "host.workspace.local.relocate":
         case "host.workspace.local.inspect":
         case "host.workspace.local.destroy":
         case "host.workspace.local.files.list":
@@ -1914,6 +1916,7 @@ export function runnerWebSocketUrl(config: Pick<RunnerConfig, "hostUrl" | "mode"
 function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnectionFence {
   switch (message.type) {
     case "host.workspace.local.provision":
+    case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":
     case "host.workspace.local.destroy":
     case "host.workspace.local.files.list":

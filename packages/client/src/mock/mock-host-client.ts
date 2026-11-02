@@ -2399,6 +2399,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
           ),
         }),
       );
+    case "workspace.adoptRelocated":
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          workspace: mockWorkspaceView(await client.adoptRelocated(command.workspaceId)),
+        }),
+      );
     case "workspace.storage.retry":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -8565,6 +8572,30 @@ class MockHostState {
       throw new Error("Workspace is being deleted.");
     }
     const updated = { ...workspace, icon };
+    this.update({
+      ...this.snapshot,
+      workspaces: this.snapshot.workspaces.map((item) =>
+        item.id === workspaceId ? updated : item,
+      ),
+    });
+    return updated;
+  }
+
+  async adoptRelocated(workspaceId: string): Promise<WorkspaceSummary> {
+    const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace || workspace.storageIssue?.code !== "relocation-required")
+      throw new Error("Project is not awaiting relocation");
+    const sharing = await this.loadWorkspaceSharing(workspaceId);
+    if (
+      !sharing.members.some(
+        (member) =>
+          member.userId === this.snapshot.user?.id &&
+          member.role === "owner" &&
+          member.state === "active",
+      )
+    )
+      throw new Error("Only the Project owner may confirm relocation");
+    const updated: WorkspaceSummary = { ...workspace, status: "ready", storageIssue: null };
     this.update({
       ...this.snapshot,
       workspaces: this.snapshot.workspaces.map((item) =>

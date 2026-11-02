@@ -231,7 +231,13 @@ export class WorkspaceService {
         message: "Workspace is awaiting deletion",
       });
     }
-    if (workspace.status === "ready") return this.ensureExecutionReady(workspace);
+    if (workspace.storageIssue?.code === "relocation-required")
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: workspace.storageIssue.message,
+      });
+    if (workspace.status === "ready" || workspace.storageIssue?.code === "relocation-pending")
+      return this.ensureExecutionReady(workspace);
     const provisioning = await this.#store.setWorkspaceStorageState({
       issue: null,
       status: "provisioning",
@@ -240,7 +246,64 @@ export class WorkspaceService {
     return this.provision(provisioning);
   }
 
+  async adoptRelocated(workspaceId: WorkspaceId, requestedBy: UserId): Promise<Workspace> {
+    const workspace = await this.#store.getWorkspaceForOwner(workspaceId, requestedBy);
+    if (
+      !workspace ||
+      workspace.kind !== "project" ||
+      workspace.status === "deleting" ||
+      workspace.status === "deleted"
+    )
+      throw new OpensteerError({ code: "not_found", message: "Project not found" });
+    if (workspace.storageIssue?.code !== "relocation-required")
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This Project is not awaiting relocation confirmation",
+      });
+    const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
+    if (!main || main.backing.kind !== "local-directory" || main.status !== "ready")
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: "Connect the computer holding Main first",
+      });
+    const backing = {
+      ...this.#requiredLocal().initialBacking({
+        backingKind: "local-directory",
+        capacityPolicy: { kind: "host-filesystem" },
+        createdBy: workspace.createdBy,
+        idempotencyKey: `workspace:${workspace.id}:adopt:v1`,
+        kind: "project",
+        name: workspace.name,
+        workspaceId: workspace.id,
+        ownerEnvironmentId: main.backing.ownerEnvironmentId,
+      }),
+      ...(workspace.backing.kind === "local-directory"
+        ? { bindingId: workspace.backing.bindingId, generation: workspace.backing.generation }
+        : {}),
+    };
+    const relocate = this.#requiredLocal().relocate;
+    if (!relocate) throw new Error("Local relocation is unavailable");
+    await relocate.call(this.#requiredLocal(), { ...workspace, backing }, true);
+    const current = await this.#store.setWorkspaceProvisioningResult({
+      backing,
+      expectedBacking: workspace.backing,
+      workspaceId,
+      status: "ready",
+      relocationConfirmed: true,
+    });
+    return this.#store.setWorkspaceStorageState({
+      workspaceId: current.id,
+      status: "ready",
+      issue: null,
+    });
+  }
+
   async ensureExecutionReady(workspace: Workspace): Promise<Workspace> {
+    if (workspace.storageIssue?.code === "relocation-required")
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: workspace.storageIssue.message,
+      });
     this.#assertWorkspace(workspace);
     let health: WorkspaceBackingHealth;
     try {
@@ -326,6 +389,32 @@ export class WorkspaceService {
 
   async reconcile(): Promise<WorkspaceReconciliationResult> {
     await this.validateDeploymentCompatibility();
+    for (const workspace of await this.#store.listWorkspaces()) {
+      if (
+        workspace.kind !== "project" ||
+        !workspace.slug ||
+        ["deleting", "deleted"].includes(workspace.status) ||
+        workspace.storageIssue?.code === "relocation-required"
+      )
+        continue;
+      const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
+      if (
+        workspace.backing.kind === "portablefs" ||
+        (main &&
+          (workspace.backing.kind !== "local-directory" ||
+            main.backing.kind !== "local-directory" ||
+            workspace.backing.storageAuthorityId !== main.backing.storageAuthorityId ||
+            workspace.backing.ownerEnvironmentId !== main.backing.ownerEnvironmentId))
+      ) {
+        const health = await this.#inspect(workspace);
+        if (health.issue?.code === "relocation-required")
+          await this.#store.setWorkspaceStorageState({
+            workspaceId: workspace.id,
+            status: "failed",
+            issue: health.issue,
+          });
+      }
+    }
     // Only a shared authority can be globally unavailable. Runner-owned local
     // storage has no such authority: one sleeping laptop is not an outage.
     const shared = this.#drivers.portableFs;
@@ -371,6 +460,8 @@ export class WorkspaceService {
     for (const status of ["provisioning", "unavailable"] as const) {
       await this.#forEachStatus(status, (workspace) => {
         if (workspace.storageIssue?.retryable === false) return Promise.resolve();
+        if (workspace.storageIssue?.code === "relocation-pending")
+          return this.ensureExecutionReady(workspace);
         return admitsCreates || !workspaceNeedsVolumeCreate(workspace)
           ? this.provision(workspace)
           : Promise.resolve();
@@ -449,6 +540,51 @@ export class WorkspaceService {
 
   async #inspect(workspace: Workspace): Promise<WorkspaceBackingHealth> {
     let health: WorkspaceBackingHealth;
+    if (workspace.storageIssue?.code === "relocation-required")
+      return { status: "failed", issue: workspace.storageIssue };
+    if (workspace.kind === "project" && workspace.slug) {
+      const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
+      if (
+        workspace.backing.kind === "portablefs" ||
+        (main &&
+          (workspace.backing.kind !== "local-directory" ||
+            main.backing.kind !== "local-directory" ||
+            workspace.backing.storageAuthorityId !== main.backing.storageAuthorityId ||
+            workspace.backing.ownerEnvironmentId !== main.backing.ownerEnvironmentId))
+      ) {
+        return {
+          status: "failed",
+          issue: {
+            code: "relocation-required",
+            message: `Move this Project from ${this.#drivers.local?.storageLocation?.(workspace) ?? (workspace.backing.kind === "local-directory" ? `computer ${workspace.backing.ownerEnvironmentId}, folder ${workspace.id}` : `PortableFS volume ${workspace.backing.volumeId}`)} to ${(main ? this.#drivers.local?.storageLocation?.(main) : null) ?? "<Main>"}/Projects/${workspace.slug}, then confirm “I moved it”.`,
+            occurredAt: new Date().toISOString(),
+            retryable: false,
+          },
+        };
+      }
+      if (workspace.backing.kind === "local-directory" && this.#drivers.local?.relocate) {
+        try {
+          await this.#drivers.local.relocate({ ...workspace, backing: workspace.backing });
+        } catch (error) {
+          if (error instanceof WorkspaceAuthorityUnreachableError) throw error;
+          const issue = this.#requiredLocal().issueFromError(error);
+          if (!issue.retryable)
+            return {
+              status: "failed",
+              issue: {
+                ...issue,
+                code: "relocation-required",
+                message:
+                  `Move this Project from ${this.#drivers.local.storageLocation?.(workspace) ?? workspace.id} to ${main ? (this.#drivers.local.storageLocation?.(main) ?? "<Main>") : "<Main>"}/Projects/${workspace.slug}, then confirm “I moved it”. ${issue.message}`.slice(
+                    0,
+                    500,
+                  ),
+              },
+            };
+          return { status: "unavailable", issue: { ...issue, code: "relocation-pending" } };
+        }
+      }
+    }
     if (workspaceUsesBacking(workspace, "local-directory")) {
       health = await this.#requiredLocal().inspect(workspace);
     } else if (workspaceUsesBacking(workspace, "portablefs")) {

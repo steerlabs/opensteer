@@ -63,6 +63,10 @@ type OptimisticCommandPatch =
       readonly workspace: WorkspaceSummary;
     }
   | {
+      readonly type: Extract<CommandType, "workspace.adoptRelocated">;
+      readonly workspace: WorkspaceSummary;
+    }
+  | {
       readonly type: Extract<CommandType, "workspace.icon.set">;
       readonly workspace: WorkspaceSummary;
     }
@@ -221,6 +225,12 @@ export const optimisticCommandPatches = {
       totalItems: snapshot.workspaceWindow.totalItems + 1,
     },
   }),
+  "workspace.adoptRelocated": (snapshot, { workspace }) => ({
+    ...snapshot,
+    workspaces: snapshot.workspaces.map((candidate) =>
+      candidate.id === workspace.id ? workspace : candidate,
+    ),
+  }),
   "workspace.storage.retry": (snapshot, { workspace }) => ({
     ...snapshot,
     workspaces: snapshot.workspaces.map((candidate) =>
@@ -303,6 +313,8 @@ export function applyOptimisticCommandPatch(
     case "thread.sendMessage":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "workspace.create":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "workspace.adoptRelocated":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "workspace.storage.retry":
       return optimisticCommandPatches[patch.type](snapshot, patch);

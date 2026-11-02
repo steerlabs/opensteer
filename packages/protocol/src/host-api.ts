@@ -350,6 +350,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    type: z.literal("workspace.adoptRelocated"),
+    workspaceId: WorkspaceIdSchema,
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     type: z.literal("workspace.storage.retry"),
     workspaceId: WorkspaceIdSchema,
   }),
@@ -1062,6 +1067,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
   z.object({ type: z.literal("attachment.upload.discard") }),
   z.object({ type: z.literal("workspace.create"), workspace: WorkspaceViewSchema }),
+  z.object({ type: z.literal("workspace.adoptRelocated"), workspace: WorkspaceViewSchema }),
   z.object({ type: z.literal("workspace.storage.retry"), workspace: WorkspaceViewSchema }),
   z.object({ type: z.literal("workspace.icon.set"), workspace: WorkspaceViewSchema }),
   z.object({ type: z.literal("workspace.color.set"), workspace: WorkspaceViewSchema }),

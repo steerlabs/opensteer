@@ -1,4 +1,9 @@
-import type { EnvironmentId, RunnerId, StorageAuthorityId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type EnvironmentId,
+  type RunnerId,
+  type StorageAuthorityId,
+} from "@opensteer/core";
 import type {
   HostWorkspaceLocalRequest,
   RunnerBootId,
@@ -33,13 +38,24 @@ export interface LocalWorkspaceIdentity {
  * request may already have been reissued to a replacement connection.
  */
 export class LocalWorkspaceService {
+  readonly #relocate:
+    | ((
+        workspaceId: HostWorkspaceLocalRequest["binding"]["workspaceId"],
+        move: () => Promise<void>,
+      ) => Promise<void>)
+    | undefined;
   readonly #authority: LocalWorkspaceAuthority;
   readonly #filesystem: NativeWorkspaceFilesAuthority;
 
   constructor(options: {
+    readonly relocate?: (
+      workspaceId: HostWorkspaceLocalRequest["binding"]["workspaceId"],
+      move: () => Promise<void>,
+    ) => Promise<void>;
     readonly authority: LocalWorkspaceAuthority;
     readonly filesystem: NativeWorkspaceFilesAuthority;
   }) {
+    this.#relocate = options.relocate;
     this.#authority = options.authority;
     this.#filesystem = options.filesystem;
   }
@@ -69,6 +85,20 @@ export class LocalWorkspaceService {
     } as const;
     try {
       switch (request.type) {
+        case "host.workspace.local.relocate": {
+          const move = () =>
+            this.#authority.relocate(
+              binding,
+              request.slug,
+              request.adopt,
+              request.createdBy,
+              signal,
+            );
+          if (this.#relocate && (await this.#authority.relocationNeeded(binding, request.slug)))
+            await this.#relocate(binding.workspaceId, move);
+          else await move();
+          return { ...echo, type: "runner.workspace.local.relocated" };
+        }
         case "host.workspace.local.provision": {
           await this.#authority.provision(
             {
@@ -145,7 +175,14 @@ export class LocalWorkspaceService {
     } catch (error) {
       if (signal.aborted) throw error;
       return {
-        error: failureFromError(error),
+        error:
+          error instanceof OpensteerError && error.code === "workspace_unavailable"
+            ? {
+                code: "workspace-conflict",
+                message: error.message.slice(0, 500),
+                retryable: error.retryable,
+              }
+            : failureFromError(error),
         fence,
         operationId: request.operationId,
         requestId: request.requestId,

@@ -1,4 +1,5 @@
 import {
+  mutationIdempotencyKey,
   sameStableHostSnapshot,
   unwrapRpcResult,
   type HostClient,
@@ -37,6 +38,7 @@ export type ProjectScreenProps = StaticScreenProps<{
  * A storage problem the Host reported is said in the Host's own words.
  */
 export function projectStatus(workspace: WorkspaceSummary): string | null {
+  if (workspace.storageIssue?.code === "relocation-required") return null;
   switch (workspace.status) {
     case "ready":
       return workspace.storageIssue?.message ?? null;
@@ -85,6 +87,8 @@ function ProjectDetail(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const [editingMark, setEditingMark] = useState(false);
+  const [adopting, setAdopting] = useState(false);
+  const [relocationError, setRelocationError] = useState<string | null>(null);
   const markTrigger = useRef<HostInstance>(null);
   const [membershipRead, setMembershipRead] = useState(0);
   const [ownership, setOwnership] = useState<{
@@ -243,6 +247,36 @@ function ProjectDetail(props: {
                 )}
               </View>
             </View>
+            {workspace.storageIssue?.code === "relocation-required" ? (
+              <View>
+                <Notice
+                  title="Move this Project into Main"
+                  detail={workspace.storageIssue.message}
+                  tone="neutral"
+                />
+                {relocationError ? <AppText>{relocationError}</AppText> : null}
+                <SecondaryButton
+                  label="I moved it"
+                  disabled={adopting}
+                  onPress={() => {
+                    setAdopting(true);
+                    setRelocationError(null);
+                    void hostClient
+                      .dispatch({
+                        type: "workspace.adoptRelocated",
+                        workspaceId,
+                        idempotencyKey: mutationIdempotencyKey("workspace-adopt"),
+                      })
+                      .catch((error: unknown) =>
+                        setRelocationError(
+                          error instanceof Error ? error.message : "Could not confirm relocation",
+                        ),
+                      )
+                      .finally(() => setAdopting(false));
+                  }}
+                />
+              </View>
+            ) : null}
             {/* A task is written before it is made, so only a Workspace that
                 cannot hold one stops it; the line above already says why. */}
             <PrimaryButton

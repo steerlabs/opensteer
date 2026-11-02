@@ -165,7 +165,12 @@ vi.mock("../client/mobile-client.js", () => ({
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
   Field: () => null,
-  Notice: () => null,
+  Notice: ({ title, detail }: { readonly title: string; readonly detail: string }) => (
+    <div>
+      {title}
+      {detail}
+    </div>
+  ),
   PrimaryButton: ({ label }: { readonly label: string }) => <button>{label}</button>,
   SecondaryButton: ({
     label,
@@ -264,9 +269,22 @@ function hold(snapshot: HostSnapshot) {
     },
   };
 }
-async function project(role: "owner" | "member", state: "active" | "revoked" = "active") {
+async function project(
+  role: "owner" | "member",
+  state: "active" | "revoked" = "active",
+  relocating = false,
+) {
   const host = await client();
   const workspace = host.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
+  if (relocating) {
+    workspace.status = "failed";
+    workspace.storageIssue = {
+      code: "relocation-required",
+      message: "Move /source to /Main/Projects/research",
+      occurredAt: new Date().toISOString(),
+      retryable: false,
+    };
+  }
   const rpc = host.rpc;
   const read = rpc["workspace.members.list"].bind(rpc);
   let membership = { role, state };
@@ -707,3 +725,17 @@ function entryFor(assignment: AssignmentSummary): AssignmentEntry {
     runId: null,
   };
 }
+
+it("shows Project relocation paths and reports an adoption refusal on mobile", async () => {
+  const { host, container, workspace } = await project("owner", "active", true);
+  expect(container.textContent).toContain("/source");
+  expect(container.textContent).toContain("/Main/Projects/research");
+  const dispatch = vi
+    .spyOn(host, "dispatch")
+    .mockRejectedValueOnce(new Error("Target directory missing"));
+  await press(container, "I moved it");
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "workspace.adoptRelocated", workspaceId: workspace.id }),
+  );
+  expect(container.textContent).toContain("Target directory missing");
+});

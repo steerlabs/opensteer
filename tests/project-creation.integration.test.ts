@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createId, type Workspace } from "../packages/core/src/index.js";
@@ -57,6 +57,8 @@ describeStore("Project creation on Main storage", (it) => {
         };
         const driver: WorkspaceBackingLifecycleDriver<"local-directory"> = {
           kind: "local-directory",
+          relocate: async (workspace, adopt = false) =>
+            authority.relocate(binding(workspace), workspace.slug!, adopt, workspace.createdBy),
           initialBacking: (input) => ({
             kind: "local-directory",
             generation: 1,
@@ -138,6 +140,55 @@ describeStore("Project creation on Main storage", (it) => {
             path.join(mainPath, "Projects", project.slug!),
           );
         }
+        const legacyId = createId("workspace");
+        const legacy = await store.createWorkspace({
+          id: legacyId,
+          name: "Converted",
+          kind: "project",
+          createdBy: owner,
+          idempotencyKey: "legacy",
+          status: "ready",
+          capacityPolicy: { kind: "host-filesystem" },
+          backing: {
+            kind: "local-directory",
+            generation: 1,
+            bindingId: createId("workspaceBinding"),
+            ownerEnvironmentId: environmentId,
+            storageAuthorityId: createId("storageAuthority"),
+          },
+        });
+        await expect(projects.ensureExecutionReady(legacy)).rejects.toThrow(/Move this Project/);
+        expect((await store.getWorkspace(legacy.id))?.storageIssue?.code).toBe(
+          "relocation-required",
+        );
+        await expect(projects.adoptRelocated(legacy.id, createId("user"))).rejects.toThrow(
+          /not found/,
+        );
+        await expect(projects.adoptRelocated(legacy.id, owner)).rejects.toThrow();
+        const target = path.join(mainPath, "Projects", legacy.slug!);
+        const source = path.join(root, "moved-source");
+        await mkdir(source);
+        await writeFile(path.join(source, "keep.txt"), "saved");
+        await symlink(source, target);
+        await expect(projects.adoptRelocated(legacy.id, owner)).rejects.toThrow();
+        await rm(target);
+        await mkdir(target);
+        await writeFile(
+          path.join(target, "keep.txt"),
+          await readFile(path.join(source, "keep.txt")),
+        );
+        const adopted = await projects.adoptRelocated(legacy.id, owner);
+        expect(adopted).toMatchObject({
+          status: "ready",
+          storageIssue: null,
+          backing: {
+            kind: "local-directory",
+            bindingId: binding(legacy).bindingId,
+            storageAuthorityId,
+          },
+        });
+        expect((await authority.resolveReadAuthority(binding(adopted))).root).toBe(target);
+        expect(await readFile(path.join(target, "keep.txt"), "utf8")).toBe("saved");
         connected = false;
         await expect(
           projects.create({ createdBy: owner, idempotencyKey: "offline", name: "Offline" }),

@@ -4679,6 +4679,7 @@ export function migrationProvider() {
         "0127_person_show": personShowMigration,
         "0128_projects": projectsMigration,
         "0129_project_slugs": projectSlugsMigration,
+        "0130_project_relocation": projectRelocationMigration,
       };
     },
   };
@@ -6693,5 +6694,26 @@ export const projectSlugsMigration: Migration = {
         ((kind = 'main' and slug is null) or (kind = 'project' and slug is not null and slug ~ '^[a-z0-9][a-z0-9-]{0,127}$'));
       create unique index workspaces_owner_slug on public.workspaces (created_by, lower(slug)) where kind = 'project';
     `.execute(database);
+  },
+};
+
+const projectRelocationMigration: Migration = {
+  async up(database) {
+    const result = await sql<{
+      definition: string;
+    }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = 'public.workspaces'::regclass and conname = 'workspaces_storage_error_shape_check'`.execute(
+      database,
+    );
+    const definition = result.rows[0]?.definition;
+    if (!definition?.includes("'local-registry-invalid'::text"))
+      throw new Error("Workspace storage issue constraint is missing");
+    await sql`alter table public.workspaces drop constraint workspaces_storage_error_shape_check`.execute(
+      database,
+    );
+    await sql
+      .raw(
+        `alter table public.workspaces add constraint workspaces_storage_error_shape_check ${definition.replace("'local-registry-invalid'::text", "'local-registry-invalid'::text, 'relocation-required'::text, 'relocation-pending'::text")}`,
+      )
+      .execute(database);
   },
 };

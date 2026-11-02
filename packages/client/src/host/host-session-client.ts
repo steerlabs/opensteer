@@ -1559,6 +1559,7 @@ export class HttpHostClient {
       case "workspace.deletion.recover":
       case "workspace.icon.set":
       case "workspace.color.set":
+      case "workspace.adoptRelocated":
       case "workspace.storage.retry": {
         const workspace = this.#toWorkspaceSummary(result.workspace);
         this.#update(applyOptimisticCommandPatch(this.#snapshot, { type: result.type, workspace }));

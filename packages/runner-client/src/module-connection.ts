@@ -430,6 +430,7 @@ export class RunnerModuleConnection {
 function modulePrimaryMessageFence(message: PostAuthenticationHostMessage): RunnerConnectionFence {
   switch (message.type) {
     case "host.workspace.local.provision":
+    case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":
     case "host.workspace.local.destroy":
     case "host.workspace.local.files.list":

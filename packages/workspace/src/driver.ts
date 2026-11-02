@@ -59,6 +59,11 @@ export interface WorkspaceBackingReadiness {
 
 export interface WorkspaceBackingLifecycleDriver<K extends WorkspaceBackingKind> {
   readonly kind: K;
+  storageLocation?(workspace: Workspace): string | null;
+  relocate?(
+    workspace: Workspace & { readonly backing: LocalWorkspaceBacking },
+    adopt?: boolean,
+  ): Promise<void>;
   /** Optional deployment-level admission signal. An absent signal preserves
    * create availability for drivers without a shared capacity authority. */
   admitsCreates?(): Promise<boolean>;

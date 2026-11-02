@@ -2064,6 +2064,7 @@ export class RunnerRegistry {
         break;
       }
       case "runner.workspace.local.provisioned":
+      case "runner.workspace.local.relocated":
       case "runner.workspace.local.inspected":
       case "runner.workspace.local.destroyed":
       case "runner.workspace.local.files.listed":
