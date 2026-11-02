@@ -17,7 +17,9 @@ func emit(_ header: [String: Any], _ payload: Data = Data()) {
 func checked(_ status: OSStatus) {
     precondition(status == noErr, "VideoToolbox failed: \(status)")
 }
-let width = 1512, height = 982
+// Content is drawn on a fixed canvas and scaled to the size the Host demands.
+let canvasWidth = 1512.0, canvasHeight = 982.0
+var width = 1512, height = 982
 let duration = Double(CommandLine.arguments.dropFirst().first ?? "20")!
 let font = NSFont.monospacedSystemFont(ofSize: 17, weight: .regular)
 let queue = DispatchQueue(label: "live-encoder")
@@ -36,7 +38,39 @@ final class Encoder {
     var tick = 0
     var pending = false
     var key = true
+    /** Bumped on each resize; a late output of a retired session is not sent. */
+    var epoch = 0
     let ci = CIContext(options: [.cacheIntermediates: false])
+    func makeSession() {
+        for configuration in MacVideoEncoder.configurations(rate.mode) {
+            session = MacVideoEncoder.make(width: width, height: height, plan: plan,
+                configuration: configuration, output: { pointer, refcon, status, flags, sample in
+                    // Submission bits: capture microseconds, the session epoch, then the key flag.
+                    let submission = Int(bitPattern: refcon)
+                    let encoder = Unmanaged<Encoder>.fromOpaque(pointer!).takeUnretainedValue()
+                    queue.async {
+                        encoder.output(status, flags, sample, submission,
+                            current: (submission >> 1) & 0xff == encoder.epoch & 0xff)
+                    }
+                }, refcon: Unmanaged.passUnretained(self).toOpaque())
+            if session != nil { break }
+        }
+        precondition(session != nil, "No supported production hardware encoder")
+    }
+    /// As the producer does on a size demand: a new session at the new size, from a key.
+    func resize(_ longSide: Int) {
+        let scale = min(1, Double(longSide) / canvasWidth)
+        let next = (max(2, Int(canvasWidth * scale) / 2 * 2), max(2, Int(canvasHeight * scale) / 2 * 2))
+        guard next != (width, height), let old = session else { return }
+        epoch += 1
+        VTCompressionSessionInvalidate(old)
+        session = nil
+        (width, height) = next
+        plan = rate.plan(width: width, height: height)
+        makeSession()
+        key = true
+        picture = nil
+    }
     func retarget() {
         let next = rate.plan(width: width, height: height)
         if next != plan, let session {
@@ -49,17 +83,12 @@ final class Encoder {
         let mode: MacVideoRate.Mode = command.keys.contains("maxBitrate")
             ? .negotiated(cap: command["maxBitrate"] as? Int) : .legacy
         rate = MacVideoRate(maxFps: mode == .legacy ? 30 : command["maxFps"] as! Int, mode: mode)
-        plan = rate.plan(width: width, height: height)
-        for configuration in MacVideoEncoder.configurations(mode) {
-            session = MacVideoEncoder.make(width: width, height: height, plan: plan,
-                configuration: configuration, output: { pointer, refcon, status, flags, sample in
-                    let submission = Int(bitPattern: refcon)
-                    let encoder = Unmanaged<Encoder>.fromOpaque(pointer!).takeUnretainedValue()
-                    queue.async { encoder.output(status, flags, sample, submission) }
-                }, refcon: Unmanaged.passUnretained(self).toOpaque())
-            if session != nil { break }
+        if let side = command["maxLongSide"] as? Int {
+            let scale = min(1, Double(side) / canvasWidth)
+            (width, height) = (max(2, Int(canvasWidth * scale) / 2 * 2), max(2, Int(canvasHeight * scale) / 2 * 2))
         }
-        precondition(session != nil, "No supported production hardware encoder")
+        plan = rate.plan(width: width, height: height)
+        makeSession()
         origin = ProcessInfo.processInfo.systemUptime
         emit(["clock": 0])
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -81,9 +110,10 @@ final class Encoder {
             let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height,
                 bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!
+            context.scaleBy(x: CGFloat(width) / canvasWidth, y: CGFloat(height) / canvasHeight)
             let cut = time >= duration * 0.8
             context.setFillColor(NSColor(calibratedWhite: cut ? 0.18 : 0.07, alpha: 1).cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.fill(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
             let idle = time >= duration * 0.55 && time < duration * 0.8
@@ -91,7 +121,7 @@ final class Encoder {
             for line in 0..<65 {
                 let row = line + Int(scroll / 24)
                 let text = String(format: "%04d  ", row) + (cut ? "const paint = (frame: VideoFrame) => canvas.drawImage(frame, 0, 0);" : "export async function renderWindow(target: WindowTarget, sequence: number) {")
-                (text as NSString).draw(at: NSPoint(x: 28 + (line % 4) * 12, y: height - 35 - line * 24 + Int(scroll.truncatingRemainder(dividingBy: 24))), withAttributes: [.font: font, .foregroundColor: line % 3 == 0 ? NSColor.systemTeal : NSColor.lightGray])
+                (text as NSString).draw(at: NSPoint(x: 28 + (line % 4) * 12, y: Int(canvasHeight) - 35 - line * 24 + Int(scroll.truncatingRemainder(dividingBy: 24))), withAttributes: [.font: font, .foregroundColor: line % 3 == 0 ? NSColor.systemTeal : NSColor.lightGray])
             }
             let typed = idle ? 24 : Int(time * 12) % 100
             (String(repeating: "x", count: typed) as NSString).draw(at: NSPoint(x: 900, y: 80), withAttributes: [.font: font, .foregroundColor: NSColor.systemYellow])
@@ -135,10 +165,13 @@ final class Encoder {
         checked(VTCompressionSessionEncodeFrame(session, imageBuffer: picture,
             presentationTimeStamp: CMTime(value: pts, timescale: 1_000_000), duration: .invalid,
             frameProperties: force ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil,
-            sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: (Int(captureUs) << 1) | (force ? 1 : 0)), infoFlagsOut: nil))
+            sourceFrameRefcon: UnsafeMutableRawPointer(
+                bitPattern: (Int(captureUs) << 9) | ((epoch & 0xff) << 1) | (force ? 1 : 0)), infoFlagsOut: nil))
     }
-    func output(_ status: OSStatus, _ flags: VTEncodeInfoFlags, _ sample: CMSampleBuffer?, _ submission: Int) {
+    func output(_ status: OSStatus, _ flags: VTEncodeInfoFlags, _ sample: CMSampleBuffer?, _ submission: Int,
+                current: Bool) {
         inFlight -= 1
+        guard current else { submit(); return }
         checked(status)
         guard session != nil else { return }
         if flags.contains(.frameDropped) {
@@ -183,13 +216,14 @@ final class Encoder {
             bytes.append(avcc[offset..<offset+size])
             offset += size
         }
-        emit(["key": key, "codec": codec, "captureUs": submission >> 1, "ptsUs": CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) * 1_000_000,
+        emit(["key": key, "codec": codec, "captureUs": submission >> 9, "ptsUs": CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample)) * 1_000_000,
             "width": width, "height": height], bytes)
         submit()
     }
     func command(_ value: [String: Any]) {
         if let start = value["start"] as? [String: Any] { self.start(start) }
         if value.keys.contains("cap") { rate.setLinkCap(value["cap"] as? Int); retarget() }
+        if let side = value["resize"] as? Int { resize(side) }
         if value["refresh"] as? Bool == true { key = true; pending = true; submit() }
         if let ack = value["ack"] as? [String: Double], let delay = ack["delayMs"] {
             if rate.acknowledged(delay: delay / 1000, now: ProcessInfo.processInfo.systemUptime, width: width, height: height) { retarget() }

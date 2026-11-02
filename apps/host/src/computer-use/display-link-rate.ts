@@ -166,7 +166,11 @@ export class DisplayLinkRate {
       // here; taking both at their word costs a paused receiver a dip its burst
       // undoes, while ignoring a handover would cost seconds of stale video.
       const persistent = now - this.#queuedSince >= Math.max(500, 3 * baseRtt);
-      if (sample !== null && (persistent || sample < frame.sending * 0.9)) this.#cut(now, sample);
+      // A brief queue cuts only to what the link recently proved; one that
+      // persists trusts the latest delivery, which follows a handover.
+      if (sample !== null && persistent) this.#cut(now, sample);
+      else if (sample !== null && sample < frame.sending * 0.9)
+        this.#cut(now, Math.max(sample, this.bandwidth(now) ?? sample));
     } else if (queue < clearMs) {
       this.#queuedSince = null;
       this.#beforeCut = undefined;
@@ -195,7 +199,7 @@ export class DisplayLinkRate {
     const rate = delivering ?? this.bandwidth(now);
     if (rate === null) return;
     const target = Math.max(minimumBitrate, Math.floor(rate * 8_000 * drainGain));
-    if (this.cap !== null && target >= this.cap) return;
+    if (target >= (this.cap ?? this.limits.maximumBitrate)) return;
     this.#beforeCut ??= this.cap;
     this.cap = target;
     this.#decidedAt = now;

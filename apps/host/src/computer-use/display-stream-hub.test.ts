@@ -378,9 +378,9 @@ async function fixture(
     app,
     base,
     macSource,
-    macViewer: (editing = false, phoneOwnerControl = false) =>
+    macViewer: (editing = false, phoneOwnerControl = false, displayWindow = false) =>
       connect(
-        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}${phoneOwnerControl ? "&phoneOwnerControl=1&displayCut=1" : ""}`,
+        `/v1/computer-use/views/${macSource.viewId}/1/display?sharedInput=1${editing ? "&editing=1" : ""}${phoneOwnerControl ? "&phoneOwnerControl=1&displayCut=1" : ""}${displayWindow ? "&displayWindow=1" : ""}`,
         "owner",
       ),
     serverViewers,
@@ -3163,6 +3163,49 @@ describe("viewer-driven phone bitrate", () => {
         legacy.socket.close();
       });
       // Lifting the cap is an increase, which waits out the update interval.
+      f.advance(2_000);
+      await deliver();
+      await until(() => caps().at(-1) === 8_000_000);
+    } finally {
+      ack.mockRestore();
+    }
+  });
+  it("lets the person driving a Mac window set its budget over a slower spectator", async () => {
+    // Only the driver acknowledges, and its link has measured room for 8 Mbps;
+    // the spectator stays at the unmeasured start.
+    const ack = vi.spyOn(DisplayLinkRate.prototype, "ack").mockImplementation(function (
+      this: DisplayLinkRate,
+    ) {
+      this.cap = 8_000_000;
+    });
+    try {
+      const f = await fixture(true, { mac: true, displayProfile: true });
+      const caps = () =>
+        f.sent
+          .filter((m) => m.type === "host.integrations.display.demand")
+          .map((m) => m.maxBitrate);
+      const driver = await f.macViewer(false, false, true);
+      await f.macViewer(false, false, true);
+      const mac = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async () => {
+        sequence++;
+        mac.socket.send(f.frame(sequence, sequence === 1));
+        await driver.received(() => driver.media().length === sequence);
+        driver.send({ type: "display.ack", sequence });
+        await driver.roundTrip();
+      };
+      f.advance(2_000);
+      await deliver();
+      expect(caps().at(-1) ?? macLinkRate.initialBitrate).toBe(macLinkRate.initialBitrate);
+      driver.send({
+        type: "display.input",
+        geometry: 1,
+        sequence: 1,
+        events: [{ kind: "mouse", phase: "down", button: "left", modifiers: [], x: 0.5, y: 0.5 }],
+      });
+      await driver.roundTrip();
       f.advance(2_000);
       await deliver();
       await until(() => caps().at(-1) === 8_000_000);

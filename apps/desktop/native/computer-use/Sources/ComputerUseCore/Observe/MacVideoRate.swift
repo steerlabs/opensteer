@@ -24,6 +24,7 @@ struct MacVideoRate: Equatable {
   static let maxBitrate = 20_000_000
   static let legacyBitrate = 2_500_000
   static let ceilingBitsPerPixel = 0.15
+  /// The Host's `macLegibleLongSide` shrinks the picture to keep this at the slowest cadence.
   static let cadenceBitsPerPixel = 0.05
   static let cadences = [60, 30, 20, 15, 10]
 

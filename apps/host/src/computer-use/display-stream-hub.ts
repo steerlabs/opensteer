@@ -70,6 +70,24 @@ const macUnmeasuredReplayBytes = 512 * 1_024;
 const displayKeyframeRetryMs = 1_500;
 /** How often a Mac viewer's path is re-measured while it sits empty. */
 const displayRoundTripPingMs = 2_000;
+/** How long after a viewer's input it still counts as driving the window. */
+const macDrivingMs = 30_000;
+
+/**
+ * The long side a Mac budget keeps legible at ten frames a second, matching the
+ * helper's cadence floor (MacVideoRate.cadenceBitsPerPixel). Below it the
+ * encoder cannot meet its budget at full size, and the queue it builds costs
+ * far more than the pixels.
+ */
+function macLegibleLongSide(
+  bitrate: number | null,
+  { width, height }: { width: number; height: number },
+): number {
+  if (bitrate === null) return Infinity;
+  const aspect = width > 0 && height > 0 ? Math.max(width, height) / Math.min(width, height) : 1.5;
+  const pixels = bitrate / (0.05 * 10);
+  return Math.max(320, Math.floor(Math.sqrt(pixels * aspect) / 16) * 16);
+}
 /** The original Mac budget, kept while a viewer that cannot report its link watches. */
 const macUnmeasuredViewerBitrate = 2_500_000;
 const displayDeliveryEstimateLifetimeMs = 5_000;
@@ -102,6 +120,8 @@ interface Viewer {
   /** The payload and send time of this viewer's outstanding round-trip ping. */
   ping: { readonly payload: string; readonly at: number } | null;
   pingedAt: number;
+  /** When this viewer last sent accepted input; the driver sets a Mac budget. */
+  inputAt: number;
   readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
   readonly phoneOwnerControl: boolean;
@@ -529,6 +549,7 @@ export class DisplayStreamHub {
       deliveryEstimate: null,
       ping: null,
       pingedAt: -Infinity,
+      inputAt: -Infinity,
     };
     if (viewer.link) {
       const link = viewer.link;
@@ -1111,6 +1132,7 @@ export class DisplayStreamHub {
     if (message.type !== "display.input" || "controlId" in message) return;
     if (!viewer.sharedInput || message.sequence <= viewer.inputSequence) return;
     viewer.inputSequence = message.sequence;
+    viewer.inputAt = this.#now();
     const extended = message.events.some(
       (event) => !["pointer", "scroll", "nav", "text"].includes(event.kind),
     );
@@ -1575,7 +1597,10 @@ export class DisplayStreamHub {
           );
       if (stream.profileAt !== null && this.#now() >= stream.profileAt && stream.viewers.size) {
         stream.profileAt = null;
-        const requested = Math.max(...[...stream.viewers].map((viewer) => viewer.maxLongSide));
+        const requested = Math.min(
+          Math.max(...[...stream.viewers].map((viewer) => viewer.maxLongSide)),
+          stream.target ? macLegibleLongSide(stream.maxBitrate, stream.state) : Infinity,
+        );
         if (Math.abs(requested - stream.maxLongSide) >= 160) {
           stream.maxLongSide = requested;
           stream.demandKey = "";
@@ -1638,7 +1663,13 @@ export class DisplayStreamHub {
   }
   #updateBitrate(stream: Stream): boolean {
     if (stream.displayProfile !== 1) return false;
-    const caps = [...stream.viewers].flatMap((viewer) => {
+    // The person driving a Mac window sets its budget; spectators on slower
+    // links skip frames rather than holding the driver to their rate.
+    const now = this.#now();
+    const driving = stream.target
+      ? [...stream.viewers].filter((viewer) => now - viewer.inputAt < macDrivingMs)
+      : [];
+    const caps = (driving.length ? driving : [...stream.viewers]).flatMap((viewer) => {
       const cap = viewer.link ? viewer.link.cap : viewer.bitrate.cap;
       if (viewer.displayWindow) return cap === null ? [] : [cap];
       return stream.target ? [macUnmeasuredViewerBitrate] : [];
@@ -1659,7 +1690,11 @@ export class DisplayStreamHub {
     return true;
   }
   #bitrate(stream: Stream): void {
-    if (this.#updateBitrate(stream)) this.#demand(stream);
+    if (!this.#updateBitrate(stream)) return;
+    // The picture size follows the budget once it settles, through the same
+    // hysteresis as a viewer's own resize.
+    if (stream.target) stream.profileAt = this.#now() + macDisplayProfileHysteresisMs;
+    this.#demand(stream);
   }
   #demand(stream: Stream): void {
     const sources = [

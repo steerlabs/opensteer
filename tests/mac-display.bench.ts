@@ -189,6 +189,7 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
                 encoder.command({
                   start: {
                     maxFps: fps,
+                    maxLongSide: message.maxLongSide,
                     ...("maxBitrate" in message ? { maxBitrate: message.maxBitrate } : {}),
                   },
                 });
@@ -203,6 +204,8 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
                 maxLongSide: message.maxLongSide ?? 1512,
               });
               if ("maxBitrate" in message) encoder?.command({ cap: message.maxBitrate });
+              if (message.maxLongSide !== undefined)
+                encoder?.command({ resize: message.maxLongSide });
             } else if (
               message.type === "host.integrations.display.stop" &&
               message.streamId === start?.streamId
