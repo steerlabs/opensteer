@@ -131,6 +131,9 @@ export function BrowserViewport({
   >(null);
   const animationFrame = useRef<number | null>(null);
   const pressedButton = useRef<"left" | "middle" | "right" | null>(null);
+  const pointerPress = useRef<{ id: number; x: number; y: number; clickCount: number } | null>(
+    null,
+  );
   const lastPointerPoint = useRef<BrowserFramePoint | null>(null);
   const clickTracker = useRef<{ count: number; time: number; x: number; y: number } | null>(null);
   // A finger is a tap until it moves; once it moves it scrolls the page.
@@ -356,6 +359,23 @@ export function BrowserViewport({
     return () => viewport.removeEventListener("wheel", handleWheel);
   }, []);
 
+  const discardMove = useCallback(() => {
+    if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current);
+    animationFrame.current = null;
+    pendingMove.current = null;
+  }, []);
+  const cancelInput = useCallback(
+    (surfaceId: BrowserTabSummary["id"] | null, send = onCommandRef.current) => {
+      discardMove();
+      pressedButton.current = null;
+      pointerPress.current = null;
+      lastPointerPoint.current = null;
+      touch.current = null;
+      clickTracker.current = null;
+      if (surfaceId) send({ type: "input.cancel", surfaceId });
+    },
+    [discardMove],
+  );
   const flushMove = useCallback(() => {
     if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current);
     animationFrame.current = null;
@@ -379,16 +399,10 @@ export function BrowserViewport({
   );
   useEffect(() => {
     const cancel = () => {
-      flushMove();
-      pressedButton.current = null;
-      lastPointerPoint.current = null;
-      touch.current = null;
-      if (activeSurfaceId) {
-        try {
-          onCommand({ type: "input.cancel", surfaceId: activeSurfaceId });
-        } catch {
-          /* Socket departure owns cleanup when this view is already detached. */
-        }
+      try {
+        cancelInput(activeSurfaceId, onCommand);
+      } catch {
+        /* Socket departure owns cleanup when this view is already detached. */
       }
     };
     const visibility = () => {
@@ -401,7 +415,7 @@ export function BrowserViewport({
       document.removeEventListener("visibilitychange", visibility);
       cancel();
     };
-  }, [activeSurfaceId, sessionId, flushMove, onCommand]);
+  }, [activeSurfaceId, sessionId, cancelInput, onCommand]);
 
   function normalizedPointer(
     event: PointerEvent<HTMLDivElement>,
@@ -464,6 +478,7 @@ export function BrowserViewport({
     pressedButton.current = button;
     lastPointerPoint.current = point;
     const clickCount = button === "left" ? trackClickCount(event) : 1;
+    pointerPress.current = { id: event.pointerId, x: event.clientX, y: event.clientY, clickCount };
     onCommand({
       action: "down",
       modifiers: keyboardModifiers(event),
@@ -507,7 +522,14 @@ export function BrowserViewport({
       });
       return;
     }
+    const press = pointerPress.current;
+    if (press && (Math.abs(event.clientX - press.x) >= 6 || Math.abs(event.clientY - press.y) >= 6))
+      clickTracker.current = null;
     const point = normalizedPointer(event, pressedButton.current !== null);
+    if (!point && !pressedButton.current) {
+      pointerLeave();
+      return;
+    }
     pendingMove.current = point
       ? { ...point, modifiers: keyboardModifiers(event), buttons: event.buttons }
       : null;
@@ -540,14 +562,16 @@ export function BrowserViewport({
       onTouchTap?.();
       return;
     }
-    const button = pressedButton.current ?? pointerButton(event.button);
-    if (!button) return;
+    const button = pressedButton.current;
+    const press = pointerPress.current;
+    if (!button || !press || press.id !== event.pointerId) return;
     const point = normalizedPointer(event, true);
     if (!point) return;
     event.preventDefault();
     pressedButton.current = null;
-    lastPointerPoint.current = null;
-    const clickCount = clickTracker.current?.count ?? 1;
+    lastPointerPoint.current = point;
+    const clickCount = press.clickCount;
+    pointerPress.current = null;
     if (button === "left") textInputRef.current?.activate();
     onCommand({
       action: "up",
@@ -558,30 +582,30 @@ export function BrowserViewport({
       ...point,
       type: "input.pointer",
     });
+    if (!normalizedPointer(event, false)) pointerLeave();
     measureRef.current?.();
   }
 
   function pointerCancel(event: PointerEvent<HTMLDivElement>) {
-    flushMove();
-    if (touch.current?.id === event.pointerId) {
-      touch.current = null;
+    if (touch.current?.id !== event.pointerId && pointerPress.current?.id !== event.pointerId)
       return;
-    }
-    if (!canInputRef.current || !pressedButton.current) return;
-    const button = pressedButton.current;
-    const point = normalizedPointer(event, true);
-    if (!point) return;
-    pressedButton.current = null;
-    lastPointerPoint.current = null;
-    onCommand({
-      action: "up",
-      button,
-      ...point,
-      modifiers: keyboardModifiers(event),
-      buttons: 0,
-      type: "input.pointer",
-    });
+    cancelInput(lastPointerPoint.current?.surfaceId ?? activeSurfaceId);
     measureRef.current?.();
+  }
+
+  function pointerLeave() {
+    if (pressedButton.current || touch.current) return;
+    discardMove();
+    const point = lastPointerPoint.current;
+    lastPointerPoint.current = null;
+    if (point && canInputRef.current)
+      onCommand({
+        ...point,
+        type: "input.pointer",
+        action: "leave",
+        button: "none",
+        modifiers: [],
+      });
   }
 
   return (
@@ -591,13 +615,14 @@ export function BrowserViewport({
       data-live-page=""
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
-          flushMove();
-          if (activeSurfaceId) onCommand({ type: "input.cancel", surfaceId: activeSurfaceId });
+          cancelInput(activeSurfaceId);
         }
       }}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={pointerDown}
       onPointerCancel={pointerCancel}
+      onLostPointerCapture={pointerCancel}
+      onPointerLeave={pointerLeave}
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}
       ref={viewportRef}

@@ -552,6 +552,21 @@ describe.each(["image", "picture"] as const)(
       expect(onTap).not.toHaveBeenCalled();
     });
 
+    it("discards a terminated touch without sending a remote press or release", async () => {
+      const { decode, emit, onTap, render, send } = setup();
+      render("synchronized");
+      emit();
+      await decode();
+      const { event, gesture } = touch(200, 300);
+      act(() => {
+        native.gestures?.onPanResponderGrant?.(event, gesture);
+        native.gestures?.onPanResponderTerminate?.(event, gesture);
+        native.gestures?.onPanResponderRelease?.(event, gesture);
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(onTap).not.toHaveBeenCalled();
+    });
+
     it("lets go of a press whose release the page refused", async () => {
       const { decode, dropFeed, emit, onTap, render, send } = setup();
       render("synchronized");

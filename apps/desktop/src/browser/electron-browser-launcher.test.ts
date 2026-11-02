@@ -884,6 +884,29 @@ describe("Electron geometry lifecycle", () => {
     }
   });
 
+  it("allows private drag cleanup on the originating channel without granting it to agents", async () => {
+    const { browser, page, view } = await launch(false);
+    const platform = await page.cdp();
+    const agent = await page.agentCdp();
+    try {
+      await expect(agent.send("Input.cancelDragging")).rejects.toThrow(/unavailable/);
+      await platform.cancelDragging!();
+      await agent.cancelDragging!();
+      expect(
+        view.webContents.debugger.sendCommand.mock.calls.filter(
+          ([method]) => method === "Input.cancelDragging",
+        ),
+      ).toEqual([
+        ["Input.cancelDragging", undefined],
+        ["Input.cancelDragging", undefined],
+      ]);
+    } finally {
+      await agent.detach();
+      await platform.detach();
+      await browser.close();
+    }
+  });
+
   // Network domain leases must not discard explicit agent settings or let an
   // empty platform subscription reset them, regardless of acquisition order.
   it.each(["platform-first", "agent-first"])(
