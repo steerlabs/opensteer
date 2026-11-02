@@ -2731,14 +2731,11 @@ export class HttpHostClient {
     );
     let history = page.events;
     let window = page.window;
-    while (
-      window.hasMore &&
-      this.#drawnRowCount(
-        thread,
-        history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]),
-        withAssignmentsFrom(this.#snapshot.assignments, history),
-      ) === 0
-    ) {
+    // Each older page is folded alone and merged, as Earlier does, so a long
+    // silent stretch is not folded again for every page read.
+    let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
+    let assignments = withAssignmentsFrom(this.#snapshot.assignments, history);
+    while (window.hasMore && this.#drawnRowCount(thread, entries, assignments) === 0) {
       const before = window.nextBefore;
       if (!before) throw new Error("Thread event page is missing its continuation cursor.");
       const older = await this.#readThreadHistory(threadId, before);
@@ -2747,6 +2744,11 @@ export class HttpHostClient {
         throw new Error("Thread event page is missing its continuation cursor.");
       history = [...older.events, ...history];
       window = older.window;
+      entries = mergeTranscriptSegments(
+        older.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]),
+        entries,
+      );
+      assignments = withAssignmentsFrom(assignments, older.events);
     }
     return { history, page, window };
   }
