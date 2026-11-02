@@ -2192,7 +2192,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       }
     },
     // The preview projects transcripts directly; it keeps no durable event log
-    // to page back through.
+    // to page back through. The RPC schema accepts turns and conversation view,
+    // which need no additional projection here.
     "thread.events.list": async ({ threadId }) => {
       const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
       if (!thread) throw new Error("Thread not found.");
