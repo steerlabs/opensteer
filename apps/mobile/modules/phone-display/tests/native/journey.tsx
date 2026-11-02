@@ -598,6 +598,37 @@ function Journey() {
         await returned;
         await check(`${name}-returned`, pixels([0, 255, 0]));
       }
+      const noisy = await fixture("noisy.h264");
+      await expect("noisy key exceeds the former relay limit", noisy.byteLength > 1_048_576, {
+        bytes: noisy.byteLength,
+      });
+      await native.reset("noisy");
+      const noisyPixels: Probe[] = [
+        { ...at(fit(area, 1920, 1248), 0.5, 0.5), color: [128, 128, 128], label: "decoded noise" },
+      ];
+      await check(
+        "noisy-reset-black",
+        noisyPixels.map((probe) => ({ ...probe, color: black })),
+      );
+      const noisyReady = ready.next((value) => value.epoch === "noisy", "noisy key rendered");
+      await expect(
+        "large noisy key admitted",
+        await decodeDisplayFrame(native, binary, noisy, {
+          epoch: "noisy",
+          width: 1920,
+          height: 1248,
+          key: true,
+          replayed: false,
+          pts: 0,
+        }),
+      );
+      const noisySize = await noisyReady;
+      await expect(
+        "noisy key rendered at source size",
+        noisySize.width === 1920 && noisySize.height === 1248,
+        noisySize,
+      );
+      await check("noisy-key", noisyPixels);
       setVideoMounted(false);
     };
 
