@@ -69,7 +69,8 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   }
 
   async probe(input: { site: string }) {
-    return (await this.#broker.probe(input)).passwords;
+    // The Host's command carries its `type`; the broker's strict params take the site alone.
+    return (await this.#broker.probe({ site: input.site })).passwords;
   }
 
   async authorize(

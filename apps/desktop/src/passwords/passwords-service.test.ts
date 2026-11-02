@@ -442,6 +442,10 @@ describe.runIf(process.platform === "darwin")("Workspace login release across su
       const emit = (event: PasswordSignInAuthorityEvent) => {
         events.push(event);
       };
+      // The Host probes with its own command before it authorizes.
+      expect(
+        await authority.control({ type: "signin.probe", site: "https://example.com" }, emit),
+      ).toEqual({ type: "signin.probe.result", passwords: "has-login" });
       await authority.control(
         {
           type: "login.authorize",
