@@ -104,3 +104,11 @@ it("embeds one extension target with standalone native sources and signing setti
   expect(once).toContain("PBXCopyFilesBuildPhase");
   expect(once).not.toContain("keychain-access-groups");
 });
+
+it("enables the app to consume the desugared notification module after repeated prebuilds", () => {
+  const template = "android {\n}\n\ndependencies {\n}\n";
+  const result = plugin.appBuildGradle(template);
+  expect(result).toContain("coreLibraryDesugaringEnabled true");
+  expect(result).toContain("coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'");
+  expect(plugin.appBuildGradle(result)).toBe(result);
+});

@@ -11,8 +11,9 @@ android {
 }
 dependencies {
   coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
-  implementation project(':expo-notifications')
-  implementation platform('com.google.firebase:firebase-bom:34.4.0')
-  implementation 'com.google.firebase:firebase-messaging'
+  // The manifest service exposes Expo and Firebase in its public superclass chain.
+  api project(':expo-notifications')
+  api platform('com.google.firebase:firebase-bom:34.4.0')
+  api 'com.google.firebase:firebase-messaging'
   testImplementation 'junit:junit:4.13.2'
 }
