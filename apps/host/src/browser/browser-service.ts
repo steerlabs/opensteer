@@ -1,4 +1,3 @@
-import { type EventData } from "@opensteer/core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
@@ -12,6 +11,8 @@ import {
   type Request,
   type RequestId,
   type RequestResponse,
+  type EventData,
+  RunIdSchema,
   type RunId,
   type RunnerId,
   type ThreadId,
@@ -661,6 +662,11 @@ export class BrowserService {
   readonly #holdings = new Map<BrowserSessionId, ReadonlySet<string>>();
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
+  /**
+   * The tab each Run last entered, so only a move to another tab reaches the
+   * database; the durable check there still holds across a Host restart.
+   */
+  readonly #runPlaces = new Map<RunId, string>();
   readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   #validateLoginLease:
@@ -2389,7 +2395,9 @@ export class BrowserService {
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
     const page = broker.pageOf(activity.surfaceId);
-    if (page) {
+    const placeKey = `${sessionId}:${activity.surfaceId}`;
+    if (page && this.#runPlaces.get(actor.runId) !== placeKey) {
+      this.#runPlaces.set(actor.runId, placeKey);
       const data: EventData<"place.entered"> = {
         place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
         title: page.title.slice(0, 256),
@@ -2759,6 +2767,7 @@ export class BrowserService {
   async drainRunPlaces(runId: RunId): Promise<void> {
     this.#forgetAgentBinding(`run:${runId}`);
     await this.#sessionOperations.get(`place:${runId}`);
+    this.#runPlaces.delete(runId);
   }
 
   /**
@@ -2770,8 +2779,11 @@ export class BrowserService {
     agentBindingId: string,
   ): Promise<readonly BrowserSessionId[]> {
     this.#forgetAgentBinding(agentBindingId);
-    if (agentBindingId.startsWith("run:"))
-      await this.#sessionOperations.get(`place:${agentBindingId.slice(4)}`);
+    if (agentBindingId.startsWith("run:")) {
+      const runId = RunIdSchema.parse(agentBindingId.slice(4));
+      await this.#sessionOperations.get(`place:${runId}`);
+      this.#runPlaces.delete(runId);
+    }
     const records = await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
     const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
     for (const workspaceId of new Set(records.map((record) => record.workspaceId))) {
