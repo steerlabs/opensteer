@@ -25,7 +25,11 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { delay } from "@opensteer/shared/delay";
 import { linkProfiles, startShapingProxy } from "./mobile-network/proxy.test-support.js";
 import { macHub } from "../apps/host/src/computer-use/mac-display-bench.test-support.js";
-import { content } from "./mac-display/content.test-support.js";
+import {
+  liveEncoder,
+  liveEncoderBinary,
+  type EncoderRecord,
+} from "./mac-display/live-encoder.test-support.js";
 
 function percentile(values: number[], fraction: number) {
   return (
@@ -63,6 +67,7 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
     globalName: "PhoneDisplayBenchmark",
     platform: "browser",
   });
+  const encoderBuild = await liveEncoderBinary(directory);
   const browser = await chromium.launch({ headless: true });
   const results = [];
   await writeFile(
@@ -79,7 +84,7 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
         scenarios,
         duration,
         legacyHost: process.env.OPENSTEER_MAC_BENCH_LEGACY === "1",
-        note: "Synthetic producer bypasses the Runner's 30 fps cap; default GOP=6; paint means headless canvas draw, not physical presentation.",
+        note: "Live production VideoToolbox encoder; offscreen deterministic content; paint means headless canvas draw, not physical presentation.",
       },
       null,
       2,
@@ -88,7 +93,6 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
   process.stdout.write(`Mac display benchmark: ${directory}\n`);
   try {
     for (const fps of fpsValues) {
-      const ladder = await content(directory, fps, duration);
       for (const scenario of scenarios) {
         const cleanup: (() => Promise<unknown>)[] = [];
         const captures = new Map<number, number>();
@@ -101,37 +105,40 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
         let needsKey = false;
         let start: HostIntegrationsDisplayStart | undefined;
         let producer: WebSocket | undefined;
-        let rung = ladder.rungs[Number(process.env.OPENSTEER_MAC_BENCH_RUNG ?? 2)]!;
-        if (!rung) throw new Error("Rung must be 0..4");
-        let track = 0,
-          index = 0,
-          sequence = 0,
-          captureAt = 0;
+        let sequence = 0;
         let origin = performance.now();
-        let timer: ReturnType<typeof setTimeout> | undefined;
         let stopped = false;
+        let encoder: ReturnType<typeof liveEncoder> | undefined;
+        const emitted: { at: number; bytes: number }[] = [];
+        const drops: number[] = [];
         const errors: string[] = [];
-        const send = (refresh: boolean) => {
+        const send = (frame: EncoderRecord, payload: Buffer) => {
+          if ("clock" in frame) {
+            origin = performance.now() - frame.clock / 1000;
+            return;
+          }
+          if ("drop" in frame) {
+            drops.push(performance.now());
+            return;
+          }
+          emitted.push({ at: performance.now(), bytes: payload.length });
           if (!start || producer?.readyState !== WebSocket.OPEN || stopped) return;
           const held = [...outstanding.values()];
           if (
-            held.reduce((sum, f) => sum + f.bytes, 0) >= 1_048_576 ||
+            held.reduce((sum, f) => sum + f.bytes, 0) + payload.length > 1_048_576 ||
             (held[0] && performance.now() - held[0].at >= 500)
           ) {
             producerCreditStalls++;
             needsKey = true;
             return;
           }
-          if (refresh || needsKey) track = index % ladder.gop;
-          needsKey = false;
-          const frame = rung.tracks[track]![index]!;
-          if (held.reduce((sum, f) => sum + f.bytes, 0) + frame.payload.byteLength > 1_048_576) {
-            producerCreditStalls++;
-            needsKey = true;
+          if (needsKey && !frame.key) {
+            encoder?.command({ refresh: true });
             return;
           }
-          outstanding.set(sequence, { bytes: frame.payload.byteLength, at: performance.now() });
-          captures.set(sequence, captureAt);
+          needsKey = false;
+          outstanding.set(sequence, { bytes: payload.length, at: performance.now() });
+          captures.set(sequence, origin + frame.captureUs / 1000);
           if (frame.key) keyframes++;
           producer.send(
             encodeDisplayMediaFrame(
@@ -139,13 +146,13 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
                 streamId: start.streamId,
                 generation: 1,
                 sequence: sequence++,
-                ptsUs: Math.round((performance.now() - origin) * 1000),
+                ptsUs: Math.round(frame.ptsUs),
                 key: frame.key,
                 ...(frame.key ? { codec: frame.codec } : {}),
-                width: rung.width,
-                height: rung.height,
+                width: frame.width,
+                height: frame.height,
               },
-              frame.payload,
+              payload,
             ),
           );
         };
@@ -156,7 +163,6 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
               start = message;
               stopped = false;
               outstanding.clear();
-              track = 0;
               demands.push({
                 atMs: 0,
                 maxBitrate: message.maxBitrate ?? null,
@@ -171,54 +177,38 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
               producer.on("error", (e) => errors.push(String(e)));
               producer.on("message", (raw) => {
                 const ack = DisplayAckSchema.parse(JSON.parse(raw.toString()));
+                const sent = outstanding.get(ack.sequence);
+                if (sent) encoder?.command({ ack: { delayMs: performance.now() - sent.at } });
                 outstanding.delete(ack.sequence);
                 producerAcks++;
               });
               producer.once("open", () => {
                 void host.state(message.streamId).catch((e) => errors.push(String(e)));
-                origin = performance.now();
-                let tick = 0;
-                const emit = () => {
-                  if (stopped) return;
-                  index = tick % (fps * duration);
-                  if (index === 0) track = 0;
-                  captureAt = origin + (tick * 1000) / fps;
-                  send(false);
-                  tick++;
-                  timer = setTimeout(
-                    emit,
-                    Math.max(0, origin + (tick * 1000) / fps - performance.now()),
-                  );
-                };
-                emit();
+                encoder = liveEncoder(encoderBuild.binary, duration, send, (e) => errors.push(e));
+                cleanup.push(encoder.close);
+                encoder.command({
+                  start: {
+                    maxFps: fps,
+                    ...("maxBitrate" in message ? { maxBitrate: message.maxBitrate } : {}),
+                  },
+                });
               });
             } else if (message.type === "host.integrations.display.refresh") {
               refreshes++;
-              send(true);
+              encoder?.command({ refresh: true });
             } else if (message.type === "host.integrations.display.demand") {
               demands.push({
                 atMs: performance.now() - origin,
                 maxBitrate: message.maxBitrate ?? null,
                 maxLongSide: message.maxLongSide ?? 1512,
               });
-              const eligible = ladder.rungs.filter(
-                (r) => Math.max(r.width, r.height) <= (message.maxLongSide ?? 1512),
-              );
-              const next = (eligible.length ? eligible : ladder.rungs).toSorted(
-                (a, b) =>
-                  Math.abs(a.bitrate - (message.maxBitrate ?? rung.bitrate)) -
-                  Math.abs(b.bitrate - (message.maxBitrate ?? rung.bitrate)),
-              )[0]!;
-              if (next !== rung) {
-                rung = next;
-                send(true);
-              }
+              if ("maxBitrate" in message) encoder?.command({ cap: message.maxBitrate });
             } else if (
               message.type === "host.integrations.display.stop" &&
               message.streamId === start?.streamId
             ) {
               stopped = true;
-              if (timer) clearTimeout(timer);
+              encoder?.command({ stop: true });
               producer?.terminate();
             }
           },
@@ -403,14 +393,50 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
             const ack = (ackSamples.get(`Bearer ${viewer.profile}`) ?? [])
               .filter((s) => s.at >= begin && s.at < end)
               .map((s) => s.delay);
+            const capIntervals = demands
+              .map((d, i) => ({
+                cap: d.maxBitrate,
+                seconds:
+                  Math.max(
+                    0,
+                    Math.min(end - origin, demands[i + 1]?.atMs ?? end - origin) -
+                      Math.max(begin - origin, d.atMs),
+                  ) / 1000,
+              }))
+              .filter((d) => d.cap !== null && d.seconds > 0);
+            const cappedSeconds = capIntervals.reduce((n, d) => n + d.seconds, 0);
+            const meanHostCap = cappedSeconds
+              ? capIntervals.reduce((n, d) => n + d.cap! * d.seconds, 0) / cappedSeconds
+              : null;
             results.push({
               scenario,
               profile: viewer.profile,
               fps,
-              contentHash: ladder.hash,
-              encoderProfile: ladder.profile,
-              gop: ladder.gop,
+              contentHash: encoderBuild.hash,
+              encoderMode: process.env.OPENSTEER_MAC_BENCH_LEGACY === "1" ? "legacy" : "negotiated",
+              encoderFps: emitted.filter((f) => f.at >= begin && f.at < end).length / seconds,
+              encoderDrops: drops.filter((at) => at >= begin && at < end).length,
+              emittedBitrate:
+                emitted
+                  .filter((f) => f.at >= begin && f.at < end)
+                  .reduce((n, f) => n + f.bytes * 8, 0) / seconds,
+              bitrateTrace: Array.from({ length: Math.ceil(seconds) }, (_, i) => {
+                const at = begin + i * 1000;
+                const until = Math.min(end, at + 1000);
+                return {
+                  atMs: at - origin,
+                  emittedBitrate:
+                    emitted
+                      .filter((f) => f.at >= at && f.at < until)
+                      .reduce((n, f) => n + f.bytes * 8, 0) /
+                    ((until - at) / 1000),
+                  hostCap: demands.findLast((d) => d.atMs <= at - origin)?.maxBitrate ?? null,
+                };
+              }),
               durationSeconds: seconds,
+              observationStartMs: begin - origin,
+              meanHostCap,
+              cappedSeconds,
               paintedFps: paints.length / seconds,
               deliveredFps:
                 viewer.received.filter((t) => t.at >= begin && t.at < end).length / seconds,
@@ -444,17 +470,18 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
                 (t) => t.record.socketReason === "Display viewer stalled",
               ).length,
               recoveryTrace: viewer.transitions,
-              nominalBitrate: rung.bitrate,
               decoderLosses: viewer.decoderLosses.filter((at) => at >= begin && at < end).length,
               demandTrace: demands,
               errors,
             });
           }
           await writeFile(join(directory, "results.json"), JSON.stringify(results, null, 2));
-          process.stdout.write("scenario viewer input delivered painted gap95 age95 refresh\n");
+          process.stdout.write(
+            "scenario viewer input painted gap95 age50 age95 freezes bitrate capMean encoderFps drops refresh\n",
+          );
           for (const r of results.filter((r) => r.scenario === scenario && r.fps === fps)) {
             process.stdout.write(
-              `${r.scenario} ${r.profile} ${r.fps} ${r.deliveredFps.toFixed(1)} ${r.paintedFps.toFixed(1)} ${r.gapP95Ms?.toFixed(0)} ${r.ageP95Ms?.toFixed(0)} ${r.refreshRequests}\n`,
+              `${r.scenario} ${r.profile} ${r.fps} ${r.paintedFps.toFixed(1)} ${r.gapP95Ms?.toFixed(0)} ${r.ageP50Ms?.toFixed(0)} ${r.ageP95Ms?.toFixed(0)} ${r.freezes1000.count} ${Math.round(r.emittedBitrate)} ${r.meanHostCap === null ? "uncapped" : Math.round(r.meanHostCap)} ${r.encoderFps.toFixed(1)} ${r.encoderDrops} ${r.refreshRequests}\n`,
             );
           }
           if (errors.length) throw new Error(`Benchmark viewer errors: ${errors.join(";")}`);
@@ -462,7 +489,7 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
           failures.push(error);
         } finally {
           stopped = true;
-          if (timer) clearTimeout(timer);
+
           for (const close of cleanup.reverse()) {
             try {
               await close();
