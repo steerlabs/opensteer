@@ -121,6 +121,9 @@ final class PhoneDisplayView: ExpoView {
   func reset(_ next: String) {
     epoch = next
     fence.lost()
+    // The renderer can retain the old surface while a flush and replay are queued.
+    // Keep it covered until a live sample is ready, even when replay needs decoding.
+    display.isHidden = true
     display.flushAndRemoveImage()
     format = nil
     announced = false
@@ -139,6 +142,7 @@ final class PhoneDisplayView: ExpoView {
   private func announceIfReady() {
     guard !announced, let size = awaiting, window != nil else { return }
     if #available(iOS 17.4, *), !display.isReadyForDisplay { return }
+    display.isHidden = false
     announced = true
     awaiting = nil
     onReady(["epoch": epoch, "width": size.width, "height": size.height])
