@@ -41,18 +41,18 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
-    const fixture = await createRunFixture("person-notify");
+    const fixture = await createRunFixture("person-message");
     const source = await enqueueHumanTrigger({
       content: [{ type: "text", text: "Work" }],
-      idempotencyKey: "person-notify-seed",
+      idempotencyKey: "person-message-seed",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
     await store.claimCommand(source.command.id, "notify-dispatcher");
-    const binding = await bindAgentControlRun(fixture, source.run.id, "person-notify");
+    const binding = await bindAgentControlRun(fixture, source.run.id, "person-message");
     const admission = {
       ...binding,
-      action: "person.notify" as const,
+      action: "person.message" as const,
       requestFingerprint: createHash("sha256").update("milestone").digest("hex"),
       requestId: randomUUID(),
       runId: source.run.id,
@@ -60,7 +60,7 @@ describeStore("PostgreSQL store", (it) => {
     };
     const results = await Promise.all(
       Array.from({ length: 4 }, () =>
-        store.publishPersonNotification({ admission, message: "Milestone passed." }),
+        store.publishPersonMessage({ admission, message: "Milestone passed." }),
       ),
     );
     expect(new Set(results.map((result) => result.message.id)).size).toBe(1);
@@ -107,7 +107,7 @@ describeStore("PostgreSQL store", (it) => {
       .executeTakeFirstOrThrow();
     expect(["starting", "running", "waiting"]).toContain(run.status);
     await expect(
-      store.publishPersonNotification({
+      store.publishPersonMessage({
         admission: {
           ...admission,
           requestFingerprint: createHash("sha256").update("changed").digest("hex"),
@@ -116,7 +116,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
     await expect(
-      store.publishPersonNotification({
+      store.publishPersonMessage({
         admission: { ...admission, requestedBy: createId("user") },
         message: "Milestone passed.",
       }),
@@ -130,7 +130,7 @@ describeStore("PostgreSQL store", (it) => {
       });
     }
     await expect(
-      store.publishPersonNotification({
+      store.publishPersonMessage({
         admission: { ...admission, requestId: randomUUID() },
         message: "Milestone passed.",
       }),
@@ -139,7 +139,7 @@ describeStore("PostgreSQL store", (it) => {
       details: { actionClass: "thread.message", limit: 32 },
     });
     await expect(
-      store.publishPersonNotification({ admission, message: "Milestone passed." }),
+      store.publishPersonMessage({ admission, message: "Milestone passed." }),
     ).resolves.toMatchObject({ wasDuplicate: true, message: { id: row.id }, events: [] });
     await database
       .updateTable("runs")
@@ -147,7 +147,7 @@ describeStore("PostgreSQL store", (it) => {
       .where("id", "=", source.run.id)
       .execute();
     await expect(
-      store.publishPersonNotification({ admission, message: "Milestone passed." }),
+      store.publishPersonMessage({ admission, message: "Milestone passed." }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 

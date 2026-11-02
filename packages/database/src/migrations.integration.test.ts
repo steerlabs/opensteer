@@ -7500,3 +7500,56 @@ integration.sequential("screen presentation removal migration", () => {
     ).rejects.toThrow(/violates check constraint "agent_control_requests_action/u);
   });
 });
+
+integration("person message migration", () => {
+  it("renames durable actions while preserving receipts, fingerprints and quota class", async () => {
+    const name = `opensteer_person_message_${randomUUID().replaceAll("-", "")}`;
+    const url = new URL(databaseUrl!);
+    url.pathname = "/postgres";
+    const maintenance = new Pool({ connectionString: url.toString() });
+    let database: Kysely<DatabaseSchema> | undefined;
+    try {
+      await maintenance.query(`create database ${name}`);
+      url.pathname = `/${name}`;
+      database = createDatabase({ connectionString: url.toString() });
+      await sql`
+        create table agent_control_requests (
+          action text constraint agent_control_requests_action_check check (action in ('person.notify', 'thread.message', 'workspace.list')),
+          action_class text,
+          result_message_id text,
+          request_fingerprint text,
+          constraint agent_control_requests_action_mapping_check check (action_class = case when action = 'person.notify' then 'thread.message' when action = 'workspace.list' then 'workspace.inspect' else action end)
+        );
+        insert into agent_control_requests values ('person.notify', 'thread.message', 'receipt', 'original-fingerprint');
+      `.execute(database);
+      const migrations = await migrationProvider().getMigrations();
+      await migrations["0128_person_message"]!.up(database);
+      const result = await sql`select * from agent_control_requests`.execute(database);
+      expect(result.rows).toEqual([
+        {
+          action: "person.message",
+          actionClass: "thread.message",
+          resultMessageId: "receipt",
+          requestFingerprint: "original-fingerprint",
+        },
+      ]);
+      await sql`insert into agent_control_requests values ('person.message', 'thread.message', null, 'new')`.execute(
+        database,
+      );
+      await expect(
+        sql`insert into agent_control_requests values ('person.notify', 'thread.message', null, 'old')`.execute(
+          database,
+        ),
+      ).rejects.toThrow("agent_control_requests_action_check");
+      await expect(
+        sql`insert into agent_control_requests values ('person.message', 'person.message', null, 'wrong')`.execute(
+          database,
+        ),
+      ).rejects.toThrow("agent_control_requests_action_mapping_check");
+    } finally {
+      await database?.destroy();
+      await maintenance.query(`drop database if exists ${name}`);
+      await maintenance.end();
+    }
+  });
+});

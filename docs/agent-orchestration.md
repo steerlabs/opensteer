@@ -266,8 +266,9 @@ reconnect; unconfirmed steers are not. See
 
 Role controls instructions and presentation, never access. Membership,
 capability profile, execution placement and tool admission remain independent.
-An addressed message from person_notify alerts the Run's requester in the same
-Thread without ending work; reports remain passive context for another agent.
+Main and Workspace Runs can use person_message to address their requester in the
+same Thread without ending work. Delegated Runs communicate through their assigner
+and cannot use person_message or person_show; reports remain passive agent context.
 Addressed messages are excluded from reply selection. A completed Run's last
 substantive reply is the single result used by
 conversations, channels and Assignments. Stopped/failed Runs have no completed

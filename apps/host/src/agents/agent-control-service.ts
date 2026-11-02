@@ -329,15 +329,13 @@ export class AgentControlService {
       });
     }
 
-    if (request.type === "person.notify") {
-      if (!(await this.#store.runnerCapabilities(claims.runnerId))?.includes("person-notify-v1"))
-        throw forbidden("Runner does not support person notifications");
-      const result = await this.#commands.publishPersonNotification({
+    if (request.type === "person.message") {
+      const result = await this.#commands.publishPersonMessage({
         admission: this.#admissionRequest(claims, request),
         message: request.message,
       });
       return AgentControlResponseSchema.parse({
-        type: "person.notify.result",
+        type: "person.message.result",
         requestId: request.requestId,
         messageId: result.message.id,
       });
@@ -1022,7 +1020,12 @@ export class AgentControlService {
     if (!thread) throw forbidden("Thread is unavailable to this user");
     // Any Thread may leave its person's Home a report. Work there needs the
     // same reach as addressing Home by id.
-    if (!home || request.delivery !== "report") this.#assertThreadScope(currentThread, thread);
+    if (
+      (!home || request.delivery !== "report") &&
+      (await this.#store.currentRunAssigner(claims.runId)) !== destination
+    ) {
+      this.#assertThreadScope(currentThread, thread);
+    }
     const delivered = await this.#commands.enqueueAdmittedThreadInput({
       admission: { kind: "agent", request: this.#admissionRequest(claims, request) },
       input: {
@@ -1128,7 +1131,7 @@ const toolForAction: Readonly<
   "thread.delegate": "thread.delegate",
   "thread.list": "thread.list",
   "thread.message": "thread.message",
-  "person.notify": "person.notify",
+  "person.message": "person.message",
   "person.show": "person.show",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
