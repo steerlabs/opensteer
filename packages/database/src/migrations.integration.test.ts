@@ -16,6 +16,7 @@ import type { DatabaseSchema } from "./schema.js";
 import { OpensteerStore } from "./store.js";
 import {
   projectsMigration,
+  projectSlugsMigration,
   advertisedAgentsCapacityMigration,
   betterAuth17Migration,
   agentPhoneOwnerAccessMigration,
@@ -7535,6 +7536,9 @@ describeStore("Project kind conversion", (it) => {
       .where("id", "=", workspace.id)
       .executeTakeFirstOrThrow();
     await sql`
+      drop trigger workspaces_project_slug on public.workspaces;
+      drop function public.allocate_project_slug();
+      alter table public.workspaces drop column slug;
       alter table public.workspaces disable trigger workspaces_immutable_kind;
       alter table public.workspaces drop constraint workspaces_kind_check;
       alter table public.workspaces alter column kind set default 'specialized';
@@ -7548,6 +7552,7 @@ describeStore("Project kind conversion", (it) => {
       alter table public.workspaces enable trigger workspaces_immutable_kind;
     `.execute(database);
     await projectsMigration.up(database);
+    await projectSlugsMigration.up(database);
     const after = await database
       .selectFrom("workspaces")
       .selectAll()
