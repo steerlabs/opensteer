@@ -3158,7 +3158,7 @@ describe("viewer-driven phone bitrate", () => {
     await mac.received(() => mac.json().length === 3);
     const long = await f.viewer(false, false, true);
     await until(() => refreshes().length === 1);
-    await delay(20);
+    await long.roundTrip();
     expect(long.media()).toHaveLength(0);
   });
   it.each([650, 1_200])(
