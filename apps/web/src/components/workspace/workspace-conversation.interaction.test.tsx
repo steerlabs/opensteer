@@ -298,9 +298,11 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("holds a page for two seconds before cutting across rapid page changes", async () => {
-    await mount("/");
     const now = Date.now();
+    // Keep mock activity timestamps and the picture's hold on the same clock,
+    // including the first render, before switching to manually advanced timers.
     vi.spyOn(Date, "now").mockReturnValue(now);
+    await mount("/", { now: () => new Date(Date.now()) });
     const { home, place: first } = await chatWorkingIn("Weekend ideas");
     const second = browserPlaces().find((item) => item.title === "Your reading list")!;
     vi.useFakeTimers({ now, toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -311,8 +313,14 @@ describe("a reply's live picture belongs to its working Run", () => {
       expect(picture()!.dataset.placeKey).toBe(first.key);
       await act(async () => client.actInPlace(home, first.key));
       await act(async () => client.actInPlace(home, second.key));
-      await act(async () => vi.advanceTimersByTimeAsync(250));
-      expect(picture()!.dataset.placeKey).toBe(second.key);
+      await act(async () => vi.advanceTimersByTimeAsync(199));
+      expect(picture()!.dataset.placeKey, "The picture cut before the two-second hold").toBe(
+        first.key,
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(picture()!.dataset.placeKey, "The picture did not cut at the two-second hold").toBe(
+        second.key,
+      );
     } finally {
       vi.useRealTimers();
     }

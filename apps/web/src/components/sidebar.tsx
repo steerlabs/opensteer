@@ -1378,32 +1378,34 @@ function SidebarFooter({
   ];
   return (
     <div className="sidebar__footer">
-      <DesktopUpdateButton />
-      <button
-        aria-expanded={open}
-        aria-haspopup="menu"
-        aria-label={`${placeName}: ${connection.label}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
-        className="sidebar__place"
-        onClick={() => setOpen((value) => !value)}
-        ref={anchorRef}
-        type="button"
-      >
-        <span aria-hidden className="sidebar__place-mark">
-          <Icon name={onThisComputer ? "desktop" : "server"} />
-          {signInEnded ? <span className="sidebar__place-alert" /> : null}
-        </span>
-        <span className="sidebar__place-text">
-          <span className="sidebar__place-name">{placeName}</span>
-          <span className="sidebar__place-status">
-            <span
-              aria-hidden
-              className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
-            />
-            {connection.label}
+      <div className="sidebar__place-row">
+        <button
+          aria-expanded={open}
+          aria-haspopup="menu"
+          aria-label={`${placeName}: ${connection.label}.${signInEnded ? " Sign in again." : ""} ${places ? "Places and menu" : "Menu"}`}
+          className="sidebar__place"
+          onClick={() => setOpen((value) => !value)}
+          ref={anchorRef}
+          type="button"
+        >
+          <span aria-hidden className="sidebar__place-mark">
+            <Icon name={onThisComputer ? "desktop" : "server"} />
+            {signInEnded ? <span className="sidebar__place-alert" /> : null}
           </span>
-        </span>
-        <Icon className="sidebar__place-settings" name="chevron-down" />
-      </button>
+          <span className="sidebar__place-text">
+            <span className="sidebar__place-name">{placeName}</span>
+            <span className="sidebar__place-status">
+              <span
+                aria-hidden
+                className={`sidebar__status-dot sidebar__status-dot--${connection.tone}`}
+              />
+              {connection.label}
+            </span>
+          </span>
+          <Icon className="sidebar__place-settings" name="chevron-down" />
+        </button>
+        <DesktopUpdateButton />
+      </div>
       {open && anchorRef.current ? (
         <Popover
           anchor={anchorRef.current}

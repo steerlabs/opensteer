@@ -78,10 +78,18 @@ describe("the engines a work location reports", () => {
     if (!update) throw new Error("Codex Update button missing");
     expect(engineCard(container, "codex").textContent).toContain("Update available");
     const dispatch = vi.spyOn(client, "dispatch");
+    const refreshed = Promise.withResolvers<void>();
+    const refresh = vi.spyOn(client, "refresh").mockReturnValue(refreshed.promise);
     await act(async () => update.click());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ driverKind: "codex", type: "harness.update" }),
     );
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(update.disabled).toBe(true);
+    expect(update.textContent).toBe("Updating…");
+    await act(async () => refreshed.resolve());
+    expect(update.disabled, "The engine update never cleared its pending state").toBe(false);
+    expect(update.textContent).toBe("Update");
   });
 
   it("lists every source an engine offers, each with what it talks to", async () => {
