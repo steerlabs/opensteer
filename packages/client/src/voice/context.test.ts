@@ -292,3 +292,60 @@ it("reuses transcript recency through token rebuilds and refreshes changed histo
     host.dispose();
   }
 });
+
+it("keeps Chat's working tab linked after the tab restores into another session", () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  try {
+    const snapshot = voiceSavedTabs(host);
+    const group = snapshot.workspaceTabs![0]!;
+    const restored = "bsn_00000000-0000-4000-8000-000000000002";
+    const moved: HostSnapshot = {
+      ...snapshot,
+      workspaceTabs: [
+        {
+          ...group,
+          session: { ...group.session, id: restored, state: "ready" },
+          tabs: group.tabs!.map((tab) => ({ ...tab, sessionId: restored })),
+        },
+      ],
+      browserSessions: [
+        {
+          id: restored,
+          state: "ready",
+          workspaceId: group.session.workspaceId,
+          placement: group.session.placement,
+          profileId: null,
+          tabCatalog: {
+            generation: 1,
+            revision: 1,
+            tabs: [
+              {
+                id: "tab_gmail",
+                title: "Gmail",
+                site: "https://mail.google.com",
+                iconRef: null,
+                availability: "ready",
+                documentId: null,
+                occupants: [],
+                order: 0,
+              },
+            ],
+          },
+          tabs: [],
+        } as unknown as HostSnapshot["browserSessions"][number],
+      ],
+    };
+    const links = new VoiceContextLinks();
+    // The Run's place still names the session it entered before the restore.
+    const working = moved.transcripts[moved.homeThreadId!]![0] as PlaceEntry;
+    const text = links.build(moved, undefined, { runPlace: () => working });
+    const line = text.split("\n").find((entry) => entry.startsWith("Chat is working in:"))!;
+    const link = line.match(/opensteer:\/\/place\/\d+/)?.[0];
+    expect(link, "the restored working tab has no link").toBeDefined();
+    expect(links.resolve(link!, moved)?.target).toMatchObject({
+      destination: { kind: "browser", sessionId: restored, tabId: "tab_gmail" },
+    });
+  } finally {
+    host.dispose();
+  }
+});

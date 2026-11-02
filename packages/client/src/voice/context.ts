@@ -9,6 +9,7 @@ import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { matchSearch, searchQuery, type SearchField } from "../host/search.js";
 import { threadSearchFields } from "../host/thread-list-model.js";
 import { threadStopTarget } from "../host/thread-activity.js";
+import { runPlaceDestination } from "../host/run-place.js";
 import type { VoiceTarget } from "./contract.js";
 
 export type VoiceView = {
@@ -41,14 +42,15 @@ export interface VoiceContextOptions {
   readonly runPlace: (runId: string) => VoiceWorkingPlace | null;
 }
 
-const matchesPlace = (place: PlaceItem, working: VoiceWorkingPlace) => {
+/** `browserSessionId` is the tab's current session, which a restore changes. */
+const matchesPlace = (place: PlaceItem, working: VoiceWorkingPlace, browserSessionId: string) => {
   const target = working.place;
   const destination = place.destination;
   if (target.kind === "browser")
     return (
       destination.kind === "browser" &&
       destination.tabId === target.surfaceId &&
-      destination.sessionId === target.sessionId
+      destination.sessionId === browserSessionId
     );
   return (
     destination.kind === target.kind &&
@@ -153,8 +155,16 @@ export class VoiceContextLinks {
     const working = run && options.runPlace(run.id);
     let current: PlaceItem | undefined;
     if (working) {
+      // Resolved as the live card resolves it, so a restored tab keeps its link.
+      const viewing = runPlaceDestination({ runId: run.id, data: working }, snapshot);
+      const browserSessionId =
+        viewing?.kind === "browser"
+          ? viewing.sessionId
+          : working.place.kind === "browser"
+            ? working.place.sessionId
+            : "";
       current = places.find((place) => {
-        if (!matchesPlace(place, working)) return false;
+        if (!matchesPlace(place, working, browserSessionId)) return false;
         const destination = place.destination;
         if (destination.kind === "browser") return true;
         return snapshot.machines
