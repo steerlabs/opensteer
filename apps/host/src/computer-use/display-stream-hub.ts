@@ -1,4 +1,8 @@
-import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
+import {
+  DisplayViewerBitrate,
+  macViewerBitrate,
+  phoneViewerBitrate,
+} from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -60,6 +64,15 @@ const displayMaxViewers = 8;
 // Credit is decoder feedback, not proof that the network drained its writes.
 const displaySocketBufferedBytes = 8 * 1_024 * 1_024;
 const displayReplayBudgetMs = 500;
+/**
+ * A Mac window makes keys only on demand, so its cache can hold a long chain.
+ * Before a viewer's link is measured, replay only what a slow link takes quickly;
+ * a phone's own refresh threshold already bounds its chain.
+ */
+const macUnmeasuredReplayBytes = 512 * 1_024;
+const displayKeyframeRetryMs = 1_500;
+/** The original Mac budget, kept while a viewer that cannot report its link watches. */
+const macUnmeasuredViewerBitrate = 2_500_000;
 const displayDeliveryEstimateLifetimeMs = 5_000;
 const displayCongestionRefreshMs = 2_000;
 
@@ -479,7 +492,7 @@ export class DisplayStreamHub {
       phoneOwnerControl: options.phoneOwnerControl === true,
       displayWindow: options.displayWindow === true,
       ackDelays: [],
-      bitrate: new DisplayViewerBitrate(attached.target ? 20_000_000 : 4_000_000),
+      bitrate: new DisplayViewerBitrate(attached.target ? macViewerBitrate : phoneViewerBitrate),
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -947,7 +960,9 @@ export class DisplayStreamHub {
       return;
     }
     if (message.type === "display.keyframe") {
-      if (viewer.keyframePending || this.#now() - viewer.keyframeAt < displayRefreshCoalescingMs)
+      // A request whose key never arrived may ask again; nothing periodic repairs it.
+      const since = this.#now() - viewer.keyframeAt;
+      if (since < (viewer.keyframePending ? displayKeyframeRetryMs : displayRefreshCoalescingMs))
         return;
       viewer.keyframeAt = this.#now();
       viewer.keyframePending = true;
@@ -1361,12 +1376,13 @@ export class DisplayStreamHub {
     const last = stream.cache.at(-1);
     if (!last) return false;
     const estimate = viewer.deliveryEstimate;
-    if (
-      stream.cache.length > 1 &&
-      estimate &&
-      this.#now() - estimate.measuredAt < displayDeliveryEstimateLifetimeMs &&
-      stream.cacheBytes > estimate.bytesPerMs * displayReplayBudgetMs
-    ) {
+    const fresh = estimate && this.#now() - estimate.measuredAt < displayDeliveryEstimateLifetimeMs;
+    const budget = fresh
+      ? estimate.bytesPerMs * displayReplayBudgetMs
+      : stream.target
+        ? macUnmeasuredReplayBytes
+        : Infinity;
+    if (stream.cache.length > 1 && stream.cacheBytes > budget) {
       viewer.slowSince ??= this.#now();
       return false;
     }
@@ -1575,7 +1591,13 @@ export class DisplayStreamHub {
   #updateBitrate(stream: Stream): boolean {
     if (stream.displayProfile !== 1) return false;
     const caps = [...stream.viewers].flatMap((viewer) =>
-      viewer.displayWindow && viewer.bitrate.cap !== null ? [viewer.bitrate.cap] : [],
+      viewer.displayWindow
+        ? viewer.bitrate.cap === null
+          ? []
+          : [viewer.bitrate.cap]
+        : stream.target
+          ? [macUnmeasuredViewerBitrate]
+          : [],
     );
     const cap = caps.length ? Math.min(...caps) : null;
     if (cap === stream.maxBitrate) return false;

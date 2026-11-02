@@ -1435,6 +1435,10 @@ describe("phone display Host sockets", () => {
     await delay(20);
     f.hub.sweep();
     expect(refreshes()).toHaveLength(1);
+    // Nothing periodic repairs a key that never arrived, so the viewer may ask again.
+    f.advance(1_000);
+    viewer.send({ type: "display.keyframe" });
+    await until(() => refreshes().length === 2);
     phone.socket.send(f.frame(1));
     phone.socket.send(f.frame(2, true));
     await until(() => viewer.media().length === 1);
@@ -3119,6 +3123,44 @@ describe("viewer-driven phone bitrate", () => {
       expect(f.start()).not.toHaveProperty("phoneOwnerControl");
     },
   );
+  it("keeps the original Mac budget while a viewer that cannot report its link watches", async () => {
+    const f = await fixture(true, { mac: true, displayProfile: true });
+    const caps = () =>
+      f.sent.filter((m) => m.type === "host.integrations.display.demand").map((m) => m.maxBitrate);
+    const reporting = await f.viewer(false, false, true);
+    const legacy = await f.viewer();
+    await until(() => caps().at(-1) === 2_500_000);
+    legacy.socket.close();
+    // Lifting the cap is an increase, which waits out the update interval.
+    f.advance(2_000);
+    const mac = await f.phone();
+    await f.state();
+    mac.socket.send(f.frame(1, true));
+    await reporting.received(() => reporting.media().length === 1);
+    reporting.send({ type: "display.ack", sequence: 1 });
+    await until(() => caps().at(-1) === null);
+  });
+  it("replays a Mac join from an unmeasured link only when the chain is short", async () => {
+    const f = await fixture(true, { mac: true, displayProfile: true });
+    await f.viewer(false, false, true);
+    const mac = await f.phone();
+    await f.state();
+    const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
+    const chunk = new Uint8Array(200_000);
+    mac.socket.send(f.frame(1, true, 1, chunk));
+    mac.socket.send(f.frame(2, false, 1, chunk));
+    await mac.received(() => mac.json().length === 2);
+    const short = await f.viewer(false, false, true);
+    await until(() => short.media().length === 2);
+    expect(refreshes()).toHaveLength(0);
+    // Keys come only on demand, so a long chain would take seconds on a slow link.
+    mac.socket.send(f.frame(3, false, 1, chunk));
+    await mac.received(() => mac.json().length === 3);
+    const long = await f.viewer(false, false, true);
+    await until(() => refreshes().length === 1);
+    await delay(20);
+    expect(long.media()).toHaveLength(0);
+  });
   it.each([650, 1_200])(
     "does not cap a %i ms receiver pause through credit age, sweep or the late ACK burst",
     async (pause) => {
