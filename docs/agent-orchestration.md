@@ -266,9 +266,11 @@ reconnect; unconfirmed steers are not. See
 
 Role controls instructions and presentation, never access. Membership,
 capability profile, execution placement and tool admission remain independent.
-Main and Workspace Runs can use person_message to address their requester in the
-same Thread without ending work. Delegated Runs communicate through their assigner
-and cannot use person_message or person_show; reports remain passive agent context.
+person_message addresses the Run's requester in the same Thread without ending
+work. Only a Run answering the person directly may use it or person_show: the
+Host refuses both for delegated Threads and for any Run on an Assignment, even
+on a Thread the person started, because a task answers its assigner. Reports
+remain passive agent context.
 Addressed messages are excluded from reply selection. A completed Run's last
 substantive reply is the single result used by
 conversations, channels and Assignments. Stopped/failed Runs have no completed

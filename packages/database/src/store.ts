@@ -1345,16 +1345,18 @@ export class OpensteerStore {
     return threadStore.ownerThreadPageForOwner(this.#database, input);
   }
 
-  async currentRunAssigner(runId: RunId): Promise<ThreadId | null> {
+  /** The task a Run works on, if any: who assigned it and whether it is still open. */
+  async runAssignment(
+    runId: RunId,
+  ): Promise<{ readonly assignerThreadId: ThreadId; readonly open: boolean } | null> {
     const row = await this.#database
       .selectFrom("runs")
       .innerJoin("delegations", "delegations.id", "runs.assignmentId")
-      .select("delegations.parentThreadId")
+      .select(["delegations.parentThreadId", "delegations.status"])
       .where("runs.id", "=", runId)
       .whereRef("delegations.childThreadId", "=", "runs.threadId")
-      .where("delegations.status", "=", "open")
       .executeTakeFirst();
-    return row?.parentThreadId ?? null;
+    return row ? { assignerThreadId: row.parentThreadId, open: row.status === "open" } : null;
   }
 
   async getAssignment(id: AssignmentId): Promise<AssignmentView | null> {

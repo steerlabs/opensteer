@@ -1555,7 +1555,7 @@ function makeService(options: {
     >
   >;
   capabilityProfileId?: Thread["capabilityProfileId"];
-  currentRunAssigner?: Thread["id"];
+  runAssignment?: { readonly assignerThreadId: Thread["id"]; readonly open: boolean };
   runnerCapabilities?: readonly string[];
   commands: {
     publishPersonMessage?: ReturnType<typeof vi.fn>;
@@ -1722,7 +1722,7 @@ function makeService(options: {
       window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
     }),
     admitAgentControlRequest,
-    currentRunAssigner: vi.fn(async () => options.currentRunAssigner ?? null),
+    runAssignment: vi.fn(async () => options.runAssignment ?? null),
     agentThreadLineage: vi.fn(async (threadId: Thread["id"]) => lineageIds(threadId)),
     agentThreadPageForOwner,
     runnerCapabilities: async () => options.runnerCapabilities ?? [],
@@ -2254,21 +2254,24 @@ it("omits client-only addressing from agent thread history", async () => {
   expect(response.messages[0]).not.toHaveProperty("addressedToUserId");
 });
 
-it.each(["person.message", "person.show"] as const)(
-  "refuses delegated %s before side effects",
-  async (type) => {
+it.each([
+  ["person.message", "delegated", null],
+  ["person.show", "delegated", null],
+  // A Thread the person started, reused as a task, answers its assigner.
+  ["person.message", "workspace", { assignerThreadId: targetThreadId, open: true }],
+  ["person.show", "main", { assignerThreadId: targetThreadId, open: true }],
+] as const)(
+  "refuses %s from a %s Run with assignment %o before side effects",
+  async (type, capabilityProfileId, runAssignment) => {
     const publishPersonMessage = vi.fn();
     const personShow = vi.fn(async () => 1);
     const fixture = makeService({
-      capabilityProfileId: "delegated",
+      capabilityProfileId,
       personShow,
+      ...(runAssignment ? { runAssignment } : {}),
       commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
-      threads: [
-        thread(currentThreadId, nativeHarnessId, "Worker", null, {
-          capabilityProfileId: "delegated",
-        }),
-      ],
+      threads: [thread(currentThreadId, nativeHarnessId, "Worker", null, { capabilityProfileId })],
     });
     await expect(
       fixture.service.handle("run-token", {
@@ -2301,7 +2304,7 @@ it.each(["report", "queue", "steer"] as const)(
     }));
     const fixture = makeService({
       capabilityProfileId: "delegated",
-      currentRunAssigner: assigner.id,
+      runAssignment: { assignerThreadId: assigner.id, open: true },
       commands: { delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
       threads: [parent, child, assigner],

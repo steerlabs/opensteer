@@ -252,6 +252,13 @@ export class AgentControlService {
     }
 
     assertToolAllowed(claims.capabilityProfileId, request);
+    // A task answers whoever assigned it, as its final reply does, even on a
+    // Thread the person started.
+    if (
+      (request.type === "person.message" || request.type === "person.show") &&
+      (await this.#store.runAssignment(claims.runId))
+    )
+      throw forbidden("A task reaches the person through the Thread that assigned it");
 
     if (request.type === "person.show") {
       if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
@@ -1020,11 +1027,10 @@ export class AgentControlService {
     if (!thread) throw forbidden("Thread is unavailable to this user");
     // Any Thread may leave its person's Home a report. Work there needs the
     // same reach as addressing Home by id.
-    if (
-      (!home || request.delivery !== "report") &&
-      (await this.#store.currentRunAssigner(claims.runId)) !== destination
-    ) {
-      this.#assertThreadScope(currentThread, thread);
+    if (!home || request.delivery !== "report") {
+      const assignment = await this.#store.runAssignment(claims.runId);
+      if (!assignment?.open || assignment.assignerThreadId !== destination)
+        this.#assertThreadScope(currentThread, thread);
     }
     const delivered = await this.#commands.enqueueAdmittedThreadInput({
       admission: { kind: "agent", request: this.#admissionRequest(claims, request) },

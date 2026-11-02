@@ -946,7 +946,10 @@ integration("notification decision boundary", () => {
       });
       await decideCommitted(fixture);
       expect(await observedViews()).toEqual([]);
-      expect(await store.currentRunAssigner(bound.run.id)).toBe(fixture.threadId);
+      expect(await store.runAssignment(bound.run.id)).toEqual({
+        assignerThreadId: fixture.threadId,
+        open: true,
+      });
 
       // The task's reply returns to Chat's agent, and its failure is that
       // agent's to report: neither is the person's news yet.
@@ -981,7 +984,10 @@ integration("notification decision boundary", () => {
         requestedBy: fixture.ownerId,
         idempotencyKey: "close-worker-assignment",
       });
-      expect(await store.currentRunAssigner(bound.run.id)).toBeNull();
+      expect(await store.runAssignment(bound.run.id)).toEqual({
+        assignerThreadId: fixture.threadId,
+        open: false,
+      });
       const unbound = await store.enqueueThreadInput({
         content: text("A new question for you"),
         idempotencyKey: "person-closed-assignment",

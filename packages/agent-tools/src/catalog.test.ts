@@ -344,7 +344,7 @@ it("validates person messages and limits them to Run profiles", () => {
   ]) {
     expect(definition.inputSchema.parse({ message })).toEqual({ message: message.trim() });
   }
-  for (const message of ["", " ", "a".repeat(2001), "\ud800"]) {
+  for (const message of ["", " ", "a".repeat(2001), "\ud800", "a\u0000b"]) {
     expect(definition.inputSchema.safeParse({ message }).success).toBe(false);
   }
   expect(definition.inputSchema.safeParse({ message: "Ready", userId: "other" }).success).toBe(

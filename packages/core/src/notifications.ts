@@ -15,7 +15,8 @@ export const PersonMessageSchema = z
   .trim()
   .min(1)
   .max(2_000)
-  .refine((s) => s.isWellFormed(), "Message must be valid Unicode");
+  .refine((s) => s.isWellFormed(), "Message must be valid Unicode")
+  .refine((s) => !s.includes("\u0000"), "Message must not contain NUL");
 
 /**
  * What a person is told about: Opensteer replied to them, Opensteer needs their
