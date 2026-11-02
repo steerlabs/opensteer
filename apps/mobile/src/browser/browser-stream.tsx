@@ -428,6 +428,7 @@ export function BrowserStream({
   const cursorSequence = useRef(0);
   const cursorPointSequence = useRef(0);
   const hoverPoint = useRef<ReturnType<typeof mobileBrowserPoint>>(null);
+  const touchContacts = useRef(0);
   const cursorExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cursorFrame = useRef<number | null>(null);
   const resetCursor = useCallback(() => {
@@ -474,11 +475,18 @@ export function BrowserStream({
       onDragEnd: () => input.current.onDragEnd?.(),
     });
   }, [hostClient, session.id, resetCursor]);
+  const trackContacts = useCallback(
+    (count: number) => {
+      touchContacts.current = count;
+      touchGesture.contacts(count);
+    },
+    [touchGesture],
+  );
   const geometry = usePaneGeometry();
   const drawnGeometry = displayed ? browserPictureFence(displayed.source) : null;
   useLayoutEffect(() => {
     touchGesture.cancel();
-    if (!active || !inputEnabled || feedState !== "synchronized") touchGesture.contacts(0);
+    if (!active || !inputEnabled || feedState !== "synchronized") trackContacts(0);
   }, [
     geometry,
     drawnGeometry,
@@ -492,6 +500,7 @@ export function BrowserStream({
     session.id,
     tabId,
     touchGesture,
+    trackContacts,
   ]);
   const cursorDocument = documentId;
   useEffect(() => {
@@ -569,12 +578,12 @@ export function BrowserStream({
     return PanResponder.create({
       onStartShouldSetPanResponder: usable,
       onMoveShouldSetPanResponder: usable,
-      onPanResponderStart: (event) => touchGesture.contacts(event.nativeEvent.touches?.length ?? 1),
-      onPanResponderEnd: (event) => touchGesture.contacts(event.nativeEvent.touches?.length ?? 0),
+      onPanResponderStart: (event) => trackContacts(event.nativeEvent.touches?.length ?? 1),
+      onPanResponderEnd: (event) => trackContacts(event.nativeEvent.touches?.length ?? 0),
       onPanResponderGrant: (event) => {
         if (frames.cursor) resetCursor();
         const count = event.nativeEvent.touches?.length ?? 1;
-        touchGesture.contacts(count);
+        trackContacts(count);
         if (count > 1) return;
         touchGesture.cancel();
         const current = input.current;
@@ -603,7 +612,7 @@ export function BrowserStream({
         });
       },
       onPanResponderMove: (event, state) => {
-        touchGesture.contacts(event.nativeEvent.touches?.length ?? 1);
+        trackContacts(event.nativeEvent.touches?.length ?? 1);
         if ((event.nativeEvent.touches?.length ?? 1) > 1) return;
         const source = input.current.displayed?.source ?? null;
         const x = touchOrigin.current.x + state.dx;
@@ -620,14 +629,14 @@ export function BrowserStream({
       },
       onPanResponderRelease: () => {
         touchGesture.release();
-        touchGesture.contacts(0);
+        trackContacts(0);
       },
       onPanResponderTerminate: (event) => {
         touchGesture.cancel();
-        touchGesture.contacts(event.nativeEvent.touches?.length ?? 0);
+        trackContacts(event.nativeEvent.touches?.length ?? 0);
       },
     });
-  }, [touchGesture, frames.cursor, resetCursor]);
+  }, [touchGesture, trackContacts, frames.cursor, resetCursor]);
   const shownWidth =
     displayed?.source.header.capture?.width ?? displayed?.source.header.viewportWidth ?? null;
   const shownHeight =
@@ -644,11 +653,11 @@ export function BrowserStream({
   return (
     <View
       accessibilityLabel={label}
-      onTouchStart={(event) => touchGesture.contacts(event.nativeEvent.touches.length)}
-      onTouchEnd={(event) => touchGesture.contacts(event.nativeEvent.touches.length)}
+      onTouchStart={(event) => trackContacts(event.nativeEvent.touches.length)}
+      onTouchEnd={(event) => trackContacts(event.nativeEvent.touches.length)}
       onTouchCancel={(event) => {
         touchGesture.cancel();
-        touchGesture.contacts(event.nativeEvent.touches.length);
+        trackContacts(event.nativeEvent.touches.length);
       }}
       accessibilityHint={
         interactive
@@ -741,6 +750,7 @@ export function BrowserStream({
               Platform.OS !== "ios" ||
               pointer.pointerType === "touch" ||
               pointer.buttons !== 0 ||
+              touchContacts.current > 0 ||
               !input.current.active ||
               !input.current.inputEnabled ||
               input.current.feedState !== "synchronized"
@@ -772,7 +782,24 @@ export function BrowserStream({
                 });
             });
           }}
-          onPointerLeave={resetCursor}
+          onPointerLeave={(event) => {
+            const point = hoverPoint.current;
+            resetCursor();
+            if (
+              point &&
+              event.nativeEvent.buttons === 0 &&
+              touchContacts.current === 0 &&
+              input.current.active &&
+              input.current.inputEnabled &&
+              input.current.feedState === "synchronized"
+            )
+              submitBrowserCommand(hostClient, session.id, {
+                ...point,
+                type: "input.pointer",
+                action: "leave",
+                button: "none",
+              });
+          }}
           onPointerCancel={() => {
             resetCursor();
             touchGesture.cancel();

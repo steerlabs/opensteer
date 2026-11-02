@@ -25,7 +25,8 @@ const native = vi.hoisted(() => ({
     move?: (event: {
       nativeEvent: { pointerType: string; buttons: number; offsetX: number; offsetY: number };
     }) => void;
-    leave?: (() => void) | undefined;
+    leave?:
+      ((event: { nativeEvent: { pointerType: string; buttons: number } }) => void) | undefined;
     cursor?: string | undefined;
   },
   /** The stage's frame, as its view lays out: a fold or resize changes it under a finger. */
@@ -111,7 +112,7 @@ vi.mock("react-native", () => ({
     testID?: string;
     children?: ReactNode;
     onPointerMove?: NonNullable<typeof native.pointer>["move"];
-    onPointerLeave?: () => void;
+    onPointerLeave?: NonNullable<typeof native.pointer>["leave"];
     style?: { cursor?: string }[];
     onLayout?: (event: {
       nativeEvent: { layout: { width: number; height: number; x: number; y: number } };
@@ -886,7 +887,12 @@ it("applies iOS link hover only for the current pointer and resets on leave and 
     };
     act(() => cursor.receive(sessionId, hint));
     expect(native.pointer!.cursor).toBe("pointer");
-    act(() => native.pointer!.leave!());
+    act(() => native.pointer!.leave!({ nativeEvent: { pointerType: "mouse", buttons: 0 } }));
+    expect(
+      send.mock.calls
+        .map(([, command]) => command)
+        .filter((command) => command.type === "input.pointer"),
+    ).toEqual([command, { ...command, action: "leave", cursorSequence: undefined }]);
     expect(native.pointer!.cursor).toBe("auto");
     act(() => cursor.receive(sessionId, hint));
     expect(native.pointer!.cursor).toBe("auto");
@@ -895,6 +901,48 @@ it("applies iOS link hover only for the current pointer and resets on leave and 
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("leaves iPad hover once, discards queued moves, and preserves held buttons and touches", async () => {
+  vi.useFakeTimers();
+  const { emit, decode, render, send } = setup(true, new BrowserCursorStore());
+  render("synchronized");
+  emit();
+  await decode();
+  const move = () =>
+    native.pointer!.move!({
+      nativeEvent: { pointerType: "mouse", buttons: 0, offsetX: 100, offsetY: 250 },
+    });
+  const leave = (buttons = 0) =>
+    native.pointer!.leave!({ nativeEvent: { pointerType: "mouse", buttons } });
+  const pointers = () =>
+    send.mock.calls
+      .map(([, command]) => command)
+      .filter((command) => command.type === "input.pointer");
+  send.mockClear();
+  act(() => {
+    move();
+    leave();
+    leave();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20);
+  });
+  expect(pointers()).toEqual([
+    expect.objectContaining({ action: "leave", button: "none", surfaceId, geometryRevision: 7 }),
+  ]);
+  send.mockClear();
+  act(() => {
+    move();
+    leave(1);
+  });
+  expect(pointers()).toEqual([]);
+  act(() => {
+    move();
+    native.gestures?.onPanResponderStart?.(touch(200, 300).event, touch(200, 300).gesture);
+    leave();
+  });
+  expect(pointers()).toEqual([]);
 });
 
 describe("mobile finger gestures", () => {

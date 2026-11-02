@@ -772,11 +772,26 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const producer = inputProducer(message);
-    await this.cancelProducer({ type: "input.cancel", producerId: producer }, true);
-    if (
+    const cleanups = this.cancelProducerOperations({ type: "input.cancel", producerId: producer });
+    await Promise.all(cleanups.map(({ surfaceId, done }) => this.untilDialog(surfaceId, done)));
+    const holdsInput = () =>
       [...this.gestures.values()].some((gesture) => gesture.owner === producer && !gesture.ended) ||
-      [...this.keyOwners.values()].includes(producer)
-    ) {
+      [...this.keyOwners.values()].includes(producer);
+    if (holdsInput()) {
+      // Keep the originating Input handler alive until cleanup finishes, then
+      // finish the requested detach without replying to the same request twice.
+      void Promise.all(cleanups.map(({ done }) => done))
+        .then(async () => {
+          if (!holdsInput())
+            await this.cdpRouter.send(this.claims.sessionId, {
+              method: message.command.method,
+              parameters: message.command.parameters ?? {},
+              ...(message.command.sessionId === undefined
+                ? {}
+                : { sessionId: message.command.sessionId }),
+            });
+        })
+        .catch(() => undefined);
       await this.send({
         type: "cdp.error",
         requestId: message.requestId,
@@ -924,31 +939,29 @@ export class BrowserController {
 
   private async cancelProducer(
     message: Extract<BrowserClientMessage, { type: "input.cancel" }>,
-    detaching = false,
   ): Promise<void> {
+    await Promise.all(this.cancelProducerOperations(message).map(({ done }) => done));
+  }
+
+  private cancelProducerOperations(
+    message: Extract<BrowserClientMessage, { type: "input.cancel" }>,
+  ): { surfaceId: BrowserSurfaceId; done: Promise<void> }[] {
     const producer = inputProducer(message);
     this.clipboardParts.cancel(message.producerId);
     this.canceledGenerations.set(producer, message.inputGeneration ?? 0);
     if (this.canceledGenerations.size > 256)
       this.canceledGenerations.delete(this.canceledGenerations.keys().next().value!);
-    await Promise.all(
-      [...this.lanes].map(async ([surfaceId, lane]) => {
-        if (message.surfaceId && message.surfaceId !== surfaceId) return;
-        const concerned =
-          lane.contains(
-            (entry) => inputProducer(entry) === producer && entry.type !== "viewport.follow",
-          ) ||
-          this.liveGesture(surfaceId)?.owner === producer ||
-          this.keyOwners.get(surfaceId) === producer;
-        lane.cancel((entry) => inputProducer(entry) === producer);
-        if (concerned) {
-          const cleanup = lane.enqueue(message, true);
-          // A dialog must not hang detach; its channel stays attached if cleanup
-          // is still held, so cancellation can finish on the original handler.
-          await (detaching ? this.untilDialog(surfaceId, cleanup) : cleanup);
-        }
-      }),
-    );
+    return [...this.lanes].flatMap(([surfaceId, lane]) => {
+      if (message.surfaceId && message.surfaceId !== surfaceId) return [];
+      const concerned =
+        lane.contains(
+          (entry) => inputProducer(entry) === producer && entry.type !== "viewport.follow",
+        ) ||
+        this.liveGesture(surfaceId)?.owner === producer ||
+        this.keyOwners.get(surfaceId) === producer;
+      lane.cancel((entry) => inputProducer(entry) === producer);
+      return concerned ? [{ surfaceId, done: lane.enqueue(message, true) }] : [];
+    });
   }
 
   private enqueueFailure(error: BrowserRuntimeError): Promise<void> {

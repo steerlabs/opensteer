@@ -1906,7 +1906,7 @@ describe("BrowserController", () => {
     },
   );
 
-  it("refuses detach without hanging or reporting success when a dialog blocks pointer cleanup", async () => {
+  it("reports blocked detach promptly and finishes it after dialog-held pointer cleanup", async () => {
     const controller = createController();
     await controller.start();
     const attachId = crypto.randomUUID();
@@ -1960,9 +1960,18 @@ describe("BrowserController", () => {
       expect(cdpRouter.attachedTargetId(validClaims().sessionId, sessionId)).toBe(
         await page.targetId(),
       );
+      page.cdpSession.emit("Page.javascriptDialogClosed", { result: false });
       press.release();
       await pending;
-      await controller.handle({ type: "input.cancel" });
+      await vi.waitFor(() =>
+        expect(
+          cdpRouter.attachedTargetId(validClaims().sessionId, sessionId),
+          "Dialog-held input cleanup never completed the requested detach.",
+        ).toBeNull(),
+      );
+      expect(
+        sink.messages.filter((message) => "requestId" in message && message.requestId === detachId),
+      ).toEqual([expect.objectContaining({ type: "cdp.error" })]);
     } finally {
       press.release();
       await pending;
