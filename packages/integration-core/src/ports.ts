@@ -96,7 +96,9 @@ export interface IntegrationAuthAttemptRecord {
 
 export interface IntegrationAuthAttemptStore {
   claimHostedAuthAttempt?(input: {
-    readonly id: IntegrationOAuthAttemptId;
+    readonly id: IntegrationAuthAttemptId;
+    readonly flow?: IntegrationAuthAttemptFlow;
+    readonly stateHash?: string;
     readonly now: Date;
     readonly ownerUserId: UserId;
   }): Promise<ClaimedIntegrationAuthAttempt | null>;
@@ -156,8 +158,18 @@ export interface IntegrationConnectionSecretRecord {
   readonly providerApplication: IntegrationProviderApplicationRecord | null;
 }
 
+export interface IntegrationOAuthAccountBindingValue {
+  readonly issuer: string;
+  readonly subject: string;
+  readonly linkGeneration: string;
+}
+export interface IntegrationOAuthAccountBinding extends IntegrationOAuthAccountBindingValue {
+  readonly kind: "personal" | "server";
+}
+
 export interface IntegrationRepository {
   completeOAuthAttempt(input: {
+    readonly accountBinding?: IntegrationOAuthAccountBinding;
     readonly attemptId: IntegrationOAuthAttemptId;
     readonly connection: Omit<IntegrationConnectionSummary, "createdAt" | "updatedAt">;
     readonly credential: SealedIntegrationSecret;

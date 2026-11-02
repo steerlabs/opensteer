@@ -1,3 +1,5 @@
+import { requireIntegrationAccountBinding } from "./integration-account-binding.js";
+import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -2681,6 +2683,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   }
 
   async completeMcpOAuthAttempt(input: {
+    readonly accountBinding?: IntegrationOAuthAccountBinding;
     readonly attemptId: McpOAuthAttemptId;
     readonly connectionId: IntegrationConnectionId;
     readonly displayName: string;
@@ -2692,6 +2695,12 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<void> {
     await withDatabaseTransaction(this.database, async (transaction) => {
+      if (input.accountBinding)
+        await requireIntegrationAccountBinding(
+          transaction,
+          input.ownerUserId,
+          input.accountBinding,
+        );
       await transaction
         .selectFrom("integrationServers")
         .select("id")

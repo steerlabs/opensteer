@@ -308,6 +308,31 @@ integration("MCP OAuth reconnect", () => {
           createdAt: now,
         })
         .executeTakeFirstOrThrow();
+      await expect(
+        store.completeMcpOAuthAttempt({
+          attemptId: started.attemptId,
+          connectionId,
+          displayName: "Existing",
+          encryptedState: Buffer.from("must-not-commit"),
+          encryptionKeyVersion: 1,
+          ownerUserId: host.ownerId,
+          serverId,
+          tools: [],
+          accountBinding: {
+            kind: "personal",
+            issuer: "https://accounts.example.test",
+            subject: `acct_${crypto.randomUUID()}`,
+            linkGeneration: "g".repeat(43),
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "account-link-mismatch" });
+      expect(
+        await host.store.database
+          .selectFrom("mcpOAuthCredentials")
+          .select("revision")
+          .where("connectionId", "=", connectionId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ revision: 1 });
       const result = await oauth.handleAuthorizationCallback({
         attemptId: started.attemptId,
         browserBinding: "b".repeat(43),

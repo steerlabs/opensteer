@@ -2,8 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { isErasedIntegrationAuthAttemptPayload } from "@opensteer/database";
 import {
   integrationProviderIdentityAlreadyConnectedFailureCode,
-  IntegrationOAuthAttemptIdSchema,
-  type IntegrationOAuthAttemptId,
+  IntegrationAuthorizationAttemptIdSchema,
   type IntegrationConnectionId,
 } from "@opensteer/integration-core";
 import {
@@ -61,10 +60,12 @@ export interface IntegrationAuthAttemptLifecycle {
     readonly ownerUserId: UserId;
   }): Promise<boolean>;
   claimHosted?(input: {
-    readonly id: IntegrationOAuthAttemptId;
+    readonly id: IntegrationAuthAttemptId;
+    readonly flow?: IntegrationAuthAttemptFlow;
+    readonly state?: string;
     readonly ownerUserId: UserId;
   }): Promise<{
-    readonly id: IntegrationOAuthAttemptId;
+    readonly id: IntegrationAuthAttemptId;
     readonly ownerUserId: UserId;
     readonly payload: Readonly<Record<string, string>>;
     readonly surface: IntegrationAuthAttemptSurface;
@@ -167,24 +168,32 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
   }
 
   async claimHosted(input: {
-    readonly id: IntegrationOAuthAttemptId;
+    readonly id: IntegrationAuthAttemptId;
+    readonly flow?: IntegrationAuthAttemptFlow;
+    readonly state?: string;
     readonly ownerUserId: UserId;
   }) {
     if (!this.#store.claimHostedAuthAttempt) {
       throw new Error("Hosted OAuth attempt claiming is unavailable");
     }
-    const attempt = await this.#store.claimHostedAuthAttempt({ ...input, now: this.#now() });
+    const attempt = await this.#store.claimHostedAuthAttempt({
+      id: input.id,
+      ownerUserId: input.ownerUserId,
+      ...(input.flow ? { flow: input.flow } : {}),
+      ...(input.state ? { stateHash: digestAttemptSecret(input.state) } : {}),
+      now: this.#now(),
+    });
     if (!attempt || isErasedIntegrationAuthAttemptPayload(attempt.encryptedPayload)) return null;
     const opened = await this.#vault.open(
       attempt.encryptedPayload,
       attemptSecretContext({
-        flow: "provider-oauth",
+        flow: input.flow ?? "provider-oauth",
         id: attempt.id,
         ownerUserId: attempt.ownerUserId,
       }),
     );
     return {
-      id: IntegrationOAuthAttemptIdSchema.parse(attempt.id),
+      id: IntegrationAuthorizationAttemptIdSchema.parse(attempt.id),
       ownerUserId: attempt.ownerUserId,
       payload: parsePayload(opened),
       surface: attempt.surface,
@@ -259,7 +268,7 @@ export class DefaultIntegrationAuthAttemptLifecycle implements IntegrationAuthAt
     const opened = await this.#vault.open(
       attempt.encryptedPayload,
       attemptSecretContext({
-        flow: "provider-oauth",
+        flow: attempt.id.startsWith("imo_") ? "mcp-oauth" : "provider-oauth",
         id: attempt.id,
         ownerUserId: attempt.ownerUserId,
       }),

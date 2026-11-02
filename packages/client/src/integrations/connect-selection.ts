@@ -7,10 +7,7 @@ import type {
   IntegrationProviderApplication,
   IntegrationProviderManifest,
 } from "@opensteer/integration-core";
-import {
-  oauthSourceFinishesOnHostComputer,
-  sameIntegrationOAuthApplicationSource,
-} from "@opensteer/integration-core";
+import { sameIntegrationOAuthApplicationSource } from "@opensteer/integration-core";
 
 /**
  * What one Connect flow decides before it touches the Host, shared by the web
@@ -80,17 +77,14 @@ export function canShareApps(dashboard: IntegrationDashboard): boolean {
 }
 
 /**
- * The apps a sign-in can use from this device. A remote session cannot finish
- * one whose provider returns to the Host computer's loopback address.
+ * The Host supplies eligible registrations and their exact callback authority.
+ * Device location does not narrow the person's choice.
  */
 export function connectSignInOptions(
   dashboard: IntegrationDashboard,
   provider: IntegrationProvider,
 ): readonly ConnectSignInOption[] {
-  const remote = dashboard.authorizationSurface === "personal-remote";
-  const sources = (dashboard.providerAuthorizations[provider]?.availableSources ?? []).filter(
-    (source) => !remote || !oauthSourceFinishesOnHostComputer(source),
-  );
+  const sources = dashboard.providerAuthorizations[provider]?.availableSources ?? [];
   return sources.map((source) => {
     if (source.kind === "hosted-oauth") {
       return {
@@ -135,10 +129,8 @@ export function initialConnectSource(
  * nothing is *selected* — the person can still connect by choosing one. So an
  * eligible app outranks the code.
  *
- * A remote session's Host reports CANONICAL_SURFACE_REQUIRED when its selected
- * app returns to the Host computer; one that says it begins remote sign-ins
- * through the Account service then has another app offered by choice. An older
- * Host reports it for every remote sign-in, and that refusal stands.
+ * A Host's explicit refusal remains authoritative, including on releases that
+ * cannot relay consent. Account-linked Hosts supply the same choices everywhere.
  */
 export function connectAvailability(
   dashboard: IntegrationDashboard,
@@ -148,9 +140,7 @@ export function connectAvailability(
   const authorization = dashboard.providerAuthorizations[provider] ?? null;
   const options = connectSignInOptions(dashboard, provider);
   if (authorization?.code === "CANONICAL_SURFACE_REQUIRED") {
-    return dashboard.remoteAccountSignIn === true && options.length > 0
-      ? { kind: "ready" }
-      : { detail: authorization.detail, kind: "other-surface" };
+    return { detail: authorization.detail, kind: "other-surface" };
   }
   if (options.length > 0) return { kind: "ready" };
   if (!authorization) {

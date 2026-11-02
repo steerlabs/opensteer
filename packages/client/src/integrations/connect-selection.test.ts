@@ -121,7 +121,7 @@ describe("connectAvailability", () => {
     );
   });
 
-  it("offers a remote session only the apps whose sign-in it can finish", () => {
+  it("uses the Host source list without inferring authority from device location", () => {
     // The Host selected a loopback app, which only the Host computer's browser
     // can return to; Opensteer's app is offered by choice, never preselected.
     const remote = dashboard({
@@ -131,9 +131,12 @@ describe("connectAvailability", () => {
       sources: [loopbackSource, hosted],
     });
 
-    expect(connectSignInOptions(remote, "slack").map(({ source }) => source)).toEqual([hosted]);
-    expect(initialConnectSource(remote, "slack")).toBeNull();
-    expect(connectAvailability(remote, "slack")).toEqual({ kind: "ready" });
+    expect(connectSignInOptions(remote, "slack").map(({ source }) => source)).toEqual([
+      loopbackSource,
+      hosted,
+    ]);
+    expect(initialConnectSource(remote, "slack")).toEqual(loopbackSource);
+    expect(connectAvailability(remote, "slack").kind).toBe("other-surface");
     expect(
       connectAvailability(
         dashboard({

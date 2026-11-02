@@ -1,3 +1,5 @@
+import { requireIntegrationAccountBinding } from "./integration-account-binding.js";
+import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { withDatabaseTransaction } from "./connection.js";
 import { jsonValue } from "./store-primitives.js";
 import {
@@ -623,6 +625,7 @@ export class IntegrationStore {
   }
 
   async completeOAuthAttempt(input: {
+    readonly accountBinding?: IntegrationOAuthAccountBinding;
     readonly attemptId: IntegrationOAuthAttemptId;
     readonly connection: Omit<IntegrationConnectionSummary, "createdAt" | "updatedAt">;
     readonly credential: StoredIntegrationSecret;
@@ -630,6 +633,12 @@ export class IntegrationStore {
     readonly ownerUserId: UserId;
   }): Promise<IntegrationConnectionSummary> {
     return withDatabaseTransaction(this.#database, async (transaction) => {
+      if (input.accountBinding)
+        await requireIntegrationAccountBinding(
+          transaction,
+          input.ownerUserId,
+          input.accountBinding,
+        );
       const attempt = await transaction
         .selectFrom("integrationAuthAttempts")
         .select(["id", "ownerUserId", "status"])
