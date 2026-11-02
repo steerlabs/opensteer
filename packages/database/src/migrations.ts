@@ -4680,6 +4680,7 @@ export function migrationProvider() {
         "0128_request_settlement_provenance": requestSettlementProvenanceMigration,
         "0129_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
         "0130_remote_administration": remoteAdministrationMigration,
+        "0131_personal_account_link_sealing": personalAccountLinkSealingMigration,
       };
     },
   };
@@ -6650,5 +6651,16 @@ export const remoteAdministrationMigration: Migration = {
       );
       create index personal_remote_administration_latest on personal_remote_administration (position desc);
     `.execute(database);
+  },
+};
+
+const personalAccountLinkSealingMigration: Migration = {
+  async up(database) {
+    await sql`create table personal_account_link_keys (
+      challenge_id text primary key,
+      public_key text not null,
+      private_key text not null,
+      expires_at timestamptz not null
+    )`.execute(database);
   },
 };

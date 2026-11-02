@@ -53,8 +53,14 @@ connections close after the revocation response is sent.
 Account linking signs in on the initiating device and uses its challenge/proof
 exchange. Browser linking uses an Account-portal confirmation with exact
 origin/source-bound messaging; native devices use their own Account credentials.
-The linked Host credential authorizes fenced Connect provision/rotation and
-teardown, so execution does not require a second Account sign-in on the desktop.
+The Host signs a per-challenge encryption key into its proof; the Account seals
+completion to that key only after verifying the pinned Host signature. The
+courier and desktop recovery journal hold ciphertext. The Host atomically opens
+it, deletes its private key and stores the linked credential before activation.
+Expired keys are erased on startup and by Host maintenance; cancellation
+and unlink erase pending keys. The linked Host credential authorizes fenced
+Connect provision/rotation and teardown, so execution does not require a second
+Account sign-in on the desktop.
 Connector credentials stay on the Host computer. Only the supervisor's private
 executor channel can obtain them; owner sessions request durable intents and
 read status.

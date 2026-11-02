@@ -1,7 +1,16 @@
+import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
+import {
+  PersonalHostAccountLinkCompletionGrantClaimsSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
+  IssuePersonalHostAccountLinkChallengeResponseSchema,
+  personalHostAccountLinkCompletionContext,
+} from "@opensteer/control-plane-protocol";
+import { signHostDiscovery } from "../identity/host-keys.js";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
 import { once } from "node:events";
+import { sql } from "kysely";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import { HostAuthenticator } from "../identity/auth.js";
@@ -53,13 +62,16 @@ const authority = {
     defaultWorkspaceBacking: "local-directory" as const,
   },
 };
-function service() {
+function service(
+  options: Partial<ConstructorParameters<typeof PersonalRemoteAccessService>[0]> = {},
+) {
   return new PersonalRemoteAccessService({
     authority,
     database,
     keys,
     grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
     identity: { announceSessionsEnded: () => {} } as never,
+    ...options,
   });
 }
 
@@ -81,6 +93,26 @@ describe("Personal remote administration intents", () => {
   });
   beforeEach(async () => {
     await database.deleteFrom("personalRemoteAdministration").execute();
+    await database.deleteFrom("authSessions").execute();
+    await database.deleteFrom("personalRemoteAccountLink").execute();
+    await database.deleteFrom("personalAccountLinkKeys").execute();
+    const now = new Date();
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: session.id,
+        userId,
+        token: crypto.randomUUID(),
+        expiresAt: new Date(session.expiresAt),
+        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "Owner device",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
   });
   afterAll(async () => {
     await database.destroy();
@@ -105,6 +137,7 @@ describe("Personal remote administration intents", () => {
     const detach = access.administration.attachExecutor(executor);
     try {
       expect(await access.administration.next(executor)).toBeNull();
+      await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
       access.administration.release(operation.id);
       expect(await access.administration.next(executor)).toMatchObject({ id: operation.id });
     } finally {
@@ -128,6 +161,65 @@ describe("Personal remote administration intents", () => {
       expect(await restarted.status(session)).toMatchObject({ operation: { state: "succeeded" } });
     } finally {
       remove();
+    }
+  });
+
+  it("refuses an intent whose session is revoked while admission waits on the access lock", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocker = database.transaction().execute(async (transaction) => {
+      await transaction
+        .selectFrom("personalRemoteAccess")
+        .select("singletonKey")
+        .where("singletonKey", "=", "personal")
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      entered();
+      await withTimeout(held, 5000, {
+        timeoutError: () => new Error("Access lock was never released"),
+      });
+    });
+    let admission: Promise<unknown> | undefined;
+    try {
+      await withTimeout(locked, 1000, {
+        timeoutError: () => new Error("Access lock was never acquired"),
+      });
+      admission = service()
+        .administration.request(session, { action: "unlink" }, "revoked-during-admission")
+        .then(
+          () => ({ accepted: true }),
+          (error: unknown) => error,
+        );
+      await vi.waitFor(
+        async () => {
+          const waiting = await sql<{
+            count: number;
+          }>`select count(*)::integer as count from pg_stat_activity
+          where datname=current_database() and application_name='remote-administration-test'
+          and wait_event_type='Lock' and query ilike '%personal_remote_access%'`.execute(database);
+          expect(waiting.rows[0]?.count, "Intent admission never waited on the access lock").toBe(
+            1,
+          );
+        },
+        { timeout: 2000 },
+      );
+      await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
+      release();
+      await blocker;
+      expect(await admission).toMatchObject({ code: "unauthorized" });
+      expect(
+        await database.selectFrom("personalRemoteAdministration").selectAll().execute(),
+      ).toEqual([]);
+    } finally {
+      release();
+      await blocker;
+      await admission;
     }
   });
 
@@ -323,6 +415,110 @@ describe("Personal remote administration intents", () => {
     }
   });
 
+  it("opens a Host-sealed completion once across restart and fences generation changes and replay after unlink", async () => {
+    const access = service();
+    const challenge = linkChallenge();
+    const proof = await access.approveAccountLink({ session }, challenge);
+    const generation = "g".repeat(43);
+    const grant = `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
+    const hostCredential = `osc_${"h".repeat(43)}`;
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const claims = PersonalHostAccountLinkCompletionGrantClaimsSchema.parse({
+      account: challenge.account,
+      aud: authority.canonicalOrigin,
+      authority,
+      challengeId: challenge.challengeId,
+      exp: issuedAt + 300,
+      iat: issuedAt,
+      iss: challenge.account.issuer,
+      jti: `phg_${crypto.randomUUID()}`,
+      linkGeneration: generation,
+      sub: challenge.account.subject,
+      tokenUse: "opensteer-personal-host-account-link",
+    });
+    const verifyLink = vi.fn(async () => claims);
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      expect(init?.headers).toMatchObject({ authorization: `Bearer ${hostCredential}` });
+      if (input.toString().endsWith("/authority"))
+        return Response.json({ deploymentId: authority.deploymentId, published: true });
+      return Response.json(
+        input.toString().endsWith("/activate")
+          ? {
+              activated: true,
+              deploymentId: authority.deploymentId,
+              linkGeneration: generation,
+            }
+          : { deploymentId: authority.deploymentId, unlinked: true },
+      );
+    });
+    const restarted = service({
+      fetch,
+      grantVerifier: { issuer: challenge.account.issuer, verifyLink } as never,
+    });
+    const metadata = CompletePersonalHostAccountLinkResponseSchema.omit({
+      sealedCompletion: true,
+    }).parse({
+      challengeId: challenge.challengeId,
+      linkGeneration: generation,
+      resultExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      schemaVersion: 2,
+    });
+    const completion = {
+      ...metadata,
+      sealedCompletion: sealOAuthBrokerPayload(
+        {
+          completionGrant: grant,
+          hostCredential,
+          linkGeneration: generation,
+          resultExpiresAt: metadata.resultExpiresAt,
+        },
+        proof.document.completionPublicKey,
+        personalHostAccountLinkCompletionContext(
+          authority,
+          metadata.challengeId,
+          metadata.linkGeneration,
+        ),
+      ),
+    };
+    expect(JSON.stringify(completion)).not.toContain(hostCredential);
+    expect(JSON.stringify(completion)).not.toContain(grant);
+    await expect(
+      restarted.consumeAccountLink({ session }, { ...completion, linkGeneration: "x".repeat(43) }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(
+      await database.selectFrom("personalAccountLinkKeys").select("challengeId").execute(),
+    ).toHaveLength(1);
+    await expect(restarted.consumeAccountLink({ session }, completion)).resolves.toMatchObject({
+      accountLink: { state: "active" },
+    });
+    expect(await database.selectFrom("personalAccountLinkKeys").selectAll().execute()).toEqual([]);
+    await restarted.consumeAccountLink({ session }, completion);
+    expect(verifyLink).toHaveBeenCalledOnce();
+    await restarted.removeAccountLink({ session });
+    await expect(restarted.consumeAccountLink({ session }, completion)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(await database.selectFrom("personalRemoteAccountLink").selectAll().execute()).toEqual(
+      [],
+    );
+  });
+
+  it.each(["cancel", "expiry"] as const)("erases the Host private key on %s", async (reason) => {
+    let now = new Date();
+    const access = service({ now: () => now });
+    const challenge = linkChallenge();
+    await access.approveAccountLink({ session }, challenge);
+    expect(await database.selectFrom("personalAccountLinkKeys").selectAll().execute()).toHaveLength(
+      1,
+    );
+    if (reason === "cancel") await access.removeAccountLink({ session });
+    else {
+      now = new Date(Date.parse(challenge.expiresAt) + 24 * 60 * 60_000 + 1);
+      await access.purgeExpiredAccountLinkKeys();
+    }
+    expect(await database.selectFrom("personalAccountLinkKeys").selectAll().execute()).toEqual([]);
+  });
+
   it("refuses non-administrators without writing an intent", async () => {
     const administration = service().administration;
     const member = { ...session, user: { ...session.user, instanceRole: "user" as const } };
@@ -334,3 +530,14 @@ describe("Personal remote administration intents", () => {
     );
   });
 });
+
+function linkChallenge() {
+  return IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
+    completionFormat: "sealed-v1",
+    account: { issuer: "https://accounts.opensteer.test", subject: `acct_${crypto.randomUUID()}` },
+    authorityEnvelope: signHostDiscovery(keys, authority),
+    challengeId: `phc_${crypto.randomUUID()}`,
+    challengeCredential: `olc_${"c".repeat(43)}`,
+    expiresAt: new Date(Date.now() + 120_000).toISOString(),
+  });
+}

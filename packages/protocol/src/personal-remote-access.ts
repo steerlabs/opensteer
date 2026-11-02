@@ -13,7 +13,7 @@ import {
   type PersonalHostAccessRouteDocument,
   type PersonalHostAccessRouteEnvelope,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
-  PersonalHostAccountLinkCompletionGrantSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
   PersonalHostAccountLinkProofEnvelopeSchema,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
@@ -200,12 +200,8 @@ export const ApprovePersonalHostAccountLinkRequestSchema =
 export const ApprovePersonalHostAccountLinkResponseSchema =
   PersonalHostAccountLinkProofEnvelopeSchema;
 
-export const ConsumePersonalHostAccountLinkRequestSchema = z.strictObject({
-  completionGrant: PersonalHostAccountLinkCompletionGrantSchema,
-  hostCredential: z.string().regex(/^osc_[A-Za-z0-9_-]{43}$/u),
-  linkGeneration: AccountLinkGenerationSchema,
-  schemaVersion: z.literal(1),
-});
+export const ConsumePersonalHostAccountLinkRequestSchema =
+  CompletePersonalHostAccountLinkResponseSchema.strict();
 
 /**
  * Machine-readable outcomes the Personal Host reports for an Account-link

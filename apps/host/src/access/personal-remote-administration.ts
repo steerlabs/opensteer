@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type AuthenticatedSession } from "@opensteer/core";
-import type { DatabaseSchema } from "@opensteer/database";
+import { requestSettlementActor, type DatabaseSchema } from "@opensteer/database";
 import {
   PersonalRemoteAdministrationIntentSchema,
   PersonalRemoteAdministrationOperationSchema,
@@ -104,6 +104,7 @@ export class PersonalRemoteAdministration {
           .where("singletonKey", "=", "personal")
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
+        await requestSettlementActor(transaction, session.user.id, session.id);
         const replay = await transaction
           .selectFrom("personalRemoteAdministration")
           .selectAll()

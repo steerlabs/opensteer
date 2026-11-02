@@ -1,4 +1,8 @@
 import {
+  generateOAuthBrokerEphemeralKeyPair,
+  openOAuthBrokerPayload,
+} from "@opensteer/integration-auth";
+import {
   PersonalRemoteAdministration,
   requirePersonalAdministrator,
 } from "./personal-remote-administration.js";
@@ -16,6 +20,8 @@ import {
   AccountLinkGenerationSchema,
   type AccountHostSessionClientSurface,
   PersonalHostAccountLinkCompletionGrantClaimsSchema,
+  PersonalHostAccountLinkCompletionPayloadSchema,
+  personalHostAccountLinkCompletionContext,
   PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccessAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
@@ -404,19 +410,37 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       .selectAll()
       .where("singletonKey", "=", "opensteer-account")
       .executeTakeFirst();
-    // One Personal Host holds one Account link, and this Host enforces that
-    // itself rather than trusting the Account to have refused. A row in any
-    // state — an activating link included — already owns the single slot, so
-    // signing a proof for a different challenge would mint authority for a
-    // second link. Re-approving the same challenge stays allowed: the crash
-    // safe courier replays exactly that transcript.
-    if (linked && linked.challengeId !== challenge.challengeId) {
+    if (linked) {
       throw new OpensteerError({
         code: "conflict",
         message: "Personal Host already holds an Opensteer Account link",
       });
     }
     const issuedAt = this.#now();
+    await this.purgeExpiredAccountLinkKeys();
+    const completionKeys = await this.#database.transaction().execute(async (transaction) => {
+      await lockRemoteAccess(transaction);
+      const existing = await transaction
+        .selectFrom("personalAccountLinkKeys")
+        .selectAll()
+        .where("challengeId", "=", challenge.challengeId)
+        .executeTakeFirst();
+      if (existing) return existing;
+      const keys = generateOAuthBrokerEphemeralKeyPair();
+      return transaction
+        .insertInto("personalAccountLinkKeys")
+        .values({
+          challengeId: challenge.challengeId,
+          ...keys,
+          // The Account retains an unactivated reservation for one day, including crash recovery.
+          expiresAt: new Date(
+            Math.min(Date.parse(challenge.expiresAt), issuedAt.getTime() + 5 * 60_000) +
+              24 * 60 * 60_000,
+          ),
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
     const expiresAt = new Date(
       Math.min(
         challenge.expiresAt ? Date.parse(challenge.expiresAt) : Number.MAX_SAFE_INTEGER,
@@ -433,7 +457,8 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
             .digest("base64url"),
           id: challenge.challengeId,
         },
-        documentVersion: 2,
+        documentVersion: 3,
+        completionPublicKey: completionKeys.publicKey,
         expiresAt: expiresAt.toISOString(),
         issuedAt: issuedAt.toISOString(),
         purpose: "opensteer-personal-host-account-link",
@@ -447,99 +472,96 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   ): Promise<PersonalRemoteAccessStatus> {
     requirePersonalAdministrator(caller.session);
     const request = ConsumePersonalHostAccountLinkRequestSchema.parse(input);
-    const stored = await this.#database.transaction().execute(async (transaction) => {
-      await lockRemoteAccess(transaction);
-      return transaction
-        .selectFrom("personalRemoteAccountLink")
-        .selectAll()
-        .where("singletonKey", "=", "opensteer-account")
-        .executeTakeFirst();
-    });
-    if (stored) {
-      assertStoredAccountLinkConsume(stored, request);
-      await this.#activateAccountLink(stored);
-      return this.status();
-    }
-
-    if (!this.#grantVerifier) {
+    const grantVerifier = this.#grantVerifier;
+    if (!grantVerifier)
       throw new OpensteerError({
         code: "not_found",
         message: "Personal Account linking is unavailable",
       });
-    }
-
-    // A rejected completion grant is the one Account-link failure Desktop can
-    // recover from on its own, by asking the Account for a fresh grant against
-    // the same challenge. It is named so Desktop never has to infer it from a
-    // failure that no refresh can fix.
-    let claims;
-    try {
-      claims = PersonalHostAccountLinkCompletionGrantClaimsSchema.parse(
-        await this.#grantVerifier.verifyLink(request.completionGrant),
-      );
-    } catch (error) {
-      throw new OpensteerError({
-        cause: error,
-        code: "forbidden",
-        message: "Account-link completion grant is invalid or expired",
-        reason: "personal-account-link-grant-expired",
-      });
-    }
-    if (!constantTimeJsonEqual(claims.authority, this.#authority)) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Account-link grant authority mismatch",
-      });
-    }
+    await this.purgeExpiredAccountLinkKeys();
     const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       const existing = await transaction
         .selectFrom("personalRemoteAccountLink")
         .selectAll()
         .where("singletonKey", "=", "opensteer-account")
-        .forNoKeyUpdate()
         .executeTakeFirst();
       if (existing) {
         assertStoredAccountLinkConsume(existing, request);
-        if (
-          existing.issuer !== claims.account.issuer ||
-          existing.subject !== claims.account.subject ||
-          existing.challengeId !== claims.challengeId ||
-          existing.grantId !== claims.jti
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Personal Host is linked to another Account",
-          });
-        }
         return existing;
       }
-      const now = this.#now();
-      if (claims.linkGeneration !== request.linkGeneration) {
+      const keys = await transaction
+        .deleteFrom("personalAccountLinkKeys")
+        .where("challengeId", "=", request.challengeId)
+        .where("expiresAt", ">", this.#now())
+        .returningAll()
+        .executeTakeFirst();
+      if (!keys)
         throw new OpensteerError({
           code: "forbidden",
-          message: "Account-link generation does not match the completion grant",
+          message:
+            "Account-link completion has expired or was already consumed. Start Account linking again.",
+        });
+      let payload;
+      try {
+        payload = PersonalHostAccountLinkCompletionPayloadSchema.parse(
+          openOAuthBrokerPayload(
+            request.sealedCompletion,
+            keys.privateKey,
+            personalHostAccountLinkCompletionContext(
+              this.#authority,
+              request.challengeId,
+              request.linkGeneration,
+            ),
+          ),
+        );
+      } catch {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Account-link sealed completion is invalid",
         });
       }
-      await transaction
+      let claims;
+      try {
+        claims = PersonalHostAccountLinkCompletionGrantClaimsSchema.parse(
+          await grantVerifier.verifyLink(payload.completionGrant),
+        );
+      } catch {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Account-link completion grant is invalid or expired",
+          reason: "personal-account-link-grant-expired",
+        });
+      }
+      if (
+        !constantTimeJsonEqual(claims.authority, this.#authority) ||
+        claims.challengeId !== request.challengeId ||
+        claims.linkGeneration !== request.linkGeneration ||
+        payload.linkGeneration !== request.linkGeneration ||
+        payload.resultExpiresAt !== request.resultExpiresAt ||
+        Date.parse(payload.resultExpiresAt) <= this.#now().getTime()
+      ) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Account-link completion binding is invalid or expired",
+        });
+      }
+      await transaction.deleteFrom("personalAccountLinkKeys").execute();
+      return transaction
         .insertInto("personalRemoteAccountLink")
         .values({
           challengeId: claims.challengeId,
           grantId: claims.jti,
-          hostCredential: request.hostCredential,
+          hostCredential: payload.hostCredential,
           issuer: claims.account.issuer,
           linkGeneration: request.linkGeneration,
-          linkedAt: now,
+          linkedAt: this.#now(),
           singletonKey: "opensteer-account",
           state: "activating",
           subject: claims.account.subject,
-          updatedAt: now,
+          updatedAt: this.#now(),
         })
-        .executeTakeFirstOrThrow();
-      return transaction
-        .selectFrom("personalRemoteAccountLink")
-        .selectAll()
-        .where("singletonKey", "=", "opensteer-account")
+        .returningAll()
         .executeTakeFirstOrThrow();
     });
     this.administration.changed();
@@ -593,6 +615,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);
+      await transaction.deleteFrom("personalAccountLinkKeys").execute();
     });
     const linked = await this.#database
       .selectFrom("personalRemoteAccountLink")
@@ -908,6 +931,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     });
   }
 
+  async purgeExpiredAccountLinkKeys(): Promise<void> {
+    await this.#database
+      .deleteFrom("personalAccountLinkKeys")
+      .where("expiresAt", "<=", this.#now())
+      .execute();
+  }
+
   /**
    * Runtime-internal: the Host re-asserts its signed identity to the Account on
    * every start, so there is no session to authorize and nothing to require
@@ -1121,11 +1151,11 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
 }
 
 function assertStoredAccountLinkConsume(
-  stored: { readonly hostCredential: string; readonly linkGeneration: string },
-  request: { readonly hostCredential: string; readonly linkGeneration: string },
+  stored: { readonly challengeId: string; readonly linkGeneration: string },
+  request: { readonly challengeId: string; readonly linkGeneration: string },
 ): void {
   if (
-    stored.hostCredential !== request.hostCredential ||
+    stored.challengeId !== request.challengeId ||
     stored.linkGeneration !== request.linkGeneration
   ) {
     throw new OpensteerError({

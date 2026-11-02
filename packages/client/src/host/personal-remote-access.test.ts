@@ -1,6 +1,15 @@
+import {
+  IssuePersonalHostAccountLinkChallengeResponseSchema,
+  PersonalHostAccountLinkProofEnvelopeSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
+} from "@opensteer/control-plane-protocol";
 import { it, expect, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { PersonalRemoteAccessClient, removeHostSession } from "./personal-remote-access.js";
+import {
+  PersonalRemoteAccessClient,
+  removeHostSession,
+  linkPersonalHostAccount,
+} from "./personal-remote-access.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
 it("shows persisted pending administration in the shared client and stops observation on disposal", async () => {
@@ -117,5 +126,73 @@ it("recovers a failed status read on Host reconnect without polling", async () =
   } finally {
     stop();
     mock.dispose();
+  }
+});
+
+it("forwards only the sealed Account completion from the signing device to the Host", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  try {
+    const status = unwrapRpcResult(await host.rpc["personal.remoteAccess.get"]({}));
+    const now = new Date();
+    const challenge = IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
+      completionFormat: "sealed-v1",
+      account: {
+        issuer: "https://accounts.opensteer.test",
+        subject: `acct_${crypto.randomUUID()}`,
+      },
+      authorityEnvelope: status.authorityEnvelope,
+      challengeId: `phc_${crypto.randomUUID()}`,
+      challengeCredential: `olc_${"c".repeat(43)}`,
+      expiresAt: new Date(now.getTime() + 120000).toISOString(),
+    });
+    const proof = PersonalHostAccountLinkProofEnvelopeSchema.parse({
+      document: {
+        account: challenge.account,
+        authority: status.authorityEnvelope.document,
+        challenge: { id: challenge.challengeId, credentialSha256: "c".repeat(43) },
+        documentVersion: 3,
+        completionPublicKey: "k".repeat(43),
+        issuedAt: now.toISOString(),
+        expiresAt: challenge.expiresAt,
+        purpose: "opensteer-personal-host-account-link",
+      },
+      publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
+      signature: "A".repeat(86),
+    });
+    const completion = CompletePersonalHostAccountLinkResponseSchema.parse({
+      challengeId: challenge.challengeId,
+      schemaVersion: 2,
+      linkGeneration: "g".repeat(43),
+      resultExpiresAt: challenge.expiresAt,
+      sealedCompletion: {
+        version: 1,
+        ciphertext: "abc",
+        ephemeralPublicKey: "k".repeat(43),
+        nonce: "n".repeat(16),
+        tag: "t".repeat(22),
+      },
+    });
+    const dispatch = vi
+      .fn<import("./client.js").HostClient["dispatch"]>()
+      .mockResolvedValueOnce({ type: "personal.accountLink.approve", proof })
+      .mockResolvedValueOnce({ type: "personal.accountLink.complete", access: status.access });
+    const account = {
+      issuePersonalHostAccountLinkChallenge: vi.fn(async () => challenge),
+      completePersonalHostAccountLink: vi.fn(async () => completion),
+    };
+    await linkPersonalHostAccount({ dispatch }, account, status.authorityEnvelope, "My computer");
+    expect(dispatch).toHaveBeenLastCalledWith({
+      type: "personal.accountLink.complete",
+      completion,
+      idempotencyKey: expect.any(String),
+    });
+    expect(JSON.stringify(dispatch.mock.calls)).not.toContain("osc_");
+    expect(JSON.stringify(dispatch.mock.calls)).not.toContain("completionGrant");
+    expect(account.completePersonalHostAccountLink).toHaveBeenCalledWith(challenge.challengeId, {
+      challengeCredential: challenge.challengeCredential,
+      proof,
+    });
+  } finally {
+    host.dispose();
   }
 });

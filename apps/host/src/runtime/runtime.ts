@@ -639,6 +639,7 @@ export async function createHostRuntime(
           keys,
         })
       : undefined;
+    await personalRemoteAccess?.purgeExpiredAccountLinkKeys();
     const tokens = new SignedTokenService(keys, {
       deploymentId: deployment.id,
       hostInstanceId: deployment.activeHostInstanceId,
@@ -2664,6 +2665,7 @@ export async function createHostRuntime(
               ]
             : []),
           workspaceDeletion.purgeDue(new Date()),
+          ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
           ...(workspaceArchive ? [workspaceArchive.sweep()] : []),
           // What a work location can run is durable state like any other, so it
           // is reconciled rather than captured once and hoped for.

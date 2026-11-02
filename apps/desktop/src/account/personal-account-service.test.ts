@@ -176,7 +176,7 @@ describe("DesktopPersonalAccountService", () => {
       operationId,
     );
     expect(fixture.link.ensureLinkedForMutation).not.toHaveBeenCalled();
-    expect(fixture.events).toEqual([]);
+    expect(fixture.events).toEqual(["host-link"]);
     await expect(fixture.links.load()).resolves.toBeNull();
   });
 
@@ -252,8 +252,8 @@ describe("DesktopPersonalAccountService", () => {
 
     expect(first).toMatchObject({ status: "fulfilled", value: { status: "unlinked" } });
     expect(second).toMatchObject({ status: "fulfilled", value: { status: "unlinked" } });
-    // The second cancel finds the link already gone and does nothing more.
-    expect(fixture.host.removeAccountLinkForUnlink).toHaveBeenCalledOnce();
+    // Each cancel also erases any pending Host completion keys.
+    expect(fixture.host.removeAccountLinkForUnlink).toHaveBeenCalledTimes(2);
     // A resume queued behind a cancel is refused rather than re-linking.
     expect(resumed).toMatchObject({
       reason: { code: "personal-account-unlink-in-progress" },
@@ -421,6 +421,7 @@ function unlinkFixture(boundary: number) {
   const challenge = IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
     account: accountIdentity,
     authorityEnvelope: runtime.discoveryEnvelope,
+    completionFormat: "sealed-v1",
     challengeCredential: `olc_${"b".repeat(43)}`,
     challengeId: `phc_${crypto.randomUUID()}`,
     expiresAt: "2026-08-20T12:05:00.000Z",
@@ -430,7 +431,8 @@ function unlinkFixture(boundary: number) {
       account: accountIdentity,
       authority: runtime.discoveryEnvelope.document,
       challenge: { credentialSha256: "c".repeat(43), id: challenge.challengeId },
-      documentVersion: 2,
+      documentVersion: 3,
+      completionPublicKey: "k".repeat(43),
       expiresAt: "2026-08-20T12:04:00.000Z",
       issuedAt: "2026-08-20T12:00:00.000Z",
       purpose: "opensteer-personal-host-account-link",
@@ -439,8 +441,15 @@ function unlinkFixture(boundary: number) {
     signature: "A".repeat(86),
   });
   const completion = CompletePersonalHostAccountLinkResponseSchema.parse({
-    completionGrant: `${"completion".repeat(4)}.${"e".repeat(32)}.${"f".repeat(32)}`,
-    hostCredential: `osc_${"d".repeat(43)}`,
+    challengeId: challenge.challengeId,
+    schemaVersion: 2,
+    sealedCompletion: {
+      version: 1,
+      ciphertext: "abc",
+      ephemeralPublicKey: "k".repeat(43),
+      nonce: "n".repeat(16),
+      tag: "t".repeat(22),
+    },
     linkGeneration: "g".repeat(43),
     resultExpiresAt: "2026-08-21T12:00:00.000Z",
   });

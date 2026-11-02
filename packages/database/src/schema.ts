@@ -2012,6 +2012,12 @@ export interface DatabaseSchema {
   notificationPreviewKeys: NotificationPreviewKeyTable;
   personalRemoteAccess: PersonalRemoteAccessTable;
   personalRemoteAccountLink: PersonalRemoteAccountLinkTable;
+  personalAccountLinkKeys: {
+    challengeId: string;
+    publicKey: string;
+    privateKey: string;
+    expiresAt: Timestamp;
+  };
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;
   personalRemoteAdministration: {
     position: Generated<string>;

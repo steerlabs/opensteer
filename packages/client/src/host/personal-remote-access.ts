@@ -67,12 +67,7 @@ export async function linkPersonalHostAccount(
   });
   await client.dispatch({
     type: "personal.accountLink.complete",
-    completion: {
-      completionGrant: completion.completionGrant,
-      hostCredential: completion.hostCredential,
-      linkGeneration: completion.linkGeneration,
-      schemaVersion: 1,
-    },
+    completion,
     idempotencyKey: mutationIdempotencyKey("account-link-complete"),
   });
 }

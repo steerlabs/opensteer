@@ -20,7 +20,7 @@ import {
 } from "@opensteer/protocol";
 import type {
   IssuePersonalHostAccountLinkChallengeResponse,
-  PersonalHostAccountLinkCompletionGrant,
+  CompletePersonalHostAccountLinkResponse,
   RevokeConnectRequest,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -607,11 +607,7 @@ export class NativePersonalRemoteHostControl {
 
   async consumeAccountLink(
     runtimeInput: PersonalHostRuntimeRecord,
-    input: {
-      readonly completionGrant: PersonalHostAccountLinkCompletionGrant;
-      readonly hostCredential: string;
-      readonly linkGeneration: string;
-    },
+    input: CompletePersonalHostAccountLinkResponse,
   ) {
     const runtime = PersonalHostRuntimeRecordSchema.parse(runtimeInput);
     const response = await this.#request(
@@ -619,10 +615,7 @@ export class NativePersonalRemoteHostControl {
       runtime.localOrigin,
       "/v1/personal-remote-access/account-link/consume",
       {
-        body: ConsumePersonalHostAccountLinkRequestSchema.parse({
-          ...input,
-          schemaVersion: 1,
-        }),
+        body: ConsumePersonalHostAccountLinkRequestSchema.parse(input),
         method: "POST",
         origin: runtime.localOrigin,
       },

@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import {
-  CompletePersonalHostAccountLinkResponseSchema,
+  PersonalHostAccountLinkCompletionPayloadSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
-  type CompletePersonalHostAccountLinkResponse,
+  type PersonalHostAccountLinkCompletionPayload,
   type PersonalHostAccountLinkChallengeId,
   type IssuePersonalHostAccountLinkChallengeResponse,
   type PersonalHostAccountLinkOperationId,
@@ -27,9 +27,9 @@ export class PersonalAccountLinkOperationCipher {
 
   seal(
     challengeId: PersonalHostAccountLinkChallengeId,
-    response: CompletePersonalHostAccountLinkResponse,
+    response: PersonalHostAccountLinkCompletionPayload,
   ): string {
-    const parsed = CompletePersonalHostAccountLinkResponseSchema.parse(response);
+    const parsed = PersonalHostAccountLinkCompletionPayloadSchema.parse(response);
     return this.#seal("plr1", resultAad(challengeId), parsed);
   }
 
@@ -59,7 +59,7 @@ export class PersonalAccountLinkOperationCipher {
   open(
     challengeId: PersonalHostAccountLinkChallengeId,
     sealed: string,
-  ): CompletePersonalHostAccountLinkResponse {
+  ): PersonalHostAccountLinkCompletionPayload {
     if (Buffer.byteLength(sealed, "utf8") > maximumSealedBytes) {
       throw new Error("Stored Personal Account-link result is too large");
     }
@@ -84,7 +84,7 @@ export class PersonalAccountLinkOperationCipher {
     if (plaintext.byteLength > maximumPlaintextBytes) {
       throw new Error("Stored Personal Account-link result is too large");
     }
-    return CompletePersonalHostAccountLinkResponseSchema.parse(
+    return PersonalHostAccountLinkCompletionPayloadSchema.parse(
       JSON.parse(plaintext.toString("utf8")),
     );
   }

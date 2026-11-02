@@ -76,6 +76,16 @@ green and include the source on first-parent main. Tim approves only publication
 of the verified draft via the `publish` environment. Matching drafts are reused;
 mismatches and already published stable versions fail closed.
 
+### Personal Account linking release order
+
+Deploy the Account service with sealed Personal link completions before shipping
+the corresponding Host and clients. Linking requires the Host-signed completion
+public key and returns only ciphertext; there is no plaintext compatibility path.
+Older Account services are refused with an update instruction. In-flight links
+from the preceding format must be restarted after updating. Links created with
+plaintext completions must be unlinked and relinked to retire credentials already
+held by the initiating device; deployment alone cannot erase those copies.
+
 ### Hosted build and keyless proof
 
 `desktop:build-release --out <outside-checkout-directory>` provisions pinned

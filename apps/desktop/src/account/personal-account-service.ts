@@ -283,11 +283,15 @@ export class DesktopPersonalAccountService {
         const operationId = state.issueOperationId ?? state.operation?.operationId;
         if (!operationId) throw new Error("Account-link journal is inconsistent.");
         await this.#account.cancelPersonalHostAccountLinkOperation(operationId);
+        await this.#host.removeAccountLinkForUnlink();
         await this.#links.clear(deploymentId);
         return this.#publish();
       }
 
-      if (!hostStatus.accountLink && !state.unlinkOperation) return this.#publish();
+      if (!hostStatus.accountLink && !state.unlinkOperation) {
+        await this.#host.removeAccountLinkForUnlink();
+        return this.#publish();
+      }
 
       const displayName = (await this.#manifest.load())?.name ?? null;
       const linkedAccount: LinkAccount | null = hostStatus.accountLink

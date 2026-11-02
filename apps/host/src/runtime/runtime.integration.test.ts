@@ -1,7 +1,11 @@
+import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import type { HostConfig } from "@opensteer/config";
 import {
   ControlPlaneAccountIdSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
+  PersonalHostAccountLinkProofEnvelopeSchema,
+  personalHostAccountLinkCompletionContext,
   DirectoryProjectionRequestSchema,
   PublishHostAuthorityRequestSchema,
   personalHostAccessRouteEnvelopeSha256,
@@ -4204,7 +4208,17 @@ integration("Host vertical slice", () => {
       .setSubject(accountId)
       .sign(accountSigningKeys.privateKey);
     const linked = await fetch(`${origin}/v1/personal-remote-access/account-link/consume`, {
-      body: JSON.stringify({ completionGrant, hostCredential, linkGeneration, schemaVersion: 1 }),
+      body: JSON.stringify(
+        await sealedLinkCompletion(
+          origin,
+          sessionHeaders,
+          accountIdentity,
+          challengeId,
+          completionGrant,
+          hostCredential,
+          linkGeneration,
+        ),
+      ),
       headers: { ...sessionHeaders, "content-type": "application/json" },
       method: "POST",
     });
@@ -4681,7 +4695,17 @@ integration("Host vertical slice", () => {
     // The grant is valid, so the Host durably owns the link — but the Account
     // refuses to activate it, and the refusal is named rather than described.
     const consumed = await fetch(`${origin}/v1/personal-remote-access/account-link/consume`, {
-      body: JSON.stringify({ completionGrant, hostCredential, linkGeneration, schemaVersion: 1 }),
+      body: JSON.stringify(
+        await sealedLinkCompletion(
+          origin,
+          sessionHeaders,
+          accountIdentity,
+          challengeId,
+          completionGrant,
+          hostCredential,
+          linkGeneration,
+        ),
+      ),
       headers: jsonHeaders,
       method: "POST",
     });
@@ -4704,6 +4728,7 @@ integration("Host vertical slice", () => {
         authorityEnvelope: HostDescriptorSchema.parse(
           await jsonFetch(`${origin}/.well-known/opensteer`),
         ).authority,
+        completionFormat: "sealed-v1",
         challengeCredential: `olc_${"a".repeat(43)}`,
         challengeId: `phc_${crypto.randomUUID()}`,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -5567,4 +5592,60 @@ function waitForClose(
   return new Promise((resolve) => {
     socket.once("close", (code, reason) => resolve({ code, reason: reason.toString("utf8") }));
   });
+}
+
+async function sealedLinkCompletion(
+  origin: string,
+  headers: Record<string, string>,
+  account: {
+    issuer: string;
+    subject: import("@opensteer/control-plane-protocol").ControlPlaneAccountId;
+  },
+  challengeId: string,
+  completionGrant: string,
+  hostCredential: string,
+  linkGeneration: string,
+) {
+  const envelope = HostDescriptorSchema.parse(
+    await jsonFetch(`${origin}/.well-known/opensteer`),
+  ).authority;
+  const response = await fetch(`${origin}/v1/personal-remote-access/account-link/proof`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({
+      account,
+      authorityEnvelope: envelope,
+      challengeId,
+      completionFormat: "sealed-v1",
+      challengeCredential: `olc_${"a".repeat(43)}`,
+      expiresAt: new Date(Date.now() + 120000).toISOString(),
+    }),
+  });
+  expect(response.status).toBe(200);
+  const proof = PersonalHostAccountLinkProofEnvelopeSchema.parse(await response.json());
+  const metadata = CompletePersonalHostAccountLinkResponseSchema.omit({
+    sealedCompletion: true,
+  }).parse({
+    challengeId,
+    linkGeneration,
+    resultExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+    schemaVersion: 2,
+  });
+  return {
+    ...metadata,
+    sealedCompletion: sealOAuthBrokerPayload(
+      {
+        completionGrant,
+        hostCredential,
+        linkGeneration,
+        resultExpiresAt: metadata.resultExpiresAt,
+      },
+      proof.document.completionPublicKey,
+      personalHostAccountLinkCompletionContext(
+        proof.document.authority,
+        metadata.challengeId,
+        metadata.linkGeneration,
+      ),
+    ),
+  };
 }

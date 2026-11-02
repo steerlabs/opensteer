@@ -156,6 +156,7 @@ describe("PersonalRemoteAccessService", () => {
           subject: `acct_${crypto.randomUUID()}`,
         },
         authorityEnvelope: signHostDiscovery(keys, pinnedAuthority),
+        completionFormat: "sealed-v1",
         challengeCredential: `olc_${"a".repeat(43)}`,
         challengeId: `phc_${crypto.randomUUID()}`,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -285,10 +286,17 @@ describe("PersonalRemoteAccessService", () => {
     });
 
     const request = {
-      completionGrant: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
-      hostCredential: link.hostCredential,
+      challengeId: link.challengeId,
+      sealedCompletion: {
+        version: 1,
+        ciphertext: "abc",
+        ephemeralPublicKey: "k".repeat(43),
+        nonce: "n".repeat(16),
+        tag: "t".repeat(22),
+      },
+      resultExpiresAt: new Date(Date.now() + 60000).toISOString(),
       linkGeneration: link.linkGeneration,
-      schemaVersion: 1,
+      schemaVersion: 2,
     } as const;
     await expect(service.consumeAccountLink(ownerSession(), request)).rejects.toMatchObject({
       code: "conflict",
@@ -322,6 +330,7 @@ describe("PersonalRemoteAccessService", () => {
         // rather than a mismatched-Account check.
         account: { issuer: link.issuer, subject: link.subject },
         authorityEnvelope: signHostDiscovery(keys, pinnedAuthority),
+        completionFormat: "sealed-v1",
         challengeCredential: `olc_${"a".repeat(43)}`,
         challengeId: `phc_${crypto.randomUUID()}`,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -332,14 +341,12 @@ describe("PersonalRemoteAccessService", () => {
         message: "Personal Host already holds an Opensteer Account link",
       });
 
-      // Replaying the exact challenge the stored link came from stays allowed:
-      // that is the crash-safe courier repeating its own transcript.
       await expect(
         service.approveAccountLink(ownerSession(), {
           ...challenge,
           challengeId: link.challengeId,
         }),
-      ).resolves.toMatchObject({ document: { challenge: { id: link.challengeId } } });
+      ).rejects.toMatchObject({ code: "conflict" });
     },
   );
 
@@ -819,7 +826,16 @@ function accountMutationDatabase(
   };
   const transaction = {
     deleteFrom: vi.fn((table: string) =>
-      table === "personalRemoteAccountLink" ? deleteQuery : authSessionDeleteQuery,
+      table === "personalRemoteAccountLink"
+        ? deleteQuery
+        : table === "personalAccountLinkKeys"
+          ? {
+              execute: async () => [],
+              where() {
+                return this;
+              },
+            }
+          : authSessionDeleteQuery,
     ),
     getExecutor: () => ({
       compileQuery: () => ({}),
@@ -862,6 +878,12 @@ function accountMutationDatabase(
       ),
       transaction: () => ({ execute: (run: (value: unknown) => unknown) => run(transaction) }),
       updateTable: vi.fn(() => updateLinkQuery),
+      deleteFrom: () => ({
+        where() {
+          return this;
+        },
+        execute: async () => [],
+      }),
     },
     deleteLink,
     revokeConnectSessions,

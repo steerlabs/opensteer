@@ -5,6 +5,7 @@ import {
   AccountDeploymentSchema,
   ConnectProjectionRequestSchema,
   CompletePersonalHostAccountLinkResponseSchema,
+  IssuePersonalHostAccountLinkChallengeResponseSchema,
   ControlPlaneAccountIdSchema,
   ControlPlaneErrorReasonSchema,
   ControlPlaneErrorResponseSchema,
@@ -64,10 +65,17 @@ describe("control-plane protocol", () => {
 
   it("keeps a Personal link completion free of any Deployment the Host has not made", () => {
     const completion = {
-      completionGrant: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
-      hostCredential: `osc_${"d".repeat(43)}`,
+      challengeId: `phc_${crypto.randomUUID()}`,
       linkGeneration: "g".repeat(43),
       resultExpiresAt: new Date().toISOString(),
+      schemaVersion: 2,
+      sealedCompletion: {
+        version: 1,
+        ciphertext: "abc",
+        ephemeralPublicKey: "k".repeat(43),
+        nonce: "n".repeat(16),
+        tag: "t".repeat(22),
+      },
     } as const;
     expect(CompletePersonalHostAccountLinkResponseSchema.parse(completion)).toEqual(completion);
     // An Account response tolerates fields a newer Account added, and drops
@@ -79,6 +87,23 @@ describe("control-plane protocol", () => {
         reservation: { reachability: "routed" },
       }),
     ).toEqual(completion);
+  });
+
+  it("refuses plaintext Personal Account completions from an older Account", () => {
+    expect(
+      CompletePersonalHostAccountLinkResponseSchema.safeParse({
+        completionGrant: `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`,
+        hostCredential: `osc_${"d".repeat(43)}`,
+        linkGeneration: "g".repeat(43),
+        resultExpiresAt: new Date().toISOString(),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("explains the required Account upgrade before sending a proof to an older service", () => {
+    expect(() => IssuePersonalHostAccountLinkChallengeResponseSchema.parse({})).toThrow(
+      "Update the Opensteer Account service",
+    );
   });
 
   it("requires fenced positive generations for Host projections", () => {

@@ -1,7 +1,11 @@
 import { createId, type EnvironmentId, type RunnerId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
-import { ConnectOperationIdSchema } from "@opensteer/control-plane-protocol";
+import {
+  AccountLinkGenerationSchema,
+  PersonalHostAccountLinkChallengeIdSchema,
+  ConnectOperationIdSchema,
+} from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { PersonalDeploymentManifest } from "../secrets/personal-deployment-store.js";
 import {
@@ -446,9 +450,17 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
     verification: "signed-loopback-discovery",
   });
   const consumeInput = {
-    completionGrant: `${"completion".repeat(4)}.${"e".repeat(32)}.${"f".repeat(32)}`,
-    hostCredential: `osc_${"d".repeat(43)}`,
-    linkGeneration: "g".repeat(43),
+    challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(`phc_${crypto.randomUUID()}`),
+    schemaVersion: 2,
+    resultExpiresAt: new Date().toISOString(),
+    sealedCompletion: {
+      version: 1,
+      ciphertext: "abc",
+      ephemeralPublicKey: "k".repeat(43),
+      nonce: "n".repeat(16),
+      tag: "t".repeat(22),
+    },
+    linkGeneration: AccountLinkGenerationSchema.parse("g".repeat(43)),
   } as const;
   const control = (body: unknown, status: number) =>
     new NativePersonalRemoteHostControl({ fetch: async () => json(body, status) });

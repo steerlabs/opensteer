@@ -10,6 +10,7 @@ import {
   opensteerAccountDeleteOAuthScopes,
 } from "@opensteer/core";
 import { z } from "zod";
+import { OAuthBrokerPublicKeySchema, OAuthBrokerSealedEnvelopeSchema } from "./oauth-broker.js";
 // Subpath imports keep this schema surface loadable in sandboxed renderer and
 // preload contexts: the deployment-authority barrel re-exports Ed25519
 // verification, which requires node:crypto.
@@ -343,6 +344,10 @@ export type IssuePersonalHostAccountLinkChallengeRequest = z.infer<
 >;
 
 export const IssuePersonalHostAccountLinkChallengeResponseSchema = z.object({
+  completionFormat: z.literal("sealed-v1", {
+    error:
+      "Update the Opensteer Account service before linking this Host, then start Account linking again.",
+  }),
   account: HostAccountIdentityViewSchema,
   authorityEnvelope: HostDiscoveryEnvelopeSchema,
   challengeCredential: PersonalHostAccountLinkChallengeCredentialSchema,
@@ -361,7 +366,8 @@ export const PersonalHostAccountLinkProofDocumentSchema = z
       credentialSha256: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
       id: PersonalHostAccountLinkChallengeIdSchema,
     }),
-    documentVersion: z.literal(2),
+    documentVersion: z.literal(3),
+    completionPublicKey: OAuthBrokerPublicKeySchema,
     expiresAt: IsoDateTimeSchema,
     issuedAt: IsoDateTimeSchema,
     purpose: z.literal("opensteer-personal-host-account-link"),
@@ -401,7 +407,7 @@ export function personalHostAccountLinkProofSigningBytes(
 ): Uint8Array {
   const document = PersonalHostAccountLinkProofDocumentSchema.parse(documentInput);
   const bytes = new TextEncoder().encode(
-    `opensteer-personal-host-account-link-v4\0${JSON.stringify({
+    `opensteer-personal-host-account-link-v5\0${JSON.stringify({
       account: {
         issuer: document.account.issuer,
         subject: document.account.subject,
@@ -420,6 +426,7 @@ export function personalHostAccountLinkProofSigningBytes(
         id: document.challenge.id,
       },
       documentVersion: document.documentVersion,
+      completionPublicKey: document.completionPublicKey,
       expiresAt: document.expiresAt,
       issuedAt: document.issuedAt,
       purpose: document.purpose,
@@ -485,20 +492,41 @@ export type PersonalHostAccountLinkCompletionGrantClaims = z.infer<
   typeof PersonalHostAccountLinkCompletionGrantClaimsSchema
 >;
 
-/**
- * Account sign-in returns only the credential material the Host needs to
- * activate. The Host is the sole activation authority, so completion names no
- * Deployment: none exists until the Host calls activate.
- */
-export const CompletePersonalHostAccountLinkResponseSchema = z.object({
+/** Plaintext exists only inside Account storage and the Host's single-use open. */
+export const PersonalHostAccountLinkCompletionPayloadSchema = z.strictObject({
   completionGrant: PersonalHostAccountLinkCompletionGrantSchema,
   hostCredential: z.string().regex(/^osc_[A-Za-z0-9_-]{43}$/u),
   linkGeneration: AccountLinkGenerationSchema,
   resultExpiresAt: IsoDateTimeSchema,
 });
+export type PersonalHostAccountLinkCompletionPayload = z.infer<
+  typeof PersonalHostAccountLinkCompletionPayloadSchema
+>;
+
+/** The signing device is a courier and never receives the Host credential. */
+export const CompletePersonalHostAccountLinkResponseSchema = z.object({
+  challengeId: PersonalHostAccountLinkChallengeIdSchema,
+  linkGeneration: AccountLinkGenerationSchema,
+  resultExpiresAt: IsoDateTimeSchema,
+  sealedCompletion: OAuthBrokerSealedEnvelopeSchema,
+  schemaVersion: z.literal(2),
+});
 export type CompletePersonalHostAccountLinkResponse = z.infer<
   typeof CompletePersonalHostAccountLinkResponseSchema
 >;
+
+export function personalHostAccountLinkCompletionContext(
+  authority: z.infer<typeof PersonalHostAccessAuthoritySchema>,
+  challengeId: PersonalHostAccountLinkChallengeId,
+  linkGeneration: z.infer<typeof AccountLinkGenerationSchema>,
+) {
+  return {
+    purpose: "opensteer-personal-host-account-link-completion-v1",
+    authority,
+    challengeId,
+    linkGeneration,
+  } as const;
+}
 
 export const ActivatePersonalHostAccountLinkRequestSchema = z.strictObject({
   challengeId: PersonalHostAccountLinkChallengeIdSchema,
