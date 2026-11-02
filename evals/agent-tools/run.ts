@@ -196,6 +196,7 @@ async function main() {
             let engineClose: (() => Promise<void>) | undefined;
             let host: Awaited<ReturnType<typeof startFakeHost>> | undefined;
             let finalText = "";
+            let assistantText = "";
             const usage: unknown[] = [];
             const nativeCalls: unknown[] = [];
             let treatment = { prompt: "unavailable", schema: "unavailable" };
@@ -220,16 +221,19 @@ async function main() {
                 signal: AbortSignal.any([stop.signal, AbortSignal.timeout(180_000)]),
                 onTurnStart: () => {
                   finalText = "";
+                  assistantText = "";
                   nativeCalls.splice(0);
                 },
                 onEvent: async (event) => {
                   await transcript.write(`${JSON.stringify(event)}\n`);
                   if (event.type === "run.usage") usage.push(event.data);
                   if (event.type === "tool.started") nativeCalls.push(event.data);
-                  if (event.type === "assistant.message")
+                  if (event.type === "assistant.message") {
                     finalText = event.data.content
                       .flatMap((part) => (part.type === "text" ? [part.text] : []))
                       .join("\n");
+                    assistantText += finalText;
+                  }
                 },
               });
               finalText = result.finalText;
@@ -253,7 +257,7 @@ async function main() {
               }
             }
             const calls = host?.calls ?? [];
-            const checks = grade(c.expect, calls, finalText);
+            const checks = grade(c.expect, calls, finalText, assistantText);
             const row = {
               caseId: c.id,
               sample,

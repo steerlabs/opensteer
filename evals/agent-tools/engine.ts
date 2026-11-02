@@ -1,6 +1,11 @@
 import { cp, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createId, ModelSelectionSchema, type ModelSelection } from "@opensteer/core";
+import {
+  createId,
+  ThreadIdSchema,
+  ModelSelectionSchema,
+  type ModelSelection,
+} from "@opensteer/core";
 import { platformGuideForRun } from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
@@ -21,7 +26,7 @@ import {
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../../apps/runner/src/skills/workspace-skills.js";
-import type { EvalCase } from "./cases.js";
+import { inputForCaseTurn, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
 import { fingerprint } from "./report.js";
@@ -197,24 +202,16 @@ export async function runEngine(input: {
             c.profile === "delegated"
               ? {
                   id: createId("delegation"),
-                  objective: c.turns[0]!,
+                  objective: typeof c.turns[0] === "string" ? c.turns[0] : c.turns[0]!.text,
                   origin: "run",
-                  parentThreadId: createId("thread"),
+                  parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
         },
         environment: p.environment,
-        inputs: [
-          {
-            author: { kind: "human", displayName: "Eval user", principalId: "eval" },
-            content: [{ type: "text", text: turn }],
-            createdAt: new Date().toISOString(),
-            kind: "input",
-            messageId: createId("message"),
-          },
-        ],
+        inputs: [inputForCaseTurn(turn)],
         reports: { messages: [], omittedCount: 0, throughSequence: null },
         runId: createId("run"),
         requestedBy: host.scope.requestedBy,
