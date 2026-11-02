@@ -288,6 +288,7 @@ async function setup(
             computerSessionId={sessionId}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
+            onTyping={noop}
           />
         ) : screen === "owner" ? (
           <ComputerOwnerView
@@ -297,6 +298,7 @@ async function setup(
             generation={1}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
+            onTyping={noop}
           />
         ) : (
           <ComputerDisplay
@@ -922,3 +924,5 @@ it("reopens an ended phone owner view through the explicit open path", async () 
     },
   });
 });
+
+function noop(): void {}

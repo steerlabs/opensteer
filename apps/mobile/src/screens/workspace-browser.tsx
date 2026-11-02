@@ -51,8 +51,8 @@ import {
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BrowserPage } from "../browser/browser-page.js";
-import { PageBar, type AskTarget } from "../browser/page-bar.js";
-import { useSurfaceHeader } from "../browser/surface-header.js";
+import { usePageHeader, type AskTarget } from "../browser/page-header.js";
+import { Toolbar, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import {
   paramsDestination,
   routeDestination,
@@ -85,9 +85,10 @@ import { useAppForeground } from "../ui/foreground.js";
 import { NewTaskPane } from "./new-task.js";
 
 /**
- * Exactly one tab, Mac app or phone, as the route names it: the native bar,
- * the page, and one bar under it with who is here and Ask. The route is the
- * selection, so nothing here chooses or swaps what is shown.
+ * Exactly one tab, Mac app or phone, as the route names it: the native bar
+ * with who is here and Ask, and the place itself with the bar it is used
+ * through. The route is the selection, so nothing here chooses or swaps what
+ * is shown.
  *
  * How the page was reached — from a conversation, from Tabs, from the sidebar
  * — changes only where Back goes, which is the stack's own business. Who is in
@@ -386,38 +387,59 @@ function Focused(props: {
     },
     [navigation, route],
   );
-  const { body, pageShaped } =
-    destination.kind !== "browser"
-      ? {
-          body: (
-            <MacAppView
-              active={props.active}
-              destination={destination}
-              hostClient={hostClient}
-              key={JSON.stringify(destination)}
-            />
-          ),
-          pageShaped: false,
-        }
-      : {
-          body: (
-            <BrowserTab
-              active={props.active}
-              connected={props.connected}
-              editAddress={route.editAddress === true}
-              hostClient={hostClient}
-              onClosed={onClosed}
-              onOpenTab={onOpenTab}
-              onTyping={setTyping}
-              onViewing={setPage}
-              place={place}
-              sessionId={destination.sessionId}
-              snapshot={snapshot}
-              tabId={destination.tabId}
-            />
-          ),
-          pageShaped: browserShowsPage(snapshot, destination.sessionId, destination.tabId),
-        };
+  // Another tab of the same browser takes this one's place in the route, as
+  // Safari's tab swipe does; Back still returns where the page came from.
+  const onSwitchTab = useCallback(
+    (tabId: string) => navigation.setParams({ editAddress: false, tabId }),
+    [navigation],
+  );
+  const onShowTabs = useCallback(() => {
+    if (destination.kind === "browser")
+      navigation.dispatch(
+        StackActions.push("BrowserTabs", {
+          deploymentId,
+          sessionId: destination.sessionId,
+          tabId: destination.tabId,
+        }),
+      );
+  }, [deploymentId, destination, navigation]);
+  const [paired, setPaired] = useState(false);
+  usePageHeader({
+    agents,
+    beside: paired ? besideId : null,
+    chat: homeThreadId !== null,
+    intent: paired ? "beside" : "open",
+    onAsk: paired ? askBeside : askAway,
+    onOpenAgent: paired ? showBeside : openThread,
+    title: place?.title ?? shownPage?.title ?? (destination.kind === "browser" ? "Tab" : ""),
+  });
+  const body =
+    destination.kind !== "browser" ? (
+      <MacAppView
+        active={props.active}
+        destination={destination}
+        hostClient={hostClient}
+        key={JSON.stringify(destination)}
+        onTyping={setTyping}
+      />
+    ) : (
+      <BrowserTab
+        active={props.active}
+        connected={props.connected}
+        editAddress={route.editAddress === true}
+        hostClient={hostClient}
+        onClosed={onClosed}
+        onOpenTab={onOpenTab}
+        onShowTabs={onShowTabs}
+        onSwitchTab={onSwitchTab}
+        onTyping={setTyping}
+        onViewing={setPage}
+        place={place}
+        sessionId={destination.sessionId}
+        snapshot={snapshot}
+        tabId={destination.tabId}
+      />
+    );
   const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
   const second =
     companion === null ? null : companion.kind === "task" ? (
@@ -451,16 +473,6 @@ function Focused(props: {
   return (
     <PagePairSurface
       body={body}
-      bar={(paired) => (
-        <PageBar
-          agents={agents}
-          beside={paired ? besideId : null}
-          chat={homeThreadId !== null}
-          intent={paired ? "beside" : "open"}
-          onAsk={paired ? askBeside : askAway}
-          onOpenAgent={paired ? showBeside : openThread}
-        />
-      )}
       companion={
         second === null
           ? null
@@ -477,7 +489,7 @@ function Focused(props: {
       }
       keyboardVerticalOffset={headerHeight}
       notices={props.notices}
-      pageShaped={pageShaped}
+      onPaired={setPaired}
       typing={typing}
     />
   );
@@ -521,6 +533,8 @@ function BrowserTab(props: {
   readonly hostClient: HostClient;
   readonly onClosed: () => void;
   readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
+  readonly onShowTabs: () => void;
+  readonly onSwitchTab: (tabId: string) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
   /** This tab in the place list, found by its own id; null while it is not listed. */
@@ -577,6 +591,8 @@ function BrowserTab(props: {
         editAddress={props.editAddress}
         onClosed={onClosed}
         onOpenTab={props.onOpenTab}
+        onShowTabs={props.onShowTabs}
+        onSwitchTab={props.onSwitchTab}
         onTyping={props.onTyping}
         onViewing={props.onViewing}
         session={session}
@@ -759,37 +775,49 @@ function SavedTab(props: {
         setClosing(false);
       });
   };
-  useSurfaceHeader({
-    acting: false,
-    glyph: "globe",
-    menu: [
-      {
-        destructive: true,
-        disabled: !props.connected || closing,
-        icon: "xmark",
-        id: "close",
-        label: "Close tab",
-        onPress: close,
-      },
-    ],
-    secondary: tabSiteLabel(place.site),
-    title: place.title,
-  });
   const waitingFor =
     !props.connected || placement?.available !== true
       ? `Waiting for ${place.device?.name ?? "its computer"}…`
       : null;
-  return closeFailure !== null ? (
-    <TabStatus title={closeFailure} action={{ label: "Try again", onPress: close }} />
-  ) : lasting !== null ? (
-    <TabStatus title={lasting} />
-  ) : failure !== null ? (
-    <TabStatus
-      action={{ label: "Try again", onPress: () => setAttempt((value) => value + 1) }}
-      title={failure}
-    />
-  ) : (
-    <TabStatus title={waitingFor ?? "Opening…"} waiting />
+  return (
+    <View style={styles.fill}>
+      {closeFailure !== null ? (
+        <TabStatus title={closeFailure} action={{ label: "Try again", onPress: close }} />
+      ) : lasting !== null ? (
+        <TabStatus title={lasting} />
+      ) : failure !== null ? (
+        <TabStatus
+          action={{ label: "Try again", onPress: () => setAttempt((value) => value + 1) }}
+          title={failure}
+        />
+      ) : (
+        <TabStatus title={waitingFor ?? "Opening…"} waiting />
+      )}
+      {/* The page's own bar, resting until the page is back: only Close works. */}
+      <Toolbar edge="bottom" testID="page-toolbar">
+        <ToolbarCapsule style={styles.restingAddress}>
+          <AppText numberOfLines={1} role="secondaryMedium" tone="muted">
+            {tabSiteLabel(place.site) ?? place.title}
+          </AppText>
+        </ToolbarCapsule>
+        <ToolbarMenu
+          label="More"
+          sections={[
+            [
+              {
+                destructive: true,
+                disabled: !props.connected || closing,
+                icon: "xmark.circle",
+                id: "close",
+                label: "Close tab",
+                onPress: close,
+              },
+            ],
+          ]}
+          symbol="ellipsis"
+        />
+      </Toolbar>
+    </View>
   );
 }
 
@@ -841,12 +869,11 @@ interface PairCompanion {
  */
 function PagePairSurface(props: {
   readonly body: ReactNode;
-  /** The bar under the page, told whether a second pane fits beside it. */
-  readonly bar: (paired: boolean) => ReactNode;
   readonly companion: PairCompanion | null;
   readonly keyboardVerticalOffset: number;
   readonly notices: ReactNode;
-  readonly pageShaped: boolean;
+  /** Whether a second pane fits beside the page, which changes what the bar's agent and Ask do. */
+  readonly onPaired: (paired: boolean) => void;
   readonly typing: boolean;
 }): ReactNode {
   const [bounds, setBounds] = useState<Size>({ height: 0, width: 0 });
@@ -866,7 +893,7 @@ function PagePairSurface(props: {
 function PagePair(
   props: Parameters<typeof PagePairSurface>[0] & { readonly bounds: Size },
 ): ReactNode {
-  const { bounds, companion, pageShaped, typing } = props;
+  const { bounds, companion, onPaired, typing } = props;
   const regions = useReservedRegions();
   const ready = useReservedRegionsReady();
   const { fontScale } = useWindowDimensions();
@@ -889,6 +916,7 @@ function PagePair(
     previous.current = derived.pair;
   });
   const paired = derived.pair.mode !== "stacked";
+  useLayoutEffect(() => onPaired(paired), [onPaired, paired]);
   // Nothing to put beside the page: it takes the most room it has off the folds.
   const pair: PagePairArrangement = companion !== null ? derived.pair : { mode: "stacked" };
   const region = companion !== null ? derived.region : derived.alone;
@@ -957,8 +985,7 @@ function PagePair(
               address, its dialogs and the remote picture a tap is mapped into. */}
           <InsetView style={styles.fill} testID="page-content">
             {props.notices}
-            <View style={pageShaped ? styles.pageCentred : styles.fill}>{props.body}</View>
-            <View style={typing ? styles.hidden : null}>{props.bar(paired)}</View>
+            {props.body}
           </InsetView>
         </Pane>
       </KeyboardAvoidingView>
@@ -1096,7 +1123,6 @@ function BrowserEnded(props: {
   readonly detail: string | null;
   readonly failed: boolean;
 }): ReactNode {
-  useSurfaceHeader({ acting: false, glyph: "globe", menu: [], secondary: null, title: "Tab" });
   return (
     <View accessibilityLiveRegion="polite" style={styles.ended}>
       <AppText role="bodyMedium" style={styles.centred}>
@@ -1142,16 +1168,14 @@ const styles = StyleSheet.create({
     padding: space[24],
   },
   fill: { flex: 1 },
-  hidden: { display: "none" },
   // Laid out, so its native views and scroll position stay, but not drawn.
   outOfView: { left: 0, opacity: 0, position: "absolute", top: 0 },
   // Alone, the page has the whole surface but the bar under it. It has no
   // floor: with the keyboard up on a short screen, a floor is what pushes the
   // page's own address field under the keyboard.
   pageAlone: { flex: 1, minHeight: 0 },
-  // The page at its own shape, centred in the room it is given, as a picture
-  // is: the bands above and below are even.
-  pageCentred: { flex: 1, justifyContent: "center", minHeight: 0 },
+  // The resting page's address, standing where the live page's will be.
+  restingAddress: { flex: 1, justifyContent: "center", minWidth: 0, paddingHorizontal: space[16] },
   row: { flexDirection: "row" },
   // Tabletop with the composer typing: the second pane keeps at least its
   // composer, and the page above gives up height to make room.

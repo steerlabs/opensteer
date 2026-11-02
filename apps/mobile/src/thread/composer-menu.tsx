@@ -19,9 +19,28 @@ import { Alert, Platform, Pressable, View, type StyleProp, type ViewStyle } from
  * field, so the trigger stays tappable and answers with the reason.
  */
 
-/** SF Symbol names this app's menus draw. Each is also a Material symbol. */
+/** SF Symbol names this app's menus draw. Android's menus are words alone. */
 export type NativeMenuIcon =
-  "checkmark" | "gearshape" | "link" | "magnifyingglass" | "paperclip" | "photo" | "stop.fill";
+  | "arrow.clockwise"
+  | "arrow.up.left.and.arrow.down.right"
+  | "bubble.left"
+  | "checkmark"
+  | "chevron.forward"
+  | "desktopcomputer"
+  | "gearshape"
+  | "link"
+  | "lock"
+  | "magnifyingglass"
+  | "paperclip"
+  | "person.badge.key"
+  | "photo"
+  | "plus.square.on.square"
+  | "safari"
+  | "square.and.arrow.up"
+  | "square.and.pencil"
+  | "stop.circle"
+  | "stop.fill"
+  | "xmark.circle";
 
 export interface NativeMenuOption {
   readonly destructive?: boolean;
@@ -35,6 +54,9 @@ export interface NativeMenuOption {
   readonly selected?: boolean;
 }
 
+/** Choices drawn as one group, set apart from the groups around it. */
+export type NativeMenuSection = readonly NativeMenuOption[];
+
 export function NativeMenu(props: {
   readonly accessibilityHint?: string;
   readonly accessibilityLabel: string;
@@ -45,7 +67,8 @@ export function NativeMenu(props: {
   readonly onPresent: () => void;
   /** The menu is gone, by a choice or by a dismissal. */
   readonly onSettle: () => void;
-  readonly options: readonly NativeMenuOption[];
+  /** The choices, or groups of them where the menu draws a separator between groups. */
+  readonly options: readonly NativeMenuOption[] | readonly NativeMenuSection[];
   readonly style?: StyleProp<ViewStyle>;
   readonly title?: string;
 }): ReactNode {
@@ -69,12 +92,15 @@ export function NativeMenu(props: {
 
   return (
     <MenuView
-      actions={props.options.map(menuAction)}
+      actions={menuActions(props.options)}
       colorScheme="dark"
       onCloseMenu={props.onSettle}
       onPressAction={({ nativeEvent }) => {
         props.onSettle();
-        props.options.find((option) => option.id === nativeEvent.event)?.onPress();
+        props.options
+          .flat()
+          .find((option) => option.id === nativeEvent.event)
+          ?.onPress();
       }}
       // Android's menu is a controlled Compose dropdown, and this is the only
       // handle that opens it without a touch.
@@ -116,6 +142,24 @@ export function NativeMenu(props: {
       </View>
     </MenuView>
   );
+}
+
+function menuActions(
+  options: readonly NativeMenuOption[] | readonly NativeMenuSection[],
+): MenuAction[] {
+  if (!options.some(isSection)) return (options as readonly NativeMenuOption[]).map(menuAction);
+  return (options as readonly NativeMenuSection[])
+    .filter((section) => section.length > 0)
+    .map((section, index) => ({
+      displayInline: true,
+      id: `section-${index}`,
+      subactions: section.map(menuAction),
+      title: "",
+    }));
+}
+
+function isSection(entry: NativeMenuOption | NativeMenuSection): entry is NativeMenuSection {
+  return Array.isArray(entry);
 }
 
 function menuAction(option: NativeMenuOption): MenuAction {

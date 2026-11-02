@@ -6,7 +6,7 @@ import {
 } from "@opensteer/client/host";
 import { memo, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import { color, headerFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { AppText } from "../ui/primitives.js";
@@ -58,8 +58,9 @@ export const AgentMarks = memo(function AgentMarks(props: {
 });
 
 /**
- * The agent pill on a page's bar: who is in this tab, app or phone, and
- * whether they are working.
+ * Who is in this tab, app or phone, and whether they are working: the title
+ * of its bar, drawn as the system draws a contact over a conversation — the
+ * marks, the name, and the state under it.
  *
  * One agent is a button that opens its Thread. Several are a native menu —
  * working first, then most recently active — and choosing one opens it; the
@@ -84,9 +85,10 @@ export const AgentPill = memo(function AgentPill(props: {
       {list.length === 0 ? <ActingDot grouped size={8} /> : <AgentMarks agents={list} />}
       <View style={styles.words}>
         <AppText
-          maxFontSizeMultiplier={controlFontScaleLimit}
+          maxFontSizeMultiplier={headerFontScaleLimit}
           numberOfLines={1}
           role="secondaryMedium"
+          style={styles.name}
         >
           {words.title}
         </AppText>
@@ -94,7 +96,7 @@ export const AgentPill = memo(function AgentPill(props: {
           <View style={styles.detail}>
             {working ? <ActingDot grouped size={6} /> : null}
             <AppText
-              maxFontSizeMultiplier={controlFontScaleLimit}
+              maxFontSizeMultiplier={headerFontScaleLimit}
               numberOfLines={1}
               role="caption"
               tone="muted"
@@ -158,21 +160,18 @@ function noop(): void {}
 
 const styles = StyleSheet.create({
   detail: { alignItems: "center", flexDirection: "row", gap: space[4] },
+  // The bar's own title weight, so the name reads as the title it is.
+  name: { fontWeight: "600" },
   mark: { borderColor: "transparent", borderWidth: 1.5, padding: 1 },
   marks: { alignItems: "center", flexDirection: "row" },
   pill: {
-    ...material.plate,
     alignItems: "center",
-    borderRadius: radius.full,
     flexDirection: "row",
     gap: space[8],
     minHeight: touchTarget,
-    paddingEnd: space[14],
-    paddingStart: space[6],
-    paddingVertical: space[4],
+    paddingHorizontal: space[4],
   },
-  pressed: { opacity: 0.7 },
-  // The pill takes what Ask leaves, and no more than its words need.
+  pressed: { opacity: 0.6 },
   slot: { flexShrink: 1, minWidth: 0 },
   words: { flexShrink: 1, minWidth: 0 },
 });

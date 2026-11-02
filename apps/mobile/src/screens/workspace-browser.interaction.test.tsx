@@ -107,6 +107,9 @@ vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   ActivityIndicator: () => null,
   Alert: { alert: vi.fn() },
+  Image: () => null,
+  Linking: { openURL: vi.fn(async () => undefined) },
+  Share: { share: vi.fn(async () => ({ action: "sharedAction" })) },
   AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
   I18nManager: { isRTL: false },
   KeyboardAvoidingView: ({
@@ -263,6 +266,31 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => state.keyboard }));
+vi.mock(
+  "../browser/toolbar.js",
+  async () => (await import("../../test-support/native-chrome.js")).toolbar,
+);
+vi.mock("../ui/glass.js", async () => (await import("../../test-support/native-chrome.js")).glass);
+vi.mock(
+  "react-native-gesture-handler",
+  async () => (await import("../../test-support/native-chrome.js")).gestureHandler,
+);
+vi.mock(
+  "react-native-worklets",
+  async () => (await import("../../test-support/native-chrome.js")).worklets,
+);
+vi.mock(
+  "react-native-reanimated",
+  async () => (await import("../../test-support/native-chrome.js")).reanimated,
+);
+vi.mock("../ui/motion.js", () => ({
+  appear: undefined,
+  duration: { enter: 0, exit: 0 },
+  enter: undefined,
+  exit: undefined,
+  move: undefined,
+}));
+vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children }: { children?: ReactNode }) => <section>{children}</section>,
 }));
@@ -542,18 +570,32 @@ function setup(
   return { container, render, route };
 }
 
-/** The bar's ⋯ menu as the page last set it. */
+/** The page's own ⋯ menu, in its bar. */
 function menu(): HTMLElement {
+  const more = document.querySelector<HTMLElement>('[aria-label="More"]');
+  if (more === null) throw new Error("The page has no menu.");
+  return more;
+}
+
+/** The native bar over the page as the screen last set it: who is here, and Ask. */
+function header(): HTMLElement {
   const options = state.setOptions.mock.calls
-    .map(([value]) => value as { headerRight?: () => ReactNode })
-    .findLast((value) => typeof value.headerRight === "function");
-  if (!options?.headerRight) throw new Error("The page set no menu.");
+    .map(([value]) => value as { headerRight?: () => ReactNode; headerTitle?: () => ReactNode })
+    .findLast((value) => typeof value.headerTitle === "function");
+  if (!options?.headerTitle || !options.headerRight) throw new Error("The page set no bar.");
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  const draw = options.headerRight;
-  act(() => root.render(<>{draw()}</>));
+  const { headerRight, headerTitle } = options;
+  act(() =>
+    root.render(
+      <>
+        {headerTitle()}
+        {headerRight()}
+      </>,
+    ),
+  );
   return container;
 }
 

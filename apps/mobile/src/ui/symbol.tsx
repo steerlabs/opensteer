@@ -20,14 +20,17 @@ import { color } from "../theme.js";
  */
 
 export type SFSymbolName =
+  | "arrow.clockwise"
   | "arrow.triangle.branch"
   | "arrow.turn.down.right"
   | "arrow.up"
+  | "arrow.up.left.and.arrow.down.right"
   | "bolt"
   | "bubble.left"
   | "bubble.left.and.bubble.right"
   | "calendar"
   | "checklist"
+  | "circle"
   | "checkmark"
   | "checkmark.circle"
   | "checkmark.circle.fill"
@@ -81,6 +84,8 @@ export type SFSymbolName =
   | "sidebar.left"
   | "smartphone"
   | "sparkles"
+  | "square"
+  | "square.on.square"
   | "square.and.pencil"
   | "stop.circle"
   | "stop.fill"
@@ -175,14 +180,17 @@ function accessibility(label: string | undefined): {
  * covers, so a phone without SF Symbols draws the mark rather than a box.
  */
 const glyph: Record<SFSymbolName, string> = {
+  "arrow.clockwise": "↻",
   "arrow.triangle.branch": "⑂",
   "arrow.turn.down.right": "↳",
   "arrow.up": "↑",
+  "arrow.up.left.and.arrow.down.right": "⤢",
   bolt: "ϟ",
   "bubble.left": "✉\uFE0E",
   "bubble.left.and.bubble.right": "◌",
   calendar: "▦",
   checklist: "☑︎",
+  circle: "○",
   checkmark: "✓",
   "checkmark.circle": "✓",
   "checkmark.circle.fill": "✔",
@@ -236,6 +244,8 @@ const glyph: Record<SFSymbolName, string> = {
   "sidebar.left": "◧",
   smartphone: "▯",
   sparkles: "✦",
+  square: "□",
+  "square.on.square": "❐",
   "square.and.pencil": "✎",
   "stop.circle": "◼",
   "stop.fill": "■",
