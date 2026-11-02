@@ -3966,6 +3966,8 @@ async function consumeComputerAppApprovalInTransaction(
   });
   const changed = await finishComputerConnectionChangeInTransaction(transaction, {
     ...input,
+    actorSessionId: input.settlementSessionId,
+    recordProvenance: true,
     connectionAccess: input.access,
     consumedSetupRequestId: pendingRequest.id,
     created: current === undefined,
@@ -4020,10 +4022,8 @@ async function reviseComputerConnectionInTransaction(
     ...input,
     connectionAccess: input.access,
     consumedSetupRequestId: null,
-    settlementSessionId:
-      current?.computerAccess === "read-write" && input.access === "read"
-        ? undefined
-        : input.settlementSessionId,
+    actorSessionId: input.settlementSessionId,
+    recordProvenance: !(current?.computerAccess === "read-write" && input.access === "read"),
     created: current === undefined,
     now,
     reissueWaiting: current?.computerAccess === "read-write" && input.access === "read",
@@ -4094,6 +4094,8 @@ export async function approveComputerAppAutomaticallyInTransaction(
   });
   const changed = await finishComputerConnectionChangeInTransaction(transaction, {
     ...input,
+    actorSessionId: undefined,
+    recordProvenance: false,
     // Main inherits the owner's authority and needs no row.
     ...(workspace.kind === "main"
       ? {}
@@ -4182,7 +4184,8 @@ async function writeComputerConnectionInTransaction(
 async function finishComputerConnectionChangeInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
-    readonly settlementSessionId?: string | undefined;
+    readonly actorSessionId: string | undefined;
+    readonly recordProvenance: boolean;
     readonly access: IntegrationAccess;
     readonly actorUserId: UserId;
     readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
@@ -4201,11 +4204,8 @@ async function finishComputerConnectionChangeInTransaction(
     readonly widened: boolean;
   },
 ): Promise<Omit<SetComputerConnectionResult, "sessionReset">> {
-  const settlementActor = await requestSettlementActor(
-    transaction,
-    input.actorUserId,
-    input.settlementSessionId,
-  );
+  const actor = await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
+  const settlementActor = input.recordProvenance ? actor : null;
   const { installed, scope } = input.target;
   const connectionId = input.row.id;
   await transaction

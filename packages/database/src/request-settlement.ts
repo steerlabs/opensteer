@@ -8,7 +8,7 @@ import { jsonValue } from "./store-primitives.js";
 export async function requestSettlementActor(
   transaction: Transaction<DatabaseSchema>,
   userId: UserId,
-  sessionId?: string,
+  sessionId: string | undefined,
 ) {
   if (!sessionId) return null;
   const row = await transaction
@@ -37,7 +37,7 @@ export async function requestSettlementActor(
 export async function requestSettlementProvenance(
   transaction: Transaction<DatabaseSchema>,
   userId: UserId,
-  sessionId?: string,
+  sessionId: string | undefined,
 ) {
   const actor = await requestSettlementActor(transaction, userId, sessionId);
   return actor ? jsonValue(actor) : null;

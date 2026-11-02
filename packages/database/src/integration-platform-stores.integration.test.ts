@@ -6012,7 +6012,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     it("keeps a wider approval waiting under a new id when the owner lowers an app's access", async ({
       storeFixture,
     }) => {
-      const { askOnMac, notes, platform, guiInput } = storeFixture;
+      const { askOnMac, notes, platform, guiInput, database } = storeFixture;
       const test = await setup(storeFixture, "reduction-reissues");
       const control = await askOnMac(test.ask("read-write"));
       await test.consume(control.setupRequest, "read-write");
@@ -6021,8 +6021,37 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const renamed = { ...notes, displayName: "Notes (renamed)" };
       const again = await askOnMac(test.ask("read-write", renamed));
 
-      const lowered = await platform.setComputerConnection(
-        guiInput({
+      const look = await askOnMac(test.ask("read", renamed));
+      // Model refreshed connection metadata while the earlier asks still wait.
+      await database
+        .updateTable("integrationConnections")
+        .set({ computerApp: jsonValue(renamed) })
+        .where("runnerId", "=", test.mac.runnerId)
+        .execute();
+      await database
+        .updateTable("integrationGrants")
+        .set({ revokedAt: new Date() })
+        .where("workspaceId", "=", test.run.workspaceId)
+        .execute();
+      expect(await test.grants()).toEqual([]);
+      const sessionId = createId("authSession");
+      const now = new Date();
+      const session = {
+        id: sessionId,
+        userId: test.run.userId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "iPhone",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await database.insertInto("authSessions").values(session).execute();
+      const input = {
+        ...guiInput({
           access: "read",
           actorUserId: test.run.userId,
           app: notes,
@@ -6030,8 +6059,60 @@ integration.sequential("PostgreSQL computer app connections", () => {
           runnerId: test.mac.runnerId,
           tools: test.mac.gui.tools("read"),
         }),
+        settlementSessionId: sessionId,
+      };
+      const snapshot = async () => ({
+        connections: await database
+          .selectFrom("integrationConnections")
+          .selectAll()
+          .orderBy("id")
+          .execute(),
+        servers: await database
+          .selectFrom("integrationServers")
+          .selectAll()
+          .orderBy("id")
+          .execute(),
+        grants: await database.selectFrom("integrationGrants").selectAll().orderBy("id").execute(),
+        requests: await database.selectFrom("requests").selectAll().orderBy("id").execute(),
+        setupRequests: await database
+          .selectFrom("computerAppSetupRequests")
+          .selectAll()
+          .orderBy("id")
+          .execute(),
+        audit: await database.selectFrom("securityAudit").selectAll().orderBy("id").execute(),
+      });
+      const before = await snapshot();
+      const barrier = pauseAfterLock(
+        database,
+        (node) => /"name":"runners"/u.test(node) && node.includes("NoKeyUpdate"),
       );
+      const held = new IntegrationPlatformStore(barrier.database);
+      const outcome = held.setComputerConnection(input).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      try {
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Reduction never acquired the computer lock"),
+        });
+        await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+        barrier.release();
+        expect(await outcome).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+        expect(await snapshot()).toEqual(before);
+      } finally {
+        barrier.release();
+        await outcome;
+      }
+      await database.insertInto("authSessions").values(session).execute();
+      const lowered = await platform.setComputerConnection(input);
+      expect(await platform.requests.get(look.request.id)).toMatchObject({
+        status: "fulfilled",
+        settlementProvenance: null,
+      });
 
+      expect(await test.grants()).toEqual([
+        { access: "read", connectionId: lowered.connection.id },
+      ]);
       expect(lowered.reissuedSetupRequestId).not.toBeNull();
       expect(await test.status(again.request.id)).toEqual({
         setupRequestId: lowered.reissuedSetupRequestId,
