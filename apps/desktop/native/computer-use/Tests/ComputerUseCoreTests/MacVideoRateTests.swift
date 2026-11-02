@@ -68,6 +68,18 @@ final class MacVideoRateTests: XCTestCase {
     XCTAssertThrowsError(try demand(#","maxBitrate":100"#).linkCap(negotiated: true))
   }
 
+  /// A distant Host is not a congested one: only delay beyond the path's own
+  /// round trip is queueing, so a fast 300 ms path keeps its full budget.
+  func testUplinkJudgesQueueingAboveThePathsOwnRoundTrip() {
+    var rate = MacVideoRate(maxFps: 60, mode: .negotiated(cap: 4_000_000))
+    for step in 0..<40 {
+      _ = rate.acknowledged(delay: 0.3, now: Double(step) * 0.25, width: 1180, height: 766)
+    }
+    XCTAssertNil(rate.uplink.estimate)
+    XCTAssertTrue(rate.acknowledged(delay: 0.6, now: 10.5, width: 1180, height: 766))
+    XCTAssertEqual(rate.plan(width: 1180, height: 766).bitrate, 3_000_000)
+  }
+
   /// A queueing uplink lowers the budget at most once a second; sustained
   /// healthy acknowledgements restore it until the estimate disappears.
   func testUplinkEstimateBacksOffAndRecovers() {

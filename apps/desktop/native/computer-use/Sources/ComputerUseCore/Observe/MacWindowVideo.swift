@@ -447,8 +447,10 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
   /// hold its budget, or its output was lost. Retry it in its next cadence slot
   /// so a window that then goes still still shows its last change.
   fileprivate func retryNewest() {
+    // Read apart from the publication lock: attach holds output while reading it.
+    guard output.current?.closedFlag == false else { return }
     let wait = publication.withLock { state -> TimeInterval? in
-      guard state.open, state.visible, !state.ended, output.current?.closedFlag == false else { return nil }
+      guard state.open, state.visible, !state.ended else { return nil }
       state.samples.hold()
       return 1 / Double(state.plan?.fps ?? MacVideoLimits.legacyMaxFps)
     }

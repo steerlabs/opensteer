@@ -69,21 +69,32 @@ struct MacVideoRate: Equatable {
 }
 
 /// This Mac's estimate of its own link to the Host. Loopback never queues; an
-/// enrolled Mac reaching a remote Host over a slow uplink does. The rule matches
-/// Agent Phone's producer estimate: a quarter less on queueing, a tenth more
-/// after sustained healthy flow, and no estimate once back at the ceiling.
+/// enrolled Mac reaching a remote Host over a slow uplink does. Only delay beyond
+/// the path's own round trip is queueing, so a distant but fast Host keeps its
+/// budget: a quarter less on queueing, a tenth more after sustained healthy
+/// flow, and no estimate once back at the ceiling.
 struct MacVideoUplink: Equatable {
   static let queueing: TimeInterval = 0.25
   static let reduceInterval: TimeInterval = 1
   static let recoverAfter: TimeInterval = 8
+  static let baselineWindow: TimeInterval = 10
 
   private(set) var estimate: Int?
   private var reducedAt = -TimeInterval.infinity
   private var healthySince: TimeInterval?
+  /// Recent acknowledgement delays; their least is the path's round trip.
+  private var delays: [(at: TimeInterval, delay: TimeInterval)] = []
+
+  static func == (a: Self, b: Self) -> Bool {
+    a.estimate == b.estimate && a.reducedAt == b.reducedAt && a.healthySince == b.healthySince
+  }
 
   /// Returns whether the estimate changed.
   mutating func acknowledged(delay: TimeInterval, now: TimeInterval, ceiling: Int) -> Bool {
-    if delay >= Self.queueing {
+    delays.removeAll { now - $0.at > Self.baselineWindow }
+    delays.append((now, delay))
+    let baseline = delays.map(\.delay).min() ?? delay
+    if delay - baseline >= Self.queueing {
       healthySince = nil
       guard now - reducedAt >= Self.reduceInterval else { return false }
       reducedAt = now
