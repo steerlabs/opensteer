@@ -7,7 +7,11 @@ export interface LinkProfile {
   readonly upBps: number;
   readonly downBps: number;
   /** A deterministic queue stall, not packet loss. */
-  readonly stall?: { readonly everyChunks: number; readonly delayMs: number };
+  readonly stall?: {
+    readonly everyChunks: number;
+    readonly delayMs: number;
+    readonly once?: boolean;
+  };
 }
 
 export const linkProfiles = {
@@ -104,7 +108,11 @@ export class Direction {
       const part = chunk.subarray(offset, offset + 16_384);
       const now = performance.now();
       const stall =
-        this.stall && ++this.#chunks % this.stall.everyChunks === 0 ? this.stall.delayMs : 0;
+        this.stall &&
+        ++this.#chunks % this.stall.everyChunks === 0 &&
+        (!this.stall.once || this.#chunks === this.stall.everyChunks)
+          ? this.stall.delayMs
+          : 0;
       this.#availableAt =
         Math.max(now, this.#availableAt) +
         (this.bps ? (part.length * 8_000) / this.bps : 0) +

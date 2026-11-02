@@ -13,6 +13,7 @@ export interface BenchmarkDisplayPacket {
 export function benchmarkPhoneDecoder(sink: {
   readonly painted: (sequence: number) => void;
   readonly dequeued: (id: number) => void;
+  readonly lost?: () => void;
   readonly failed: (message: string) => void;
 }) {
   const canvas = document.createElement("canvas");
@@ -29,7 +30,10 @@ export function benchmarkPhoneDecoder(sink: {
       }
       picture.close();
     },
-    onLost: () => sink.failed("Production display decoder lost its stream"),
+    onLost: () => {
+      if (sink.lost) sink.lost();
+      else sink.failed("Production display decoder lost its stream");
+    },
   });
   return {
     accept: (packet: BenchmarkDisplayPacket) =>
