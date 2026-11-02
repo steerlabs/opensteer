@@ -1,4 +1,5 @@
 import {
+  AppPublishInputSchema,
   AgentCapabilityProfileIdSchema,
   AssignmentIdSchema,
   BrowserProfileIdSchema,
@@ -29,6 +30,7 @@ import { z } from "zod";
 import legacyTriggerWriteContract from "./fixtures/trigger-write-e45e4ecdc.json" with { type: "json" };
 
 export const AgentToolIdSchema = z.enum([
+  "app.publish",
   "environment.list",
   "workspace.list",
   "workspace.create",
@@ -59,6 +61,7 @@ export const AgentToolIdSchema = z.enum([
 export type AgentToolId = z.infer<typeof AgentToolIdSchema>;
 
 export const AgentToolNameSchema = z.enum([
+  "app_publish",
   "environment_list",
   "workspace_list",
   "workspace_create",
@@ -173,6 +176,20 @@ const browserAccessRequestAnnotations = {
 } as const satisfies AgentToolAnnotations;
 
 const definitions = [
+  {
+    id: "app.publish",
+    name: "app_publish",
+    inputSchema: AppPublishInputSchema,
+    description:
+      "Publish a self-contained HTML file from this Run's Workspace as an app, shown inline in this Thread and openable full-screen on every device. Use it when a chart, diagram, dashboard, mockup or interactive page communicates better than prose. Write a complete UTF-8 HTML document (.html or .htm) with your ordinary file tools, then pass its Workspace-relative path and a short title. External HTTPS CDN scripts are fine; no local assets or server. Design for about 380px phone width and wider screens, with a transparent or neutral background that works in light and dark. Avoid vh-based full-height layouts: the inline frame sizes to content. The document receives data-theme=light/dark and the opensteer:theme event. Pass appId to publish a new version; every card shows the latest. A successful publish already shows the app to the person: do not repeat its contents in prose.",
+    annotations: {
+      title: "Publish App",
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+    },
+  },
   {
     annotations: {
       destructiveHint: false,
@@ -781,6 +798,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.delegate",
       "thread.message",
       "person.notify",
+      "app.publish",
       "person.show",
       "thread.write",
       "assignment.cancel",
@@ -811,6 +829,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.delegate",
       "thread.message",
       "person.notify",
+      "app.publish",
       "person.show",
       "thread.write",
       "assignment.cancel",
@@ -840,6 +859,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.delegate",
       "thread.message",
       "person.notify",
+      "app.publish",
       "person.show",
       "thread.write",
       "assignment.cancel",

@@ -9,6 +9,7 @@ export const quietRunPredicate = sql<boolean>`(
   and not runs.person_waited
   and not exists (select 1 from messages reply where reply.run_id = runs.id
     and reply.kind in ('assistant', 'run-result'))
+  and not exists (select 1 from workspace_events app where app.run_id = runs.id and app.type = 'app.published')
   and not exists (select 1 from delegations child where child.parent_run_id = runs.id)
   and not exists (select 1 from requests request where request.originating_run_id = runs.id)
 )`;

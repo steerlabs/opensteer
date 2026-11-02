@@ -58,6 +58,11 @@ it("keeps full product validation and valid dispatch over MCP", async () => {
     result: { accepted: true },
   }));
   const service = new AgentToolsMcpService({
+    apps: {
+      publish: async () => {
+        throw new Error("Unexpected app publication in fixture");
+      },
+    },
     agentControl: { handle } as unknown as AgentOptions["agentControl"],
     store: {} as AgentOptions["store"],
     tokens: {} as AgentOptions["tokens"],

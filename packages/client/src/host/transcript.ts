@@ -58,6 +58,14 @@ export function foldTranscriptEvent(
   event: AgentEvent,
 ): TranscriptEntry[] {
   switch (event.type) {
+    case "app.published":
+      return upsertEntry(entries, {
+        ...event.data,
+        id: `app:${event.eventId}`,
+        kind: "app",
+        createdAt: event.createdAt,
+        runId: event.runId,
+      });
     case "place.entered":
       return upsertEntry(entries, {
         ...event.data,

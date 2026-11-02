@@ -2026,7 +2026,29 @@ interface ComputerAppSetupRequestTable {
   expiresAt: Timestamp;
 }
 
+export interface AppTable {
+  id: string;
+  workspaceId: WorkspaceId;
+  threadId: ThreadId;
+  runId: RunId;
+  title: string;
+  latestVersion: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface AppVersionTable {
+  appId: string;
+  version: number;
+  sha256: string;
+  sizeBytes: number;
+  createdByRun: RunId | null;
+  publishKey: string;
+  createdAt: Timestamp;
+}
+
 export interface DatabaseSchema {
+  apps: AppTable;
+  appVersions: AppVersionTable;
   attachments: AttachmentTable;
   computerUseApprovalKeys: ComputerUseApprovalKeyTable;
   computerUsePolicies: ComputerUsePolicyTable;

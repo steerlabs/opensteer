@@ -119,6 +119,8 @@ import {
   AttachmentService,
   RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
+import { AppStore } from "@opensteer/database";
+import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
 import { announceBrowserUsage, browserPresencePublisher } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
@@ -2256,7 +2258,17 @@ export async function createHostRuntime(
       store,
       tokens: watchControlTokens,
     });
+    const apps = new AppService({
+      dataDirectory,
+      apps: new AppStore(database),
+      store,
+      files,
+      tokens: agentControlTokens,
+      publishEvent: publishWorkspaceEvent,
+    });
+    await apps.collectGarbage();
     const agentTools = new AgentToolsMcpService({
+      apps,
       // The Runner's stored advertisement, not its live connection: a Run's
       // engine keeps using its tools while that connection drops and returns.
       runnerCapabilities: async (scope) => {
@@ -2378,6 +2390,7 @@ export async function createHostRuntime(
           : {}),
         agentControl,
         attachments,
+        apps,
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,

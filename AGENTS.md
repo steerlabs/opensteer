@@ -256,6 +256,7 @@ decisions and constraints the code can't show.
 | Messaging providers and channel authority                              | [Messaging](docs/messaging.md)                                                                                |
 | Mobile lifecycle, UI or push notifications                             | [Mobile](docs/mobile.md)                                                                                      |
 | Managed infrastructure                                                 | [Cloud operations](apps/control-plane/src/cloud/README.md)                                                    |
+| Published Opensteer Apps and their viewing frames                      | [Apps](docs/apps.md)                                                                                          |
 | Browser sessions, page uploads or profile storage                      | [Browser sessions](docs/browser-sessions.md)                                                                  |
 | Native browser profile identity and deletion                           | [Storage contract](packages/protocol/src/browser-profile-storage.ts)                                          |
 | Chrome sign-ins and the Chrome extension                               | [Chrome sign-ins](docs/browser-sources.md)                                                                    |

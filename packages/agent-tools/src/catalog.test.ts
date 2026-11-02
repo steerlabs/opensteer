@@ -15,6 +15,7 @@ import { skillsForCapabilityProfile } from "./skills.js";
 
 const expectedTools = {
   delegated: [
+    "app_publish",
     "request_list",
     "request_withdraw",
     "environment_list",
@@ -36,6 +37,7 @@ const expectedTools = {
     "trigger_write",
   ],
   main: [
+    "app_publish",
     "request_list",
     "request_withdraw",
     "environment_list",
@@ -74,6 +76,7 @@ const expectedTools = {
     "trigger_write",
   ],
   workspace: [
+    "app_publish",
     "request_list",
     "request_withdraw",
     "environment_list",

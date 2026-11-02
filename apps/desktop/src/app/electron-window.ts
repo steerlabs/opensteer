@@ -70,7 +70,12 @@ export function configureDesktopSession(
       urls: ["<all_urls>"],
     },
     (details: OnBeforeRequestListenerDetails, callback) => {
-      callback({ cancel: !policy.allowsNetworkRequest(details.url) });
+      callback({
+        cancel: !policy.allowsNetworkRequest(details.url, {
+          url: details.frame?.url ?? "",
+          resourceType: details.resourceType,
+        }),
+      });
     },
   );
 }

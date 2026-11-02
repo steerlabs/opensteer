@@ -86,6 +86,7 @@ export async function startFakeHost(testCase: EvalCase) {
   const agent = new AgentToolsMcpService({
     publicUrl: url,
     agentControl: { handle: async () => unavailable() },
+    apps: { publish: async () => unavailable() },
     store: { getThreadForOwner: async () => null },
     tokens: agentTokens,
   });

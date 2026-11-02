@@ -21,11 +21,62 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { BrowserSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { TranscriptSurfacesContext, TracePlace, type TranscriptSurfaces } from "./surface-chips.js";
 import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
+import { AppCard } from "./app-card.js";
+import { AttachmentReader } from "./attachment-views.js";
 
 // Exercise the actual native renderer's state and hierarchy with DOM hosts.
 // The platform controls and animation drivers are outside this regression.
+vi.mock("react-native-webview", () => ({
+  WebView: ({
+    source,
+    style,
+    containerStyle,
+    incognito,
+    sharedCookiesEnabled,
+    thirdPartyCookiesEnabled,
+    allowFileAccess,
+    onMessage,
+  }: {
+    source: { uri: string };
+    style: object;
+    containerStyle: object;
+    incognito: boolean;
+    sharedCookiesEnabled: boolean;
+    thirdPartyCookiesEnabled: boolean;
+    allowFileAccess: boolean;
+    onMessage: (event: { nativeEvent: { data: string } }) => void;
+  }) => (
+    <div
+      data-app-webview
+      data-uri={source.uri}
+      data-style={JSON.stringify(style)}
+      data-container-style={JSON.stringify(containerStyle)}
+      data-isolation={JSON.stringify({
+        incognito,
+        sharedCookiesEnabled,
+        thirdPartyCookiesEnabled,
+        allowFileAccess,
+      })}
+    >
+      <button
+        onClick={() =>
+          onMessage({
+            nativeEvent: { data: JSON.stringify({ type: "opensteer-app:size", height: 50_000 }) },
+          })
+        }
+      >
+        Report app height
+      </button>
+    </div>
+  ),
+}));
+vi.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
+  ActivityIndicator: () => <span>Loading app</span>,
+  Modal: ({ children }: { children: ReactNode }) => <section role="dialog">{children}</section>,
   View: ({
     children,
     accessibilityLabel,
@@ -102,7 +153,12 @@ vi.mock("./message-menu.js", () => ({
   MessageMenu: (props: { onActivity?: () => void }) =>
     props.onActivity ? <button onClick={props.onActivity}>Run details</button> : null,
 }));
-vi.mock("./attachment-views.js", () => ({ MessageAttachments: () => null }));
+vi.mock("./attachment-views.js", async () => ({
+  MessageAttachments: () => null,
+  AttachmentReader: (await import("react")).createContext<
+    import("@opensteer/client/host").HostClient | null
+  >(null),
+}));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { text: string }) => <p>{text}</p>,
   PlainProse: ({ text }: { text: string }) => <p>{text}</p>,
@@ -853,4 +909,80 @@ describe("native page rail", () => {
       }
     },
   );
+});
+
+it("renders published apps in isolated native WebViews, caps inline height and reloads already-mounted views on republish", async () => {
+  const client = new MockHostClient();
+  const appId = "app_11111111-1111-4111-8111-111111111111";
+  let snapshot = client.getSnapshot();
+  let version = 1;
+  const listeners = new Set<() => void>();
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  });
+  vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+  const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
+    app: {
+      id: appId,
+      workspaceId: createId("workspace"),
+      threadId: createId("thread"),
+      runId: createId("run"),
+      title: `Budget ${version}`,
+      latestVersion: version,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    url: `https://host.test/app?version=${version}`,
+  }));
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  try {
+    await act(async () =>
+      root.render(
+        <AttachmentReader value={client}>
+          <AppCard
+            entry={{
+              appId,
+              id: "app:event",
+              createdAt: new Date().toISOString(),
+              kind: "app",
+              title: "Budget",
+              version: 1,
+              runId: createId("run"),
+            }}
+          />
+        </AttachmentReader>,
+      ),
+    );
+    const frame = () => container.querySelector("[data-app-webview]")!;
+    expect(JSON.parse(frame().getAttribute("data-isolation")!)).toEqual({
+      incognito: true,
+      sharedCookiesEnabled: false,
+      thirdPartyCookiesEnabled: false,
+      allowFileAccess: false,
+    });
+    press(container, "Report app height");
+    expect(JSON.parse(frame().getAttribute("data-style")!).height).toBe(640);
+    expect(JSON.parse(frame().getAttribute("data-container-style")!)).toMatchObject({
+      height: 640,
+      flex: 0,
+    });
+    version = 2;
+    snapshot = { ...snapshot, appVersions: { [appId]: 2 } };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(frame().getAttribute("data-uri")).toBe("https://host.test/app?version=2");
+    expect(container.textContent).toContain("Budget 2");
+    await act(async () => press(container, "Open"));
+    expect(container.querySelector('[role="dialog"] [data-app-webview]')).not.toBeNull();
+    expect(read).toHaveBeenCalledTimes(3);
+  } finally {
+    client.dispose();
+  }
 });

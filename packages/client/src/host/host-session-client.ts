@@ -1709,6 +1709,13 @@ export class HttpHostClient {
     );
   }
 
+  async viewApp(appId: string, theme: "light" | "dark", signal?: AbortSignal) {
+    const view = unwrapRpcResult(
+      await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
+    );
+    return { app: view.app, url: this.#url(view.path) };
+  }
+
   async getAttachment(attachmentId: string): Promise<Attachment> {
     return unwrapRpcResult(await this.rpc["attachment.get"]({ attachmentId }));
   }
@@ -6530,6 +6537,17 @@ function projectAgentEvent(
     inputQueues,
     requests,
     waitingRequests,
+    ...(event.type === "app.published"
+      ? {
+          appVersions: {
+            ...snapshot.appVersions,
+            [event.data.appId]: Math.max(
+              snapshot.appVersions?.[event.data.appId] ?? 0,
+              event.data.version,
+            ),
+          },
+        }
+      : {}),
     threads: patchThread(snapshot.threads, event.threadId, {
       updatedAt: event.createdAt,
     }),

@@ -4677,6 +4677,7 @@ export function migrationProvider() {
         "0125_run_place_events": runPlaceEventsMigration,
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
+        "0128_apps": appsMigration,
       };
     },
   };
@@ -6611,5 +6612,32 @@ const personShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+const appsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table apps (
+        id text primary key check (id ~ '^app_[0-9a-f-]{36}$'),
+        workspace_id text not null references workspaces(id) on delete cascade,
+        thread_id text not null references threads(id) on delete cascade,
+        run_id text not null references runs(id) on delete cascade,
+        title text not null check (length(title) between 1 and 160),
+        latest_version integer not null check (latest_version > 0),
+        created_at timestamptz not null, updated_at timestamptz not null
+      );
+      create index apps_workspace on apps(workspace_id);
+      create table app_versions (
+        app_id text not null references apps(id) on delete cascade,
+        version integer not null check (version > 0),
+        sha256 text not null check (sha256 ~ '^[0-9a-f]{64}$'),
+        size_bytes integer not null check (size_bytes between 1 and 5242880),
+        created_by_run text references runs(id) on delete set null,
+        publish_key text not null,
+        created_at timestamptz not null,
+        primary key (app_id, version), unique (created_by_run, publish_key)
+      );
+    `.execute(database);
   },
 };

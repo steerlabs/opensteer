@@ -2802,6 +2802,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
     service = new AgentToolsMcpService({
+      apps: {
+        publish: async () => {
+          throw new Error("Unexpected app publication in fixture");
+        },
+      },
       agentControl: agents,
       runnerCapabilities: async (scope) => {
         const capabilities = (await store.runnerCapabilities(scope.runnerId)) ?? [];

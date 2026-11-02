@@ -169,3 +169,5 @@ boolean options stay booleans. For more models, focus `harnessInstanceId` and
 follow `modelsNextCursor` with `cursor`, retaining the query. A changed catalog
 invalidates that cursor; restart the focused listing. Follow the environment and
 profile directory cursors to see every authorized target.
+
+Use `app_publish` when a chart, diagram or interactive page explains the result better than prose. Write self-contained HTML in this Run’s Workspace and publish its relative path; the app appears in the Thread. Design for phone width and light/dark themes. Republish with the returned appId to update every card, and do not repeat the app’s contents in your reply.

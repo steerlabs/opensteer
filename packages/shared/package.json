@@ -47,7 +47,8 @@
     "./processGroup": "./src/processGroup.ts",
     "./test-support/serverProbes": "./src/serverProbes.test-support.ts",
     "./test-support/loopbackPort": "./src/loopbackPort.test-support.ts",
-    "./test-support/tcpServer": "./src/tcpServer.test-support.ts"
+    "./test-support/tcpServer": "./src/tcpServer.test-support.ts",
+    "./appFrame": "./src/appFrame.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

@@ -1,3 +1,5 @@
+import { isPublishedAppUrl } from "./published-app-protocol.js";
+
 export class DesktopAppOriginPolicy {
   allowsNavigation(value: string): boolean {
     const url = parseUrl(value);
@@ -20,10 +22,20 @@ export class DesktopAppOriginPolicy {
     );
   }
 
-  allowsNetworkRequest(value: string): boolean {
+  allowsNetworkRequest(
+    value: string,
+    frame?: { readonly url: string; readonly resourceType: string },
+  ): boolean {
     const url = parseUrl(value);
     if (!url) return false;
-    if (isDesktopAppUrl(url)) return true;
+    if (isDesktopAppUrl(url) || isPublishedAppUrl(value)) return true;
+    if (
+      url.protocol === "https:" &&
+      frame &&
+      isPublishedAppUrl(frame.url) &&
+      ["script", "stylesheet", "image", "font"].includes(frame.resourceType)
+    )
+      return true;
     if (url.protocol === "blob:") {
       const embedded = parseUrl(url.href.slice("blob:".length));
       return embedded !== null && isDesktopAppUrl(embedded);

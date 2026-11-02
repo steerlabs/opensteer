@@ -17,6 +17,7 @@ interface DialogProps {
   returnFocusTo?: HTMLElement | null;
   title: ReactNode;
   wide?: boolean;
+  fullScreen?: boolean;
 }
 
 /**
@@ -41,6 +42,7 @@ function DialogContent({
   returnFocusTo = null,
   title,
   wide,
+  fullScreen,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -63,7 +65,11 @@ function DialogContent({
     handleModalKeyDown(event, dialogRef.current, onClose);
 
   return (
-    <div className="dialog-layer" role="presentation" onKeyDown={handleKeyDown}>
+    <div
+      className={fullScreen ? "dialog-layer dialog-layer--full-screen" : "dialog-layer"}
+      role="presentation"
+      onKeyDown={handleKeyDown}
+    >
       <button
         type="button"
         className="dialog-scrim"
@@ -73,7 +79,9 @@ function DialogContent({
       />
       <div
         ref={dialogRef}
-        className={wide ? "dialog dialog--wide" : "dialog"}
+        className={
+          fullScreen ? "dialog dialog--full-screen" : wide ? "dialog dialog--wide" : "dialog"
+        }
         id={id}
         role="dialog"
         aria-modal="true"

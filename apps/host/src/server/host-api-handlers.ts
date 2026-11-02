@@ -75,6 +75,8 @@ export function createHostApiHandlers(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
+    | "apps.get"
+    | "apps.view"
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"

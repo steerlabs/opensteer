@@ -272,6 +272,8 @@ it stops new use, never promises to undo returned data or completed changes.
 
 ## Native compatibility
 
+Opensteer Apps require a rebuilt binary with `react-native-webview`.
+
 Keep Expo's generated UIKit scene lifecycle as the sole startup/link owner. The
 iOS 27 SDK requires it; multiple scenes are disabled to preserve one navigation
 history and draft owner. Generated `ios/` and `android/` are not tracked.

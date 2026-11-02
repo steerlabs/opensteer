@@ -1,3 +1,4 @@
+import { AppCard } from "./apps/app-card.js";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { useTaskSnapshot } from "./task-rows.js";
 import { taskMark, threadMark } from "@opensteer/client/host";
@@ -334,7 +335,9 @@ export function AgentTranscript({
                                   <Fragment key={key}>
                                     {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
                                     <div className="transcript__row" data-transcript-row={key}>
-                                      {group.kind === "turn" ? (
+                                      {group.kind === "app" ? (
+                                        <AppCard entry={group.entry} />
+                                      ) : group.kind === "turn" ? (
                                         <TurnView
                                           turn={group.turn}
                                           turnKey={group.key}

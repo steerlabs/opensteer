@@ -1,0 +1,57 @@
+.app-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
+}
+.app-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+}
+.app-card > p {
+  padding: 12px 14px;
+}
+.app-frame {
+  position: relative;
+  min-width: 0;
+}
+.app-frame iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+.app-frame__status {
+  padding: 12px 14px;
+}
+.dialog.dialog--full-screen {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  border-radius: 0;
+}
+.dialog--full-screen .dialog__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.app-frame--full {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.app-frame--full iframe {
+  flex: 1;
+  height: 100%;
+}
+
+.dialog-layer--full-screen {
+  padding: 0;
+}
