@@ -954,4 +954,10 @@ it("revokes picture input and requests a key when the decoder loses its picture"
   expect(socket.sent.slice(before)).toContainEqual({ type: "display.keyframe" });
   expect(socket.sent.slice(before)).toContainEqual({ type: "display.input-reset" });
   expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  // A key can already be queued when the asynchronous loss event reaches JS.
+  await act(async () =>
+    state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+  );
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  expect(container.querySelector('button[aria-label="Keyboard"]')).not.toBeNull();
 });

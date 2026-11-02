@@ -332,7 +332,6 @@ export function ComputerDisplay({
           if (nativeEvent.pictureGone) {
             controls.current?.resetInput();
             setPicture(null);
-            decodingPicture.current = null;
             setShown(false);
           }
           requestKeyframe.current?.();
