@@ -19,6 +19,7 @@ enum Wire {
     let loginText: Int?
     let ownerViewVersion: Int?
     var ownerInputVersion: Int? = nil
+    var videoProfile: Int? = nil
     let protocolVersion: Int
     let clientVersion: String?
   }
@@ -27,6 +28,8 @@ enum Wire {
     var loginText: LoginReceiverKey? = nil
     var ownerViewVersion: Int? = nil
     var ownerInputVersion: Int? = nil
+    /// Answered only when offered: an older desktop's strict reader rejects it.
+    var videoProfile: Int? = nil
     let helperVersion: String
     let minProtocolVersion: Int
     let permissions: PermissionsState

@@ -32,6 +32,11 @@ public final class IPCConnection: @unchecked Sendable {
   var negotiatedOwnerInputVersion: Int? {
     lock.lock(); defer { lock.unlock() }; return clientOwnerInputVersion
   }
+  private var clientVideoProfile: Int?
+  /// Mac window video taking a viewer bitrate cap and up to 60 fps.
+  var negotiatedVideoProfile: Int? {
+    lock.lock(); defer { lock.unlock() }; return clientVideoProfile
+  }
 
   var negotiatedOwnerViewVersion: Int? {
     lock.lock()
@@ -175,13 +180,17 @@ public final class IPCConnection: @unchecked Sendable {
     return clientProtocolVersion
   }
 
-  func markGreeted(protocolVersion: Int, ownerViewVersion: Int? = nil, loginText: Int? = nil, ownerInputVersion: Int? = nil) {
+  func markGreeted(
+    protocolVersion: Int, ownerViewVersion: Int? = nil, loginText: Int? = nil,
+    ownerInputVersion: Int? = nil, videoProfile: Int? = nil
+  ) {
     lock.lock()
     guard !isClosed, clientProtocolVersion == nil else { lock.unlock(); return }
     if loginText == 1 { loginTextReceiver = LoginTextReceiver() }
     clientProtocolVersion = protocolVersion
     clientOwnerViewVersion = ownerViewVersion
     clientOwnerInputVersion = ownerInputVersion
+    clientVideoProfile = videoProfile
     lock.unlock()
   }
 
