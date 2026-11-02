@@ -199,8 +199,12 @@ highest version. Publish in version order, with all channel assets ready and the
 visible in Atom. A missing channel file falls back to `latest-mac.yml` on the
 same tag; publish `latest-mac.yml` for stable and `insider-mac.yml` for Beta.
 
-Updates run only from Applications; the move prompt precedes supervised children. Readiness requires native `update-downloaded`, proving Squirrel staged
-and validated the bundle. Never log native errors carrying URLs/paths; log only
+Updates run only from Applications; the move prompt precedes supervised children.
+The app checks on its own, but downloads and restarts only when the person asks,
+from the sidebar or the app menu's Check for Updates…; the update journey clicks
+Download Update… for the same reason. Readiness requires native `update-downloaded`, proving Squirrel staged
+and validated the bundle, and ends checking until the restart: a second staging
+in one run is untested. Never log native errors carrying URLs/paths; log only
 the fixed reason. Stop children and destroy windows before handing off installation.
 Both channels refuse downgrades. Bundle entries must remain owner-writable for
 ShipIt. See [updater](../apps/desktop/src/app/desktop-updater.ts),

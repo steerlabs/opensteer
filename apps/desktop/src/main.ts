@@ -1,5 +1,5 @@
 import { autoUpdater } from "electron-updater";
-import { startDesktopUpdater } from "./app/desktop-updater.js";
+import { DesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
 import { DesktopPasskeyRequests } from "./passkeys/passkey-requests.js";
@@ -70,7 +70,7 @@ import {
   desktopWindowForContents,
   ElectronWindowFactory,
 } from "./app/electron-window.js";
-import { createDesktopApplicationMenu } from "./app/application-menu.js";
+import { createDesktopApplicationMenu, showDesktopUpdateMenuItem } from "./app/application-menu.js";
 import { DesktopTrayService } from "./app/desktop-tray.js";
 import { AgentPhoneAdbServer } from "./app/agent-phone-adb-server.js";
 import { DesktopUsbDeviceAccess } from "./app/usb-device-access.js";
@@ -251,6 +251,7 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
   );
+  const updater = new DesktopUpdater({ updates: loaded.config.updates, log: reportEvent });
   const downloads = new DesktopDownloads({
     directory: () => app.getPath("downloads"),
     staging: path.join(loaded.config.dataDirectory, "partial-downloads"),
@@ -929,6 +930,12 @@ async function runDesktop(
   );
   let workspaceContents: Electron.WebContents | null = null;
   const unregisterBridge = registerDesktopBridge({
+    updates: {
+      state: () => updater.state(),
+      subscribe: (listener) => updater.subscribe(listener),
+      download: () => updater.download(),
+      restart: () => restartToUpdate(),
+    },
     webLinks,
     isWorkspaceContents: (sender) => sender === workspaceContents,
     passkeys,
@@ -1039,11 +1046,51 @@ async function runDesktop(
   const restartToUpdate = () => {
     if (updateReady) shutdown.requestUpdate(installUpdate);
   };
+  const checkForUpdates = async () => {
+    const state = await updater.check();
+    // The window's update button carries an offer from here.
+    if (state.status === "available") return mainProcess.activate();
+    const name = app.getName();
+    const result =
+      state.status === "up-to-date"
+        ? {
+            message: "You're up to date",
+            detail: `${name} ${state.currentVersion} is the newest version.`,
+          }
+        : state.status === "error"
+          ? {
+              message: "Couldn't check for updates",
+              detail: "Check your internet connection, then try again.",
+            }
+          : state.status === "unavailable"
+            ? {
+                message: "Updates unavailable",
+                detail: `Move ${name} to your Applications folder to get updates.`,
+              }
+            : null;
+    if (result)
+      await dialog.showMessageBox({
+        type: state.status === "error" ? "warning" : "info",
+        buttons: ["OK"],
+        ...result,
+      });
+  };
   Menu.setApplicationMenu(
     createDesktopApplicationMenu({
       workspaceContents: (window) => (mainWindows.owns(window) ? window.webContents : null),
       browserKey: (key) => browserPresentation.menuKey(key),
-      ...(loaded.config.updates ? { restartToUpdate } : {}),
+      ...(loaded.config.updates
+        ? {
+            updates: {
+              check: () =>
+                void checkForUpdates().catch((error: unknown) =>
+                  reportNonFatal("desktop.update.menu-check-failed", error),
+                ),
+              download: () => void updater.download(),
+              restart: restartToUpdate,
+            },
+          }
+        : {}),
     }),
   );
   const updateReopenMenu = (snapshot: ReturnType<typeof access.snapshot>) => {
@@ -1082,19 +1129,16 @@ async function runDesktop(
     quit: () => app.quit(),
     runner: localRunner,
   });
-  await tray.start();
-  startDesktopUpdater({
-    updates: loaded.config.updates,
-    signal: shutdown.signal,
-    log: reportEvent,
-    readinessChanged: (ready) => {
-      updateReady = ready;
-      shutdown.setUpdateInstaller(ready ? installUpdate : undefined);
-      const item = Menu.getApplicationMenu()?.getMenuItemById("restart-to-update");
-      if (item) item.visible = ready;
-      tray.setRestartToUpdate(ready ? restartToUpdate : undefined);
-    },
+  updater.subscribe((state) => {
+    showDesktopUpdateMenuItem(Menu.getApplicationMenu(), state);
+    const ready = state.status === "downloaded";
+    if (ready === updateReady) return;
+    updateReady = ready;
+    shutdown.setUpdateInstaller(ready ? installUpdate : undefined);
+    tray.setRestartToUpdate(ready ? restartToUpdate : undefined);
   });
+  await tray.start();
+  updater.start(shutdown.signal);
   shutdown.signal.throwIfAborted();
   const detachOAuthDeepLinks = oauthDeepLinks.attach(async (url) => {
     const handled = await nativeAuth.handleCallback(url);

@@ -39,6 +39,18 @@ describe("desktop bridge", () => {
       }),
     };
     const unregister = registerDesktopBridge({
+      updates: {
+        state: () => ({
+          status: "idle",
+          currentVersion: "0.1.396",
+          availableVersion: null,
+          downloadPercent: null,
+          failed: null,
+        }),
+        subscribe: () => () => undefined,
+        download: async () => undefined,
+        restart: () => undefined,
+      },
       downloads: {
         snapshot: () => ({ downloads: [] }),
         subscribe: () => () => undefined,
@@ -139,6 +151,7 @@ describe("desktop bridge", () => {
     const notificationChannels = new Set<string>([
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
+      desktopBridgeChannels.updateChanged,
       desktopBridgeChannels.workspaceTabCommand,
       desktopBridgeChannels.deploymentAccessSnapshotChanged,
       desktopBridgeChannels.hostWebSocketEvent,
