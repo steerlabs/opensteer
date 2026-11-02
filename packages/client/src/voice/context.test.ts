@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList } from "../host/places.js";
@@ -209,6 +210,58 @@ it("never offers or resolves a place this device can't show", async () => {
       expect(links.resolve(link[0], snapshot)?.target).not.toMatchObject({
         destination: { kind: "app" },
       });
+  } finally {
+    host.dispose();
+  }
+});
+
+it("reuses transcript recency through token rebuilds and refreshes changed histories", () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  try {
+    const snapshot = voiceSavedTabs(host);
+    const home = snapshot.homeThreadId!;
+    const entry = snapshot.transcripts[home]![0]!;
+    if (entry.kind !== "place" || entry.place.kind !== "browser") throw new Error("Expected place");
+    const read = vi.fn(() => entry.place);
+    const recent = {
+      ...entry,
+      createdAt: "2026-11-01T12:00:00.000Z",
+      get place() {
+        return read();
+      },
+    };
+    const history = [recent];
+    const links = new VoiceContextLinks();
+    const initial = { ...snapshot, transcripts: { [home]: history } };
+    const first = links.build(initial, undefined, { runPlace: () => null });
+    const reads = read.mock.calls.length;
+    expect(reads).toBeGreaterThan(0);
+    expect(
+      links.build(
+        { ...initial, transcripts: { ...initial.transcripts, streaming: [] } },
+        undefined,
+        { runPlace: () => null },
+      ),
+    ).toBe(first);
+    expect(read).toHaveBeenCalledTimes(reads);
+    const changed = {
+      ...initial,
+      transcripts: {
+        [home]: [
+          ...history,
+          {
+            ...entry,
+            id: "new-place",
+            createdAt: "2026-11-02T12:00:00.000Z",
+            place: { ...entry.place, surfaceId: BrowserSurfaceIdSchema.parse("tab_saved17") },
+          },
+        ],
+      },
+    };
+    const found = links.find(changed, "saved tab");
+    expect(
+      links.resolve(found.text.match(/opensteer:\/\/place\/\d+/)![0], changed)?.target,
+    ).toMatchObject({ destination: { tabId: "tab_saved17" } });
   } finally {
     host.dispose();
   }

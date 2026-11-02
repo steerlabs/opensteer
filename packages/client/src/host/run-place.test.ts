@@ -1,6 +1,7 @@
 import { createId, PlaceEnteredEventViewSchema, SequenceSchema } from "@opensteer/core";
 import { expect, it, vi } from "vitest";
-import { RunPlaceStore } from "./run-place.js";
+import type { HostSnapshot } from "./client.js";
+import { runPlaceDestination, RunPlaceStore } from "./run-place.js";
 
 const workspaceId = createId("workspace");
 const threadId = createId("thread");
@@ -63,4 +64,30 @@ it("a resync removes ended Runs without discarding places newer than its cut", (
   expect(store.get(runId)).toBeNull();
   store.seed([current]);
   expect(store.get(runId)).toBeNull();
+});
+
+it("resolves a durable tab from its current ready catalog even while the saved row still names its old session", () => {
+  const event = entered("1");
+  if (event.data.place.kind !== "browser") throw new Error("Expected browser");
+  const original = event.data.place.sessionId;
+  const restored = "bsn_00000000-0000-4000-8000-000000000002";
+  const tabId = event.data.place.surfaceId;
+  const snapshot = {
+    machines: [],
+    workspaceTabs: [{ tabs: [{ id: tabId, sessionId: original }] }],
+    browserSessions: [
+      { id: original, state: "closed", tabCatalog: { tabs: [] } },
+      { id: restored, state: "ready", tabCatalog: { tabs: [{ id: tabId }] } },
+    ],
+  } as unknown as HostSnapshot;
+  expect(runPlaceDestination(event, snapshot)).toEqual({
+    kind: "browser",
+    tabId,
+    sessionId: restored,
+  });
+  expect(runPlaceDestination(event, { ...snapshot, browserSessions: [] })).toEqual({
+    kind: "browser",
+    tabId,
+    sessionId: original,
+  });
 });

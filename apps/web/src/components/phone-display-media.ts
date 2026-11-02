@@ -365,14 +365,22 @@ export class PhoneDisplayPicture {
     this.#update({ shown: null, stale: false });
   }
 
-  dispose(): void {
+  dispose(preservePixels = false): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#unsubscribe();
-    this.clear();
+    if (preservePixels) {
+      if (this.#drawRequest !== null) cancelAnimationFrame(this.#drawRequest);
+      this.#drawRequest = null;
+      this.#latest?.picture.close();
+      this.#latest = null;
+      this.#update({ stale: true });
+    } else this.clear();
     this.#decoder.close();
-    this.#canvases.clear();
-    this.#listeners.clear();
+    if (!preservePixels) {
+      this.#canvases.clear();
+      this.#listeners.clear();
+    }
     this.#lease.release();
   }
 
@@ -461,7 +469,7 @@ export function retainPhoneDisplayPicture(
   streams: DisplayStreams,
   target: ComputerDisplayTarget,
   acceleration: HardwareAcceleration,
-): { readonly picture: PhoneDisplayPicture; readonly release: () => void } {
+): { readonly picture: PhoneDisplayPicture; readonly release: (preservePixels?: boolean) => void } {
   let pool = pictures.get(streams);
   if (!pool) {
     pool = new Map();
@@ -479,13 +487,13 @@ export function retainPhoneDisplayPicture(
   let released = false;
   return {
     picture: entry.picture,
-    release: () => {
+    release: (preservePixels = false) => {
       if (released) return;
       released = true;
       entry.holds -= 1;
       if (entry.holds > 0) return;
       if (shared.get(key) === entry) shared.delete(key);
-      entry.picture.dispose();
+      entry.picture.dispose(preservePixels);
     },
   };
 }

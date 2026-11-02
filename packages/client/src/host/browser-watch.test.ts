@@ -467,3 +467,39 @@ it("keeps a retained target's frame through eligibility gaps, releases transport
     store.dispose();
   }
 });
+
+it.each([false, true])(
+  "clears catalog-revoked frames and inactive presenter fences before socket close (released %s)",
+  (released) => {
+    const socket = new TargetSocket();
+    const store = new BrowserWatchStore(
+      () => socket,
+      "watch",
+      undefined,
+      () => 100,
+    );
+    const changed = vi.fn();
+    const unsubscribe = store.subscribe(sessionId, surfaceId, changed);
+    const release = store.retain(sessionId, surfaceId);
+    try {
+      socket.open();
+      socket.admit();
+      socket.picture();
+      const before = store.invalidationKey(sessionId, surfaceId);
+      if (released) release();
+      else store.reconcile(() => false);
+      changed.mockClear();
+      store.reconcile(
+        () => false,
+        () => false,
+      );
+      expect(store.get(sessionId, surfaceId).frame).toBeNull();
+      expect(store.invalidationKey(sessionId, surfaceId)).not.toBe(before);
+      expect(changed).toHaveBeenCalled();
+    } finally {
+      release();
+      unsubscribe();
+      store.dispose();
+    }
+  },
+);

@@ -61,6 +61,8 @@ export class BrowserWatchStore {
     const key = this.#key(target.sessionId, target.surfaceId);
     this.#revoked.set(key, (this.#revoked.get(key) ?? 0) + 1);
   }
+  readonly #authorityDenied = new Set<string>();
+  #authorized: (sessionId: string, surfaceId: string) => boolean = () => true;
   #suspended = false;
   #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
@@ -341,7 +343,7 @@ export class BrowserWatchStore {
   suspend(suspended: boolean, keepControlOnly = false): void {
     this.#suspended = suspended;
     this.#keepControlOnly = keepControlOnly;
-    this.reconcile(this.#allowed);
+    this.reconcile(this.#allowed, this.#authorized);
   }
   #paused(target: Watch): boolean {
     return (
@@ -349,9 +351,30 @@ export class BrowserWatchStore {
       !(this.#keepControlOnly && this.mode === "control" && target.pictureHolds === 0)
     );
   }
-  reconcile(allowed: (sessionId: string, surfaceId: string) => boolean): void {
+  reconcile(
+    allowed: (sessionId: string, surfaceId: string) => boolean = this.#allowed,
+    authorized: (sessionId: string, surfaceId: string) => boolean = this.#authorized,
+  ): void {
     this.#allowed = allowed;
+    this.#authorized = authorized;
+    // A displayed canvas can outlive its transport lease. Revoke those listeners too.
+    for (const key of new Set([...this.#targets.keys(), ...this.#listeners.keys()])) {
+      const [sessionId, surfaceId] = JSON.parse(key) as [string, string];
+      if (authorized(sessionId, surfaceId)) {
+        this.#authorityDenied.delete(key);
+        continue;
+      }
+      if (this.#authorityDenied.has(key)) continue;
+      this.#authorityDenied.add(key);
+      this.#revoked.set(key, (this.#revoked.get(key) ?? 0) + 1);
+      const target = this.#targets.get(key);
+      if (target) {
+        this.#close(target);
+        this.#set(target, empty);
+      } else for (const listener of this.#listeners.get(key) ?? []) listener();
+    }
     for (const target of this.#targets.values()) {
+      if (!authorized(target.sessionId, target.surfaceId)) continue;
       if (!allowed(target.sessionId, target.surfaceId)) {
         this.#close(target);
         this.#set(target, this.#kept(target));
@@ -372,7 +395,7 @@ export class BrowserWatchStore {
       this.#close(target);
       this.#set(target, this.#kept(target));
     }
-    this.reconcile(this.#allowed);
+    this.reconcile(this.#allowed, this.#authorized);
   }
   capabilitiesChanged(): void {
     for (const target of this.#targets.values()) {
@@ -388,6 +411,7 @@ export class BrowserWatchStore {
   clear(): void {
     this.#clearVersion++;
     this.#revoked.clear();
+    this.#authorityDenied.clear();
     for (const target of this.#targets.values()) {
       this.#close(target);
       this.#set(target, empty);
@@ -404,7 +428,12 @@ export class BrowserWatchStore {
     this.#demands.clear();
   }
   #open(target: Watch): void {
-    if (this.#paused(target) || !this.#allowed(target.sessionId, target.surfaceId)) return;
+    if (
+      this.#paused(target) ||
+      !this.#allowed(target.sessionId, target.surfaceId) ||
+      !this.#authorized(target.sessionId, target.surfaceId)
+    )
+      return;
     let socket: WebSocketClient;
     try {
       socket = this.connect(target.sessionId, target.surfaceId);

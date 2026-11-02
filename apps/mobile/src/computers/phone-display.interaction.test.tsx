@@ -4,7 +4,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
-import type { HostClient, WebSocketClient } from "@opensteer/client/host";
+import { RunPlaceStore } from "@opensteer/client/host";
+import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
+import { LivePlace } from "../thread/live-place.js";
+import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -113,7 +116,7 @@ vi.mock("expo", async () => {
               return state.decodeResult ? state.decodeResult() : true;
             },
           }));
-          return <div />;
+          return <div data-native-display />;
         },
       ),
   };
@@ -136,6 +139,8 @@ vi.mock("../../modules/remote-text-input/src/remote-text-input.js", () => ({
 }));
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch }),
+  useNavigationState: (select: (state: object) => unknown) =>
+    select({ index: 0, routes: [{ name: "Thread" }] }),
   StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
 }));
 vi.mock(
@@ -232,20 +237,38 @@ async function setup(
   os = "android",
   owner = false,
   interactive = true,
-  screen: "display" | "task" | "owner" = "display",
+  screen: "display" | "task" | "owner" | "live" = "display",
 ) {
   state.os = os;
   socket = new Socket();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const snapshot = {
+  const runId = createId("run"),
+    threadId = createId("thread");
+  const machineId = screen === "live" ? createId("runner") : "machine";
+  const runPlaces = new RunPlaceStore();
+  if (screen === "live")
+    runPlaces.accept(
+      PlaceEnteredEventViewSchema.parse({
+        eventId: createId("event"),
+        environmentId: createId("environment"),
+        workspaceId: createId("workspace"),
+        threadId,
+        runId,
+        type: "place.entered",
+        sequence: "1",
+        createdAt: "2026-11-02T12:00:00.000Z",
+        data: { place: { kind: "phone", machineId, display: "main" }, title: "Phone", site: null },
+      }),
+    );
+  let snapshot = {
     session: "authenticated",
     user: { id: "person" },
     deploymentId: "deployment",
     machines: [
       {
-        id: "machine",
+        id: machineId,
         status: "online",
         kind: "personal",
         computerUse: {
@@ -268,6 +291,8 @@ async function setup(
           sessions: [
             {
               sessionId,
+              runId,
+              threadId,
               display: phone,
               apps: [{ bundleId: "com.apple.Notes", displayName: "Notes", teamId: null }],
             },
@@ -277,9 +302,19 @@ async function setup(
     ],
   };
   const connect = vi.fn((_source: unknown, _options?: unknown) => socket);
+  const listeners = new Set<() => void>();
+  const move = (patch: Partial<HostSnapshot>) => {
+    snapshot = { ...snapshot, ...patch } as typeof snapshot;
+    listeners.forEach((listener) => listener());
+  };
   const client = {
     getSnapshot: () => snapshot,
-    subscribe: () => () => undefined,
+    runPlace: runPlaces.get,
+    subscribeRunPlace: runPlaces.subscribe,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     subscribeLifecycle: () => () => undefined,
     connectComputerDisplay: connect,
     retainComputerView: () => ({ release: () => undefined }),
@@ -343,7 +378,9 @@ async function setup(
   const render = async (active = true) =>
     act(async () =>
       root!.render(
-        screen === "task" ? (
+        screen === "live" ? (
+          <LivePlace active={active} hostClient={client} runId={runId} onOpen={noop} />
+        ) : screen === "task" ? (
           <ComputerTaskView
             active={active}
             hostClient={client}
@@ -368,6 +405,7 @@ async function setup(
             bar={{ title: phone ? "Phone" : "Notes", detail: null, menu: [], onTyping: noop }}
             active={active}
             interactive={interactive}
+            machineId="machine"
             phone={phone}
             label={phone ? "Phone" : "Notes"}
             hostClient={client}
@@ -431,6 +469,7 @@ async function setup(
     render,
     power,
     setDisplay,
+    move,
     endOwner: () => {
       snapshot.machines[0]!.computerUse.ownerViews[0]!.state = "closed";
     },
@@ -1101,3 +1140,27 @@ it("revokes picture input and requests a key when the decoder loses its picture"
 });
 
 function noop(): void {}
+
+it("keeps passive native decoded pixels while the session binding is missing or offline and clears authority while released", async () => {
+  const view = await setup(true, "android", false, false, "live");
+  const before = state.epoch;
+  const nativeView = container.querySelector("[data-native-display]");
+  expect(nativeView).not.toBeNull();
+  expect(container.textContent).not.toContain("Connecting");
+  const snapshot = view.client.getSnapshot();
+  const machine = snapshot.machines[0]!;
+  for (const changed of [
+    { ...machine, computerUse: { ...machine.computerUse!, sessions: [] } },
+    { ...machine, status: "offline" as const },
+  ]) {
+    await act(async () => view.move!({ machines: [changed] }));
+    expect(socket.readyState).toBe(3);
+    expect(container.querySelector("[data-native-display]")).toBe(nativeView);
+    expect(state.epoch).toBe(before);
+    expect(container.textContent).not.toContain("Connecting");
+  }
+  await act(async () =>
+    view.move!({ machines: [{ ...machine, ownership: "other", computerUse: null }] }),
+  );
+  expect(state.epoch).not.toBe(before);
+});

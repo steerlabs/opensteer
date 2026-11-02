@@ -137,7 +137,7 @@ import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { newerBrowserTabCatalog, placeList } from "./places.js";
-import { RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
+import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
@@ -628,6 +628,11 @@ export class HttpHostClient {
   #presenceCounter = 0;
   #browserStateCounter = 0;
   readonly #browserStateMarks = new Map<string, number>();
+  // Released presenters still need the authority of their session during catalog gaps.
+  readonly #browserTargetAuthorities = new Map<
+    string,
+    Pick<BrowserSessionSummary, "workspaceId" | "profileId">
+  >();
   readonly #tabCatalogs = new Map<string, BrowserTabCatalog>();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
@@ -5247,8 +5252,7 @@ export class HttpHostClient {
         (event.type === "run.completed" ||
           event.type === "run.failed" ||
           event.type === "run.interrupted" ||
-          (event.type === "run.status" &&
-            !["queued", "running", "waiting"].includes(event.data.status)))
+          (event.type === "run.status" && !isActiveRunStatus(event.data.status)))
       )
         this.#runPlaces.end(event.runId, false);
       const current = next.threads.find(({ id }) => id === event.threadId);
@@ -5849,6 +5853,20 @@ export class HttpHostClient {
     }
   }
 
+  #browserTargetAuthorized(snapshot: HostSnapshot, sessionId: string): boolean {
+    const authority = this.#browserTargetAuthorities.get(sessionId);
+    if (!authority) return true;
+    if (this.#forbiddenWorkspaces.has(authority.workspaceId)) return false;
+    return (
+      authority.profileId === null ||
+      (snapshot.browserProfiles.some((profile) => profile.id === authority.profileId) &&
+        snapshot.browserProfileGrants.some(
+          (grant) =>
+            grant.profileId === authority.profileId && grant.workspaceId === authority.workspaceId,
+        ))
+    );
+  }
+
   #refuseWorkspace(workspaceId: string): void {
     this.#savedViewReadiness = {
       ...emptySavedViewReadiness(),
@@ -5859,16 +5877,10 @@ export class HttpHostClient {
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#forbiddenWorkspaces.add(workspaceId);
-    this.#targetedControl.reconcile(
-      (sessionId) =>
-        this.#snapshot.browserSessions.find((session) => session.id === sessionId)?.workspaceId !==
-        workspaceId,
-    );
-    this.#targetedWatch.reconcile(
-      (sessionId) =>
-        this.#snapshot.browserSessions.find((session) => session.id === sessionId)?.workspaceId !==
-        workspaceId,
-    );
+    const authorized = (sessionId: string) =>
+      this.#browserTargetAuthorized(this.#snapshot, sessionId);
+    this.#targetedControl.reconcile(undefined, authorized);
+    this.#targetedWatch.reconcile(undefined, authorized);
     this.#notificationPreferences.delete(workspaceId);
     this.#workspaceTaskScopes.delete(workspaceId);
     for (const [threadId, ownerWorkspaceId] of this.#threadWorkspace) {
@@ -5996,6 +6008,7 @@ export class HttpHostClient {
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
       this.#browserStateMarks.clear();
+      this.#browserTargetAuthorities.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
@@ -6031,23 +6044,34 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        snapshot.workspaceTabs !== this.#snapshot.workspaceTabs
+        snapshot.workspaceTabs !== this.#snapshot.workspaceTabs ||
+        snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
+        snapshot.browserProfileGrants !== this.#snapshot.browserProfileGrants ||
+        snapshot.workspaces !== this.#snapshot.workspaces
       ) {
         const places = placeList(snapshot);
         if (snapshot.connection === "connected")
           this.#placeActivity.reconcile(
             new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),
           );
-        // Browser viewers follow the catalog, never the realtime channel: the
-        // Host admits and revokes each one on its own socket.
+        for (const session of [
+          ...snapshot.browserSessions,
+          ...(snapshot.workspaceTabs ?? []).map((group) => group.session),
+        ])
+          this.#browserTargetAuthorities.set(session.id, {
+            workspaceId: session.workspaceId,
+            profileId: session.profileId,
+          });
+        const authorized = (sessionId: string) =>
+          this.#browserTargetAuthorized(snapshot, sessionId);
         const allowed = (sessionId: string, surfaceId: string) =>
           places.some(
             (place) =>
               place.key === `browser:${sessionId}:${surfaceId}` && place.availability === "ready",
           );
         reconcileBrowserTargets = () => {
-          this.#targetedWatch.reconcile(allowed);
-          this.#targetedControl.reconcile(allowed);
+          this.#targetedWatch.reconcile(allowed, authorized);
+          this.#targetedControl.reconcile(allowed, authorized);
         };
       }
     }

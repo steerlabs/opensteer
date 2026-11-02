@@ -27,6 +27,7 @@ export function ComputerWatchView({
   app = null,
   appKey,
   compact = false,
+  preserveLastFrame = false,
   marks = null,
   hostClient,
   hostConnected,
@@ -44,6 +45,7 @@ export function ComputerWatchView({
   appKey: string | null;
   /** A tile: the picture and what it is waiting for, with nothing to press. */
   compact?: boolean;
+  preserveLastFrame?: boolean;
   /** Who is working in it, after its name. */
   marks?: ReactNode;
   hostClient: HostClient;
@@ -101,13 +103,16 @@ export function ComputerWatchView({
         ? "stopping"
         : "unavailable",
     hostClient,
-    source: live
-      ? {
-          kind: "task-session",
-          sessionId: live.session.sessionId,
-          ...(appKey === null ? {} : { appKey }),
-        }
-      : null,
+    preserveLastFrame,
+    machineId,
+    source:
+      preserveLastFrame || live
+        ? {
+            kind: "task-session",
+            sessionId,
+            ...(appKey === null ? {} : { appKey }),
+          }
+        : null,
     streamable: machine !== null && canStreamComputerDisplay(machine),
   });
   const status = computerWatchStatus({
@@ -122,11 +127,12 @@ export function ComputerWatchView({
     startingWords: display.startingWords,
     stop,
   });
-  const showing = reading && status?.clear !== true && display.picture !== null;
+  const showing =
+    display.picture !== null && (preserveLastFrame || (reading && status?.clear !== true));
   useEffect(() => {
-    onPictureLive?.(showing && hostConnected);
+    onPictureLive?.(reading && showing && hostConnected);
     return () => onPictureLive?.(false);
-  }, [hostConnected, onPictureLive, showing]);
+  }, [hostConnected, onPictureLive, reading, showing]);
   const label = phone ? machineName : `${shownName ?? "App"} on ${machineName}`;
   const ratio =
     showing && display.picture ? `${display.picture.width} / ${display.picture.height}` : null;
