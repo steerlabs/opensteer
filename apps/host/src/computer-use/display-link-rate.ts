@@ -40,6 +40,7 @@ export class DisplayLinkRate {
     { delivered: number; deliveredAt: number | null; at: number; bytes: number }
   >();
   #samples: { at: number; bytesPerMs: number }[] = [];
+  #latest: number | null = null;
   #sends: { at: number; bytes: number }[] = [];
   #clearMs = 0;
   #lastAck: number | null = null;
@@ -61,14 +62,16 @@ export class DisplayLinkRate {
     return this.#samples.length ? Math.max(...this.#samples.map((s) => s.bytesPerMs)) : null;
   }
 
-  /** Bytes in flight that the link can carry within a round trip and a short queue. */
+  /**
+   * Bytes in flight the link carries, as BBR bounds them: twice its round trip
+   * of delivery plus a short allowance. The latest delivery bounds a stale
+   * maximum, so a handover to a slow link stops filling it at once.
+   */
   creditBytes(now: number, baseRttMs: number, ceiling: number): number {
-    const rate = Math.min(
-      this.bandwidth(now) ?? Infinity,
-      this.cap === null ? Infinity : this.cap / 8_000,
-    );
-    if (!Number.isFinite(rate)) return Math.min(ceiling, 128 * 1_024);
-    return Math.min(ceiling, Math.max(64 * 1_024, rate * (baseRttMs + 150)));
+    const bandwidth = this.bandwidth(now);
+    if (bandwidth === null) return Math.min(ceiling, 128 * 1_024);
+    const rate = Math.min(bandwidth, 2 * (this.#latest ?? bandwidth));
+    return Math.min(ceiling, Math.max(64 * 1_024, rate * (2 * baseRttMs + 100)));
   }
 
   sent(sequence: number, bytes: number, now: number): void {
@@ -108,6 +111,7 @@ export class DisplayLinkRate {
     if (since !== null && now > since) {
       sample = (this.#delivered - base) / (now - since);
       this.#samples.push({ at: now, bytesPerMs: sample });
+      this.#latest = sample;
     }
     const gap = this.#lastAck === null ? 0 : now - this.#lastAck;
     const sentGap = this.#lastAckedSentAt === null ? 0 : frame.at - this.#lastAckedSentAt;

@@ -439,11 +439,7 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
       return plan
     }
     guard let plan else { return }
-    guard VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AverageBitRate,
-        value: NSNumber(value: plan.bitrate)) == noErr,
-      VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_ExpectedFrameRate,
-        value: NSNumber(value: plan.fps)) == noErr
-    else { fail("encoder-failed"); return }
+    guard MacVideoEncoder.retarget(encoder, plan) else { fail("encoder-failed"); return }
     publication.withLock { diagnostic("rate", $0, reason: "\(plan.bitrate)@\(plan.fps)") }
   }
 
@@ -643,51 +639,6 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     producer.encoded(sample, generation: inputGeneration)
   }
 
-  /// One fully configured hardware session, or nil when this encoder lacks it.
-  private func makeEncoder(
-    width: Int, height: Int, plan: MacVideoRate.Plan, lowLatency: Bool, profile: CFString
-  ) -> VTCompressionSession? {
-    var created: VTCompressionSession?
-    guard VTCompressionSessionCreate(
-      allocator: kCFAllocatorDefault, width: Int32(width), height: Int32(height),
-      codecType: kCMVideoCodecType_H264,
-      encoderSpecification: [
-        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
-        kVTVideoEncoderSpecification_EnableLowLatencyRateControl: lowLatency,
-      ] as CFDictionary,
-      imageBufferAttributes: nil, compressedDataAllocator: nil,
-      outputCallback: Self.encoderOutput,
-      refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &created) == noErr,
-      let session = created
-    else { return nil }
-    var properties: [(CFString, CFTypeRef)] = [
-      (kVTCompressionPropertyKey_RealTime, kCFBooleanTrue as CFTypeRef),
-      (kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse as CFTypeRef),
-      (kVTCompressionPropertyKey_ProfileLevel, profile as CFTypeRef),
-      (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: plan.fps)),
-      (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: plan.bitrate)),
-    ]
-    // Low-latency keys come only on demand (start, refresh, loss): a periodic
-    // key on a scarce budget costs seconds of skipped frames.
-    if !lowLatency {
-      properties.append((kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: plan.fps * 2)))
-    }
-    var hardware: Unmanaged<CFTypeRef>?
-    guard properties.allSatisfy({ VTSessionSetProperty(session, key: $0.0, value: $0.1) == noErr }),
-      VTCompressionSessionPrepareToEncodeFrames(session) == noErr,
-      withUnsafeMutablePointer(to: &hardware, { pointer in
-        VTSessionCopyProperty(
-          session, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
-          allocator: kCFAllocatorDefault, valueOut: UnsafeMutableRawPointer(pointer))
-      }) == noErr,
-      hardware?.takeRetainedValue() as? Bool == true
-    else {
-      VTCompressionSessionInvalidate(session)
-      return nil
-    }
-    return session
-  }
-
   private func prepareEncoder(width: Int, height: Int, advanceGeneration: Bool = false) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       queue.async { [self] in
@@ -711,24 +662,13 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
             state.encodePts = .invalid
             return (state.rate.mode, plan)
           }
-          // A negotiated stream prefers low-latency rate control, which tracks
-          // the budget by skipping frames rather than blurring text and needs
-          // Constrained High. An encoder without either, as in a virtual
-          // machine, keeps the next configuration it fully supports.
-          let candidates: [(lowLatency: Bool, profile: CFString)] =
-            mode == .legacy
-            ? [(false, kVTProfileLevel_H264_Baseline_AutoLevel)]
-            : [
-              (true, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel),
-              (false, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel),
-              (false, kVTProfileLevel_H264_Baseline_AutoLevel),
-            ]
-          guard let session = candidates.lazy.compactMap({ candidate -> VTCompressionSession? in
-            let session = self.makeEncoder(width: width, height: height, plan: plan,
-              lowLatency: candidate.lowLatency, profile: candidate.profile)
+          let refcon = Unmanaged.passUnretained(self).toOpaque()
+          guard let session = MacVideoEncoder.configurations(mode).lazy.compactMap({ configuration in
+            let session = MacVideoEncoder.make(width: width, height: height, plan: plan,
+              configuration: configuration, output: Self.encoderOutput, refcon: refcon)
             self.publication.withLock {
-              self.diagnostic("encoder-create", $0,
-                reason: "lowLatency=\(candidate.lowLatency):profile=\(candidate.profile):\(session != nil)")
+              self.diagnostic("encoder-create", $0, reason: "lowLatency=\(configuration.lowLatency):"
+                + "profile=\(configuration.profile):\(session != nil)")
             }
             return session
           }).first else { throw EncoderFailure() }
