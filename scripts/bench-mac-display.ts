@@ -1,8 +1,7 @@
-// Opt-in, offscreen only. Reuse OUT to reuse the source/parameter-hashed content cache.
+// Opt-in, offscreen only. OUT reuses the production-source-hashed Swift binary.
 // OPENSTEER_MAC_BENCH_SCENARIO=lan,4g,weak-cell,edge,handover,mixed
-// OPENSTEER_MAC_BENCH_FPS=30,60 DURATION=20 OUT=<scratch directory>
-// All variables use the OPENSTEER_MAC_BENCH_ prefix; PROFILE=baseline|main,
-// GOP=6 (frames), RUNG=2 (0..4 => .75/1.5/3/6/12 Mbps).
+// OPENSTEER_MAC_BENCH_FPS=60 OPENSTEER_MAC_BENCH_DURATION=20
+// OPENSTEER_MAC_BENCH_OUT=<scratch directory> OPENSTEER_MAC_BENCH_LEGACY=1
 import { spawn } from "node:child_process";
 
 if (process.platform !== "darwin")
