@@ -83,18 +83,21 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
   RowGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SectionLabel: ({ children }: { children: string }) => <h3>{children}</h3>,
   SecondaryButton: ({
+    accessibilityLabel,
     busy,
     disabled,
     label,
     onPress,
   }: {
+    accessibilityLabel?: string;
     busy?: boolean;
     disabled?: boolean;
     label: string;
     onPress: () => void;
   }) => (
-    <button disabled={disabled || busy} onClick={onPress}>
+    <button aria-label={accessibilityLabel} disabled={disabled || busy} onClick={onPress}>
       {busy ? "Sending…" : label}
     </button>
   ),
@@ -236,6 +239,9 @@ describe("RequestCard saved-password sign-ins", () => {
       .mockResolvedValueOnce(true);
     await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
     await click("Review request");
+    expect(text()).toContain(
+      "Allow lets agents in Research sign in as person@example.com from now on.",
+    );
     await click("Allow");
     expect(dispatch).not.toHaveBeenCalled();
     await click("Only this time");
@@ -252,6 +258,58 @@ describe("RequestCard saved-password sign-ins", () => {
     );
     expect(passwordRead).toHaveBeenCalledTimes(1);
   });
+
+  it.each([false, true])(
+    "keeps account host groups and page matches (onPage=%s)",
+    async (onPage) => {
+      const accounts = ["github.com", "enterprise.github.com", "login.github.com"].map(
+        (host, index) => ({
+          id: `00000000-0000-4000-8000-00000000000${index + 1}`,
+          revision: index + 1,
+          username: "same@example.com",
+          host,
+          onPage: onPage && index === 0,
+          updatedAt: new Date().toISOString(),
+          label: null,
+        }),
+      );
+      const passwordRead = vi.fn(async () => ({
+        ok: true,
+        data: { stage: "approval", permissionVersion: 5, accounts },
+      }));
+      const dispatch = vi.fn(async () => ({
+        type: "browser.password-sign-in.respond",
+        status: "fulfilled",
+      }));
+      await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
+      await click("Review request");
+      if (onPage) {
+        expect(text()).not.toContain("enterprise.github.com");
+        await click("Other accounts on github.com (2)");
+      }
+      for (const host of ["enterprise.github.com", "login.github.com"]) {
+        expect(text()).toContain(host);
+        expect(button(`Sign in as same@example.com · ${host}`)).toBeDefined();
+      }
+      await click("Sign in as same@example.com · enterprise.github.com");
+      expect(text()).toContain(
+        "Allow lets agents in Research sign in as same@example.com from now on.",
+      );
+      await click("Allow");
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decision: {
+            kind: "approve",
+            loginId: accounts[1]!.id,
+            revision: 2,
+            remember: true,
+            permissionVersion: 5,
+          },
+        }),
+      );
+      expect(passwordRead).toHaveBeenCalledOnce();
+    },
+  );
 
   it("retries a failed decline with the same idempotency key", async () => {
     const dispatch = vi

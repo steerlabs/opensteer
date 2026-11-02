@@ -223,6 +223,46 @@ describe("ComputerUseBlock on the phone", () => {
     );
   });
 
+  it.each(["Review", "Decline"])(
+    "shows a failed pending %s beside that request",
+    async (action) => {
+      await mount({
+        dispatch: async () => {
+          throw new Error("This request was already answered.");
+        },
+        rpc: {
+          "integration.computer.setup.review": async () => {
+            throw new Error("Studio is offline.");
+          },
+        },
+        view: view({ pending: [pending("thr_1")] }),
+      });
+      const control = button(action);
+      await click(control);
+      expect(control.parentElement?.textContent).toContain(
+        action === "Review" ? "Studio is offline." : "This request was already answered.",
+      );
+      expect(control.disabled).toBe(false);
+    },
+  );
+
+  it("keeps Add app failures visible after closing the picker", async () => {
+    const installed = vi.fn(async () => ({ ok: true, data: { apps: [{ identity: preview }] } }));
+    await mount({
+      dispatch: async () => {
+        throw new Error("Preview's identity changed.");
+      },
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button("Add app"));
+    await click(button("Can see"));
+    expect(maybeButton("Close")).toBeNull();
+    expect(text()).toContain("Preview's identity changed.");
+    expect(installed).toHaveBeenCalledOnce();
+    expect(button("Add app").disabled).toBe(false);
+  });
+
   it("holds every control while the Host is unreachable", async () => {
     const dispatch = vi.fn();
     await mount({

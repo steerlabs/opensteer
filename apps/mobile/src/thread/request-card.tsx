@@ -25,6 +25,9 @@ import {
   passwordSignInPrivacy,
   passwordSignInReasonLabel,
   passwordSignInAllowLabel,
+  passwordSignInAllowRemembers,
+  passwordSignInOtherAccounts,
+  type PasswordSignInAccountGroup,
   passwordSignInOnceLabel,
   passwordSignInNoAccount,
   passwordSignInConsent,
@@ -84,6 +87,7 @@ import {
   Notice,
   PrimaryButton,
   RowGroup,
+  SectionLabel,
   SecondaryButton,
   StatusDot,
 } from "../ui/primitives.js";
@@ -1357,6 +1361,7 @@ function PasswordSignInBody(props: {
   const [now, setNow] = useState(() => new Date());
   const [query, setQuery] = useState("");
   const [chosenId, setChosenId] = useState<string | null>(null);
+  const [otherAccountsExpanded, setOtherAccountsExpanded] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), expiryTickMs);
     return () => clearInterval(timer);
@@ -1368,6 +1373,22 @@ function PasswordSignInBody(props: {
     !props.canRespond ||
     props.pendingId !== null ||
     Date.parse(props.payload.expiresAt) <= now.getTime();
+  function renderGroups(list: readonly PasswordSignInAccountGroup[]): ReactNode {
+    return list.map((group, index) => (
+      <View key={group.host ?? index}>
+        {group.host === null ? null : <SectionLabel>{group.host}</SectionLabel>}
+        {group.rows.map(({ account, detail }) => (
+          <SecondaryButton
+            key={account.id}
+            label={`${chosen?.id === account.id ? "✓ " : ""}${account.username}${detail ? ` · ${detail}` : ""}`}
+            accessibilityLabel={`Sign in as ${account.username}${group.host ? ` · ${group.host}` : ""}${detail ? ` · ${detail}` : ""}`}
+            disabled={disabled}
+            onPress={() => setChosenId(account.id)}
+          />
+        ))}
+      </View>
+    ));
+  }
   return (
     <View style={styles.choices}>
       <Notice
@@ -1393,17 +1414,19 @@ function PasswordSignInBody(props: {
           onChangeText={setQuery}
         />
       ) : null}
-      {[...groups.primary, ...groups.others]
-        .flatMap((group) => group.rows)
-        .map(({ account, detail }) => (
+      {renderGroups(groups.primary)}
+      {groups.others.length > 0 ? (
+        <>
           <SecondaryButton
-            key={account.id}
-            label={`${chosen?.id === account.id ? "✓ " : ""}${account.username}${detail ? ` · ${detail}` : ""}`}
-            accessibilityLabel={`Sign in as ${account.username}`}
-            disabled={disabled}
-            onPress={() => setChosenId(account.id)}
+            label={passwordSignInOtherAccounts(
+              props.payload.site,
+              groups.others.reduce((count, group) => count + group.rows.length, 0),
+            )}
+            onPress={() => setOtherAccountsExpanded((expanded) => !expanded)}
           />
-        ))}
+          {otherAccountsExpanded || query.trim() !== "" ? renderGroups(groups.others) : null}
+        </>
+      ) : null}
       {props.card?.stage === "approval" && accounts.length === 0 ? (
         <AppText role="secondary">{passwordSignInNoAccount(props.payload.site)}</AppText>
       ) : null}
@@ -1423,6 +1446,9 @@ function PasswordSignInBody(props: {
       />
       {chosen && props.card?.stage === "approval" ? (
         <>
+          <AppText role="secondary" tone="muted">
+            {passwordSignInAllowRemembers(props.workspaceName, chosen.username)}
+          </AppText>
           <SecondaryButton
             label={passwordSignInOnceLabel}
             busy={props.pendingId === "password-once"}

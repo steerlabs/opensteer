@@ -110,6 +110,7 @@ export function ComputerUseBlock(props: {
         disabled={disabled || view.state.kind === "offline"}
         onPress={() => run("list", () => listApps(""))}
       />
+      <FailureText detail={failureFor("add-app")} />
       {view.sessions.map((session) => (
         <SessionRow
           key={session.sessionId}
@@ -215,6 +216,7 @@ export function ComputerUseBlock(props: {
               run(pending.request.id, () => cancelComputerUseSetup(hostClient, pending.request.id))
             }
           />
+          <FailureText detail={failureFor(pending.request.id)} />
         </View>
       ))}
       <FailureText
@@ -248,9 +250,7 @@ export function ComputerUseBlock(props: {
                       disabled={disabled}
                       onPress={() => {
                         setApps(null);
-                        run(app.identity.bundleId, () =>
-                          request({ kind: "app", app: app.identity, access }),
-                        );
+                        run("add-app", () => request({ kind: "app", app: app.identity, access }));
                       }}
                     />
                   ))}
