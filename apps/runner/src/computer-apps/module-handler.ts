@@ -860,7 +860,7 @@ export class ComputerAppModuleHandler {
     await this.#send(stream, {
       error: {
         code: "failed",
-        message: "This computer does not offer an MCP executor.",
+        message: "The selected computer does not offer an MCP executor.",
       },
       sessionId,
       type: "runner.integrations.mcp.closed",

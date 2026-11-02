@@ -119,9 +119,10 @@ Phone data loss and consumed-ticket upgrade failures close viewers with retryabl
 
 ## Compatibility
 
-The native-only browser cutover deliberately uses Host API epoch 49. There are no
-users requiring the removed Vault, preparation or Guest-save behavior. Prior
-epochs receive the existing discovery/RPC/subscription update refusal.
+Host API epoch 50 deliberately removes the device-local approval paths: an
+earlier client would offer only decline for saved logins or wait for an answer on
+that Mac. Prior epochs receive the existing discovery/RPC/subscription update
+refusal.
 
 After that boundary, compatibility targets the previous **public** release.
 [The previous-release journey](../apps/host/src/agents/previous-release-compat.integration.test.ts)
