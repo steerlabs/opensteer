@@ -104,14 +104,20 @@ struct MacVideoCredit {
   mutating func drained() { inFlight = 0 }
 
   /// Reserves peer credit before enqueueing: the media peer can acknowledge immediately.
+  /// An empty lane takes any legal envelope: refusing a large key would only
+  /// request another key of the same size, so a detailed window never showed.
   mutating func reserve(sequence: Int, bytes: Int, now: TimeInterval) -> Bool {
-    guard outstandingBytes + bytes <= Self.maxOutstandingBytes else {
+    guard outstanding.isEmpty || outstandingBytes + bytes <= Self.maxOutstandingBytes else {
       needsKey = true
       return false
     }
     outstanding.append((sequence, bytes, now))
     return true
   }
+
+  /// The encoder chose not to encode a submitted sample. Nothing was emitted,
+  /// so the peer's references are intact; only a requested key is asked again.
+  mutating func dropped(key: Bool) { if key { needsKey = true } }
 
   /// Encoded output that will not reach the peer breaks its reference chain.
   mutating func lost(_ sequence: Int? = nil) {
@@ -562,14 +568,19 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
                 producer.publication.withLock { $0.credit.returned() }
                 producer.schedulePendingSample()
               }
-              let inputGeneration = Int(bitPattern: generation)
+              let submitted = Int(bitPattern: generation)
+              let inputGeneration = submitted >> 1
               guard producer.publication.withLock({ !$0.ended && $0.generation == inputGeneration })
               else { return }
               guard status == noErr else {
                 producer.fail("encoder-failed")
                 return
               }
-              guard !flags.contains(.frameDropped), let sample else {
+              if flags.contains(.frameDropped) {
+                producer.publication.withLock { $0.credit.dropped(key: submitted & 1 == 1) }
+                return
+              }
+              guard let sample else {
                 producer.publication.withLock { $0.credit.lost() }
                 return
               }
@@ -813,7 +824,9 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     let status = VTCompressionSessionEncodeFrame(
       encoder, imageBuffer: sample.buffer,
       presentationTimeStamp: sample.pts, duration: .invalid, frameProperties: properties,
-      sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation), infoFlagsOut: nil)
+      // The refcon carries the generation and whether this submission asked for a key.
+      sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: generation << 1 | (key ? 1 : 0)),
+      infoFlagsOut: nil)
     if status != noErr {
       publication.withLock { $0.credit.returned() }
       fail("encoder-failed")
@@ -947,6 +960,11 @@ final class MacWindowVideoProducer: NSObject, MacVideoProducing, SCStreamOutput,
     withUnsafeBytes(of: &size) { envelope.append(contentsOf: $0) }
     envelope.append(json)
     envelope.append(annex)
+    // One IPC frame carries the whole envelope; a larger one could never be sent.
+    guard envelope.count <= Frame.maxBytes else {
+      fail("encoder-failed")
+      return
+    }
     let reserved = publication.withLock { state in
       guard state.open, state.visible, !state.ended, state.generation == generation else {
         return false

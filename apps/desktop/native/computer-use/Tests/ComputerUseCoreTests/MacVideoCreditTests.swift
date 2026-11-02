@@ -96,6 +96,48 @@ final class MacVideoCreditTests: XCTestCase {
     XCTAssertEqual(credit.admit(now: 2), .submit(key: false))
   }
 
+  /// Refusing a legal keyframe larger than the byte budget would only request
+  /// another keyframe of the same size, so a detailed window would never show.
+  func testOversizedEnvelopePassesOnlyAnEmptyLane() {
+    var credit = MacVideoCredit()
+    let large = MacVideoCredit.maxOutstandingBytes + 512 * 1_024
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: true))
+    credit.returned()
+    XCTAssertTrue(credit.reserve(sequence: 1, bytes: large, now: 0))
+    XCTAssertEqual(credit.admit(now: 0.01), .withheld("bytes"), "Nothing is encoded behind it")
+    XCTAssertTrue(credit.acknowledge(1))
+    XCTAssertEqual(credit.admit(now: 0.02), .submit(key: false), "The delivered key needs no repeat")
+    credit.returned()
+    XCTAssertTrue(credit.reserve(sequence: 2, bytes: 10, now: 0.02))
+    XCTAssertFalse(credit.reserve(sequence: 3, bytes: large, now: 0.02), "A busy lane keeps its bound")
+    XCTAssertEqual(credit.admit(now: 0.03), .submit(key: true))
+  }
+
+  /// The helper's media write queue follows the same rule as producer credit.
+  func testMediaQueueTakesOneLargeFrameOnlyWhenEmpty() {
+    let large = 1_048_576 + 4
+    XCTAssertTrue(IPCConnection.mediaAdmits(queued: 0, framed: large))
+    XCTAssertFalse(IPCConnection.mediaAdmits(queued: 10, framed: large))
+    XCTAssertTrue(IPCConnection.mediaAdmits(queued: 10, framed: 1_048_566))
+    XCTAssertFalse(IPCConnection.mediaAdmits(queued: 10, framed: 1_048_567))
+  }
+
+  /// An encoder drop emits nothing, so the peer's references stay intact. Only
+  /// a requested key must be asked for again; a dropped delta changes nothing.
+  func testEncoderDropsKeepReferencesButRetryARequestedKey() {
+    var credit = MacVideoCredit()
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: true))
+    credit.dropped(key: true)
+    credit.returned()
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: true))
+    credit.returned()
+    XCTAssertTrue(credit.reserve(sequence: 1, bytes: 10, now: 0))
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: false))
+    credit.dropped(key: false)
+    credit.returned()
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: false))
+  }
+
   /// Encoded output the peer never receives, and every reset, needs a key.
   func testLostEncodedOutputAndResetForceKeyFrames() {
     var credit = MacVideoCredit()
