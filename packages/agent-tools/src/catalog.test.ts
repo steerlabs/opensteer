@@ -208,7 +208,9 @@ describe("agent tool catalog", () => {
       expect(description).not.toMatch(/report"? to publish/u);
     }
     const conversation = platformGuideForRun({ capabilityProfileId: "main", role: "conversation" });
-    expect(conversation).toContain("end the turn without writing anything, not even an acknowledgement");
+    expect(conversation).toContain(
+      "end the turn without writing anything, not even an acknowledgement",
+    );
     expect(conversation).toContain("Deliver results they are waiting for");
     expect(platformGuideForRun({ capabilityProfileId: "delegated", role: "work" })).toContain(
       "Reports never alert",
