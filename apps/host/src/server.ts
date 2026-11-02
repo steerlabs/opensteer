@@ -539,6 +539,7 @@ export async function createHostServer(
     authenticator: dependencies.authenticator,
     deploymentId: dependencies.discovery.document.deploymentId,
     integrations: dependencies.integrations.service,
+    mcpOauth: dependencies.integrations.mcpOauth,
   };
   registerIntegrationAuthorizationRoutes(app, integrationAuthorizationRpcOptions);
   const integrationRpcOptions: IntegrationRpcOptions = {

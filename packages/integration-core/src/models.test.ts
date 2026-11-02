@@ -173,6 +173,7 @@ describe("provider application sources", () => {
 
   it.each([
     ["canonical", false, "server", "account-adopted-self-hosted"],
+    ["routed", false, "server", "account-adopted-self-hosted"],
     [null, true, "personal", "account-linked-personal"],
     [null, false, "personal", "account-free-personal"],
     [null, false, "server", "independent-self-hosted"],

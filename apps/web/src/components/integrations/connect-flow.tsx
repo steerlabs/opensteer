@@ -523,6 +523,15 @@ export function ConnectFlow({
 
       {step.kind === "choose" ? (
         <>
+          {chosen?.kind === "deployment-oauth" ? (
+            <div className="notice" role="note">
+              <p>
+                Existing connections keep working. Before connecting or reconnecting, register this
+                exact redirect URI in your provider console.
+              </p>
+              <code>{chosen.callbackUrl}</code>
+            </div>
+          ) : null}
           {hostedOutage ? (
             <div className="notice notice--warn" role="status">
               <Icon name="alert-circle" />

@@ -619,6 +619,31 @@ describe("IntegrationService OAuth refresh", () => {
     });
   });
 
+  it("keeps a direct custom connection and its refresh working after Account linking", async () => {
+    const harness = deploymentRefreshHarness("account-linked-personal");
+    const authorization = (await harness.service.providerAuthorizations(harness.ownerUserId))
+      .example!;
+    expect(authorization.availableSources).toContainEqual(
+      expect.objectContaining({
+        kind: "deployment-oauth",
+        callbackUrl: "https://account.example.test/v1/oauth-broker/callback/example",
+      }),
+    );
+    harness.providerFetch.mockResolvedValue(
+      Response.json({
+        access_token: "new-access-token",
+        refresh_token: "new-refresh-token",
+        token_type: "Bearer",
+        scope: "openid email",
+      }),
+    );
+    expect(await harness.service.materializeForAdapter(harness.request)).toMatchObject({
+      credentialValues: { accessToken: "new-access-token" },
+    });
+    expect(harness.providerFetch).toHaveBeenCalledOnce();
+    expect(harness.markConnectionNeedsAttention).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       error: "invalid_grant",
@@ -939,7 +964,7 @@ describe("IntegrationService OAuth source authority", () => {
     },
     {
       expectedAvailableKinds: ["hosted-oauth", "deployment-oauth"],
-      expectedCode: "CANONICAL_SURFACE_REQUIRED",
+      expectedCode: "READY",
       expectedKind: "deployment-oauth",
       hosted: true,
       name: "never falls back to hosted OAuth when the saved source is deployment OAuth",
@@ -1221,6 +1246,7 @@ describe("IntegrationService hosted OAuth failures", () => {
         definitions: [definition],
         deploymentPosture: async () => "account-linked-personal" as const,
         hostedOAuth: {
+          kind: "personal",
           accountSubject: vi.fn(async () => ({
             issuer: "https://account.example.test",
             // Older cloud releases accidentally returned the link timestamp here.
@@ -1278,63 +1304,56 @@ describe("IntegrationService hosted OAuth failures", () => {
     },
   );
 
-  it("honors the persisted deployment OAuth default when the request omits a source", async () => {
-    const ownerUserId = createId("user");
-    const applicationId = createIntegrationId("providerApplication");
-    const attemptId = createIntegrationId("oauthAttempt");
-    let attemptPayload: Readonly<Record<string, string>> = {};
-    const attempts = {
-      begin: vi.fn(async (input) => {
-        attemptPayload = (await input.payload("oauth-state")).payload;
-        return {
-          attemptId,
-          expiresAt: new Date("2026-08-20T12:10:00.000Z"),
-          launchTicket: "L".repeat(43),
-        };
-      }),
-    };
-    const createAttempt = vi.fn();
-    const service = new IntegrationService({
-      onConnectionConnected: vi.fn(async () => undefined),
-      attempts: attempts as never,
-      definitions: [refreshDefinition()],
-      deploymentPosture: async () => "account-linked-personal" as const,
-      hostedOAuth: {
-        accountSubject: vi.fn(async () => ({
-          issuer: "https://account.example.test",
-          linkGeneration: "G".repeat(43),
-          subject: `acct_${crypto.randomUUID()}`,
-        })) as never,
-        broker: {
-          createAttempt,
-          issuer: "https://account.example.test",
-          metadata: vi.fn(async () => ({
-            callbackRelayProviders: [],
-            providerRevisions: { example: 1 },
-          })),
-        } as never,
-        deploymentAuthorityDigest: "D".repeat(43),
-      },
-      publicUrl: new URL("https://host.example.test"),
-      repository: {
-        getProviderApplication: vi.fn(async () => ({
-          clientId: "deployment-client-id",
-          createdAt: "2026-08-20T12:00:00.000Z",
-          displayName: "Deployment OAuth",
-          encryptedSecrets: Buffer.from("sealed-application-secret"),
-          encryptionKeyVersion: 1,
-          id: applicationId,
-          ownerUserId: null,
-          provider: "example",
-          revision: 1,
-          status: "active",
-          updatedAt: "2026-08-20T12:00:00.000Z",
-        })),
-        listApplicationSourceDefaults: vi.fn(async () => ({
-          example: "deployment-oauth" as const,
-        })),
-        listProviderApplications: vi.fn(async () => [
-          {
+  it.each(["canonical", "personal-remote"] as const)(
+    "honors the saved custom app through the Account relay on %s",
+    async (requestSurface) => {
+      const ownerUserId = createId("user");
+      const applicationId = createIntegrationId("providerApplication");
+      const attemptId = createIntegrationId("oauthAttempt");
+      let attemptPayload: Readonly<Record<string, string>> = {};
+      const attempts = {
+        begin: vi.fn(async (input) => {
+          attemptPayload = (await input.payload("oauth-state")).payload;
+          return {
+            attemptId,
+            expiresAt: new Date("2026-08-20T12:10:00.000Z"),
+            launchTicket: "L".repeat(43),
+          };
+        }),
+      };
+      const createAttempt = vi.fn();
+      const service = new IntegrationService({
+        onConnectionConnected: vi.fn(async () => undefined),
+        attempts: attempts as never,
+        definitions: [refreshDefinition()],
+        deploymentPosture: async () => "account-linked-personal" as const,
+        hostedOAuth: {
+          kind: "personal",
+          accountSubject: vi.fn(async () => ({
+            issuer: "https://account.example.test",
+            linkGeneration: "G".repeat(43),
+            subject: `acct_${crypto.randomUUID()}`,
+          })) as never,
+          broker: {
+            callbackUrl: (provider: string) =>
+              `https://account.example.test/v1/oauth-broker/callback/${provider}`,
+
+            createAttempt,
+            createCallbackRelay: vi.fn(async (input: { attemptId: string; expiresAt: string }) => ({
+              ...input,
+              launchUrl: "https://account.example.test/launch",
+            })),
+            issuer: "https://account.example.test",
+            metadata: vi.fn(async () => ({
+              callbackRelayProviders: ["example"],
+              providerRevisions: { example: 1 },
+            })),
+          } as never,
+          deploymentAuthorityDigest: "D".repeat(43),
+        },
+        publicUrl: new URL("https://host.example.test"),
+        repository: {
+          getProviderApplication: vi.fn(async () => ({
             clientId: "deployment-client-id",
             createdAt: "2026-08-20T12:00:00.000Z",
             displayName: "Deployment OAuth",
@@ -1344,28 +1363,46 @@ describe("IntegrationService hosted OAuth failures", () => {
             ownerUserId: null,
             provider: "example",
             revision: 1,
-            status: "active" as const,
+            status: "active",
             updatedAt: "2026-08-20T12:00:00.000Z",
-          },
-        ]),
-      } as unknown as IntegrationRepository,
-      vault: {} as never,
-    });
+          })),
+          listApplicationSourceDefaults: vi.fn(async () => ({
+            example: "deployment-oauth" as const,
+          })),
+          listProviderApplications: vi.fn(async () => [
+            {
+              clientId: "deployment-client-id",
+              createdAt: "2026-08-20T12:00:00.000Z",
+              displayName: "Deployment OAuth",
+              encryptedSecrets: Buffer.from("sealed-application-secret"),
+              encryptionKeyVersion: 1,
+              id: applicationId,
+              ownerUserId: null,
+              provider: "example",
+              revision: 1,
+              status: "active" as const,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+            },
+          ]),
+        } as unknown as IntegrationRepository,
+        vault: {} as never,
+      });
 
-    await service.beginAuthorization({
-      definitionId: "example",
-      ownerUserId,
-      requestSurface: "canonical",
-      returnPath: "/integrations",
-      surface: "desktop",
-    });
+      await service.beginAuthorization({
+        definitionId: "example",
+        ownerUserId,
+        requestSurface,
+        returnPath: "/integrations",
+        surface: "desktop",
+      });
 
-    expect(JSON.parse(attemptPayload.payload ?? "")).toMatchObject({
-      applicationSource: "deployment-oauth",
-      providerApplicationId: applicationId,
-    });
-    expect(createAttempt).not.toHaveBeenCalled();
-  });
+      expect(JSON.parse(attemptPayload.payload ?? "")).toMatchObject({
+        applicationSource: "deployment-oauth",
+        providerApplicationId: applicationId,
+      });
+      expect(createAttempt).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { identity: "userinfo", ackFails: false, persists: true, pullFailure: null, remote: false },
@@ -1448,6 +1485,8 @@ describe("IntegrationService hosted OAuth failures", () => {
       // Every hop crosses the real protocol schemas the broker client parses, so a request the Host
       // sends with a field the contract does not carry fails here instead of in production.
       const broker = {
+        callbackUrl: (provider: string) =>
+          `https://account.example.test/v1/oauth-broker/callback/${provider}`,
         acknowledge: vi.fn(async () => {
           if (ackFails) throw new Error("broker acknowledgement unavailable");
         }),
@@ -1527,6 +1566,7 @@ describe("IntegrationService hosted OAuth failures", () => {
         deploymentPosture: async () => "account-linked-personal" as const,
         fetch: vi.fn(async () => Response.json({ name: "Hosted user", sub: "subject-1" })),
         hostedOAuth: {
+          kind: "personal",
           accountSubject: vi.fn(async () => ({
             issuer: "https://account.example.test",
             linkGeneration: "G".repeat(43),
@@ -1653,12 +1693,16 @@ describe("IntegrationService hosted OAuth failures", () => {
         attempts: attempts as never,
         deploymentPosture: async () => "account-linked-personal" as const,
         hostedOAuth: {
+          kind: "personal",
           accountSubject: vi.fn(async () => ({
             issuer: "https://account.example.test",
             linkGeneration: "G".repeat(43),
             subject: accountSubject,
           })) as never,
           broker: {
+            callbackUrl: (provider: string) =>
+              `https://account.example.test/v1/oauth-broker/callback/${provider}`,
+
             issuer: "https://account.example.test",
             status: vi.fn(async () => {
               if (outcome === "outage") throw new Error("broker unavailable");
@@ -1983,6 +2027,9 @@ describe("IntegrationService disconnect", () => {
       hosted: true,
       revocable: true,
       broker: {
+        callbackUrl: (provider: string) =>
+          `https://account.example.test/v1/oauth-broker/callback/${provider}`,
+
         issuer: "https://account.example.test",
         metadata: async () => ({
           providerRevisions: { example: 1 },
@@ -2007,6 +2054,9 @@ describe("IntegrationService disconnect", () => {
       hosted: true,
       revocable: true,
       broker: {
+        callbackUrl: (provider: string) =>
+          `https://account.example.test/v1/oauth-broker/callback/${provider}`,
+
         issuer: "https://account.example.test",
         metadata: async () => ({ providerRevisions: { example: 2 } }),
         revoke,
@@ -2086,6 +2136,7 @@ function disconnectFixture(input: {
     ...(input.broker
       ? {
           hostedOAuth: {
+            kind: "personal",
             broker: input.broker as never,
             deploymentAuthorityDigest: "D".repeat(43),
             accountSubject: async () =>
@@ -2210,6 +2261,8 @@ function hostedRefreshBroker(
     transactionId: request.transactionId,
   });
   return {
+    callbackUrl: (provider: string) =>
+      `https://account.example.test/v1/oauth-broker/callback/${provider}`,
     acknowledgeRefresh: vi.fn(async () => undefined),
     issuer: "https://account.example.test",
     metadata: vi.fn(async () =>
@@ -2277,6 +2330,7 @@ function hostedRefreshHarness(broker: unknown) {
     connection,
     definition,
     hostedOAuth: {
+      kind: "personal",
       accountSubject: vi.fn(async () => ({
         issuer: "https://account.example.test",
         linkGeneration: "G".repeat(43),
@@ -2303,7 +2357,9 @@ function roundTripDefinition(definition: IntegrationDefinition): IntegrationDefi
   return installedIntegrationDefinition(row);
 }
 
-function deploymentRefreshHarness() {
+function deploymentRefreshHarness(
+  posture: IntegrationDeploymentPosture = "independent-self-hosted",
+) {
   const applicationId = createIntegrationId("providerApplication");
   const definition = refreshDefinition();
   const application = {
@@ -2335,7 +2391,8 @@ function deploymentRefreshHarness() {
       connection,
       definition,
       fetch: providerFetch,
-      posture: "independent-self-hosted",
+      posture,
+      ...(posture === "account-linked-personal" ? { hostedOAuth: hostedOAuthFixture() } : {}),
       providerApplication: application,
     }),
     providerFetch,
@@ -2433,8 +2490,12 @@ function hostedOAuthFixture(
   } = {},
 ) {
   return {
+    kind: "personal" as const,
     accountSubject: vi.fn(async () => null),
     broker: {
+      callbackUrl: (provider: string) =>
+        `https://account.example.test/v1/oauth-broker/callback/${provider}`,
+
       issuer: "https://account.example.test",
       metadata: vi.fn(async () => {
         if (options.metadataUnavailable) throw new Error("broker metadata unavailable");

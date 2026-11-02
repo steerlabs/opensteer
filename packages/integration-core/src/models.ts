@@ -107,7 +107,7 @@ export function resolveIntegrationDeploymentPosture(input: {
   readonly kind: "personal" | "server";
   readonly personalAccountLinked: boolean;
 }): IntegrationDeploymentPosture {
-  if (input.accountReachability === "canonical") return "account-adopted-self-hosted";
+  if (input.accountReachability !== null) return "account-adopted-self-hosted";
   if (input.kind === "personal") {
     return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
   }
@@ -269,9 +269,8 @@ export const integrationProviderIdentityAlreadyConnectedDetail =
   "This account is already connected by another user. Ask them to disconnect it, or connect with your own provider app.";
 
 /**
- * Connections pin the exact OAuth application source that created them. A pinned source that is no
- * longer offered by the provider authorization can never be refreshed or reused, so every surface
- * that reports or enforces connection health must agree on this one predicate.
+ * Credential use pins the selected app and revision. The callback belongs to
+ * the original consent; changing the next consent callback keeps existing grants usable.
  */
 export function integrationApplicationSourcePinnedAndAvailable(input: {
   readonly applicationSource: IntegrationApplicationSource | null | undefined;
@@ -281,6 +280,18 @@ export function integrationApplicationSourcePinnedAndAvailable(input: {
   if (source?.kind !== "hosted-oauth" && source?.kind !== "deployment-oauth") return true;
   if (input.authorization?.hostedOAuthStatus === "temporarily-unavailable") {
     return true;
+  }
+  if (source.kind === "deployment-oauth") {
+    // A callback pins consent, not an existing grant's use or refresh. Relinking
+    // the Deployment must not invalidate credentials for the same registered app.
+    return (
+      input.authorization?.availableSources.some(
+        (candidate) =>
+          candidate.kind === "deployment-oauth" &&
+          candidate.providerApplicationId === source.providerApplicationId &&
+          candidate.providerApplicationRevision === source.providerApplicationRevision,
+      ) ?? false
+    );
   }
   return providerAuthorizationIncludesSource(input.authorization, source);
 }

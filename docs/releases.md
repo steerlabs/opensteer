@@ -271,6 +271,8 @@ insider. Nobody deploys it by hand, and
 [deploy-account.sh](../.github/scripts/deploy-account.sh) never replaces a newer
 live source with an older one.
 
+Deploy Account's additive browser-binding migration, custom/MCP callback-relay reader, browser-bound callback claim and static MCP client-metadata document on every replica before distributing Hosts that require Account callbacks for all new consent. An older or unavailable Account causes an update/unavailable refusal; Hosts never switch linked consent back to loopback. Existing connections continue using and refreshing their grants. In-flight callbacks launched before the browser-binding rollout must restart consent.
+
 The workload lives in [deploy/account](../deploy/account); secrets stay in Secret
 Manager and only their names and versions are here. New pods migrate the database
 at startup while the previous release keeps serving, so every migration must work

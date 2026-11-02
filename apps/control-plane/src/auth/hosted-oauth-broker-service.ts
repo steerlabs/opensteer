@@ -18,6 +18,9 @@ import {
   OAuthBrokerAuthorizationContextSchema,
   OAuthBrokerAuthorizationCodeBundleSchema,
   OAuthBrokerCallbackRelayContextSchema,
+  OAuthBrokerMcpRelayBindingSchema,
+  OAuthBrokerMcpAuthorizationResponseSchema,
+  OAuthBrokerMcpCallbackRelayContextSchema,
   OAuthBrokerDigestSchema,
   OAuthBrokerPublicMetadataSchema,
   OAuthBrokerRefreshContextSchema,
@@ -84,6 +87,7 @@ interface BrokerAuthorizationContext {
   readonly launchTicket: string;
   readonly mode: "managed" | "callback-relay";
   readonly clientId?: string | undefined;
+  readonly mcp?: z.infer<typeof OAuthBrokerMcpRelayBindingSchema> | undefined;
   readonly providerApplicationId?: string | undefined;
   readonly returnPath?: string | undefined;
   readonly requestedScopes: readonly string[];
@@ -101,6 +105,7 @@ const BrokerAuthorizationContextSchema = z
     launchTicket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
     mode: z.enum(["managed", "callback-relay"]).default("managed"),
     clientId: z.string().min(1).max(2_048).optional(),
+    mcp: OAuthBrokerMcpRelayBindingSchema.optional(),
     providerApplicationId: z
       .string()
       .regex(/^ipa_[0-9a-f-]{36}$/iu)
@@ -109,7 +114,10 @@ const BrokerAuthorizationContextSchema = z
     returnPath: z.string().min(1).max(2_048).optional(),
   })
   .superRefine((value, context) => {
-    if (value.mode === "callback-relay" && (!value.clientId || !value.providerApplicationId)) {
+    if (
+      value.mode === "callback-relay" &&
+      (!value.clientId || (!value.providerApplicationId && !value.mcp))
+    ) {
       context.addIssue({
         code: "custom",
         message: "Callback relay application binding is missing",
@@ -179,7 +187,16 @@ export class HostedOAuthBrokerService {
         ),
       ),
       issuer: this.#issuer,
-      callbackRelayProviders: ["slack"],
+      callbackRelayProviders: [
+        ...new Set(
+          integrationDefinitions
+            .filter((definition) =>
+              definition.authMethods.some((method) => method.kind === "oauth"),
+            )
+            .map((definition) => definition.provider),
+        ),
+      ],
+      ...(includeInstallationUrls ? { mcpCallbackRelay: 1 } : {}),
       providerRevisions: Object.fromEntries(
         [...this.#applications.values()].map(({ provider, revision }) => [provider, revision]),
       ),
@@ -281,19 +298,30 @@ export class HostedOAuthBrokerService {
     const definition = integrationDefinitions.find(
       (candidate) => candidate.id === input.definitionId && candidate.provider === input.provider,
     );
-    if (!definition || input.provider !== "slack") {
+    if (!("mcp" in input) && !definition) {
       throw new ControlPlaneError("conflict", "OAuth callback relay is unavailable");
     }
-    assertAuthorizationDigest(input.authorizationDigest, definition);
-    const method = oauthMethod(definition);
-    const scopes = fixedOAuthScopes(method);
-    const authorizationUrl = validateCallbackRelayAuthorizationUrl({
-      authorizationUrl: input.authorizationUrl,
-      callbackUrl: this.callbackUrl(input.provider),
-      clientId: input.clientId,
-      method,
-      scopes,
-    });
+    const mcp = "mcp" in input ? input.mcp : undefined;
+    if (!mcp && definition) assertAuthorizationDigest(input.authorizationDigest, definition);
+    const method = !mcp && definition ? oauthMethod(definition) : null;
+    const scopes = method
+      ? fixedOAuthScopes(method)
+      : (new URL(input.authorizationUrl).searchParams.get("scope")?.split(" ").filter(Boolean) ??
+        []);
+    const authorizationUrl = mcp
+      ? validateMcpRelayAuthorizationUrl(
+          input.authorizationUrl,
+          input.clientId,
+          this.callbackUrl("mcp"),
+          mcp,
+        )
+      : validateCallbackRelayAuthorizationUrl({
+          authorizationUrl: input.authorizationUrl,
+          callbackUrl: this.callbackUrl(input.provider),
+          clientId: input.clientId,
+          method: method!,
+          scopes,
+        });
     const state = authorizationUrl.searchParams.get("state")!;
     const now = this.#now();
     const expiresAt = new Date(input.expiresAt);
@@ -315,7 +343,9 @@ export class HostedOAuthBrokerService {
       deploymentAuthorityDigest: input.deploymentAuthorityDigest,
       launchTicket,
       mode: "callback-relay",
-      providerApplicationId: input.providerApplicationId,
+      ...("mcp" in input
+        ? { mcp: input.mcp }
+        : { providerApplicationId: input.providerApplicationId }),
       requestedScopes: scopes,
       ...(input.returnPath ? { returnPath: input.returnPath } : {}),
     });
@@ -345,7 +375,8 @@ export class HostedOAuthBrokerService {
     if (
       durable.mode !== "callback-relay" ||
       durable.accountSubject.subject !== input.accountSubject.subject ||
-      durable.providerApplicationId !== input.providerApplicationId ||
+      durable.providerApplicationId !==
+        ("providerApplicationId" in input ? input.providerApplicationId : undefined) ||
       durable.clientId !== input.clientId ||
       durable.authorizationUrl !== authorizationUrl.toString()
     ) {
@@ -378,6 +409,14 @@ export class HostedOAuthBrokerService {
       const binding = await this.#requireDeploymentBinding(launched.deploymentId);
       await this.#assertAccountAccess(binding, context.accountSubject);
       assertAuthorityDigest(context.deploymentAuthorityDigest, binding);
+      if (context.mcp && context.clientId) {
+        return validateMcpRelayAuthorizationUrl(
+          context.authorizationUrl,
+          context.clientId,
+          this.callbackUrl("mcp"),
+          context.mcp,
+        ).toString();
+      }
       if (context.mode === "callback-relay") {
         const definition = integrationDefinitions.find(
           (candidate) =>
@@ -440,6 +479,7 @@ export class HostedOAuthBrokerService {
 
   async completeAuthorization(input: {
     readonly parameters: URLSearchParams;
+    readonly cookieHeader?: string | undefined;
     readonly provider: string;
   }): Promise<{
     readonly attemptId: HostedOAuthAttemptId;
@@ -455,19 +495,93 @@ export class HostedOAuthBrokerService {
     } catch {
       throw invalidAttempt();
     }
-    const row = await this.#store.claimCallback(secretDigest(state), now);
+    const browserBindings = (input.cookieHeader ?? "").split(";").flatMap((cookie) => {
+      const match = /^__Secure-opensteer\.oauth\.(hoa_[0-9a-f-]{36})=([A-Za-z0-9_-]{43})$/iu.exec(
+        cookie.trim(),
+      );
+      return match ? [{ attemptId: match[1]!, hash: secretDigest(match[2]!) }] : [];
+    });
+    const row = await this.#store.claimCallback({
+      browserBindings,
+      now,
+      provider: input.provider,
+      stateHash: secretDigest(state),
+    });
     if (!row) throw invalidAttempt();
     const attemptId = HostedOAuthAttemptIdSchema.parse(row.attemptId);
-    if (row.provider !== input.provider) {
+    let context: BrokerAuthorizationContext;
+    try {
+      context = await this.#openAttemptContext(row, attemptId);
+    } catch {
       await this.#store.failAttempt(attemptId, "failed", "invalid-provider-response", now);
       return { attemptId, status: "failed", failureCode: "invalid-provider-response" };
     }
-    let context: BrokerAuthorizationContext;
+    if (context.mcp) {
+      let returnUrl: string | null = null;
+      try {
+        const binding = await this.#requireDeploymentBinding(row.deploymentId);
+        await this.#assertAccountAccess(binding, context.accountSubject);
+        assertAuthorityDigest(context.deploymentAuthorityDigest, binding);
+        returnUrl = callbackReturnUrl({
+          attemptId,
+          canonicalOrigin: binding.canonicalOrigin,
+          clientSurface: context.clientSurface,
+          mcp: true,
+          deploymentId: binding.id,
+          returnPath: context.returnPath,
+        });
+        const response = validateOAuthAuthorizationResponse({
+          clientId: context.clientId!,
+          issuer: context.mcp.issuer,
+          authorizationResponseIssuerParameterSupported:
+            context.mcp.authorizationResponseIssuerParameterSupported,
+          parameters: input.parameters,
+        });
+        if (response.kind === "error") {
+          const denied = oauthUserDeniedAuthorization(response.error);
+          await this.#store.failAttempt(
+            attemptId,
+            denied ? "denied" : "failed",
+            "authorization-denied",
+            now,
+          );
+          return authorizationCompletion(
+            attemptId,
+            denied ? "denied" : "failed",
+            returnUrl,
+            "authorization-denied",
+          );
+        }
+        const sealingContext = OAuthBrokerMcpCallbackRelayContextSchema.parse({
+          accountSubject: context.accountSubject,
+          attemptId,
+          authorizationDigest: context.authorizationDigest,
+          deploymentAuthorityDigest: context.deploymentAuthorityDigest,
+          expiresAt: row.expiresAt.toISOString(),
+          clientId: context.clientId,
+          mcp: context.mcp,
+          redirectUrl: this.callbackUrl("mcp"),
+          schemaVersion: 1,
+        });
+        await this.#store.sealAttempt(
+          attemptId,
+          sealOAuthBrokerPayload(
+            OAuthBrokerMcpAuthorizationResponseSchema.parse({ parameters: [...input.parameters] }),
+            row.hostPublicKey,
+            sealingContext,
+          ),
+          now,
+        );
+        return authorizationCompletion(attemptId, "sealed", returnUrl);
+      } catch {
+        await this.#store.failAttempt(attemptId, "failed", "invalid-provider-response", now);
+        return authorizationCompletion(attemptId, "failed", returnUrl, "invalid-provider-response");
+      }
+    }
     let application: HostedOAuthProviderApplication | null = null;
     let definition: IntegrationDefinition;
     let method: ReturnType<typeof oauthMethod>;
     try {
-      context = await this.#openAttemptContext(row, attemptId);
       if (context.mode === "callback-relay") {
         const found = integrationDefinitions.find(
           (candidate) =>
@@ -925,6 +1039,7 @@ export class HostedOAuthBrokerService {
         deploymentAuthorityDigest: context.deploymentAuthorityDigest,
         launchTicket: context.launchTicket,
         mode: context.mode,
+        mcp: context.mcp ? JSON.stringify(context.mcp) : "",
         providerApplicationId: context.providerApplicationId ?? "",
         requestedScopes: JSON.stringify(context.requestedScopes),
         returnPath: context.returnPath ?? "",
@@ -970,6 +1085,7 @@ export class HostedOAuthBrokerService {
       deploymentAuthorityDigest: opened.deploymentAuthorityDigest,
       launchTicket: opened.launchTicket,
       mode: opened.mode || undefined,
+      mcp: opened.mcp ? JSON.parse(opened.mcp) : undefined,
       providerApplicationId: opened.providerApplicationId || undefined,
       requestedScopes,
       returnPath: opened.returnPath || undefined,
@@ -981,6 +1097,18 @@ export class HostedOAuthBrokerService {
       `/v1/oauth-broker/callback/${encodeURIComponent(provider)}`,
       this.#issuer,
     ).toString();
+  }
+
+  mcpClientMetadata() {
+    return {
+      client_id: new URL("/v1/oauth-broker/mcp/client-metadata.json", this.#issuer).toString(),
+      client_name: "Opensteer",
+      client_uri: this.#issuer,
+      grant_types: ["authorization_code", "refresh_token"],
+      redirect_uris: [this.callbackUrl("mcp")],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    };
   }
 
   #qualifiedProvider(provider: string, revision: number, definitionId: string) {
@@ -1070,8 +1198,7 @@ function validateCallbackRelayAuthorizationUrl(input: {
     authorizationUrl.searchParams.get("response_type") !== "code" ||
     !state ||
     !/^[A-Za-z0-9_-]{43}$/u.test(state) ||
-    !scopes ||
-    !sameStringSet(scopes, input.scopes)
+    !sameStringSet(scopes ?? [], input.scopes)
   ) {
     throw new ControlPlaneError("bad_request", "OAuth callback relay authorization is invalid");
   }
@@ -1080,13 +1207,14 @@ function validateCallbackRelayAuthorizationUrl(input: {
 
 function callbackReturnUrl(input: {
   readonly attemptId: HostedOAuthAttemptId;
+  readonly mcp?: boolean;
   readonly canonicalOrigin: string;
   readonly clientSurface: "desktop" | "native" | "web";
   readonly deploymentId: DeploymentId;
   readonly returnPath: string | undefined;
 }): string | null {
   const result = integrationAuthorizationBrowserReturn({
-    attemptId: `ioa_${input.attemptId.slice("hoa_".length)}`,
+    attemptId: `${input.mcp ? "imo" : "ioa"}_${input.attemptId.slice("hoa_".length)}`,
     canonicalOrigin: input.canonicalOrigin,
     surface: input.clientSurface,
     deploymentId: input.deploymentId,
@@ -1254,4 +1382,42 @@ function privateKeyPair(privateKey: string) {
     throw new TypeError("Hosted OAuth broker encryption private key is invalid");
   }
   return pair;
+}
+
+export function hostedOAuthBindingCookieName(attemptId: string): string {
+  return `__Secure-opensteer.oauth.${attemptId}`;
+}
+
+function validateMcpRelayAuthorizationUrl(
+  raw: string,
+  clientId: string,
+  callbackUrl: string,
+  binding: z.infer<typeof OAuthBrokerMcpRelayBindingSchema>,
+): URL {
+  const url = new URL(raw);
+  const endpoint = new URL(binding.authorizationEndpoint);
+  if (
+    url.protocol !== "https:" ||
+    endpoint.protocol !== "https:" ||
+    url.origin !== endpoint.origin ||
+    url.pathname !== endpoint.pathname ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    url.searchParams.getAll("state").length !== 1 ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get("state") ?? "") ||
+    url.searchParams.getAll("client_id").length !== 1 ||
+    url.searchParams.get("client_id") !== clientId ||
+    url.searchParams.getAll("redirect_uri").length !== 1 ||
+    url.searchParams.get("redirect_uri") !== callbackUrl ||
+    url.searchParams.get("response_type") !== "code" ||
+    url.searchParams.get("code_challenge_method") !== "S256" ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(url.searchParams.get("code_challenge") ?? "")
+  ) {
+    throw new ControlPlaneError(
+      "bad_request",
+      "MCP authorization cannot use the Account HTTPS callback",
+    );
+  }
+  return url;
 }

@@ -459,6 +459,7 @@ const migrationProvider = {
       "0012_notification_device_environment": notificationDeviceEnvironmentMigration,
       "0013_better_auth_17": betterAuth17Migration,
       "0014_notification_previews": notificationPreviewsMigration,
+      "0015_oauth_browser_binding": oauthBrowserBindingMigration,
     };
   },
 };
@@ -485,5 +486,14 @@ function assertMigrationSucceeded(result: MigrationResultSet): void {
 export const notificationPreviewsMigration: Migration = {
   async up(database) {
     await sql`alter table notification_deliveries add column preview jsonb`.execute(database);
+  },
+};
+
+const oauthBrowserBindingMigration: Migration = {
+  async up(database) {
+    await sql`alter table hosted_oauth_broker_attempts add column browser_binding_hash text
+      check (browser_binding_hash is null or browser_binding_hash ~ '^[A-Za-z0-9_-]{43}$')`.execute(
+      database,
+    );
   },
 };

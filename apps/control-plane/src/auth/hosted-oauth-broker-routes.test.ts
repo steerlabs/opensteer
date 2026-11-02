@@ -98,6 +98,9 @@ describe("hosted OAuth browser launch", () => {
 
     expect(response.statusCode).toBe(303);
     expect(response.headers.location).toBe("https://provider.test/authorize");
+    expect(response.headers["set-cookie"]).toContain(
+      `__Secure-opensteer.oauth.${attemptId}=${launchTicket};`,
+    );
     expect(launchAuthorization).toHaveBeenCalledWith(accountId, attemptId, launchTicket);
   });
 

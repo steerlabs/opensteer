@@ -970,6 +970,7 @@ export async function createHostRuntime(
     const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
+          kind: config.workspace.shape.kind,
           accountSubject: integrationAccountSubject,
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
@@ -1046,6 +1047,8 @@ export async function createHostRuntime(
       vault: integrationVault,
     });
     const mcpOauth = new McpOAuthService({
+      ...(hostedOAuthBroker ? { hostedOAuth: hostedOAuthBroker } : {}),
+      deploymentPosture: integrationDeploymentPosture,
       attempts: integrationAuthAttempts,
       exposure: config.exposure,
       onConnectionConnected: (input) => integrationConnectionConnected(input),
