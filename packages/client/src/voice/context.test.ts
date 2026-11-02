@@ -59,3 +59,35 @@ it("keeps exact browser tabs distinct and rejects stale places and unknown threa
     host.dispose();
   }
 });
+
+it("never offers or resolves a place this device can't show", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  try {
+    await host.load();
+    const app = (await host.listApprovedComputerApps()).find(
+      (candidate) => candidate.target.kind === "app",
+    )!;
+    await host.openComputerView(app.machineId, app.target);
+    const snapshot = host.getSnapshot();
+    let apps = true;
+    const links = new VoiceContextLinks((destination) => apps || destination.kind !== "app");
+    const appLink = [...links.build(snapshot).matchAll(/opensteer:\/\/place\/\d+/g)]
+      .map((m) => m[0])
+      .find((link) => {
+        const target = links.resolve(link, snapshot)?.target;
+        return target?.kind === "place" && target.destination.kind === "app";
+      });
+    expect(appLink, "the mock offers a Mac app place").toBeDefined();
+
+    apps = false;
+    const shown = links.build(snapshot);
+    expect(shown.split("\n").filter((line) => line.includes("| app"))).toEqual([]);
+    expect(links.resolve(appLink!, snapshot)).toBeNull();
+    for (const link of shown.matchAll(/opensteer:\/\/place\/\d+/g))
+      expect(links.resolve(link[0], snapshot)?.target).not.toMatchObject({
+        destination: { kind: "app" },
+      });
+  } finally {
+    host.dispose();
+  }
+});

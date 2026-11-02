@@ -31,9 +31,16 @@ const label = (text: string) => JSON.stringify(text.slice(0, 180));
 /** References belong to one call and retain the exact offered destination. */
 export class VoiceContextLinks {
   readonly #refs = new Map<string, WorkspaceSurfaceDestination>();
+  readonly #canShow: (destination: WorkspaceSurfaceDestination) => boolean;
   #next = 0;
+  constructor(canShow: (destination: WorkspaceSurfaceDestination) => boolean = () => true) {
+    this.#canShow = canShow;
+  }
+  #places(snapshot: HostSnapshot) {
+    return placeList(snapshot).filter((place) => this.#canShow(place.destination));
+  }
   build(snapshot: HostSnapshot, view?: VoiceView): string {
-    const places = placeList(snapshot);
+    const places = this.#places(snapshot);
     const place =
       view?.destination &&
       places.find((p) => identity(p.destination) === identity(view.destination!));
@@ -100,7 +107,7 @@ export class VoiceContextLinks {
       const destination = match && this.#refs.get(decodeURIComponent(match[1]!));
       const found =
         destination &&
-        placeList(snapshot).find((p) => identity(p.destination) === identity(destination));
+        this.#places(snapshot).find((p) => identity(p.destination) === identity(destination));
       return found
         ? { target: { kind: "place", destination: found.destination }, title: found.title }
         : null;

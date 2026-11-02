@@ -4,6 +4,7 @@ import { VoiceSessionIdSchema, type VoiceToolCall } from "@opensteer/protocol/vo
 import { ClientOperationError, classifyClientFailure } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { PendingSendCommand } from "../host/pending-send.js";
+import type { WorkspaceSurfaceDestination } from "../host/surfaces.js";
 import { heldThread } from "../host/task-list.js";
 import { threadPlacementOptions } from "../host/thread-placement.js";
 import { createCodexVoiceProvider, type CodexVoiceProviderInput } from "./codex-provider.js";
@@ -110,6 +111,8 @@ export interface VoiceControllerInput extends VoiceTimers {
   readonly createId: () => string;
   readonly currentView?: () => VoiceView;
   readonly places?: () => Promise<readonly PlaceContentPart[]>;
+  /** Whether this device can show a place; the call is never offered one it can't. */
+  readonly canShow?: (destination: WorkspaceSurfaceDestination) => boolean;
   readonly onStart?: () => void | Promise<void>;
   /** Semantic provider seam, also usable by offline implementations and tests. */
   readonly createProvider?: (input: CodexVoiceProviderInput) => VoiceProvider;
@@ -205,7 +208,7 @@ export class VoiceController {
       turns: new Set(),
       earlyUtterances: [],
       pending: new Map(),
-      links: new VoiceContextLinks(),
+      links: new VoiceContextLinks(this.#input.canShow),
       answers: new Map(),
       utterances: [],
       heardWaiters: new Set(),
