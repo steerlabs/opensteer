@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, symlink, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, symlink, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -14,7 +14,7 @@ it("shares starts, refuses stale generations, lazily restarts crashes and stops 
       starts.push(id);
       return (launch) => launch;
     },
-    terminate: async () => undefined,
+    terminate: async (_id, stopEngine) => stopEngine(),
     readyTimeoutMs: 2_000,
   });
   const spec = {
@@ -62,7 +62,7 @@ it("returns bounded log tails on exit and readiness timeout and rejects escaping
   const manager = new AppServerManager({
     resolveRoot: async () => root,
     planLaunch: async () => (l) => l,
-    terminate: async () => undefined,
+    terminate: async (_id, stopEngine) => stopEngine(),
     readyTimeoutMs: 200,
   });
   const spec = {
@@ -115,7 +115,7 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
       });
       return (launch) => launch;
     },
-    terminate: async () => undefined,
+    terminate: async (_id, stopEngine) => stopEngine(),
   });
   const spec = {
     appId: "unused",
@@ -148,7 +148,7 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
   }
 });
 
-it("contains detached server descendants when the Runner stops its app servers", async () => {
+it("inventories detached descendants without the execution marker before stopping the server group", async () => {
   const { ExecutionContainment } = await import("../runtime/execution-containment.js");
   const root = await mkdtemp(join(tmpdir(), "opensteer-app-server-containment-"));
   const containment = new ExecutionContainment({ bootId: "app-server-test", dataDirectory: root });
@@ -156,9 +156,10 @@ it("contains detached server descendants when the Runner stops its app servers",
     resolveRoot: async () => root,
     privateDirectory: join(root, "private"),
     planLaunch: async (id) => containment.wrap(id, (launch) => launch),
-    terminate: (id) => containment.terminate(id),
+    terminate: (id, stopEngine?: () => Promise<unknown>) => containment.terminate(id, stopEngine),
     readyTimeoutMs: 2_000,
   });
+  let childPid: number | undefined;
   const spec = {
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
@@ -169,16 +170,121 @@ it("contains detached server descendants when the Runner stops its app servers",
   try {
     await writeFile(
       join(root, "parent.cjs"),
-      `const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'inherit'});require('node:http').createServer((q,s)=>s.end(String(child.pid))).listen(process.env.PORT,'127.0.0.1');`,
+      `const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',env:{}});require('node:http').createServer((q,s)=>s.end(String(child.pid))).listen(process.env.PORT,'127.0.0.1');`,
     );
     const port = await manager.start(spec);
-    const childPid = Number(await (await fetch(`http://127.0.0.1:${port}`)).text());
+    childPid = Number(await (await fetch(`http://127.0.0.1:${port}`)).text());
     expect(Number.isInteger(childPid)).toBe(true);
     expect(childPid).toBeGreaterThan(0);
     process.kill(childPid, 0);
     await manager.stopAll();
-    expect(() => process.kill(childPid, 0)).toThrow();
+    expect(() => process.kill(childPid!, 0)).toThrow();
   } finally {
+    if (childPid) {
+      try {
+        process.kill(childPid, "SIGKILL");
+      } catch {
+        /* Already contained. */
+      }
+    }
+    await manager.stopAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("cleans a crashed server and descendants before releasing its capacity and launch directory", async () => {
+  const { ExecutionContainment } = await import("../runtime/execution-containment.js");
+  const root = await mkdtemp(join(tmpdir(), "opensteer-app-crash-"));
+  const privateDirectory = join(root, "private");
+  const containment = new ExecutionContainment({ bootId: "crash-test", dataDirectory: root });
+  const cleanupStarted = Promise.withResolvers<void>();
+  const allowCleanup = Promise.withResolvers<void>();
+  const releaseLaunches = Promise.withResolvers<void>();
+  const slotsReserved = Promise.withResolvers<void>();
+  const replacementReserved = Promise.withResolvers<void>();
+  let reservations = 0;
+  let childPid: number | undefined;
+  const manager = new AppServerManager({
+    resolveRoot: async () => root,
+    privateDirectory,
+    planLaunch: async (id) => {
+      if (!id.startsWith("app:app_crash:")) {
+        if (++reservations === 31) slotsReserved.resolve();
+        if (reservations === 32) replacementReserved.resolve();
+        await withTimeout(releaseLaunches.promise, 3_000, {
+          timeoutError: () => new Error("Launch reservations were not released"),
+        });
+      }
+      return containment.wrap(id, (launch) => launch);
+    },
+    terminate: async (id, stopEngine?: () => Promise<unknown>) => {
+      if (id.startsWith("app:app_crash:")) {
+        cleanupStarted.resolve();
+        await withTimeout(allowCleanup.promise, 2_000, {
+          timeoutError: () => new Error("Crash cleanup was not released"),
+        });
+      }
+      return containment.terminate(id, stopEngine);
+    },
+    readyTimeoutMs: 2_000,
+  });
+  const spec = {
+    appId: "app_crash",
+    version: 1,
+    folder: ".",
+    command: `exec ${process.execPath} server.cjs`,
+    binding: {},
+  } as Parameters<typeof manager.start>[0];
+  const starts: Promise<number>[] = [];
+  let settled: Promise<PromiseSettledResult<number>[]> | undefined;
+  try {
+    await writeFile(
+      join(root, "server.cjs"),
+      `const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();require('node:http').createServer((q,s)=>{s.end(String(child.pid));if(q.url==='/crash'){console.error('crash tail');s.on('finish',()=>process.exit(1));}}).listen(process.env.PORT,'127.0.0.1');`,
+    );
+    const port = await manager.start(spec);
+    const exited = manager.exited(spec.appId);
+    childPid = Number(await (await fetch(`http://127.0.0.1:${port}/crash`)).text());
+    expect(childPid).toBeGreaterThan(0);
+    await withTimeout(cleanupStarted.promise, 1_000, {
+      timeoutError: () => new Error("Crashed server never queued containment cleanup"),
+    });
+    for (let index = 0; index < 31; index++)
+      starts.push(manager.start({ ...spec, appId: `app_reserved_${index}` }));
+    settled = Promise.allSettled(starts);
+    await withTimeout(slotsReserved.promise, 1_000, {
+      timeoutError: () => new Error("Server slots were not reserved"),
+    });
+    await expect(manager.start({ ...spec, appId: "app_over_limit" })).rejects.toThrow(
+      "32 app servers",
+    );
+    allowCleanup.resolve();
+    await exited;
+    expect(await readdir(privateDirectory)).toHaveLength(31);
+    expect(() => process.kill(childPid!, 0)).toThrow();
+    expect(manager.logTail(spec.appId)).toContain("crash tail");
+    starts.push(manager.start({ ...spec, appId: "app_replacement" }));
+    settled = Promise.allSettled(starts);
+    await withTimeout(replacementReserved.promise, 1_000, {
+      timeoutError: () => new Error("Cleaned server did not release its capacity"),
+    });
+    const stopping = manager.stopAll();
+    releaseLaunches.resolve();
+    await stopping;
+    await settled;
+    expect(reservations).toBe(32);
+    expect(await readdir(privateDirectory)).toEqual([]);
+  } finally {
+    allowCleanup.resolve();
+    releaseLaunches.resolve();
+    if (childPid) {
+      try {
+        process.kill(childPid, "SIGKILL");
+      } catch {
+        /* Already contained. */
+      }
+    }
+    await settled;
     await manager.stopAll();
     await rm(root, { recursive: true, force: true });
   }

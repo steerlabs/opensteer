@@ -524,7 +524,7 @@ export class RunnerRuntime {
           throw new Error("App servers need a local Workspace");
         }),
       planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
-      terminate: (id) => this.#containment.terminate(id),
+      terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
     this.#warm = new WarmEnginePool({ retire: (engine) => this.#retireWarmEngine(engine) });
   }

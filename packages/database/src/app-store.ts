@@ -162,12 +162,24 @@ export class AppStore {
       }));
   }
 
-  exists(appId: string) {
+  serversForWorkspace(workspaceId: WorkspaceId) {
     return this.#database
       .selectFrom("apps")
-      .select("id")
-      .where("id", "=", appId)
-      .executeTakeFirst();
+      .innerJoin("workspaces", "workspaces.id", "apps.workspaceId")
+      .innerJoin("appVersions", (join) =>
+        join
+          .onRef("appVersions.appId", "=", "apps.id")
+          .onRef("appVersions.version", "=", "apps.latestVersion"),
+      )
+      .select([
+        "apps.id as appId",
+        "apps.latestVersion as version",
+        "workspaces.backing",
+        "appVersions.server",
+      ])
+      .where("apps.workspaceId", "=", workspaceId)
+      .where("appVersions.server", "is not", null)
+      .execute();
   }
 
   async publish(input: {
@@ -203,6 +215,16 @@ export class AppStore {
       async () => [input.workspaceId],
       async (transaction) => {
         await requireActiveWorkspaceMembership(transaction, input.workspaceId, input.userId);
+        const workspace = await transaction
+          .selectFrom("workspaces")
+          .select("status")
+          .where("id", "=", input.workspaceId)
+          .executeTakeFirst();
+        if (!workspace || workspace.status === "deleting" || workspace.status === "deleted")
+          throw new OpensteerError({
+            code: "workspace_unavailable",
+            message: "Workspace is awaiting deletion",
+          });
         const run = await transaction
           .selectFrom("runs")
           .innerJoin("threads", "threads.id", "runs.threadId")

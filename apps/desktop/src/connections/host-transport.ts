@@ -1,9 +1,6 @@
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
-import {
-  forEachBoundedResponseChunk,
-  readBoundedText,
-  streamBoundedResponse,
-} from "@opensteer/shared/boundedJson";
+import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
+import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { ensurePrivateDirectory, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { openAsBlob, promises as fs } from "node:fs";
 import { createHmac, randomBytes } from "node:crypto";
@@ -272,6 +269,7 @@ export class DesktopHostTransport extends HostTransport {
         );
         await done;
       },
+      "app-stream",
     ).catch(reject);
     return ready;
   }

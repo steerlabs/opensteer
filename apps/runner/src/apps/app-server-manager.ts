@@ -19,6 +19,8 @@ interface Server {
   readonly child: ChildProcess;
   readonly port: number;
   readonly closed: Promise<void>;
+  readonly cleaned: Promise<void>;
+  readonly finishCleanup: () => void;
   readonly abort: AbortController;
   readonly launchDirectory: string;
   log: Buffer;
@@ -40,7 +42,7 @@ interface Options {
     executionId: string,
     launch: Parameters<ProgramLaunchPlanner>[0],
   ) => Promise<HarnessProcessLaunchWrapper>;
-  readonly terminate: (executionId: string) => Promise<unknown>;
+  readonly terminate: (executionId: string, stopEngine: () => Promise<unknown>) => Promise<unknown>;
   readonly readyTimeoutMs?: number;
   readonly privateDirectory?: string;
 }
@@ -50,6 +52,7 @@ export class AppServerManager {
   readonly #servers = new Map<string, Server>();
   readonly #queues = new KeyedMutationQueue();
   readonly #slots = new Set<string>();
+  readonly #logs = new Map<string, string>();
   #epoch = 0;
   constructor(options: Options) {
     this.#options = options;
@@ -57,7 +60,7 @@ export class AppServerManager {
 
   start(spec: AppRuntimeSpec, signal = AbortSignal.timeout(30_000)): Promise<number> {
     const epoch = this.#epoch;
-    return this.#serialize(spec.appId, async () => {
+    return this.#queues.run(spec.appId, async () => {
       signal.throwIfAborted();
       if (epoch !== this.#epoch) throw new Error("App connection was lost");
       const previous = this.#servers.get(spec.appId);
@@ -106,6 +109,8 @@ export class AppServerManager {
           stdio: ["ignore", "pipe", "pipe"],
         });
         let finish!: () => void;
+        const cleanup = Promise.withResolvers<void>();
+        this.#logs.delete(spec.appId);
         const server: Server = {
           spec,
           executionId,
@@ -117,6 +122,8 @@ export class AppServerManager {
           closed: new Promise((resolve) => {
             finish = resolve;
           }),
+          cleaned: cleanup.promise,
+          finishCleanup: cleanup.resolve,
           dead: false,
         };
         this.#servers.set(spec.appId, server);
@@ -125,19 +132,26 @@ export class AppServerManager {
         };
         child.stdout?.on("data", append);
         child.stderr?.on("data", append);
-        child.once("error", (error) => {
-          append(Buffer.from(error.message));
+        const exited = (error: Error) => {
+          if (server.dead) return;
+          const unexpected = !server.abort.signal.aborted;
           server.dead = true;
           server.abort.abort(error);
+          void this.#queues
+            .run(spec.appId, async () => {
+              if (this.#servers.get(spec.appId) === server) await this.#stop(server, unexpected);
+            })
+            .catch((error: unknown) => {
+              append(Buffer.from(error instanceof Error ? error.message : "App cleanup failed"));
+            });
+        };
+        child.once("error", (error) => {
+          append(Buffer.from(error.message));
+          exited(error);
         });
-        child.once("exit", () => {
-          server.dead = true;
-          this.#slots.delete(spec.appId);
-          server.abort.abort(new Error("App server exited before it was ready"));
-        });
+        child.once("exit", () => exited(new Error("App server exited")));
         child.once("close", () => {
-          server.dead = true;
-          server.abort.abort(new Error("App server exited before it was ready"));
+          exited(new Error("App server exited"));
           finish();
         });
         const readySignal = AbortSignal.any([
@@ -157,24 +171,25 @@ export class AppServerManager {
           );
         }
       } finally {
-        if (!this.#servers.has(spec.appId)) this.#slots.delete(spec.appId);
         if (launchDirectory && this.#servers.get(spec.appId)?.launchDirectory !== launchDirectory)
           await rm(launchDirectory, { recursive: true, force: true });
+        if (!this.#servers.has(spec.appId)) this.#slots.delete(spec.appId);
       }
     });
   }
 
   logTail(appId: string): string {
-    return this.#servers.get(appId)?.log.toString("utf8") ?? "";
+    return this.#servers.get(appId)?.log.toString("utf8") ?? this.#logs.get(appId) ?? "";
   }
 
   exited(appId: string): Promise<void> {
-    return withTimeout(this.#servers.get(appId)?.closed ?? Promise.resolve(), 5_000, {
+    return withTimeout(this.#servers.get(appId)?.cleaned ?? Promise.resolve(), 5_000, {
       timeoutError: () => new Error("App server never exited"),
     });
   }
   stop(appId: string, version?: number): Promise<void> {
-    return this.#serialize(appId, async () => {
+    return this.#queues.run(appId, async () => {
+      this.#logs.delete(appId);
       const server = this.#servers.get(appId);
       if (server && (version === undefined || server.spec.version === version))
         await this.#stop(server);
@@ -182,6 +197,7 @@ export class AppServerManager {
   }
   async stopAll(): Promise<void> {
     this.#epoch++;
+    this.#logs.clear();
     // Abort readiness before joining queues, so a disconnected start cannot run for 30 seconds.
     for (const server of this.#servers.values())
       server.abort.abort(new Error("App connection was lost"));
@@ -191,26 +207,24 @@ export class AppServerManager {
       ),
     );
   }
-  async #stop(server: Server): Promise<void> {
+  async #stop(server: Server, retainLog = false): Promise<void> {
     server.abort.abort(new Error("App server stopped"));
-    try {
+    await this.#options.terminate(server.executionId, async () => {
       if (server.child.pid && process.platform !== "win32")
         await stopProcessGroup(server.child.pid, { graceMs: 500 });
       else if (!server.dead) server.child.kill("SIGKILL");
-      await this.#options.terminate(server.executionId);
-      await withTimeout(server.closed, 5_000, {
-        timeoutError: () => new Error("App server did not stop"),
-      });
-    } finally {
-      if (this.#servers.get(server.spec.appId) === server) {
-        this.#servers.delete(server.spec.appId);
-        this.#slots.delete(server.spec.appId);
-      }
-      await rm(server.launchDirectory, { recursive: true, force: true });
+    });
+    await withTimeout(server.closed, 5_000, {
+      timeoutError: () => new Error("App server did not stop"),
+    });
+    await rm(server.launchDirectory, { recursive: true, force: true });
+    if (this.#servers.get(server.spec.appId) === server) {
+      if (retainLog && server.log.length)
+        this.#logs.set(server.spec.appId, server.log.toString("utf8"));
+      this.#servers.delete(server.spec.appId);
+      this.#slots.delete(server.spec.appId);
     }
-  }
-  #serialize<T>(appId: string, work: () => Promise<T>): Promise<T> {
-    return this.#queues.run(appId, work);
+    server.finishCleanup();
   }
 }
 // The command receives PORT, so this listener must release the port before it can bind.

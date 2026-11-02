@@ -2720,7 +2720,6 @@ export async function createHostRuntime(
           }),
           ...(workspaceMountService ? [workspaceMountService.reconcile()] : []),
           securityEffects.reconcile(),
-          apps.reconcile(),
         ]);
         const failures = results.flatMap((result) =>
           result.status === "rejected" ? [result.reason] : [],

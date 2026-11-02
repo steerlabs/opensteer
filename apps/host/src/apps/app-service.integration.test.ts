@@ -377,7 +377,7 @@ describeStore("published app HTML", (it) => {
       await rm(directory, { recursive: true, force: true });
     }
   });
-  it("authorizes server publication before start, stops failed commits, preserves tokens and enforces agent reach", async ({
+  it("authorizes server publication, enforces reach and derives Workspace teardown and recovery from stored versions", async ({
     storeFixture,
   }) => {
     const { store, database } = storeFixture;
@@ -415,7 +415,7 @@ describeStore("published app HTML", (it) => {
       })),
       download: vi.fn(async () => new Response(html)),
     };
-    const service = new AppService({
+    const options = {
       dataDirectory: directory,
       store,
       apps,
@@ -423,7 +423,8 @@ describeStore("published app HTML", (it) => {
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: () => undefined,
       tunnels: { start, stop, connect, accept: () => undefined },
-    });
+    };
+    const service = new AppService(options);
     const publish = (extra = {}) =>
       service.publish("run-token", crypto.randomUUID(), {
         path: "app",
@@ -647,25 +648,76 @@ describeStore("published app HTML", (it) => {
       ).rejects.toMatchObject({ code: "bad_request" });
       const next = await publish({ appId: first.appId });
       expect(next.version).toBe(3);
-      // The same causal root constraint used in the HTML lifecycle fixture.
-      const retained = await storeFixture.enqueueHumanTrigger({
-        content: [{ type: "text", text: "Retained" }],
-        idempotencyKey: "retained-server-cause",
+      // A new Host has no memory of the server that the database owns.
+      const restarted = new AppService(options);
+      const restartedView = await restarted.view(first.appId, f.userId, "dark");
+      const viewerRequest = {
+        appId: first.appId,
+        token: restartedView.path.split("/").at(-2)!,
+        theme: "dark" as const,
+        method: "GET",
+        path: "/",
+        prefix: restartedView.path.slice(0, -1),
+        headers: {},
+        signal: AbortSignal.timeout(5_000),
+      };
+      // Lazy start can succeed on the Runner while tunnel establishment fails on the Host.
+      connect.mockRejectedValue(new Error("Tunnel failed after lazy start"));
+      (await restarted.response(viewerRequest)).body.destroy();
+      // Deletion can win after startup admission but before the publication commits.
+      const { app: origin } = await apps.latest(first.appId, f.userId);
+      await store.requestWorkspaceDeletion({
+        workspaceId: f.workspace.id,
         requestedBy: f.userId,
-        threadId: unrelated.id,
+        purgeAfter: new Date(Date.now() + 60_000),
       });
-      await database
-        .updateTable("causalChains")
-        .set({ rootMessageId: retained.run.seedInputId })
-        .where("id", "=", f.run.causalChainId)
-        .execute();
-      await database.deleteFrom("threads").where("id", "=", f.thread.id).execute();
-      const deletedStops = stop.mock.calls.length;
-      await service.reconcile();
-      expect(stop).toHaveBeenCalledTimes(deletedStops + 1);
-      await expect(service.authorizeView(first.appId, token)).rejects.toMatchObject({
-        code: "not_found",
+      await expect(
+        apps.publish({
+          appId: origin.id,
+          title: "Late publication",
+          publishKey: "after-deletion",
+          ...scope,
+          userId: f.userId,
+          server: { environmentId: f.environmentId, folder: "app", command: "node server.js" },
+        }),
+      ).rejects.toMatchObject({ code: "workspace_unavailable" });
+      await store.recoverWorkspaceDeletion({ workspaceId: f.workspace.id, requestedBy: f.userId });
+      const failedStops = stop.mock.calls.length;
+      stop.mockRejectedValueOnce(new Error("Connected Runner stop failed"));
+      await store.requestWorkspaceDeletion({
+        workspaceId: f.workspace.id,
+        requestedBy: f.userId,
+        purgeAfter: new Date(Date.now() + 60_000),
       });
+      await restarted.stopWorkspace(f.workspace.id);
+      expect(stop).toHaveBeenCalledTimes(failedStops + 1);
+      expect(stop).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          appId: first.appId,
+          version: 3,
+          binding: expect.objectContaining({
+            workspaceId: f.workspace.id,
+            ownerEnvironmentId: f.environmentId,
+          }),
+        }),
+      );
+      await restarted.stopWorkspace(f.workspace.id);
+      expect(stop).toHaveBeenCalledTimes(failedStops + 2);
+      const connectionsBeforeDeletion = connect.mock.calls.length;
+      const startsBeforeDeletion = start.mock.calls.length;
+      (await restarted.response(viewerRequest)).body.destroy();
+      await expect(publish({ appId: first.appId })).rejects.toMatchObject({
+        code: "workspace_unavailable",
+      });
+      expect(connect).toHaveBeenCalledTimes(connectionsBeforeDeletion);
+      expect(start).toHaveBeenCalledTimes(startsBeforeDeletion);
+      await store.recoverWorkspaceDeletion({ workspaceId: f.workspace.id, requestedBy: f.userId });
+      (await restarted.response(viewerRequest)).body.destroy();
+      expect(connect).toHaveBeenCalledTimes(connectionsBeforeDeletion + 1);
+      expect(connect).toHaveBeenLastCalledWith(
+        expect.objectContaining({ appId: first.appId, version: 3 }),
+        expect.any(AbortSignal),
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -1469,3 +1469,92 @@ it("does not replay a streamed app POST on 401 and fences an open response when 
   await rejected;
   expect(requestSignal.aborted).toBe(true);
 });
+
+it("keeps idle app SSE open beyond the ordinary response-stall deadline", async () => {
+  vi.useFakeTimers();
+  const abort = new AbortController();
+  try {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    let requestSignal!: AbortSignal;
+    let upstream!: ReadableStreamDefaultController<Uint8Array>;
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      network: {
+        openWebSocket: () => socket(),
+        request: async (input) => {
+          requestSignal = input.signal;
+          return new Response(
+            new ReadableStream({
+              start(c) {
+                upstream = c;
+              },
+            }),
+            {
+              headers: { "content-type": "text/event-stream" },
+            },
+          );
+        },
+      },
+    });
+    const response = await transport.streamApp({
+      path: `/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/events`,
+      method: "GET",
+      headers: {},
+      signal: abort.signal,
+    });
+    const reader = response.body!.getReader();
+    const first = reader.read();
+    void first.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requestSignal.aborted).toBe(false);
+    upstream.enqueue(new TextEncoder().encode("data: awake\n\n"));
+    expect(new TextDecoder().decode((await first).value)).toBe("data: awake\n\n");
+    const next = reader.read();
+    abort.abort();
+    await expect(next).rejects.toThrow();
+    expect(requestSignal.aborted).toBe(true);
+  } finally {
+    abort.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+  }
+});
+
+it("bounds app streams independently so a full app pool leaves ordinary Host requests available", async () => {
+  vi.useFakeTimers();
+  const abort = new AbortController();
+  const responses: Response[] = [];
+  try {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      network: {
+        openWebSocket: () => socket(),
+        request: async (input) =>
+          input.request.path.startsWith("/v1/apps/")
+            ? new Response(new ReadableStream<Uint8Array>(), {
+                headers: { "content-type": "text/event-stream" },
+              })
+            : new Response("ordinary response"),
+      },
+    });
+    const appRequest = {
+      path: `/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/events`,
+      method: "GET",
+      headers: {},
+      signal: abort.signal,
+    };
+    for (let index = 0; index < 32; index++) responses.push(await transport.streamApp(appRequest));
+    expect(
+      await transport.request({ path: "/v1/rpc/auth.config", method: "GET", headers: {} }),
+    ).toMatchObject({ status: 200, body: "ordinary response" });
+    await expect(transport.streamApp(appRequest)).rejects.toThrow(/app.*limit/i);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+  } finally {
+    abort.abort();
+    await Promise.all(responses.map((response) => response.body?.cancel().catch(() => undefined)));
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+  }
+});

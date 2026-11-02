@@ -34,6 +34,7 @@
     "./processSecrets": "./src/processSecrets.ts",
     "./proof": "./src/proof.ts",
     "./resizeObserver": "./src/resizeObserver.ts",
+    "./responseStream": "./src/responseStream.ts",
     "./restartPolicy": "./src/restartPolicy.ts",
     "./safeMessage": "./src/safeMessage.ts",
     "./secretDigest": "./src/secretDigest.ts",

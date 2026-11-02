@@ -2,7 +2,7 @@
 
 Apps render on the person's device, inline in their Thread or full-screen. Each
 card resolves its app ID to the latest publication, even in older history. The
-origin Thread owns the app; deleting that Thread removes its publications.
+origin Thread owns the app and its publications.
 Stored HTML and the database belong in the same backup as Host attachments.
 
 An HTML app is a self-contained document stored by the Host. A server app runs
@@ -38,10 +38,11 @@ person. Every request checks current Workspace membership. Logout doesn't revoke
 a copied view URL. Treat the whole URL as private; clients keep it only in memory.
 
 Servers stay running for background work. A crash restarts lazily on the next
-request, with concurrent requests sharing a start. Republishing as HTML, deleting
-the origin Thread or losing the primary Host connection stops the server. After
-reconnect, the current committed version starts lazily. There is no idle shutdown.
-The Host's existing reconciliation loop notices deleted origin rows.
+request, with concurrent requests sharing a start. Servers stop when republished
+as HTML, when their Workspace is deleted, or when the Runner loses its primary
+Host connection or stops. A Workspace awaiting deletion refuses new starts and connections;
+recovering it allows lazy starts again. After reconnect, the current committed
+version starts lazily. There is no idle shutdown.
 
 Only agents receive the Runner's 16 KiB in-memory log tail on startup failure;
 viewer error pages omit it. Redirect output in the start command if persistent

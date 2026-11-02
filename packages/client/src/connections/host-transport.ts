@@ -16,6 +16,7 @@ import {
 import { HostTransportError } from "./host-transport-error.js";
 
 const maximumConcurrentRequests = 32;
+const maximumConcurrentAppStreams = 32;
 const maximumOpenSockets = 128;
 // A Host's refusal is a short error envelope; anything longer is not one.
 const maximumUnauthorizedBodyBytes = 64 * 1_024;
@@ -94,6 +95,7 @@ export class HostTransport {
   readonly #requestControllers = new Set<AbortController>();
   readonly #sockets = new Set<HostNetworkSocket>();
   #activeRequests = 0;
+  #activeAppStreams = 0;
 
   constructor(options: HostTransportOptions) {
     this.#fence = new HostAttachmentFence({
@@ -147,11 +149,20 @@ export class HostTransport {
       response: Response,
       progress: { readonly signal: AbortSignal; readonly onProgress: () => void },
     ) => Promise<Result>,
+    kind: "request" | "app-stream" = "request",
   ): Promise<Result> {
-    if (this.#activeRequests >= maximumConcurrentRequests) {
-      throw new Error("The Host request limit is full.");
+    const appStream = kind === "app-stream";
+    if (
+      appStream
+        ? this.#activeAppStreams >= maximumConcurrentAppStreams
+        : this.#activeRequests >= maximumConcurrentRequests
+    ) {
+      throw new Error(
+        appStream ? "The app stream limit is full." : "The Host request limit is full.",
+      );
     }
-    this.#activeRequests += 1;
+    if (appStream) this.#activeAppStreams += 1;
+    else this.#activeRequests += 1;
     try {
       const selected = await this.current();
       const { resolved } = selected;
@@ -165,7 +176,10 @@ export class HostTransport {
       deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
       try {
         let response = await deadline.wait(this.#send(resolved, request, controller.signal));
-        const onProgress = () => deadline.reset(hostResponseStallTimeoutMs);
+        const onProgress = () => {
+          if (!appStream) deadline.reset(hostResponseStallTimeoutMs);
+        };
+        deadline.pause();
         onProgress();
         if (
           response.status === 401 &&
@@ -198,7 +212,8 @@ export class HostTransport {
         this.#requestControllers.delete(controller);
       }
     } finally {
-      this.#activeRequests -= 1;
+      if (appStream) this.#activeAppStreams -= 1;
+      else this.#activeRequests -= 1;
     }
   }
 

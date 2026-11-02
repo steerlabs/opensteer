@@ -48,7 +48,6 @@ export class AppService {
   readonly #views = new Map<string, { appId: string; userId: UserId }>();
   readonly #tokensByPair = new Map<string, string>();
   readonly #locks = new KeyedMutationQueue();
-  readonly #knownServers = new Map<string, AppRuntimeSpec>();
   readonly #directory: string;
   readonly #options: AppServiceOptions;
   constructor(options: AppServiceOptions) {
@@ -59,12 +58,12 @@ export class AppService {
   async publish(token: string, publishKey: string, input: z.infer<typeof AppPublishInputSchema>) {
     input = AppPublishInputSchema.parse(input);
     const scope = await this.#options.tokens.authenticate(token);
-    const admission = await this.#options.store.admitWorkspaceFiles(
-      scope.workspaceId,
-      scope.requestedBy,
-    );
-    if (!admission) throw unavailable();
     return this.#locks.run(input.appId ?? `${scope.runId}:${publishKey}`, async () => {
+      const admission = await this.#options.store.admitWorkspaceFiles(
+        scope.workspaceId,
+        scope.requestedBy,
+      );
+      if (!admission) throw unavailable();
       const { app: previous } = await this.#options.apps.authorize({
         ...scope,
         userId: scope.requestedBy,
@@ -116,7 +115,6 @@ export class AppService {
             server,
             expectedVersion: version,
           });
-          this.#knownServers.set(appId, spec);
           if (result.event) this.#options.publishEvent(result.event);
           return publicationResult(result);
         } catch (error) {
@@ -295,9 +293,7 @@ export class AppService {
               current.version.server,
               admission.workspace,
             );
-            const connection = await this.#tunnels().connect(spec, signal);
-            this.#knownServers.set(input.appId, spec);
-            return connection;
+            return this.#tunnels().connect(spec, signal);
           }),
       });
     } catch (error) {
@@ -337,7 +333,6 @@ export class AppService {
         headers: input.headers ?? {},
         ...(input.body === undefined ? {} : { body: Readable.from([input.body]) }),
         prefix: view.path.slice(0, -1),
-        theme: "light",
         signal,
         connect: (signal) =>
           this.#locks.run(input.appId, async () => {
@@ -361,9 +356,7 @@ export class AppService {
               version.server,
               admission.workspace,
             );
-            const connection = await this.#tunnels().connect(spec, signal);
-            this.#knownServers.set(app.id, spec);
-            return connection;
+            return this.#tunnels().connect(spec, signal);
           }),
       });
       const chunks: Buffer[] = [];
@@ -410,22 +403,14 @@ export class AppService {
   }
 
   async stopWorkspace(workspaceId: WorkspaceId): Promise<void> {
+    const servers = await this.#options.apps.serversForWorkspace(workspaceId);
     await Promise.all(
-      [...this.#knownServers.values()]
-        .filter((spec) => spec.binding.workspaceId === workspaceId)
-        .map((spec) =>
-          this.#locks.run(spec.appId, async () => {
-            const current = this.#knownServers.get(spec.appId);
-            if (current?.binding.workspaceId === workspaceId) await this.#stop(current);
-          }),
-        ),
-    );
-  }
-  async reconcile(): Promise<void> {
-    await Promise.all(
-      [...this.#knownServers.values()].map((spec) =>
-        this.#locks.run(spec.appId, async () => {
-          if (!(await this.#options.apps.exists(spec.appId))) await this.#stop(spec);
+      servers.map(({ appId, version, server, backing }) =>
+        this.#locks.run(appId, async () => {
+          if (server)
+            await this.#stop(
+              this.#runtimeSpec(appId, version, server, { id: workspaceId, backing }),
+            );
         }),
       ),
     );
@@ -435,9 +420,6 @@ export class AppService {
       await this.#tunnels().stop(spec);
     } catch {
       /* A disconnected Runner stops its servers when it loses the primary connection. */
-    } finally {
-      if (this.#knownServers.get(spec.appId)?.version === spec.version)
-        this.#knownServers.delete(spec.appId);
     }
   }
 
@@ -445,7 +427,7 @@ export class AppService {
     appId: string,
     version: number,
     server: AppServerSpec,
-    workspace: import("@opensteer/core").Workspace,
+    workspace: Pick<import("@opensteer/core").Workspace, "id" | "backing">,
   ): AppRuntimeSpec {
     const backing = workspace.backing;
     if (backing.kind !== "local-directory")

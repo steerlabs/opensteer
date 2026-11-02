@@ -58,7 +58,7 @@ export async function requestAppHttp(input: {
   readonly method: string;
   readonly path: string;
   readonly prefix: string;
-  readonly theme: AppTheme;
+  readonly theme?: AppTheme;
   readonly headers: IncomingHttpHeaders;
   readonly body?: Readable;
   readonly signal: AbortSignal;
@@ -115,8 +115,7 @@ export async function requestAppHttp(input: {
   response.on("error", () => undefined);
   const outgoing: Record<string, string | string[]> = {
     ...appProxyHeaders(response.headers),
-    ...appFrameHeaders(),
-    ...appCorsHeaders,
+    ...(input.theme ? { ...appFrameHeaders(), ...appCorsHeaders } : {}),
   };
   outgoing["content-type"] = response.headers["content-type"] ?? "application/octet-stream";
   const location = response.headers.location;
@@ -137,6 +136,7 @@ export async function requestAppHttp(input: {
     }
   }
   if (
+    input.theme &&
     /^text\/html(?:;|$)/iu.test(String(outgoing["content-type"])) &&
     input.method !== "HEAD" &&
     ![204, 304].includes(response.statusCode ?? 200)
