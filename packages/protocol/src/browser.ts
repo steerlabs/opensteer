@@ -361,8 +361,56 @@ export const browserPromptTextMaxLength = 10_000;
 /** The most text one paste carries to a page; typing fields stop there. */
 export const browserPasteTextMaxLength = 1_000_000;
 
+/** Page cursors only: arbitrary CSS and custom cursor images never cross the wire. */
+export const BrowserCursorSchema = z.enum([
+  "default",
+  "pointer",
+  "text",
+  "vertical-text",
+  "crosshair",
+  "move",
+  "wait",
+  "progress",
+  "help",
+  "not-allowed",
+  "no-drop",
+  "grab",
+  "grabbing",
+  "all-scroll",
+  "col-resize",
+  "row-resize",
+  "n-resize",
+  "s-resize",
+  "e-resize",
+  "w-resize",
+  "ne-resize",
+  "nw-resize",
+  "se-resize",
+  "sw-resize",
+  "ew-resize",
+  "ns-resize",
+  "nesw-resize",
+  "nwse-resize",
+  "zoom-in",
+  "zoom-out",
+]);
+export type BrowserCursor = z.infer<typeof BrowserCursorSchema>;
+const cursorSequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+
 const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
+    z.strictObject({
+      ...browserBase,
+      type: z.literal("cursor.query"),
+      surfaceId: BrowserSurfaceIdSchema,
+      cursorSequence,
+      pointSequence: cursorSequence,
+    }),
+    z.strictObject({
+      ...browserBase,
+      type: z.literal("cursor.reset"),
+      surfaceId: BrowserSurfaceIdSchema,
+    }),
     PasskeyResultSchema,
     z.strictObject({
       ...browserBase,
@@ -482,6 +530,7 @@ const BaselineBrowserClientMessageSchema = z
     z.strictObject({
       ...browserBase,
       type: z.literal("input.pointer"),
+      cursorSequence: cursorSequence.optional(),
       geometryRevision: z.number().int().nonnegative().optional(),
       captureRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
       modifiers: z
@@ -492,7 +541,8 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       /** Host-issued in editing sessions: names the controller a page write or menu this input causes belongs to. */
       consumerToken: z.uuid().optional(),
-      action: z.enum(["down", "move", "up"]),
+      /** Leave clears this producer's hover only, without ending a held drag. */
+      action: z.enum(["down", "move", "up", "leave"]),
       button: z.enum(["none", "left", "middle", "right"]),
       clickCount: z.number().int().min(1).max(3).optional(),
       surfaceId: BrowserSurfaceIdSchema,
@@ -746,6 +796,17 @@ export const BrowserNavigationCommittedSchema = z.strictObject({
 export type BrowserNavigationCommitted = z.infer<typeof BrowserNavigationCommittedSchema>;
 
 const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.cursor"),
+    surfaceId: BrowserSurfaceIdSchema,
+    consumerToken: z.uuid(),
+    cursorSequence,
+    documentId: z.string().min(1).max(255),
+    geometryRevision: cursorSequence,
+    captureRevision: cursorSequence,
+    cursor: BrowserCursorSchema,
+  }),
   BrowserPasskeyOfferSchema,
   BrowserPasskeyWithdrawnSchema,
   BrowserPasskeyNoticeSchema,

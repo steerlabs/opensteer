@@ -21,6 +21,7 @@ export function mobileBrowserPoint(input: {
   readonly height: number;
   readonly x: number;
   readonly y: number;
+  readonly clampOutside?: boolean;
 }) {
   const { frame, width, height } = input;
   if (frame === null || width <= 0 || height <= 0) return null;
@@ -36,7 +37,12 @@ export function mobileBrowserPoint(input: {
   if (!rect) return null;
   const x = (input.x - rect.left) / rect.width;
   const y = (input.y - rect.top) / rect.height;
-  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return null;
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    (!input.clampOutside && (x < 0 || x > 1 || y < 0 || y > 1))
+  )
+    return null;
   return {
     geometryRevision,
     ...(frame.header.capture ? { captureRevision: frame.header.capture.revision } : {}),
@@ -44,8 +50,8 @@ export function mobileBrowserPoint(input: {
     surfaceId: frame.header.surfaceId,
     viewportWidth: frame.header.viewportWidth,
     viewportHeight: frame.header.viewportHeight,
-    x,
-    y,
+    x: Math.max(0, Math.min(1, x)),
+    y: Math.max(0, Math.min(1, y)),
   };
 }
 

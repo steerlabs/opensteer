@@ -9,7 +9,12 @@ import {
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 const native = vi.hoisted(() => ({
-  props: null as null | { onProxyEvent(event: { nativeEvent: unknown }): void; onLayout(): void },
+  props: null as null | {
+    onProxyEvent(event: { nativeEvent: unknown }): void;
+    onLayout(): void;
+    focused: boolean;
+    softKeyboard: boolean;
+  },
   respond: vi.fn(async (_instruction: unknown): Promise<void> => undefined),
   finishComposition: vi.fn(async () => undefined),
 }));
@@ -268,4 +273,20 @@ it("does not reset a view before registration and ignores late rejection after r
   await act(async () => root.render(null));
   await act(async () => reject!(new Error("Unable to find view with tag")));
   expect(error).not.toHaveBeenCalled();
+});
+
+it("keeps hardware focus without a remote field or software keyboard", async () => {
+  await act(async () =>
+    root.render(
+      <RemoteTextInput
+        context={null}
+        focused
+        softKeyboard={false}
+        onEvent={() => ({})}
+        onError={() => undefined}
+      />,
+    ),
+  );
+  expect(native.props?.focused).toBe(true);
+  expect(native.props?.softKeyboard).toBe(false);
 });

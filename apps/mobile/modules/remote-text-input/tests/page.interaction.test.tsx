@@ -4,11 +4,13 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createMobileBrowserEditing } from "../../../src/browser/browser-editing.js";
-import type { BrowserCommand } from "@opensteer/client/host";
+import { BrowserEditingStore, type BrowserCommand } from "@opensteer/client/host";
 const harness = vi.hoisted(() => ({
   proxy: null as null | {
     onEvent: (event: import("@opensteer/client/editing").EditingProxyEvent) => void;
     context: unknown;
+    focused: boolean;
+    softKeyboard: boolean;
     finishCompositionRequest?: number;
   },
   contexts: [] as unknown[],
@@ -45,6 +47,8 @@ vi.mock("../src/remote-text-input.js", () => ({
   RemoteTextInput: (props: {
     onEvent: (event: import("@opensteer/client/editing").EditingProxyEvent) => void;
     context: unknown;
+    focused: boolean;
+    softKeyboard: boolean;
     finishCompositionRequest?: number;
   }) => {
     harness.proxy = props;
@@ -93,6 +97,7 @@ vi.mock("../../../src/ui/motion.js", () => ({
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("../../../src/client/mobile-client.js", () => ({ operationDetail: () => "error" }));
 vi.mock("../../../src/ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
+vi.mock("../../../src/ui/sheet.js", () => ({ Sheet: () => null }));
 import { PageTyping } from "../../../src/browser/browser-page.js";
 const context = {
   contextId: "00000000-0000-4000-8000-000000000001",
@@ -310,3 +315,102 @@ it("lets native configuration end the old context without an extra unscoped fini
     { kind: "edit", edit: { contextId: next.contextId, text: "한", before: "", after: "" } },
   ]);
 });
+
+it.each([
+  ["ios", false],
+  ["ios", true],
+  ["android", false],
+  ["android", true],
+] as const)(
+  "forwards %s hardware page keys with the soft keyboard closed (negotiated=%s)",
+  async (platform, negotiated) => {
+    const { Platform } = await import("react-native");
+    Platform.OS = platform as typeof Platform.OS;
+    const commands: BrowserCommand[] = [];
+    const store = new BrowserEditingStore((_session, _surface, command) => {
+      commands.push(command);
+    });
+    if (negotiated) store.negotiate("session", 1);
+    const port = createMobileBrowserEditing(
+      negotiated ? { browserFrames: { editing: store } } : {},
+      "session",
+      "srf_00000000-0000-4000-8000-000000000001",
+      (command) => {
+        commands.push(command);
+        return true;
+      },
+      { write: async () => "written" },
+    );
+    const stop = port.activate(() => undefined);
+    try {
+      await act(async () =>
+        root.render(
+          <PageTyping
+            context={null}
+            softKeyboard={false}
+            sendOperation={port.send}
+            onDone={() => undefined}
+          />,
+        ),
+      );
+      expect(harness.proxy?.focused).toBe(true);
+      expect(harness.proxy?.softKeyboard).toBe(false);
+      expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
+      for (const key of [
+        "Tab",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        " ",
+        "Escape",
+        "Enter",
+      ]) {
+        for (const type of ["keydown", "keyup"] as const)
+          await act(async () =>
+            harness.proxy?.onEvent({
+              type,
+              key,
+              code: key === " " ? "Space" : key,
+              control: false,
+              meta: false,
+              shift: false,
+              alt: false,
+              altGraph: false,
+              location: 0,
+              repeat: false,
+              composing: false,
+            }),
+          );
+      }
+      expect(
+        commands.filter((command) => command.type === "input.key").map((command) => command.key),
+      ).toEqual([
+        "Tab",
+        "Tab",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowDown",
+        "PageUp",
+        "PageUp",
+        "PageDown",
+        "PageDown",
+        " ",
+        " ",
+        "Escape",
+        "Escape",
+        "Enter",
+        "Enter",
+      ]);
+    } finally {
+      stop();
+    }
+  },
+);

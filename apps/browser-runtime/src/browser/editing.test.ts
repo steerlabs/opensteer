@@ -617,6 +617,24 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           editable: true,
         });
         checks.push("uncanceled page context menu attributed to clicking controller");
+        const previousMenus = messages.filter((m) => m.type === "browser.contextmenu").length;
+        for (const action of ["down", "up"] as const)
+          send({
+            type: "input.key",
+            surfaceId,
+            key: "ContextMenu",
+            code: "ContextMenu",
+            action,
+            modifiers: [],
+            consumerToken,
+          });
+        await waitForBrowserState(
+          () => messages.filter((m) => m.type === "browser.contextmenu").length > previousMenus,
+        );
+        expect(messages.filter((m) => m.type === "browser.contextmenu").at(-1)).toMatchObject({
+          consumerToken,
+        });
+        checks.push("keyboard context menu remains attributed after key release");
         const menus = messages.filter((m) => m.type === "browser.contextmenu").length;
         await read(
           "window.menuCanceled=false;window.addEventListener('contextmenu',event=>{event.preventDefault();window.menuCanceled=true},{once:true})",
@@ -631,6 +649,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
             y: point.y,
             viewportWidth: 1280,
             viewportHeight: 800,
+            consumerToken,
           });
         await waitForBrowserState(() => read<boolean>("menuCanceled"));
         await cdp.send("Runtime.evaluate", {
