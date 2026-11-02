@@ -8,6 +8,7 @@ import {
 import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
   pageViewport,
+  normalizeElectronCursor,
   siteCookieReplacementBatch,
   type BrowserContext,
   type BrowserLauncher,
@@ -869,6 +870,26 @@ class ElectronBrowserContext implements BrowserContext {
 }
 
 class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
+  #cursor: import("@opensteer/protocol/browser").BrowserCursor = "default";
+  readonly #cursorListeners = new Set<
+    (cursor: import("@opensteer/protocol/browser").BrowserCursor | null) => void
+  >();
+  readonly cursor = {
+    read: () => (this.#mount ? "default" : this.#cursor),
+    subscribe: (
+      listener: (cursor: import("@opensteer/protocol/browser").BrowserCursor | null) => void,
+    ) => {
+      this.#cursorListeners.add(listener);
+      return () => {
+        this.#cursorListeners.delete(listener);
+      };
+    },
+  };
+  #invalidateCursor(): void {
+    this.#cursor = "default";
+    for (const listener of this.#cursorListeners) listener(null);
+  }
+
   readonly initialLoad: Promise<void> | undefined;
   readonly view: WebContentsView;
   /**
@@ -1026,7 +1047,14 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     view.webContents.on("will-navigate", (event, url) => {
       if (!isAllowedBrowserNavigation(url)) event.preventDefault();
     });
+    view.webContents.on("cursor-changed", (_event, type) => {
+      this.#cursor = normalizeElectronCursor(type);
+      for (const listener of this.#cursorListeners) listener(this.#mount ? null : this.#cursor);
+    });
     view.webContents.on("before-mouse-event", (_event, mouse) => {
+      // Native and injected input cannot be disambiguated while a local view
+      // is mounted. Remote hints remain default until native viewing ends.
+      if (this.#mount || !this.inputOutstanding()) this.#invalidateCursor();
       if (mouse.type !== "mouseDown") return;
       const origin = this.inputOutstanding() ? "agent" : "person";
       if (mouse.button === "right" || mouse.modifiers?.includes("control") || this.#controlDown)
@@ -1038,6 +1066,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       }
     });
     view.webContents.on("before-input-event", (_event, input) => {
+      if (this.#mount || !this.inputOutstanding()) this.#invalidateCursor();
       this.#controlDown = input.control;
       if (input.type !== "keyDown" && input.type !== "rawKeyDown") return;
       const origin = this.inputOutstanding() ? "agent" : "person";
@@ -1080,9 +1109,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#fullscreen = false;
     });
     view.webContents.on("did-navigate", () => {
+      this.#invalidateCursor();
       void this.invalidateSurface().catch(() => undefined);
     });
     view.webContents.on("render-process-gone", () => {
+      this.#invalidateCursor();
       // The hub rejects placement while crashed; navigation can recover it.
       this.#cancelPaint("crash");
       this.#fullscreen = false;
@@ -1093,6 +1124,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#cancelPaint();
       this.#passkeyInput.clear();
       this.#humanInput.clear();
+      this.#invalidateCursor();
+      this.#cursorListeners.clear();
       this.#contextMenuTrigger = null;
       this.#contextMenuCandidate = null;
       this.#mount?.dispose();
@@ -1361,6 +1394,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   ): void {
     if (this.isClosed() || window.isDestroyed())
       throw new Error("The browser presentation is closed.");
+    this.#invalidateCursor();
     const displayChanged = () => this.displayChanged();
     window.on("resize", displayChanged);
     window.on("move", displayChanged);

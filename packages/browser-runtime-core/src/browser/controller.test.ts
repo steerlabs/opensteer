@@ -57,6 +57,84 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("queries cursor hints outside the mutation lane and fences canceled observations", async () => {
+    const controller = createController();
+    await controller.start();
+    await controller.handle({ type: "stream.subscribe", captureRegion: true });
+    page.cdpSession.emit("Page.screencastFrame", {
+      data: jpeg(1280, 720).toString("base64"),
+      metadata: { deviceHeight: 720, deviceWidth: 1280 },
+      sessionId: 1,
+    });
+    await flushMicrotasks();
+    const surface = ledger.active()!.surface;
+    const producerId = "00000000-0000-4000-8000-000000000001";
+    page.cdpSession.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "root" } } });
+    page.cdpSession.responses.set("Page.createIsolatedWorld", { executionContextId: 77 });
+    const query = Promise.withResolvers<unknown>();
+    page.cdpSession.responses.set(
+      "Runtime.evaluate",
+      (parameters: Record<string, unknown> | undefined) =>
+        parameters?.contextId === 77 ? query.promise : {},
+    );
+    vi.useFakeTimers();
+    try {
+      await controller.handle({
+        type: "input.pointer",
+        action: "move",
+        button: "none",
+        surfaceId: surface.id,
+        x: 0.5,
+        y: 0.5,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        modifiers: [],
+        geometryRevision: surface.geometryRevision,
+        producerId,
+        cursorSequence: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        page.cdpSession.sent.some(
+          (command) =>
+            command.method === "Runtime.evaluate" && command.parameters?.contextId === 77,
+        ),
+      ).toBe(true);
+      await controller.handle({
+        type: "input.key",
+        action: "down",
+        code: "KeyA",
+        key: "a",
+        modifiers: [],
+        surfaceId: surface.id,
+        producerId,
+      });
+      expect(
+        page.cdpSession.sent.some((command) => command.method === "Input.dispatchKeyEvent"),
+      ).toBe(true);
+      const afterKeyboard = sink.messages.length;
+      await controller.handle({ type: "cursor.reset", surfaceId: surface.id, producerId });
+      query.resolve({ result: { value: "text" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        sink.messages.slice(afterKeyboard).filter((message) => message.type === "browser.cursor"),
+      ).toEqual([
+        expect.objectContaining({
+          cursor: "default",
+          consumerToken: producerId,
+          cursorSequence: 1,
+          documentId: surface.documentId,
+          captureRevision: 0,
+        }),
+      ]);
+    } finally {
+      query.resolve({});
+      vi.useRealTimers();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it.each([false, true])(
     "records the initial page without waiting for commit (history=%s)",
     async (history) => {

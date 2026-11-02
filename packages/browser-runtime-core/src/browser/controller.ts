@@ -42,6 +42,7 @@ import {
   editingCommandParameters,
   editingModifiers,
 } from "./editing-commands.js";
+import { PageCursorHints } from "./cursor-hints.js";
 import { PageEditingObserver } from "./editing-observer.js";
 import type { HostSignIns } from "./host-sign-ins.js";
 import { BrowserInputLane } from "./input-lane.js";
@@ -172,6 +173,32 @@ interface PointerGesture {
 }
 
 export class BrowserController {
+  private readonly cursorHints = new Map<
+    BrowserSurfaceId,
+    { hints: PageCursorHints; unsubscribe: () => void }
+  >();
+  private cursorAgentCommands = 0;
+  private cursorObserver(surfaceId: BrowserSurfaceId): PageCursorHints | null {
+    let entry = this.cursorHints.get(surfaceId);
+    if (entry) return entry.hints;
+    const binding = this.ledger.binding(surfaceId);
+    if (!binding || this.closed || this.closePromise) return null;
+    const hints = new PageCursorHints(
+      binding.cdp,
+      (hint) => {
+        if (!this.closed)
+          void this.send({ type: "browser.cursor", surfaceId, ...hint }).catch(() => undefined);
+      },
+      binding.page.cursor,
+    );
+    entry = {
+      hints,
+      unsubscribe: binding.page.capture?.subscribe(() => hints.invalidate()) ?? (() => {}),
+    };
+    this.cursorHints.set(surfaceId, entry);
+    return hints;
+  }
+
   private readonly openOperations = new Set<AbortController>();
   private readonly verifyOpenAuthority: BrowserControllerOptions["verifyOpenAuthority"];
   private readonly editing: boolean;
@@ -525,6 +552,11 @@ export class BrowserController {
   }
 
   close(): Promise<void> {
+    for (const entry of this.cursorHints.values()) {
+      entry.unsubscribe();
+      entry.hints.close();
+    }
+    this.cursorHints.clear();
     for (const opening of this.openOperations)
       opening.abort(new BrowserRuntimeError("conflict", "The browser session closed."));
     this.openOperations.clear();
@@ -622,7 +654,23 @@ export class BrowserController {
         this.targetedCasts.get(message.surfaceId)?.cast.setRasterDemand(message.density) ??
         Promise.resolve()
       );
-    if (message.type === "cdp.command") this.clipboard?.invalidate();
+    if (message.type === "cursor.query" || message.type === "cursor.reset") {
+      const hints = this.cursorHints.get(message.surfaceId)?.hints;
+      if (message.producerId) {
+        if (message.type === "cursor.reset") hints?.invalidate(message.producerId);
+        else hints?.refresh(message.producerId, message.cursorSequence, message.pointSequence);
+      }
+      return Promise.resolve();
+    }
+    if (message.type.startsWith("input."))
+      for (const entry of this.cursorHints.values())
+        entry.hints.invalidateOther(inputProducer(message));
+    if (message.type === "input.cancel")
+      for (const entry of this.cursorHints.values()) entry.hints.invalidate(message.producerId);
+    if (message.type === "cdp.command") {
+      this.clipboard?.invalidate();
+      for (const entry of this.cursorHints.values()) entry.hints.invalidate();
+    }
 
     if (
       message.type === "surface.activate" ||
@@ -705,7 +753,12 @@ export class BrowserController {
           return this.refuseInput(message, "browser-input-overload");
         this.cleanupReservations.add(reservation);
       }
+      const resumeCursor =
+        message.type === "input.wheel" || message.type === "input.key"
+          ? this.cursorHints.get(surfaceId)?.hints.pause()
+          : undefined;
       return lane.enqueue(message, cleanup).finally(() => {
+        resumeCursor?.();
         if (release && reservation) this.cleanupReservations.delete(reservation);
       });
     }
@@ -1832,6 +1885,30 @@ export class BrowserController {
         x: point.x,
         y: point.y,
       });
+    const hints =
+      message.cursorSequence === undefined
+        ? this.cursorHints.get(message.surfaceId)?.hints
+        : this.cursorObserver(message.surfaceId);
+    const settleCursor =
+      message.producerId &&
+      message.cursorSequence !== undefined &&
+      (!binding.page.capture || message.captureRevision !== undefined) &&
+      message.geometryRevision !== undefined &&
+      binding.surface.documentId &&
+      this.cursorAgentCommands === 0
+        ? hints?.point(
+            {
+              consumerToken: message.producerId,
+              cursorSequence: message.cursorSequence,
+              documentId: binding.surface.documentId,
+              geometryRevision: message.geometryRevision,
+              captureRevision: message.captureRevision ?? 0,
+              x: point.x,
+              y: point.y,
+            },
+            true,
+          )
+        : (hints?.invalidate(), undefined);
     try {
       this.recordPasskeyInput(message, message.surfaceId);
       await binding.cdp.send("Input.dispatchMouseEvent", {
@@ -1848,11 +1925,13 @@ export class BrowserController {
         x: point.x,
         y: point.y,
       });
+      settleCursor?.();
       if (gesture && message.action === "up" && button) {
         gesture.buttons.delete(button);
         if (!gesture.buttons.size) this.gestures.delete(message.surfaceId);
       }
     } catch (error) {
+      hints?.invalidate();
       if (!this.ledger.binding(message.surfaceId)) this.gestures.delete(message.surfaceId);
       throw error;
     }
@@ -2172,6 +2251,7 @@ export class BrowserController {
       ).catch(() => undefined);
     if (this.editing && event.type === "changed" && event.change !== "closed")
       void this.editingObserver(event.surface.id).catch(() => undefined);
+    if (event.type === "geometry") this.cursorHints.get(event.surfaceId)?.hints.invalidate();
     if (event.type === "geometry") this.observers.get(event.surfaceId)?.observer.refresh();
     if (event.type === "closed" || event.type === "geometry") return;
     if (
@@ -2194,6 +2274,9 @@ export class BrowserController {
     }
     if (event.type === "changed" && event.change === "closed") {
       const surfaceId = event.surface.id;
+      this.cursorHints.get(surfaceId)?.unsubscribe();
+      this.cursorHints.get(surfaceId)?.hints.close();
+      this.cursorHints.delete(surfaceId);
       this.observers.get(surfaceId)?.unsubscribeCapture();
       void this.observers.get(surfaceId)?.observer.close();
       this.observers.delete(surfaceId);
@@ -2295,11 +2378,14 @@ export class BrowserController {
   private async dispatchAgentCommand(
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
+    this.cursorAgentCommands++;
+    for (const entry of this.cursorHints.values()) entry.hints.invalidate();
     const finish = this.clipboard?.agentStarted();
     try {
       await this.dispatchAgentCommandInScope(message);
     } finally {
       finish?.();
+      this.cursorAgentCommands--;
     }
   }
 

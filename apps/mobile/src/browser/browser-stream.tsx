@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { useBrowserPresentationWait } from "@opensteer/client/react";
 import type {
   BrowserCommand,
@@ -21,6 +22,7 @@ import {
   Image,
   PanResponder,
   PixelRatio,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -66,6 +68,7 @@ export interface BrowserStreamProps {
   readonly interactive?: boolean;
   readonly inputEnabled?: boolean;
   readonly tabId: string;
+  readonly documentId?: string | undefined;
   /** What the picture shows, in the page's own words: its title and site. */
   readonly label: string;
   /** The page's own size, as each new picture reports it, so a preview takes its shape. */
@@ -133,6 +136,7 @@ export function BrowserStream({
   inputEnabled = true,
   preserveLastFrame = false,
   tabId,
+  documentId,
   zoom,
 }: BrowserStreamProps) {
   // Asking again takes the feed anew: a fresh subscription, fresh pictures.
@@ -430,6 +434,85 @@ export function BrowserStream({
     session.id,
     tabId,
   ]);
+  const [pointerCursor, setPointerCursor] = useState<"auto" | "pointer">("auto");
+  const cursorSequence = useRef(0);
+  const cursorPointSequence = useRef(0);
+  const hoverPoint = useRef<ReturnType<typeof mobileBrowserPoint>>(null);
+  const cursorExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cursorFrame = useRef<number | null>(null);
+  const resetCursor = useCallback(() => {
+    if (cursorFrame.current !== null) cancelAnimationFrame(cursorFrame.current);
+    cursorFrame.current = null;
+    hoverPoint.current = null;
+    cursorSequence.current++;
+    setPointerCursor("auto");
+    if (cursorExpiry.current) clearTimeout(cursorExpiry.current);
+    if (frames.cursor && tabId)
+      submitBrowserCommand(hostClient, session.id, {
+        type: "cursor.reset",
+        surfaceId: BrowserSurfaceIdSchema.parse(tabId),
+      });
+  }, [frames.cursor, hostClient, session.id, tabId]);
+  const cursorDocument = documentId;
+  useEffect(() => {
+    resetCursor();
+    if (
+      !interactive ||
+      !active ||
+      !inputEnabled ||
+      feedState !== "synchronized" ||
+      !tabId ||
+      !frames.cursor
+    )
+      return;
+    const unsubscribe = frames.cursor.subscribe(session.id, tabId, (hint) => {
+      const point = hoverPoint.current;
+      if (
+        !point ||
+        hint.cursorSequence !== cursorSequence.current ||
+        hint.documentId !== cursorDocument ||
+        hint.geometryRevision !== point.geometryRevision ||
+        hint.captureRevision !== (point.captureRevision ?? 0)
+      )
+        return;
+      // RN 0.88 offers only iOS auto/pointer hover effects. Other shapes,
+      // and Android's native pointer, need a platform cursor adapter.
+      setPointerCursor(Platform.OS === "ios" && hint.cursor === "pointer" ? "pointer" : "auto");
+      if (cursorExpiry.current) clearTimeout(cursorExpiry.current);
+      cursorExpiry.current = setTimeout(() => setPointerCursor("auto"), 750);
+    });
+    const refresh = setInterval(() => {
+      if (hoverPoint.current)
+        submitBrowserCommand(hostClient, session.id, {
+          type: "cursor.query",
+          surfaceId: BrowserSurfaceIdSchema.parse(tabId),
+          cursorSequence: cursorSequence.current,
+          pointSequence: cursorPointSequence.current,
+        });
+    }, 300);
+    return () => {
+      unsubscribe();
+      clearInterval(refresh);
+      resetCursor();
+    };
+  }, [
+    active,
+    inputEnabled,
+    interactive,
+    feedState,
+    feed.admissionId,
+    cursorDocument,
+    drawnGeometry,
+    geometry,
+    stageSize.height,
+    stageSize.width,
+    frames.cursor,
+    hostClient,
+    session.id,
+    tabId,
+    resetCursor,
+  ]);
+
   const gestures = useMemo(() => {
     const send = (command: BrowserCommand) => submitBrowserCommand(hostClient, session.id, command);
     const usable = () => {
@@ -450,6 +533,7 @@ export function BrowserStream({
         if (event.nativeEvent.touches.length > 1) held.current = null;
       },
       onPanResponderGrant: (event) => {
+        if (frames.cursor) resetCursor();
         if (event.nativeEvent.touches?.length > 1) {
           held.current = null;
           return;
@@ -540,7 +624,7 @@ export function BrowserStream({
         held.current = null;
       },
     });
-  }, [hostClient, session.id]);
+  }, [hostClient, session.id, resetCursor]);
   const shownWidth =
     displayed?.source.header.capture?.width ?? displayed?.source.header.viewportWidth ?? null;
   const shownHeight =
@@ -630,7 +714,52 @@ export function BrowserStream({
           </View>
         );
       })}
-      {interactive ? <View style={styles.image} {...gestures.panHandlers} /> : null}
+      {interactive ? (
+        <View
+          style={[styles.image, { cursor: pointerCursor }]}
+          onPointerMove={(event) => {
+            const pointer = event.nativeEvent;
+            if (
+              !frames.cursor ||
+              Platform.OS !== "ios" ||
+              pointer.pointerType === "touch" ||
+              pointer.buttons !== 0 ||
+              !input.current.active ||
+              !input.current.inputEnabled ||
+              input.current.feedState !== "synchronized"
+            )
+              return;
+            const point = mobileBrowserPoint({
+              frame: input.current.displayed?.source ?? null,
+              ...size.current,
+              x: pointer.offsetX,
+              y: pointer.offsetY,
+            });
+            if (!point) {
+              resetCursor();
+              return;
+            }
+            hoverPoint.current = point;
+            cursorPointSequence.current = ++cursorSequence.current;
+            if (cursorFrame.current !== null) return;
+            cursorFrame.current = requestAnimationFrame(() => {
+              cursorFrame.current = null;
+              const point = hoverPoint.current;
+              if (point)
+                submitBrowserCommand(hostClient, session.id, {
+                  ...point,
+                  type: "input.pointer",
+                  action: "move",
+                  button: "none",
+                  cursorSequence: cursorPointSequence.current,
+                });
+            });
+          }}
+          onPointerLeave={resetCursor}
+          onPointerCancel={resetCursor}
+          {...gestures.panHandlers}
+        />
+      ) : null}
       {words === null ? null : (
         <View pointerEvents="box-none" style={styles.status}>
           <Text numberOfLines={3} style={styles.label}>

@@ -564,6 +564,7 @@ export function BrowserPage(props: {
             <BrowserStream
               active={props.active}
               tabId={tabId}
+              documentId={liveTab?.documentId}
               hostClient={hostClient}
               interactive
               inputEnabled={closeReview === null && !addressOpen}

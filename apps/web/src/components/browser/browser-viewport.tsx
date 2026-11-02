@@ -42,6 +42,7 @@ export interface BrowserKeyboardHandle {
 /** The focused view keeps the shared active page at its panel size. */
 export function BrowserViewport({
   activeSurfaceId,
+  documentId,
   canInput,
   keyboardRef,
   frames,
@@ -60,6 +61,7 @@ export function BrowserViewport({
   visible,
 }: {
   activeSurfaceId: BrowserTabSummary["id"] | null;
+  documentId?: string | undefined;
   canInput: boolean;
   keyboardRef?: Ref<BrowserKeyboardHandle> | undefined;
   frames: BrowserFrameStore;
@@ -125,8 +127,86 @@ export function BrowserViewport({
     );
     framePresentedRef.current?.(presentedFrame);
   }, []);
+  const [cursor, setCursor] =
+    useState<import("@opensteer/protocol/browser").BrowserCursor>("default");
+  const cursorSequence = useRef(0);
+  const cursorPointSequence = useRef(0);
+  const cursorPoint = useRef<BrowserFramePoint | null>(null);
+  const cursorExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetCursor = useCallback(
+    (leave = true) => {
+      cursorSequence.current++;
+      setCursor("default");
+      if (cursorExpiry.current) clearTimeout(cursorExpiry.current);
+      if (leave) {
+        cursorPoint.current = null;
+        if (activeSurfaceId && frames.cursor) {
+          try {
+            onCommandRef.current({ type: "cursor.reset", surfaceId: activeSurfaceId });
+          } catch {
+            /* Departure owns remote cleanup. */
+          }
+        }
+      }
+    },
+    [activeSurfaceId, frames.cursor],
+  );
+  useLayoutEffect(() => {
+    resetCursor();
+    if (!activeSurfaceId || !frames.cursor || !viewportCanInput) return;
+    const unsubscribe = frames.cursor.subscribe(sessionId, activeSurfaceId, (hint) => {
+      const point = cursorPoint.current;
+      if (
+        !canInputRef.current ||
+        !point ||
+        hint.cursorSequence !== cursorSequence.current ||
+        hint.documentId !== documentId ||
+        hint.geometryRevision !== (point.geometryRevision ?? 0) ||
+        hint.captureRevision !== (point.captureRevision ?? 0)
+      )
+        return;
+      setCursor(hint.cursor);
+      if (cursorExpiry.current) clearTimeout(cursorExpiry.current);
+      cursorExpiry.current = setTimeout(() => setCursor("default"), 750);
+    });
+    const refresh = setInterval(() => {
+      if (!cursorPoint.current || !canInputRef.current) return;
+      try {
+        onCommandRef.current({
+          type: "cursor.query",
+          surfaceId: activeSurfaceId,
+          cursorSequence: cursorSequence.current,
+          pointSequence: cursorPointSequence.current,
+        });
+      } catch {
+        resetCursor();
+      }
+    }, 300);
+    return () => {
+      unsubscribe();
+      clearInterval(refresh);
+      resetCursor();
+    };
+  }, [
+    activeSurfaceId,
+    documentId,
+    frames.cursor,
+    live,
+    sessionId,
+    viewportCanInput,
+    stageSize?.height,
+    stageSize?.width,
+    presentedGeometry?.header.geometryRevision,
+    presentedGeometry?.header.capture?.revision,
+    resetCursor,
+  ]);
+
   const pendingMove = useRef<
-    | (BrowserFramePoint & { modifiers: ReturnType<typeof keyboardModifiers>; buttons: number })
+    | (BrowserFramePoint & {
+        cursorSequence?: number;
+        modifiers: ReturnType<typeof keyboardModifiers>;
+        buttons: number;
+      })
     | null
   >(null);
   const animationFrame = useRef<number | null>(null);
@@ -339,6 +419,7 @@ export function BrowserViewport({
       );
       if (!point) return;
       event.preventDefault();
+      resetCursor(false);
       flushMove();
       sendWheel(onCommandRef.current, {
         deltaX:
@@ -379,6 +460,7 @@ export function BrowserViewport({
   );
   useEffect(() => {
     const cancel = () => {
+      resetCursor();
       flushMove();
       pressedButton.current = null;
       lastPointerPoint.current = null;
@@ -448,6 +530,7 @@ export function BrowserViewport({
     editingTarget?.dismissMenu();
     textInputRef.current?.pointerDown();
     if (event.pointerType === "touch") {
+      resetCursor();
       if (button !== "left") return;
       event.currentTarget.setPointerCapture(event.pointerId);
       touch.current = {
@@ -463,9 +546,12 @@ export function BrowserViewport({
     event.currentTarget.setPointerCapture(event.pointerId);
     pressedButton.current = button;
     lastPointerPoint.current = point;
+    cursorPoint.current = point;
+    cursorPointSequence.current = ++cursorSequence.current;
     const clickCount = button === "left" ? trackClickCount(event) : 1;
     onCommand({
       action: "down",
+      ...(frames.cursor ? { cursorSequence: cursorPointSequence.current } : {}),
       modifiers: keyboardModifiers(event),
       buttons: event.buttons,
       button,
@@ -508,8 +594,19 @@ export function BrowserViewport({
       return;
     }
     const point = normalizedPointer(event, pressedButton.current !== null);
+    if (event.pointerType === "touch") return;
+    if (!point) resetCursor();
+    else {
+      cursorPoint.current = point;
+      cursorPointSequence.current = ++cursorSequence.current;
+    }
     pendingMove.current = point
-      ? { ...point, modifiers: keyboardModifiers(event), buttons: event.buttons }
+      ? {
+          ...point,
+          ...(frames.cursor ? { cursorSequence: cursorPointSequence.current } : {}),
+          modifiers: keyboardModifiers(event),
+          buttons: event.buttons,
+        }
       : null;
     if (pendingMove.current) lastPointerPoint.current = pendingMove.current;
     if (animationFrame.current !== null) return;
@@ -573,8 +670,11 @@ export function BrowserViewport({
     if (!point) return;
     pressedButton.current = null;
     lastPointerPoint.current = null;
+    cursorPoint.current = point;
+    cursorPointSequence.current = ++cursorSequence.current;
     onCommand({
       action: "up",
+      ...(frames.cursor ? { cursorSequence: cursorPointSequence.current } : {}),
       button,
       ...point,
       modifiers: keyboardModifiers(event),
@@ -586,6 +686,7 @@ export function BrowserViewport({
 
   return (
     <div
+      style={{ cursor: viewportCanInput ? cursor : "default" }}
       aria-label="Live browser page"
       className="browser-canvas browser-frame"
       data-live-page=""
@@ -596,6 +697,10 @@ export function BrowserViewport({
         }
       }}
       onContextMenu={(event) => event.preventDefault()}
+      onPointerLeave={() => {
+        flushMove();
+        resetCursor();
+      }}
       onPointerDown={pointerDown}
       onPointerCancel={pointerCancel}
       onPointerMove={pointerMove}

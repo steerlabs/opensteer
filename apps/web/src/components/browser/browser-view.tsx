@@ -762,6 +762,7 @@ export function PlaceBrowserView({
             <>
               <BrowserViewport
                 activeSurfaceId={tabId}
+                documentId={shownTab?.documentId}
                 canInput={visible && pageReachable && !blocked}
                 frames={hostClient.browserFrames}
                 keyboardRef={keyboardRef}

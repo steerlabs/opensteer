@@ -14,12 +14,20 @@ import type {
   BrowserFrameView,
   BrowserSessionSummary,
 } from "@opensteer/client/host";
+import { BrowserCursorStore } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
 
 const native = vi.hoisted(() => ({
   gestures: null as PanResponderCallbacks | null,
+  pointer: null as null | {
+    move?: (event: {
+      nativeEvent: { pointerType: string; buttons: number; offsetX: number; offsetY: number };
+    }) => void;
+    leave?: (() => void) | undefined;
+    cursor?: string | undefined;
+  },
   /** The stage's frame, as its view lays out: a fold or resize changes it under a finger. */
   layout: { height: 600, width: 400, x: 0, y: 0 },
   /** The surface's arrangement, as the pane the stream is drawn in reports it. */
@@ -95,12 +103,24 @@ vi.mock("react-native", () => ({
   View: ({
     children,
     onLayout,
+    onPointerMove,
+    onPointerLeave,
+    style,
   }: {
     children?: ReactNode;
+    onPointerMove?: NonNullable<typeof native.pointer>["move"];
+    onPointerLeave?: () => void;
+    style?: { cursor?: string }[];
     onLayout?: (event: {
       nativeEvent: { layout: { width: number; height: number; x: number; y: number } };
     }) => void;
   }) => {
+    if (onPointerMove)
+      native.pointer = {
+        move: onPointerMove,
+        leave: onPointerLeave,
+        cursor: style?.find((item) => item.cursor)?.cursor,
+      };
     const { height, width, x, y } = native.layout;
     useEffect(() => {
       onLayout?.({ nativeEvent: { layout: { height, width, x, y } } });
@@ -115,6 +135,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = null;
   native.gestures = null;
+  native.pointer = null;
   native.layout = { height: 600, width: 400, x: 0, y: 0 };
   native.geometry = "side:page@0";
   native.presenter = "image";
@@ -162,7 +183,7 @@ function frame(): BrowserFrameView {
     },
   };
 }
-function setup(interactive = true) {
+function setup(interactive = true, cursor?: BrowserCursorStore) {
   // How far the phone has pinched the picture in, read when a drag moves.
   const zoom = { value: 1 };
   let picture: BrowserFrameView | null = null;
@@ -178,6 +199,7 @@ function setup(interactive = true) {
   const demand = { update: vi.fn(), release: vi.fn() };
   const rasterDemand = vi.fn(() => demand);
   const frames: BrowserFrameStore = {
+    ...(cursor ? { cursor } : {}),
     invalidationKey: () => invalidation,
     rasterDemand,
     claim: vi.fn(),
@@ -811,4 +833,48 @@ describe.each(["image", "picture"] as const)("passive Run preview on %s", (prese
     expect(preview.container.querySelector("img")).toBeNull();
     expect(preview.watchRelease).toHaveBeenCalledTimes(2);
   });
+});
+
+it("applies iOS link hover only for the current pointer and resets on leave and reconnect", async () => {
+  vi.useFakeTimers();
+  const cursor = new BrowserCursorStore();
+  const { emit, decode, render, send } = setup(true, cursor);
+  try {
+    render("synchronized", true, { documentId: "doc" });
+    emit();
+    await decode();
+    act(() =>
+      native.pointer!.move!({
+        nativeEvent: { pointerType: "mouse", buttons: 0, offsetX: 100, offsetY: 250 },
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    const command = send.mock.calls
+      .map((call) => call[1])
+      .findLast((command) => command.type === "input.pointer");
+    if (command?.type !== "input.pointer" || command.cursorSequence === undefined)
+      throw new Error("No hover point was sent");
+    const hint = {
+      type: "browser.cursor" as const,
+      consumerToken: "00000000-0000-4000-8000-000000000001",
+      surfaceId,
+      cursorSequence: command.cursorSequence,
+      documentId: "doc",
+      geometryRevision: 7,
+      captureRevision: 0,
+      cursor: "pointer" as const,
+    };
+    act(() => cursor.receive(sessionId, hint));
+    expect(native.pointer!.cursor).toBe("pointer");
+    act(() => native.pointer!.leave!());
+    expect(native.pointer!.cursor).toBe("auto");
+    act(() => cursor.receive(sessionId, hint));
+    expect(native.pointer!.cursor).toBe("auto");
+    render("disconnected");
+    expect(native.pointer!.cursor).toBe("auto");
+  } finally {
+    vi.useRealTimers();
+  }
 });
