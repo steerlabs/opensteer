@@ -469,7 +469,20 @@ vi.mock("../ui/notifications-context.js", () => ({
   }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => harness.keyboard }));
-vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => false }));
+vi.mock(
+  "../browser/toolbar.js",
+  async () => (await import("../../test-support/native-chrome.js")).toolbar,
+);
+vi.mock("../ui/glass.js", async () => (await import("../../test-support/native-chrome.js")).glass);
+vi.mock(
+  "react-native-gesture-handler",
+  async () => (await import("../../test-support/native-chrome.js")).gestureHandler,
+);
+vi.mock(
+  "react-native-worklets",
+  async () => (await import("../../test-support/native-chrome.js")).worklets,
+);
+
 vi.mock("../ui/motion.js", () => ({
   appear: undefined,
   duration: { enter: 0, exit: 0 },
@@ -1028,12 +1041,10 @@ async function world(
   return { calls, container, drafts, host, record, render, stack };
 }
 
-async function settle(rounds = 12): Promise<void> {
-  for (let index = 0; index < rounds; index += 1)
-    await act(async () => {
-      if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
-      else await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+async function settle(): Promise<void> {
+  await act(async () => {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+  });
 }
 
 /** The screen in front, as the stack draws it. */
