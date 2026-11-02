@@ -634,6 +634,104 @@ a.input-card__sender:focus-visible {
   font-size: var(--text-sm);
 }
 
+/* Where the Run began acting in a browser tab: a stop on the trace's line. The
+   hairline through its mark fades both ways because the trace knows where the
+   Run arrived, not how long it stayed. */
+.trace-place {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: fit-content;
+  max-width: 100%;
+  min-height: 27px;
+  padding: var(--space-2) var(--space-8) var(--space-2) 0;
+  border-radius: var(--radius-sm);
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  animation: trace-step-in var(--duration-med) var(--ease-out) backwards;
+}
+
+a.trace-place:hover {
+  text-decoration: none;
+}
+
+a.trace-place:hover .trace-place__title {
+  color: var(--text);
+}
+
+.trace-place__stop {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  width: 16px;
+  flex: none;
+}
+
+.trace-place__stop::before,
+.trace-place__stop::after {
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  height: calc(50% - 7px);
+  translate: -50% 0;
+  content: "";
+}
+
+.trace-place__stop::before {
+  top: calc(var(--space-2) * -1);
+  background: linear-gradient(to bottom, transparent, var(--line-strong));
+}
+
+.trace-place__stop::after {
+  bottom: calc(var(--space-2) * -1);
+  background: linear-gradient(to top, transparent, var(--line-strong));
+}
+
+.trace-place__stop .site-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+}
+
+.trace-place__stop .site-mark svg {
+  width: 9px;
+  height: 9px;
+}
+
+.trace-place__title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.trace-place__site {
+  flex: none;
+  white-space: nowrap;
+}
+
+.trace-place__site::before {
+  margin-right: var(--space-6);
+  content: "·";
+}
+
+.trace-place > .live-dot {
+  flex: none;
+}
+
+.trace-place--ended {
+  opacity: 0.6;
+}
+
+.trace-place--ended .site-mark {
+  filter: grayscale(1);
+}
+
 .trace-step__duration {
   flex: none;
   color: var(--muted-dim);

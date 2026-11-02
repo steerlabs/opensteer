@@ -43,7 +43,7 @@ import { AssignmentLines, DelegationLine, ThreadMark } from "./task-line.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
 import { MessageMenu } from "./message-menu.js";
-import { MessagePages, ReplySurfaces } from "./surface-chips.js";
+import { MessagePages, ReplySurfaces, TracePlace } from "./surface-chips.js";
 
 /**
  * The transcript, one row per group.
@@ -204,8 +204,11 @@ function TurnView(props: {
         turn={turn}
         live={props.live ?? true}
       />
-      {/* A Run split by a message that joined it shows its pages once, on its latest stretch. */}
-      {turn.continued === true ? null : <ReplySurfaces turn={turn} turnKey={props.turnKey} />}
+      {/* A Run split by a message that joined it shows its pages once, on its latest
+          stretch, and only once it is done: while it works, its stops are in the trace. */}
+      {turn.continued === true || turnState(turn) !== "settled" ? null : (
+        <ReplySurfaces turn={turn} turnKey={props.turnKey} />
+      )}
       <AssignmentLines entries={turn.assignments} />
       {turn.run !== null && (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
         <RunOutcome run={turn.run} />
@@ -373,11 +376,6 @@ function ConversationTurn(props: {
       ) : view.startHold !== null ? (
         <WorkingIndicator indicator={{ kind: "status", label: view.startHold }} live={props.live} />
       ) : null}
-      {/* The pages and apps the reply under way is using; a reply carries its own.
-          Under a Mac line, its app's chip is the way to the app. */}
-      {view.reply === null && (composing || line !== null) ? (
-        <ReplySurfaces turn={turn} turnKey={props.turnKey} />
-      ) : null}
       {/* Typing alone would not say the reader's steered message is why it began again. */}
       {composing && restarting(turn.run) ? (
         <Animated.View accessibilityLiveRegion="polite" entering={appear}>
@@ -428,10 +426,13 @@ function ReplyBubble(props: {
           />
         ) : null}
       </View>
-      <ReplySurfaces
-        turn={props.turn ?? { runId: message.runId, work: [], subagentWork: {} }}
-        turnKey={props.turnKey}
-      />
+      {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
+      {props.turn === undefined || turnState(props.turn) === "settled" ? (
+        <ReplySurfaces
+          turn={props.turn ?? { runId: message.runId, work: [], subagentWork: {} }}
+          turnKey={props.turnKey}
+        />
+      ) : null}
     </View>
   );
 }
@@ -524,6 +525,7 @@ function TurnContent(props: {
     [closed, props.entries, turn],
   );
   const trace = traceWindow(rows, { showAll: closed || showAll, keep: props.reveal ?? null });
+  const latestPlaceId = turn.work.findLast((entry) => entry.kind === "place")?.id ?? null;
   return (
     <>
       {summary === null ? null : (
@@ -553,6 +555,7 @@ function TurnContent(props: {
             <WorkRowView
               active={active}
               highlightRequestId={props.highlightRequestId}
+              latestPlaceId={latestPlaceId}
               onOpenStep={props.onOpenStep}
               row={row}
               subagentWork={turn.subagentWork}
@@ -576,6 +579,8 @@ function TurnContent(props: {
 function WorkRowView(props: {
   readonly active: boolean;
   readonly highlightRequestId: string | null;
+  /** The turn's newest stop in a tab, the only one its agent can be acting at now. */
+  readonly latestPlaceId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly row: WorkRow;
   readonly subagentWork: Turn["subagentWork"];
@@ -603,6 +608,8 @@ function WorkRowView(props: {
           row={row}
         />
       );
+    case "place":
+      return <TracePlace entry={row.entry} latest={row.entry.id === props.latestPlaceId} />;
   }
 }
 
@@ -638,6 +645,7 @@ function SubagentRow(props: {
               active={node.status === "running"}
               highlightRequestId={props.highlightRequestId}
               key={row.key}
+              latestPlaceId={null}
               onOpenStep={props.onOpenStep}
               row={row}
               subagentWork={props.subagentWork}

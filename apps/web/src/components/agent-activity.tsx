@@ -33,8 +33,8 @@ import {
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   messagePages,
+  placePage,
   replyPlaces,
-  runPlace,
   threadActivityIndicator,
   toolBody,
   turnComputer,
@@ -55,6 +55,7 @@ import {
   type AssignmentEntry,
   type DelegationEntry,
   type MessageEntry,
+  type PlaceEntry,
   type ReasoningEntry,
   type RequestReceiptEntry,
   type RunEntry,
@@ -79,29 +80,25 @@ import {
   type ComputerUseNow,
   type ComputerUseStop,
 } from "@opensteer/client/integrations";
-import {
-  useComputerUseStop,
-  useComputerUseStopForRun,
-  useThreadPlace,
-} from "@opensteer/client/react";
+import { useComputerUseStop, useComputerUseStopForRun } from "@opensteer/client/react";
 import type { AssignmentSummary, BrowserPageContentPart, WaitingRequest } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { AttachmentReader, MessageAttachments } from "./attachments/message-attachments.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
 import { Popover } from "./popover.js";
+import { SiteMark } from "./site-mark.js";
 import {
   appChip,
   pageChip,
   phoneChip,
   SurfaceChip,
   SurfaceChips,
-  type ChipSurface,
+  SurfaceLink,
 } from "./surface-chips.js";
 import { MessageFold } from "./message-fold.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
 import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
-import { useRunPicture, Viewfinder } from "./workspace/viewfinder.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
@@ -174,8 +171,6 @@ export interface TranscriptComputers {
   readonly machines: readonly MachineSummary[];
 }
 const ReaderComputers = createContext<TranscriptComputers | null>(null);
-/** Draws a working reply's live picture of its place; without it replies list chips only. */
-const RunPictures = createContext<HostClient | null>(null);
 
 const noWorkspaces: readonly WorkspaceSummary[] = [];
 const noWaitingRequests: readonly WaitingRequest[] = [];
@@ -207,7 +202,6 @@ export function AgentTranscript({
   renderTask,
   requestShown = false,
   revealMessage = null,
-  pictures = null,
   startHold = null,
   threadId = null,
   unreadBoundarySequence = null,
@@ -254,11 +248,6 @@ export function AgentTranscript({
   /** A request waiting on the reader is on screen, so "Waiting for you" is not said again. */
   requestShown?: boolean;
   revealMessage?: { readonly id: string } | null;
-  /**
-   * Given, a reply whose Run is working draws a live picture of the place it
-   * acted in last, under its chips ([`useRunPicture`](./workspace/viewfinder.tsx)).
-   */
-  pictures?: HostClient | null;
   /** Why the Thread's queued work has not started, from `threadStartHold`. */
   startHold?: string | null;
   /** The Thread this transcript is, whose mark its own replies wear. */
@@ -294,7 +283,6 @@ export function AgentTranscript({
     }
     return byTurn;
   }, [conversation, groups]);
-  const threadPlace = useThreadPlace(pictures, threadId);
   const stopTurn = groups.find(
     (group) => group.kind === "turn" && turnState(group.turn) !== "settled",
   );
@@ -316,10 +304,9 @@ export function AgentTranscript({
               turnComputer(turn) !== null || (keptStop !== null && turn.runId === keptStop.runId),
             live,
             waitingRequests,
-            pictured: (turn) => runPlace(threadPlace, workingRunId(turn)) !== null,
           })
         : groups.map((group) => ({ group, key: group.key })),
-    [conversation, groups, live, threadPlace, waitingRequests, keptStop],
+    [conversation, groups, live, waitingRequests, keptStop],
   );
   const indicator =
     live && !(requestShown && activity === "waiting_for_you")
@@ -342,48 +329,46 @@ export function AgentTranscript({
                           <ReaderComputers value={computers}>
                             <TranscriptBrowsers value={browserSessions}>
                               <Speakers value={speakers}>
-                                <RunPictures value={pictures}>
-                                  {rows.map(({ group, key }) => (
-                                    <Fragment key={key}>
-                                      {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
-                                      <div className="transcript__row" data-transcript-row={key}>
-                                        {group.kind === "turn" ? (
-                                          <TurnView
-                                            turn={group.turn}
-                                            turnKey={group.key}
-                                            reveal={revealMessage}
-                                          />
-                                        ) : group.kind === "delegation" ? (
-                                          <DelegationNotice delegation={group.entry} />
-                                        ) : group.kind === "assignment" ? (
-                                          renderTask?.([group.entry])
-                                        ) : (
-                                          <TranscriptMessage
-                                            joinedRun={group.joinedRun === true}
-                                            reveal={
-                                              revealMessage?.id === group.entry.id
-                                                ? revealMessage
-                                                : null
-                                            }
-                                            message={group.entry}
-                                            askAbout={askAbout}
-                                            viewerUserId={viewerUserId}
-                                            workspaces={workspaces}
-                                          />
-                                        )}
-                                      </div>
-                                    </Fragment>
-                                  ))}
-                                  {indicator === null ? null : indicator.kind === "typing" ? (
-                                    // No turn has begun, so there is no Activity to open yet.
-                                    <div className="turn turn--conversation">
-                                      <Typing />
+                                {rows.map(({ group, key }) => (
+                                  <Fragment key={key}>
+                                    {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
+                                    <div className="transcript__row" data-transcript-row={key}>
+                                      {group.kind === "turn" ? (
+                                        <TurnView
+                                          turn={group.turn}
+                                          turnKey={group.key}
+                                          reveal={revealMessage}
+                                        />
+                                      ) : group.kind === "delegation" ? (
+                                        <DelegationNotice delegation={group.entry} />
+                                      ) : group.kind === "assignment" ? (
+                                        renderTask?.([group.entry])
+                                      ) : (
+                                        <TranscriptMessage
+                                          joinedRun={group.joinedRun === true}
+                                          reveal={
+                                            revealMessage?.id === group.entry.id
+                                              ? revealMessage
+                                              : null
+                                          }
+                                          message={group.entry}
+                                          askAbout={askAbout}
+                                          viewerUserId={viewerUserId}
+                                          workspaces={workspaces}
+                                        />
+                                      )}
                                     </div>
-                                  ) : (
-                                    <WorkingIndicator label={indicator.label} />
-                                  )}
-                                  {queued}
-                                </RunPictures>
+                                  </Fragment>
+                                ))}
+                                {indicator === null ? null : indicator.kind === "typing" ? (
+                                  // No turn has begun, so there is no Activity to open yet.
+                                  <div className="turn turn--conversation">
+                                    <Typing />
+                                  </div>
+                                ) : (
+                                  <WorkingIndicator label={indicator.label} />
+                                )}
+                                {queued}
                               </Speakers>
                             </TranscriptBrowsers>
                           </ReaderComputers>
@@ -430,7 +415,9 @@ function TurnView({
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
-  const placesUnderOutcome = !turn.continued && outcome && turn.reply === null;
+  // The chips are the record of a turn that is done; while it works, its place is marked in the trace.
+  const placesShown = !turn.continued && turnState(turn) === "settled";
+  const placesUnderOutcome = placesShown && outcome && turn.reply === null;
   return (
     <div className="turn" data-run-id={turn.runId ?? undefined}>
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
@@ -440,9 +427,7 @@ function TurnView({
         reveal={reveal?.id ?? null}
         live={live}
       />
-      {turn.continued || placesUnderOutcome ? null : (
-        <ReplySurfaces turn={turn} turnKey={turnKey} />
-      )}
+      {placesShown && !placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
       {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
       {placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
@@ -764,27 +749,18 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
   const composing = view.composing && live && now === null && kept === null;
-  const working = turn.personWaiting !== false && live && workingRunId(turn) !== null;
   const startHold = live ? view.startHold : null;
   const outcome = turn.personWaiting !== false && turn.run !== null && showsRunOutcome(turn.run);
+  const settled = turnState(turn) === "settled";
   // A Run that ended without a reply, stopped or failed, keeps its places under how it ended.
-  const placesUnderOutcome = outcome && view.reply === null;
+  const placesUnderOutcome = settled && outcome && view.reply === null;
   const tasks = renderTask === undefined ? [] : turn.assignments;
   const openActivity = useContext(OpenActivity);
   // The conversation leaves out a turn with nothing of its own to show
   // (`conversationRows`). One can still come to nothing here for what
   // only this screen knows: a Mac session it is not shown, or tasks it has no
   // card for.
-  if (
-    !now &&
-    !kept &&
-    !composing &&
-    !working &&
-    !startHold &&
-    !view.reply &&
-    !outcome &&
-    tasks.length === 0
-  )
+  if (!now && !kept && !composing && !startHold && !view.reply && !outcome && tasks.length === 0)
     return null;
   return (
     <div className="turn turn--conversation">
@@ -802,7 +778,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : startHold !== null ? (
         <WorkingIndicator label={startHold} />
       ) : null}
-      {(view.reply || view.composing || working) && !placesUnderOutcome ? (
+      {view.reply && settled && !placesUnderOutcome ? (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       ) : null}
       {tasks.length > 0 ? renderTask?.(tasks) : null}
@@ -826,23 +802,13 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
 }
 
 /**
- * The Run a turn is working in, or null once it settled. A Run is on the
- * latest of its stretches only, so that stretch alone draws its picture.
- */
-function workingRunId(turn: Turn): string | null {
-  return turn.run !== null && turnState(turn) !== "settled" ? turn.runId : null;
-}
-
-/**
- * The pages and Mac apps a reply's Run worked in, under the reply: the way
- * back to exactly the browser or app it used. Every stretch of the Run counts,
- * so a reply that a message interrupted still lists what came before.
+ * The pages and Mac apps a finished reply's Run worked in, under the reply:
+ * the way back to exactly the browser or app it used. Every stretch of the Run
+ * counts, so a reply that a message interrupted still lists what came before.
  */
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const sessions = useContext(TranscriptBrowsers);
   const computers = useContext(ReaderComputers);
-  const pictures = useContext(RunPictures);
-  const { threadId } = useContext(Speakers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
   const surfaces = useMemo(
     () =>
@@ -855,48 +821,7 @@ function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ),
     [computers?.machines, sessions, whole],
   );
-  const working = workingRunId(turn);
-  return pictures && working && threadId ? (
-    <WorkingReplySurfaces
-      hostClient={pictures}
-      runId={working}
-      surfaces={surfaces}
-      threadId={threadId}
-    />
-  ) : (
-    <SurfaceChips label={replySurfacesLabel} surfaces={surfaces} />
-  );
-}
-
-const replySurfacesLabel = "Pages and apps this reply used";
-
-/** A working reply's chips, the one its picture shows highlighted, and the picture under them. */
-function WorkingReplySurfaces({
-  hostClient,
-  runId,
-  surfaces,
-  threadId,
-}: {
-  hostClient: HostClient;
-  runId: string;
-  surfaces: readonly ChipSurface[];
-  threadId: string;
-}) {
-  const place = useRunPicture(hostClient, threadId, runId);
-  return (
-    <>
-      <SurfaceChips
-        activeKey={place?.placeKey ?? null}
-        label={replySurfacesLabel}
-        surfaces={surfaces}
-      />
-      {place ? (
-        <div className="viewfinder-slot">
-          <Viewfinder hostClient={hostClient} place={place} threadId={threadId} />
-        </div>
-      ) : null}
-    </>
-  );
+  return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
 }
 
 /**
@@ -1350,7 +1275,45 @@ function WorkRowView({
       return <SubagentRow active={active} live={live} row={row} turn={turn} />;
     case "steps":
       return <StepsRow row={row} />;
+    case "place":
+      return <TracePlace entry={row.entry} turn={turn} />;
   }
+}
+
+/**
+ * Where the Run began acting in a browser tab: a stop on the trace's line, not
+ * a step. It names the page as it was then and opens that exact tab while it
+ * is open; a closed one stays, muted, and opens nothing.
+ */
+function TracePlace({ entry, turn }: { entry: PlaceEntry; turn: Turn }) {
+  const sessions = useContext(TranscriptBrowsers);
+  const { threadId } = useContext(Speakers);
+  const page = useMemo(() => placePage(entry, sessions, threadId), [entry, sessions, threadId]);
+  if (page === null) return null;
+  // An agent is in one tab at a time, so only the turn's latest stop can be live.
+  const acting =
+    page.acting && !page.ended && turn.work.findLast((work) => work.kind === "place") === entry;
+  const site = page.site !== null && page.site !== page.title ? page.site : null;
+  const label = [page.title, page.site, page.ended ? "closed" : acting ? "agent working" : null]
+    .filter(Boolean)
+    .join(", ");
+  return (
+    <SurfaceLink
+      className={page.ended ? "trace-place trace-place--ended" : "trace-place"}
+      destination={page.ended ? null : page.destination}
+      label={label}
+      title={
+        page.ended ? "This page was closed" : [page.title, page.site].filter(Boolean).join(" · ")
+      }
+    >
+      <span className="trace-place__stop">
+        <SiteMark favicon={page.favicon} />
+      </span>
+      <span className="trace-place__title">{page.title}</span>
+      {site ? <span className="trace-place__site">{site}</span> : null}
+      {acting ? <span aria-hidden className="live-dot" /> : null}
+    </SurfaceLink>
+  );
 }
 
 /**

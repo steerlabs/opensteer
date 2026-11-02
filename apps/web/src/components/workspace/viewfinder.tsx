@@ -7,12 +7,18 @@ import { observeResize } from "@opensteer/shared/resizeObserver";
 import { BrowserCropCue } from "../browser/browser-crop-cue.js";
 import { browserFrameContentRect } from "@opensteer/shared/browserPresentation";
 import { memo, useEffect, useRef, useState } from "react";
-import { placeActivityPoint, type HostClient, type ThreadPlace } from "@opensteer/client/host";
+import {
+  browserSiteLabel,
+  placeActivityPoint,
+  type HostClient,
+  type ThreadPlace,
+} from "@opensteer/client/host";
 import { usePlaceList, useRunPlace } from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { useMediaQuery } from "../../ui-utils.js";
 import { ComputerWatchView } from "../computer-watch.js";
 import { AgentCursors } from "./agent-cursors.js";
+import { destinationPlaceKey } from "./navigation.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /** How long the picture stays on a place before it may cut to another. */
@@ -66,10 +72,34 @@ export function useRunPicture(
 }
 
 /**
+ * A conversation's one live spot, over its composer: the place its working Run
+ * acts in now. Where that place is already in the middle, the middle shows it.
+ */
+export function LivePlace({
+  hostClient,
+  runId,
+  threadId,
+}: {
+  readonly hostClient: HostClient;
+  readonly runId: string;
+  readonly threadId: string;
+}) {
+  const place = useRunPicture(hostClient, threadId, runId);
+  const { selection } = useWorkspace();
+  if (place === null) return null;
+  if (selection.kind === "place" && destinationPlaceKey(selection.destination) === place.placeKey)
+    return null;
+  return (
+    <div className="live-place">
+      <Viewfinder hostClient={hostClient} place={place} threadId={threadId} />
+    </div>
+  );
+}
+
+/**
  * A working Run's live view of the place it is in, framed on its pointer,
- * with the agents' cursors. Its reply's highlighted chip names the place, so
- * the picture carries no label of its own. Pressing it shows that place in
- * the middle and changes nothing else.
+ * with the agents' cursors, beside what the place is. Pressing it shows that
+ * place in the middle and changes nothing else.
  */
 export const Viewfinder = memo(function Viewfinder({
   hostClient,
@@ -89,6 +119,7 @@ export const Viewfinder = memo(function Viewfinder({
   // picture lets go of its watch until it is shown again. A hidden page only
   // pauses it in the client, which keeps the last picture.
   const live = inView && conversationShown;
+  const site = place.site ? browserSiteLabel(place.site) : null;
   return (
     <button
       aria-label={`Open ${place.title}`}
@@ -140,6 +171,13 @@ export const Viewfinder = memo(function Viewfinder({
             />
           </span>
         ) : null}
+      </span>
+      <span className="viewfinder__words">
+        <span className="viewfinder__title">
+          <span aria-hidden className="live-dot" />
+          <span className="viewfinder__name">{place.title}</span>
+        </span>
+        {site && site !== place.title ? <span className="viewfinder__site">{site}</span> : null}
       </span>
     </button>
   );
