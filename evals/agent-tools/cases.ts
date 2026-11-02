@@ -55,6 +55,8 @@ export const CaseSchema = z.strictObject({
   source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
   profile: z.enum(["main", "workspace", "delegated"]),
   role: z.enum(["conversation", "work"]),
+  /** Runs the turns on an Assignment; delegated Threads always have one. */
+  assigned: z.boolean().optional(),
   engines: z
     .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
     .min(1)

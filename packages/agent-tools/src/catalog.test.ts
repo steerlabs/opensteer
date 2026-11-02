@@ -204,12 +204,12 @@ describe("agent tool catalog", () => {
       expect(description).toContain(
         '"report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person.',
       );
-      expect(description).toContain("Delegated updates go to the parent");
+      expect(description).toContain("A task's updates go to the Thread that assigned it");
       expect(description).not.toMatch(/report"? to publish/u);
     }
     const conversation = platformGuideForRun({ capabilityProfileId: "main", role: "conversation" });
-    expect(conversation).toContain("produce no assistant text, not even an acknowledgement");
-    expect(conversation).toContain("Deliver results the person is awaiting");
+    expect(conversation).toContain("write no assistant text at all, not even an acknowledgement");
+    expect(conversation).toContain("Deliver results they are waiting for");
     expect(platformGuideForRun({ capabilityProfileId: "delegated", role: "work" })).toContain(
       "Reports never alert",
     );

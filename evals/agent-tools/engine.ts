@@ -199,7 +199,7 @@ export async function runEngine(input: {
       await session.execute({
         context: {
           assignment:
-            c.profile === "delegated"
+            (c.assigned ?? c.profile === "delegated")
               ? {
                   id: createId("delegation"),
                   objective: typeof c.turns[0] === "string" ? c.turns[0] : c.turns[0]!.text,

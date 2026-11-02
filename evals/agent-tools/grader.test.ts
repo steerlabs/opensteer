@@ -72,11 +72,11 @@ describe("trajectory grading failure modes", () => {
   });
 });
 
-it("parses all orchestration cases including person notification guards", async () => {
+it("parses all orchestration cases including person message guards", async () => {
   const cases = parseCases(
     await readFile(new URL("./cases/orchestration.ndjson", import.meta.url), "utf8"),
   );
-  expect(cases.filter((value) => value.id.startsWith("person-message-"))).toHaveLength(7);
+  expect(cases.filter((value) => value.id.startsWith("person-message-"))).toHaveLength(8);
 });
 
 it("validates structured seeds with production authorship rules and preserves human strings", () => {

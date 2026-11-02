@@ -389,7 +389,7 @@ const definitions = [
     id: "person.message",
     name: "person_message",
     description:
-      "Post a message to this Run's requester in this Thread. It can alert their devices unless they are already viewing this Thread. The Run keeps going. The final answer belongs in the final reply, not here.",
+      "Post a message to this Run's requester as its own row in this Thread while work continues. It may alert their devices; a client already showing this Thread's latest activity stays silent. Put the final answer in your final reply.",
     inputSchema: z.strictObject({ message: PersonMessageSchema }),
     annotations: {
       title: "Message Person",
@@ -422,7 +422,7 @@ const definitions = [
       title: "Message Thread",
     },
     description:
-      'To send an asynchronous update, set delivery: "report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person. "queue" starts an idle Thread or waits for its next turn; "steer" directs a compatible active Run and fails if none can be steered. queue/steer joins an active task; returned assignmentId identifies it (null if none). To continue a finished task and receive its result, use thread_delegate. Delegated updates go to the parent; final replies return automatically. threadId "home" is Chat; any Thread may report there, but queue requires reach. disposition is steering, run-queued or pending; accepted does not mean read. The Host supplies authorship.',
+      'To send an asynchronous update, set delivery: "report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person. "queue" starts an idle Thread or waits for its next turn; "steer" directs a compatible active Run and fails if none can be steered. queue/steer joins an active task; returned assignmentId identifies it (null if none). To continue a finished task and receive its result, use thread_delegate. A task\'s updates go to the Thread that assigned it; its final reply returns automatically. threadId "home" is Chat; any Thread may report there, but queue requires reach. disposition is steering, run-queued or pending; accepted does not mean read. The Host supplies authorship.',
     id: "thread.message",
     inputSchema: z.strictObject({
       delivery: z.enum(["report", "queue", "steer"]),
@@ -852,7 +852,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "trigger.read",
       "trigger.write",
     ],
-    `Stay within this Workspace and delegation lineage. For Triggers, load opensteer-triggers; authoring requires full access and a delegated anchor here in this lineage. Read lineage, message reachable Threads and delegate bounded work here. ${browserGuidance} ${computerUseGuidance} Use existing grants. If profile access is missing, end with the access needed; the assigner resolves it and continues the task. You cannot request authority, create/mount Workspaces, create profiles or close sessions.`,
+    `Work within this Workspace and delegation lineage; your current assigner is always reachable. For Triggers, load opensteer-triggers; authoring requires full access and a delegated anchor here in this lineage. Read lineage, message reachable Threads and delegate bounded work here. ${browserGuidance} ${computerUseGuidance} Use existing grants. If profile access is missing, end with the access needed; the assigner resolves it and continues the task. You cannot request authority, create/mount Workspaces, create profiles or close sessions.`,
   ),
   profile(
     AgentCapabilityProfileIdSchema.parse("trigger"),
@@ -965,16 +965,17 @@ export function platformGuideForCapabilityProfile(id: AgentCapabilityProfileId):
   return `${opensteerPlatformGuide}\n\nCapability profile: ${capability.id}\n${capability.instructions}`;
 }
 
-const conversationRoleGuide = `Reply promptly and keep Chat responsive. Handle quick answers yourself; hand sustained work to thread_delegate before gathering its evidence. Give the goal, constraints, context and completion criteria, then let the task choose its approach. Use this Workspace unless a specialist owns the work; reuse helpful task context. Specialist Workspaces may be shared, so consider who can read what you forward. Main is personal.
-After delegation, briefly say what started, handle other requests and end your turn; do not wait or poll. Check returned results against the request before answering with the outcome and deliverables. Identify the task when needed. Answer a task's question, or ask the person, then continue it with thread_delegate and threadId. Change active work with thread_message. Stop it with assignment_cancel and confirm the returned status.
-Keep the person informed of what deserves their attention. Put the final answer in the final reply so they never read it twice. On a background wake with no news, produce no assistant text, not even an acknowledgement. Deliver results the person is awaiting; drop stale, duplicate or unchanged updates.
-Preserve outstanding requests through follow-ups and resume interrupted work unless the person changes or withdraws them. Recover wanted ongoing work that fails or stops: restart a stopped task with thread_delegate and threadId, without reading history just to restart. Fix what you can within authorization; delegate remaining repair and reuse repair already underway. Agent-imposed limits cannot block recovery; the person's and site's limits can. For recurring failures without new evidence, change approach or arrange a later retry. After verified recovery, resume Triggers paused for the failure, including automatic pauses; preserve the person's pauses. Explain the failure and repair; ask only for needed decisions or access.
+const conversationRoleGuide = `Keep Chat responsive. Answer quick questions yourself and hand sustained work to thread_delegate. Give the goal, context, constraints and completion criteria; let the task choose its approach. Prefer this Workspace unless a specialist owns the work, and reuse helpful task context; specialist members can read what you forward. Main is personal.
+After delegating, briefly say what started, handle other requests and end your turn; do not wait or poll. When a result returns, check it against the request and give the outcome and deliverables in your final reply, naming the task when several are outstanding.
+Tell the person what deserves their attention, once. Deliver results they are waiting for; drop stale, duplicate or unchanged updates. On a background wake with no news, write no assistant text at all, not even an acknowledgement.
+Keep outstanding requests through follow-ups unless the person changes or withdraws them. Recover wanted ongoing work that fails or stops, within authorization and the person's constraints: restart a stopped task with thread_delegate and threadId without rereading its history, and reuse repair already underway. A limit an agent set itself never blocks recovery. If a failure repeats without new evidence, change approach or retry later. After verified recovery, resume Triggers paused by the failure but keep the person's pauses. Explain what broke and the repair; ask only for needed decisions or access.
+Answer a task's question, or ask the person, then continue it with thread_delegate and threadId. Change active work with thread_message. Stop a task with assignment_cancel and confirm its returned status.
 Call Main's conversation (threadId "home") Chat, and a specialized Workspace a specialist.`;
 
-const workRoleGuide = `Complete the focused work using this Workspace's instructions, tools, files and skills. Choose your approach, including code and native subagents; use thread_delegate for independent execution.
-End with a self-contained result, evidence, output locations and material limits. Try authorized fixes before reporting a blocker and the decision or access needed. Restore wanted ongoing work unless the person stopped or withdrew it. Replace agent notes that block fixable recovery, while preserving the person's and site's constraints; check their source.
-For delegated work, the final reply returns to the assigner automatically. Send earlier updates to the parent with thread_message: report for an FYI, queue for something it should act on or pass on. Reports never alert and wait for the parent's next turn. Avoid duplicating the final reply.
-End your turn when waiting on a Request or delegated task; resolution resumes you, and the task returns its result when finished.`;
+const workRoleGuide = `Complete the focused work using this Workspace's instructions, tools, files and skills. Choose your approach, including code and native subagents; use thread_delegate when independent execution helps.
+End with a self-contained result: evidence, output locations and material limits. Try authorized fixes before reporting a blocker and the decision or access needed. Restore wanted ongoing work unless the person stopped or withdrew it; replace agent notes that block a fixable recovery, but keep the person's and site's constraints.
+On an Assignment, the final reply returns to the assigning Thread automatically; do not repeat it. Send a distinct earlier update there with thread_message: report for an FYI, queue for something it should act on or pass on. Reports never alert and wait for its next turn. Assigned Runs cannot use person_message or person_show, even when listed.
+End your turn when waiting on a Request or delegated task; resolution resumes you, and a task returns its result when finished.`;
 
 /**
  * Engines habitually link files by their path, which names a file on this
@@ -992,7 +993,9 @@ export function platformGuideForRun(input: {
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationRoleGuide : workRoleGuide,
     ...(capabilityProfileAllowsTool(input.capabilityProfileId, "person.message")
-      ? ["Use person_message only for news worth hearing mid-Run; save final answers for replies."]
+      ? [
+          "When answering the person directly, use person_message for news they would want before your final reply.",
+        ]
       : []),
     replyFormatGuide,
   ].join("\n\n");
