@@ -461,7 +461,7 @@ export class RunnerRuntime {
     this.#privateStateDirectory = resolve(options.privateStateDirectory);
     this.#voice = new VoiceCalls(
       join(this.#privateStateDirectory, "voice"),
-      async ({ harnessInstanceId, offer, agent, signal, directory }) => {
+      async ({ harnessInstanceId, offer, agent, find, signal, directory }) => {
         const definition = this.#harnesses.state(harnessInstanceId)?.definition;
         if (!definition || definition.driverKind !== "codex")
           throw new OpensteerError({
@@ -480,6 +480,7 @@ export class RunnerRuntime {
         const { providerState } = await prepareHarnessProviderState(definition, options);
         return adapter.startVoiceCall({
           agent,
+          find,
           offer,
           signal,
           environment: options.environment,

@@ -45,6 +45,7 @@ export type VoiceEndReason =
 
 export interface VoiceCall {
   readonly agent?: boolean;
+  readonly find?: boolean;
   /** Has the voice tell the person this. Resolves when accepted, not when spoken. */
   say(text: string): Promise<void>;
   setMuted(muted: boolean): void;

@@ -7324,7 +7324,7 @@ describe("HttpHostClient voice capability", () => {
   it("keeps voice hidden on an older Host and refreshes its advertisement", async () => {
     let enabled = false;
     const client = createHttpHostClient({
-      capabilities: async () => (enabled ? ["voice-v1"] : []),
+      capabilities: async () => (enabled ? ["voice-v1", "voice-agent-v1", "voice-find-v1"] : []),
       refreshIntervalMs: 0,
       webSocketFactory: () => new FakeSocket(),
       fetch: async () => json(bootstrap([])),
@@ -7332,12 +7332,15 @@ describe("HttpHostClient voice capability", () => {
     try {
       await client.load();
       expect(client.getSnapshot().voiceAvailable).toBe(false);
+      expect(client.getSnapshot().voiceFindAvailable).toBe(false);
       enabled = true;
       await client.refresh();
       expect(client.getSnapshot().voiceAvailable).toBe(true);
+      expect(client.getSnapshot().voiceFindAvailable).toBe(true);
       enabled = false;
       await client.refresh();
       expect(client.getSnapshot().voiceAvailable).toBe(false);
+      expect(client.getSnapshot().voiceFindAvailable).toBe(false);
     } finally {
       client.dispose();
     }

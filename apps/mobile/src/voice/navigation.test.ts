@@ -9,33 +9,44 @@ vi.mock("@react-navigation/native", () => ({
 }));
 vi.mock("../navigation-ref.js", () => ({
   navigationRef: {
-    isReady: () => true,
+    isReady: vi.fn(() => true),
     getCurrentRoute: vi.fn(),
     dispatch: vi.fn(),
-    canGoBack: () => true,
+    canGoBack: vi.fn(() => true),
     goBack: vi.fn(),
   },
 }));
+it("reports failure when navigation is not ready or Back has nowhere to go", () => {
+  vi.mocked(navigationRef.isReady).mockReturnValueOnce(false);
+  expect(show("d", { kind: "chat" })).toBe(false);
+  expect(show(null, { kind: "chat" })).toBe(false);
+  vi.mocked(navigationRef.canGoBack).mockReturnValueOnce(false);
+  expect(show("d", { kind: "back" })).toBe(false);
+});
 it("does not push an already visible task or exact tab and pops to the existing Home root", () => {
   vi.mocked(navigationRef.getCurrentRoute).mockReturnValue({
     key: "task",
     name: "Thread",
     params: { deploymentId: "d", threadId: "t" },
   });
-  show("d", { kind: "thread", threadId: "t" });
+  expect(show("d", { kind: "thread", threadId: "t" })).toBe(false);
   expect(navigationRef.dispatch).not.toHaveBeenCalled();
   vi.mocked(navigationRef.getCurrentRoute).mockReturnValue({
     key: "tab",
     name: "WorkspaceBrowser",
     params: { deploymentId: "d", scope: "workspace", sessionId: "s", tabId: "one" },
   });
-  show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "one" } });
+  expect(
+    show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "one" } }),
+  ).toBe(false);
   expect(navigationRef.dispatch).not.toHaveBeenCalled();
-  show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "two" } });
+  expect(
+    show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "two" } }),
+  ).toBe(true);
   expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({ type: "PUSH" }),
   );
-  show("d", { kind: "chat" });
+  expect(show("d", { kind: "chat" })).toBe(true);
   expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({
       type: "POP_TO",

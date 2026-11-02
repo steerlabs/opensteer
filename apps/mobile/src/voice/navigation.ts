@@ -3,16 +3,22 @@ import { StackActions } from "@react-navigation/native";
 import { navigationRef } from "../navigation-ref.js";
 import { workspaceRoute } from "../browser/surface-route.js";
 
-export function show(deploymentId: string | null, target: VoiceTarget): void {
-  if (!deploymentId || !navigationRef.isReady()) return;
+export function show(deploymentId: string | null, target: VoiceTarget): boolean {
+  if (!deploymentId || !navigationRef.isReady()) return false;
   const route = navigationRef.getCurrentRoute();
   if (target.kind === "back") {
-    if (navigationRef.canGoBack()) navigationRef.goBack();
-    return;
+    if (!navigationRef.canGoBack()) return false;
+    navigationRef.goBack();
+    return true;
   }
   if (target.kind === "chat") {
+    if (
+      route?.name === "Home" &&
+      (route.params as { deploymentId?: string } | undefined)?.deploymentId === deploymentId
+    )
+      return false;
     navigationRef.dispatch(StackActions.popTo("Home", { deploymentId }));
-    return;
+    return true;
   }
   const name = target.kind === "thread" ? "Thread" : "WorkspaceBrowser";
   const params =
@@ -25,6 +31,7 @@ export function show(deploymentId: string | null, target: VoiceTarget): void {
     current &&
     Object.entries(params).every(([key, value]) => current[key] === value)
   )
-    return;
+    return false;
   navigationRef.dispatch(StackActions.push(name, params));
+  return true;
 }

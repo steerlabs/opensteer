@@ -72,6 +72,26 @@ function fixture() {
 }
 describe("Host voice authorization and relay", () => {
   it.each([false, true])(
+    "forwards find and reports its negotiation only when requested: %s",
+    async (find) => {
+      const f = fixture();
+      f.runners.voice.mockResolvedValue({ ok: true, answer: "answer", agent: true, find });
+      expect(
+        await f.handlers["voice.start"]({ ...f.input, agent: true, find: true }, f.context),
+      ).toEqual({ ok: true, data: { answer: "answer", agent: true, find } });
+      expect(f.runners.voice).toHaveBeenLastCalledWith(
+        environmentId,
+        userId,
+        expect.objectContaining({ agent: true, find: true }),
+        f.context.signal,
+      );
+      expect(await f.handlers["voice.start"]({ ...f.input, agent: true }, f.context)).toEqual({
+        ok: true,
+        data: { answer: "answer", agent: true },
+      });
+    },
+  );
+  it.each([false, true])(
     "reports negotiated agent support %s only when requested",
     async (agent) => {
       const f = fixture();

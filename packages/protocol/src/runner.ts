@@ -1709,6 +1709,8 @@ export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
     offer: VoiceSdpSchema,
     /** Sent only to a Runner advertising `voice-agent-v1`. */
     agent: z.literal(true).optional(),
+    /** Sent only to a Runner advertising `voice-find-v1`. */
+    find: z.literal(true).optional(),
   }),
   z.strictObject({
     action: z.literal("renew"),
@@ -1748,12 +1750,14 @@ export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
   }),
 ]);
 export type RunnerVoiceCommand = z.infer<typeof RunnerVoiceCommandSchema>;
-/** `agent` and `call` appear only in answers to the agent requests above, so an older Host never sees them. */
+/** Optional results appear only when requested, so an older Host never sees new keys. */
 export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
   z.strictObject({
     ok: z.literal(true),
     answer: VoiceSdpSchema.optional(),
     agent: z.boolean().optional(),
+    /** Included only in the answer to a start that requested find. */
+    find: z.boolean().optional(),
     call: VoiceToolCallSchema.nullable().optional(),
   }),
   z.strictObject({

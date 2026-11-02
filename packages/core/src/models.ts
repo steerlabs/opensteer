@@ -302,6 +302,7 @@ export const RunnerCapabilitySchema = z.enum([
   "voice-v1",
   // Runs a voice call's own agent, which acts through the calling device.
   "voice-agent-v1",
+  "voice-find-v1",
   "network-egress",
   "native-session-continuation-v1",
   // Carries `requesterTimeZone` in every Run's context.
