@@ -1364,3 +1364,108 @@ it("holds passkey messages in main before renderer delivery and binds native inp
     transport.closeAllSockets();
   }
 });
+
+it("streams an app POST and SSE through the selected route without credentials or replay, keeping cancellation until body end", async () => {
+  const selected = deployment("Home", "https://home.connect.opensteer.test");
+  const abort = new AbortController();
+  let received!: HostNetworkRequest;
+  let chunks!: ReadableStreamDefaultController<Uint8Array>;
+  const recoverUnauthorized = vi.fn();
+  const transport = desktopHostTransport({
+    catalog: catalogStore([selected], selected.authority.document.deploymentId),
+    sessions: { recoverUnauthorized } as unknown as HostSessionRecovery,
+    network: {
+      openWebSocket: () => socket(),
+      request: async (input) => {
+        received = input;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              chunks = controller;
+              controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    },
+  });
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('{"x":1}'));
+      c.close();
+    },
+  });
+  const response = await transport.streamApp({
+    path: `/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/api/`,
+    method: "POST",
+    body,
+    headers: { "content-type": "application/json" },
+    signal: abort.signal,
+  });
+  expect(received.authorization).toBeNull();
+  expect(received.request.credentials).toBe("omit");
+  expect(received.request.redirect).toBe("manual");
+  expect(received.request.body).toBe(body);
+  const reader = response.body!.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain("first");
+  expect(received.signal.aborted).toBe(false);
+  const next = reader.read();
+  abort.abort();
+  await expect(next).rejects.toThrow();
+  expect(received.signal.aborted).toBe(true);
+  expect(recoverUnauthorized).not.toHaveBeenCalled();
+  void chunks;
+});
+
+it("does not replay a streamed app POST on 401 and fences an open response when the selected Host changes", async () => {
+  const first = deployment("First", "https://first.connect.opensteer.test");
+  const second = deployment("Second", "https://second.connect.opensteer.test");
+  const catalog = catalogStore([first, second], first.authority.document.deploymentId);
+  const recoverUnauthorized = vi.fn();
+  let refuse = true;
+  let requestSignal!: AbortSignal;
+  const networkRequest = vi.fn(async (input: HostNetworkRequest) => {
+    requestSignal = input.signal;
+    return refuse
+      ? new Response("Unauthorized", { status: 401 })
+      : new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("data: first\n\n"));
+            },
+          }),
+        );
+  });
+  const transport = desktopHostTransport({
+    catalog,
+    sessions: { recoverUnauthorized } as unknown as HostSessionRecovery,
+    network: { openWebSocket: () => socket(), request: networkRequest },
+  });
+  const path = `/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/api/`;
+  const denied = await transport.streamApp({
+    path,
+    method: "POST",
+    headers: {},
+    body: new ReadableStream({
+      start(c) {
+        c.enqueue(new Uint8Array([1]));
+        c.close();
+      },
+    }),
+  });
+  expect(denied.status).toBe(401);
+  expect(await denied.text()).toBe("Unauthorized");
+  expect(networkRequest).toHaveBeenCalledTimes(1);
+  expect(recoverUnauthorized).not.toHaveBeenCalled();
+  refuse = false;
+  const response = await transport.streamApp({ path, method: "GET", headers: {} });
+  const reader = response.body!.getReader();
+  await reader.read();
+  const next = reader.read();
+  const rejected = expect(next).rejects.toMatchObject({ code: "deployment-changed" });
+  await catalog.select(second.authority.document.deploymentId);
+  await transport.selection();
+  await rejected;
+  expect(requestSignal.aborted).toBe(true);
+});

@@ -23,6 +23,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 const appId = "app_11111111-1111-4111-8111-111111111111";
+const appUrl = `https://host.test/v1/apps/${appId}/dark/${"a".repeat(43)}/`;
 const entry: AppEntry = {
   appId,
   createdAt: new Date().toISOString(),
@@ -115,20 +116,22 @@ it("reloads already-rendered cards on republish and expands the same app instanc
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
     app: { ...metadata, title: `Budget ${latest}`, latestVersion: latest },
-    url: `https://host.test/app?version=${latest}`,
+    url: appUrl,
   }));
   const container = await mount(client, 2);
   expect(read).toHaveBeenCalledTimes(2);
+  const original = container.querySelector("iframe");
   latest = 2;
   snapshot = { ...snapshot, appVersions: { [appId]: 2 } };
   await act(async () => {
     for (const listener of listeners) listener();
   });
   expect([...container.querySelectorAll("iframe")].map((frame) => frame.src)).toEqual([
-    "https://host.test/app?version=2",
-    "https://host.test/app?version=2",
+    appUrl,
+    appUrl,
   ]);
   expect(container.querySelector(".app-card__header")?.textContent).toContain("Budget 2");
+  expect(container.querySelector("iframe")).not.toBe(original);
   const frame = container.querySelector("iframe")!;
   const toggle = container.querySelector("button") as HTMLButtonElement;
   toggle.focus();

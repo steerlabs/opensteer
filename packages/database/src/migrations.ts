@@ -6639,8 +6639,11 @@ const appsMigration: Migration = {
       create table app_versions (
         app_id text not null references apps(id) on delete cascade,
         version integer not null check (version > 0),
-        sha256 text not null check (sha256 ~ '^[0-9a-f]{64}$'),
-        size_bytes integer not null check (size_bytes between 1 and 5242880),
+        sha256 text check (sha256 ~ '^[0-9a-f]{64}$'),
+        size_bytes integer check (size_bytes between 1 and 5242880),
+        server jsonb,
+        check ((server is null and sha256 is not null and size_bytes is not null)
+          or (server is not null and sha256 is null and size_bytes is null)),
         created_by_run text references runs(id) on delete set null,
         publish_key text not null,
         created_at timestamptz not null,

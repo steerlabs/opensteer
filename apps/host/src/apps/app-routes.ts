@@ -1,3 +1,7 @@
+import { Readable } from "node:stream";
+import { hostInternalRoutePaths } from "../server/internal-routes.js";
+import { appTunnelMaxFrameBytes } from "@opensteer/protocol";
+import { appCorsHeaders } from "./app-proxy.js";
 import { AppIdSchema } from "@opensteer/core";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import { appFrameHeaders } from "@opensteer/shared/appFrame";
@@ -19,15 +23,90 @@ export function createAppHandlers(
 
 /** This download has its own capability; ambient Opensteer credentials confer no access. */
 export function registerAppRoutes(app: FastifyInstance, apps: AppService): void {
-  app.get("/v1/apps/:appId/content", { logLevel: "silent" }, async (request, reply) => {
-    for (const [name, value] of Object.entries(appFrameHeaders())) reply.header(name, value);
-    const { appId } = z.object({ appId: AppIdSchema }).parse(request.params);
-    const { token, theme } = z
-      .object({
-        token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
-        theme: z.enum(["light", "dark"]).default("light"),
-      })
-      .parse(request.query);
-    return reply.send(await apps.content(appId, token, theme));
+  void app.register(async (proxy) => {
+    proxy.removeAllContentTypeParsers();
+    proxy.addContentTypeParser("*", (_request, payload, done) => done(null, payload));
+    proxy.all(
+      "/v1/apps/:appId/:theme/:token/*",
+      { logLevel: "silent", bodyLimit: 32 * 1_024 * 1_024 },
+      async (request, reply) => {
+        for (const [name, value] of Object.entries({ ...appFrameHeaders(), ...appCorsHeaders }))
+          reply.header(name, value);
+        const parsed = z
+          .object({
+            appId: AppIdSchema,
+            theme: z.enum(["light", "dark"]),
+            token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+            "*": z.string(),
+          })
+          .safeParse(request.params);
+        if (!parsed.success) return reply.code(404).send("App not found");
+        const { appId, theme, token } = parsed.data;
+        const prefix = `/v1/apps/${appId}/${theme}/${token}`;
+        const controller = new AbortController();
+        const abort = () => controller.abort(new Error("App viewer disconnected"));
+        const close = () => {
+          if (!reply.raw.writableFinished) abort();
+        };
+        request.raw.once("aborted", abort);
+        reply.raw.once("close", close);
+        reply.raw.once("finish", () => {
+          request.raw.off("aborted", abort);
+          reply.raw.off("close", close);
+        });
+        try {
+          if (request.method === "OPTIONS" && request.headers["access-control-request-method"]) {
+            const latest = await apps.authorizeView(appId, token);
+            if (!latest.version.server)
+              return reply.code(404).type("text/plain").send("App not found");
+            reply.header(
+              "access-control-allow-methods",
+              request.headers["access-control-request-method"],
+            );
+            const requested = request.headers["access-control-request-headers"];
+            if (typeof requested === "string")
+              reply.header("access-control-allow-headers", requested);
+            return reply.code(204).send();
+          }
+          const path = request.raw.url!.slice(prefix.length) || "/";
+          const result = await apps.response({
+            appId,
+            token,
+            theme,
+            prefix,
+            path,
+            method: request.method,
+            headers: request.headers,
+            body: request.body instanceof Readable ? request.body : request.raw,
+            signal: controller.signal,
+          });
+          for (const [name, value] of Object.entries(result.headers)) reply.header(name, value);
+          return reply.code(result.status).send(result.body);
+        } catch {
+          if (controller.signal.aborted) return reply;
+          return reply.code(404).type("text/plain").send("App not found");
+        }
+      },
+    );
   });
+  app.get(
+    hostInternalRoutePaths.appTunnel,
+    { websocket: true, logLevel: "silent" },
+    (socket, request) => {
+      const ticket = z
+        .object({ ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u) })
+        .safeParse(request.query);
+      if (!ticket.success) {
+        socket.close(1008, "App tunnel unavailable");
+        return;
+      }
+      socket.on("message", (bytes) => {
+        const size = Array.isArray(bytes)
+          ? bytes.reduce((n, part) => n + part.length, 0)
+          : bytes.byteLength;
+        if (size > appTunnelMaxFrameBytes) socket.terminate();
+      });
+      apps.acceptTunnel(ticket.data.ticket, socket);
+    },
+  );
 }

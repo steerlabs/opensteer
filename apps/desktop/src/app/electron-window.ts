@@ -1,3 +1,4 @@
+import { isAppPrefixNavigation } from "@opensteer/shared/appFrame";
 import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import {
@@ -117,6 +118,11 @@ export function configureDesktopWindowNavigation(
     if (source && isPublishedAppUrl(source) && /^https?:\/\//iu.test(url))
       void shell.openExternal(url).catch(() => undefined);
     return { action: "deny" };
+  });
+  webContents.on("will-frame-navigate", (event) => {
+    const source = event.frame?.url;
+    if (source && isPublishedAppUrl(source) && !isAppPrefixNavigation(event.url, source))
+      event.preventDefault();
   });
   webContents.on("will-attach-webview", (event) => event.preventDefault());
   webContents.on("will-navigate", guardNavigation);

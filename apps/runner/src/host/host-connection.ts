@@ -1,3 +1,6 @@
+import { openAppTunnel } from "../apps/app-tunnel.js";
+import { fenceMismatch } from "../workspace/local-workspace-service.js";
+import type { HostAppRequest } from "@opensteer/protocol";
 import type { RunnerConfig } from "@opensteer/config";
 import type {
   EnvironmentId,
@@ -1053,6 +1056,7 @@ export class ReconnectingHostConnection {
     const work: RunnerWorkSession = agents
       ? new AgentsWorkSession({
           agents,
+          appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
           fence: this.#fence,
@@ -1194,6 +1198,7 @@ interface RunnerWorkSession {
 }
 
 interface AgentsWorkSessionOptions {
+  readonly appTransport: Pick<RunnerConfig, "hostUrl" | "mode" | "controlCaPath">;
   readonly agents: RunnerAgentsConnection;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
@@ -1206,6 +1211,7 @@ interface AgentsWorkSessionOptions {
 
 /** One connection's worth of agent work: harness catalogs, commands, storage. */
 class AgentsWorkSession implements RunnerWorkSession {
+  readonly #appRequests = new Map<string, { appId: string; controller: AbortController }>();
   readonly #options: AgentsWorkSessionOptions;
   readonly #lifetime = new AbortController();
   readonly #signal: AbortSignal;
@@ -1308,6 +1314,12 @@ class AgentsWorkSession implements RunnerWorkSession {
         );
         return;
       }
+      case "host.app.start":
+      case "host.app.connect":
+      case "host.app.stop":
+      case "host.app.cancel":
+        void this.#answerAppRequest(message).catch(() => this.#options.fail("App response failed"));
+        return;
       case "host.workspace.local.provision":
       case "host.workspace.local.inspect":
       case "host.workspace.local.destroy":
@@ -1480,6 +1492,89 @@ class AgentsWorkSession implements RunnerWorkSession {
     void response.catch(() => this.#options.fail("Harness authentication response failed"));
   }
 
+  async #answerAppRequest(request: HostAppRequest): Promise<void> {
+    const local = this.#options.agents.localWorkspaces;
+    const echo = {
+      type: "runner.app.result" as const,
+      requestId: request.requestId,
+      appId: request.spec.appId,
+      fence: request.fence,
+    };
+    let controller: AbortController | undefined;
+    let retained = false;
+    try {
+      if (!local) throw new Error("App servers need a local Workspace");
+      const mismatch = fenceMismatch(request.fence, {
+        ...this.#options.fence.fence,
+        environmentId: this.#options.environmentId(),
+        storageAuthorityId: (await local.inventory()).storageAuthorityId,
+      });
+      if (mismatch) throw new Error(mismatch.message);
+      if (
+        request.spec.binding.ownerEnvironmentId !== request.fence.environmentId ||
+        request.spec.binding.storageAuthorityId !== request.fence.storageAuthorityId
+      )
+        throw new Error("App Workspace belongs to another environment or disk");
+      if (request.type === "host.app.cancel") {
+        this.#appRequests.get(request.requestId)?.controller.abort();
+        return;
+      }
+      if (this.#appRequests.has(request.requestId)) throw new Error("Duplicate app request");
+      controller = new AbortController();
+      this.#appRequests.set(request.requestId, { appId: request.spec.appId, controller });
+      const signal = AbortSignal.any([
+        this.#signal,
+        controller.signal,
+        AbortSignal.timeout(30_000),
+      ]);
+      const manager = this.#options.agents.runtime.appServers;
+      if (request.type === "host.app.stop") {
+        for (const [id, entry] of this.#appRequests)
+          if (id !== request.requestId && entry.appId === request.spec.appId)
+            entry.controller.abort();
+        await manager.stop(request.spec.appId, request.spec.version);
+      } else {
+        if (
+          request.type === "host.app.connect" &&
+          [...this.#appRequests.values()].filter((entry) => entry.appId === request.spec.appId)
+            .length > 64
+        )
+          throw new Error("Too many app tunnels");
+        const port = await manager.start(request.spec, signal);
+        if (request.type === "host.app.connect") {
+          const tunnel = await openAppTunnel(
+            this.#options.appTransport,
+            request.ticket,
+            port,
+            AbortSignal.any([this.#signal, controller.signal]),
+            signal,
+          );
+          retained = true;
+          void tunnel.done.finally(() => this.#appRequests.delete(request.requestId));
+        }
+        await this.#options.sink.send({ ...echo, ok: true, port });
+        return;
+      }
+      await this.#options.sink.send({ ...echo, ok: true });
+    } catch (error) {
+      const logTail =
+        error &&
+        typeof error === "object" &&
+        "logTail" in error &&
+        typeof error.logTail === "string"
+          ? error.logTail
+          : this.#options.agents.runtime.appServers.logTail(request.spec.appId);
+      await this.#options.sink.send({
+        ...echo,
+        ok: false,
+        error: (error instanceof Error ? error.message : "App server failed").slice(0, 2_000),
+        ...(logTail ? { logTail: logTail.slice(-16_384) } : {}),
+      });
+    } finally {
+      if (!retained) this.#appRequests.delete(request.requestId);
+    }
+  }
+
   async #answerWorkspaceRequest(request: HostWorkspaceLocalRequest): Promise<void> {
     const local = this.#options.agents.localWorkspaces;
     if (!local) {
@@ -1567,6 +1662,20 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             correlationId: message.command.correlationId,
             error: { code: "forbidden", message: notRunningAgents, retryable: false },
             type: "runner.command-rejected",
+          });
+          return;
+        case "host.app.cancel":
+          return;
+        case "host.app.start":
+        case "host.app.connect":
+        case "host.app.stop":
+          await sink.send({
+            type: "runner.app.result",
+            requestId: message.requestId,
+            appId: message.spec.appId,
+            fence: message.fence,
+            ok: false,
+            error: notRunningAgents,
           });
           return;
         case "host.workspace.local.provision":
@@ -1913,6 +2022,10 @@ export function runnerWebSocketUrl(config: Pick<RunnerConfig, "hostUrl" | "mode"
 
 function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnectionFence {
   switch (message.type) {
+    case "host.app.start":
+    case "host.app.connect":
+    case "host.app.stop":
+    case "host.app.cancel":
     case "host.workspace.local.provision":
     case "host.workspace.local.inspect":
     case "host.workspace.local.destroy":

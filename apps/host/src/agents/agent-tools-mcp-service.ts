@@ -1,4 +1,4 @@
-import { AppPublishInputSchema } from "@opensteer/core";
+import { AppPublishInputSchema, AppFetchInputSchema } from "@opensteer/core";
 import type { AppService } from "../apps/app-service.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -112,7 +112,7 @@ function toolDescription(name: string, current: string, version: 1 | 2 | 3 | nul
 }
 
 export class AgentToolsMcpService {
-  readonly #apps: Pick<AppService, "publish">;
+  readonly #apps: Pick<AppService, "publish" | "list" | "fetch">;
   readonly #agentControl: Pick<AgentControlService, "handle">;
   readonly #allowedHost: string;
   readonly #allowedOrigin: string;
@@ -128,7 +128,7 @@ export class AgentToolsMcpService {
   #sessionsBeingCreated = 0;
 
   constructor(options: {
-    readonly apps: Pick<AppService, "publish">;
+    readonly apps: Pick<AppService, "publish" | "list" | "fetch">;
     readonly agentControl: Pick<AgentControlService, "handle">;
     readonly publicUrl: URL;
     /**
@@ -366,7 +366,8 @@ export class AgentToolsMcpService {
         : []),
     ].filter(
       (definition) =>
-        (definition.name !== "app_publish" || input.scope === "run") &&
+        (!["app_publish", "app_list", "app_fetch"].includes(definition.name) ||
+          input.scope === "run") &&
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
         (definition.name !== "person_show" ||
           (input.scope === "run" && !lacks("person-show-v1"))) &&
@@ -529,6 +530,10 @@ export class AgentToolsMcpService {
         if (response.type !== "workspace.create.result") throw unexpectedToolResponse();
         return { workspace: response.workspace };
       }
+      case "app_list":
+        return this.#apps.list(token);
+      case "app_fetch":
+        return this.#apps.fetch(token, AppFetchInputSchema.parse(input));
       case "app_publish": {
         return this.#apps.publish(token, requestId, AppPublishInputSchema.parse(input));
       }

@@ -1748,6 +1748,7 @@ export async function createHostServer(
           command.workspaceId,
           userId,
         );
+        await dependencies.apps.stopWorkspace(command.workspaceId);
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),

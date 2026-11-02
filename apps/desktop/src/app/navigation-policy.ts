@@ -1,9 +1,17 @@
+import { isAppPrefixNavigation } from "@opensteer/shared/appFrame";
 import { isPublishedAppUrl } from "./published-app-protocol.js";
 
 export class DesktopAppOriginPolicy {
-  allowsNavigation(value: string): boolean {
+  allowsNavigation(value: string, source?: string): boolean {
     const url = parseUrl(value);
-    return url !== null && isDesktopAppUrl(url);
+    return (
+      url !== null &&
+      (isDesktopAppUrl(url) ||
+        (!!source &&
+          isPublishedAppUrl(source) &&
+          isPublishedAppUrl(value) &&
+          isAppPrefixNavigation(value, source)))
+    );
   }
 
   /**
@@ -33,7 +41,7 @@ export class DesktopAppOriginPolicy {
       url.protocol === "https:" &&
       frame &&
       isPublishedAppUrl(frame.url) &&
-      ["script", "stylesheet", "image", "font"].includes(frame.resourceType)
+      ["script", "stylesheet", "image", "font", "media"].includes(frame.resourceType)
     )
       return true;
     if (url.protocol === "blob:") {

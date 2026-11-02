@@ -26,15 +26,18 @@ const deploymentChangedCloseCode = 4_001;
 
 /** One Host request, in the terms every platform's network adapter accepts. */
 export interface HostTransportRequest {
-  readonly body?: string | Blob | undefined;
+  readonly body?: string | Blob | ReadableStream<Uint8Array> | undefined;
+  readonly credentials?: "omit";
+  readonly redirect?: "manual";
   readonly headers: {
+    readonly additional?: Readonly<Record<string, string>>;
     readonly accept?: string | undefined;
     readonly apiVersion?: string | undefined;
     readonly bootstrapDiagnostics?: string | undefined;
     readonly contentType?: string | undefined;
     readonly idempotencyKey?: string | undefined;
   };
-  readonly method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
+  readonly method: string;
   /** Resolved against the attachment's origin, and refused if it leaves it. */
   readonly path: string;
   readonly signal?: AbortSignal | undefined;
@@ -164,7 +167,12 @@ export class HostTransport {
         let response = await deadline.wait(this.#send(resolved, request, controller.signal));
         const onProgress = () => deadline.reset(hostResponseStallTimeoutMs);
         onProgress();
-        if (response.status === 401 && this.#sessions) {
+        if (
+          response.status === 401 &&
+          this.#sessions &&
+          request.credentials !== "omit" &&
+          !(request.body instanceof ReadableStream)
+        ) {
           response = await this.#retryAfterSessionRecovery(
             this.#sessions,
             selected,
@@ -285,7 +293,7 @@ export class HostTransport {
     let response: Response;
     try {
       response = await this.#network.request({
-        authorization: resolved.authorization,
+        authorization: request.credentials === "omit" ? null : resolved.authorization,
         canonicalOrigin: resolved.canonicalOrigin,
         requestOrigin: resolved.origin,
         deploymentId: resolved.deploymentId,

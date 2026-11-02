@@ -1,6 +1,6 @@
 import { useAppView } from "@opensteer/client/react";
 import type { AppEntry } from "@opensteer/client/host";
-import { appContentHeight, appFrameReady } from "@opensteer/shared/appFrame";
+import { appContentHeight, appFrameReady, isAppPrefixNavigation } from "@opensteer/shared/appFrame";
 import { useContext, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Modal, Pressable, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -110,8 +110,7 @@ function AppDocument({
       javaScriptCanOpenWindowsAutomatically={false}
       setSupportMultipleWindows
       onShouldStartLoadWithRequest={(request): boolean => {
-        if (request.url === "about:blank" || request.url.split("#")[0] === url.split("#")[0])
-          return true;
+        if (request.url === "about:blank" || isAppPrefixNavigation(request.url, url)) return true;
         if (
           request.isTopFrame !== false &&
           (request.navigationType === "click" || request.navigationType === undefined)
@@ -123,18 +122,31 @@ function AppDocument({
       onMessage={(event) => {
         try {
           const message: unknown = JSON.parse(event.nativeEvent.data);
-          if (appFrameReady(message)) ready.current = true;
+          if (appFrameReady(message)) {
+            ready.current = true;
+            setLoadFailed(false);
+          }
           const height = appContentHeight(message);
           if (height !== null) setHeight(height);
         } catch {
           /* A page's messages carry no native authority. */
         }
       }}
+      onLoadStart={() => {
+        ready.current = false;
+      }}
       onLoad={() => {
         if (!ready.current) setLoadFailed(true);
       }}
-      onError={() => setLoadFailed(true)}
-      onHttpError={() => setLoadFailed(true)}
+      onError={() => {
+        if (!ready.current) setLoadFailed(true);
+      }}
+      onHttpError={() => {
+        /* A prepared error document can still send ready before onLoadEnd. */
+      }}
+      onLoadEnd={() => {
+        if (!ready.current) setLoadFailed(true);
+      }}
       startInLoadingState
       renderLoading={() => <ActivityIndicator accessibilityLabel="Loading app" />}
     />

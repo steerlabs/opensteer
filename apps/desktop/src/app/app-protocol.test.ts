@@ -33,8 +33,8 @@ describe("Desktop app protocol", () => {
           secure: true,
           standard: true,
           bypassCSP: false,
-          corsEnabled: false,
-          supportFetchAPI: false,
+          corsEnabled: true,
+          supportFetchAPI: true,
         },
       },
       {

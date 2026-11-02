@@ -1,3 +1,4 @@
+import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
   AesGcmSecretVault,
   createPublicHttpsFetch,
@@ -2259,6 +2260,7 @@ export async function createHostRuntime(
       tokens: watchControlTokens,
     });
     const apps = new AppService({
+      tunnels: new AppTunnelHub(runners),
       dataDirectory,
       apps: new AppStore(database),
       store,
@@ -2718,6 +2720,7 @@ export async function createHostRuntime(
           }),
           ...(workspaceMountService ? [workspaceMountService.reconcile()] : []),
           securityEffects.reconcile(),
+          apps.reconcile(),
         ]);
         const failures = results.flatMap((result) =>
           result.status === "rejected" ? [result.reason] : [],

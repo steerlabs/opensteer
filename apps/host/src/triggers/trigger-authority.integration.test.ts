@@ -2803,6 +2803,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
     service = new AgentToolsMcpService({
       apps: {
+        list: async () => ({ apps: [] }),
+        fetch: async () => {
+          throw new Error("Unexpected app fetch");
+        },
         publish: async () => {
           throw new Error("Unexpected app publication in fixture");
         },

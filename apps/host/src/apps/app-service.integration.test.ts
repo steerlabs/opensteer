@@ -17,7 +17,7 @@ import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
 describeStore("published app HTML", (it) => {
-  it("publishes, versions atomically, replays tool calls, serves latest through reusable expiring capabilities, and cleans origin-owned bytes", async ({
+  it("publishes, versions atomically, replays tool calls, serves latest through reusable capabilities, and cleans origin-owned bytes", async ({
     storeFixture,
   }) => {
     const { store, database, startRunFixture } = storeFixture;
@@ -91,7 +91,7 @@ describeStore("published app HTML", (it) => {
         (await store.threadEventPageForOwner({ ownerId: f.userId, threadId: f.thread.id }))?.events,
       ).toContainEqual(events[0]);
       const view = await service.view(first.appId, f.userId, "dark");
-      const token = new URL(view.path, "https://host.test").searchParams.get("token")!;
+      const token = view.path.split("/").at(-2)!;
       const content = await service.content(first.appId, token, "dark");
       expect(content).toContain("First");
       expect(content.startsWith("<!doctype html>")).toBe(true);
@@ -142,11 +142,9 @@ describeStore("published app HTML", (it) => {
         service.content(`app_${crypto.randomUUID()}`, token, "light"),
       ).rejects.toMatchObject({ code: "not_found" });
       const now = Date.now();
-      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 5 * 60_000 + 1);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 12 * 60 * 60_000);
       try {
-        await expect(service.content(first.appId, token, "dark")).rejects.toMatchObject({
-          code: "not_found",
-        });
+        expect(await service.content(first.appId, token, "dark")).toContain("Latest");
       } finally {
         clock.mockRestore();
       }
@@ -375,6 +373,299 @@ describeStore("published app HTML", (it) => {
           .where("workspaceId", "=", f.workspace.id)
           .execute(),
       ).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("authorizes server publication before start, stops failed commits, preserves tokens and enforces agent reach", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-servers");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-app-server-host-"));
+    let scope = {
+      runId: f.run.id,
+      threadId: f.thread.id,
+      workspaceId: f.workspace.id,
+      environmentId: f.environmentId,
+      requestedBy: f.userId,
+    } as AgentControlRunScope;
+    const start = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const connect =
+      vi.fn<NonNullable<ConstructorParameters<typeof AppService>[0]["tunnels"]>["connect"]>();
+    const apps = new AppStore(database);
+    const files = {
+      list: vi.fn(async () => ({
+        parentKey: "",
+        cursor: null,
+        revision: "r",
+        entries: [
+          {
+            name: "index.html",
+            key: "html",
+            kind: "file" as const,
+            executable: false,
+            hidden: false,
+            mode: 0o600,
+            sizeBytes: html.length,
+            modifiedAt: null,
+          },
+        ],
+      })),
+      download: vi.fn(async () => new Response(html)),
+    };
+    const service = new AppService({
+      dataDirectory: directory,
+      store,
+      apps,
+      files,
+      tokens: { authenticate: async () => scope, reauthorize: async () => scope },
+      publishEvent: () => undefined,
+      tunnels: { start, stop, connect, accept: () => undefined },
+    });
+    const publish = (extra = {}) =>
+      service.publish("run-token", crypto.randomUUID(), {
+        path: "app",
+        title: "Server",
+        start: "node server.js",
+        ...extra,
+      });
+    try {
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", f.thread.id)
+        .execute();
+      await expect(publish()).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining("full-access"),
+      });
+      expect(start).not.toHaveBeenCalled();
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "full-access" })
+        .where("id", "=", f.thread.id)
+        .execute();
+      await expect(publish()).rejects.toMatchObject({
+        message: "App servers need a local Workspace",
+      });
+      expect(start).not.toHaveBeenCalled();
+      await database
+        .updateTable("workspaces")
+        .set({
+          backing: {
+            kind: "local-directory",
+            bindingId: createId("workspaceBinding"),
+            generation: 1,
+            storageAuthorityId: createId("storageAuthority"),
+            ownerEnvironmentId: f.environmentId,
+          },
+          capacityPolicy: { kind: "host-filesystem" },
+        })
+        .where("id", "=", f.workspace.id)
+        .execute();
+      for (const path of ["../bad", "/absolute", "a/../b"])
+        await expect(publish({ path })).rejects.toMatchObject({ code: "bad_request" });
+      expect(start).not.toHaveBeenCalled();
+      start.mockRejectedValueOnce(
+        new (await import("./app-tunnel-hub.js")).AppTunnelError(
+          "Server exited",
+          "failure log tail",
+        ),
+      );
+      await expect(publish()).rejects.toMatchObject({
+        message: expect.stringContaining("failure log tail"),
+      });
+      expect(await database.selectFrom("appVersions").selectAll().execute()).toHaveLength(0);
+      stop.mockClear();
+      const commit = vi
+        .spyOn(apps, "publish")
+        .mockRejectedValueOnce(new Error("Injected commit failure"));
+      await expect(publish()).rejects.toThrow("Injected commit failure");
+      expect(stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ version: 1 }));
+      expect(await database.selectFrom("appVersions").selectAll().execute()).toHaveLength(0);
+      commit.mockRestore();
+      const first = await publish();
+      expect((await apps.latest(first.appId, f.userId)).version).toMatchObject({
+        sha256: null,
+        sizeBytes: null,
+        server: { folder: "app", command: "node server.js", environmentId: f.environmentId },
+      });
+      const v = await service.view(first.appId, f.userId, "dark");
+      const token = v.path.split("/").at(-2)!;
+      expect((await service.view(first.appId, f.userId, "light")).path.split("/").at(-2)).toBe(
+        token,
+      );
+      expect(await service.list("token")).toMatchObject({
+        apps: [
+          expect.objectContaining({
+            id: first.appId,
+            kind: "server",
+            folder: "app",
+            start: "node server.js",
+          }),
+        ],
+      });
+      const { createServer } = await import("node:http");
+      const { once } = await import("node:events");
+      const { connect: dial } = await import("node:net");
+      const upstream = createServer((req, res) => {
+        res.writeHead(req.url === "/error" ? 409 : 200, { "content-type": "text/plain" });
+        if (req.url === "/large") res.end("x".repeat(300_000));
+        else res.end("app response");
+      });
+      try {
+        const listening = once(upstream, "listening", { signal: AbortSignal.timeout(3_000) });
+        upstream.listen(0, "127.0.0.1");
+        await listening;
+        const address = upstream.address();
+        if (!address || typeof address === "string") throw new Error("Missing upstream address");
+        connect.mockImplementation(async (_spec, signal) => ({
+          stream: dial({ host: "127.0.0.1", port: address.port, signal }),
+          port: address.port,
+        }));
+        expect(
+          await service.fetch("token", { appId: first.appId, method: "GET", path: "/error" }),
+        ).toMatchObject({ status: 409, body: "app response" });
+        const large = await service.fetch("token", {
+          appId: first.appId,
+          method: "GET",
+          path: "/large",
+        });
+        expect(large.truncated).toBe(true);
+        expect(large.body).toContain("Response truncated");
+        expect(large.body.length).toBeLessThan(263_000);
+      } finally {
+        await (await import("@opensteer/shared/httpServer")).closeHttpServerNow(upstream);
+      }
+      const startsBefore = start.mock.calls.length;
+      const { thread: unrelated } = await store.createThread({
+        createdBy: f.userId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        idempotencyKey: "unrelated-app-root",
+        modelSelection: f.thread.modelSelection,
+        title: "Other",
+        workspaceId: f.workspace.id,
+      });
+      const { thread: child } = await store.createThread({
+        createdBy: f.userId,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        idempotencyKey: "unrelated-app-child",
+        modelSelection: f.thread.modelSelection,
+        title: "Other task",
+        workspaceId: f.workspace.id,
+        parentThreadId: unrelated.id,
+      });
+      const turn = await storeFixture.enqueueHumanTrigger({
+        content: [{ type: "text", text: "Other task" }],
+        idempotencyKey: "unrelated-app-turn",
+        requestedBy: f.userId,
+        threadId: child.id,
+      });
+      await database
+        .updateTable("runs")
+        .set({ status: "running" })
+        .where("id", "=", turn.run.id)
+        .execute();
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "full-access" })
+        .where("id", "=", child.id)
+        .execute();
+      const originScope = scope;
+      scope = { ...scope, threadId: child.id, runId: turn.run.id };
+      await expect(publish({ appId: first.appId })).rejects.toMatchObject({ code: "not_found" });
+      expect(start).toHaveBeenCalledTimes(startsBefore);
+      await expect(
+        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+      ).rejects.toMatchObject({ code: "not_found" });
+      expect(await service.list("token")).toEqual({ apps: [] });
+      scope = originScope;
+      const retainedOwner = await store.createUser("Retained app Workspace owner");
+      await database
+        .insertInto("workspaceMemberships")
+        .values({
+          generation: 1,
+          id: createId("workspaceMembership"),
+          invitedBy: f.userId,
+          joinedAt: new Date(),
+          revokedAt: null,
+          revokedBy: null,
+          role: "owner",
+          state: "active",
+          updatedAt: new Date(),
+          userId: retainedOwner,
+          workspaceId: f.workspace.id,
+        })
+        .execute();
+
+      await database
+        .updateTable("workspaceMemberships")
+        .set({ state: "revoked", revokedAt: new Date(), revokedBy: retainedOwner })
+        .where("workspaceId", "=", f.workspace.id)
+        .where("userId", "=", f.userId)
+        .execute();
+      await expect(service.authorizeView(first.appId, token)).rejects.toMatchObject({
+        code: "not_found",
+      });
+      await expect(
+        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+      ).rejects.toMatchObject({ code: "not_found" });
+      await database
+        .updateTable("workspaceMemberships")
+        .set({ state: "active", revokedAt: null, revokedBy: null })
+        .where("workspaceId", "=", f.workspace.id)
+        .where("userId", "=", f.userId)
+        .execute();
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", f.thread.id)
+        .execute();
+      await expect(
+        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(service.list("token")).rejects.toMatchObject({ code: "forbidden" });
+      await database
+        .updateTable("threads")
+        .set({ accessMode: "full-access" })
+        .where("id", "=", f.thread.id)
+        .execute();
+
+      const stopsBefore = stop.mock.calls.length;
+      await service.publish("token", "html-republish", {
+        appId: first.appId,
+        path: "index.html",
+        title: "HTML",
+      });
+      expect(stop).toHaveBeenCalledTimes(stopsBefore + 1);
+      await expect(
+        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+      const next = await publish({ appId: first.appId });
+      expect(next.version).toBe(3);
+      // The same causal root constraint used in the HTML lifecycle fixture.
+      const retained = await storeFixture.enqueueHumanTrigger({
+        content: [{ type: "text", text: "Retained" }],
+        idempotencyKey: "retained-server-cause",
+        requestedBy: f.userId,
+        threadId: unrelated.id,
+      });
+      await database
+        .updateTable("causalChains")
+        .set({ rootMessageId: retained.run.seedInputId })
+        .where("id", "=", f.run.causalChainId)
+        .execute();
+      await database.deleteFrom("threads").where("id", "=", f.thread.id).execute();
+      const deletedStops = stop.mock.calls.length;
+      await service.reconcile();
+      expect(stop).toHaveBeenCalledTimes(deletedStops + 1);
+      await expect(service.authorizeView(first.appId, token)).rejects.toMatchObject({
+        code: "not_found",
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
@@ -36,21 +36,28 @@ it("serves only capability-addressed HTML, with the same opaque-origin sandbox o
   });
   const server = Fastify({ logger: { level: "info", stream } });
   const content = vi.fn(async () => "<!doctype html><html>Chart</html>");
-  registerAppRoutes(server, { content } as unknown as AppService);
+  const serve = vi.fn(async () => ({
+    status: 200,
+    headers: {},
+    body: Readable.from([await content()]),
+  }));
+  registerAppRoutes(server, { response: serve } as unknown as AppService);
   try {
     const response = await server.inject({
       method: "GET",
-      url: `/v1/apps/${appId}/content?token=${"a".repeat(43)}&theme=dark`,
+      url: `/v1/apps/${appId}/dark/${"a".repeat(43)}/`,
     });
     expect(response.statusCode).toBe(200);
-    expect(content).toHaveBeenCalledWith(appId, "a".repeat(43), "dark");
+    expect(serve).toHaveBeenCalledWith(
+      expect.objectContaining({ appId, token: "a".repeat(43), theme: "dark", path: "/" }),
+    );
     expect(response.headers["content-security-policy"]).toContain(
       "sandbox allow-scripts allow-popups",
     );
     expect(response.headers["content-security-policy"]).not.toContain("allow-same-origin");
-    expect(response.headers["content-security-policy"]).toContain("connect-src 'none'");
+    expect(response.headers["content-security-policy"]).toContain("connect-src 'self'");
     expect(response.headers["content-security-policy"]).toContain(
-      "script-src 'unsafe-inline' https:",
+      "script-src 'self' 'unsafe-inline' https:",
     );
     expect(response.headers["cache-control"]).toBe("private, no-store");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
@@ -66,6 +73,53 @@ it("serves only capability-addressed HTML, with the same opaque-origin sandbox o
     ).toBeGreaterThanOrEqual(400);
     expect(content).not.toHaveBeenCalled();
     expect(logs.join("\n")).not.toContain("a".repeat(43));
+  } finally {
+    await server.close();
+  }
+});
+
+it("authorizes CORS preflight without starting a server and supports opaque-origin JSON requests", async () => {
+  const server = Fastify();
+  const authorizeView = vi.fn(async () => ({ version: { server: {} } }));
+  const response = vi.fn(async () => ({
+    status: 201,
+    headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+    body: (await import("node:stream")).Readable.from(['{"ok":true}']),
+  }));
+  registerAppRoutes(server, { authorizeView, response } as unknown as AppService);
+  const url = `/v1/apps/${appId}/dark/${"a".repeat(43)}/api/`;
+  try {
+    const preflight = await server.inject({
+      method: "OPTIONS",
+      url,
+      headers: {
+        origin: "null",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers["access-control-allow-origin"]).toBe("*");
+    expect(preflight.headers["access-control-allow-headers"]).toBe("content-type");
+    expect(response).not.toHaveBeenCalled();
+    const custom = await server.inject({
+      method: "OPTIONS",
+      url,
+      headers: { origin: "null", "access-control-request-method": "PROPFIND" },
+    });
+    expect(custom.headers["access-control-allow-methods"]).toBe("PROPFIND");
+
+    const post = await server.inject({
+      method: "POST",
+      url,
+      headers: { origin: "null", "content-type": "application/json" },
+      payload: '{"value":42}',
+    });
+    expect(post.statusCode).toBe(201);
+    expect(post.json()).toEqual({ ok: true });
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "POST", path: "/api/", body: expect.anything() }),
+    );
   } finally {
     await server.close();
   }

@@ -7,6 +7,7 @@ import {
   appMaxBytes,
   nonTerminalRunStatuses,
   threadInReach,
+  type AppServerSpec,
   type AgentEvent,
   type EnvironmentId,
   type RunId,
@@ -30,7 +31,7 @@ export class AppStore {
   async referencedDigests(): Promise<readonly string[]> {
     return (
       await this.#database.selectFrom("appVersions").select("sha256").distinct().execute()
-    ).map((row) => row.sha256);
+    ).flatMap((row) => (row.sha256 ? [row.sha256] : []));
   }
 
   async get(appId: string, userId: UserId) {
@@ -70,6 +71,105 @@ export class AppStore {
       .executeTakeFirst();
   }
 
+  async authorize(input: {
+    readonly workspaceId: WorkspaceId;
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly userId: UserId;
+    readonly appId?: string;
+    readonly fullAccess?: boolean;
+    readonly sameWorkspace?: boolean;
+  }) {
+    const membership = await this.#database
+      .selectFrom("workspaceMemberships")
+      .select("workspaceId")
+      .where("workspaceId", "=", input.workspaceId)
+      .where("userId", "=", input.userId)
+      .where("state", "=", "active")
+      .executeTakeFirst();
+    if (!membership) throw missing();
+    const publisher = await this.#database
+      .selectFrom("threads")
+      .innerJoin("runs", "runs.threadId", "threads.id")
+      .select([
+        "threads.id",
+        "threads.workspaceId",
+        "threads.capabilityProfileId",
+        "threads.lineageRootThreadId",
+        "threads.accessMode",
+        "runs.status",
+      ])
+      .where("runs.id", "=", input.runId)
+      .where("threads.id", "=", input.threadId)
+      .where("threads.workspaceId", "=", input.workspaceId)
+      .where("runs.requestedBy", "=", input.userId)
+      .executeTakeFirst();
+    if (!publisher || !nonTerminalRunStatuses.some((status) => status === publisher.status))
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The publishing Run is no longer active",
+      });
+    let app;
+    if (input.appId) {
+      app = await this.get(input.appId, input.userId);
+      if (input.sameWorkspace && app.workspaceId !== input.workspaceId) throw missing();
+      const origin = await this.#database
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", app.threadId)
+        .executeTakeFirst();
+      if (!origin || !threadInReach(publisher, origin)) throw missing();
+    }
+    if (input.fullAccess && publisher.accessMode !== "full-access")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "App servers require a full-access Run",
+      });
+    return { publisher, app };
+  }
+
+  async list(input: {
+    readonly workspaceId: WorkspaceId;
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly userId: UserId;
+  }) {
+    const { publisher } = await this.authorize({ ...input, fullAccess: true });
+    const rows = await this.#database
+      .selectFrom("apps")
+      .innerJoin("threads", "threads.id", "apps.threadId")
+      .innerJoin("appVersions", (join) =>
+        join
+          .onRef("appVersions.appId", "=", "apps.id")
+          .onRef("appVersions.version", "=", "apps.latestVersion"),
+      )
+      .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "apps.workspaceId")
+      .selectAll("apps")
+      .select(["threads.capabilityProfileId", "threads.lineageRootThreadId", "appVersions.server"])
+      .where("workspaceMemberships.userId", "=", input.userId)
+      .where("workspaceMemberships.state", "=", "active")
+      .execute();
+    return rows
+      .filter((row) => threadInReach(publisher, row))
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        kind: row.server ? ("server" as const) : ("html" as const),
+        ...(row.server ? { folder: row.server.folder, start: row.server.command } : {}),
+        threadId: row.threadId,
+        latestVersion: row.latestVersion,
+        updatedAt: row.updatedAt.toISOString(),
+      }));
+  }
+
+  exists(appId: string) {
+    return this.#database
+      .selectFrom("apps")
+      .select("id")
+      .where("id", "=", appId)
+      .executeTakeFirst();
+  }
+
   async publish(input: {
     readonly appId?: string;
     readonly workspaceId: WorkspaceId;
@@ -78,8 +178,11 @@ export class AppStore {
     readonly environmentId: EnvironmentId;
     readonly userId: UserId;
     readonly title: string;
-    readonly sha256: string;
-    readonly sizeBytes: number;
+    readonly sha256?: string;
+    readonly sizeBytes?: number;
+    readonly server?: AppServerSpec;
+    readonly id?: string;
+    readonly expectedVersion?: number;
     readonly publishKey: string;
   }): Promise<{
     readonly appId: string;
@@ -87,7 +190,10 @@ export class AppStore {
     readonly event: AgentEvent | null;
   }> {
     const title = AppTitleSchema.parse(input.title);
-    if (input.sizeBytes < 1 || input.sizeBytes > appMaxBytes)
+    if (
+      !input.server &&
+      (input.sizeBytes === undefined || input.sizeBytes < 1 || input.sizeBytes > appMaxBytes)
+    )
       throw new OpensteerError({
         code: "bad_request",
         message: "App HTML exceeds the 5 MiB limit",
@@ -100,7 +206,7 @@ export class AppStore {
         const run = await transaction
           .selectFrom("runs")
           .innerJoin("threads", "threads.id", "runs.threadId")
-          .select(["runs.id", "runs.status"])
+          .select(["runs.id", "runs.status", "threads.accessMode"])
           .where("runs.id", "=", input.runId)
           .where("runs.threadId", "=", input.threadId)
           .where("threads.workspaceId", "=", input.workspaceId)
@@ -111,6 +217,11 @@ export class AppStore {
             code: "conflict",
             message: "The publishing Run is no longer active",
           });
+        if (input.server && run.accessMode !== "full-access")
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "App servers require a full-access Run",
+          });
         const replay = await transaction
           .selectFrom("appVersions")
           .select(["appId", "version"])
@@ -119,7 +230,9 @@ export class AppStore {
           .executeTakeFirst();
         if (replay) return { ...replay, event: null };
         const now = new Date();
-        const appId = input.appId ? AppIdSchema.parse(input.appId) : `app_${randomUUID()}`;
+        const appId = input.appId
+          ? AppIdSchema.parse(input.appId)
+          : (input.id ?? `app_${randomUUID()}`);
         let version = 1;
         if (input.appId) {
           const app = await transaction
@@ -160,13 +273,19 @@ export class AppStore {
             })
             .execute();
         }
+        if (input.expectedVersion !== undefined && input.expectedVersion !== version)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "App version changed during publication",
+          });
         await transaction
           .insertInto("appVersions")
           .values({
             appId,
             version,
-            sha256: input.sha256,
-            sizeBytes: input.sizeBytes,
+            sha256: input.sha256 ?? null,
+            sizeBytes: input.sizeBytes ?? null,
+            server: input.server ?? null,
             createdByRun: input.runId,
             publishKey: input.publishKey,
             createdAt: now,

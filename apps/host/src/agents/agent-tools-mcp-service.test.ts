@@ -35,9 +35,16 @@ describe("AgentToolsMcpService", () => {
       version: 1,
       message: "Already shown to the person.",
     }));
+    const list = vi.fn(async () => ({ apps: [] }));
+    const fetchApp = vi.fn(async () => ({
+      status: 409,
+      contentType: "text/plain",
+      body: "Already claimed",
+      truncated: false,
+    }));
     const fixture = await startService({
       agentControl: { handle: vi.fn() } as unknown as AgentControlService,
-      apps: { publish },
+      apps: { publish, list, fetch: fetchApp },
       profiles: { "run-token": "workspace" },
     });
     const client = await connectClient(fixture.url, "run-token");
@@ -61,6 +68,28 @@ describe("AgentToolsMcpService", () => {
         ).isError,
       ).toBe(true);
       expect(publish).toHaveBeenCalledTimes(1);
+      const serverResult = await client.callTool({
+        name: "app_publish",
+        arguments: { path: "dashboard", title: "Inventory", start: "node server.js" },
+      });
+      expect(serverResult.isError).not.toBe(true);
+      expect(publish).toHaveBeenLastCalledWith("run-token", expect.any(String), {
+        path: "dashboard",
+        title: "Inventory",
+        start: "node server.js",
+      });
+      await client.callTool({ name: "app_list", arguments: {} });
+      expect(list).toHaveBeenCalledExactlyOnceWith("run-token");
+      const fetched = await client.callTool({
+        name: "app_fetch",
+        arguments: { appId: "app_11111111-1111-4111-8111-111111111111", path: "/api/items" },
+      });
+      expect(fetched.structuredContent).toMatchObject({ status: 409, body: "Already claimed" });
+      expect(fetchApp).toHaveBeenCalledExactlyOnceWith("run-token", {
+        appId: "app_11111111-1111-4111-8111-111111111111",
+        path: "/api/items",
+        method: "GET",
+      });
     } finally {
       await client.close();
       await fixture.service.close();
@@ -402,6 +431,8 @@ describe("AgentToolsMcpService", () => {
     expect(listed.tools.map(({ name }) => name)).toContain("browser_profile_list");
     expect(listed.tools.map(({ name }) => name)).toEqual([
       "app_publish",
+      "app_list",
+      "app_fetch",
       "request_list",
       "request_withdraw",
       "environment_list",
@@ -613,6 +644,8 @@ describe("AgentToolsMcpService", () => {
     const listed = await client.listTools();
     expect(listed.tools.map(({ name }) => name)).toEqual([
       "app_publish",
+      "app_list",
+      "app_fetch",
       "request_list",
       "request_withdraw",
       "environment_list",
@@ -748,6 +781,8 @@ describe("AgentToolsMcpService", () => {
     await expect(client.listTools()).resolves.toMatchObject({
       tools: [
         { name: "app_publish" },
+        { name: "app_list" },
+        { name: "app_fetch" },
         { name: "request_list" },
         { name: "request_withdraw" },
         { name: "environment_list" },
@@ -887,6 +922,8 @@ describe("AgentToolsMcpService", () => {
     const listed = await client.listTools();
     expect(listed.tools.map(({ name }) => name)).toEqual([
       "app_publish",
+      "app_list",
+      "app_fetch",
       "request_list",
       "request_withdraw",
       "environment_list",
@@ -1088,6 +1125,10 @@ async function startService(input: {
   } as Awaited<ReturnType<TriggerControlTokenService["authenticate"]>>;
   service = new AgentToolsMcpService({
     apps: input.apps ?? {
+      list: async () => ({ apps: [] }),
+      fetch: async () => {
+        throw new Error("Unexpected app fetch in fixture");
+      },
       publish: async () => {
         throw new Error("Unexpected app publication in fixture");
       },

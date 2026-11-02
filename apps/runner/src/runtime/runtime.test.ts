@@ -5957,3 +5957,18 @@ import { stat } from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+it("stops app servers on primary connection loss and Runner shutdown", async () => {
+  const runtime = configuredRuntime({
+    environmentId: createId("environment"),
+    registry: new HarnessRegistry(),
+  });
+  const stopAll = vi.spyOn(runtime.appServers, "stopAll");
+  try {
+    await runtime.connectionLost({ send: async () => undefined });
+    expect(stopAll).toHaveBeenCalledTimes(1);
+  } finally {
+    await runtime.close();
+  }
+  expect(stopAll).toHaveBeenCalledTimes(2);
+});

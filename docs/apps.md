@@ -1,22 +1,50 @@
 # Opensteer Apps
 
-An app renders on the person's device, inline in its Thread or full-screen.
-A chart or interactive explanation should travel with its conversation and work
-on a phone; a streamed browser tab would add a computer, latency and a separate
-place to find it.
+Apps render on the person's device, inline in their Thread or full-screen. Each
+card resolves its app ID to the latest publication, even in older history. The
+origin Thread owns the app; deleting that Thread removes its publications.
+Stored HTML and the database belong in the same backup as Host attachments.
 
-Published HTML has an opaque origin: both the frame and its response sandbox
-allow scripts and popups without `allow-same-origin`. The app cannot reach the
-Opensteer session, storage or Host API. HTTPS CDN scripts and presentation assets
-are allowed; direct data connections, nested frames and forms are not. Desktop uses a
-separate scheme through the main process; mobile uses an isolated WebView without
-Opensteer credentials. View capabilities expire and remain only in memory.
+An HTML app is a self-contained document stored by the Host. A server app runs
+from a folder in the publishing Run's local-directory Workspace, on the computer
+that owns that directory. The folder holds its source and data. Publishing
+verifies the start command before committing a version, but it doesn't copy or
+roll back files. Editing the folder can affect an already running server.
+PortableFS cannot host app servers.
 
-Each Thread has one live card per app, placed at its latest publication. The
-card resolves its app ID to the latest version, including in older history. Old immutable versions are retained as history, not pinned views.
-An app belongs to its origin Thread: deleting that Thread removes its rows.
-The Host owns digest-named bytes and removes unreferenced content at startup.
-Back up the database and Host data directory together, as with attachments.
+Starting a server requires a full-access Run. So do `app_list` and `app_fetch`;
+calling an app can execute code with the computer user's full authority. A
+Personal macOS Runner has no outer sandbox. Servers use the program launch and
+containment paths, with the program environment allowlist plus `PORT`, and
+receive no Opensteer tool credential. App versions record their owning computer;
+they don't move to another computer when someone views them.
 
-Phase 2 will let an app run its own server on its computer, with Opensteer routing
-its `api/*` requests. Frameworks, data and background work belong to that app.
+Serve the UI at `/` and listen on `127.0.0.1:$PORT`. Use relative URLs for assets,
+links and API calls, such as `api/items` or `./assets/app.js`. Opensteer strips the
+view prefix before forwarding requests and supplies it as `x-forwarded-prefix`
+for frameworks that need a base path. For Vite, use `base: './'`. Document the
+app's API in its folder's README so another agent can use `app_fetch`.
+
+The frame and every app response enforce an opaque-origin sandbox, without
+`allow-same-origin`. Relative resources and HTTPS presentation assets work;
+Opensteer cookies, storage and the parent document stay inaccessible. The proxy
+strips credentials and cookies in both directions. Desktop streams through a
+separate scheme in its main process; mobile uses a WebView without Opensteer
+credentials. Links within the capability prefix stay in the frame; other HTTP(S)
+links open outside it. Design for phone width and the supplied light/dark theme.
+
+A view capability stays valid until Host restart, with one token per app and
+person. Every request checks current Workspace membership. Logout doesn't revoke
+a copied view URL. Treat the whole URL as private; clients keep it only in memory.
+
+Servers stay running for background work. A crash restarts lazily on the next
+request, with concurrent requests sharing a start. Republishing as HTML, deleting
+the origin Thread or losing the primary Host connection stops the server. After
+reconnect, the current committed version starts lazily. There is no idle shutdown.
+The Host's existing reconciliation loop notices deleted origin rows.
+
+Only agents receive the Runner's 16 KiB in-memory log tail on startup failure;
+viewer error pages omit it. Redirect output in the start command if persistent
+logs are needed. `app_fetch` stops reading after 30 seconds or 256 KiB and cancels
+the upstream request, including an endless event stream. Browsers can consume
+streaming responses and SSE directly.

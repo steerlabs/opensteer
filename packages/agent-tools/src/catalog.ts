@@ -1,5 +1,6 @@
 import {
   AppPublishInputSchema,
+  AppFetchInputSchema,
   AgentCapabilityProfileIdSchema,
   AssignmentIdSchema,
   BrowserProfileIdSchema,
@@ -31,6 +32,8 @@ import legacyTriggerWriteContract from "./fixtures/trigger-write-e45e4ecdc.json"
 
 export const AgentToolIdSchema = z.enum([
   "app.publish",
+  "app.list",
+  "app.fetch",
   "environment.list",
   "workspace.list",
   "workspace.create",
@@ -62,6 +65,8 @@ export type AgentToolId = z.infer<typeof AgentToolIdSchema>;
 
 export const AgentToolNameSchema = z.enum([
   "app_publish",
+  "app_list",
+  "app_fetch",
   "environment_list",
   "workspace_list",
   "workspace_create",
@@ -181,9 +186,37 @@ const definitions = [
     name: "app_publish",
     inputSchema: AppPublishInputSchema,
     description:
-      "Publish a self-contained HTML file from this Run's Workspace as an app, shown inline in this Thread and openable full-screen on every device. Use it when a chart, diagram, dashboard, mockup or interactive page communicates better than prose. Write a complete UTF-8 HTML document (.html or .htm) with your ordinary file tools, then pass its Workspace-relative path and a short title. External HTTPS CDN scripts are fine; no local assets or server. Design for about 380px phone width and wider screens, with a transparent or neutral background that works in light and dark. Avoid vh-based full-height layouts: the inline frame sizes to content. The document receives data-theme=light/dark and the opensteer:theme event. Pass appId to publish a new version; every card shows the latest. A successful publish already shows the app to the person: do not repeat its contents in prose.",
+      "Publish an app inline in this Thread and full-screen on every device. For a UI-only app, write one self-contained UTF-8 HTML file and pass its Workspace-relative path. For an app with data, APIs or multiple files, pass a Workspace-relative folder and start (shell command); listen on 127.0.0.1:$PORT and serve UI at /. Server apps require a full-access Run and a local-directory Workspace on this computer. Publishing starts and verifies the server before saving; files run in place. Use relative URLs (api/items, ./assets/app.js), or the base path from x-forwarded-prefix (Vite base './'). Design for 380px phone width and light/dark themes (data-theme and opensteer:theme event); avoid vh-based full-height layouts. Keep app data in its folder and document its API in a README so other agents can use app_fetch. Logs have only a 16 KiB in-memory tail; redirect output in start if persistent logs are needed. Pass appId to update every card; publishing HTML instead stops the server. Success already shows the app: do not repeat its contents in prose.",
     annotations: {
       title: "Publish App",
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+    },
+  },
+  {
+    id: "app.list",
+    name: "app_list",
+    inputSchema: z.strictObject({}),
+    description:
+      "List published apps in this Run's reach and active Workspace memberships, including server folders and start commands. Requires a full-access Run. Read a server app's README for its API, then call app_fetch.",
+    annotations: {
+      title: "List Apps",
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+      readOnlyHint: true,
+    },
+  },
+  {
+    id: "app.fetch",
+    name: "app_fetch",
+    inputSchema: AppFetchInputSchema,
+    description:
+      "Call a published server app's HTTP API using its appId and a relative HTTP path beginning with /. Requires a full-access Run with reach to the app's origin Thread and active Workspace membership. Returns status, content type and text, including non-2xx responses; bounded to 30 seconds and 256 KiB. Read the app folder's README for its API. Calling an app may change its data; app servers have the publishing computer user's authority.",
+    annotations: {
+      title: "Call App",
       destructiveHint: false,
       idempotentHint: false,
       openWorldHint: false,
@@ -799,6 +832,8 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.message",
       "person.notify",
       "app.publish",
+      "app.list",
+      "app.fetch",
       "person.show",
       "thread.write",
       "assignment.cancel",
@@ -830,6 +865,8 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.message",
       "person.notify",
       "app.publish",
+      "app.list",
+      "app.fetch",
       "person.show",
       "thread.write",
       "assignment.cancel",
@@ -860,6 +897,8 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "thread.message",
       "person.notify",
       "app.publish",
+      "app.list",
+      "app.fetch",
       "person.show",
       "thread.write",
       "assignment.cancel",

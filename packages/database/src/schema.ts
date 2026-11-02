@@ -2039,8 +2039,9 @@ export interface AppTable {
 export interface AppVersionTable {
   appId: string;
   version: number;
-  sha256: string;
-  sizeBytes: number;
+  sha256: string | null;
+  sizeBytes: number | null;
+  server: JsonColumn<import("@opensteer/core").AppServerSpec | null>;
   createdByRun: RunId | null;
   publishKey: string;
   createdAt: Timestamp;

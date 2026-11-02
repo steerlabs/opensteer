@@ -20,15 +20,21 @@ function appPath(url: URL): string | null {
   )
     return null;
   const path = `${url.pathname}${url.search}`;
-  return /^\/v1\/apps\/app_[0-9a-f-]{36}\/content\?token=[A-Za-z0-9_-]{43}&theme=(light|dark)$/u.test(
-    path,
-  )
-    ? path
-    : null;
+  if (!/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\//u.test(path)) return null;
+  for (const part of url.pathname.split("/")) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(part);
+    } catch {
+      return null;
+    }
+    if (decoded === "." || decoded === ".." || /[\\/\0\r\n]/u.test(decoded)) return null;
+  }
+  return path;
 }
 
 export function createPublishedAppProtocolHandler(
-  transport: Pick<DesktopHostTransport, "request">,
+  transport: Pick<DesktopHostTransport, "streamApp">,
 ) {
   return async (request: Request): Promise<Response> => {
     let path: string | null = null;
@@ -37,14 +43,41 @@ export function createPublishedAppProtocolHandler(
     } catch {
       /* Invalid URL. */
     }
-    if (request.method !== "GET" || path === null)
+    if (path === null)
       return new Response("Not Found", { status: 404, headers: appFrameHeaders() });
     try {
-      const result = await transport.request({ method: "GET", headers: {}, path });
-      return new Response(result.status === 200 ? result.body : "App unavailable", {
-        status: result.status,
-        headers: appFrameHeaders(),
+      const headers: Record<string, string> = {};
+      for (const name of [
+        "accept",
+        "content-type",
+        "content-length",
+        "last-event-id",
+        "range",
+        "if-none-match",
+        "if-modified-since",
+        "access-control-request-method",
+        "access-control-request-headers",
+      ]) {
+        const value = request.headers.get(name);
+        if (value) headers[name] = value;
+      }
+      const result = await transport.streamApp({
+        method: request.method,
+        headers,
+        path,
+        signal: request.signal,
+        ...(request.body ? { body: request.body } : {}),
       });
+      const responseHeaders = new Headers(result.headers);
+      for (const [name, value] of Object.entries(appFrameHeaders()))
+        if (name !== "content-type") responseHeaders.set(name, value);
+      const location = responseHeaders.get("location");
+      if (location && location.startsWith("/v1/apps/"))
+        responseHeaders.set("location", `${appFrameScheme}://view${location}`);
+      return new Response(
+        [204, 205, 304].includes(result.status) || request.method === "HEAD" ? null : result.body,
+        { status: result.status, headers: responseHeaders },
+      );
     } catch {
       return new Response("App unavailable", { status: 503, headers: appFrameHeaders() });
     }
@@ -53,7 +86,7 @@ export function createPublishedAppProtocolHandler(
 
 export function installPublishedAppProtocol(
   protocol: DesktopProtocolRegistrar,
-  transport: Pick<DesktopHostTransport, "request">,
+  transport: Pick<DesktopHostTransport, "streamApp">,
 ): () => void {
   protocol.handle(appFrameScheme, createPublishedAppProtocolHandler(transport));
   return () => protocol.unhandle(appFrameScheme);

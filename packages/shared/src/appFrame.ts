@@ -4,11 +4,12 @@ export const appFrameSandbox = "allow-scripts allow-popups";
 export const appFrameContentSecurityPolicy = [
   `sandbox ${appFrameSandbox}`,
   "default-src 'none'",
-  "script-src 'unsafe-inline' https:",
-  "style-src 'unsafe-inline' https:",
-  "img-src https: data: blob:",
-  "font-src https: data:",
-  "connect-src 'none'",
+  "script-src 'self' 'unsafe-inline' https:",
+  "style-src 'self' 'unsafe-inline' https:",
+  "img-src 'self' https: data: blob:",
+  "font-src 'self' https: data:",
+  "connect-src 'self'",
+  "media-src 'self' https: data: blob:",
   "frame-src 'none'",
   "object-src 'none'",
   "base-uri 'none'",
@@ -38,6 +39,7 @@ export function prepareAppHtml(html: string, theme: AppTheme): string {
   const bootstrap = `<meta name="viewport" content="width=device-width, initial-scale=1"><script>
 (()=>{
   ${appThemeScript(theme)}
+  const isAppPrefixNavigation=${isAppPrefixNavigation.toString()};
   const send=message=>{
     if(parent!==window)parent.postMessage(message,'*');
     if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(message));
@@ -45,7 +47,9 @@ export function prepareAppHtml(html: string, theme: AppTheme): string {
   send({type:'opensteer-app:ready'});
   addEventListener('keydown',e=>{if(e.key==='Escape')send({type:'opensteer-app:escape'})});
   addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('a[href]');if(!a||e.defaultPrevented)return;
-    const url=new URL(a.href,location.href);if(!/^https?:$/.test(url.protocol))return;
+    const url=new URL(a.href,location.href);
+    if(isAppPrefixNavigation(url.href,location.href))return;
+    if(!/^https?:$/.test(url.protocol))return;
     const here=new URL(location.href);url.hash='';here.hash='';if(url.href===here.href)return;
     e.preventDefault();open(a.href,'_blank','noopener');
   });
@@ -91,4 +95,20 @@ export function appFrameReady(value: unknown): boolean {
   return (
     !!value && typeof value === "object" && "type" in value && value.type === "opensteer-app:ready"
   );
+}
+
+export function isAppPrefixNavigation(value: string, document: string): boolean {
+  try {
+    const from = new URL(document);
+    const to = new URL(value, document);
+    const prefix = /^\/v1\/apps\/[^/]+\/(?:light|dark)\/[^/]+\//u.exec(from.pathname)?.[0];
+    return (
+      !!prefix &&
+      to.protocol === from.protocol &&
+      to.host === from.host &&
+      to.pathname.startsWith(prefix)
+    );
+  } catch {
+    return false;
+  }
 }

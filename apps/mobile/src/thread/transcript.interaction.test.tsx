@@ -914,6 +914,7 @@ it("renders published apps in isolated native WebViews, caps inline height and r
   const client = new MockHostClient();
   const appId = "app_11111111-1111-4111-8111-111111111111";
   let snapshot = client.getSnapshot();
+  const prefix = `https://host.test/v1/apps/${appId}/dark/${"a".repeat(43)}/`;
   let version = 1;
   const listeners = new Set<() => void>();
   vi.spyOn(client, "subscribe").mockImplementation((listener) => {
@@ -934,7 +935,7 @@ it("renders published apps in isolated native WebViews, caps inline height and r
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
-    url: `https://host.test/app?version=${version}`,
+    url: `${prefix}?version=${version}`,
   }));
   const container = document.createElement("div");
   document.body.append(container);
@@ -977,10 +978,11 @@ it("renders published apps in isolated native WebViews, caps inline height and r
       initial.onShouldStartLoadWithRequest!({ url, navigationType, isTopFrame } as Parameters<
         NonNullable<WebViewProps["onShouldStartLoadWithRequest"]>
       >[0]);
-    expect(navigate("https://host.test/app?version=1#chart")).toBe(true);
-    expect(navigate("https://host.test/app?version=1#/router")).toBe(true);
-    expect(navigate("https://host.test/app?version=999")).toBe(false);
-    expect(Linking.openURL).toHaveBeenLastCalledWith("https://host.test/app?version=999");
+    expect(navigate(prefix + "?version=1#chart")).toBe(true);
+    expect(navigate(prefix + "?version=1#/router")).toBe(true);
+    expect(navigate(prefix + "settings")).toBe(true);
+    expect(navigate("https://host.test/v1/rpc/bootstrap.get")).toBe(false);
+    expect(Linking.openURL).toHaveBeenLastCalledWith("https://host.test/v1/rpc/bootstrap.get");
     expect(
       initial.onShouldStartLoadWithRequest!({ url: "http://example.com/android" } as Parameters<
         NonNullable<WebViewProps["onShouldStartLoadWithRequest"]>
@@ -1010,15 +1012,22 @@ it("renders published apps in isolated native WebViews, caps inline height and r
     await act(async () => {
       for (const listener of listeners) listener();
     });
-    expect(frame().getAttribute("data-uri")).toBe("https://host.test/app?version=2");
+    expect(frame().getAttribute("data-uri")).toBe(prefix + "?version=2");
     expect(container.textContent).toContain("Budget 2");
     const fresh = appWebView.props!;
+    await act(() =>
+      fresh.onHttpError!({} as Parameters<NonNullable<WebViewProps["onHttpError"]>>[0]),
+    );
+    expect(frame()).not.toBeNull();
     await act(() =>
       fresh.onMessage!({
         nativeEvent: { data: JSON.stringify({ type: "opensteer-app:ready" }) },
       } as Parameters<NonNullable<WebViewProps["onMessage"]>>[0]),
     );
     await act(() => fresh.onLoad!({} as Parameters<NonNullable<WebViewProps["onLoad"]>>[0]));
+    await act(() =>
+      fresh.onHttpError!({} as Parameters<NonNullable<WebViewProps["onHttpError"]>>[0]),
+    );
     expect(container.textContent).not.toContain("Could not load this app");
     expect(frame()).not.toBeNull();
     await act(async () => press(container, "Open"));

@@ -42,8 +42,8 @@ export function registerDesktopAppScheme(protocol: DesktopProtocolRegistrar): vo
         secure: true,
         standard: true,
         bypassCSP: false,
-        corsEnabled: false,
-        supportFetchAPI: false,
+        corsEnabled: true,
+        supportFetchAPI: true,
       },
     },
     {

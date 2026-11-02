@@ -155,7 +155,7 @@ export class LocalWorkspaceService {
   }
 }
 
-function fenceMismatch(
+export function fenceMismatch(
   fence: WorkspaceStorageFence,
   identity: LocalWorkspaceIdentity,
 ): WorkspaceLocalFailure | undefined {

@@ -1,5 +1,9 @@
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
-import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
+import {
+  forEachBoundedResponseChunk,
+  readBoundedText,
+  streamBoundedResponse,
+} from "@opensteer/shared/boundedJson";
 import { ensurePrivateDirectory, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { openAsBlob, promises as fs } from "node:fs";
 import { createHmac, randomBytes } from "node:crypto";
@@ -232,6 +236,44 @@ export class DesktopHostTransport extends HostTransport {
         status: response.status,
       }),
     );
+  }
+
+  /** Main-process app traffic keeps the attachment fence until its streamed body ends. */
+  streamApp(input: {
+    readonly method: string;
+    readonly path: string;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body?: ReadableStream<Uint8Array>;
+    readonly signal?: AbortSignal;
+  }): Promise<Response> {
+    let resolve!: (response: Response) => void;
+    let reject!: (error: unknown) => void;
+    const ready = new Promise<Response>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    void this.exchange(
+      { ...input, credentials: "omit", redirect: "manual", headers: { additional: input.headers } },
+      async (response, progress) => {
+        if (!response.body) {
+          resolve(response);
+          return;
+        }
+        const { body, done } = streamBoundedResponse(response, {
+          ...progress,
+          maximumBytes: Number.MAX_SAFE_INTEGER,
+        });
+        resolve(
+          new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          }),
+        );
+        await done;
+      },
+    ).catch(reject);
+    return ready;
   }
 
   async openBinary(ownerId: number, input: unknown): Promise<{ readonly transferId: string }> {

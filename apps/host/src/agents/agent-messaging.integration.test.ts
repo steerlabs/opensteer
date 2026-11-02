@@ -1235,6 +1235,10 @@ integration("agent-to-agent messaging round trip", () => {
     const claims = claimsByToken.get(f.tokenA)!;
     const mcp = new AgentToolsMcpService({
       apps: {
+        list: async () => ({ apps: [] }),
+        fetch: async () => {
+          throw new Error("Unexpected app fetch in fixture");
+        },
         publish: async () => {
           throw new Error("Unexpected app publication in fixture");
         },

@@ -28,7 +28,7 @@ it("paints the window ground inside the compositor beneath the transparent app v
 });
 
 it("opens only HTTP(S) links from the focused published-app frame in the system browser", () => {
-  const appUrl = `opensteer-app://view/v1/apps/app_11111111-1111-4111-8111-111111111111/content?token=${"a".repeat(43)}&theme=dark#chart`;
+  const appUrl = `opensteer-app://view/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/#chart`;
   const contents = { focusedFrame: { url: appUrl }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
   configureDesktopWindowNavigation(
     contents as unknown as WebContents,
@@ -59,4 +59,26 @@ it("opens only HTTP(S) links from the focused published-app frame in the system 
   contents.focusedFrame.url = "app://opensteer";
   open("https://example.com/untrusted-source");
   expect(shell.openExternal).toHaveBeenCalledTimes(2);
+});
+
+it("keeps only same-prefix app frame navigations inside the renderer", () => {
+  const prefix = `opensteer-app://view/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/`;
+  const contents = { focusedFrame: { url: prefix }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  configureDesktopWindowNavigation(
+    contents as unknown as WebContents,
+    new DesktopAppOriginPolicy(),
+  );
+  const guard = contents.on.mock.calls.find(
+    ([name]) => name === "will-frame-navigate",
+  )![1] as (event: { frame: { url: string }; url: string; preventDefault: () => void }) => void;
+  for (const [url, denied] of [
+    [prefix + "settings", false],
+    [prefix + "#details", false],
+    ["app://opensteer/", true],
+    ["https://host/v1/rpc/bootstrap.get", true],
+  ] as const) {
+    const preventDefault = vi.fn();
+    guard({ frame: { url: prefix }, url, preventDefault });
+    expect(preventDefault.mock.calls.length).toBe(denied ? 1 : 0);
+  }
 });
