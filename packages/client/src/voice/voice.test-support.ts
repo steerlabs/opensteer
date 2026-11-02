@@ -8,7 +8,8 @@ import type { VoiceCallEvent, VoiceMediaPort, VoiceProvider } from "./contract.j
 export const voiceTestId = "12345678-1234-4123-8123-123456789abc";
 export const voiceTestNow = Date.parse("2026-10-30T12:00:00.000Z");
 
-export function voiceSavedTabs(snapshot: HostSnapshot): HostSnapshot {
+export function voiceSavedTabs(host: MockHostClient): HostSnapshot {
+  const snapshot = host.getSnapshot();
   const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
   const runId = createId("run");
   const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
@@ -40,6 +41,11 @@ export function voiceSavedTabs(snapshot: HostSnapshot): HostSnapshot {
       state: "suspended",
       createdAt: new Date(voiceTestNow - (36 - index) * 1000).toISOString(),
     })),
+  });
+  host.enterPlace(runId, home.id, {
+    title: "Gmail",
+    site: "https://mail.google.com",
+    place: { kind: "browser", sessionId: group.id, surfaceId: group.tabs![0]!.id },
   });
   return {
     ...snapshot,

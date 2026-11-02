@@ -545,7 +545,7 @@ it("agent captions never auto-send; redelivered back executes once and unknown t
 it("shows Chat's old asleep tab from context or find and reports refused navigation honestly", async () => {
   const f = agentSetup();
   Object.assign(f.call, { find: true });
-  f.publish(voiceSavedTabs(f.host.getSnapshot()));
+  f.publish(voiceSavedTabs(f.host));
   await f.controller.start();
   await settle();
   const text = f.context.mock.calls[0]![0].text;

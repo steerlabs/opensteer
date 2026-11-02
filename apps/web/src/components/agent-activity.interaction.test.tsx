@@ -829,7 +829,7 @@ describe("page rail", () => {
       );
     return { client, container, show, draw, stop, session };
   }
-  it("opens the exact recorded stop, preserves modifier clicks and makes ended stops non-links", () => {
+  it("opens the exact recorded stop, preserves modifier clicks and makes ended stops non-links", async () => {
     const f = fixture();
     try {
       f.draw([{ ...run, status: "running" }, f.stop]);
@@ -842,7 +842,7 @@ describe("page rail", () => {
           cancelable: true,
           [modifier]: true,
         });
-        act(() => link.dispatchEvent(event));
+        await act(() => link.dispatchEvent(event));
         expect(event.defaultPrevented).toBe(false);
       }
       expect(f.show).not.toHaveBeenCalled();

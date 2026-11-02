@@ -1430,7 +1430,7 @@ function PersonShowNavigation({ hostClient }: { readonly hostClient: HostClient 
     const match = /^\/threads\/([^/]+)/.exec(location.pathname);
     // The composer is where the person asked; any other field is work in progress.
     const field = document.activeElement?.closest(
-      "input, textarea, [contenteditable=true], iframe",
+      'input, textarea, [contenteditable]:not([contenteditable="false"]), iframe',
     );
     const editing = field && !field.hasAttribute("data-composer-input");
     handlePersonShow(

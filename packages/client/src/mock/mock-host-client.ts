@@ -3841,6 +3841,8 @@ export class MockHostClient implements HostClient {
   readonly subscribePlaceActivity = (placeKey: string, listener: () => void) =>
     this.#places.subscribeActivity(placeKey, listener);
   readonly runPlace = (runId: string) => this.#state.runPlaces.get(runId);
+  readonly enterPlace = (runId: string, threadId: string, data: EventData<"place.entered">) =>
+    this.#state.enterPlace(runId, threadId, data);
   readonly actInPlace = (threadId: string, placeKey: string) =>
     this.#places.actInPlace(threadId, placeKey);
   /** A mock helper's current window for one held app. */

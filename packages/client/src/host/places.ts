@@ -498,15 +498,6 @@ export function placeDestinationEnded(
     : !session.apps.some((app) => computerAppIdentityKey(app) === destination.appKey);
 }
 
-/** A place presentation consumed by the mobile surface selector. */
-export interface ThreadPlace {
-  readonly placeKey: string;
-  readonly runId: string | null;
-  readonly destination: SurfaceDestination | null;
-  readonly title: string;
-  readonly site: string | null;
-}
-
 export interface BrowserTabCloseImpact {
   readonly heldByLiveWork: boolean;
   readonly discardsFreshSignIns: boolean;

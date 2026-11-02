@@ -51,11 +51,22 @@ describe("native viewer routes", () => {
       )!;
       expect(place, "opened owner window missing from places").toBeDefined();
       const destination = paramsDestination(workspaceRoute("deployment", place.destination))!;
+      const links = new VoiceContextLinks();
       expect(
-        new VoiceContextLinks()
-          .build(snapshot, { destination, title: "WorkspaceBrowser" })
+        links
+          .build(
+            snapshot,
+            { destination, title: "WorkspaceBrowser" },
+            {
+              runPlace: (runId) => host.runPlace(runId)?.data ?? null,
+            },
+          )
           .split("\n")[0],
-      ).toBe(`Visible now: ${JSON.stringify(place.title)}`);
+      ).toBe(`Visible now: ${JSON.stringify(place.title)} | opensteer://place/1`);
+      expect(links.resolve("opensteer://place/1", snapshot)?.target).toEqual({
+        kind: "place",
+        destination,
+      });
     } finally {
       host.dispose();
     }

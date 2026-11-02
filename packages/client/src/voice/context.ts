@@ -138,8 +138,9 @@ export class VoiceContextLinks {
     const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
     const run = home && threadStopTarget({ thread: home, runQueue: snapshot.runQueue });
     const working = run && options.runPlace(run.id);
+    let current: PlaceItem | undefined;
     if (working) {
-      const current = places.find((place) => {
+      current = places.find((place) => {
         if (!matchesPlace(place, working)) return false;
         const destination = place.destination;
         if (destination.kind === "browser") return true;
@@ -166,6 +167,7 @@ export class VoiceContextLinks {
     lines.push(options.find ? "Places (partial; use find for more):" : "Places:");
     const recent = this.#recency(snapshot, places);
     for (const place of [...places]
+      .filter((place) => place !== current)
       .sort(
         (a, b) =>
           recent.get(b.key)!.localeCompare(recent.get(a.key)!) || a.key.localeCompare(b.key),

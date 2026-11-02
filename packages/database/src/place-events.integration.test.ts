@@ -204,7 +204,8 @@ describeStore("durable Run place entries", (it) => {
       maxSerializedBytes: baseline.serializedBytes + 20,
     });
     expect(bounded.serializedBytes).toBeLessThanOrEqual(baseline.serializedBytes + 20);
-    expect(bounded.runPlaces).toEqual([]);
+    // Missing Runs in a complete seed are terminal; a budget-limited seed must stay unknown.
+    expect(bounded).not.toHaveProperty("runPlaces");
     expect(bounded.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(bounded)));
     const terminalEvent = pendingEvent({
       bindingGeneration: f.bindingGeneration,

@@ -14883,6 +14883,13 @@ describe("a Run's current place", () => {
       expect(client.getSnapshot().transcripts[thread.id]).toBeUndefined();
       socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
       expect(client.runPlace(runId)).toEqual(second);
+      // A Host that cannot fit a complete seed omits it rather than ending these Runs.
+      const { runPlaces: _places, ...unknownPlaces } = seed;
+      socket.receiveRaw({
+        type: "host.snapshot",
+        snapshot: { ...unknownPlaces, sequence: "4" },
+      });
+      expect(client.runPlace(runId)).toEqual(second);
       socket.receive({
         type: "host.events",
         events: [

@@ -232,12 +232,15 @@ export async function workspaceSnapshot(
                   ),
                 )
                 .orderBy("place.sequence", "desc")
-                .limit(workspaceSnapshotMaxRunQueueEntries)
+                .limit(workspaceSnapshotMaxRunQueueEntries + 1)
                 .execute()
             )
               .map(eventFromRow)
               .filter((event) => event.type === "place.entered")
           : undefined;
+      // Absence is unknown; a partial seed would falsely end every omitted Run on clients.
+      if (runPlaces && runPlaces.length > workspaceSnapshotMaxRunQueueEntries)
+        runPlaces = undefined;
       const [threadRows, threadCountRow] = await Promise.all([
         transaction
           .selectFrom("threads")
@@ -410,14 +413,7 @@ export async function workspaceSnapshot(
         });
       }
       if (runPlaces !== undefined && snapshot.serializedBytes > maxSerializedBytes) {
-        const placeBytes = serializedArrayBytes(runPlaces);
-        runPlaces = [
-          ...boundedSerializedPrefix(
-            runPlaces,
-            workspaceSnapshotMaxRunQueueEntries,
-            Math.max(2, placeBytes - (snapshot.serializedBytes - maxSerializedBytes)),
-          ).items,
-        ];
+        runPlaces = undefined;
         snapshot = buildWorkspaceSnapshot({
           readStates,
           notificationPreferences,
