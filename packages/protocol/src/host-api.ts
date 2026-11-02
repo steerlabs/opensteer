@@ -121,7 +121,6 @@ import {
   TriggerWatchActivationViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers";
-import { WorkspaceStorageChoiceSchema } from "@opensteer/workspace";
 import { z } from "zod";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
@@ -347,12 +346,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     icon: WorkspaceIconNameSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(160),
-    quotaBytes: z.number().int().positive().optional(),
-    quotaInodes: z.number().int().positive().optional(),
-    // Absent means the Deployment's default backing, and for a local directory
-    // the caller's own machine. A quota is meaningful only for shared storage,
-    // so the Host refuses one alongside a local-directory choice.
-    storage: WorkspaceStorageChoiceSchema.optional(),
     type: z.literal("workspace.create"),
   }),
   z.strictObject({

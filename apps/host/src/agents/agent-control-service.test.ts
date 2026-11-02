@@ -245,21 +245,19 @@ describe("AgentControlService", () => {
     // The icon is for people; a Runner parsing this strictly never sees it.
     expect(response.workspace).not.toHaveProperty("icon");
     expect(createWorkspace).toHaveBeenLastCalledWith(
-      expect.objectContaining({ storage: { backing: "portablefs" } }),
+      expect.not.objectContaining({ storage: expect.anything() }),
     );
 
-    // A local directory with no machine named goes on the machine this Run uses.
+    // Creation leaves placement to the owner’s Main storage authority.
     await service.handle("run-token", {
       icon: "plane",
       name: "Travel",
       requestId: crypto.randomUUID(),
-      storage: { backing: "local-directory" },
       type: "workspace.create",
     });
     expect(createWorkspace).toHaveBeenLastCalledWith(
       expect.objectContaining({
         icon: "plane",
-        storage: { backing: "local-directory", environmentId },
       }),
     );
   });

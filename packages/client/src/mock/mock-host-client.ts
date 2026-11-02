@@ -6737,10 +6737,24 @@ class MockHostState {
   async listWorkspaceFiles(workspaceId: string, input: { readonly parentKey: string }) {
     await delay(Math.min(this.latencyMs, 180));
     const { parentKey } = input;
-    const parentPath = parentKey === "" ? "" : mockFileForKey(workspaceId, parentKey)?.path;
+    const projectFiles: MockWorkspaceFile[] =
+      workspaceId === this.snapshot.homeWorkspaceId && this.projectSlugs.size > 0
+        ? [
+            { content: null, path: "Projects", type: "directory" as const },
+            ...[...this.projectSlugs].map((slug) => ({
+              content: null,
+              path: `Projects/${slug}`,
+              type: "directory" as const,
+            })),
+          ]
+        : [];
+    const files = [...(mockWorkspaceFiles[workspaceId] ?? []), ...projectFiles];
+    const parentPath =
+      parentKey === ""
+        ? ""
+        : files.find((file) => encodeMockFileKey(file.path) === parentKey)?.path;
     if (parentPath === undefined) throw new Error("Folder not found.");
     const prefix = parentPath === "" ? "" : `${parentPath}/`;
-    const files = mockWorkspaceFiles[workspaceId] ?? [];
     const entries = files
       .filter((file) => {
         if (!file.path.startsWith(prefix)) return false;
@@ -8592,9 +8606,20 @@ class MockHostState {
 
   async loadEarlierWorkspaces(): Promise<void> {}
 
+  private readonly projectSlugs = new Set<string>();
+
   async createWorkspace(input: CreateWorkspaceInput) {
     const name = input.name.trim();
     if (!name) throw new Error("Workspace name is required.");
+    const base =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .slice(0, 100)
+        .replace(/^-|-$/g, "") || "project";
+    let slug = base;
+    for (let suffix = 2; this.projectSlugs.has(slug); suffix++) slug = `${base}-${suffix}`;
+    this.projectSlugs.add(slug);
     const timestamp = this.now().toISOString();
     const workspace = {
       description: "A durable Opensteer Workspace.",

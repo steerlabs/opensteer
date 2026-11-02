@@ -508,16 +508,6 @@ export class AgentToolsMcpService {
           ...(input.color ? { color: input.color } : {}),
           name: input.name,
           requestId,
-          ...(input.backing === "local-directory"
-            ? {
-                storage: {
-                  backing: "local-directory" as const,
-                  ...(input.environmentId ? { environmentId: input.environmentId } : {}),
-                },
-              }
-            : input.backing === "portablefs"
-              ? { storage: { backing: "portablefs" as const } }
-              : {}),
           type: "workspace.create",
         });
         if (response.type !== "workspace.create.result") throw unexpectedToolResponse();

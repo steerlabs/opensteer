@@ -1145,3 +1145,28 @@ it("accepts a conversation-view history read without a durable mock event log", 
     client.dispose();
   }
 });
+
+it("creates mock Projects beneath Main with distinct case-insensitive slugs", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await client.load();
+    await client.dispatch({
+      type: "workspace.create",
+      idempotencyKey: "first-project",
+      name: "Research",
+    });
+    await client.dispatch({
+      type: "workspace.create",
+      idempotencyKey: "second-project",
+      name: "RESEARCH",
+    });
+    const main = client.getSnapshot().homeWorkspaceId!;
+    const root = await client.listWorkspaceFiles(main, { parentKey: "" });
+    const projects = root.entries.find((entry) => entry.name === "Projects");
+    expect(projects).toMatchObject({ kind: "directory" });
+    const children = await client.listWorkspaceFiles(main, { parentKey: projects!.key });
+    expect(children.entries.map((entry) => entry.name)).toEqual(["research", "research-2"]);
+  } finally {
+    client.dispose();
+  }
+});

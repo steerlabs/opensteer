@@ -108,15 +108,22 @@ describe("RunnerLocalWorkspaceDriver", () => {
     });
     const input = provisionInput();
     const backing = driver.initialBacking(input);
+    const mainId = createId("workspace");
+    const mainInput = { ...input, kind: "main" as const, workspaceId: mainId };
+    const mainBacking = driver.initialBacking(mainInput);
+    await driver.provision({
+      idempotencyKey: "main",
+      workspace: { ...localWorkspace(mainBacking), id: mainId, kind: "main" },
+    });
 
     await expect(
       driver.provision({
         idempotencyKey: input.idempotencyKey,
-        workspace: localWorkspace(backing),
+        workspace: { ...localWorkspace(backing), slug: "research" },
       }),
     ).resolves.toMatchObject({ status: "ready" });
     await expect(authority.inventory()).resolves.toMatchObject({
-      bindings: [expect.objectContaining({ bindingId: backing.bindingId })],
+      bindings: expect.arrayContaining([expect.objectContaining({ bindingId: backing.bindingId })]),
     });
   });
 

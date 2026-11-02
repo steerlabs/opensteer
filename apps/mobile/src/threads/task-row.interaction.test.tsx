@@ -457,6 +457,9 @@ it("creates a project with the chosen colour, keeping colour choices off old Hos
   expect(dispatch).toHaveBeenCalledWith(
     expect.objectContaining({ type: "workspace.create", name: "Travel planning", color: "sky" }),
   );
+  expect(dispatch.mock.calls.at(-1)?.[0]).not.toHaveProperty("storage");
+  expect(container.textContent).not.toContain("Where its files live");
+  expect(container.textContent).not.toContain("Computer");
   act(() => root?.unmount());
   root = null;
   container.remove();

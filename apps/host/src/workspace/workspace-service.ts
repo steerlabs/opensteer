@@ -21,7 +21,6 @@ import {
 import {
   WorkspaceAuthorityUnreachableError,
   assertBackingAllowedByDeployment,
-  type WorkspaceStorageChoice,
   type WorkspaceBackingHealth,
   type WorkspaceBackingLifecycleDriver,
   type WorkspaceBackingReadiness,
@@ -29,30 +28,6 @@ import {
 } from "@opensteer/workspace";
 
 const mainWorkspaceName = "Main";
-
-/**
- * Where an agent's or Trigger's new Workspace lives: the backing it asked for,
- * else the Deployment's default, and for a local directory the machine it
- * named, else the machine it is running on. Anywhere else would surprise it.
- */
-export function callerWorkspaceStorage(input: {
-  readonly callerEnvironmentId: EnvironmentId;
-  readonly defaultBacking: WorkspaceStorageChoice["backing"];
-  readonly requested:
-    | { readonly backing: "local-directory"; readonly environmentId?: EnvironmentId | undefined }
-    | { readonly backing: "portablefs" }
-    | undefined;
-}): WorkspaceStorageChoice {
-  const backing = input.requested?.backing ?? input.defaultBacking;
-  if (backing === "portablefs") return { backing };
-  return {
-    backing,
-    environmentId:
-      (input.requested?.backing === "local-directory"
-        ? input.requested.environmentId
-        : undefined) ?? input.callerEnvironmentId,
-  };
-}
 
 interface WorkspaceLifecycleDrivers {
   readonly local?: WorkspaceBackingLifecycleDriver<"local-directory">;
@@ -140,11 +115,33 @@ export class WorkspaceService {
     readonly idempotencyKey: string;
     readonly kind?: WorkspaceKind;
     readonly name: string;
-    readonly storage?: WorkspaceStorageChoice;
   }): Promise<Workspace> {
     const id = workspaceIdForCreate(input.createdBy, input.idempotencyKey);
     const provisioningKey = workspaceProvisioningKey(id);
-    const backingKind = input.storage?.backing ?? this.#shape.defaultWorkspaceBacking;
+    let main: Workspace | null = null;
+    if (input.kind !== "main") {
+      try {
+        main = await this.ensureMainWorkspace(input.createdBy);
+      } catch (error) {
+        if (!(error instanceof OpensteerError) || error.code !== "workspace_unavailable")
+          throw error;
+        throw new OpensteerError({
+          code: "workspace_unavailable",
+          message:
+            "Main storage is unavailable. Connect the computer holding Main and retry creating the Project.",
+          retryable: true,
+        });
+      }
+    }
+    if (main && (main.status !== "ready" || main.backing.kind !== "local-directory")) {
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message:
+          "Main storage is unavailable. Connect the computer holding Main and retry creating the Project.",
+        retryable: true,
+      });
+    }
+    const backingKind = main ? "local-directory" : this.#shape.defaultWorkspaceBacking;
     const capacityPolicy = this.#effectiveCapacityPolicy(backingKind, input.capacityPolicy);
     const base = {
       backingKind,
@@ -161,11 +158,23 @@ export class WorkspaceService {
             ...base,
             backingKind: "local-directory",
             ownerEnvironmentId:
-              input.storage?.backing === "local-directory"
-                ? input.storage.environmentId
+              main?.backing.kind === "local-directory"
+                ? main.backing.ownerEnvironmentId
                 : await this.#ownerEnvironmentId(input.createdBy),
           })
         : this.#requiredPortableFs().initialBacking({ ...base, backingKind: "portablefs" });
+    if (
+      main?.backing.kind === "local-directory" &&
+      backing.kind === "local-directory" &&
+      main.backing.storageAuthorityId !== backing.storageAuthorityId
+    ) {
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message:
+          "Main storage authority is unavailable. Reconnect the computer holding Main and retry.",
+        retryable: true,
+      });
+    }
     assertBackingAllowedByDeployment(this.#shape, backing);
     const workspace = await this.#store.createWorkspace({
       backing,

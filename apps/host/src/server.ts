@@ -1672,21 +1672,11 @@ export async function createHostServer(
         return { type: command.type };
       case "workspace.create": {
         const workspace = await dependencies.workspaces.create({
-          ...(command.quotaBytes !== undefined && command.quotaInodes !== undefined
-            ? {
-                capacityPolicy: {
-                  blockHardLimitBytes: command.quotaBytes,
-                  inodeHardLimit: command.quotaInodes,
-                  kind: "hard-quota" as const,
-                },
-              }
-            : {}),
           createdBy: userId,
           ...(command.icon ? { icon: command.icon } : {}),
           idempotencyKey: command.idempotencyKey,
           kind: "project",
           name: command.name,
-          ...(command.storage ? { storage: command.storage } : {}),
         });
         if (workspace.storageIssue) {
           app.log.warn(

@@ -44,7 +44,6 @@ import {
   assertProgramMessageScope,
   assertProgramDelegationScope,
 } from "./program-authority.js";
-import { callerWorkspaceStorage } from "../workspace/workspace-service.js";
 
 const TriggerCapabilityScopeSchema = z.strictObject({
   environmentId: EnvironmentIdSchema,
@@ -123,7 +122,6 @@ type TriggerWorkspaceCreator = Pick<
 export class TriggerControlService {
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
   readonly #commands: CommandService;
-  readonly #defaultWorkspaceBacking: WorkspaceBackingKind;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
   ) => readonly WorkspaceBackingKind[];
@@ -148,7 +146,6 @@ export class TriggerControlService {
   }) {
     this.#canRunHarness = options.canRunHarness;
     this.#commands = options.commands;
-    this.#defaultWorkspaceBacking = options.defaultWorkspaceBacking;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
     this.#store = options.store;
@@ -281,11 +278,6 @@ export class TriggerControlService {
         idempotencyKey: idempotencyKey(claims, request.requestId, "workspace"),
         kind: "project",
         name: request.name,
-        storage: callerWorkspaceStorage({
-          callerEnvironmentId: claims.environmentId,
-          defaultBacking: this.#defaultWorkspaceBacking,
-          requested: request.storage,
-        }),
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,

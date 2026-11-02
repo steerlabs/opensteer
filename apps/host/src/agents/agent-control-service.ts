@@ -36,7 +36,6 @@ import {
   type AgentControlResponse,
 } from "@opensteer/protocol";
 import type { TriggerControlInput } from "@opensteer/triggers";
-import type { WorkspaceStorageChoice } from "@opensteer/workspace";
 import { createHash } from "node:crypto";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { BrowserSourceService } from "../browser/browser-source-service.js";
@@ -45,7 +44,6 @@ import type { PlaceContextService } from "../computer-use/place-context-service.
 import type { ComputerUseService } from "../computer-use/computer-use-service.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
-import { callerWorkspaceStorage } from "../workspace/workspace-service.js";
 import {
   delegationEngines,
   delegationHarnessPage,
@@ -78,7 +76,6 @@ export interface AgentWorkspaceCreator {
     readonly idempotencyKey: string;
     readonly kind: "project";
     readonly name: string;
-    readonly storage?: WorkspaceStorageChoice;
   }): Promise<Workspace>;
 }
 
@@ -124,7 +121,6 @@ export class AgentControlService {
   readonly #browserTabs: BrowserTabGroupService | undefined;
   readonly #canRunHarness: (environmentId: EnvironmentId, driverKind: HarnessId) => boolean;
   readonly #commands: CommandService;
-  readonly #defaultWorkspaceBacking: WorkspaceBackingKind;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
   ) => readonly WorkspaceBackingKind[];
@@ -185,7 +181,6 @@ export class AgentControlService {
     this.#browserTabs = options.browserTabs;
     this.#canRunHarness = options.canRunHarness;
     this.#commands = options.commands;
-    this.#defaultWorkspaceBacking = options.defaultWorkspaceBacking;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
@@ -468,11 +463,6 @@ export class AgentControlService {
         idempotencyKey: idempotencyKey(claims, request.requestId, "workspace"),
         kind: "project",
         name: request.name,
-        storage: callerWorkspaceStorage({
-          callerEnvironmentId: claims.environmentId,
-          defaultBacking: this.#defaultWorkspaceBacking,
-          requested: request.storage,
-        }),
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,

@@ -308,6 +308,7 @@ describe("WorkspaceService with a machine that owns its own directories", () => 
 
     await expect(
       service.create({
+        kind: "main",
         capacityPolicy: { blockHardLimitBytes: 1_024, inodeHardLimit: 10, kind: "hard-quota" },
         createdBy: createId("user"),
         idempotencyKey: "quota-on-a-laptop",
@@ -326,6 +327,7 @@ describe("WorkspaceService creation capacity policy", () => {
 
     await expect(
       service.create({
+        kind: "main",
         capacityPolicy: {
           blockHardLimitBytes: 101 * 1_024 * 1_024 * 1_024,
           inodeHardLimit: 2_000_000,
@@ -346,6 +348,7 @@ describe("WorkspaceService creation capacity policy", () => {
 
     await expect(
       service.create({
+        kind: "main",
         capacityPolicy: { kind: "host-filesystem" },
         createdBy: createId("user"),
         idempotencyKey: "wrong-kind",
@@ -367,6 +370,7 @@ describe("WorkspaceService creation capacity policy", () => {
 
     await expect(
       service.create({
+        kind: "main",
         capacityPolicy: {
           blockHardLimitBytes: 1_024,
           inodeHardLimit: 1,

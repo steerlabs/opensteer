@@ -107,6 +107,7 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
       {
         binding: bindingRef(input.workspace.backing, input.workspace.id),
         fingerprint: {
+          ...(input.workspace.slug ? { slug: input.workspace.slug } : {}),
           createdBy: input.workspace.createdBy,
           workspaceKind: input.workspace.kind,
         },

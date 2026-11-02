@@ -4253,6 +4253,7 @@ describe("Workspace provisioning", () => {
     } as unknown as PortableFsControlPlane;
     const service = portableFsWorkspaceService(store, controlPlane);
     const result = await service.create({
+      kind: "main",
       createdBy: owner,
       idempotencyKey: "create-1",
       name: "Client",
@@ -4320,6 +4321,7 @@ describe("Workspace provisioning", () => {
     } as unknown as PortableFsControlPlane;
     const service = portableFsWorkspaceService(store, controlPlane);
     const result = await service.create({
+      kind: "main",
       createdBy: owner,
       idempotencyKey: "create-2",
       name: "Client",

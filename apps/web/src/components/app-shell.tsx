@@ -98,7 +98,7 @@ import {
 } from "./workspace/navigation.js";
 import { DeploymentOperationBanner } from "./deployment-operation.js";
 import { Icon } from "./icon.js";
-import { NewWorkspaceDialog, type NewWorkspaceStorageChoice } from "./new-workspace-dialog.js";
+import { NewWorkspaceDialog } from "./new-workspace-dialog.js";
 import {
   PaneResizeHandle,
   usePersistedPaneSize,
@@ -606,11 +606,7 @@ export function AppShell({
     setNewWorkspaceOpen(true);
   }, []);
   const createWorkspace = useCallback(
-    async (input: {
-      readonly icon: WorkspaceIconName | null;
-      readonly name: string;
-      readonly storage: NewWorkspaceStorageChoice;
-    }) => {
+    async (input: { readonly icon: WorkspaceIconName | null; readonly name: string }) => {
       setCreatingWorkspace(true);
       setNewWorkspaceError(null);
       try {
@@ -618,13 +614,6 @@ export function AppShell({
           ...(input.icon ? { icon: input.icon } : {}),
           idempotencyKey: mutationIdempotencyKey("workspace"),
           name: input.name,
-          storage:
-            input.storage.backing === "local-directory"
-              ? {
-                  backing: "local-directory",
-                  environmentId: input.storage.environmentId ?? "",
-                }
-              : { backing: "portablefs" },
           type: "workspace.create",
         });
         if (result.type !== "workspace.create") throw new Error("Workspace command mismatch.");
@@ -1183,18 +1172,11 @@ export function AppShell({
               {newWorkspaceOpen ? (
                 <NewWorkspaceDialog
                   creating={creatingWorkspace}
-                  defaultBacking={
-                    snapshot.deploymentShape?.defaultWorkspaceBacking ?? "local-directory"
-                  }
-                  environments={snapshot.environments}
                   error={newWorkspaceError}
                   onClose={() => {
                     if (!creatingWorkspace) setNewWorkspaceOpen(false);
                   }}
                   onCreate={(input) => void createWorkspace(input)}
-                  sharedStorageAvailable={
-                    snapshot.deploymentShape?.defaultWorkspaceBacking === "portablefs"
-                  }
                 />
               ) : null}
               {harnessAuthentication ? (

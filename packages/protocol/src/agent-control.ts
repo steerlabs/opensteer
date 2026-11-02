@@ -151,17 +151,6 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     color: MarkColorSchema.optional(),
     icon: WorkspaceIconNameSchema.optional(),
     name: z.string().trim().min(1).max(160),
-    // Absent means this Deployment's default backing; a local directory with
-    // no machine named is on the machine the caller runs on.
-    storage: z
-      .discriminatedUnion("backing", [
-        z.strictObject({
-          backing: z.literal("local-directory"),
-          environmentId: EnvironmentIdSchema.optional(),
-        }),
-        z.strictObject({ backing: z.literal("portablefs") }),
-      ])
-      .optional(),
     type: z.literal("workspace.create"),
   }),
   z.strictObject({

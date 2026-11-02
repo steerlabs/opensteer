@@ -108,40 +108,15 @@ export interface AgentToolDefinition<Input extends z.ZodType = z.ZodType> {
 const CursorSchema = z.string().trim().min(1).max(2_048);
 
 const workspaceNameSchema = z.string().trim().min(1).max(160);
-/**
- * One object, not a union: MCP advertises only an object's properties, so a
- * union would reach the agent with no fields at all. Backing is part of the
- * request because a Deployment holds both kinds; `environmentId` names the
- * machine for a local directory and means nothing for shared storage.
- */
-const WorkspaceCreateInputSchema = z
-  .strictObject({
-    backing: z
-      .enum(["local-directory", "portablefs"])
-      .optional()
-      .describe(
-        "local-directory: one machine's own disk. portablefs: shared storage every machine can mount. Omit for this Deployment's default.",
-      ),
-    environmentId: EnvironmentIdSchema.optional().describe(
-      "Only with local-directory: the machine whose disk holds the Workspace. Defaults to the machine this Run is on.",
-    ),
-    icon: WorkspaceIconNameSchema.optional().describe(
-      "Icon people see beside this Workspace. Pick the one that best matches its purpose.",
-    ),
-    color: MarkColorSchema.optional().describe(
-      "Colour of this Workspace's mark. Omit to take the one least like this person's other Projects.",
-    ),
-    name: workspaceNameSchema,
-  })
-  .superRefine((input, context) => {
-    if (input.environmentId !== undefined && input.backing !== "local-directory") {
-      context.addIssue({
-        code: "custom",
-        message: "environmentId applies only to a local-directory Workspace",
-        path: ["environmentId"],
-      });
-    }
-  });
+const WorkspaceCreateInputSchema = z.strictObject({
+  icon: WorkspaceIconNameSchema.optional().describe(
+    "Icon people see beside this Workspace. Pick the one that best matches its purpose.",
+  ),
+  color: MarkColorSchema.optional().describe(
+    "Colour of this Workspace's mark. Omit to take the one least like this person's other Projects.",
+  ),
+  name: workspaceNameSchema,
+});
 const BrowserSessionIdInputSchema = z.string().regex(/^bsn_[0-9a-f-]{36}$/i);
 const BrowserAccessSuggestionInputSchema = z
   .discriminatedUnion("kind", [
@@ -255,7 +230,7 @@ const definitions = [
       title: "Create Workspace",
     },
     description:
-      "To create a Project, choose environmentId and backing with environment_list first. Returns the Workspace and provisioning status; provisioning may still be in progress.",
+      "Create a Project inside its owner's Main folder. Main's computer must be connected. Returns the Workspace and provisioning status.",
     id: "workspace.create",
     inputSchema: WorkspaceCreateInputSchema,
     name: "workspace_create",
@@ -939,7 +914,7 @@ export function toolsForEnvironmentContract(
         return {
           ...tool,
           description:
-            "Create one Project. Choose where its files live: local-directory puts them on one machine's own disk (name the machine with environmentId, or omit it for the machine this Run is on), portablefs puts them in shared storage every machine can mount. Omit backing to take this Deployment's default. Give it an icon that fits its purpose. Returns while storage provisioning is in progress or ready.",
+            "Create one Project inside its owner's Main folder. Main's computer must be connected. Give it an icon that fits its purpose. Returns the Workspace and provisioning status.",
         };
       if (tool.name === "thread_delegate")
         return {

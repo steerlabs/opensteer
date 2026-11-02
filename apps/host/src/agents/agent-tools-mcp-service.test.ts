@@ -391,19 +391,13 @@ describe("AgentToolsMcpService", () => {
     ]);
     // What the agent discovers is the whole creation contract, icons included.
     const createSchema = listed.tools.find(({ name }) => name === "workspace_create")?.inputSchema;
-    expect(Object.keys(createSchema?.properties ?? {}).sort()).toEqual([
-      "backing",
-      "color",
-      "environmentId",
-      "icon",
-      "name",
-    ]);
+    expect(Object.keys(createSchema?.properties ?? {}).sort()).toEqual(["color", "icon", "name"]);
     expect(createSchema?.properties?.icon).toMatchObject({
       enum: expect.arrayContaining(["mail", "plane", "tag"]),
     });
     expect(createSchema?.required).toEqual(["name"]);
     const created = await client.callTool({
-      arguments: { backing: "portablefs", icon: "plane", name: "Travel" },
+      arguments: { icon: "plane", name: "Travel" },
       name: "workspace_create",
     });
     expect(created.isError).not.toBe(true);
@@ -412,7 +406,6 @@ describe("AgentToolsMcpService", () => {
       expect.objectContaining({
         icon: "plane",
         name: "Travel",
-        storage: { backing: "portablefs" },
         type: "workspace.create",
       }),
     );
@@ -1341,7 +1334,7 @@ it.each([false, true])(
         expect(legacy.map(({ name }) => name)).not.toContain("environment_list");
         for (const [name, hash] of Object.entries({
           workspace_list: "73c4e227619784907796f4779d37f020dca2f8dca8a255ccab8057dac73bb633",
-          workspace_create: "ba7dba0a463a8f3a905d169463099134f0c7b4cfe88e4d65493395c5f4cfc638",
+          workspace_create: "c813760d472f9c9cb740ada1240190b9548201a688e600b68d2ae2c0fb7432db",
           thread_delegate: "0ae90e18d6b458996d2828b9b583b59b3ffe148aa3e6d8247ec8926e1b83225e",
         })) {
           const definition = legacy.find((tool) => tool.name === name);
