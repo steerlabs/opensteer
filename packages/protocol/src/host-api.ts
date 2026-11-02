@@ -1673,6 +1673,15 @@ export const hostApi = defineRpc({
         placeEvents: z.literal("include").optional(),
         /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
         turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
+        /**
+         * Page a conversation as its reader sees it: turns count, and events
+         * travel, only for turns that can show. A quiet Run (settled, automatic,
+         * nothing said, handed out or asked) and the Thread's superseded state
+         * history are left out; `window.nextBefore` is where the scan stopped,
+         * even when it kept nothing, and `totalItems` is omitted. Work Threads
+         * page as usual. Needs `turns` and `history-conversation-v1`.
+         */
+        view: z.literal("conversation").optional(),
       })
       .extend(durablePageInputSchema.shape)
       .refine(
@@ -1682,6 +1691,10 @@ export const hostApi = defineRpc({
       .refine(
         (input) => input.turns === undefined || (!input.aroundMessageId && !input.limit),
         "A turn page sets its own size",
+      )
+      .refine(
+        (input) => input.view === undefined || input.turns !== undefined,
+        "A conversation view pages by turns",
       ),
     ThreadEventPageSchema,
   ),
