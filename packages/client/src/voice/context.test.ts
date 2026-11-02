@@ -3,9 +3,10 @@ import {
   ThreadIdSchema,
   WorkspaceIdSchema,
   BrowserSurfaceIdSchema,
+  BrowserSessionIdSchema,
 } from "@opensteer/core";
 import { expect, it, vi } from "vitest";
-import type { TranscriptEntry } from "../host/client.js";
+import type { HostSnapshot, PlaceEntry, TranscriptEntry } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList } from "../host/places.js";
 import { foldLiveRun } from "../host/transcript.js";
@@ -298,7 +299,7 @@ it("keeps Chat's working tab linked after the tab restores into another session"
   try {
     const snapshot = voiceSavedTabs(host);
     const group = snapshot.workspaceTabs![0]!;
-    const restored = "bsn_00000000-0000-4000-8000-000000000002";
+    const restored = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002");
     const moved: HostSnapshot = {
       ...snapshot,
       workspaceTabs: [
