@@ -791,6 +791,31 @@ describe("native placement", () => {
 });
 
 describe("Electron geometry lifecycle", () => {
+  it("normalizes native cursor changes and invalidates attribution on native movement", async () => {
+    const { browser, page, view } = await launch();
+    const publish = vi.fn();
+    const unsubscribe = page.cursor!.subscribe(publish);
+    const changed = view.webContents.on.mock.calls.find(
+      ([event]) => event === "cursor-changed",
+    )?.[1];
+    const moved = view.webContents.on.mock.calls.find(
+      ([event]) => event === "before-mouse-event",
+    )?.[1];
+    try {
+      changed!({}, "hand");
+      expect(page.cursor!.read()).toBe("pointer");
+      expect(publish).toHaveBeenLastCalledWith("pointer");
+      moved!({}, { type: "mouseMove", x: 1, y: 1 });
+      expect(publish).toHaveBeenLastCalledWith(null);
+      changed!({}, "custom", { privateImage: "must never escape" });
+      expect(page.cursor!.read()).toBe("default");
+      expect(publish).toHaveBeenLastCalledWith("default");
+    } finally {
+      unsubscribe();
+      await browser.close();
+    }
+  });
+
   async function launch(bindGeometry = true, provider = false) {
     const browser = await new ElectronBrowserLauncher({
       ...(provider
@@ -880,6 +905,29 @@ describe("Electron geometry lifecycle", () => {
       ]);
     } finally {
       unbind();
+      await browser.close();
+    }
+  });
+
+  it("allows private drag cleanup on the originating channel without granting it to agents", async () => {
+    const { browser, page, view } = await launch(false);
+    const platform = await page.cdp();
+    const agent = await page.agentCdp();
+    try {
+      await expect(agent.send("Input.cancelDragging")).rejects.toThrow(/unavailable/);
+      await platform.cancelDragging!();
+      await agent.cancelDragging!();
+      expect(
+        view.webContents.debugger.sendCommand.mock.calls.filter(
+          ([method]) => method === "Input.cancelDragging",
+        ),
+      ).toEqual([
+        ["Input.cancelDragging", undefined],
+        ["Input.cancelDragging", undefined],
+      ]);
+    } finally {
+      await agent.detach();
+      await platform.detach();
       await browser.close();
     }
   });

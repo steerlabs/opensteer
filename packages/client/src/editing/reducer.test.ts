@@ -508,3 +508,40 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     }
   });
 });
+
+it.each(["ios", "android"] as const)(
+  "keeps %s page navigation keys as held keys outside editable fields",
+  (platform) => {
+    const names = [
+      "Tab",
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "ArrowDown",
+      "PageUp",
+      "PageDown",
+      " ",
+      "Escape",
+      "Enter",
+    ];
+    const events = names.flatMap((name) => {
+      const down = key(name, { code: name === " " ? "Space" : name });
+      return [down, { ...down, type: "keyup" as const }];
+    });
+    const { operations } = replay(
+      [{ type: "context", context: { ...context, field: null, caret: null } }, ...events],
+      platform,
+    );
+    expect(operations.every((operation) => operation.kind === "key")).toBe(true);
+    expect(
+      operations
+        .filter((operation) => operation.kind === "key")
+        .map((operation) => [operation.keystroke.action, operation.keystroke.key]),
+    ).toEqual(
+      names.flatMap((name) => [
+        ["down", name],
+        ["up", name],
+      ]),
+    );
+  },
+);

@@ -13,6 +13,7 @@
     "./boundedAsyncInbox": "./src/boundedAsyncInbox.ts",
     "./bootstrapDiagnostics": "./src/bootstrapDiagnostics.ts",
     "./boundedJson": "./src/boundedJson.ts",
+    "./browserTouch": "./src/browserTouch.ts",
     "./browserPresentation": "./src/browserPresentation.ts",
     "./canonicalJson": "./src/canonicalJson.ts",
     "./clock": "./src/clock.ts",

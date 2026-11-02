@@ -34,6 +34,12 @@ actor AppleRecognizer: Recognizer {
     }
     return nil
   }
+  private func installed(_ locale: Locale) async -> Bool {
+    // Not AssetInventory status: see the macOS 26 trap in docs/dictation.md.
+    await SpeechTranscriber.installedLocales.contains {
+      localeIdentity($0) == localeIdentity(locale)
+    }
+  }
   private func module(_ locale: Locale) -> SpeechTranscriber {
     SpeechTranscriber(
       locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults],
@@ -54,14 +60,13 @@ actor AppleRecognizer: Recognizer {
     let resolved = await resolve()
     await reconcile(resolved)
     guard let locale = resolved else { return .unavailable(.language) }
-    let status = await AssetInventory.status(forModules: [module(locale)])
-    guard status != .unsupported else { return .unavailable(.language) }
     let identifier = locale.identifier(.bcp47)
     let name =
       Locale.current.localizedString(
         forLanguageCode: locale.language.languageCode?.identifier ?? identifier) ?? identifier
     return .available(
-      locale: identifier, languageName: name, model: status == .installed ? .installed : .download,
+      locale: identifier, languageName: name,
+      model: await installed(locale) ? .installed : .download,
       microphone: microphone)
   }
   func download(progress: @escaping @Sendable (Double?) -> Void) async throws {
@@ -109,6 +114,7 @@ actor AppleRecognizer: Recognizer {
         try await installation.downloadAndInstall()
       }
       guard !cancelled else { throw CancellationError() }
+      guard await installed(locale) else { throw DictationError.downloadFailed }
       await reservations.recordCreatedReservation(nil)
       installation = nil
     } catch {
@@ -118,7 +124,7 @@ actor AppleRecognizer: Recognizer {
   }
   private func releaseUninstalled() async {
     if let locale = await reservations.takeCreatedReservation() {
-      if await AssetInventory.status(forModules: [module(locale)]) != .installed {
+      if await !installed(locale) {
         await AssetInventory.release(reservedLocale: locale)
       }
     }
@@ -126,7 +132,7 @@ actor AppleRecognizer: Recognizer {
   func admit() async throws {
     guard let locale = await resolve(), !cancelled else { throw DictationError.modelUnavailable }
     let transcriber = module(locale)
-    guard await AssetInventory.status(forModules: [transcriber]) == .installed, !cancelled,
+    guard await installed(locale), !cancelled,
       let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
       !cancelled
     else { throw DictationError.modelUnavailable }

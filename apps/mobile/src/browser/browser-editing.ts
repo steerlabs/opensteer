@@ -32,6 +32,7 @@ export function createMobileBrowserEditing(
   };
   return {
     get: target.get,
+    dismissMenu: target.dismissMenu,
     subscribe: target.subscribe,
     activate(onError: (message: string) => void) {
       active = true;

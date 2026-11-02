@@ -235,6 +235,9 @@ agent sized the page. A place's bars sit beside the picture, never over it: a
 streamed page cannot leave room for chrome it does not know about, so anything
 over it would hide its own sticky controls. Dialog responses bind to the exact
 tab and dialog.
+Finger-scroll inertia belongs to the viewer and uses the existing wheel lane;
+the runtime and OS wheel input must not add another fling. Local contact feedback
+acknowledges the finger only: the page owns hover, selection and context menus.
 Native editing needs a rebuilt custom client; its [adapter contract](../apps/mobile/modules/remote-text-input/README.md)
 owns composition and device qualification.
 

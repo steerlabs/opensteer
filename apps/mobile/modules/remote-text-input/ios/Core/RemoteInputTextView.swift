@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
   private var mutating = false
   private var held = Set<Int>()
   private var contextId: String?
+  private var traits: RemoteInputTraits?
+  private let noKeyboard = UIView(frame: .zero)
+  public override var canBecomeFirstResponder: Bool { true }
   public var deliver: (([String: Any]) -> Void)? { didSet { gate.deliver = deliver } }
   public override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
@@ -128,16 +131,19 @@ import UniformTypeIdentifiers
   private func hardware(_ press: UIPress, down: Bool, action: @escaping () -> Void) {
     guard let key = press.key else { action(); return }
     let usage = Int(key.keyCode.rawValue)
-    let named: [Int: String] = [40: "Enter", 41: "Escape", 42: "Backspace", 43: "Tab", 44: " ", 73: "Insert", 74: "Home", 75: "PageUp", 76: "Delete", 77: "End", 78: "PageDown", 79: "ArrowRight", 80: "ArrowLeft", 81: "ArrowDown", 82: "ArrowUp", 224: "Control", 225: "Shift", 226: "Alt", 227: "Meta", 228: "Control", 229: "Shift", 230: "Alt", 231: "Meta"]
+    // Leave system/app Command shortcuts in the responder chain outside text editing.
+    if !isEditable && key.modifierFlags.contains(.command) && (down || !held.contains(usage)) { action(); return }
+    let named: [Int: String] = [40: "Enter", 41: "Escape", 42: "Backspace", 43: "Tab", 44: " ", 73: "Insert", 74: "Home", 75: "PageUp", 76: "Delete", 77: "End", 78: "PageDown", 79: "ArrowRight", 80: "ArrowLeft", 81: "ArrowDown", 82: "ArrowUp", 101: "ContextMenu", 224: "Control", 225: "Shift", 226: "Alt", 227: "Meta", 228: "Control", 229: "Shift", 230: "Alt", 231: "Meta"]
+    let name = (58...69).contains(usage) ? "F\(usage - 57)" : named[usage]
     let code: String
     if usage >= 4 && usage <= 29 { code = "Key" + String(UnicodeScalar(65 + usage - 4)!) }
     else if usage >= 30 && usage <= 39 { code = "Digit\((usage - 29) % 10)" }
     else if usage >= 224 && usage <= 231 { code = (named[usage] ?? "Unidentified") + (usage < 228 ? "Left" : "Right") }
-    else { code = [44: "Space", 45: "Minus", 46: "Equal", 47: "BracketLeft", 48: "BracketRight", 49: "Backslash", 51: "Semicolon", 52: "Quote", 53: "Backquote", 54: "Comma", 55: "Period", 56: "Slash"][usage] ?? named[usage] ?? "Unidentified" }
+    else { code = [44: "Space", 45: "Minus", 46: "Equal", 47: "BracketLeft", 48: "BracketRight", 49: "Backslash", 51: "Semicolon", 52: "Quote", 53: "Backquote", 54: "Comma", 55: "Period", 56: "Slash"][usage] ?? name ?? "Unidentified" }
     let flags = key.modifierFlags
     let repeated = down && held.contains(usage)
     if down { held.insert(usage) } else { held.remove(usage) }
-    let event: [String: Any] = ["type": down ? "keydown" : "keyup", "key": named[usage] ?? key.characters, "code": code, "alt": flags.contains(.alternate), "control": flags.contains(.control), "meta": flags.contains(.command), "shift": flags.contains(.shift), "altGraph": false, "location": usage >= 224 && usage <= 231 ? (usage < 228 ? 1 : 2) : (usage >= 84 && usage <= 99 ? 3 : 0), "repeat": repeated]
+    let event: [String: Any] = ["type": down ? "keydown" : "keyup", "key": name ?? key.characters, "code": code, "alt": flags.contains(.alternate), "control": flags.contains(.control), "meta": flags.contains(.command), "shift": flags.contains(.shift), "altGraph": false, "location": usage >= 224 && usage <= 231 ? (usage < 228 ? 1 : 2) : (usage >= 84 && usage <= 99 ? 3 : 0), "repeat": repeated]
     gate.enqueue {
       var current = event
       current["composing"] = self.markedTextRange != nil
@@ -153,18 +159,18 @@ import UniformTypeIdentifiers
   public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
     for press in presses { hardware(press, down: false) { super.pressesCancelled([press], with: event) } }
   }
-  public func configure(_ context: [String: Any]?, focused: Bool) {
+  public func configure(_ context: [String: Any]?, focused: Bool, softKeyboard: Bool = true) {
     gate.enqueue {
       if context?["contextId"] as? String != self.contextId {
         self.unmarkText()
         // The ending's acknowledgement precedes the reset and new-context input.
-        self.gate.enqueue { self.applyConfiguration(context, focused: focused) }
+        self.gate.enqueue { self.applyConfiguration(context, focused: focused, softKeyboard: softKeyboard) }
       } else {
-        self.applyConfiguration(context, focused: focused)
+        self.applyConfiguration(context, focused: focused, softKeyboard: softKeyboard)
       }
     }
   }
-  private func applyConfiguration(_ context: [String: Any]?, focused: Bool) {
+  private func applyConfiguration(_ context: [String: Any]?, focused: Bool, softKeyboard: Bool) {
     let nextContext = context?["contextId"] as? String
     if nextContext != contextId {
       contextId = nextContext
@@ -174,18 +180,22 @@ import UniformTypeIdentifiers
       selectedRange = NSRange(location: 0, length: 0)
       mutating = false
     }
-    let field = context?["field"] as? [String: Any]
-    let editable = field != nil
-    isEditable = editable
-    let sensitive = field?["sensitive"] as? Bool == true
-    isSecureTextEntry = sensitive
-    autocorrectionType = sensitive ? .no : .default
-    spellCheckingType = sensitive ? .no : .default
-    keyboardType = ["numeric": .numberPad, "decimal": .decimalPad, "tel": .phonePad, "email": .emailAddress, "url": .URL, "search": .webSearch][field?["inputMode"] as? String ?? ""] ?? .default
-    returnKeyType = ["done": .done, "go": .go, "next": .next, "search": .search, "send": .send][field?["enterKeyHint"] as? String ?? ""] ?? .default
-    autocapitalizationType = ["off": .none, "none": .none, "on": .sentences, "sentences": .sentences, "words": .words, "characters": .allCharacters][field?["autocapitalize"] as? String ?? "none"] ?? .none
-    inputView = field?["inputMode"] as? String == "none" ? UIView(frame: .zero) : nil
-    if editable && focused { if !isFirstResponder { becomeFirstResponder() }; reloadInputViews() }
-    else { resignFirstResponder() }
+    let nextTraits = RemoteInputTraits(context, softKeyboard: softKeyboard)
+    let changed = traits != nextTraits
+    if changed {
+      traits = nextTraits
+      isEditable = nextTraits.editable
+      isSecureTextEntry = nextTraits.sensitive
+      autocorrectionType = nextTraits.sensitive ? .no : .default
+      spellCheckingType = nextTraits.sensitive ? .no : .default
+      keyboardType = ["numeric": .numberPad, "decimal": .decimalPad, "tel": .phonePad, "email": .emailAddress, "url": .URL, "search": .webSearch][nextTraits.inputMode] ?? .default
+      returnKeyType = ["done": .done, "go": .go, "next": .next, "search": .search, "send": .send][nextTraits.enterKeyHint] ?? .default
+      autocapitalizationType = ["sentences": .sentences, "words": .words, "characters": .allCharacters][nextTraits.autocapitalize] ?? .none
+      inputView = nextTraits.showsKeyboard ? nil : noKeyboard
+    }
+    if focused {
+      if !isFirstResponder { becomeFirstResponder() }
+      else if changed { reloadInputViews() }
+    } else if isFirstResponder { resignFirstResponder() }
   }
 }

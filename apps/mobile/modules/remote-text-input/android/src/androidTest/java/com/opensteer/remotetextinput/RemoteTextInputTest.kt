@@ -1,11 +1,45 @@
 package com.opensteer.remotetextinput
 
 import android.view.inputmethod.EditorInfo
+import android.view.KeyEvent
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteTextInputTest {
+  @Test fun hardwarePageKeysWorkWithoutAnEditableFieldOrSoftKeyboard() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      val view = RemoteInputEditText(InstrumentationRegistry.getInstrumentation().targetContext)
+      val packets = mutableListOf<Map<String, Any?>>()
+      view.deliver = { packets.add(it) }
+      view.configure(mapOf("contextId" to "page", "field" to null), true, false)
+      assertTrue(view.isFocused)
+      assertFalse(view.showSoftInputOnFocus)
+      val keys = mapOf(KeyEvent.KEYCODE_TAB to "Tab", KeyEvent.KEYCODE_DPAD_LEFT to "ArrowLeft", KeyEvent.KEYCODE_DPAD_RIGHT to "ArrowRight", KeyEvent.KEYCODE_DPAD_UP to "ArrowUp", KeyEvent.KEYCODE_DPAD_DOWN to "ArrowDown", KeyEvent.KEYCODE_PAGE_UP to "PageUp", KeyEvent.KEYCODE_PAGE_DOWN to "PageDown", KeyEvent.KEYCODE_SPACE to " ", KeyEvent.KEYCODE_ESCAPE to "Escape", KeyEvent.KEYCODE_ENTER to "Enter", KeyEvent.KEYCODE_MENU to "ContextMenu", KeyEvent.KEYCODE_F10 to "F10")
+      var next = 0
+      for ((code, name) in keys) {
+        for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+          assertTrue(view.dispatchKeyEvent(KeyEvent(action, code)))
+          while (next < packets.size) view.respond(mapOf("id" to packets[next++]["id"], "preventDefault" to true))
+        }
+        val events = packets.takeLast(2).map { it["event"] as Map<*, *> }
+        assertEquals(listOf("keydown", "keyup"), events.map { it["type"] })
+        assertTrue(events.all { it["key"] == name && it["code"] == if (name == " ") "Space" else name })
+      }
+      view.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A))
+      while (next < packets.size) view.respond(mapOf("id" to packets[next++]["id"], "preventDefault" to true))
+      view.dispatchKeyEvent(KeyEvent(0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_A, 0, KeyEvent.META_META_ON))
+      while (next < packets.size) view.respond(mapOf("id" to packets[next++]["id"], "preventDefault" to true))
+      assertEquals("keyup", (packets.last()["event"] as Map<*, *>)["type"])
+      assertEquals("KeyA", (packets.last()["event"] as Map<*, *>)["code"])
+      view.configure(mapOf("contextId" to "page", "field" to null), true, false)
+      assertTrue(view.isFocused)
+      assertFalse(view.showSoftInputOnFocus)
+      view.configure(null, false, false)
+      assertFalse(view.isFocused)
+    }
+  }
+
   @Test fun composingRegionCommitAndCancellationAreObservedInOrder() {
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
       val view = RemoteInputEditText(InstrumentationRegistry.getInstrumentation().targetContext)

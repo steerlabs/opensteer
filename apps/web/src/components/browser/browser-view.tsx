@@ -366,12 +366,16 @@ export function PlaceBrowserView({
     return () => window.clearTimeout(timer);
   }, [keyboardOffered]);
 
+  const [inputEpoch, setInputEpoch] = useState(0);
   const send = useCallback(
     (command: BrowserCommand) => {
+      if (command.type.startsWith("navigation.")) setInputEpoch((value) => value + 1);
       try {
         hostClient.sendBrowserCommand(sessionId, command);
+        return true;
       } catch (error) {
         onReportError(error);
+        return false;
       }
     },
     [hostClient, onReportError, sessionId],
@@ -762,6 +766,8 @@ export function PlaceBrowserView({
             <>
               <BrowserViewport
                 activeSurfaceId={tabId}
+                documentId={shownTab?.documentId}
+                inputEpoch={`${inputEpoch}:${catalogTab?.documentId ?? ""}:${url}:${tab?.loading ?? catalogTab?.loading ?? false}`}
                 canInput={visible && pageReachable && !blocked}
                 frames={hostClient.browserFrames}
                 keyboardRef={keyboardRef}
