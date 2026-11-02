@@ -198,7 +198,10 @@ export class BrowserController {
       ...(message.consumerToken ? { consumerToken: message.consumerToken } : {}),
     }),
   );
-  private readonly menuConsumers = new Map<BrowserSurfaceId, { consumerToken: string }>();
+  private readonly menuConsumers = new Map<
+    BrowserSurfaceId,
+    { consumerToken: string; release: string }
+  >();
   private readonly editingCounters: Record<string, number> = {};
 
   private readonly targetedCasts = new Map<
@@ -1122,8 +1125,23 @@ export class BrowserController {
     admittedSurface: BrowserSurfaceId | null,
   ): Promise<void> {
     await this.clipboard?.finish();
-    if (admittedSurface && !(message.type === "input.pointer" && message.button === "right"))
-      this.menuConsumers.delete(admittedSurface);
+    if (admittedSurface) {
+      const owner = this.menuConsumers.get(admittedSurface);
+      const release =
+        message.type === "input.pointer"
+          ? `pointer:${message.button}`
+          : message.type === "input.key"
+            ? `key:${message.code || message.key}`
+            : null;
+      if (
+        !owner ||
+        !(message.type === "input.pointer" || message.type === "input.key") ||
+        message.action !== "up" ||
+        owner.release !== release ||
+        owner.consumerToken !== message.consumerToken
+      )
+        this.menuConsumers.delete(admittedSurface);
+    }
     if (this.editing)
       this.editingCounters[message.type] = (this.editingCounters[message.type] ?? 0) + 1;
     if (message.type === "input.cancel") {
@@ -1492,14 +1510,14 @@ export class BrowserController {
           ),
         );
     }
-    if (
-      this.editing &&
-      message.type === "input.pointer" &&
-      message.action === "down" &&
-      message.button === "right" &&
-      message.consumerToken
-    )
-      this.menuConsumers.set(active.surface.id, { consumerToken: message.consumerToken });
+    if (this.editing && contextMenuTrigger(message, this.platform) && message.consumerToken)
+      this.menuConsumers.set(active.surface.id, {
+        consumerToken: message.consumerToken,
+        release:
+          message.type === "input.pointer"
+            ? `pointer:${message.button}`
+            : `key:${message.code || message.key}`,
+      });
 
     if (message.type === "navigation.go") {
       this.ledger.recordHumanActivity(active.surface.id, { kind: "navigation" });
@@ -3103,3 +3121,21 @@ const editingMessageKinds = new Set([
   "clipboard.paste-data",
   "clipboard.part",
 ]);
+
+function contextMenuTrigger(
+  message: BrowserClientMessage,
+  platform: NodeJS.Platform,
+): message is Extract<BrowserClientMessage, { type: "input.pointer" | "input.key" }> {
+  if (message.type === "input.pointer")
+    return (
+      message.action === "down" &&
+      (message.button === "right" ||
+        (platform === "darwin" &&
+          message.button === "left" &&
+          message.modifiers?.includes("control") === true))
+    );
+  if (message.type !== "input.key" || message.action !== "down") return false;
+  return (
+    message.key === "ContextMenu" || (message.key === "F10" && message.modifiers.includes("shift"))
+  );
+}

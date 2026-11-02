@@ -188,6 +188,15 @@ describe("browser text entry through the presented page", async () => {
         ]),
       ),
     ).toMatchObject({ Paste: false, Copy: true, Cut: true });
+    const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
+    expect(menu.contains(document.activeElement)).toBe(true);
+    void act(() =>
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    );
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(
+      container.querySelector('[aria-label="Browser keyboard input"]'),
+    );
   });
   it.each(["pointercancel", "lostpointercapture"])(
     "cancels a held drag without flushing a pending move on %s",

@@ -633,88 +633,112 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
-  it("does not revive an earlier context menu when the same controller clicks again", async () => {
-    const cdp = page.cdpSession;
-    cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
-    cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
-    cdp.responses.set("DOM.getFrameOwner", () => {
-      throw new Error("The root has no owner.");
-    });
-    const controller = new BrowserController({
-      cdpRouter,
-      claims: validClaims({ editingVersion: 1 }),
-      files,
-      ledger,
-      replaceSiteCookies,
-      signIns: noSignIns(),
-      sink,
-      clipboard: { machineClipboardShared: false, open: async () => ({ close: async () => null }) },
-    });
-    await controller.start();
-    try {
-      await flushMicrotasks();
-      const world = cdp.sent.find(
-        (entry) =>
-          entry.method === "Runtime.addBinding" &&
-          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
-      )!.parameters!;
-      cdp.emit("Runtime.executionContextCreated", {
-        context: {
-          id: 7,
-          uniqueId: globalThis.crypto.randomUUID(),
-          name: world.executionContextName,
-          origin: "https://example.test",
-          auxData: { frameId: "main", isDefault: false },
+  it.each(["right", "control-click", "ContextMenu", "Shift+F10"] as const)(
+    "attributes %s menus through release without reviving an earlier menu",
+    async (trigger) => {
+      const cdp = page.cdpSession;
+      cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+      cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+      cdp.responses.set("DOM.getFrameOwner", () => {
+        throw new Error("The root has no owner.");
+      });
+      const controller = new BrowserController({
+        cdpRouter,
+        claims: validClaims({ editingVersion: 1 }),
+        files,
+        ledger,
+        replaceSiteCookies,
+        platform: "darwin",
+        signIns: noSignIns(),
+        sink,
+        clipboard: {
+          machineClipboardShared: false,
+          open: async () => ({ close: async () => null }),
         },
       });
-      const consumerToken = globalThis.crypto.randomUUID();
-      const pointer = {
-        type: "input.pointer" as const,
-        button: "right" as const,
-        surfaceId: activeSurfaceId(),
-        x: 0.2,
-        y: 0.2,
-        viewportWidth: 1280,
-        viewportHeight: 720,
-        consumerToken,
-      };
-      await controller.handle({ ...pointer, action: "down" });
-      const geometry = Promise.withResolvers<unknown>();
-      cdp.responses.set("Page.getLayoutMetrics", () => geometry.promise);
-      const menu = () =>
-        cdp.emit("Runtime.bindingCalled", {
-          name: world.name,
-          executionContextId: 7,
-          payload: JSON.stringify({ kind: "menu", x: 20, y: 20, editable: true, selection: false }),
+      await controller.start();
+      try {
+        await flushMicrotasks();
+        const world = cdp.sent.find(
+          (entry) =>
+            entry.method === "Runtime.addBinding" &&
+            String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+        )!.parameters!;
+        cdp.emit("Runtime.executionContextCreated", {
+          context: {
+            id: 7,
+            uniqueId: globalThis.crypto.randomUUID(),
+            name: world.executionContextName,
+            origin: "https://example.test",
+            auxData: { frameId: "main", isDefault: false },
+          },
         });
-      menu();
-      await controller.handle({ ...pointer, action: "up" });
-      const key = {
-        type: "input.key" as const,
-        surfaceId: activeSurfaceId(),
-        key: "Escape",
-        code: "Escape",
-        modifiers: [],
-      };
-      await controller.handle({ ...key, action: "down" });
-      await controller.handle({ ...key, action: "up" });
-      await controller.handle({ ...pointer, action: "down" });
-      geometry.resolve({ visualViewport: { clientWidth: 1280, clientHeight: 720 } });
-      await flushMicrotasks();
-      expect(
-        sink.messages.filter((message) => message.type === "browser.contextmenu"),
-      ).toHaveLength(0);
-      menu();
-      await flushMicrotasks();
-      expect(
-        sink.messages.filter((message) => message.type === "browser.contextmenu"),
-      ).toMatchObject([{ consumerToken }]);
-      await controller.handle({ ...pointer, action: "up" });
-    } finally {
-      await controller.close();
-      await ledger.close();
-    }
-  });
+        const consumerToken = globalThis.crypto.randomUUID();
+        const pointer =
+          trigger === "right" || trigger === "control-click"
+            ? {
+                type: "input.pointer" as const,
+                button: trigger === "right" ? ("right" as const) : ("left" as const),
+                modifiers: trigger === "control-click" ? ["control" as const] : [],
+                surfaceId: activeSurfaceId(),
+                x: 0.2,
+                y: 0.2,
+                viewportWidth: 1280,
+                viewportHeight: 720,
+                consumerToken,
+              }
+            : {
+                type: "input.key" as const,
+                surfaceId: activeSurfaceId(),
+                key: trigger === "ContextMenu" ? "ContextMenu" : "F10",
+                code: trigger === "ContextMenu" ? "ContextMenu" : "F10",
+                modifiers: trigger === "Shift+F10" ? ["shift" as const] : [],
+                consumerToken,
+              };
+        await controller.handle({ ...pointer, action: "down" });
+        const geometry = Promise.withResolvers<unknown>();
+        cdp.responses.set("Page.getLayoutMetrics", () => geometry.promise);
+        const menu = () =>
+          cdp.emit("Runtime.bindingCalled", {
+            name: world.name,
+            executionContextId: 7,
+            payload: JSON.stringify({
+              kind: "menu",
+              x: 20,
+              y: 20,
+              editable: true,
+              selection: false,
+            }),
+          });
+        menu();
+        await controller.handle({ ...pointer, action: "up" });
+        const key = {
+          type: "input.key" as const,
+          surfaceId: activeSurfaceId(),
+          key: "Escape",
+          code: "Escape",
+          modifiers: [],
+        };
+        await controller.handle({ ...key, action: "down" });
+        await controller.handle({ ...key, action: "up" });
+        await controller.handle({ ...pointer, action: "down" });
+        geometry.resolve({ visualViewport: { clientWidth: 1280, clientHeight: 720 } });
+        await flushMicrotasks();
+        expect(
+          sink.messages.filter((message) => message.type === "browser.contextmenu"),
+        ).toHaveLength(0);
+        await controller.handle({ ...pointer, action: "up" });
+        menu();
+        await flushMicrotasks();
+        expect(
+          sink.messages.filter((message) => message.type === "browser.contextmenu"),
+        ).toMatchObject([{ consumerToken }]);
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
 
   it("normalizes the caret to the native crop and refreshes stationary fields on crop changes", async () => {
     const cdp = page.cdpSession;

@@ -356,6 +356,17 @@ vi.mock("../thread/composer-menu.js", () => ({
     </div>
   ),
 }));
+vi.mock("../../modules/remote-text-input/src/remote-text-input.js", () => ({
+  RemoteTextInput: (props: {
+    focused: boolean;
+    softKeyboard: boolean;
+    onEvent(event: { type: "blur" }): void;
+  }) => (
+    <div data-page-input data-focused={props.focused} data-soft-keyboard={props.softKeyboard}>
+      <button onClick={() => props.onEvent({ type: "blur" })}>Release page keyboard</button>
+    </div>
+  ),
+}));
 vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
 vi.mock("../browser/browser-stream.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../browser/browser-stream.js")>()),
@@ -2278,6 +2289,42 @@ describe("native page layout and controls", () => {
       [chosen.id, { type: "navigation.back", surfaceId: chosen.tabs[0]!.id }],
       [chosen.id, { type: "navigation.forward", surfaceId: chosen.tabs[0]!.id }],
     ]);
+  });
+
+  it("keeps page hardware focus without a field and hands focus to app controls", async () => {
+    const editing = new BrowserEditingStore(vi.fn());
+    editing.negotiate("chosen", 1);
+    state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
+    const chosen = mailSession("chosen");
+    const { container, render } = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    state.snapshot = snapshot([chosen]);
+    await act(async () => render());
+    const input = () => container.querySelector<HTMLElement>("[data-page-input]");
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("false");
+    expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
+    press(container, "Release page keyboard");
+    expect(input()?.dataset.focused).toBe("false");
+    press(container, "Tap the page");
+    expect(input()?.dataset.focused).toBe("true");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId: chosen.tabs[0]!.id,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000001",
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.softKeyboard).toBe("true");
+    press(container, "Done");
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("false");
+    state.focused = false;
+    render();
+    expect(input()).toBeNull();
   });
 
   it("opens the keyboard after a tapped negotiated page reports a field", () => {
