@@ -434,6 +434,7 @@ async function startAgentsRunner(input: {
               // what the disk holds now rather than what it held at startup.
               inventory: () => localWorkspace.authority.inventory(signal),
               service: new LocalWorkspaceService({
+                appServers: runtime.appServers,
                 authority: localWorkspace.authority,
                 filesystem: localWorkspace.filesystem,
               }),

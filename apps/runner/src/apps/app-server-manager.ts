@@ -6,12 +6,13 @@ import { tmpdir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { appFolderSegments } from "@opensteer/core";
-import type { AppRuntimeSpec } from "@opensteer/protocol";
+import type { AppRuntimeSpec, LocalWorkspaceBindingRef } from "@opensteer/protocol";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { ProgramLaunchPlanner } from "../agent/program-executor.js";
+import type { TerminationProof } from "../runtime/execution-containment.js";
 
 interface Server {
   readonly spec: AppRuntimeSpec;
@@ -42,7 +43,10 @@ interface Options {
     executionId: string,
     launch: Parameters<ProgramLaunchPlanner>[0],
   ) => Promise<HarnessProcessLaunchWrapper>;
-  readonly terminate: (executionId: string, stopEngine: () => Promise<unknown>) => Promise<unknown>;
+  readonly terminate: (
+    executionId: string,
+    stopEngine: () => Promise<unknown>,
+  ) => Promise<TerminationProof>;
   readonly readyTimeoutMs?: number;
   readonly privateDirectory?: string;
 }
@@ -66,7 +70,12 @@ export class AppServerManager {
       const previous = this.#servers.get(spec.appId);
       if (previous && previous.spec.version > spec.version)
         throw new Error("Stale app version refused");
-      if (previous && !previous.dead && JSON.stringify(previous.spec) === JSON.stringify(spec))
+      if (
+        previous &&
+        !previous.dead &&
+        !previous.abort.signal.aborted &&
+        JSON.stringify(previous.spec) === JSON.stringify(spec)
+      )
         return previous.port;
       // Resolve and check the identity-bound root even when replacing a live server.
       const root = await this.#options.resolveRoot(spec.binding, signal);
@@ -195,6 +204,26 @@ export class AppServerManager {
         await this.#stop(server);
     });
   }
+  async stopBinding(binding: LocalWorkspaceBindingRef): Promise<void> {
+    // Join pending starts too: a launch may not have a server record yet.
+    await Promise.all(
+      [...new Set([...this.#queues.keys(), ...this.#servers.keys()])].map((appId) =>
+        this.#queues.run(appId, async () => {
+          const server = this.#servers.get(appId);
+          const owner = server?.spec.binding;
+          if (
+            server &&
+            owner?.bindingId === binding.bindingId &&
+            owner.generation === binding.generation &&
+            owner.workspaceId === binding.workspaceId &&
+            owner.ownerEnvironmentId === binding.ownerEnvironmentId &&
+            owner.storageAuthorityId === binding.storageAuthorityId
+          )
+            await this.#stop(server);
+        }),
+      ),
+    );
+  }
   async stopAll(): Promise<void> {
     this.#epoch++;
     this.#logs.clear();
@@ -209,11 +238,16 @@ export class AppServerManager {
   }
   async #stop(server: Server, retainLog = false): Promise<void> {
     server.abort.abort(new Error("App server stopped"));
-    await this.#options.terminate(server.executionId, async () => {
+    const proof = await this.#options.terminate(server.executionId, async () => {
       if (server.child.pid && process.platform !== "win32")
         await stopProcessGroup(server.child.pid, { graceMs: 500 });
       else if (!server.dead) server.child.kill("SIGKILL");
     });
+    if (proof === "unknown")
+      throw new AppServerError(
+        `Cannot prove app server ${server.spec.appId} stopped; retry stopping it before restarting`,
+        server.log.toString("utf8"),
+      );
     await withTimeout(server.closed, 5_000, {
       timeoutError: () => new Error("App server did not stop"),
     });

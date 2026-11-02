@@ -16,11 +16,14 @@ import {
   type NativeWorkspaceFilesAuthority,
 } from "@opensteer/workspace-local";
 import { afterEach, describe, expect, it } from "vitest";
+import { AppServerManager } from "../apps/app-server-manager.js";
 import { LocalWorkspaceService, type LocalWorkspaceIdentity } from "./local-workspace-service.js";
 
 const temporaryDirectories: string[] = [];
+const appServerManagers: AppServerManager[] = [];
 
 afterEach(async () => {
+  await Promise.all(appServerManagers.splice(0).map((manager) => manager.stopAll()));
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -125,6 +128,56 @@ describe("LocalWorkspaceService", () => {
     });
   });
 
+  it("stops every app server for the destroyed binding before recording its receipt", async () => {
+    const machine = await fixture();
+    const provision = await machine.provisionRequest();
+    const other = await machine.provisionRequest();
+    await machine.handle(provision);
+    await machine.handle(other);
+    const ports = await Promise.all([
+      machine.appServers.start(serverSpec(provision.binding)),
+      machine.appServers.start(serverSpec(provision.binding)),
+    ]);
+    const otherSpec = serverSpec(other.binding);
+    const otherPort = await machine.appServers.start(otherSpec);
+
+    await expect(machine.handle(destroyRequest(provision))).resolves.toMatchObject({
+      receipt: { outcome: "destroyed" },
+      type: "runner.workspace.local.destroyed",
+    });
+
+    for (const port of ports) await expect(fetch(`http://127.0.0.1:${port}`)).rejects.toThrow();
+    expect(await machine.appServers.start(otherSpec)).toBe(otherPort);
+    expect(await (await fetch(`http://127.0.0.1:${otherPort}`)).text()).toBe("ok");
+  });
+
+  it("withholds a destroy receipt when an app server cannot stop and succeeds on replay", async () => {
+    let proof: "unknown" | "proven" = "unknown";
+    const machine = await fixture(async (_id, stopEngine) => {
+      await stopEngine();
+      return proof;
+    });
+    const provision = await machine.provisionRequest();
+    await machine.handle(provision);
+    await machine.appServers.start(serverSpec(provision.binding));
+    const destroy = destroyRequest(provision);
+    try {
+      await expect(machine.handle(destroy)).resolves.toMatchObject({
+        type: "runner.workspace.local.error",
+        error: { retryable: true },
+      });
+      await expect(
+        machine.authority.resolveReadAuthority(provision.binding),
+      ).resolves.toHaveProperty("root");
+    } finally {
+      proof = "proven";
+    }
+    await expect(machine.handle(destroy)).resolves.toMatchObject({
+      receipt: { outcome: "destroyed" },
+      type: "runner.workspace.local.destroyed",
+    });
+  });
+
   it("reads a bounded range against the identity-bound root", async () => {
     const machine = await fixture();
     const provision = await machine.provisionRequest();
@@ -148,7 +201,7 @@ describe("LocalWorkspaceService", () => {
   });
 });
 
-async function fixture() {
+async function fixture(terminate?: ConstructorParameters<typeof AppServerManager>[0]["terminate"]) {
   const basePath = await mkdtemp(join(tmpdir(), "opensteer-local-workspace-service-"));
   temporaryDirectories.push(basePath);
   const environmentId = createId("environment");
@@ -158,7 +211,24 @@ async function fixture() {
     visibleRootPath: join(basePath, "workspaces"),
   });
   const filesystem = recordingFilesystem();
-  const service = new LocalWorkspaceService({ authority, filesystem: filesystem.authority });
+  const appServers = new AppServerManager({
+    privateDirectory: join(basePath, "private", "app-servers"),
+    resolveRoot: async (binding, signal) =>
+      (await authority.resolveReadAuthority(binding, signal)).root,
+    planLaunch: async () => (launch) => launch,
+    terminate:
+      terminate ??
+      (async (_id, stopEngine) => {
+        await stopEngine();
+        return "proven";
+      }),
+  });
+  appServerManagers.push(appServers);
+  const service = new LocalWorkspaceService({
+    authority,
+    filesystem: filesystem.authority,
+    appServers,
+  });
   const storageAuthorityId: StorageAuthorityId = await authority.storageAuthorityId();
   const identity: LocalWorkspaceIdentity = {
     bootId: "rbt_11111111-1111-4111-8111-111111111111" as RunnerBootId,
@@ -179,6 +249,7 @@ async function fixture() {
     storageAuthorityId,
   };
   return {
+    appServers,
     authority,
     filesystem,
     handle: (request: HostWorkspaceLocalRequest) =>
@@ -212,6 +283,30 @@ async function fixture() {
         type: "host.workspace.local.provision",
       };
     },
+  };
+}
+
+function serverSpec(binding: HostWorkspaceLocalRequest["binding"]) {
+  return {
+    appId: `app_${crypto.randomUUID()}`,
+    version: 1,
+    binding,
+    folder: ".",
+    command: `exec ${process.execPath} -e 'require("node:http").createServer((q,s)=>s.end("ok")).listen(process.env.PORT,"127.0.0.1")'`,
+  };
+}
+
+function destroyRequest(provision: HostWorkspaceLocalRequest): HostWorkspaceLocalRequest {
+  return {
+    binding: provision.binding,
+    fence: provision.fence,
+    operationId: workspaceLocalOperationId({
+      generation: provision.binding.generation,
+      operation: "destroy",
+      workspaceId: provision.binding.workspaceId,
+    }),
+    requestId: globalThis.crypto.randomUUID(),
+    type: "host.workspace.local.destroy",
   };
 }
 

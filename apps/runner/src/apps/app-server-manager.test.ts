@@ -14,7 +14,10 @@ it("shares starts, refuses stale generations, lazily restarts crashes and stops 
       starts.push(id);
       return (launch) => launch;
     },
-    terminate: async (_id, stopEngine) => stopEngine(),
+    terminate: async (_id, stopEngine) => {
+      await stopEngine();
+      return "proven";
+    },
     readyTimeoutMs: 2_000,
   });
   const spec = {
@@ -62,7 +65,10 @@ it("returns bounded log tails on exit and readiness timeout and rejects escaping
   const manager = new AppServerManager({
     resolveRoot: async () => root,
     planLaunch: async () => (l) => l,
-    terminate: async (_id, stopEngine) => stopEngine(),
+    terminate: async (_id, stopEngine) => {
+      await stopEngine();
+      return "proven";
+    },
     readyTimeoutMs: 200,
   });
   const spec = {
@@ -115,7 +121,10 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
       });
       return (launch) => launch;
     },
-    terminate: async (_id, stopEngine) => stopEngine(),
+    terminate: async (_id, stopEngine) => {
+      await stopEngine();
+      return "proven";
+    },
   });
   const spec = {
     appId: "unused",
@@ -289,3 +298,99 @@ it("cleans a crashed server and descendants before releasing its capacity and la
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it.each(["stop", "replacement", "crash", "stopAll"] as const)(
+  "retains ownership, capacity and launch files after unknown containment during %s until a proven stop",
+  async (operation) => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-app-unknown-"));
+    const privateDirectory = join(root, "private");
+    const releaseLaunches = Promise.withResolvers<void>();
+    const slotsReserved = Promise.withResolvers<void>();
+    const replacementReserved = Promise.withResolvers<void>();
+    const cleanupAttempted = Promise.withResolvers<void>();
+    let reservations = 0;
+    let proof: "unknown" | "proven" = "unknown";
+    const manager = new AppServerManager({
+      resolveRoot: async () => root,
+      privateDirectory,
+      planLaunch: async (id) => {
+        if (!id.startsWith("app:app_uncertain:")) {
+          if (++reservations === 31) slotsReserved.resolve();
+          if (reservations === 32) replacementReserved.resolve();
+          await withTimeout(releaseLaunches.promise, 3_000, {
+            timeoutError: () => new Error("Launch reservations were not released"),
+          });
+        }
+        return (launch) => launch;
+      },
+      terminate: async (_id, stopEngine) => {
+        await stopEngine();
+        cleanupAttempted.resolve();
+        return proof;
+      },
+      readyTimeoutMs: 2_000,
+    });
+    const spec = {
+      appId: "app_uncertain",
+      version: 1,
+      folder: ".",
+      command: `exec ${process.execPath} server.cjs`,
+      binding: {},
+    } as Parameters<typeof manager.start>[0];
+    const starts: Promise<number>[] = [];
+    let settled: Promise<PromiseSettledResult<number>[]> | undefined;
+    try {
+      await writeFile(
+        join(root, "server.cjs"),
+        `require('node:http').createServer((q,s)=>{s.end('ok');if(q.url==='/crash')s.on('finish',()=>process.exit(1))}).listen(process.env.PORT,'127.0.0.1')`,
+      );
+      const port = await manager.start(spec);
+      const [launchDirectory] = await readdir(privateDirectory);
+      if (operation === "crash") {
+        await fetch(`http://127.0.0.1:${port}/crash`);
+        await withTimeout(cleanupAttempted.promise, 1_000, {
+          timeoutError: () => new Error("Crashed server never attempted containment cleanup"),
+        });
+      } else {
+        const stopping =
+          operation === "replacement"
+            ? manager.start({ ...spec, version: 2 })
+            : operation === "stopAll"
+              ? manager.stopAll()
+              : manager.stop(spec.appId);
+        await expect(stopping).rejects.toThrow(/cannot prove.*stopped/i);
+      }
+      await expect(manager.start({ ...spec, version: 2 })).rejects.toThrow(
+        /cannot prove.*stopped/i,
+      );
+      await expect(manager.start(spec)).rejects.toThrow(/cannot prove.*stopped/i);
+      expect(await readdir(privateDirectory)).toEqual([launchDirectory]);
+      for (let index = 0; index < 31; index++)
+        starts.push(manager.start({ ...spec, appId: `app_reserved_${index}` }));
+      settled = Promise.allSettled(starts);
+      await withTimeout(slotsReserved.promise, 1_000, {
+        timeoutError: () => new Error("Server slots were not reserved"),
+      });
+      await expect(manager.start({ ...spec, appId: "app_over_limit" })).rejects.toThrow(
+        "32 app servers",
+      );
+
+      proof = "proven";
+      await manager.stop(spec.appId);
+      expect(await readdir(privateDirectory)).not.toContain(launchDirectory);
+      starts.push(manager.start({ ...spec, appId: "app_replacement" }));
+      settled = Promise.allSettled(starts);
+      await withTimeout(replacementReserved.promise, 1_000, {
+        timeoutError: () => new Error("Proven cleanup did not release its server slot"),
+      });
+      expect(reservations).toBe(32);
+    } finally {
+      proof = "proven";
+      const stopping = manager.stopAll();
+      releaseLaunches.resolve();
+      await stopping;
+      await settled;
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

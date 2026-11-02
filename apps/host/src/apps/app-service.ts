@@ -419,7 +419,7 @@ export class AppService {
     try {
       await this.#tunnels().stop(spec);
     } catch {
-      /* A disconnected Runner stops its servers when it loses the primary connection. */
+      /* Best effort for promptness; durable Workspace destruction retries server teardown. */
     }
   }
 
