@@ -85,8 +85,12 @@ it("uses the per-Run reader outside transcript windows and ranks equal titles by
     expect(links.resolve(offered, used)?.target).toMatchObject({
       destination: { tabId: "tab_saved17" },
     });
-    expect(links.build(used, undefined, { runPlace: placeOf(used) })).toContain('Chat is working in: "Gmail"');
-    expect(links.build({ ...snapshot, runQueue: [] }, undefined, { runPlace: placeOf(snapshot) })).not.toContain("Chat is working in:");
+    expect(links.build(used, undefined, { runPlace: placeOf(used) })).toContain(
+      'Chat is working in: "Gmail"',
+    );
+    expect(
+      links.build({ ...snapshot, runQueue: [] }, undefined, { runPlace: placeOf(snapshot) }),
+    ).not.toContain("Chat is working in:");
     const thread = snapshot.threads.find((t) => t.id !== home)!;
     const threadLinks = new VoiceContextLinks();
     expect(threadLinks.resolve(`opensteer://thread/${thread.id}`, snapshot)).toBeNull();
@@ -137,7 +141,7 @@ it("keeps exact browser tabs distinct and rejects stale places and unknown threa
     const text = links.build(snapshot, undefined, { runPlace: placeOf(snapshot) });
     expect(text.length).toBeLessThanOrEqual(16_000);
     expect(links.build(snapshot, undefined, { runPlace: placeOf(snapshot) })).toBe(text);
-    const offered = [...text.matchAll(/opensteer:\/\/place\/\d+/g)].map((m) => m[0]);
+    const offered = [...new Set([...text.matchAll(/opensteer:\/\/place\/\d+/g)].map((m) => m[0]))];
     expect(offered.length).toBeGreaterThan(1);
     const destinations = offered.map((link) => links.resolve(link, snapshot)!.target);
     expect(new Set(destinations.map((d) => JSON.stringify(d))).size).toBe(destinations.length);
@@ -192,7 +196,11 @@ it("never offers or resolves a place this device can't show", async () => {
     const snapshot = host.getSnapshot();
     let apps = true;
     const links = new VoiceContextLinks((destination) => apps || destination.kind !== "app");
-    const appLink = [...links.build(snapshot, undefined, { runPlace: placeOf(snapshot) }).matchAll(/opensteer:\/\/place\/\d+/g)]
+    const appLink = [
+      ...links
+        .build(snapshot, undefined, { runPlace: placeOf(snapshot) })
+        .matchAll(/opensteer:\/\/place\/\d+/g),
+    ]
       .map((m) => m[0])
       .find((link) => {
         const target = links.resolve(link, snapshot)?.target;

@@ -61,8 +61,9 @@ export function useNativeBrowserPicture(input: {
   readonly tabId: string;
   /** Returns one delivery's receipt. */
   readonly settle: (delivery: BrowserFrameView) => void;
+  readonly preserveLastFrame?: boolean;
 }) {
-  const { enabled, visible, frames, sessionId, tabId, settle } = input;
+  const { enabled, visible, frames, sessionId, tabId, settle, preserveLastFrame = false } = input;
   const view = useRef<NativePicture | null>(null);
   const generation = useRef(0);
   // Native clear events and presentation promises can reach JS in either order.
@@ -81,15 +82,27 @@ export function useNativeBrowserPicture(input: {
     [enabled, frames, sessionId, tabId],
   );
   const present = useSyncExternalStore(subscribe, getPresent, getPresent);
+  const invalidation = useSyncExternalStore(
+    subscribe,
+    useCallback(() => frames.invalidationKey?.(sessionId, tabId) ?? 0, [frames, sessionId, tabId]),
+  );
 
   // Pixels and the input they aim go in the same layout pass that loses them.
-  const shown = enabled && visible && present;
+  const shown = enabled && visible && (present || preserveLastFrame);
+  const identity = preserveLastFrame ? tabId : `${sessionId}:${tabId}`;
+  useLayoutEffect(() => {
+    const clear = () => {
+      void view.current?.clear(++generation.current).catch(() => undefined);
+      setDrawn(null);
+    };
+    clear();
+    return clear;
+  }, [enabled, frames, identity, invalidation, shown]);
   useLayoutEffect(() => {
     if (!enabled || !shown) return;
     const owned = new Set<BrowserFrameView>();
-    const current = ++generation.current;
-    // Native calls run in order, so the view takes this generation before any picture.
-    void view.current?.clear(current).catch(() => undefined);
+    const current = generation.current;
+    let disposed = false;
     const release = (delivery: BrowserFrameView) => {
       if (owned.delete(delivery)) settle(delivery);
     };
@@ -117,6 +130,7 @@ export function useNativeBrowserPicture(input: {
         .then(
           (outcome) => {
             if (
+              !disposed &&
               outcome === "presented" &&
               owned.has(latest) &&
               generation.current === current &&
@@ -132,8 +146,7 @@ export function useNativeBrowserPicture(input: {
     pump();
     return () => {
       unsubscribe();
-      generation.current++;
-      void view.current?.clear(generation.current).catch(() => undefined);
+      disposed = true;
       for (const delivery of owned) release(delivery);
       // The store's newest delivery was never this view's to draw now.
       const latest = frames.get(sessionId, tabId);
@@ -141,9 +154,8 @@ export function useNativeBrowserPicture(input: {
         handled.current = latest;
         settle(latest);
       }
-      setDrawn(null);
     };
-  }, [enabled, frames, sessionId, settle, shown, tabId]);
+  }, [enabled, frames, invalidation, sessionId, settle, shown, tabId]);
 
   // Whatever the store holds that this view will not draw is returned at once:
   // everything while hidden, and another tab's picture while shown.

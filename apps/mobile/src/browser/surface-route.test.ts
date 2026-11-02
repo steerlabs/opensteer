@@ -53,9 +53,13 @@ describe("native viewer routes", () => {
       const destination = paramsDestination(workspaceRoute("deployment", place.destination))!;
       expect(
         new VoiceContextLinks()
-          .build(snapshot, { destination, title: "WorkspaceBrowser" })
+          .build(
+            snapshot,
+            { destination, title: "WorkspaceBrowser" },
+            { runPlace: (runId) => host.runPlace(runId)?.data ?? null },
+          )
           .split("\n")[0],
-      ).toBe(`Visible now: ${JSON.stringify(place.title)}`);
+      ).toBe(`Visible now: ${JSON.stringify(place.title)} | opensteer://place/1`);
     } finally {
       host.dispose();
     }

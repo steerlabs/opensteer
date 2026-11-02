@@ -67,7 +67,7 @@ import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
-import { enter, exit } from "../ui/motion.js";
+import { enter, exit, move } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
@@ -87,6 +87,7 @@ import { waitingQuestion } from "./docked-requests.js";
 import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-chips.js";
 import { AttachmentReader } from "./attachment-views.js";
 import { Composer } from "./composer.js";
+import { LivePlace } from "./live-place.js";
 import { QueuedMessages } from "./queued-messages.js";
 import {
   TranscriptComputersContext,
@@ -799,24 +800,23 @@ function ThreadPaneForUser(
       ),
     [groups],
   );
+  const openSurface = useCallback(
+    (destination: SurfaceDestination) => {
+      const route = surfaceRoute(deploymentId, threadId, destination);
+      const state = navigation.getState();
+      const current = state?.routes[state.index];
+      if (
+        current?.name === "WorkspaceBrowser" &&
+        sameDestination(paramsDestination(current.params), destination)
+      )
+        return;
+      navigation.dispatch(StackActions.push("WorkspaceBrowser", route));
+    },
+    [deploymentId, navigation, threadId],
+  );
   const surfaces = useMemo<TranscriptSurfaces>(
-    () => ({
-      hostClient,
-      threadId,
-      turns: surfaceTurns,
-      open: (destination: SurfaceDestination) => {
-        const route = surfaceRoute(deploymentId, threadId, destination);
-        const state = navigation.getState();
-        const current = state?.routes[state.index];
-        if (
-          current?.name === "WorkspaceBrowser" &&
-          sameDestination(paramsDestination(current.params), destination)
-        )
-          return;
-        navigation.dispatch(StackActions.push("WorkspaceBrowser", route));
-      },
-    }),
-    [deploymentId, hostClient, navigation, surfaceTurns, threadId],
+    () => ({ hostClient, threadId, turns: surfaceTurns, open: openSurface }),
+    [hostClient, openSurface, surfaceTurns, threadId],
   );
   /**
    * Quotes a published update into Chat's composer and goes back to Chat.
@@ -1287,7 +1287,8 @@ function ThreadPaneForUser(
     <>
       {transcript}
 
-      <View
+      <Animated.View
+        layout={move}
         style={[
           styles.dock,
           column,
@@ -1323,6 +1324,15 @@ function ThreadPaneForUser(
         ) : null}
         {snapshot.user === null ? null : (
           <>
+            {stopTarget === null ? null : (
+              <LivePlace
+                active={focused}
+                hostClient={hostClient}
+                key={stopTarget.id}
+                onOpen={openSurface}
+                runId={stopTarget.id}
+              />
+            )}
             <WaitingQuestions
               canRespond={canRespond}
               deploymentId={props.deploymentId}
@@ -1426,7 +1436,7 @@ function ThreadPaneForUser(
             </View>
           </>
         )}
-      </View>
+      </Animated.View>
     </>
   );
   // Beside a page, the screen already keeps the keyboard clear; a second

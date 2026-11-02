@@ -1,5 +1,7 @@
 import {
   BrowserSessionIdSchema,
+  createId,
+  PlaceEnteredEventViewSchema,
   BrowserSurfaceIdSchema,
   type PlaceContentPart,
 } from "@opensteer/core";
@@ -545,7 +547,25 @@ it("agent captions never auto-send; redelivered back executes once and unknown t
 it("shows Chat's old asleep tab from context or find and reports refused navigation honestly", async () => {
   const f = agentSetup();
   Object.assign(f.call, { find: true });
-  f.publish(voiceSavedTabs(f.host.getSnapshot()));
+  const snapshot = voiceSavedTabs(f.host.getSnapshot());
+  const thread = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const place = snapshot.transcripts[thread.id]![0]!;
+  if (place.kind !== "place") throw new Error("The saved tab fixture has no Run place.");
+  const entry = PlaceEnteredEventViewSchema.parse({
+    type: "place.entered",
+    eventId: createId("event"),
+    environmentId: thread.environmentId,
+    workspaceId: thread.workspaceId,
+    runId: place.runId,
+    threadId: thread.id,
+    sequence: "1",
+    createdAt: place.createdAt,
+    data: { place: place.place, title: place.title, site: place.site },
+  });
+  vi.spyOn(f.host, "runPlace").mockImplementation((runId) =>
+    runId === entry.runId ? entry : null,
+  );
+  f.publish({ ...snapshot, transcripts: {} });
   await f.controller.start();
   await settle();
   const text = f.context.mock.calls[0]![0].text;
