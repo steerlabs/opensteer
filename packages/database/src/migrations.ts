@@ -4672,6 +4672,7 @@ export function migrationProvider() {
         "0122_thread_event_history": threadEventHistoryMigration,
         "0123_thread_asked_at": threadAskedAtMigration,
         "0124_browser_native_only": browserNativeOnlyMigration,
+        "0125_run_place_events": runPlaceEventsMigration,
       };
     },
   };
@@ -6495,6 +6496,16 @@ export const threadAskedAtMigration: Migration = {
       )
       update threads as thread set asked_at = times.asked_at
       from times where thread.id = times.id;
+    `.execute(database);
+  },
+};
+
+/** A Run's newest entered place is read on every tab change, from its own events only. */
+export const runPlaceEventsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create index workspace_events_run_places
+        on public.workspace_events (run_id, sequence) where type = 'place.entered'
     `.execute(database);
   },
 };

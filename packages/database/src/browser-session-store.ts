@@ -2162,6 +2162,7 @@ export async function recordRunPlace(
         .where("runId", "=", input.runId)
         .where("type", "=", "place.entered")
         .orderBy("sequence", "desc")
+        .limit(1)
         .executeTakeFirst();
       if (last) {
         const previous = eventDataSchemas["place.entered"].parse(last.data);
