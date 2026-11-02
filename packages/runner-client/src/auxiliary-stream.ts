@@ -163,7 +163,7 @@ export async function openRunnerAuxiliaryStream(options: {
   });
   const stream: RunnerModuleStream = {
     ...(welcome.loginText === 1 ? { loginText: 1 } : {}),
-    ...(welcome.passwordSignIn === 1 ? { passwordSignIn: 1 } : {}),
+    ...(welcome.passwordSignIn === 2 ? { passwordSignIn: 2 } : {}),
     ...(welcome.browserWireVersion ? { browserWireVersion: welcome.browserWireVersion } : {}),
     ...(welcome.passkeys === 1 ? { passkeys: 1 } : {}),
     browserAttachPublicKeys: welcome.browserAttachPublicKeys,

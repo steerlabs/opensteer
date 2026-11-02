@@ -144,6 +144,10 @@ const config: ExpoConfig = {
     // Plist mods compose in reverse order: remove the upstream camera key last.
     "./plugins/with-voice.cjs",
     "expo-secure-store",
+    [
+      "expo-local-authentication",
+      { faceIDPermission: "Opensteer uses Face ID to confirm saved-login approvals." },
+    ],
     "@config-plugins/react-native-webrtc",
     "./plugins/with-apple-data.cjs",
     "./plugins/with-dictation.cjs",

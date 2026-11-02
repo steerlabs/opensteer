@@ -147,7 +147,6 @@ import { desktopComputerUseTeamId } from "./computer-use/release-identity.js";
 import { bundledPasswordsBrokerPath } from "./passwords/paths.js";
 import { PasswordsService } from "./passwords/passwords-service.js";
 import { OpensteerOwnOrigins } from "./passwords/own-origins.js";
-import { PasswordsSignInOperations } from "./passwords/sign-in-operations.js";
 import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
 
 registerDesktopAppScheme(protocol);
@@ -368,7 +367,6 @@ async function runDesktop(
     protocolVersion: passwordsBrokerLatestProtocolVersion,
     log: (event, fields) => reportEvent(event, fields),
   });
-  const passwordsSignIns = new PasswordsSignInOperations();
   const ownOrigins = new OpensteerOwnOrigins({
     accountUrl: loaded.config.accountUrl,
     catalog: deploymentCatalog,
@@ -378,7 +376,6 @@ async function runDesktop(
       ? new PasswordsLoginAuthority({
           broker: passwords.broker(),
           legacyBroker: passwords.broker(4),
-          operations: passwordsSignIns,
           ownOrigins: ownOrigins.current,
         })
       : undefined;
@@ -1001,7 +998,6 @@ async function runDesktop(
     dictation,
     passwords: {
       open: () => passwords.open(),
-      signIns: passwordsSignIns,
       status: () => passwords.status(),
       subscribe: (listener) => passwords.onStatusChanged(listener),
     },

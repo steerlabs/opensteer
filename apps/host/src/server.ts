@@ -524,6 +524,16 @@ export async function createHostServer(
     dependencies.discovery.document.canonicalOrigin,
   );
   const browserSourceRpcOptions: BrowserSourceRpcOptions = {
+    revalidateSession: async (context: HostApiServerContext) => {
+      const current = await dependencies.authenticator.authenticateSession(context.headers, {
+        mutation: true,
+      });
+      if (current.id !== context.session?.id)
+        throw new OpensteerError({
+          code: "unauthorized",
+          message: "The approving session changed.",
+        });
+    },
     service: dependencies.browserSources,
     canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
     authority: dependencies.discovery,
@@ -2155,6 +2165,7 @@ export async function createHostServer(
           const input = {
             requestId: command.requestId,
             resolvedBy: userId,
+            settlementSessionId: session.id,
             response: command.response,
           };
           await (async (): Promise<void> => {
@@ -2173,7 +2184,7 @@ export async function createHostServer(
                     pending.kind === "browser.sign-in"
                       ? "Answer a sign-in Request with browser.sign-in.respond"
                       : pending.kind === "browser.password-sign-in"
-                        ? "Approve a saved-password sign-in on its Mac, or decline it with browser.password-sign-in.decline"
+                        ? "Answer a saved-password sign-in with browser.password-sign-in.respond"
                         : "This Request can no longer be answered",
                 });
               case "browser.access": {
@@ -2233,6 +2244,7 @@ export async function createHostServer(
             idempotencyKey: command.idempotencyKey,
             requestedBy: userId,
             requestId: command.requestId,
+            settlementSessionId: session.id,
             response: command.response,
             runId,
             sealedResponse,

@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",

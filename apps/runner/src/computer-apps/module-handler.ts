@@ -231,7 +231,7 @@ export class ComputerAppModuleHandler {
       this.#queueInspection(stream);
     });
     this.#detachPasswordEvents = this.#computerUse?.onPasswordEvent((event) => {
-      if (stream.passwordSignIn === 1)
+      if (stream.passwordSignIn === 2)
         void this.#send(stream, {
           type: "runner.integrations.password-sign-in-event",
           event,
@@ -322,7 +322,7 @@ export class ComputerAppModuleHandler {
     this.#inFlight.set(message.requestId, { abort });
     try {
       const result =
-        stream.passwordSignIn === 1 && this.#computerUse
+        stream.passwordSignIn === 2 && this.#computerUse
           ? await this.#computerUse.passwordControl(
               message.command,
               Date.now() + message.timeoutMs,
@@ -793,8 +793,8 @@ export class ComputerAppModuleHandler {
     const capabilities = this.#computerUse?.passwordsSnapshot();
     const status: IntegrationsStatus = {
       ...base,
-      ...(stream.passwordSignIn === 1 && capabilities?.authority === 1
-        ? { passwordSignIn: 1 }
+      ...(stream.passwordSignIn === 2 && capabilities?.authority === 2
+        ? { passwordSignIn: 2 }
         : {}),
     };
     this.#publishedStatus = status;
@@ -830,15 +830,15 @@ export class ComputerAppModuleHandler {
     );
     if (this.#stream !== stream) return;
     const capabilities =
-      this.#computerUse && (stream.loginText === 1 || stream.passwordSignIn === 1)
+      this.#computerUse && (stream.loginText === 1 || stream.passwordSignIn === 2)
         ? await this.#computerUse.passwordsCapabilities()
         : undefined;
     const passwords = {
       ...(stream.loginText === 1 && capabilities?.receiver
         ? { loginText: capabilities.receiver }
         : {}),
-      ...(stream.passwordSignIn === 1 && capabilities?.authority === 1
-        ? { passwordSignIn: 1 as const }
+      ...(stream.passwordSignIn === 2 && capabilities?.authority === 2
+        ? { passwordSignIn: 2 as const }
         : {}),
     };
     const ownerViewVersion = this.#computerUse?.ownerViewVersion();

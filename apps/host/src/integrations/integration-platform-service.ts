@@ -770,6 +770,7 @@ export class IntegrationPlatformService {
   async resolveRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<{
     readonly grant: import("@opensteer/integration-core").IntegrationGrant | null;
@@ -789,6 +790,7 @@ export class IntegrationPlatformService {
         const selected = await this.#store.requests.selectIntegrationAccessServer({
           requestId: input.requestId,
           resolvedBy: input.resolvedBy,
+          ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
           requestedServerId: IntegrationServerIdSchema.parse(
             response.optionId.slice("server:".length),
           ),
@@ -805,6 +807,9 @@ export class IntegrationPlatformService {
           installed = await this.#store.requests.installForIntegrationAccessRequest({
             requestId: input.requestId,
             resolvedBy: input.resolvedBy,
+            ...(input.settlementSessionId
+              ? { settlementSessionId: input.settlementSessionId }
+              : {}),
             preparedFulfillment,
           });
         }
@@ -846,6 +851,7 @@ export class IntegrationPlatformService {
           ),
           requestId: input.requestId,
           resolvedBy: input.resolvedBy,
+          ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
           response,
         });
       };
@@ -874,6 +880,9 @@ export class IntegrationPlatformService {
             await this.#store.requests.loadIntegrationInstallManifest({
               requestId: input.requestId,
               resolvedBy: input.resolvedBy,
+              ...(input.settlementSessionId
+                ? { settlementSessionId: input.settlementSessionId }
+                : {}),
             }),
           )
         : undefined;
@@ -881,6 +890,7 @@ export class IntegrationPlatformService {
       ...(preparedFulfillment ? { preparedFulfillment } : {}),
       requestId: input.requestId,
       resolvedBy: input.resolvedBy,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response,
     });
     if (resolved.installation) this.#invalidateInstallation(resolved.installation.id);

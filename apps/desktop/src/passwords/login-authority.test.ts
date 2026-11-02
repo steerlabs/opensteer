@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostSignIns } from "../../../../packages/browser-runtime-core/src/browser/host-sign-ins.js";
 import { PasswordsLoginAuthority } from "./login-authority.js";
 import type { PasswordsBrokerSession } from "./broker-session.js";
-import { PasswordsSignInOperations } from "./sign-in-operations.js";
 import { openLoginEnvelope } from "./login-envelope.js";
 
 vi.mock("electron", () => ({ webContents: { fromDevToolsTargetId: vi.fn() } }));
@@ -18,7 +17,8 @@ afterEach(async () => {
 function fixture() {
   const lifetime = new AbortController();
   const broker: PasswordsBrokerSession = {
-    protocolVersion: 5,
+    protocolVersion: 6,
+    commit: vi.fn(async () => ({ committed: true })),
     probe: vi.fn<PasswordsBrokerSession["probe"]>(async () => ({ passwords: "has-login" })),
     request: vi.fn<PasswordsBrokerSession["request"]>(async () => ({
       decision: {
@@ -37,7 +37,6 @@ function fixture() {
   const authority = new PasswordsLoginAuthority({
     broker,
     legacyBroker: { ...broker, protocolVersion: 4 },
-    operations: new PasswordsSignInOperations(),
     ownOrigins: () => [],
   });
   const events: PasswordSignInAuthorityEvent[] = [];
@@ -109,6 +108,67 @@ function fixture() {
 }
 
 describe("desktop-lifetime Passwords authority", () => {
+  it("serves the chooser and prepares shared consent without release until Host commit", async () => {
+    const f = fixture();
+    const account = {
+      id: randomUUID(),
+      revision: 3,
+      username: "person@example.com",
+      host: "example.com",
+      onPage: true,
+      updatedAt: new Date().toISOString(),
+      label: null,
+    };
+    vi.mocked(f.broker.request).mockResolvedValueOnce({
+      decision: { decision: "approve", accounts: [account] },
+      lifetime: new AbortController().signal,
+    });
+    vi.mocked(f.broker.approve).mockResolvedValue({
+      decision: "authorized",
+      login: { id: account.id, revision: 3, account: "p•••", hasTOTP: false },
+    });
+    await f.authority.control(f.command, f.emit);
+    await vi.waitFor(() =>
+      expect(f.events).toContainEqual({
+        type: "login.needs",
+        operationId: f.operationId,
+        need: "approval",
+      }),
+    );
+    expect(
+      await f.authority.control({ type: "login.get", operationId: f.operationId }, f.emit),
+    ).toEqual({
+      type: "login.get.result",
+      card: { stage: "approval", accounts: [account], permissionVersion: 5 },
+    });
+    const choice = {
+      loginId: account.id,
+      revision: 3,
+      remember: true,
+      permissionVersion: 5,
+    } as const;
+    expect(
+      await f.authority.control(
+        { type: "login.approve", operationId: f.operationId, ...choice },
+        f.emit,
+      ),
+    ).toEqual({ type: "login.approve.result", result: { ok: true } });
+    expect(f.broker.approve).toHaveBeenCalledWith(
+      { transactionId: f.operationId, ...choice },
+      expect.any(AbortSignal),
+    );
+    await vi.waitFor(() =>
+      expect(f.events.some((event) => event.type === "login.result")).toBe(true),
+    );
+    expect(JSON.stringify(f.events)).not.toContain(account.username);
+    expect(await f.seal()).toEqual({ type: "login.seal.result", status: "expired" });
+    expect(f.broker.release).not.toHaveBeenCalled();
+    expect(
+      await f.authority.control({ type: "login.commit", operationId: f.operationId }, f.emit),
+    ).toEqual({ type: "login.committed", committed: true });
+    expect(await f.seal()).toMatchObject({ type: "login.seal.result", status: "sealed" });
+  });
+
   it("caps sealing at the lease, act deadline and the desktop clock's lifetime cap", async () => {
     const f = fixture();
     await f.authorize();
@@ -165,7 +225,7 @@ describe("desktop-lifetime Passwords authority", () => {
     const f = fixture();
     await f.authorize();
     expect(f.broker.request).toHaveBeenCalledWith(
-      expect.objectContaining({ protocolVersion: 5, permissionVersion: 5 }),
+      expect.objectContaining({ protocolVersion: 6, permissionVersion: 5 }),
       expect.any(AbortSignal),
     );
     const request = vi.mocked(f.broker.request).mock.calls[0]?.[0];

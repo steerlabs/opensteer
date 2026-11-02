@@ -80,7 +80,7 @@ export interface PasswordsBrokerPeerVerifier {
 
 export interface PasswordsBrokerClientOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5;
+  readonly protocolVersion?: 4 | 5 | 6;
   /** The installed broker, which is what LaunchServices starts. */
   readonly brokerAppPath: string;
   readonly connectTimeoutMs?: number;

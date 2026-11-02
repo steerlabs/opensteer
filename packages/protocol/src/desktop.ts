@@ -71,29 +71,9 @@ export type {
   DesktopPersonalRemoteAccessStatus,
   PersonalRemoteAccessMode,
 } from "./personal-remote-access.js";
-import type {
-  DesktopPasswordsSignInApproveInput,
-  DesktopPasswordsSignInApproveResult,
-  DesktopPasswordsSignInCardInput,
-  DesktopPasswordsSignInCardState,
-  DesktopPasswordsStatus,
-} from "./desktop-passwords.js";
-export {
-  DesktopPasswordsSignInApproveInputSchema,
-  DesktopPasswordsSignInApproveResultSchema,
-  DesktopPasswordsSignInCardChangedSchema,
-  DesktopPasswordsSignInCardInputSchema,
-  DesktopPasswordsSignInCardStateSchema,
-  DesktopPasswordsStatusSchema,
-} from "./desktop-passwords.js";
-export type {
-  DesktopPasswordsSignInApproveInput,
-  DesktopPasswordsSignInApproveResult,
-  DesktopPasswordsSignInCardChanged,
-  DesktopPasswordsSignInCardInput,
-  DesktopPasswordsSignInCardState,
-  DesktopPasswordsStatus,
-} from "./desktop-passwords.js";
+import type { DesktopPasswordsStatus } from "./desktop-passwords.js";
+export { DesktopPasswordsStatusSchema } from "./desktop-passwords.js";
+export type { DesktopPasswordsStatus } from "./desktop-passwords.js";
 
 /**
  * `windows` is a first-class local-execution platform even though PortableFS
@@ -1759,21 +1739,6 @@ export interface OpensteerDesktopBridge {
   onPasswordsStatusChanged(listener: (status: DesktopPasswordsStatus) => void): () => void;
   /** Brings up the Opensteer Passwords window, which decides between setup and the list. */
   passwordsOpen(): Promise<void>;
-  /**
-   * A sign-in Request's card on the Mac that runs it, keyed by the Request's
-   * runtime operation: its stage, and every change Electron main sees.
-   */
-  passwordsSignInGet(
-    input: DesktopPasswordsSignInCardInput,
-  ): Promise<DesktopPasswordsSignInCardState>;
-  onPasswordsSignInChanged(
-    input: DesktopPasswordsSignInCardInput,
-    listener: (state: DesktopPasswordsSignInCardState) => void,
-  ): () => void;
-  /** Allow or Only this time; the broker asks for Touch ID or the Mac's password first. */
-  passwordsSignInApprove(
-    input: DesktopPasswordsSignInApproveInput,
-  ): Promise<DesktopPasswordsSignInApproveResult>;
   /** This desktop's approval key, for the computer's page on this Mac to register. */
   useComputerViewOnThisMac?(
     input: DesktopUseComputerViewInput,

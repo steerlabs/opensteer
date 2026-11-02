@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import PasswordsCore
+
 @testable import PasswordsBrokerKit
 
 /// The desktop's side of the socket, for tests: a real Unix-socket client that
@@ -51,7 +52,10 @@ final class TestClient: @unchecked Sendable {
   func sendFrame(_ payload: Data) {
     var framed = Data()
     let length = UInt32(payload.count)
-    framed.append(contentsOf: [UInt8(length >> 24 & 0xFF), UInt8(length >> 16 & 0xFF), UInt8(length >> 8 & 0xFF), UInt8(length & 0xFF)])
+    framed.append(contentsOf: [
+      UInt8(length >> 24 & 0xFF), UInt8(length >> 16 & 0xFF), UInt8(length >> 8 & 0xFF),
+      UInt8(length & 0xFF),
+    ])
     framed.append(payload)
     sendRaw(framed)
   }
@@ -63,20 +67,39 @@ final class TestClient: @unchecked Sendable {
       defer { nextID += 1 }
       return nextID
     }
-    let request = JSONValue.object(["id": .integer(id), "method": .string(method), "params": params])
+    let request = JSONValue.object([
+      "id": .integer(id), "method": .string(method), "params": params,
+    ])
     Artifact.record(client: name, direction: "out", frame: request)
     sendFrame(try! CanonicalJSON.encode(request))
     return id
   }
 
   /// Sends and waits for the answer to it.
-  func call(_ method: String, _ params: JSONValue = .object([:]), timeout: TimeInterval = 5) async throws -> Reply {
+  func call(_ method: String, _ params: JSONValue = .object([:]), timeout: TimeInterval = 5)
+    async throws -> Reply
+  {
     let id = send(method, params)
     return try await reply(to: id, timeout: timeout)
   }
 
+  /// The normal person flow: prepare, durable Host acceptance, then commit.
+  func allow(_ params: JSONValue) async throws -> Reply {
+    let prepared = try await call("signin.approve", params)
+    if prepared.result?["decision"] == .string("authorized"),
+      let id = params["transactionId"]?.string
+    {
+      _ = try await call("signin.commit", Fixtures.transaction(id))
+    }
+    return prepared
+  }
+
   func hello(version: Int64 = Wire.protocolVersion) async throws -> Reply {
-    try await call("hello", .object(["client": .object(["version": .string("test")]), "protocolVersion": .integer(version)]))
+    try await call(
+      "hello",
+      .object([
+        "client": .object(["version": .string("test")]), "protocolVersion": .integer(version),
+      ]))
   }
 
   func close() {
@@ -162,7 +185,9 @@ final class TestClient: @unchecked Sendable {
     var decoder = FrameDecoder()
     var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
     while true {
-      let count = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
+      let count = buffer.withUnsafeMutableBytes {
+        Darwin.read(descriptor, $0.baseAddress, $0.count)
+      }
       if count <= 0 {
         if count < 0, errno == EINTR { continue }
         lock.withLock { closed = true }
@@ -174,7 +199,9 @@ final class TestClient: @unchecked Sendable {
         Artifact.record(client: name, direction: "in", frame: value)
         lock.withLock {
           frames.append(value)
-          if case .object(let fields) = value, case .integer(let id)? = fields["id"] { answered.append(id) }
+          if case .object(let fields) = value, case .integer(let id)? = fields["id"] {
+            answered.append(id)
+          }
         }
       }
     }
@@ -193,7 +220,8 @@ enum Artifact {
     if let path = ProcessInfo.processInfo.environment["OPENSTEER_PASSWORDS_BROKER_ARTIFACT"] {
       return URL(fileURLWithPath: path)
     }
-    return FileManager.default.temporaryDirectory.appendingPathComponent("opensteer-passwords-broker-swift-e2e.json")
+    return FileManager.default.temporaryDirectory.appendingPathComponent(
+      "opensteer-passwords-broker-swift-e2e.json")
   }
 
   static func begin(_ scenario: String) {
@@ -215,7 +243,8 @@ enum Artifact {
     let value = lock.withLock {
       JSONValue.object([
         "artifact": .string("opensteer-passwords-broker-swift-e2e"),
-        "scenarios": .array(scenarios.map { .object(["frames": .array($0.1), "name": .string($0.0)]) }),
+        "scenarios": .array(
+          scenarios.map { .object(["frames": .array($0.1), "name": .string($0.0)]) }),
       ])
     }
     try? CanonicalJSON.encode(value).write(to: url)

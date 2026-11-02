@@ -51,7 +51,6 @@ import { PasswordsLoginAuthority } from "../src/passwords/login-authority.js";
 import { openLoginEnvelope } from "../src/passwords/login-envelope.js";
 import { PasswordsService } from "../src/passwords/passwords-service.js";
 import { passwordsBrokerSocketPath } from "../src/passwords/paths.js";
-import { PasswordsSignInOperations } from "../src/passwords/sign-in-operations.js";
 import {
   FakePasswordsBroker,
   verifySameUserPeer,
@@ -324,11 +323,9 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       throw new Error("Unexpected helper command.");
     },
   });
-  const cards = new PasswordsSignInOperations();
   authority = new PasswordsLoginAuthority({
-    broker: service.broker(5),
+    broker: service.broker(6),
     legacyBroker: service.broker(4),
-    operations: cards,
     ownOrigins: () => ["https://opensteer.test"],
   });
   const controlEvents: PasswordSignInAuthorityEvent[] = [];

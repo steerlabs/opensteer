@@ -13,7 +13,7 @@ public enum PresenceError: Error, Equatable, Sendable {
 /// Proof that the person just authenticated, with Touch ID or the Mac
 /// password, for the one action named in `reason`. Only a `PresenceChecker`
 /// makes one, after the system prompt succeeded, and the broker hands it
-/// only to that action: every vault change made on the person's behalf takes
+/// only to that action: vault-management changes made on the person's behalf take
 /// one.
 public struct Authentication: Sendable {
   public let reason: String

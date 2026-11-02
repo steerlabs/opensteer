@@ -46,6 +46,7 @@ const hostApiScopes = {
   "browser.history.get": "session",
   "browser.history.icons.get": "session",
   "browser.sources.get": "session",
+  "browser.password-sign-in.get": "mutation",
   "browser.sources.inspect": "mutation",
   "channel.connection.check": "mutation",
   "channels.get": "session",

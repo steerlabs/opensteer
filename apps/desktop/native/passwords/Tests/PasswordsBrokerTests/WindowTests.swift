@@ -1,5 +1,6 @@
 import PasswordsCore
 import XCTest
+
 @testable import PasswordsBrokerKit
 
 /// Section 18's window visit, U7, U8, U23 and the import (W11, U10–U12, U16),
@@ -8,11 +9,14 @@ import XCTest
 @MainActor
 final class WindowTests: BrokerTestCase {
   private func model() -> PasswordsWindowModel {
-    PasswordsWindowModel(broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: builtWorker))
+    PasswordsWindowModel(
+      broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: builtWorker))
   }
 
   /// A model whose saved logins are shown: one authentication, a live visit.
-  private func shown(file: StaticString = #filePath, line: UInt = #line) async throws -> PasswordsWindowModel {
+  private func shown(file: StaticString = #filePath, line: UInt = #line) async throws
+    -> PasswordsWindowModel
+  {
     let window = model()
     await window.showPasswords()
     guard case .shown = window.logins else {
@@ -65,7 +69,9 @@ final class WindowTests: BrokerTestCase {
 
   /// P4, P8: one authentication shows the list; hiding it ends the visit.
   func testLoginListNeedsAuthenticationOncePerVisit() async throws {
-    try await harness.ready(items: [Fixtures.login(username: "zed@example.com"), Fixtures.login("github.com", username: "sam")])
+    try await harness.ready(items: [
+      Fixtures.login(username: "zed@example.com"), Fixtures.login("github.com", username: "sam"),
+    ])
     let window = model()
     XCTAssertEqual(window.logins, .hidden)
     let before = presence.askCount
@@ -96,11 +102,14 @@ final class WindowTests: BrokerTestCase {
     let window = try await shown()
     let asked = presence.askCount
     same(
-      await window.add(website: "example.com", username: "ana", password: "synthetic-1", twoFactor: "", label: ""), .saved)
+      await window.add(
+        website: "example.com", username: "ana", password: "synthetic-1", twoFactor: "", label: ""),
+      .saved)
     let login = try XCTUnwrap(window.visibleLogins.first)
     same(
       await window.edit(
-        login, websites: "example.com", username: "ana", newPassword: "synthetic-2", twoFactor: "JBSWY3DPEHPK3PXP",
+        login, websites: "example.com", username: "ana", newPassword: "synthetic-2",
+        twoFactor: "JBSWY3DPEHPK3PXP",
         removeTwoFactor: false, label: "Work"), .saved)
     window.startImport()
     let flow = try XCTUnwrap(window.importFlow)
@@ -149,12 +158,16 @@ final class WindowTests: BrokerTestCase {
     let attempts: [(String, () async throws -> Void)] = [
       ("list", { _ = try await self.broker.listLogins() }),
       ("add", { _ = try await self.broker.addLogin(Fixtures.login("example.org")) }),
-      ("edit", {
-        _ = try await self.broker.updateLogin(
-          LoginEdit(
-            id: id, origins: ["https://example.com"], loginURL: "https://example.com/login", username: "alice@example.com",
-            password: "synthetic-x", totp: nil, label: nil))
-      }),
+      (
+        "edit",
+        {
+          _ = try await self.broker.updateLogin(
+            LoginEdit(
+              id: id, origins: ["https://example.com"], loginURL: "https://example.com/login",
+              username: "alice@example.com",
+              password: "synthetic-x", totp: nil, label: nil))
+        }
+      ),
       ("delete", { _ = try await self.broker.deleteLogin(id: id) }),
       ("import", { _ = try self.broker.beginImport() }),
     ]
@@ -171,10 +184,13 @@ final class WindowTests: BrokerTestCase {
 
     // A window still drawn as shown after its visit ended.
     let window = try await shown()
-    let stale = PasswordsWindowModel(broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: builtWorker))
+    let stale = PasswordsWindowModel(
+      broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: builtWorker))
     window.hidePasswords()
     same(
-      await stale.add(website: "example.net", username: "x", password: "synthetic", twoFactor: "", label: ""), .stays(nil))
+      await stale.add(
+        website: "example.net", username: "x", password: "synthetic", twoFactor: "", label: ""),
+      .stays(nil))
     XCTAssertEqual(try harness.headSeq(), seq)
   }
 
@@ -183,18 +199,23 @@ final class WindowTests: BrokerTestCase {
   func testDestinationEditsAlwaysAuthenticate() async throws {
     try await harness.ready()
     let window = try await shown()
-    _ = await window.add(website: "example.com", username: "ana", password: "synthetic-1", twoFactor: "", label: "")
+    _ = await window.add(
+      website: "example.com", username: "ana", password: "synthetic-1", twoFactor: "", label: "")
     var asked = presence.askCount
     func login() throws -> LoginSummary { try XCTUnwrap(window.visibleLogins.first) }
     same(
-      await window.edit(try login(), websites: "example.com", username: "ana", newPassword: "synthetic-2", twoFactor: "", removeTwoFactor: false, label: "Work"),
+      await window.edit(
+        try login(), websites: "example.com", username: "ana", newPassword: "synthetic-2",
+        twoFactor: "", removeTwoFactor: false, label: "Work"),
       .saved)
     XCTAssertEqual(presence.askCount, asked, "a password or label change rides on the visit")
 
     let seq = try harness.headSeq()
     presence.next(.cancel)
     same(
-      await window.edit(try login(), websites: "example.com", username: "ana@example.com", newPassword: "", twoFactor: "", removeTwoFactor: false, label: "Work"),
+      await window.edit(
+        try login(), websites: "example.com", username: "ana@example.com", newPassword: "",
+        twoFactor: "", removeTwoFactor: false, label: "Work"),
       .stays(nil))
     XCTAssertEqual(presence.lastReason, "change the website or username saved for example.com")
     XCTAssertEqual(try harness.headSeq(), seq, "cancelled: nothing written")
@@ -207,7 +228,9 @@ final class WindowTests: BrokerTestCase {
       ("login.example.com", "ana@example.com", "login page"),
     ] {
       same(
-        await window.edit(try login(), websites: websites, username: username, newPassword: "", twoFactor: "", removeTwoFactor: false, label: "Work"),
+        await window.edit(
+          try login(), websites: websites, username: username, newPassword: "", twoFactor: "",
+          removeTwoFactor: false, label: "Work"),
         .saved, what)
       XCTAssertEqual(presence.askCount, asked + 1, what)
       asked += 1
@@ -224,17 +247,23 @@ final class WindowTests: BrokerTestCase {
     let window = try await shown()
     let before = presence.reasons.count
     for (website, password, twoFactor, expected) in [
-      ("", "x", "", Copy.badWebsite), ("http://example.com", "x", "", Copy.badWebsite), ("127.0.0.1", "x", "", Copy.badWebsite),
-      ("example.com", "", "", Copy.noPassword), ("example.com", "x", "not base32!", Copy.badTwoFactor),
+      ("", "x", "", Copy.badWebsite), ("http://example.com", "x", "", Copy.badWebsite),
+      ("127.0.0.1", "x", "", Copy.badWebsite),
+      ("example.com", "", "", Copy.noPassword),
+      ("example.com", "x", "not base32!", Copy.badTwoFactor),
       ("example.com", String(repeating: "p", count: 4_097), "", Copy.tooLong),
     ] {
-      let outcome = await window.add(website: website, username: "a", password: password, twoFactor: twoFactor, label: "")
+      let outcome = await window.add(
+        website: website, username: "a", password: password, twoFactor: twoFactor, label: "")
       XCTAssertEqual(outcome, .stays(expected), website)
     }
-    _ = await window.add(website: "example.com", username: "a", password: "synthetic", twoFactor: "", label: "")
+    _ = await window.add(
+      website: "example.com", username: "a", password: "synthetic", twoFactor: "", label: "")
     let login = try XCTUnwrap(window.visibleLogins.first)
     same(
-      await window.edit(login, websites: "http://example.com", username: "b", newPassword: "", twoFactor: "", removeTwoFactor: false, label: ""),
+      await window.edit(
+        login, websites: "http://example.com", username: "b", newPassword: "", twoFactor: "",
+        removeTwoFactor: false, label: ""),
       .stays(Copy.badWebsite), "a bad destination edit asks nothing")
     XCTAssertEqual(presence.reasons.count, before, "no form error asked")
   }
@@ -251,24 +280,28 @@ final class WindowTests: BrokerTestCase {
     XCTAssertEqual(added, .saved)
     XCTAssertEqual(try harness.headSeq(), seq + 1)
     seq += 1
-    let login = try XCTUnwrap(window.visibleLogins.first, "the list shows the change without asking again")
+    let login = try XCTUnwrap(
+      window.visibleLogins.first, "the list shows the change without asking again")
     XCTAssertEqual(login.loginURL, "https://example.com/login")
     XCTAssertTrue(login.hasTOTP)
 
     let edited = await window.edit(
-      login, websites: "example.com\nlogin.example.com", username: "ana@example.com", newPassword: "", twoFactor: "",
+      login, websites: "example.com\nlogin.example.com", username: "ana@example.com",
+      newPassword: "", twoFactor: "",
       removeTwoFactor: true, label: "Work")
     XCTAssertEqual(edited, .saved)
     XCTAssertEqual(try harness.headSeq(), seq + 1)
     seq += 1
     let saved = try await harness.savedItems()
     XCTAssertEqual(saved.first?.origins, ["https://example.com", "https://login.example.com"])
-    XCTAssertEqual(saved.first?.password, "synthetic-1", "an empty new password keeps the saved one")
+    XCTAssertEqual(
+      saved.first?.password, "synthetic-1", "an empty new password keeps the saved one")
     XCTAssertNil(saved.first?.totp)
     XCTAssertEqual(window.visibleLogins.first?.hasTOTP, false)
 
     let unchanged = await window.edit(
-      try XCTUnwrap(window.visibleLogins.first), websites: "example.com\nlogin.example.com", username: "ana@example.com",
+      try XCTUnwrap(window.visibleLogins.first), websites: "example.com\nlogin.example.com",
+      username: "ana@example.com",
       newPassword: "", twoFactor: "", removeTwoFactor: false, label: "Work")
     XCTAssertEqual(unchanged, .saved)
     XCTAssertEqual(try harness.headSeq(), seq, "an edit that changes nothing writes nothing")
@@ -287,17 +320,20 @@ final class WindowTests: BrokerTestCase {
     for workspace in [Fixtures.workspace, Fixtures.otherWorkspace] {
       let id = UUID().uuidString.lowercased()
       let account = try unwrap(try await request(desktop, id, workspace: workspace)["accounts"]?[0])
-      _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
+      _ = try await desktop.allow(Fixtures.approve(id, account, remember: true))
       _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
     }
     let window = try await shown()
     let login = try XCTUnwrap(window.visibleLogins.first)
     XCTAssertEqual(login.grants.map(\.workspaceName), ["Main", "Side projects"])
     XCTAssertEqual(Copy.allowedIn("Main", site: nil), "Allowed for agents in: Main")
-    XCTAssertEqual(Copy.allowedIn("Main", site: "example.org"), "Allowed for agents in: Main, on example.org")
+    XCTAssertEqual(
+      Copy.allowedIn("Main", site: "example.org"), "Allowed for agents in: Main, on example.org")
     let asked = presence.askCount
     await window.removeGrant(try XCTUnwrap(login.grants.first))
-    XCTAssertEqual(window.visibleLogins.first?.grants.map(\.workspaceName), ["Side projects"], "the list follows at once")
+    XCTAssertEqual(
+      window.visibleLogins.first?.grants.map(\.workspaceName), ["Side projects"],
+      "the list follows at once")
     XCTAssertEqual(presence.askCount, asked, "Remove asks nothing")
     XCTAssertEqual(try harness.savedGrants().map(\.workspaceName), ["Side projects"])
   }
@@ -329,10 +365,15 @@ final class WindowTests: BrokerTestCase {
     XCTAssertEqual(preview.new, 2)
     XCTAssertEqual(preview.updates, 0)
     XCTAssertEqual(preview.alreadySaved, 1)
-    XCTAssertEqual(preview.skipped, [
-      ImportPreview.SkippedRow(row: 5, reason: "not an https website"), ImportPreview.SkippedRow(row: 6, reason: "no password"),
-    ])
-    XCTAssertEqual(Copy.importCounts(new: 2, updates: 0, already: 1, skipped: 2), "2 new · 1 already saved · 2 skipped")
+    XCTAssertEqual(
+      preview.skipped,
+      [
+        ImportPreview.SkippedRow(row: 5, reason: "not an https website"),
+        ImportPreview.SkippedRow(row: 6, reason: "no password"),
+      ])
+    XCTAssertEqual(
+      Copy.importCounts(new: 2, updates: 0, already: 1, skipped: 2),
+      "2 new · 1 already saved · 2 skipped")
     XCTAssertEqual(Copy.importCounts(new: 0, updates: 1, already: 0, skipped: 0), "1 update")
     XCTAssertEqual(try harness.headSeq(), seq, "nothing is written before Import")
 
@@ -365,7 +406,8 @@ final class WindowTests: BrokerTestCase {
     await flow.read(export, from: .other)
     guard case .preview(_, let preview) = flow.stage else { return XCTFail("\(flow.stage)") }
     XCTAssertEqual(preview.importCount, 0)
-    XCTAssertEqual(preview.skipped.map(\.reason), [ImportText.conflictInFile, ImportText.conflictInFile])
+    XCTAssertEqual(
+      preview.skipped.map(\.reason), [ImportText.conflictInFile, ImportText.conflictInFile])
     flow.close()
     try await harness.eventually("the prepared import is dropped") { window.importFlow == nil }
   }
@@ -402,7 +444,9 @@ final class WindowTests: BrokerTestCase {
   }
 
   /// Import `id` cannot be committed, nothing was written, and the vault it unlocked is dropped.
-  private func assertEnded(_ id: ImportID, seq: Int64, file: StaticString = #filePath, line: UInt = #line) async {
+  private func assertEnded(
+    _ id: ImportID, seq: Int64, file: StaticString = #filePath, line: UInt = #line
+  ) async {
     do {
       _ = try await broker.commitImport(id)
       XCTFail("an ended import cannot be committed", file: file, line: line)
@@ -444,7 +488,8 @@ final class WindowTests: BrokerTestCase {
     let slow = harness.directory.appendingPathComponent("slow-worker")
     try Data("#!/bin/sh\n/bin/sleep 0.5\nexec '\(builtWorker.path)'\n".utf8).write(to: slow)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: slow.path)
-    let window = PasswordsWindowModel(broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: slow))
+    let window = PasswordsWindowModel(
+      broker: broker, activityLog: harness.activity, runner: ImportRunner(worker: slow))
     await window.showPasswords()
     window.startImport()
     let reading = try XCTUnwrap(window.importFlow)
@@ -487,8 +532,12 @@ final class WindowTests: BrokerTestCase {
     await flow.read(export, from: .bitwarden)
     guard case .preview(_, let preview) = flow.stage else { return XCTFail("\(flow.stage)") }
     XCTAssertEqual(preview.new, 1)
-    XCTAssertEqual(preview.leftOut, [ImportPreview.SkippedRow(row: 1, reason: "Bitwarden is set never to fill it there")])
-    XCTAssertEqual(Copy.leftOutAddress(1, "Bitwarden is set never to fill it there"), "Row 1, one web address: Bitwarden is set never to fill it there")
+    XCTAssertEqual(
+      preview.leftOut,
+      [ImportPreview.SkippedRow(row: 1, reason: "Bitwarden is set never to fill it there")])
+    XCTAssertEqual(
+      Copy.leftOutAddress(1, "Bitwarden is set never to fill it there"),
+      "Row 1, one web address: Bitwarden is set never to fill it there")
     flow.close()
   }
 
@@ -498,10 +547,12 @@ final class WindowTests: BrokerTestCase {
     window.startImport()
     let flow = try XCTUnwrap(window.importFlow)
     let export = harness.directory.appendingPathComponent("encrypted.json")
-    try Data(contentsOf: coreFixtures.appendingPathComponent("bitwarden-encrypted.json")).write(to: export)
+    try Data(contentsOf: coreFixtures.appendingPathComponent("bitwarden-encrypted.json")).write(
+      to: export)
     let asked = presence.reasons.count
     await flow.read(export, from: .bitwarden)
-    XCTAssertEqual(flow.stage, .failed(.bitwarden, "Export from Bitwarden without a password, then import."))
+    XCTAssertEqual(
+      flow.stage, .failed(.bitwarden, "Export from Bitwarden without a password, then import."))
     XCTAssertEqual(presence.reasons.count, asked, "a file that cannot be read asks nothing")
   }
 }

@@ -140,7 +140,7 @@ export class ComputerUseHandler {
   #loginTextNegotiated = false;
   #passwordsBridgeConfirmed = false;
   #passwordCapabilities: {
-    authority: 1 | null;
+    authority: 2 | null;
     receiver: LoginReceiverKey | null;
   } = { authority: null, receiver: null };
   readonly #grantListeners = new Set<() => void>();

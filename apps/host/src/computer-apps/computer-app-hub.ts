@@ -483,8 +483,8 @@ export class ComputerAppHub {
           : null;
       const supported =
         module?.platform === "darwin" &&
-        module.passwordSignIn === 1 &&
-        message.passwordSignIn === 1;
+        module.passwordSignIn === 2 &&
+        message.passwordSignIn === 2;
       if (entry.passwordSignIn && !supported) {
         for (const settle of entry.pendingPasswords.values()) settle({ type: "unavailable" });
         this.#emitPasswordSignIn(stream.identity.runnerId, { type: "authority-lost" });

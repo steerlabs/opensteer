@@ -604,7 +604,7 @@ describe("computer use over the desktop bridge", () => {
     let release: (() => void) | undefined;
     fixture.bridge.answer("passwords.capabilities", (request, socket) => {
       release = () =>
-        socket.send(JSON.stringify({ kind: "response", id: request.id, result: { authority: 1 } }));
+        socket.send(JSON.stringify({ kind: "response", id: request.id, result: { authority: 2 } }));
       return "hold";
     });
     await vi.waitFor(() => expect(release, "The inspection never reached Passwords").toBeDefined());
@@ -616,7 +616,7 @@ describe("computer use over the desktop bridge", () => {
     await vi.waitFor(() => expect(hinted).toBe(true));
     expect(computerUse.ownerViewVersion()).toBe(3);
     expect(computerUse.videoProfile()).toBe(1);
-    fixture.bridge.answer("passwords.capabilities", () => ({ result: { authority: 1 } }));
+    fixture.bridge.answer("passwords.capabilities", () => ({ result: { authority: 2 } }));
     release!();
     await vi.waitFor(() =>
       expect(
@@ -752,7 +752,7 @@ describe("computer use over the desktop bridge", () => {
       })
       .parse(fixture.vectors[0]);
     const { receiver, envelope } = vector;
-    f.bridge.answer("passwords.capabilities", () => ({ result: { authority: 1, receiver } }));
+    f.bridge.answer("passwords.capabilities", () => ({ result: { authority: 2, receiver } }));
     const events = f.openStream();
     const canary = vector.plaintext;
     const requestId = envelope.binding.actId;
@@ -804,12 +804,12 @@ describe("computer use over the desktop bridge", () => {
     expect(methodsOf(legacy.bridge)).not.toContain("passwords.capabilities");
     const modern = await setup({ passwords: true });
     modern.bridge.answer("passwords.capabilities", () => ({
-      result: { authority: 1, receiver: null },
+      result: { authority: 2, receiver: null },
     }));
     const current = modern.openStream();
     await eventually(() =>
       expect(
-        statuses(current).some((status) => status.passwordSignIn === 1 && !("loginText" in status)),
+        statuses(current).some((status) => status.passwordSignIn === 2 && !("loginText" in status)),
       ).toBe(true),
     );
   });
@@ -817,10 +817,10 @@ describe("computer use over the desktop bridge", () => {
   it("refuses a whole saved-text batch when an old helper has no receiver key", async () => {
     const bridge = await startFakeBridge();
     teardown.push(() => bridge.close());
-    bridge.answer("passwords.capabilities", () => ({ result: { authority: 1, receiver: null } }));
+    bridge.answer("passwords.capabilities", () => ({ result: { authority: 2, receiver: null } }));
     const handler = new ComputerUseHandler({ bridge: { token: bridgeToken, url: bridge.url } });
     teardown.push(() => handler.close());
-    expect(await handler.passwordsCapabilities()).toEqual({ authority: 1, receiver: null });
+    expect(await handler.passwordsCapabilities()).toEqual({ authority: 2, receiver: null });
     const saved = {
       sealed: {
         binding: {
@@ -2097,7 +2097,7 @@ async function setup(
     const received: IntegrationsModuleEvent[] = [];
     handler.attach({
       browserAttachPublicKeys: undefined,
-      ...(options.passwords ? { loginText: 1 as const, passwordSignIn: 1 as const } : {}),
+      ...(options.passwords ? { loginText: 1 as const, passwordSignIn: 2 as const } : {}),
       fence,
       send: vi.fn(async (payload: Buffer | string) => {
         received.push(IntegrationsModuleEventSchema.parse(JSON.parse(payload.toString())));

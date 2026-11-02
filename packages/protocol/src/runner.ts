@@ -1422,7 +1422,7 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .number()
     .int()
     .positive()
-    .transform((version) => (version === 1 ? (1 as const) : undefined))
+    .transform((version) => (version === 2 ? (2 as const) : undefined))
     .optional(),
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   /**

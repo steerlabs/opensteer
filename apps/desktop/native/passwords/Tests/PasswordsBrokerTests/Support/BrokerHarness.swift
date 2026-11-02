@@ -215,8 +215,8 @@ enum Fixtures {
       "deploymentName": .string(deployment.1),
       "expiresAt": .string(expiresAt ?? iso(Date().addingTimeInterval(expiresIn))),
       "reason": .string("Check the invoice"),
-      "runtimeId": .string("desktop-browser"),
-      "sessionId": .string(session),
+      "protocolVersion": .integer(6),
+      "permissionVersion": .integer(5),
       "site": .string(site),
       "threadTitle": .string("Invoices"),
       "transactionId": .string(transactionId),
@@ -233,6 +233,7 @@ enum Fixtures {
 
   static func approve(_ transactionId: String, _ account: JSONValue?, remember: Bool) -> JSONValue {
     .object([
+      "permissionVersion": .integer(5),
       "loginId": account?["id"] ?? .null, "remember": .bool(remember),
       "revision": account?["revision"] ?? .null,
       "transactionId": .string(transactionId),
@@ -243,7 +244,8 @@ enum Fixtures {
     _ transactionId: String, field: String = "password", origin: String = "https://example.com"
   ) -> JSONValue {
     .object([
-      "transactionId": .string(transactionId), "field": .string(field), "origin": .string(origin),
+      "transactionId": .string(transactionId), "field": .string(field), "kind": .string("browser"),
+      "origin": .string(origin),
     ])
   }
 

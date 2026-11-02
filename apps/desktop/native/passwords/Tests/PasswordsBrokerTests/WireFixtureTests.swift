@@ -41,19 +41,23 @@ final class WireFixtureTests: XCTestCase {
     guard case .object(var modernFields) = request.json else { preconditionFailure("request") }
     modernFields.removeValue(forKey: "runtimeId")
     modernFields.removeValue(forKey: "sessionId")
-    modernFields["protocolVersion"] = .integer(5)
+    modernFields["protocolVersion"] = .integer(6)
     modernFields["permissionVersion"] = .integer(5)
-    let modern = try Wire.SignInRequestParams(json: .object(modernFields))
+    let modern = try Wire.SignInRequestParams(json: .object(modernFields), protocolVersion: 6)
     let modernReleases = try Wire.ReleaseField.allCases.flatMap { field -> [JSONValue] in
       try [
-        Wire.ReleaseParams(json: .object([
-          "transactionId": .string(transactionId), "field": .string(field.rawValue),
-          "kind": .string("app"),
-        ])).json,
-        Wire.ReleaseParams(json: .object([
-          "transactionId": .string(transactionId), "field": .string(field.rawValue),
-          "kind": .string("browser"), "origin": .string("https://github.com"),
-        ])).json,
+        Wire.ReleaseParams(
+          json: .object([
+            "transactionId": .string(transactionId), "field": .string(field.rawValue),
+            "kind": .string("app"),
+          ])
+        ).json,
+        Wire.ReleaseParams(
+          json: .object([
+            "transactionId": .string(transactionId), "field": .string(field.rawValue),
+            "kind": .string("browser"), "origin": .string("https://github.com"),
+          ])
+        ).json,
       ]
     }
     let transaction = Wire.TransactionParams(transactionId: transactionId)
@@ -61,6 +65,7 @@ final class WireFixtureTests: XCTestCase {
       Wire.Method.hello.rawValue: [
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 4).json,
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 5).json,
+        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 6).json,
       ],
       Wire.Method.status.rawValue: [.object([:])],
       Wire.Method.windowOpen.rawValue: [.object([:])],
@@ -76,6 +81,7 @@ final class WireFixtureTests: XCTestCase {
           .json
       } + modernReleases,
       Wire.Method.signInCancel.rawValue: [transaction.json],
+      Wire.Method.signInCommit.rawValue: [transaction.json],
     ]
   }
 
@@ -94,6 +100,7 @@ final class WireFixtureTests: XCTestCase {
       Wire.Method.hello.rawValue: [
         Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 4).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 5).json,
+        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 6).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: true).json,
       ],
       Wire.Method.status.rawValue: [
@@ -122,6 +129,9 @@ final class WireFixtureTests: XCTestCase {
       ]
         + Wire.ReleaseReason.allCases.map { Wire.ReleaseResult.refused($0).json },
       Wire.Method.signInCancel.rawValue: [Wire.emptyResult],
+      Wire.Method.signInCommit.rawValue: [
+        .object(["committed": .bool(true)]), .object(["committed": .bool(false)]),
+      ],
     ]
   }
 
@@ -178,14 +188,15 @@ final class WireFixtureTests: XCTestCase {
       for params in entries {
         switch known {
         case .hello:
-          XCTAssertTrue([4, 5].contains(try Wire.HelloParams(json: params).protocolVersion))
+          XCTAssertTrue([4, 5, 6].contains(try Wire.HelloParams(json: params).protocolVersion))
         case .status, .windowOpen: XCTAssertNoThrow(try Wire.empty(params))
         case .signInProbe:
           XCTAssertEqual(try Wire.ProbeParams(json: params).site, "https://github.com")
         case .signInRequest:
           XCTAssertEqual(try Wire.SignInRequestParams(json: params).siteHost, "github.com")
         case .signInApprove: XCTAssertNoThrow(try Wire.ApproveParams(json: params))
-        case .signInCancel: XCTAssertNoThrow(try Wire.TransactionParams(json: params))
+        case .signInCancel, .signInCommit:
+          XCTAssertNoThrow(try Wire.TransactionParams(json: params))
         case .signInRelease: XCTAssertNoThrow(try Wire.ReleaseParams(json: params))
         }
       }

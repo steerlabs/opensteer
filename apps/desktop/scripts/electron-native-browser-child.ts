@@ -1364,11 +1364,6 @@ function bridgeOptions(
     fullDiskAccess: { check: unavailable, closePanel: unavailable, request: unavailable },
     passwords: {
       open: unavailable,
-      signIns: {
-        approve: unavailable,
-        get: unavailable,
-        subscribe,
-      },
       status: unavailable,
       subscribe,
     },

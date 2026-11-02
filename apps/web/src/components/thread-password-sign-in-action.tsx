@@ -8,7 +8,6 @@ import {
   type RefObject,
 } from "react";
 import type { Request } from "@opensteer/core";
-import { hostsDeployment } from "@opensteer/client/computers";
 import {
   browserSiteLabel,
   mutationIdempotencyKey,
@@ -30,41 +29,25 @@ import {
   passwordSignInConsent,
   passwordSignInPrivacy,
   passwordSignInReasonLabel,
-  passwordSignInWaitingOn,
-  passwordsHere,
   type HostClient,
   type PasswordSignInAccount,
   type PasswordSignInAccountGroup,
   type PasswordSignInAccountRow,
 } from "@opensteer/client/host";
-import type {
-  DesktopPasswordsSignInCardInput,
-  DesktopPasswordsSignInCardState,
-  OpensteerDesktopBridge,
-} from "@opensteer/protocol/desktop";
+import type { PasswordSignInCard } from "@opensteer/protocol";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 
-export type PasswordSignInRequestClient = Pick<HostClient, "dispatch">;
-
-/** What the card drives on the Mac that runs the sign-in. */
-export type PasswordSignInCardBridge = Pick<
-  OpensteerDesktopBridge,
-  "onPasswordsSignInChanged" | "passwordsSignInApprove" | "passwordsSignInGet"
->;
+export type PasswordSignInRequestClient = Pick<HostClient, "dispatch" | "rpc">;
 
 /** Often enough that "Expires in" never lags the deadline by more than a moment. */
 const expiryTickMs = 5_000;
 /** Past this many accounts in view the list offers a filter. */
 const filterAbove = 8;
 
-/**
- * An agent asked to sign in to a site with a password saved on a Mac. On that
- * Mac's desktop app the card is the approval itself; everywhere else it names
- * the Mac. Don’t allow works from anywhere.
- */
+/** All signed-in clients use the requester-authorized Host path. */
 export function ThreadPasswordSignInAction({
   disabled,
   request,
@@ -72,29 +55,12 @@ export function ThreadPasswordSignInAction({
   readonly disabled: boolean;
   readonly request: Request;
 }) {
-  const { desktopBridge, desktopDeployment, hostClient, localExecutionStatus, snapshot } =
-    useShell();
-  const payload = request.payload.kind === "browser.password-sign-in" ? request.payload : null;
-  const machine = payload
-    ? snapshot.machines.find((candidate) => candidate.id === payload.runnerId)
-    : undefined;
-  const here =
-    payload !== null &&
-    passwordsHere({
-      hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
-      inDesktopApp: desktopBridge !== null,
-      localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
-      runnerHostsDeployment:
-        machine !== undefined && hostsDeployment(machine, snapshot.deploymentShape?.kind ?? null),
-      runnerId: payload.runnerId,
-    });
+  const { hostClient, snapshot } = useShell();
   return (
     <PasswordSignInRequestBody
       client={hostClient}
-      computerName={machine?.name ?? payload?.computerName ?? "that Mac"}
       disabled={disabled}
       key={request.id}
-      mac={here ? desktopBridge : null}
       request={request}
       workspaceName={
         snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.name ??
@@ -106,29 +72,20 @@ export function ThreadPasswordSignInAction({
 
 type Busy = "allow" | "decline" | "once" | null;
 
-/**
- * The card's body. `mac` is the bridge on the Mac the Request names, and null
- * anywhere else: a browser, a phone-sized window, the desktop app on another
- * computer.
- */
 export function PasswordSignInRequestBody({
   client,
-  computerName,
   disabled,
-  mac,
   request,
   workspaceName,
 }: {
   readonly client: PasswordSignInRequestClient;
-  readonly computerName: string;
   readonly disabled: boolean;
-  readonly mac: PasswordSignInCardBridge | null;
   readonly request: Request;
   readonly workspaceName: string;
 }) {
   const payload = request.payload.kind === "browser.password-sign-in" ? request.payload : null;
   const pending = request.status === "pending";
-  const signIn = useMacSignIn(mac, pending && payload ? payload.operationId : null);
+  const signIn = useHostSignIn(client, pending && !disabled ? request.id : null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -140,7 +97,7 @@ export function PasswordSignInRequestBody({
   const listEntryRef = useRef<HTMLInputElement | null>(null);
   const [now, setNow] = useState(() => new Date());
   const { state } = signIn;
-  const stage = mac === null ? null : (state?.stage ?? null);
+  const stage = state?.stage ?? null;
 
   useEffect(() => {
     if (!pending) return;
@@ -178,7 +135,6 @@ export function PasswordSignInRequestBody({
     );
   }
 
-  const input: DesktopPasswordsSignInCardInput = { operationId: payload.operationId };
   const accounts: readonly PasswordSignInAccount[] =
     state?.stage === "approval" ? state.accounts : [];
   // Allow remembers the account, so of several the person always chooses one.
@@ -198,7 +154,8 @@ export function PasswordSignInRequestBody({
       .dispatch({
         idempotencyKey: declineKey.current,
         requestId: request.id,
-        type: "browser.password-sign-in.decline",
+        type: "browser.password-sign-in.respond",
+        decision: { kind: "decline" },
       })
       .catch((reason: unknown) => {
         setError(actionErrorMessage(reason));
@@ -206,42 +163,31 @@ export function PasswordSignInRequestBody({
       });
   }
 
-  function run(
-    kind: Exclude<Busy, null>,
-    action: (bridge: PasswordSignInCardBridge) => Promise<void>,
-  ) {
-    if (busy !== null || disabled || mac === null) return;
-    setBusy(kind);
-    setError(null);
-    action(mac)
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-      .finally(() => setBusy(null));
-  }
-
   function approve(remember: boolean) {
     const account = chosen;
-    if (account === null) return;
-    const since = signIn.version();
-    run(remember ? "allow" : "once", async (bridge) => {
-      const result = await bridge.passwordsSignInApprove({
-        loginId: account.id,
-        operationId: input.operationId,
-        remember,
-        revision: account.revision,
-      });
-      if (!result.ok) {
-        setError(result.message);
-        return;
-      }
-      signIn.assume(
-        {
-          account: account.username,
-          stage: "authorized",
-          ...(payload?.permissionVersion === 5 ? { permissionVersion: 5 } : {}),
+    if (!account || busy !== null || disabled) return;
+    setBusy(remember ? "allow" : "once");
+    setError(null);
+    client
+      .dispatch({
+        type: "browser.password-sign-in.respond",
+        requestId: request.id,
+        idempotencyKey: mutationIdempotencyKey(`password-sign-in:${request.id}`),
+        decision: {
+          kind: "approve",
+          loginId: account.id,
+          revision: account.revision,
+          remember,
+          permissionVersion: 5,
         },
-        since,
-      );
-    });
+      })
+      .then((result) => {
+        if (result.type !== "browser.password-sign-in.respond") return;
+        if (result.card) signIn.apply(result.card);
+        if (result.message) setError(result.message);
+      })
+      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+      .finally(() => setBusy(null));
   }
 
   const offer =
@@ -279,12 +225,7 @@ export function PasswordSignInRequestBody({
         <span>{payload.reason}</span>
       </div>
       <div aria-live="polite" className="sign-in-card__state">
-        {mac === null ? (
-          <p className="sign-in-card__line">
-            <Icon name="laptop" />
-            {passwordSignInWaitingOn(computerName)}
-          </p>
-        ) : state === null ? null : state.stage === "approval" ? (
+        {state === null ? null : state.stage === "approval" ? (
           accounts.length === 0 ? (
             <p className="sign-in-card__lead">{passwordSignInNoAccount(payload.site)}</p>
           ) : accounts.length === 1 && chosen ? (
@@ -310,7 +251,7 @@ export function PasswordSignInRequestBody({
         ) : state.stage === "authorized" ? (
           <p className="sign-in-card__line" role="status">
             <Icon name="check-circle" />
-            Allowed agents to sign in as {state.account}
+            Allowed agents to sign in
           </p>
         ) : (
           <ActionNote>{passwordSignInGone}</ActionNote>
@@ -607,54 +548,27 @@ function AccountName({ value }: { readonly value: string }) {
  * the Mac pushes is newer than any read still in flight, and newer than any
  * state the card assumes after an answer.
  */
-function useMacSignIn(mac: PasswordSignInCardBridge | null, operationId: string | null) {
-  const [state, setState] = useState<DesktopPasswordsSignInCardState | null>(null);
+function useHostSignIn(client: PasswordSignInRequestClient, requestId: Request["id"] | null) {
+  const [state, setState] = useState<PasswordSignInCard | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const reported = useRef(0);
-
   useEffect(() => {
-    if (mac === null || operationId === null) return;
+    if (!requestId) return;
     let live = true;
-    const input = { operationId };
-    const apply = (next: DesktopPasswordsSignInCardState) => {
-      reported.current += 1;
-      setState((current) =>
-        next.stage === "gone" && current?.stage === "authorized" ? current : next,
-      );
-      setReadError(null);
-    };
-    const stop = mac.onPasswordsSignInChanged(input, (next) => {
-      if (live) apply(next);
-    });
-    const before = reported.current;
-    mac.passwordsSignInGet(input).then(
-      (next) => {
-        if (live && reported.current === before) apply(next);
-      },
-      (reason: unknown) => {
-        if (live && reported.current === before) setReadError(actionErrorMessage(reason));
-      },
-    );
+    client.rpc["browser.password-sign-in.get"]({ requestId })
+      .then((result) => {
+        if (!live) return;
+        if (result.ok) {
+          setState(result.data);
+          setReadError(null);
+        } else setReadError(result.error.message);
+      })
+      .catch((reason: unknown) => {
+        if (live) setReadError(actionErrorMessage(reason));
+      });
     return () => {
       live = false;
-      stop();
     };
-  }, [attempt, mac, operationId]);
-
-  return {
-    /** Shows what an answer implies, unless the Mac has reported anything since `since`. */
-    assume: (next: DesktopPasswordsSignInCardState, since: number) => {
-      if (reported.current !== since) return;
-      reported.current += 1;
-      setState(next);
-    },
-    readError,
-    retry: () => {
-      setReadError(null);
-      setAttempt((count) => count + 1);
-    },
-    state,
-    version: () => reported.current,
-  };
+  }, [client, requestId, attempt]);
+  return { state, readError, apply: setState, retry: () => setAttempt((value) => value + 1) };
 }

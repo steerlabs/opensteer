@@ -37,46 +37,24 @@ final class VaultStateTests: BrokerTestCase {
   func testTurningOffStopsFutureReleases() async throws {
     try await harness.ready(items: [Fixtures.login()])
     let desktop = try await harness.client()
-    let using = UUID().uuidString.lowercased()
-    let usingAccount = try unwrap(try await request(desktop, using)["accounts"]?[0])
-    _ = try await desktop.call(
-      "signin.approve", Fixtures.approve(using, usingAccount, remember: false))
-    let waiting = UUID().uuidString.lowercased()
-    let account = try unwrap(
-      try await desktop.call("signin.request", Fixtures.request(waiting, session: "bsn_waiting"))
-        .result?["accounts"]?[0])
-    let held = UUID().uuidString.lowercased()
-    let heldAccount = try unwrap(
-      try await desktop.call("signin.request", Fixtures.request(held, session: "bsn_held")).result?[
-        "accounts"]?[0])
-    presence.next(.holdThenConfirm)
-    let authenticating = desktop.send(
-      "signin.approve", Fixtures.approve(held, heldAccount, remember: true))
-    try await harness.eventually("the authentication showing") { presence.holdingCount == 1 }
-
+    let id = UUID().uuidString.lowercased()
+    let account = try unwrap(try await request(desktop, id)["accounts"]?[0])
+    _ = try await desktop.allow(Fixtures.approve(id, account, remember: false))
+    let pending = UUID().uuidString.lowercased()
+    let choice = try unwrap(
+      try await request(desktop, pending, workspace: Fixtures.otherWorkspace)["accounts"]?[0])
+    _ = try await desktop.call("signin.approve", Fixtures.approve(pending, choice, remember: true))
     try await broker.setAgentSignIns(false)
-    let asked = presence.askCount
-    let off = TestClient.Reply.result(
-      .object(["decision": .string("unavailable"), "reason": .string("passwords-off")]))
-    same(
-      try await desktop.call("signin.approve", Fixtures.approve(waiting, account, remember: true)),
-      off)
-    XCTAssertEqual(presence.askCount, asked, "refused before asking")
-    presence.releaseHeld()
-    same(try await desktop.reply(to: authenticating), off, "checked again after the authentication")
+    let commit = try await desktop.call("signin.commit", Fixtures.transaction(pending))
+    XCTAssertNotEqual(commit.result?["committed"], .bool(true))
     XCTAssertTrue(try harness.savedGrants().isEmpty)
-    for id in [waiting, held] {
-      same(
-        try await desktop.call("signin.release", Fixtures.release(id)).result?["reason"],
-        .string("ended"), "that answer ended it")
-    }
     same(
-      try await desktop.call("signin.release", Fixtures.release(using)).result?["reason"],
+      try await desktop.call("signin.release", Fixtures.release(pending)).result?["reason"],
+      .string("ended"))
+    same(
+      try await desktop.call("signin.release", Fixtures.release(id)).result?["reason"],
       .string("passwords-off"))
-    present(try await desktop.call("signin.cancel", Fixtures.transaction(using)).result)
     XCTAssertEqual(broker.status, Wire.Status(vault: .ready, agentSignIns: false))
-    await harness.activity.flush()
-    same(await harness.activity.entries().map(\.outcome), [.cancelled, .cancelled, .cancelled])
   }
 
   /// M5: Allow after the vault stopped being ready says so, in the
@@ -90,7 +68,7 @@ final class VaultStateTests: BrokerTestCase {
     await broker.reload()
     let asked = presence.askCount
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
+      try await desktop.allow(Fixtures.approve(id, account, remember: false))
         .result,
       .object(["decision": .string("unavailable"), "reason": .string("not-set-up")]))
     XCTAssertEqual(presence.askCount, asked)
@@ -200,33 +178,18 @@ final class VaultStateTests: BrokerTestCase {
     try await harness.ready(items: [Fixtures.login()])
     let store = try XCTUnwrap(harness.controlled)
     let desktop = try await harness.client()
-    let notUnlocked = TestClient.Reply.error(
-      code: "unavailable", message: Copy.notUnlockedSinceRestart)
-    let first = UUID().uuidString.lowercased()
-    let second = UUID().uuidString.lowercased()
-    let account = try unwrap(try await request(desktop, first)["accounts"]?[0])
-    let other = try unwrap(
-      try await request(desktop, second, session: "bsn_second")["accounts"]?[0])
-
-    presence.next(.holdThenConfirm)
-    let held = desktop.send("signin.approve", Fixtures.approve(first, account, remember: true))
-    try await harness.eventually("the authentication showing") { presence.holdingCount == 1 }
+    let id = UUID().uuidString.lowercased()
+    let account = try unwrap(try await request(desktop, id)["accounts"]?[0])
+    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
     store.notUnlockedSinceRestart = true
     await broker.reload()
     XCTAssertEqual(broker.condition, .unavailable)
-    presence.releaseHeld()
-    same(try await desktop.reply(to: held), notUnlocked, "Allow, after its authentication")
-    let asked = presence.askCount
+    let committed = try await desktop.call("signin.commit", Fixtures.transaction(id))
+    XCTAssertNotEqual(committed.result?["committed"], .bool(true))
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(second, other, remember: false)),
-      notUnlocked, "Allow")
-    XCTAssertEqual(presence.askCount, asked, "nobody was asked")
-    for ended in [first, second] {
-      same(
-        try await desktop.call("signin.release", Fixtures.release(ended)).result?["reason"],
-        .string("ended"), "the approval ended")
-    }
-    XCTAssertTrue(try harness.savedGrants().isEmpty, "nothing was granted")
+      try await desktop.call("signin.request", Fixtures.request()),
+      .error(code: "unavailable", message: Copy.notUnlockedSinceRestart))
+    XCTAssertTrue(try harness.savedGrants().isEmpty)
   }
 
   /// S2.
@@ -308,7 +271,7 @@ final class VaultStateTests: BrokerTestCase {
     let desktop = try await harness.client()
     let id = UUID().uuidString.lowercased()
     let account = try unwrap(try await request(desktop, id)["accounts"]?[0])
-    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
+    _ = try await desktop.allow(Fixtures.approve(id, account, remember: true))
     XCTAssertEqual(try harness.savedGrants().count, 1)
     do {
       try await broker.startFresh()

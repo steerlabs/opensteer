@@ -1091,6 +1091,7 @@ export interface RequestTable {
   cancellationReason: Request["cancellationReason"];
   resolvedAt: NullableTimestamp;
   resolvedBy: UserId | null;
+  settlementProvenance: Generated<NonNullable<Request["settlementProvenance"]> | null>;
   createdAt: Timestamp;
 }
 

@@ -1358,7 +1358,7 @@ async function connectPhone(
             apps: [...apps, "apple-messages", "macos-app", "android-phone"].map(status),
             ownerViewVersion: 1,
             displayAvailable: true,
-            passwordSignIn: 1,
+            passwordSignIn: 2,
             type: "runner.integrations.status",
           }),
         );

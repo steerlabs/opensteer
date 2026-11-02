@@ -1,3 +1,4 @@
+import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
@@ -27,10 +28,7 @@ import {
   DesktopPersonalRemoteAccessStatusSchema,
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
-  DesktopPasswordsSignInApproveInputSchema,
-  DesktopPasswordsSignInCardInputSchema,
   type DesktopComputerUseApprovalPresentation,
-  type DesktopPasswordsSignInCardState,
   type DesktopPasswordsStatus,
   type DesktopDeploymentSelection,
   type DesktopDeploymentSummary,
@@ -143,12 +141,7 @@ export function desktopPreviewBridge(
   const remoteAccessListeners = new Set<(status: DesktopPersonalRemoteAccessStatus) => void>();
   const passwordsListeners = new Set<(status: DesktopPasswordsStatus) => void>();
   const passwords = previewPasswordsStatus(search);
-  const signInCardListeners = new Set<(state: DesktopPasswordsSignInCardState) => void>();
-  let signInCard = previewPasswordsSignInCard(search);
-  const moveSignInCard = (next: DesktopPasswordsSignInCardState) => {
-    signInCard = next;
-    emit(signInCardListeners, signInCard);
-  };
+
   const localExecutionListeners = new Set<(status: DesktopLocalExecutionStatus) => void>();
   const socketListeners = new Set<(event: DesktopHostWebSocketEvent) => void>();
   const accessListeners = new Set<(snapshot: DeploymentAccessSnapshot) => void>();
@@ -594,23 +587,6 @@ export function desktopPreviewBridge(
     // move it on as Electron main would.
     onPasswordsStatusChanged: (listener) => subscribe(passwordsListeners, listener),
     passwordsOpen: async () => undefined,
-    onPasswordsSignInChanged: (_input, listener) => subscribe(signInCardListeners, listener),
-    passwordsSignInApprove: async (input) => {
-      const { loginId } = DesktopPasswordsSignInApproveInputSchema.parse(input);
-      const account =
-        signInCard.stage === "approval"
-          ? signInCard.accounts.find(({ id }) => id === loginId)
-          : undefined;
-      if (!account || new URLSearchParams(search).has("cancel-auth")) {
-        return { message: "Touch ID was cancelled. Choose Allow to try again.", ok: false };
-      }
-      moveSignInCard({ account: account.username, stage: "authorized" });
-      return { ok: true };
-    },
-    passwordsSignInGet: async (input) => {
-      DesktopPasswordsSignInCardInputSchema.parse(input);
-      return signInCard;
-    },
     passwordsStatus: async () => passwords,
 
     // The onboarding preview has no file dialog to open.
@@ -1069,12 +1045,12 @@ const previewLongAccounts: readonly PasswordSignInAccount[] = [
  * their pages), `approval-many` (forty), `approval-duplicates`,
  * `approval-long`, `authorized` or `gone`.
  */
-export function previewPasswordsSignInCard(search: string): DesktopPasswordsSignInCardState {
+export function previewPasswordsSignInCard(search: string): PasswordSignInCard {
   const site = "https://github.com";
   const approval = (
     accounts: readonly PasswordSignInAccount[],
-    on = site,
-  ): DesktopPasswordsSignInCardState => ({ accounts: [...accounts], site: on, stage: "approval" });
+    _on = site,
+  ): PasswordSignInCard => ({ accounts: [...accounts], permissionVersion: 5, stage: "approval" });
   switch (new URLSearchParams(search).get("card")) {
     case "approval-one":
       return approval([previewSignInAccounts[0]]);
@@ -1097,7 +1073,7 @@ export function previewPasswordsSignInCard(search: string): DesktopPasswordsSign
     case "approval-long":
       return approval(previewLongAccounts);
     case "authorized":
-      return { account: "t•••@example.com", stage: "authorized" };
+      return { stage: "authorized" };
     case "gone":
       return { stage: "gone" };
     default:

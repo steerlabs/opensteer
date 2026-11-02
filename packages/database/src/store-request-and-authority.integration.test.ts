@@ -40,6 +40,88 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
+  it("records only the winning human Passwords session and refuses revoked sessions", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const fixture = await startRunFixture("password-settlement-provenance");
+    const sessionId = createId("authSession");
+    const now = new Date();
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: sessionId,
+        userId: fixture.userId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) Version/19.0 Mobile Safari/604.1",
+        deviceLabel: "old unsafe label",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    const open = async (suffix: string) =>
+      store.requests.openPasswordSignIn({
+        callId: suffix,
+        originatingRunId: fixture.run.id,
+        originatingThreadId: fixture.thread.id,
+        originatingWorkspaceId: fixture.workspace.id,
+        targetWorkspaceId: fixture.workspace.id,
+        requestedBy: fixture.userId,
+        requiredActor: "requester",
+        kind: "browser.password-sign-in",
+        mode: "durable",
+        payload: {
+          kind: "browser.password-sign-in",
+          operationId: randomUUID(),
+          scope: "workspace",
+          permissionVersion: 5,
+          runnerId: fixture.runnerId,
+          computerName: "Test Mac",
+          reason: "Sign in",
+          site: "https://example.com",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        presentation: {
+          kind: "external",
+          title: "Sign in",
+          subject: { kind: "browser-site", id: "https://example.com" },
+        },
+      });
+    const first = await open("first");
+    const input = {
+      ownerId: fixture.userId,
+      requestId: first.request.id,
+      settlementSessionId: sessionId,
+      settlement: { status: "declined" as const },
+    };
+    const result = await store.requests.settlePasswordSignInRequest(input);
+    expect(result?.request.settlementProvenance).toEqual({
+      sessionId,
+      deviceLabel: "Safari on iPhone",
+    });
+    await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+    expect(await store.requests.settlePasswordSignInRequest(input)).toBeNull();
+    expect((await store.requests.get(first.request.id))?.settlementProvenance).toEqual(
+      result?.request.settlementProvenance,
+    );
+    const second = await open("second");
+    await expect(
+      store.requests.settlePasswordSignInRequest({ ...input, requestId: second.request.id }),
+    ).rejects.toThrow("no longer signed in");
+    expect((await store.requests.get(second.request.id))?.status).toBe("pending");
+    const automatic = await store.requests.settlePasswordSignInRequest({
+      ownerId: fixture.userId,
+      requestId: second.request.id,
+      settlement: { status: "fulfilled", response: { outcome: "expired" } },
+    });
+    expect(automatic?.request.settlementProvenance).toBeNull();
+  });
+
   it("keeps Occurrence Request resolution compatible with Trigger inbox admission", async ({
     storeFixture,
   }) => {

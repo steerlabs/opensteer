@@ -220,7 +220,6 @@ async function run(): Promise<void> {
     fullDiskAccess: { check: unused, closePanel: unused, request: unused },
     passwords: {
       open: unused,
-      signIns: { get: unused, approve: unused, subscribe },
       status: unused,
       subscribe,
     },
