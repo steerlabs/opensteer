@@ -625,6 +625,7 @@ export async function threadEventPageForOwner(
   database: Kysely<DatabaseSchema>,
   notificationState: NotificationStateStore,
   input: {
+    readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;
     readonly before?: string;
     readonly maxBytes?: number;
@@ -682,13 +683,25 @@ export async function threadEventPageForOwner(
           ? eventsAroundMessage(transaction, input.threadId, input.aroundMessageId, {
               maxBytes,
               maxItems,
+              placeEvents: input.placeEvents,
             })
-          : newestTurns(transaction, input.threadId, anchor, { maxBytes, maxItems, maxTurns }),
+          : newestTurns(transaction, input.threadId, anchor, {
+              maxBytes,
+              maxItems,
+              maxTurns,
+              placeEvents: input.placeEvents,
+            }),
         transaction
           .selectFrom("workspaceEvents")
           .select(({ fn }) => fn.countAll<string>().as("count"))
           .where("threadId", "=", input.threadId)
-          .where("type", "not in", legacyLiveEventTypes)
+          .where(
+            "type",
+            "not in",
+            input.placeEvents === "include"
+              ? legacyLiveEventTypes
+              : [...legacyLiveEventTypes, "place.entered"],
+          )
           .executeTakeFirstOrThrow(),
       ]);
       const oldest = events.at(0);
@@ -723,7 +736,12 @@ async function newestTurns(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   before: Sequence | null,
-  bounds: { readonly maxBytes: number; readonly maxItems: number; readonly maxTurns: number },
+  bounds: {
+    readonly placeEvents?: "include" | undefined;
+    readonly maxBytes: number;
+    readonly maxItems: number;
+    readonly maxTurns: number;
+  },
 ): Promise<{ readonly events: AgentEvent[]; readonly hasMore: boolean }> {
   let metadataQuery = transaction
     .selectFrom("workspaceEvents")
@@ -736,7 +754,13 @@ async function newestTurns(
       turnStartSelection.as("turnStart"),
     ])
     .where("threadId", "=", threadId)
-    .where("type", "not in", legacyLiveEventTypes);
+    .where(
+      "type",
+      "not in",
+      bounds.placeEvents === "include"
+        ? legacyLiveEventTypes
+        : [...legacyLiveEventTypes, "place.entered"],
+    );
   if (before !== null) metadataQuery = metadataQuery.where("sequence", "<", before);
   const metadata = await metadataQuery
     .orderBy("sequence", "desc")
@@ -752,7 +776,13 @@ async function newestTurns(
     .selectFrom("workspaceEvents")
     .selectAll()
     .where("threadId", "=", threadId)
-    .where("type", "not in", legacyLiveEventTypes)
+    .where(
+      "type",
+      "not in",
+      bounds.placeEvents === "include"
+        ? legacyLiveEventTypes
+        : [...legacyLiveEventTypes, "place.entered"],
+    )
     .where("sequence", ">=", oldest.sequence);
   if (before !== null) rowsQuery = rowsQuery.where("sequence", "<", before);
   const candidates = (await rowsQuery.orderBy("sequence", "desc").execute()).map(eventFromRow);
@@ -775,7 +805,11 @@ async function eventsAroundMessage(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   messageId: MessageId,
-  bounds: { readonly maxBytes: number; readonly maxItems: number },
+  bounds: {
+    readonly placeEvents?: "include" | undefined;
+    readonly maxBytes: number;
+    readonly maxItems: number;
+  },
 ): Promise<{ readonly events: AgentEvent[]; readonly hasMore: boolean }> {
   const { maxBytes, maxItems } = bounds;
   const visibleMessage = await transaction
@@ -813,7 +847,13 @@ async function eventsAroundMessage(
     .selectFrom("workspaceEvents")
     .selectAll()
     .where("threadId", "=", threadId)
-    .where("type", "not in", legacyLiveEventTypes);
+    .where(
+      "type",
+      "not in",
+      bounds.placeEvents === "include"
+        ? legacyLiveEventTypes
+        : [...legacyLiveEventTypes, "place.entered"],
+    );
   const [later, centre, earlier] = await Promise.all([
     query
       .where("sequence", ">", aroundSequence)

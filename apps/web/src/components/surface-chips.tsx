@@ -1,5 +1,5 @@
 import { observeResize } from "@opensteer/shared/resizeObserver";
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useLocation } from "react-router";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import type {
@@ -14,7 +14,6 @@ import { AppMark } from "./computer-apps/computer-use-section.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { SiteMark } from "./site-mark.js";
-import { destinationPlaceKey } from "./workspace/navigation.js";
 
 /** One page, Mac app or phone a message names, and exactly where it opens. */
 export interface ChipSurface {
@@ -87,18 +86,13 @@ export function phoneChip(phone: TurnPhone): ChipSurface {
  * nothing; nothing else is put in its place.
  */
 export function SurfaceChip({
-  active = false,
   surface,
   withSite = false,
 }: {
-  /** The place the reply's live picture shows. */
-  readonly active?: boolean;
   readonly surface: ChipSurface;
   /** Says the site after the title, where the chip stands alone. */
   readonly withSite?: boolean;
 }) {
-  const location = useLocation();
-  const workspace = useOptionalWorkspace();
   const chipRef = useRef<HTMLElement | null>(null);
   const endedNote = surface.app
     ? "The agent finished with this app"
@@ -117,7 +111,6 @@ export function SurfaceChip({
     "surface-chip",
     site ? "surface-chip--with-site" : "",
     surface.ended ? "surface-chip--ended" : "",
-    active ? "surface-chip--active" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -166,33 +159,64 @@ export function SurfaceChip({
   ]
     .filter(Boolean)
     .join(", ");
-  if (!surface.destination || surface.ended || !workspace) {
+  return (
+    <SurfaceLink
+      className={className}
+      destination={surface.ended ? null : surface.destination}
+      elementRef={(node) => {
+        chipRef.current = node;
+      }}
+      label={label}
+      title={tooltip}
+    >
+      {body}
+    </SurfaceLink>
+  );
+}
+
+/**
+ * Opens exactly this page, app or phone in the stage. With nowhere to go, an
+ * ended place or a screen outside a Workspace, the same content stands as a
+ * labelled image that opens nothing.
+ */
+export function SurfaceLink({
+  children,
+  className,
+  destination,
+  elementRef,
+  label,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly className: string;
+  readonly destination: SurfaceDestination | null;
+  readonly elementRef?: (node: HTMLElement | null) => void;
+  readonly label: string;
+  readonly title: string;
+}) {
+  const location = useLocation();
+  const workspace = useOptionalWorkspace();
+  if (!destination || !workspace) {
     return (
-      <span aria-label={label} className={className} ref={chipRef} role="img" title={tooltip}>
-        {body}
+      <span aria-label={label} className={className} ref={elementRef} role="img" title={title}>
+        {children}
       </span>
     );
   }
   return (
     <Link
-      aria-current={active ? "true" : undefined}
       aria-label={`Open ${label}`}
       className={className}
-      ref={(node) => {
-        chipRef.current = node;
-      }}
+      ref={elementRef}
       onClick={(event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
         event.preventDefault();
-        if (surface.destination) workspace.nav.showPlace(surface.destination);
+        workspace.nav.showPlace(destination);
       }}
-      title={tooltip}
-      to={{
-        pathname: location.pathname,
-        search: workspace.nav.placeSearch(surface.destination),
-      }}
+      title={title}
+      to={{ pathname: location.pathname, search: workspace.nav.placeSearch(destination) }}
     >
-      {body}
+      {children}
     </Link>
   );
 }
@@ -234,49 +258,34 @@ function useSiteFits(
 
 /**
  * A reply's pages and apps in the order its Run first used them: the first
- * three, then how many more, listed on request. The one its live picture
- * shows is highlighted where it stands; nothing moves when that changes. When
- * it is among the hidden ones, "+N" carries its highlight, and an agent acting
- * in a hidden one lights "+N"'s dot.
+ * three, then how many more, listed on request. An agent acting in a hidden
+ * one lights "+N"'s dot.
  */
 export function SurfaceChips({
-  activeKey = null,
   label,
   surfaces,
 }: {
-  /** The place key of the reply's live picture. */
-  readonly activeKey?: string | null;
   readonly label: string;
   readonly surfaces: readonly ChipSurface[];
 }) {
   const [open, setOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement | null>(null);
   if (surfaces.length === 0) return null;
-  const isActive = (surface: ChipSurface) =>
-    activeKey !== null &&
-    surface.destination !== null &&
-    destinationPlaceKey(surface.destination) === activeKey;
   const shown = surfaces.slice(0, 3);
   const rest = surfaces.slice(3);
-  const restActive = rest.some(isActive);
   const restActing = rest.some((surface) => surface.acting && !surface.ended);
   return (
     <div aria-label={label} className="surface-chips" role="group">
       {shown.map((surface) => (
-        <SurfaceChip active={isActive(surface)} key={surface.key} surface={surface} />
+        <SurfaceChip key={surface.key} surface={surface} />
       ))}
       {rest.length > 0 ? (
         <>
           <button
-            aria-current={restActive ? "true" : undefined}
             aria-expanded={open}
             aria-haspopup="dialog"
             aria-label={`${rest.length} more${restActing ? ", agent working" : ""}`}
-            className={
-              restActive
-                ? "surface-chip surface-chip--more surface-chip--active"
-                : "surface-chip surface-chip--more"
-            }
+            className="surface-chip surface-chip--more"
             onClick={() => setOpen((value) => !value)}
             ref={moreRef}
             type="button"
@@ -295,12 +304,7 @@ export function SurfaceChips({
               {/* Following a chip leaves the list behind it. */}
               <div className="surface-chips__list" onClick={() => setOpen(false)}>
                 {rest.map((surface) => (
-                  <SurfaceChip
-                    active={isActive(surface)}
-                    key={surface.key}
-                    surface={surface}
-                    withSite
-                  />
+                  <SurfaceChip key={surface.key} surface={surface} withSite />
                 ))}
               </div>
             </Popover>

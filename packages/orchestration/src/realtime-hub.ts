@@ -108,6 +108,7 @@ export interface RealtimeFillWindow {
 }
 
 interface SubscriberOptions {
+  readonly placeEvents: boolean;
   readonly cursor: Sequence;
   readonly fill: (after: Sequence, through: Sequence) => Promise<RealtimeFillWindow>;
   readonly gapFillDelayMs: number;
@@ -167,9 +168,49 @@ class Subscriber {
   #gapTimer: ReturnType<typeof setTimeout> | undefined;
   #filling = false;
 
+  /**
+   * For a client that did not ask for place events: the last event it was
+   * sent, and the last one handed on whether sent or left out. A live frame
+   * that waits only on events it left out waits on the last one it has.
+   */
+  #visibleThrough: Sequence;
+  #handedThrough: Sequence;
+
+  #send(message: HostToClientMessage): Promise<void> {
+    if (this.#options.placeEvents) return this.sink.send(message);
+    switch (message.type) {
+      case "host.events": {
+        const events = message.events.filter((event) => event.type !== "place.entered");
+        const last = message.events.at(-1);
+        const visible = events.at(-1);
+        if (last) this.#handedThrough = last.sequence;
+        if (visible) this.#visibleThrough = visible.sequence;
+        if (events.length === 0) return Promise.resolve();
+        return this.sink.send(
+          events.length === message.events.length ? message : { ...message, events },
+        );
+      }
+      case "host.live":
+        if (
+          compareSequence(message.afterSequence, this.#visibleThrough) > 0 &&
+          compareSequence(message.afterSequence, this.#handedThrough) <= 0
+        )
+          return this.sink.send({ ...message, afterSequence: this.#visibleThrough });
+        return this.sink.send(message);
+      case "host.synchronized":
+        this.#visibleThrough = message.sequence;
+        this.#handedThrough = message.sequence;
+        return this.sink.send(message);
+      default:
+        return this.sink.send(message);
+    }
+  }
+
   constructor(options: SubscriberOptions) {
     this.#options = options;
     this.#queuedThrough = options.cursor;
+    this.#visibleThrough = options.cursor;
+    this.#handedThrough = options.cursor;
     this.sink = options.sink;
     this.userId = options.userId;
     this.workspaceId = options.workspaceId;
@@ -228,7 +269,7 @@ class Subscriber {
     cursor: Sequence,
     viewerSnapshot: () => Promise<void>,
   ): Promise<void> {
-    for (const message of messages) await this.sink.send(message);
+    for (const message of messages) await this.#send(message);
     this.#queuedThrough = cursor;
     await viewerSnapshot();
     while (this.#state === "synchronizing") {
@@ -239,23 +280,23 @@ class Subscriber {
       const batch = this.#takeContiguous();
       if (batch.length > 0) {
         for (const events of boundedEventBatches(batch, this.#options.maxWireBytes)) {
-          await this.sink.send({ events, type: "host.events" });
+          await this.#send({ events, type: "host.events" });
         }
         continue;
       }
       const pending = this.#syncNotices.values().next();
       if (!pending.done) {
         this.#syncNotices.delete(pending.value.type);
-        for (const notice of wireNotices(pending.value)) await this.sink.send(notice);
+        for (const notice of wireNotices(pending.value)) await this.#send(notice);
         continue;
       }
       const viewerMessage = this.#syncViewerMessages.shift();
       if (viewerMessage) {
         this.#viewerBufferedBytes -= Buffer.byteLength(JSON.stringify(viewerMessage));
-        await this.sink.send(viewerMessage);
+        await this.#send(viewerMessage);
         continue;
       }
-      this.#sendTail = this.sink.send({
+      this.#sendTail = this.#send({
         type: "host.synchronized",
         workspaceId: this.workspaceId,
         sequence: this.#queuedThrough,
@@ -324,7 +365,7 @@ class Subscriber {
     }
     if (this.#state !== "live") return;
     this.#sendTail = this.#sendTail
-      .then(() => (this.#state === "live" ? this.sink.send(message) : undefined))
+      .then(() => (this.#state === "live" ? this.#send(message) : undefined))
       .catch(() => this.#failDelivery());
   }
 
@@ -394,7 +435,7 @@ class Subscriber {
       .then(async () => {
         if (this.#state === "closed") return;
         for (const batch of boundedEventBatches(events, this.#options.maxWireBytes)) {
-          await this.sink.send({ events: batch, type: "host.events" });
+          await this.#send({ events: batch, type: "host.events" });
         }
       })
       .catch(() => this.#failDelivery())
@@ -425,7 +466,7 @@ class Subscriber {
     this.#sendTail = this.#sendTail
       .then(() =>
         this.#state === "live"
-          ? this.sink.send({
+          ? this.#send({
               afterSequence: frame.afterSequence,
               progress: frame.progress,
               type: "host.live",
@@ -568,6 +609,7 @@ export class RealtimeHub {
   async subscribe(input: {
     readonly afterSequence: Sequence;
     readonly snapshotMessages?: "omit";
+    readonly placeEvents?: "include";
     readonly sink: RealtimeSink;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
@@ -595,6 +637,7 @@ export class RealtimeHub {
       maxWireBytes: this.#maxWireBytes,
       onClose: remove,
       sink: input.sink,
+      placeEvents: input.placeEvents === "include",
       userId: input.userId,
       workspaceId: input.workspaceId,
     });

@@ -1063,8 +1063,7 @@ svg.icon {
     .account-choice__option:has(input:checked),
     .execution-menu__engine[aria-selected="true"],
     .action-row--selected,
-    .computer-use__option--on,
-    .surface-chip--active
+    .computer-use__option--on
   ) {
     border-color: Highlight;
     outline: 2px solid Highlight;

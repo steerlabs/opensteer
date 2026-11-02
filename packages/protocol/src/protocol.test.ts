@@ -824,6 +824,30 @@ describe("wire protocol", () => {
     ).toBe(false);
   });
 
+  it("rejects Host-authored place entries from runners", () => {
+    expect(
+      PendingAgentEventSchema.safeParse({
+        type: "place.entered",
+        bindingGeneration: 1,
+        emittedAt: new Date().toISOString(),
+        environmentId: createId("environment"),
+        ordinal: 0,
+        runId: createId("run"),
+        threadId: createId("thread"),
+        workspaceId: createId("workspace"),
+        data: {
+          place: {
+            kind: "browser",
+            sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+            surfaceId: "A",
+          },
+          title: "Page",
+          site: null,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts bounded canonical tool output and rejects provider-native or oversized output", () => {
     const base = {
       bindingGeneration: 1,

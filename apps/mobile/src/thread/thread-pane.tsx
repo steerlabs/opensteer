@@ -802,6 +802,7 @@ function ThreadPaneForUser(
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({
       hostClient,
+      threadId,
       turns: surfaceTurns,
       open: (destination: SurfaceDestination) => {
         const route = surfaceRoute(deploymentId, threadId, destination);

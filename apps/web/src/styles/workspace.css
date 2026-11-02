@@ -1314,17 +1314,39 @@ button.side-needs:hover {
   transition: opacity 220ms var(--ease-out);
 }
 
-/* ---- The viewfinder ---- */
+/* ---- The live place, over the composer ----
+   A conversation's one live spot: a small picture of where its working Run
+   acts now, and what that place is. It keeps one height, so nothing under it
+   moves while the Run streams. */
 
-.viewfinder-slot {
+.live-place {
   display: flex;
+  width: 100%;
+  max-width: var(--composer-max-width);
+  margin: 0 auto var(--space-8);
+  animation: live-place-in var(--duration-med) var(--ease-out) both;
+}
+
+@keyframes live-place-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-place {
+    animation: none;
+  }
 }
 
 .viewfinder {
-  display: grid;
-  width: min(100%, 340px);
-  padding: 0;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: fit-content;
+  max-width: min(100%, 24rem);
+  padding: var(--space-4) var(--space-14) var(--space-4) var(--space-4);
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-md);
   background: var(--sheen) var(--fill-plate);
@@ -1349,10 +1371,53 @@ button.side-needs:hover {
 .viewfinder__frame {
   position: relative;
   display: block;
-  aspect-ratio: 16 / 9;
-  max-height: 190px;
+  flex: none;
+  width: 76px;
+  aspect-ratio: 16 / 10;
   overflow: hidden;
+  border-radius: calc(var(--radius-md) - var(--space-4));
   background: var(--surface-elevated);
+}
+
+.viewfinder__words {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.viewfinder__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.viewfinder:hover .viewfinder__title {
+  color: var(--text);
+}
+
+.viewfinder__name,
+.viewfinder__site {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The frame is too small for a cursor's name tag, and the words beside it
+   already say where the agent is. */
+.cursor-layer--viewfinder .acur__name {
+  display: none;
+}
+
+/* Under the name, past the dot. */
+.viewfinder__site {
+  padding-left: calc(6px + var(--space-6));
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
 }
 
 .viewfinder__picture {

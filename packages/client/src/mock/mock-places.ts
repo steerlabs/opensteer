@@ -1,8 +1,10 @@
 import {
+  BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
   RunIdSchema,
   ThreadIdSchema,
   nextMarkColor,
+  type EventData,
 } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
@@ -521,6 +523,7 @@ export interface MockPlaceScript {
 export class MockPlaceWorld {
   readonly #history = new Map<string, BrowserHistory>();
   readonly #historyChanged: (profileId: string) => void;
+  readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
   readonly #historyOwner: string | undefined;
   readonly activity: PlaceActivityStore;
   readonly latest = new LatestPlaceStore();
@@ -582,9 +585,13 @@ export class MockPlaceWorld {
     update: (snapshot: HostSnapshot) => void,
     now: () => Date,
     historyChanged: (profileId: string) => void = () => undefined,
+    /** As the Host records it: a Run began acting in a tab. */
+    entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void = () =>
+      undefined,
   ) {
     this.#snapshot = snapshot;
     this.#historyChanged = historyChanged;
+    this.#entered = entered;
     this.#historyOwner = snapshot().user?.id;
     this.#update = update;
     this.#now = now;
@@ -775,6 +782,18 @@ export class MockPlaceWorld {
       };
     });
     this.#update({ ...snapshot, browserSessions });
+    const tab = snapshot.browserSessions
+      .find((session) => session.id === sessionId)
+      ?.tabs.find((candidate) => candidate.id === tabId);
+    this.#entered(run.id, threadId, {
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        surfaceId: BrowserSurfaceIdSchema.parse(tabId),
+      },
+      title: place.title.slice(0, 256),
+      site: tab?.url ? originOf(tab.url) : null,
+    });
     this.#tick();
   }
   subscribeActivity = (key: string, listener: () => void): (() => void) => {
@@ -1734,5 +1753,15 @@ export class MockPlaceWorld {
     this.#nativeReferences.clear();
     this.#watches.clear();
     this.#watchListeners.clear();
+  }
+}
+
+/** A page's origin, as the Host records a place's site; null for one with none. */
+function originOf(url: string): string | null {
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
   }
 }

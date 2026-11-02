@@ -1,3 +1,6 @@
+import { eventDataSchemas, placeIdentityKey, type EventData } from "@opensteer/core";
+import { storableText } from "./runner-event-store.js";
+import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import {
   type BrowserProfileAccess,
   BrowserProfileAccessSchema,
@@ -2116,5 +2119,73 @@ export async function interruptPendingBrowserTabOpens(
     where binding -> 'outcome' ->> 'kind' = 'pending'`.execute(
     database,
     databaseOperationOptions(),
+  );
+}
+
+/** The Run fence precedes the Workspace allocator, including on delegated Runs. */
+export async function recordRunPlace(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly runId: RunId;
+    readonly bindingGeneration: number;
+    readonly data: EventData<"place.entered">;
+  },
+): Promise<AgentEvent | undefined> {
+  return withRequestWorkspaceLocks(
+    database,
+    async (transaction) => {
+      const run = await transaction
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .select("threads.workspaceId")
+        .where("runs.id", "=", input.runId)
+        .executeTakeFirst();
+      return run ? [run.workspaceId] : [];
+    },
+    async (transaction) => {
+      const run = await transaction
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .selectAll("runs")
+        .select("threads.workspaceId")
+        .where("runs.id", "=", input.runId)
+        .executeTakeFirst();
+      if (
+        !run ||
+        run.bindingGeneration !== input.bindingGeneration ||
+        !(nonTerminalRunStatuses as readonly string[]).includes(run.status)
+      )
+        return undefined;
+      const last = await transaction
+        .selectFrom("workspaceEvents")
+        .select("data")
+        .where("runId", "=", input.runId)
+        .where("type", "=", "place.entered")
+        .orderBy("sequence", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      if (last) {
+        const previous = eventDataSchemas["place.entered"].parse(last.data);
+        if (placeIdentityKey(previous.place) === placeIdentityKey(input.data.place))
+          return undefined;
+      }
+      return appendHostWorkspaceEvent(transaction, {
+        type: "place.entered",
+        runId: input.runId,
+        threadId: run.threadId,
+        workspaceId: run.workspaceId,
+        environmentId: run.environmentId,
+        // A title cut to its bound can end on half a surrogate pair, which jsonb refuses.
+        data: { ...input.data, title: storableText(input.data.title) },
+      });
+    },
+    async (transaction) => {
+      await transaction
+        .selectFrom("runs")
+        .select("id")
+        .where("runs.id", "=", input.runId)
+        .forNoKeyUpdate()
+        .execute();
+    },
   );
 }

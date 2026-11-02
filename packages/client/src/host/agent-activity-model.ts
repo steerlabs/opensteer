@@ -13,6 +13,7 @@ import type {
   AssignmentEntry,
   DelegationEntry,
   MessageEntry,
+  PlaceEntry,
   ReasoningEntry,
   RequestReceiptEntry,
   RunEntry,
@@ -75,7 +76,8 @@ export type ActivityTone = "decided" | "done" | "error" | "running" | "stopped";
 export type ActivitySurface = "browser";
 
 /** Everything that happens inside a turn's work, the agent's own notes included. */
-export type WorkEntry = MessageEntry | NodeEntry | ReasoningEntry | RequestReceiptEntry | ToolEntry;
+export type WorkEntry =
+  MessageEntry | NodeEntry | PlaceEntry | ReasoningEntry | RequestReceiptEntry | ToolEntry;
 
 export type ActivityFeedEntry = Exclude<
   TranscriptEntry,
@@ -85,6 +87,7 @@ export type ActivityFeedEntry = Exclude<
       | "assignment-return"
       | "delivery"
       | "message"
+      | "place"
       | "request-wait"
       | "selection"
       | "withdrawn";
@@ -528,7 +531,6 @@ interface ConversationRowOptions {
   readonly waitingRequests?: readonly WaitingRequest[];
   readonly atComputer: (turn: Turn) => boolean;
   readonly live: boolean;
-  readonly pictured?: ((turn: Turn) => boolean) | undefined;
 }
 
 /**
@@ -539,9 +541,7 @@ interface ConversationRowOptions {
  * messages. `live` is whether the transcript can say a reply is being written.
  * `atComputer` is whether the screen draws a live turn for its work on a
  * computer, which only the screen can say: it holds the Macs its reader is
- * shown and the Stops they pressed there. `pictured` is whether it draws a
- * live picture of the place the turn's Run is working in, which keeps a reply
- * waiting on the person drawn.
+ * shown and the Stops they pressed there.
  *
  * The reply under way after a message that joined it is drawn under that
  * message's place from the moment it is empty, so its first step does not
@@ -606,10 +606,7 @@ export function conversationRows(
  * Its reply, typing or why it has not started, the tasks it handed out, how
  * its Run ended, or its work on a computer.
  */
-function conversationTurnShows(
-  turn: Turn,
-  { atComputer, live, pictured }: ConversationRowOptions,
-): boolean {
+function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRowOptions): boolean {
   if (turn.personWaiting === false)
     return turn.reply !== null || turn.assignments.length > 0 || (live && atComputer(turn));
   const { composing, reply, startHold } = conversationTurn(turn);
@@ -617,7 +614,7 @@ function conversationTurnShows(
     reply !== null ||
     turn.assignments.length > 0 ||
     (turn.run !== null && (hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1)) ||
-    (live && (composing || startHold !== null || atComputer(turn) || pictured?.(turn) === true))
+    (live && (composing || startHold !== null || atComputer(turn)))
   );
 }
 
@@ -1049,6 +1046,8 @@ export type WorkRow =
       readonly key: string;
       readonly kind: "subagent";
     }
+  /** Where the Run began acting in a browser tab: a point in the trace, not a span. */
+  | { readonly entry: PlaceEntry; readonly key: string; readonly kind: "place" }
   | { readonly entry: ReasoningEntry; readonly key: string; readonly kind: "reasoning" };
 
 export type StepGroup = "command" | "computer" | "edit" | "explore" | "integrations" | "web";
@@ -1103,6 +1102,10 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
     }
     if (entry.kind === "node") {
       result.push({ entry, head: nodeHead(entry), key: `subagent:${entry.id}`, kind: "subagent" });
+      continue;
+    }
+    if (entry.kind === "place") {
+      result.push({ entry, key: `place:${entry.id}`, kind: "place" });
       continue;
     }
     const group = entry.kind === "tool" ? stepGroup(toolPresentation(entry).kind) : null;

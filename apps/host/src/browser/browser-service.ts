@@ -11,6 +11,7 @@ import {
   type Request,
   type RequestId,
   type RequestResponse,
+  type EventData,
   type RunId,
   type RunnerId,
   type ThreadId,
@@ -207,6 +208,11 @@ export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionR
 }
 
 export interface BrowserSessionRepository {
+  recordRunPlace(input: {
+    readonly runId: RunId;
+    readonly bindingGeneration: number;
+    readonly data: EventData<"place.entered">;
+  }): Promise<AgentEvent | undefined>;
   findMainWorkspaceForOwner(
     ownerId: UserId,
   ): Promise<{ readonly id: WorkspaceId } | null | undefined>;
@@ -655,6 +661,11 @@ export class BrowserService {
   readonly #holdings = new Map<BrowserSessionId, ReadonlySet<string>>();
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
+  /**
+   * The tab each Run last entered, so only a move to another tab reaches the
+   * database; the durable check there still holds across a Host restart.
+   */
+  readonly #runPlaces = new Map<string, string>();
   readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   #validateLoginLease:
@@ -2382,6 +2393,37 @@ export class BrowserService {
     if (broker.geometryOf(activity.surfaceId) !== activity.geometryRevision)
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
+    const page = broker.pageOf(activity.surfaceId);
+    const placeKey = `${sessionId}:${activity.surfaceId}`;
+    const runId = actor.runId;
+    if (page && this.#runPlaces.get(runId) !== placeKey) {
+      this.#runPlaces.set(runId, placeKey);
+      const data: EventData<"place.entered"> = {
+        place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
+        title: page.title.slice(0, 256),
+        site: (() => {
+          try {
+            const origin = new URL(page.site).origin;
+            return origin === "null" ? null : origin;
+          } catch {
+            return null;
+          }
+        })(),
+      };
+      void this.#serializeKey(`place:${runId}`, async () => {
+        const event = await this.#repository.recordRunPlace({
+          runId,
+          bindingGeneration: actor.generation,
+          data,
+        });
+        if (event) this.#onWorkspaceEvent(event);
+      }).catch((error: unknown) => {
+        // The next action in this tab tries again, unless the Run has moved on since.
+        if (this.#runPlaces.get(runId) === placeKey) this.#runPlaces.delete(runId);
+        this.#onError(error);
+      });
+    }
+
     if (actor.lastSurfaceId !== activity.surfaceId) {
       actor.lastSurfaceId = activity.surfaceId;
       void this.#repository
@@ -2727,6 +2769,15 @@ export class BrowserService {
   }
 
   /**
+   * Lets the places a Run has entered so far land before its terminal event is
+   * committed. It ends nothing: the event may yet be refused, or the Run go on.
+   */
+  async drainRunPlaces(runId: RunId): Promise<void> {
+    // A refused write was reported where it failed; it must not hold up the Run's end.
+    await this.#sessionOperations.get(`place:${runId}`)?.catch(() => undefined);
+  }
+
+  /**
    * A Run's end releases every session it held; the sessions themselves stay
    * open. Its agent stops acting in them at once, and any command of its that
    * answers afterwards does not make it look acting again.
@@ -2735,6 +2786,11 @@ export class BrowserService {
     agentBindingId: string,
   ): Promise<readonly BrowserSessionId[]> {
     this.#forgetAgentBinding(agentBindingId);
+    if (agentBindingId.startsWith("run:")) {
+      const runId = agentBindingId.slice(4);
+      await this.#sessionOperations.get(`place:${runId}`)?.catch(() => undefined);
+      this.#runPlaces.delete(runId);
+    }
     const records = await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
     const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
     for (const workspaceId of new Set(records.map((record) => record.workspaceId))) {

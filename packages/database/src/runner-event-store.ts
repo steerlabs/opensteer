@@ -657,7 +657,7 @@ function storableJson<Value>(value: Value): Value {
   ) as Value;
 }
 
-function storableText(text: string): string {
+export function storableText(text: string): string {
   return text.toWellFormed().replaceAll("\u0000", "\uFFFD");
 }
 

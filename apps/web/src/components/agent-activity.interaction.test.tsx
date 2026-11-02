@@ -6,6 +6,8 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   MessageEntry,
+  PlaceEntry,
+  BrowserSessionSummary,
   ReasoningEntry,
   RunEntry,
   ToolEntry,
@@ -16,17 +18,34 @@ import {
   mockComputerUseToolRefs,
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
-import { createId, ThreadIdSchema, WorkspaceIdSchema, RunnerIdSchema } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  createId,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+  RunnerIdSchema,
+} from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
+import type { WorkspaceNavigation } from "./workspace/navigation.js";
 import { useWorkspaceNavigation } from "./workspace/navigation.js";
 import { WorkspaceProvider } from "./workspace/workspace-context.js";
 
 /** Chips open places through the workspace's navigation, as they do in the app. */
-function TestWorkspace({ children }: { readonly children: React.ReactNode }) {
+function TestWorkspace({
+  children,
+  onShow,
+}: {
+  readonly children: React.ReactNode;
+  readonly onShow?: WorkspaceNavigation["showPlace"];
+}) {
   const nav = useWorkspaceNavigation({ deploymentId: null, userId: null }, null);
   return (
-    <WorkspaceProvider attention={0} nav={nav} openDrawer={() => undefined}>
+    <WorkspaceProvider
+      attention={0}
+      nav={onShow ? { ...nav, showPlace: onShow } : nav}
+      openDrawer={() => undefined}
+    >
       {children}
     </WorkspaceProvider>
   );
@@ -37,6 +56,7 @@ const roots: Root[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 let sequence = 0;
@@ -585,6 +605,21 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
   click(steps);
   expect(steps?.getAttribute("aria-expanded")).toBe("false");
   expect(container.querySelector(".trace-step")).toBeNull();
+  expect(container.querySelector(".surface-chip")).toBeNull();
+  act(() =>
+    root.render(
+      <MemoryRouter>
+        <TestWorkspace>
+          <AgentTranscript
+            entries={entries.map((entry) =>
+              entry.kind === "run" ? { ...entry, status: "completed" } : entry,
+            )}
+            computers={{ hostClient: client, machines: [machine] }}
+          />
+        </TestWorkspace>
+      </MemoryRouter>,
+    ),
+  );
   const chip = container.querySelector<HTMLAnchorElement>(
     `a[aria-label="Open ${machine.name}, agent working"]`,
   );
@@ -673,6 +708,7 @@ describe("task mark bylines", () => {
 });
 
 it("keeps a silent automatic turn through pending Stop and its kept window", async () => {
+  vi.useFakeTimers();
   const client = new MockHostClient({ latencyMs: 0 });
   const machine = client.getSnapshot().machines.find((m) => m.device?.form === "phone")!;
   const session = machine.computerUse!.sessions[0]!;
@@ -712,11 +748,171 @@ it("keeps a silent automatic turn through pending Stop and its kept window", asy
   draw(true);
   expect(container.textContent).toContain("Stopping");
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.advanceTimersByTimeAsync(50);
   });
   expect(container.textContent).toContain("Stopped using");
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 3100));
+    await vi.advanceTimersByTimeAsync(3100);
   });
   expect(container.textContent).not.toContain("Stopped using");
 }, 10000);
+
+describe("page rail", () => {
+  function fixture() {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const original = client
+      .getSnapshot()
+      .browserSessions.find((session) => session.tabCatalog?.tabs.length)!;
+    const tab = original.tabCatalog!.tabs[0]!;
+    const session: BrowserSessionSummary = {
+      ...original,
+      attachedRunIds: [run.runId!],
+      uses: [
+        {
+          runId: run.runId!,
+          tabId: tab.id,
+          threadId: "thread-1",
+          firstUsedAt: run.createdAt,
+          lastUsedAt: run.createdAt,
+        },
+      ],
+      tabCatalog: {
+        ...original.tabCatalog!,
+        tabs: [
+          {
+            ...tab,
+            occupants: [
+              {
+                threadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
+                home: false,
+                holding: true,
+                acting: true,
+                lastActiveAt: run.createdAt,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const stop: PlaceEntry = {
+      kind: "place",
+      id: "first-stop",
+      createdAt: run.createdAt,
+      runId: run.runId!,
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(session.id),
+        surfaceId: tab.id,
+      },
+      title: "Recorded page",
+      site: "https://recorded.example",
+    };
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const show = vi.fn();
+    const draw = (entries: TranscriptEntry[], sessions = [session], conversation = false) =>
+      act(() =>
+        root.render(
+          <MemoryRouter>
+            <TestWorkspace onShow={show}>
+              <AgentTranscript
+                entries={entries}
+                browserSessions={sessions}
+                conversation={conversation}
+                threadId="thr_00000000-0000-4000-8000-000000000001"
+              />
+            </TestWorkspace>
+          </MemoryRouter>,
+        ),
+      );
+    return { client, container, show, draw, stop, session };
+  }
+  it("opens the exact recorded stop, preserves modifier clicks and makes ended stops non-links", () => {
+    const f = fixture();
+    try {
+      f.draw([{ ...run, status: "running" }, f.stop]);
+      const link = f.container.querySelector<HTMLAnchorElement>("a.trace-place")!;
+      expect(link.textContent).toContain("Recorded page");
+      expect(link.textContent).toContain("recorded.example");
+      for (const modifier of ["metaKey", "ctrlKey", "shiftKey"]) {
+        const event = new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          [modifier]: true,
+        });
+        act(() => link.dispatchEvent(event));
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(f.show).not.toHaveBeenCalled();
+      click(link);
+      expect(f.show).toHaveBeenCalledExactlyOnceWith({
+        kind: "browser",
+        sessionId: f.session.id,
+        tabId: f.stop.place.kind === "browser" ? f.stop.place.surfaceId : "",
+      });
+      f.draw([{ ...run, status: "running" }, f.stop], [{ ...f.session, state: "closed" }]);
+      expect(f.container.querySelector("a.trace-place")).toBeNull();
+      expect(f.container.querySelector('.trace-place--ended[role="img"]')).not.toBeNull();
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("lights only the latest stop while its turn is live, and folds historical stops", () => {
+    const f = fixture();
+    try {
+      const newer = { ...f.stop, id: "newest" };
+      f.draw([{ ...run, status: "running" }, f.stop, newer]);
+      const stops = f.container.querySelectorAll(".trace-place");
+      expect(stops).toHaveLength(2);
+      expect(stops[0]!.querySelector(".live-dot")).toBeNull();
+      expect(stops[1]!.querySelector(".live-dot")).not.toBeNull();
+      f.draw([run, f.stop, newer]);
+      expect(f.container.querySelector(".trace-place")).toBeNull();
+      click(status(f.container));
+      expect(f.container.querySelectorAll(".trace-place")).toHaveLength(2);
+      expect(f.container.querySelector(".trace-place .live-dot")).toBeNull();
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it.each(["interrupted", "failed"] as const)(
+    "keeps a %s reply's pages below its outcome",
+    (status) => {
+      const f = fixture();
+      try {
+        f.draw([
+          {
+            ...run,
+            status,
+            error:
+              status === "failed"
+                ? { code: "test", message: "Browser task failed", retryable: false }
+                : null,
+          },
+          note,
+        ]);
+        const outcome = f.container.querySelector(
+          status === "failed" ? ".run-failure" : ".run-note",
+        )!;
+        expect(outcome).not.toBeNull();
+        expect(outcome.nextElementSibling?.classList.contains("surface-chips")).toBe(true);
+        expect(f.container.querySelector(".viewfinder")).toBeNull();
+      } finally {
+        f.client.dispose();
+      }
+    },
+  );
+  it.each([false, true])("shows page chips only once settled (Chat: %s)", (conversation) => {
+    const f = fixture();
+    try {
+      f.draw([{ ...run, status: "running" }, note], [f.session], conversation);
+      expect(f.container.querySelector(".surface-chip")).toBeNull();
+      f.draw([{ ...run, replyMessageId: note.id }, note], [f.session], conversation);
+      expect(f.container.querySelector(".surface-chip")).not.toBeNull();
+    } finally {
+      f.client.dispose();
+    }
+  });
+});
