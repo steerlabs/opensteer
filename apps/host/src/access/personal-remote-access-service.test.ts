@@ -17,9 +17,6 @@ const authority = {
   },
 };
 
-/** Stands in for the row the owner claim writes when it establishes a session. */
-const machineLocalMarker = { authSessionId: "marked" } as const;
-
 describe("PersonalRemoteAccessService", () => {
   it("never contacts a stored Account link without a configured issuer", async () => {
     const link = accountLink("https://accounts.opensteer.test");
@@ -40,57 +37,50 @@ describe("PersonalRemoteAccessService", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects a remote administrator before route mutation", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const session = ownerSession();
-    const transaction = fakeTransaction({ machineLocal: false });
-    const database = fakeDatabase(transaction);
-    const service = new PersonalRemoteAccessService({
-      authority,
-      database: database as never,
-      identity: fakeIdentity(),
-      keys,
-    });
-
-    await expect(
-      service.configure(session, {
-        mode: "private",
-        routeOrigin: "https://personal.example.test",
-        schemaVersion: 1,
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-      message: "Remote access settings can be changed only on the Personal computer",
-    });
-    expect(transaction.updateTable).not.toHaveBeenCalled();
-  });
-
-  it("refuses every credential that is not this session's own browser cookie", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    // The marker is present for all of these: a token minted from a browser
-    // session names that session, so the marker alone travels with it.
-    const transaction = fakeTransaction({ machineLocal: true });
-    const service = new PersonalRemoteAccessService({
-      authority,
-      database: fakeDatabase(transaction) as never,
-      identity: fakeIdentity(),
-      keys,
-    });
-
+  it("admits owner administration from every credential family", async () => {
     for (const credentialKind of [
+      "browser-cookie",
       "native-oauth",
       "personal-remote-cookie",
       "personal-remote-header",
     ] as const) {
-      await expect(service.isMachineLocalSession(ownerSession(credentialKind))).resolves.toBe(
-        false,
-      );
-      await expect(service.issuePairingCode(ownerSession(credentialKind))).rejects.toMatchObject({
-        code: "forbidden",
-        message: "Remote access settings can be changed only on the Personal computer",
+      const fixture = configureDatabase({ generation: 0, mode: "off", routeOrigin: null });
+      const service = new PersonalRemoteAccessService({
+        authority,
+        database: fixture.database as never,
+        identity: fakeIdentity(),
+        keys: generateKeyPairSync("ed25519"),
       });
+      await expect(
+        service.configure(ownerSession(credentialKind), {
+          mode: "private",
+          routeOrigin: "https://private.example",
+          schemaVersion: 1,
+        }),
+      ).resolves.toMatchObject({ generation: 1, mode: "private" });
     }
-    await expect(service.isMachineLocalSession(ownerSession())).resolves.toBe(true);
+  });
+
+  it("refuses non-owners before any administration effect", async () => {
+    const fixture = configureDatabase({ generation: 0, mode: "off", routeOrigin: null });
+    const service = new PersonalRemoteAccessService({
+      authority,
+      database: fixture.database as never,
+      identity: fakeIdentity(),
+      keys: generateKeyPairSync("ed25519"),
+    });
+    const caller = ownerSession("personal-remote-header");
+    const session = {
+      ...caller.session,
+      user: { ...caller.session.user, instanceRole: "user" as const },
+    };
+    await expect(
+      service.configure({ session }, { mode: "off", routeOrigin: null, schemaVersion: 1 }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(service.issuePairingCode({ session })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(fixture.updated).not.toHaveBeenCalled();
   });
 
   it("disconnects the reachable computers exactly when the route generation moves", async () => {
@@ -132,23 +122,6 @@ describe("PersonalRemoteAccessService", () => {
       }),
     ).resolves.toMatchObject({ generation: 5 });
     expect(disconnectRunners).toHaveBeenCalledOnce();
-  });
-
-  it("does not let a remote administrator mint a new pairing capability", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const session = ownerSession();
-    const transaction = fakeTransaction({ machineLocal: false });
-    const service = new PersonalRemoteAccessService({
-      authority,
-      database: fakeDatabase(transaction) as never,
-      identity: fakeIdentity(),
-      keys,
-    });
-
-    await expect(service.issuePairingCode(session)).rejects.toMatchObject({
-      code: "forbidden",
-      message: "Remote access settings can be changed only on the Personal computer",
-    });
   });
 
   it("pins Account approval and publishes with the Host-owned linked credential", async () => {
@@ -495,7 +468,7 @@ describe("PersonalRemoteAccessService", () => {
       identity: fakeIdentity(),
       keys,
     });
-    const before = await service.status("machine-local");
+    const before = await service.status();
 
     await expect(
       service.publishConnectProjection(ownerSession(), {
@@ -505,7 +478,7 @@ describe("PersonalRemoteAccessService", () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(await service.status("machine-local")).toEqual(before);
+    expect(await service.status()).toEqual(before);
     expect(before).toMatchObject({
       generation: privateState.generation,
       mode: "private",
@@ -581,7 +554,7 @@ function ownerSession(
 
 /**
  * One optional row behind the chained builder, which is how both the
- * `machineLocalSessions` marker and an absent singleton read.
+ * an absent singleton read.
  */
 function rowQuery(row: { readonly authSessionId: string } | undefined) {
   return {
@@ -605,12 +578,6 @@ function rowQuery(row: { readonly authSessionId: string } | undefined) {
   };
 }
 
-function fakeDatabase(transaction: ReturnType<typeof fakeTransaction>) {
-  return {
-    transaction: () => ({ execute: (run: (value: unknown) => unknown) => run(transaction) }),
-  };
-}
-
 /**
  * The one stored remote-access row, answered from a mutable state object so a
  * second `configure` reads back exactly what the first one wrote.
@@ -626,6 +593,12 @@ function configureDatabase(initial: {
     forNoKeyUpdate() {
       return this;
     },
+    leftJoin() {
+      return this;
+    },
+    select() {
+      return this;
+    },
     selectAll() {
       return this;
     },
@@ -633,7 +606,7 @@ function configureDatabase(initial: {
       return this;
     },
   };
-  const marker = rowQuery(machineLocalMarker);
+  const marker = rowQuery(undefined);
   const absentAccountLink = rowQuery(undefined);
   const written: { generation?: number; mode?: string; routeOrigin?: string | null } = {};
   const updated = vi.fn(async () => ({ numUpdatedRows: 1n }));
@@ -701,7 +674,7 @@ function projectionDatabase(
     subject: `acct_${crypto.randomUUID()}`,
   };
   const localSessionQuery = {
-    executeTakeFirst: vi.fn(async () => machineLocalMarker),
+    executeTakeFirst: vi.fn(async () => undefined),
     forShare() {
       return this;
     },
@@ -713,7 +686,19 @@ function projectionDatabase(
     },
   };
   const remoteAccessQuery = {
-    executeTakeFirstOrThrow: vi.fn(async () => remoteAccessState),
+    executeTakeFirstOrThrow: vi.fn(async () => ({
+      ...remoteAccessState,
+      accountIssuer: link.issuer,
+      accountGeneration: link.linkGeneration,
+      accountState: link.state,
+      accountSubject: link.subject,
+    })),
+    leftJoin() {
+      return this;
+    },
+    select() {
+      return this;
+    },
     selectAll() {
       return this;
     },
@@ -723,6 +708,9 @@ function projectionDatabase(
   };
   const linkQuery = {
     executeTakeFirst: vi.fn(async () => link),
+    leftJoin() {
+      return this;
+    },
     select() {
       return this;
     },
@@ -765,7 +753,7 @@ function accountMutationDatabase(
   link: ReturnType<typeof accountLink>,
   remoteModes: readonly ("connect" | "off" | "private")[] = ["off"],
 ) {
-  const machineLocalQuery = rowQuery(machineLocalMarker);
+  const emptyQuery = rowQuery(undefined);
   let remoteModeRead = 0;
   const remoteAccessQuery = {
     executeTakeFirstOrThrow: vi.fn(async () => ({
@@ -785,6 +773,9 @@ function accountMutationDatabase(
     executeTakeFirst: vi.fn(async () => link),
     executeTakeFirstOrThrow: vi.fn(async () => link),
     forNoKeyUpdate() {
+      return this;
+    },
+    leftJoin() {
       return this;
     },
     select() {
@@ -838,7 +829,7 @@ function accountMutationDatabase(
     selectFrom: vi.fn((table: string) => {
       if (table === "personalRemoteAccess") return remoteAccessQuery;
       if (table === "personalRemoteAccountLink") return linkQuery;
-      return machineLocalQuery;
+      return emptyQuery;
     }),
   };
   const statusRemoteAccessQuery = {
@@ -846,7 +837,17 @@ function accountMutationDatabase(
       generation: 0,
       mode: "off",
       routeOrigin: null,
+      accountIssuer: link.issuer,
+      accountGeneration: link.linkGeneration,
+      accountState: link.state,
+      accountSubject: link.subject,
     })),
+    leftJoin() {
+      return this;
+    },
+    select() {
+      return this;
+    },
     selectAll() {
       return this;
     },
@@ -872,15 +873,5 @@ const remoteLoginId = "ses_00000000-0000-4000-8000-000000000042";
 function fakeIdentity() {
   return { announceSessionsEnded: vi.fn() } as unknown as IdentityService & {
     readonly announceSessionsEnded: ReturnType<typeof vi.fn>;
-  };
-}
-
-function fakeTransaction(input: { readonly machineLocal: boolean }) {
-  const sessionQuery = rowQuery(input.machineLocal ? machineLocalMarker : undefined);
-  return {
-    deleteFrom: vi.fn(),
-    executeQuery: vi.fn(async () => ({ rows: [] })),
-    selectFrom: vi.fn(() => sessionQuery),
-    updateTable: vi.fn(),
   };
 }

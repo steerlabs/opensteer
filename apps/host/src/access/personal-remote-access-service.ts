@@ -1,3 +1,7 @@
+import {
+  PersonalRemoteAdministration,
+  requirePersonalAdministrator,
+} from "./personal-remote-administration.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
@@ -35,17 +39,14 @@ import {
   PersonalPairingCodeSchema,
   PersonalRemoteAccessStatusSchema,
   PublishPersonalConnectProjectionRequestSchema,
-  RemotePersonalRemoteAccessStatusSchema,
   sessionExchangeDeliveryForClientSurface,
   ResumePersonalHostAccountLinkRequestSchema,
   type ConfigurePersonalRemoteAccessRequest,
   type IssuePersonalPairingCodeResponse,
   type PersonalPairingCodeCredential,
   type PersonalRemoteAccessStatus,
-  type RemotePersonalRemoteAccessStatus,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { AuthenticatedHostSession } from "../identity/auth.js";
 import type { HostKeyPair } from "../identity/host-keys.js";
 import { signHostDiscovery, signPersonalHostAccessRoute } from "../identity/host-keys.js";
 import { signPersonalHostAccountLinkProof } from "../identity/host-keys.js";
@@ -56,13 +57,6 @@ import {
   PersonalAccountLinkCancelledError,
   PersonalAccountLinkNotFoundError,
 } from "./account-directory-client.js";
-
-/**
- * Which side of the machine boundary is asking. The owner's own computer sees
- * the whole link; a session that arrived over a signed access route sees only
- * whether the link is usable.
- */
-export type PersonalRemoteAccessStatusCaller = "machine-local" | "remote";
 
 /**
  * What an exchange arm hands back: the response headers the delivery needs —
@@ -95,6 +89,7 @@ export interface PersonalRemoteSessionAuthenticator {
  * loopback-only; this service signs and fences optional HTTPS access routes.
  */
 export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthenticator {
+  readonly administration: PersonalRemoteAdministration;
   readonly #authority: PersonalHostAccessAuthority;
   readonly #database: Kysely<DatabaseSchema>;
   readonly #identity: IdentityService;
@@ -120,6 +115,12 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     readonly fetch?: typeof globalThis.fetch;
     readonly now?: () => Date;
   }) {
+    this.administration = new PersonalRemoteAdministration({
+      authorityEnvelope: signHostDiscovery(options.keys, options.authority),
+      database: options.database,
+      readAccess: () => this.status(),
+      accountIssuer: options.grantVerifier?.issuer ?? null,
+    });
     this.#authority = PersonalHostAccessAuthoritySchema.parse(options.authority);
     this.#database = options.database;
     this.#identity = options.identity;
@@ -130,56 +131,34 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     this.#disconnectRunners = options.disconnectRunners ?? (async () => undefined);
   }
 
-  /**
-   * Whether this session was established at the keyboard of the computer that
-   * runs this Host: the owner claim recorded a marker for it, and the caller
-   * presented that session's own browser cookie.
-   */
-  async isMachineLocalSession(caller: AuthenticatedHostSession): Promise<boolean> {
-    return this.#database
-      .transaction()
-      .execute((transaction) => machineLocalSession(transaction, caller));
-  }
-
-  status(caller: "machine-local"): Promise<PersonalRemoteAccessStatus>;
-  status(caller: "remote"): Promise<RemotePersonalRemoteAccessStatus>;
-  status(
-    caller: PersonalRemoteAccessStatusCaller,
-  ): Promise<PersonalRemoteAccessStatus | RemotePersonalRemoteAccessStatus>;
-  async status(
-    caller: PersonalRemoteAccessStatusCaller,
-  ): Promise<PersonalRemoteAccessStatus | RemotePersonalRemoteAccessStatus> {
-    const [state, account] = await Promise.all([
-      this.#database
-        .selectFrom("personalRemoteAccess")
-        .selectAll()
-        .where("singletonKey", "=", "personal")
-        .executeTakeFirstOrThrow(),
-      this.#database
-        .selectFrom("personalRemoteAccountLink")
-        .select(["issuer", "linkGeneration", "state", "subject"])
-        .where("singletonKey", "=", "opensteer-account")
-        .executeTakeFirst(),
-    ]);
+  async status(): Promise<PersonalRemoteAccessStatus> {
+    const state = await this.#database
+      .selectFrom("personalRemoteAccess")
+      .leftJoin("personalRemoteAccountLink", (join) =>
+        join.on("personalRemoteAccountLink.singletonKey", "=", "opensteer-account"),
+      )
+      .selectAll("personalRemoteAccess")
+      .select([
+        "personalRemoteAccountLink.issuer as accountIssuer",
+        "personalRemoteAccountLink.linkGeneration as accountGeneration",
+        "personalRemoteAccountLink.state as accountState",
+        "personalRemoteAccountLink.subject as accountSubject",
+      ])
+      .where("personalRemoteAccess.singletonKey", "=", "personal")
+      .executeTakeFirstOrThrow();
     const shared = {
       generation: Number(state.generation),
       mode: state.mode,
       route: state.mode === "off" ? null : this.#signedRoute(state),
       schemaVersion: 2,
     } as const;
-    if (caller === "remote") {
-      return RemotePersonalRemoteAccessStatusSchema.parse({
-        accountLink: account ? { state: account.state } : null,
-        ...shared,
-      });
-    }
     return PersonalRemoteAccessStatusSchema.parse({
-      accountLink: account
+      accountLink: state.accountIssuer
         ? {
-            generation: account.linkGeneration,
-            issuer: account.issuer,
-            state: account.state,
-            subject: account.subject,
+            generation: state.accountGeneration,
+            issuer: state.accountIssuer,
+            state: state.accountState,
+            subject: state.accountSubject,
           }
         : null,
       ...shared,
@@ -187,15 +166,15 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   }
 
   async configure(
-    caller: AuthenticatedHostSession,
+    caller: { readonly session: AuthenticatedSession },
     input: ConfigurePersonalRemoteAccessRequest | unknown,
+    afterResponse?: (effect: () => void) => void,
   ): Promise<PersonalRemoteAccessStatus> {
-    requireLocalOwner(caller.session);
+    requirePersonalAdministrator(caller.session);
     const request = ConfigurePersonalRemoteAccessRequestSchema.parse(input);
     let reconfigured = false;
     let ended: readonly AuthSessionId[] = [];
     await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       const current = await transaction
         .selectFrom("personalRemoteAccess")
@@ -254,25 +233,26 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       reconfigured = true;
     });
     // Their browser and realtime connections end with the logins, after commit.
-    this.#identity.announceSessionsEnded(ended);
+    const announce = () => this.#identity.announceSessionsEnded(ended);
+    if (afterResponse) afterResponse(announce);
+    else announce();
     // After the commit, never inside it: the computers reached this Deployment
     // over the route this generation replaced, so the new generation has to be
     // durable before their connections are taken away. Nothing is revoked —
     // each of them reconnects when a route exists again, and until then its
     // shell sessions have ended as the disconnection they are.
     if (reconfigured) await this.#disconnectRunners();
-    return this.status("machine-local");
+    return this.status();
   }
 
-  async issuePairingCode(
-    caller: AuthenticatedHostSession,
-  ): Promise<IssuePersonalPairingCodeResponse> {
-    requireLocalOwner(caller.session);
+  async issuePairingCode(caller: {
+    readonly session: AuthenticatedSession;
+  }): Promise<IssuePersonalPairingCodeResponse> {
+    requirePersonalAdministrator(caller.session);
     const now = this.#now();
     const code = PersonalPairingCodeSchema.parse(`osp_${randomBytes(32).toString("base64url")}`);
     const expiresAt = new Date(now.getTime() + pairingCodeLifetimeMilliseconds);
     const result = await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       const state = await transaction
         .selectFrom("personalRemoteAccess")
@@ -402,10 +382,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   }
 
   async approveAccountLink(
-    caller: AuthenticatedHostSession,
+    caller: { readonly session: AuthenticatedSession },
     input: IssuePersonalHostAccountLinkChallengeResponse | unknown,
   ) {
-    requireLocalOwner(caller.session);
+    requirePersonalAdministrator(caller.session);
     const challenge = ApprovePersonalHostAccountLinkRequestSchema.parse(input);
     if (!this.#grantVerifier || challenge.account.issuer !== this.#grantVerifier.issuer) {
       throw new OpensteerError({
@@ -433,9 +413,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         message: "Personal Host already holds an Opensteer Account link",
       });
     }
-    await this.#database
-      .transaction()
-      .execute((transaction) => requireMachineLocalSession(transaction, caller));
     const issuedAt = this.#now();
     const expiresAt = new Date(
       Math.min(
@@ -462,13 +439,12 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   }
 
   async consumeAccountLink(
-    caller: AuthenticatedHostSession,
+    caller: { readonly session: AuthenticatedSession },
     input: unknown,
   ): Promise<PersonalRemoteAccessStatus> {
-    requireLocalOwner(caller.session);
+    requirePersonalAdministrator(caller.session);
     const request = ConsumePersonalHostAccountLinkRequestSchema.parse(input);
     const stored = await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       return transaction
         .selectFrom("personalRemoteAccountLink")
@@ -479,7 +455,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     if (stored) {
       assertStoredAccountLinkConsume(stored, request);
       await this.#activateAccountLink(stored);
-      return this.status("machine-local");
+      return this.status();
     }
 
     if (!this.#grantVerifier) {
@@ -513,7 +489,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       });
     }
     const linked = await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       const existing = await transaction
         .selectFrom("personalRemoteAccountLink")
@@ -565,17 +540,16 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .executeTakeFirstOrThrow();
     });
     await this.#activateAccountLink(linked);
-    return this.status("machine-local");
+    return this.status();
   }
 
   async resumeAccountLink(
-    caller: AuthenticatedHostSession,
+    caller: { readonly session: AuthenticatedSession },
     input: unknown,
   ): Promise<PersonalRemoteAccessStatus> {
-    requireLocalOwner(caller.session);
+    requirePersonalAdministrator(caller.session);
     ResumePersonalHostAccountLinkRequestSchema.parse(input);
     const stored = await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       return transaction
         .selectFrom("personalRemoteAccountLink")
@@ -590,23 +564,29 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       });
     }
     await this.#activateAccountLink(stored);
-    return this.status("machine-local");
+    return this.status();
   }
 
-  async revokeAccountSessions(caller: AuthenticatedHostSession): Promise<void> {
-    requireLocalOwner(caller.session);
+  async revokeAccountSessions(
+    caller: { readonly session: AuthenticatedSession },
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<void> {
+    requirePersonalAdministrator(caller.session);
     const ended = await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       return await revokeConnectRemoteSessions(transaction);
     });
-    this.#identity.announceSessionsEnded(ended);
+    const announce = () => this.#identity.announceSessionsEnded(ended);
+    if (afterResponse) afterResponse(announce);
+    else announce();
   }
 
-  async removeAccountLink(caller: AuthenticatedHostSession): Promise<void> {
-    requireLocalOwner(caller.session);
+  async removeAccountLink(
+    caller: { readonly session: AuthenticatedSession },
+    afterResponse?: (effect: () => void) => void,
+  ): Promise<void> {
+    requirePersonalAdministrator(caller.session);
     await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);
     });
@@ -637,7 +617,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
 
     let ended: readonly AuthSessionId[] = [];
     await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);
       // Link removal is the authority boundary for Account-brokered access.
@@ -668,13 +647,16 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         });
       }
     });
-    this.#identity.announceSessionsEnded(ended);
+    const announce = () => this.#identity.announceSessionsEnded(ended);
+    if (afterResponse) afterResponse(announce);
+    else announce();
   }
 
-  async markHostedOAuthConnectionsForRepair(caller: AuthenticatedHostSession): Promise<void> {
-    requireLocalOwner(caller.session);
+  async markHostedOAuthConnectionsForRepair(caller: {
+    readonly session: AuthenticatedSession;
+  }): Promise<void> {
+    requirePersonalAdministrator(caller.session);
     await this.#database.transaction().execute(async (transaction) => {
-      await requireMachineLocalSession(transaction, caller);
       await transaction
         .updateTable("integrationConnections")
         .set({
@@ -876,13 +858,13 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     }
   }
 
-  async publishConnectProjection(caller: AuthenticatedHostSession, input: unknown): Promise<void> {
-    requireLocalOwner(caller.session);
+  async publishConnectProjection(
+    caller: { readonly session: AuthenticatedSession },
+    input: unknown,
+  ): Promise<void> {
+    requirePersonalAdministrator(caller.session);
     const request = PublishPersonalConnectProjectionRequestSchema.parse(input);
-    await this.#database
-      .transaction()
-      .execute((transaction) => requireMachineLocalSession(transaction, caller));
-    const status = await this.status("machine-local");
+    const status = await this.status();
     const linked = await this.#database
       .selectFrom("personalRemoteAccountLink")
       .selectAll()
@@ -942,10 +924,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   }
 
   async revokeConnectResource(
-    caller: AuthenticatedHostSession,
+    caller: { readonly session: AuthenticatedSession },
     input: RevokeConnectRequest | unknown,
   ): Promise<RevokeConnectResponse> {
-    requireLocalOwner(caller.session);
+    requirePersonalAdministrator(caller.session);
     const request = RevokeConnectRequestSchema.parse(input);
     if (request.hostInstanceId !== this.#authority.hostInstanceId) {
       throw new OpensteerError({
@@ -953,9 +935,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         message: "Personal Host authority changed before Connect could be revoked",
       });
     }
-    await this.#database
-      .transaction()
-      .execute((transaction) => requireMachineLocalSession(transaction, caller));
     const linked = await this.#database
       .selectFrom("personalRemoteAccountLink")
       .selectAll()
@@ -969,6 +948,28 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       });
     }
     return this.#accountClient(linked).revokePersonalConnect(request);
+  }
+
+  async connectCredential(
+    caller: { readonly session: AuthenticatedSession },
+    input:
+      | import("@opensteer/control-plane-protocol").ProvisionConnectRequest
+      | import("@opensteer/control-plane-protocol").RotateConnectCredentialRequest,
+    rotate: boolean,
+  ) {
+    requirePersonalAdministrator(caller.session);
+    const link = await this.#database
+      .selectFrom("personalRemoteAccountLink")
+      .selectAll()
+      .where("singletonKey", "=", "opensteer-account")
+      .where("state", "=", "active")
+      .executeTakeFirst();
+    if (!link)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Link an Opensteer Account before enabling Connect",
+      });
+    return this.#accountClient(link).connectCredential(input, rotate);
   }
 
   #accountClient(link: { readonly issuer: string; readonly hostCredential: string }) {
@@ -1203,45 +1204,6 @@ async function requireConnectDisabled(transaction: Transaction<DatabaseSchema>):
       code: "conflict",
       message: "Disable the Connect route before unlinking the Opensteer Account",
     });
-  }
-}
-
-/**
- * "At the keyboard" is two facts, both positive. The marker says this session
- * was established by spending the process-launch capability only the
- * application on this computer holds. The credential says the caller is that
- * session's own browser cookie: a native access token names the browser
- * session that authorized it, so a marker alone would travel off the computer
- * with the token.
- */
-async function machineLocalSession(
-  transaction: Transaction<DatabaseSchema>,
-  caller: AuthenticatedHostSession,
-): Promise<boolean> {
-  if (caller.credentialKind !== "browser-cookie") return false;
-  const marker = await transaction
-    .selectFrom("machineLocalSessions")
-    .select("authSessionId")
-    .where("authSessionId", "=", caller.session.id)
-    .forShare()
-    .executeTakeFirst();
-  return marker !== undefined;
-}
-
-async function requireMachineLocalSession(
-  transaction: Transaction<DatabaseSchema>,
-  caller: AuthenticatedHostSession,
-): Promise<void> {
-  if (await machineLocalSession(transaction, caller)) return;
-  throw new OpensteerError({
-    code: "forbidden",
-    message: "Remote access settings can be changed only on the Personal computer",
-  });
-}
-
-function requireLocalOwner(session: AuthenticatedSession): void {
-  if (session.user.instanceRole !== "administrator") {
-    throw new OpensteerError({ code: "forbidden", message: "Personal owner access required" });
   }
 }
 

@@ -24,10 +24,7 @@ export interface SettingsView {
   readonly administrator: boolean;
   readonly deployment: DesktopDeploymentSummary | null;
   readonly kind: DeploymentDisplayKind;
-  /**
-   * True when this Deployment's only identity is the implicit machine owner.
-   * This deployment-level fact is not evidence that this session is machine-local.
-   */
+  /** True when this Deployment's only identity is the implicit machine owner. */
   readonly machineOwner: boolean;
   readonly name: string;
   readonly facts: SettingsFacts;

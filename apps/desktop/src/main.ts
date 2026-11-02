@@ -119,6 +119,8 @@ import { DesktopPersonalAccountService } from "./account/personal-account-servic
 import { DesktopPersonalAccountMutationCoordinator } from "./account/personal-account-mutation.js";
 import { DesktopPersonalDirectoryProjection } from "./account/personal-directory-projection.js";
 import { DesktopPersonalHostRemoteAdapter } from "./supervisor/personal-host-remote-adapter.js";
+import { DesktopRemoteAdministrationExecutor } from "./connections/remote-administration-executor.js";
+import { ConnectOperationIdSchema } from "@opensteer/control-plane-protocol";
 import { DesktopPersonalRemoteAccessService } from "./connections/personal-remote-access.js";
 import { DesktopConnectCredentialStore } from "./secrets/connect-credential-store.js";
 import { VerifiedDesktopSecretCryptography } from "./secrets/verified-secret-cryptography.js";
@@ -646,7 +648,6 @@ async function runDesktop(
       })
     : null;
   const personalRemote = new DesktopPersonalRemoteAccessService({
-    auth: nativeAuth,
     connectFactory: (runtime) => {
       const supervisor = new CloudflaredConnectorSupervisor({
         fetch: serviceNetwork.fetch.bind(serviceNetwork),
@@ -665,7 +666,12 @@ async function runDesktop(
       return {
         management: accountConnect
           ? new PersonalHostConnectOrchestrator({
-              controlPlane: accountConnect,
+              controlPlane: {
+                provision: (_deploymentId, request) =>
+                  personalRemoteHost.connectCredential(runtime, request, false),
+                rotate: (_deploymentId, request) =>
+                  personalRemoteHost.connectCredential(runtime, request, true),
+              },
               deploymentId: runtime.discovery.deploymentId,
               projection: personalHostRemote,
               routes: personalHostRemote,
@@ -682,7 +688,6 @@ async function runDesktop(
       ? null
       : "Opensteer Connect isn't available yet.",
     host: personalHostRemote,
-    link: personalAccountLink,
     mutations: personalAccountMutations,
     runtime: personal,
   });
@@ -703,9 +708,52 @@ async function runDesktop(
     remote: personalRemote,
     runtime: personal,
   });
+  const remoteAdministrationExecutor = new DesktopRemoteAdministrationExecutor({
+    network: hostNetwork,
+    runtime: personal,
+    execute: async (operation, progress) => {
+      const detachRemote = personalRemote.subscribe((status) => progress(status.phase));
+      const detachAccount = personalAccount.subscribe((status) =>
+        progress(status.unlinkStep ?? status.status),
+      );
+      try {
+        const intent = operation.intent;
+        if (intent.action === "configure") {
+          if (intent.mode === "connect" && !(await personalHostRemote.status()).accountLink)
+            throw new Error("Link an Account from the device signing in before enabling Connect.");
+          await personalRemote.configure({
+            mode: intent.mode,
+            privateOrigin: intent.privateOrigin,
+          });
+        } else if (intent.action === "rotate") {
+          await personalRemote.rotate(
+            ConnectOperationIdSchema.parse(`cop_${operation.executionId}`),
+          );
+        } else if (intent.action === "unlink") {
+          await personalAccount.unlink();
+        } else {
+          const status = await personalAccount.status();
+          if (status.status === "unlinking") await personalAccount.unlink();
+          else await personalRemote.initialize();
+          await personalAccount.resumeActivatingLink();
+        }
+      } finally {
+        detachRemote();
+        detachAccount();
+      }
+    },
+  });
+  shutdown.add({
+    component: "remote-access-intents",
+    step: "stop",
+    order: 19,
+    timeoutMs: 1000,
+    stop: async () => remoteAdministrationExecutor.stop(),
+  });
   let personalAccountLinkResumeAttempted = false;
   const detachPersonalRemoteInitialization = personal.subscribe((status) => {
     if (shutdown.requested || status.state !== "ready") return;
+    void remoteAdministrationExecutor.connect();
     void personalRemote
       .initialize()
       .catch((error: unknown) =>
@@ -836,11 +884,6 @@ async function runDesktop(
   });
   await access.initialize();
   shutdown.signal.throwIfAborted();
-  const resumePersonalRemote = nativeAuth.subscribe((state) => {
-    if (!shutdown.requested && state.account.status === "signed-in") {
-      void personalRemote.resumeDesiredConnect().catch(() => undefined);
-    }
-  });
   const computerUseApprovalPanel = new ComputerUseApprovalPanel({
     screen,
     webPreferences: panelWebPreferences,
@@ -955,6 +998,7 @@ async function runDesktop(
     },
     bridgeToken,
     cloud: accountConnect,
+    accountLinkCourier: accountDirectory,
     fullDiskAccess: {
       check: () => probeFullDiskAccess(loaded.config.localExecution.nativeFsHelperBinary),
       closePanel: async () => fullDiskAccessPanel.close(),
@@ -1005,7 +1049,6 @@ async function runDesktop(
       status: () => passwords.status(),
       subscribe: (listener) => passwords.onStatusChanged(listener),
     },
-    personalRemote,
     portal: {
       openExternal: async (url) => {
         await shell.openExternal(url, { activate: true });
@@ -1196,7 +1239,6 @@ async function runDesktop(
       browserPresentation.endAll();
       powerMonitor.off("resume", refreshOnSystemResume);
       detachPersonalRemoteInitialization();
-      resumePersonalRemote();
       detachAccountDirectoryRefresh();
       detachOpenAtLogin();
       detachReopenMenu();

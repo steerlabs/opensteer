@@ -603,9 +603,8 @@ export async function accountSubjectsForUsers(
 /**
  * A Personal Deployment's Account identity, and whose it is.
  *
- * The link belongs to the one person who could make it: linking requires a
- * machine-local owner session, and that owner is the single administrator this
- * Host has. Mapping any other user to the link would hand somebody else's
+ * The link belongs to the Personal owner, who is the Host's single
+ * administrator. Mapping any other user to the link would hand somebody else's
  * phone a Deployment they merely have membership in, so the administrator is
  * checked rather than assumed even though a Personal Host has one user.
  */

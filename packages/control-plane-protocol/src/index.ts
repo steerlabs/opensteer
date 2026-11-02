@@ -395,7 +395,7 @@ export type PersonalHostAccountLinkProofEnvelope = z.infer<
 
 const maximumPersonalHostAccountLinkProofSigningBytes = 8 * 1_024;
 
-/** Exact bytes approved locally and signed by the Personal Host. */
+/** Exact owner-approved bytes signed by the Personal Host. */
 export function personalHostAccountLinkProofSigningBytes(
   documentInput: PersonalHostAccountLinkProofDocument,
 ): Uint8Array {

@@ -24,6 +24,7 @@ import type {
   RevokeConnectRequest,
 } from "@opensteer/control-plane-protocol";
 import {
+  ConnectCredentialResponseSchema,
   RevokeConnectRequestSchema,
   RevokeConnectResponseSchema,
 } from "@opensteer/control-plane-protocol";
@@ -284,10 +285,8 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     LocalBootstrapSchema.parse(
       await readBoundedJson(response, personalHostJsonOptions(64 * 1_024)),
     );
-    // Re-establish the machine-local session on every Host start. A session
-    // created before the positive machine-local marker existed remains a valid
-    // browser session, but it cannot control Personal reachability until this
-    // process-launch proof marks the fresh session.
+    // The process-launch capability bootstraps the desktop's ordinary owner
+    // session after every Host start; it grants no extra administrative powers.
     await this.claimOwner(origin, manifest, claimToken, signal);
     response = await this.#request(
       manifest.deploymentId,
@@ -548,6 +547,23 @@ export class NativePersonalRemoteHostControl {
     return PersonalRemoteAccessStatusSchema.parse(await this.#json(response));
   }
 
+  async connectCredential(
+    runtimeInput: PersonalHostRuntimeRecord,
+    input:
+      | import("@opensteer/control-plane-protocol").ProvisionConnectRequest
+      | import("@opensteer/control-plane-protocol").RotateConnectCredentialRequest,
+    rotate: boolean,
+  ) {
+    const runtime = PersonalHostRuntimeRecordSchema.parse(runtimeInput);
+    const response = await this.#request(
+      runtime.discovery.deploymentId,
+      runtime.localOrigin,
+      `/v1/personal-remote-access/connect-${rotate ? "rotate" : "provision"}`,
+      { body: input, method: "POST", origin: runtime.localOrigin, timeoutMs: 35_000 },
+    );
+    return ConnectCredentialResponseSchema.parse(await this.#json(response));
+  }
+
   async issuePairingCode(runtimeInput: PersonalHostRuntimeRecord) {
     const runtime = PersonalHostRuntimeRecordSchema.parse(runtimeInput);
     const response = await this.#request(
@@ -706,6 +722,7 @@ export class NativePersonalRemoteHostControl {
       readonly method: "DELETE" | "GET" | "POST" | "PUT";
       readonly origin: string;
       readonly signal?: AbortSignal;
+      readonly timeoutMs?: number;
     },
     allowErrorStatus = false,
   ): Promise<Response> {
@@ -713,7 +730,7 @@ export class NativePersonalRemoteHostControl {
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(clientTimeoutError("Personal Host request timed out.")),
-      this.#requestTimeoutMs,
+      input.timeoutMs ?? this.#requestTimeoutMs,
     );
     timeout.unref?.();
     const relayAccountAbort = () => controller.abort(input.signal?.reason);

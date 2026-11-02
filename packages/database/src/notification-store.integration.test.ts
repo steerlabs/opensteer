@@ -1897,8 +1897,8 @@ integration("notification decision boundary", () => {
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
       await makePersonalDeployment(`acct_${randomUUID()}`);
 
-      // The Workspace creator is an ordinary user here, so the link — which only
-      // a machine-local owner could have made — is not theirs to be reached by.
+      // The Workspace creator is an ordinary user here, so the owner's Account
+      // link does not make this Deployment reachable by that member.
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
     });
 

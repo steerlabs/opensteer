@@ -378,6 +378,19 @@ describe("PersonalHostConnectOrchestrator", () => {
     expect(fixture.projections.map(({ state }) => state)).toEqual(["ready"]);
   });
 
+  it("executes a remotely requested rotation with the Host operation identity", async () => {
+    const fixture = await orchestratorFixture();
+    await fixture.orchestrator.enable();
+    const id = ConnectOperationIdSchema.parse(`cop_${crypto.randomUUID()}`);
+    fixture.controlPlane.failNextRotateAfterMutation = true;
+    await expect(fixture.orchestrator.rotate(id)).rejects.toThrow(/response was lost/u);
+    await expect(fixture.orchestrator.rotate(id)).resolves.toMatchObject({
+      generation: 2,
+      state: "enabled",
+    });
+    expect(fixture.controlPlane.rotationMutations).toBe(1);
+  });
+
   it("does not rerun an already-completed rotation after the rotated credential is lost locally", async () => {
     const fixture = await orchestratorFixture();
     await fixture.orchestrator.enable();

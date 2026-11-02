@@ -59,7 +59,7 @@ interface BegunRevokeOperation {
   readonly resource?: CloudflareConnectResource;
 }
 
-type ConnectRevokeAuthority =
+type ConnectCallerAuthority =
   | { readonly kind: "account-owner"; readonly ownerAccountId: ControlPlaneAccountId }
   | { readonly authority: HostAuthority; readonly kind: "host" };
 
@@ -99,7 +99,7 @@ export class ConnectLifecycleService {
   }
 
   async provision(
-    ownerAccountId: ControlPlaneAccountId,
+    ownerAccountId: ControlPlaneAccountId | HostAuthority,
     deploymentIdInput: DeploymentId,
     requestInput: ProvisionConnectRequest,
   ): Promise<ConnectCredentialResponse> {
@@ -135,7 +135,7 @@ export class ConnectLifecycleService {
   }
 
   async rotateCredential(
-    ownerAccountId: ControlPlaneAccountId,
+    ownerAccountId: ControlPlaneAccountId | HostAuthority,
     deploymentIdInput: DeploymentId,
     requestInput: RotateConnectCredentialRequest,
   ): Promise<ConnectCredentialResponse> {
@@ -184,8 +184,8 @@ export class ConnectLifecycleService {
 
   /**
    * Lets an exact Personal Host authority reduce its own reachability without
-   * requiring a signed-in Account user. Provisioning and credential rotation
-   * deliberately remain Account-owner operations.
+   * requiring a signed-in Account user. The same exact Host credential fence
+   * also authorizes provisioning and rotation after an owner requests them.
    */
   async revokeForHost(
     authority: HostAuthority,
@@ -195,7 +195,7 @@ export class ConnectLifecycleService {
   }
 
   async #revoke(
-    authority: ConnectRevokeAuthority,
+    authority: ConnectCallerAuthority,
     deploymentId: DeploymentId,
     requestInput: RevokeConnectRequest,
   ): Promise<RevokeConnectResponse> {
@@ -304,14 +304,16 @@ export class ConnectLifecycleService {
 
   async #beginProvision(
     database: Kysely<ControlPlaneDatabaseSchema>,
-    ownerAccountId: ControlPlaneAccountId,
+    ownerAccountId: ControlPlaneAccountId | HostAuthority,
     deploymentId: DeploymentId,
     request: ProvisionConnectRequest,
   ): Promise<BegunCredentialOperation> {
     return database.transaction().execute(async (transaction) => {
-      const deployment = await requireManagedAuthority(
+      const deployment = await requireConnectCallerAuthority(
         transaction,
-        ownerAccountId,
+        typeof ownerAccountId === "string"
+          ? { kind: "account-owner", ownerAccountId }
+          : { kind: "host", authority: ownerAccountId },
         deploymentId,
         request,
       );
@@ -412,14 +414,16 @@ export class ConnectLifecycleService {
 
   async #beginCredentialRotation(
     database: Kysely<ControlPlaneDatabaseSchema>,
-    ownerAccountId: ControlPlaneAccountId,
+    ownerAccountId: ControlPlaneAccountId | HostAuthority,
     deploymentId: DeploymentId,
     request: RotateConnectCredentialRequest,
   ): Promise<BegunCredentialOperation> {
     return database.transaction().execute(async (transaction) => {
-      const deployment = await requireManagedAuthority(
+      const deployment = await requireConnectCallerAuthority(
         transaction,
-        ownerAccountId,
+        typeof ownerAccountId === "string"
+          ? { kind: "account-owner", ownerAccountId }
+          : { kind: "host", authority: ownerAccountId },
         deploymentId,
         request,
       );
@@ -483,12 +487,12 @@ export class ConnectLifecycleService {
 
   async #beginRevoke(
     database: Kysely<ControlPlaneDatabaseSchema>,
-    authority: ConnectRevokeAuthority,
+    authority: ConnectCallerAuthority,
     deploymentId: DeploymentId,
     request: RevokeConnectRequest,
   ): Promise<BegunRevokeOperation> {
     return database.transaction().execute(async (transaction) => {
-      const deployment = await requireConnectRevokeAuthority(
+      const deployment = await requireConnectCallerAuthority(
         transaction,
         authority,
         deploymentId,
@@ -696,9 +700,9 @@ export class ConnectLifecycleService {
   }
 }
 
-async function requireConnectRevokeAuthority(
+async function requireConnectCallerAuthority(
   transaction: Transaction<ControlPlaneDatabaseSchema>,
-  principal: ConnectRevokeAuthority,
+  principal: ConnectCallerAuthority,
   deploymentId: DeploymentId,
   fence: { readonly hostInstanceId: HostInstanceId },
 ): Promise<DeploymentRow> {

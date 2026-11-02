@@ -26,30 +26,14 @@ import {
 } from "../primitives.js";
 import { RemoteAccessSection } from "./remote-access.js";
 
-/**
- * Where you open Opensteer from — never what agents use, which is Computers.
- *
- * Which page this is follows from where the reader is: on the Mac a Personal
- * Opensteer runs on it is the remote-access switch; on a device that reached
- * that Mac from elsewhere it is this device's connection; on a server it is the
- * list of devices signed in. A browser on the Mac itself can only be told where
- * the switch is.
- */
+/** Every device administers the same Deployment and sees its own session inventory. */
 export function DevicesSettings({ view }: { readonly view: SettingsView }) {
-  if (view.facts.onThisComputer) return <RemoteAccessSection view={view} />;
-  if (view.facts.remote) return <RemoteDeviceSection view={view} />;
-  if (view.kind === "personal" && view.machineOwner) {
-    return (
-      <>
-        <DevicesHeader
-          lead={`To open ${view.name} from your phone or another computer, turn on remote access in the Opensteer app on ${view.name}.`}
-          view={view}
-        />
-        <ComputersPointer />
-      </>
-    );
-  }
-  return <SignedInDevicesSection view={view} />;
+  return (
+    <>
+      {view.kind === "personal" && view.administrator ? <RemoteAccessSection view={view} /> : null}
+      <SignedInDevicesSection view={view} />
+    </>
+  );
 }
 
 export function DevicesHeader({
@@ -62,7 +46,7 @@ export function DevicesHeader({
   return <SectionHeader lead={lead} title={settingsItem("devices", view.kind).label} />;
 }
 
-/** A server: every device you are signed in from, this one first. */
+/** Every device you are signed in from, this one first. */
 function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
   const sessions = useSessions();
   const current = sessions.list?.find((session) => session.current) ?? null;
@@ -78,57 +62,10 @@ function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
         loading={sessions.list === null}
         name={view.name}
       />
-      <OtherDevicesGroup home={null} sessions={sessions} />
+      <OtherDevicesGroup sessions={sessions} />
       <ComputersPointer />
     </>
   );
-}
-
-/**
- * A device that reached a Personal Opensteer from somewhere else. Leaving is
- * the one thing it can do to its own access; the switch that lets devices in
- * at all lives on the Mac it runs on.
- */
-function RemoteDeviceSection({ view }: { readonly view: SettingsView }) {
-  const sessions = useSessions();
-  const home = useHomeComputer();
-  const { deploymentAccess } = useShell();
-  const current = sessions.list?.find((session) => session.current) ?? null;
-  const through = remoteRouteLabel(view);
-  const origin = view.facts.desktop
-    ? (deploymentAccess?.deployments.find(({ id }) => id === view.deployment?.id)?.activeOrigin ??
-      view.deployment?.activeOrigin)
-    : window.location.origin;
-  const route = origin ? `${through} · ${origin}` : through;
-  return (
-    <>
-      <DevicesHeader
-        lead={`You’re using ${view.name} from this device. Turning remote access on or off happens on ${view.name}.`}
-        view={view}
-      />
-      <ThisDeviceGroup
-        current={current}
-        detail={current ? `${route} · since ${formatWhen(current.createdAt)}` : null}
-        loading={sessions.list === null}
-        name={view.name}
-      />
-      <OtherDevicesGroup
-        home={{ icon: home.icon, name: home.name ?? view.name, here: false }}
-        sessions={sessions}
-      />
-      <ComputersPointer />
-    </>
-  );
-}
-
-/**
- * How this device reached the Mac, in the words a person set it up with. A
- * browser has no catalog, so its own address is the only honest answer.
- */
-export function remoteRouteLabel(view: SettingsView): string {
-  if (view.deployment?.access === "connect") return "Through Opensteer Connect";
-  if (view.deployment?.access === "private") return "Through your private network";
-  return `At ${window.location.host}`;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -216,13 +153,7 @@ export function sessionActivity(lastSeenAt: string, now = new Date()): string {
   return /^\d+[mhd]$/u.test(relative) ? `Active ${relative} ago` : `Last active ${relative}`;
 }
 
-/**
- * The device the reader is holding, and the one way to leave from it.
- *
- * The note is the blast radius: this device stops reaching the place and the
- * place itself is untouched. It is "Disconnect", never "Sign out", which
- * belongs to the Opensteer Account and ends something far larger.
- */
+/** Removing this device ends its Host session independently of its Account sign-in. */
 function ThisDeviceGroup({
   current,
   detail,
@@ -266,7 +197,7 @@ function ThisDeviceGroup({
               onClick={disconnect}
               type="button"
             >
-              {pending ? "Disconnecting…" : "Disconnect"}
+              {pending ? "Removing…" : "Remove"}
             </button>
           }
           detail={detail}
@@ -286,43 +217,19 @@ function ThisDeviceGroup({
   );
 }
 
-/**
- * Every other device that can open this Opensteer, with a way to take that
- * away. The computer a Personal Opensteer runs on heads the list: it needs no
- * session, so its app's own sign-ins are folded into it rather than listed once
- * per launch.
- */
+/** Every other signed-in session, including the desktop bootstrap session. */
 export function OtherDevicesGroup({
   heading = "Other devices",
-  home,
   note = null,
   sessions,
 }: {
   readonly heading?: string;
-  readonly home: {
-    readonly here: boolean;
-    readonly icon: IconName;
-    readonly name: string;
-  } | null;
   readonly note?: string | null;
   readonly sessions: SessionsState;
 }) {
-  const others =
-    sessions.list?.filter((session) => !session.current && !session.machineLocal) ?? [];
+  const others = sessions.list?.filter((session) => !session.current) ?? [];
   return (
     <SettingsGroup heading={heading} headingId="settings-other-devices-heading" note={note}>
-      {home ? (
-        <SettingsRow
-          detail="Opensteer runs here, so it always has access."
-          icon={home.icon}
-          title={
-            <>
-              {home.name}
-              {home.here ? <HerePin /> : null}
-            </>
-          }
-        />
-      ) : null}
       {others.map((session) => (
         <SettingsRow
           action={
@@ -344,7 +251,7 @@ export function OtherDevicesGroup({
       ))}
       {sessions.list === null ? (
         <LoadingRows label="Loading devices" rows={2} />
-      ) : others.length === 0 && !home ? (
+      ) : others.length === 0 ? (
         <p className="card__empty">No other devices are signed in.</p>
       ) : null}
       <SettingsError message={sessions.error} />
@@ -365,13 +272,7 @@ export function ComputersPointer() {
   );
 }
 
-/**
- * Ends the authenticated Host session regardless of how its credential reached
- * the Host. `auth.signOut` belongs only to the canonical Better Auth cookie;
- * native OAuth and PersonalRemote sessions use the same session row but a
- * different credential family. The Host deliberately permits each caller to
- * revoke its own current row.
- */
+/** Ends the current Host session for every credential family. */
 export async function revokeCurrentSession(
   hostClient: Pick<HostClient, "dispatch" | "rpc">,
 ): Promise<void> {

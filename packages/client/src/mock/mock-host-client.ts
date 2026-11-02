@@ -1883,6 +1883,22 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
+    "personal.remoteAccess.get": async (input, context) => {
+      if (input.after === client.remoteAdministration.revision)
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            client.remoteAdministrationListeners.delete(done);
+            context.signal.removeEventListener("abort", done);
+            resolve();
+          };
+          const timer = setTimeout(done, 20000);
+          client.remoteAdministrationListeners.add(done);
+          context.signal.addEventListener("abort", done, { once: true });
+          if (context.signal.aborted) done();
+        });
+      return rpcSuccess(client.remoteAdministration);
+    },
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
@@ -2726,6 +2742,38 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     // The preview never opens a session, so there is never one to stop.
     case "machine.access.session.stop":
       return rpcSuccess({ ended: false, type: command.type });
+    case "personal.remoteAccess.request": {
+      const id = globalThis.crypto.randomUUID();
+      client.remoteAdministration = {
+        ...client.remoteAdministration,
+        revision: client.remoteAdministration.revision + 1,
+        operation: {
+          id,
+          executionId: id,
+          intent: command.intent,
+          state: "pending",
+          detail: "Waiting for the Opensteer desktop app to run on this computer.",
+        },
+      };
+      for (const listener of client.remoteAdministrationListeners) listener();
+      return rpcSuccess({ type: command.type, operation: client.remoteAdministration.operation! });
+    }
+    case "personal.remoteAccess.pairing.create": {
+      if (client.remoteAdministration.access.mode !== "private")
+        throw mockConflict("Enable Private network access before creating a pairing code");
+      return rpcSuccess({
+        type: command.type,
+        pairing: {
+          code: `osp_${"m".repeat(43)}` as import("@opensteer/protocol").PersonalPairingCode,
+          expiresAt: new Date(Date.now() + 600000).toISOString(),
+          generation: client.remoteAdministration.access.generation,
+          schemaVersion: 1 as const,
+        },
+      });
+    }
+    case "personal.accountLink.approve":
+    case "personal.accountLink.complete":
+      return unsupportedMockRpc();
     case "session.revoke":
       await client.revokeSession(command.sessionId);
       return rpcSuccess({ type: command.type });
@@ -3659,6 +3707,17 @@ export class MockHostClient implements HostClient {
     body: string,
   ): void {
     this.#state.receiveAgentInput(threadId, MessageAuthorSchema.parse(author), body);
+  }
+
+  setPersonalRemoteAccessStatus(
+    access: import("@opensteer/protocol").PersonalRemoteAccessStatus,
+  ): void {
+    this.#state.remoteAdministration = {
+      ...this.#state.remoteAdministration,
+      access,
+      revision: this.#state.remoteAdministration.revision + 1,
+    };
+    for (const listener of this.#state.remoteAdministrationListeners) listener();
   }
 
   readonly getSnapshot = (): HostSnapshot => {
@@ -4611,6 +4670,25 @@ export class MockHostClient implements HostClient {
 }
 
 class MockHostState {
+  readonly remoteAdministrationListeners = new Set<() => void>();
+  remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
+    access: { accountLink: null, generation: 0, mode: "off", route: null, schemaVersion: 2 },
+    accountIssuer: null,
+    executorConnected: false,
+    operation: null,
+    revision: 0,
+    authorityEnvelope: {
+      document: {
+        canonicalOrigin: "http://127.0.0.1:4310",
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        hostKey: { algorithm: "Ed25519" },
+        deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      },
+      publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
+      signature: "A".repeat(86),
+    },
+  };
   readonly runPlaces = new RunPlaceStore();
   readonly searchSuggestionRequests: { readonly query: string; readonly at: number }[] = [];
   computerViews: MockComputerViews | undefined;
@@ -5263,7 +5341,6 @@ class MockHostState {
           form: "computer",
           id: createId("authSession"),
           lastSeenAt: "2026-09-14T00:00:00.000Z",
-          machineLocal: false,
         },
       ]),
     ];

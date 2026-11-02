@@ -24,7 +24,6 @@ import type {
 } from "@opensteer/protocol/desktop";
 import type { DeploymentAccessService } from "../connections/deployment-access-service.js";
 import type { DesktopHostTransport } from "../connections/host-transport.js";
-import type { DesktopPersonalRemoteAccessService } from "../connections/personal-remote-access.js";
 import type { LocalRunnerService } from "../supervisor/local-runner-service.js";
 import type { AccountConnectClient } from "@opensteer/client/connections";
 import type { ComputerUsePermissions } from "@opensteer/protocol";
@@ -36,6 +35,10 @@ export interface BridgeEnvelope {
 }
 
 export interface DesktopBridgeOptions {
+  readonly accountLinkCourier?: Pick<
+    import("@opensteer/client/connections").AccountDeploymentDirectoryService,
+    "issuePersonalHostAccountLinkChallenge" | "completePersonalHostAccountLink"
+  >;
   readonly webLinks?: DesktopWebLinks;
   readonly isWorkspaceContents?: (
     sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
@@ -188,10 +191,6 @@ export interface DesktopBridgeOptions {
     readonly status: () => Promise<DesktopPasswordsStatus>;
     readonly subscribe: (listener: (status: DesktopPasswordsStatus) => void) => () => void;
   };
-  readonly personalRemote: Pick<
-    DesktopPersonalRemoteAccessService,
-    "configure" | "issuePairingCode" | "status" | "subscribe"
-  >;
   readonly portal: {
     readonly openExternal: (url: string) => Promise<void>;
     /** The chosen folder, or null when the dialog was closed without one. */
@@ -215,7 +214,6 @@ export interface DesktopBridgeContext {
    * renderers a window's change is pushed to, and each only its own.
    */
   readonly passwordsSignInCards: Map<WebContents, Set<string>>;
-  readonly personalRemoteSenders: Set<WebContents>;
   readonly trackedHostSenders: Set<number>;
 }
 

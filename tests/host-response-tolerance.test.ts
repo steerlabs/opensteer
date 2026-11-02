@@ -9,6 +9,7 @@ import {
   SessionExchangeResponseSchema,
 } from "../packages/protocol/src/session-exchange.js";
 import {
+  PersonalHostAccountLinkProofEnvelopeSchema,
   CancelPersonalHostAccountLinkOperationResponseSchema,
   CompletePersonalHostAccountLinkResponseSchema,
   ControlPlaneErrorResponseSchema,
@@ -115,6 +116,11 @@ const responseRoots: SchemaLocation[] = [
 const verifiedVerbatim = new Set<RuntimeSchema>([
   schemaAt(HostDiscoveryEnvelopeSchema, "HostDiscoveryEnvelopeSchema"),
   schemaAt(PersonalHostAccessRouteEnvelopeSchema, "PersonalHostAccessRouteEnvelopeSchema"),
+  // The initiating device couriers these exact signed bytes to the Account verifier.
+  schemaAt(
+    PersonalHostAccountLinkProofEnvelopeSchema,
+    "PersonalHostAccountLinkProofEnvelopeSchema",
+  ),
 ]);
 
 const responseAudit = auditSchemas(responseRoots, verifiedVerbatim);

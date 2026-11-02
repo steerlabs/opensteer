@@ -1,3 +1,7 @@
+import {
+  handleIssuePersonalAccountLinkChallenge,
+  handleCompletePersonalAccountLink,
+} from "./methods/account-link-courier.js";
 import { personalWebLinksAvailable, WebLinkDeliveryOwner } from "./methods/web-links.js";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { dictationHandlers } from "./methods/dictation.js";
@@ -17,7 +21,6 @@ import {
   DesktopLocalExecutionStatusSchema,
   DesktopPasswordsSignInCardChangedSchema,
   DesktopPasswordsStatusSchema,
-  DesktopPersonalRemoteAccessStatusSchema,
 } from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "./desktop-bridge-channels.js";
 import type { DesktopBridgeContext, DesktopBridgeOptions } from "./context.js";
@@ -107,11 +110,6 @@ import {
   handleGetPasswordsStatus,
   handleOpenPasswords,
 } from "./methods/passwords.js";
-import {
-  handleConfigurePersonalRemoteAccess,
-  handleGetPersonalRemoteAccessStatus,
-  handleIssuePersonalPairingCode,
-} from "./methods/personal.js";
 import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
 
 export function registerDesktopBridge(options: DesktopBridgeOptions): () => void {
@@ -123,7 +121,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     options,
     passwordsSenders: new Set(),
     passwordsSignInCards: new Map(),
-    personalRemoteSenders: new Set(),
     trackedHostSenders: new Set(),
   };
   const unsubscribeDownloads = options.downloads.subscribe((snapshot) => {
@@ -170,14 +167,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     for (const sender of context.accessSenders) {
       if (!sender.isDestroyed()) {
         sender.send(desktopBridgeChannels.deploymentAccessSnapshotChanged, parsed);
-      }
-    }
-  });
-  const unsubscribePersonalRemote = options.personalRemote.subscribe((status) => {
-    const parsed = DesktopPersonalRemoteAccessStatusSchema.parse(status);
-    for (const sender of context.personalRemoteSenders) {
-      if (!sender.isDestroyed()) {
-        sender.send(desktopBridgeChannels.personalRemoteAccessStatusChanged, parsed);
       }
     }
   });
@@ -304,10 +293,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.createCloudDeployment, handleCreateCloudDeployment(context));
   register(desktopBridgeChannels.deleteCloudDeployment, handleDeleteCloudDeployment(context));
   register(desktopBridgeChannels.closeHostWebSocket, handleCloseHostWebSocket(context));
-  register(
-    desktopBridgeChannels.configurePersonalRemoteAccess,
-    handleConfigurePersonalRemoteAccess(context),
-  );
   register(desktopBridgeChannels.listCloudDeployments, handleListCloudDeployments(context));
   register(desktopBridgeChannels.retryCloudDeployment, handleRetryCloudDeployment(context));
   register(desktopBridgeChannels.connectPrivate, handleConnectPrivate(context));
@@ -317,10 +302,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     handleGetDeploymentAccessSnapshot(context),
   );
   register(desktopBridgeChannels.getLocalExecutionStatus, handleGetLocalExecutionStatus(context));
-  register(
-    desktopBridgeChannels.getPersonalRemoteAccessStatus,
-    handleGetPersonalRemoteAccessStatus(context),
-  );
   register(desktopBridgeChannels.hostRequest, handleHostRequest(context));
   register(desktopBridgeChannels.hostBinaryOpen, handleHostBinaryOpen(context));
   register(desktopBridgeChannels.hostBinaryWrite, handleHostBinaryWrite(context));
@@ -328,7 +309,14 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context));
   register(desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context));
   register(desktopBridgeChannels.installPortableFs, handleInstallPortableFs(context));
-  register(desktopBridgeChannels.issuePersonalPairingCode, handleIssuePersonalPairingCode(context));
+  register(
+    desktopBridgeChannels.issuePersonalAccountLinkChallenge,
+    handleIssuePersonalAccountLinkChallenge(context),
+  );
+  register(
+    desktopBridgeChannels.completePersonalAccountLink,
+    handleCompletePersonalAccountLink(context),
+  );
   register(desktopBridgeChannels.linkPersonal, handleLinkPersonal(context));
   const webLinkOwner = options.webLinks
     ? new WebLinkDeliveryOwner(
@@ -379,14 +367,12 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     visibilitySenders.clear();
     unsubscribeAccess();
     unsubscribeLocalExecution();
-    unsubscribePersonalRemote();
     unsubscribePasswords();
     unsubscribeSignIns();
     context.passwordsSignInCards.clear();
     context.accessSenders.clear();
     context.localExecutionSenders.clear();
     context.passwordsSenders.clear();
-    context.personalRemoteSenders.clear();
     for (const channel of Object.values(desktopBridgeChannels)) {
       options.ipcMain.removeHandler(channel);
     }

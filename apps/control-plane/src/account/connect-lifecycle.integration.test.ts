@@ -433,6 +433,52 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
     ).resolves.toEqual({ count: "1" });
   });
 
+  it("lets the linked Host provision and rotate, while rejecting stale and cross-Deployment authority before provider calls", async () => {
+    const fixture = await deploymentFixture(database, ownerAccountId);
+    const other = await deploymentFixture(database, otherAccountId, "other-host");
+    const authority = await store.authenticateHostCredential(`Bearer ${fixture.hostCredential}`);
+    await expect(
+      lifecycle.provision(
+        authority,
+        other.deploymentId,
+        provisionRequest(other, connectOperationId()),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      lifecycle.provision(authority, fixture.deploymentId, {
+        ...provisionRequest(fixture, connectOperationId()),
+        hostInstanceId: createId("hostInstance"),
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(provider.ensureCalls).toEqual([]);
+    await expect(
+      lifecycle.provision(
+        authority,
+        fixture.deploymentId,
+        provisionRequest(fixture, connectOperationId()),
+      ),
+    ).resolves.toMatchObject({ connectorCredentialGeneration: 1 });
+    await expect(
+      lifecycle.rotateCredential(authority, fixture.deploymentId, {
+        hostInstanceId: fixture.hostInstanceId,
+        operationId: connectOperationId(),
+      }),
+    ).resolves.toMatchObject({ connectorCredentialGeneration: 2 });
+    const calls = provider.rotateCalls;
+    await database
+      .updateTable("deploymentCredentials")
+      .set({ tokenHash: hashCredential(createHostCredential()) })
+      .where("deploymentId", "=", fixture.deploymentId)
+      .execute();
+    await expect(
+      lifecycle.rotateCredential(authority, fixture.deploymentId, {
+        hostInstanceId: fixture.hostInstanceId,
+        operationId: connectOperationId(),
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(provider.rotateCalls).toBe(calls);
+  });
+
   it("lets the exact Personal Host authority revoke and retry its own Connect resource", async () => {
     const fixture = await deploymentFixture(database, ownerAccountId);
     await lifecycle.provision(

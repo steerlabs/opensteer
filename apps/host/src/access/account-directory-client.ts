@@ -1,6 +1,11 @@
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isDeepStrictEqual } from "node:util";
 import {
+  ConnectCredentialResponseSchema,
+  ProvisionConnectRequestSchema,
+  RotateConnectCredentialRequestSchema,
+  type ProvisionConnectRequest,
+  type RotateConnectCredentialRequest,
   ActivatePersonalHostAccountLinkRequestSchema,
   ActivatePersonalHostAccountLinkResponseSchema,
   ConnectProjectionRequestSchema,
@@ -174,6 +179,28 @@ export class AccountDirectoryClient {
     }
   }
 
+  async connectCredential(
+    input: ProvisionConnectRequest | RotateConnectCredentialRequest,
+    rotate: boolean,
+  ) {
+    const request = rotate
+      ? RotateConnectCredentialRequestSchema.parse(input)
+      : ProvisionConnectRequestSchema.parse(input);
+    if (request.hostInstanceId !== this.#deployment.activeHostInstanceId)
+      throw new Error("Personal Connect authority does not match this Host");
+    const response = await this.#request(
+      rotate ? "/v1/host/connect/credential/rotate" : "/v1/host/connect/provision",
+      "POST",
+      request,
+      "Personal Connect credential",
+      undefined,
+      30_000,
+    );
+    return ConnectCredentialResponseSchema.parse(
+      await readBoundedJson(response, { ...boundedJsonOptions, maximumBytes: 32 * 1024 }),
+    );
+  }
+
   async revokePersonalConnect(input: RevokeConnectRequest): Promise<RevokeConnectResponse> {
     const request = RevokeConnectRequestSchema.parse(input);
     if (request.hostInstanceId !== this.#deployment.activeHostInstanceId) {
@@ -218,6 +245,7 @@ export class AccountDirectoryClient {
     body: unknown,
     label: string,
     handleFailure?: (response: Response) => Promise<void>,
+    timeoutMs = 15_000,
   ): Promise<Response> {
     let response: Response;
     try {
@@ -230,7 +258,7 @@ export class AccountDirectoryClient {
         },
         method,
         redirect: "manual",
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       throw new Error(`${label} API request failed`, { cause: error });

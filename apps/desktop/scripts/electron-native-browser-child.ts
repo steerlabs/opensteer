@@ -1372,14 +1372,6 @@ function bridgeOptions(
       status: unavailable,
       subscribe,
     },
-    personalRemote: {
-      configure: unavailable,
-      issuePairingCode: unavailable,
-      get status() {
-        return unavailable();
-      },
-      subscribe,
-    },
     portal: { openExternal: unavailable, pickFolder: unavailable },
     runner: {
       portableFs: unavailable,

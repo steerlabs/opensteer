@@ -431,7 +431,10 @@ describe("Host signing keys", () => {
       } as never,
       discovery: testDiscovery,
       personalRemoteAccess: {
-        service: { accountSessionExchangeEnabled: () => true } as never,
+        service: {
+          administration: { close: () => {} },
+          accountSessionExchangeEnabled: () => true,
+        } as never,
       },
       realtime: testRealtime(),
     } satisfies HostServerTestOverrides);
@@ -1281,7 +1284,7 @@ describe("rpc envelope", () => {
     }
   });
 
-  it("holds session revocation to an exact-origin request whatever the credential", async () => {
+  it("allows header session revocation and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
@@ -1316,16 +1319,20 @@ describe("rpc envelope", () => {
       const bearer = await injectRpcRequest(app, "commands.dispatch", command, {
         authorization: "Bearer header.payload.signature",
       });
-      expect(bearer.statusCode).toBe(403);
-      expect(bearer.json()).toMatchObject({ error: { code: "forbidden" }, ok: false });
-      expect(revokeSession).not.toHaveBeenCalled();
+      expect(bearer.statusCode, bearer.body).toBe(200);
+      const hostile = await injectRpcRequest(app, "commands.dispatch", command, {
+        cookie: "opensteer.session=test",
+        origin: "https://hostile.example",
+      });
+      expect(hostile.statusCode).toBe(403);
+      expect(revokeSession).toHaveBeenCalledOnce();
 
       const fromBrowser = await injectRpcRequest(app, "commands.dispatch", command, {
         cookie: "opensteer.session=test",
         origin: "https://opensteer.example",
       });
       expect(fromBrowser.statusCode, fromBrowser.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, command.sessionId);
+      expect(revokeSession).toHaveBeenCalledWith(session, command.sessionId, expect.any(Function));
     } finally {
       await app.close();
     }
@@ -1370,7 +1377,7 @@ describe("rpc envelope", () => {
       );
 
       expect(own.statusCode, own.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, session.id);
+      expect(revokeSession).toHaveBeenCalledWith(session, session.id, expect.any(Function));
     } finally {
       await app.close();
     }
@@ -1405,13 +1412,13 @@ describe("rpc envelope", () => {
       );
 
       expect(own.statusCode, own.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, session.id);
+      expect(revokeSession).toHaveBeenCalledWith(session, session.id, expect.any(Function));
     } finally {
       await app.close();
     }
   });
 
-  it("still refuses a header credential ending somebody else's session", async () => {
+  it("allows a header credential to request removal of another session owned by its user", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
@@ -1449,15 +1456,14 @@ describe("rpc envelope", () => {
 
       // Signing this device out is one thing; ending another device's access
       // is the owner's move and still wants the owner's browser.
-      expect(other.statusCode).toBe(403);
-      expect(other.json()).toMatchObject({ error: { code: "forbidden" }, ok: false });
-      expect(revokeSession).not.toHaveBeenCalled();
+      expect(other.statusCode, other.body).toBe(200);
+      expect(revokeSession).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
   });
 
-  it("holds integration uninstall to an exact-origin request whatever the credential", async () => {
+  it("allows header integration uninstall and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const authenticator = new HostAuthenticator({
       identity: {
@@ -1505,9 +1511,13 @@ describe("rpc envelope", () => {
       const bearer = await injectRpcRequest(app, "commands.dispatch", command, {
         authorization: "Bearer header.payload.signature",
       });
-      expect(bearer.statusCode).toBe(403);
-      expect(bearer.json()).toMatchObject({ error: { code: "forbidden" }, ok: false });
-      expect(uninstallIntegration).not.toHaveBeenCalled();
+      expect(bearer.statusCode, bearer.body).toBe(200);
+      const hostile = await injectRpcRequest(app, "commands.dispatch", command, {
+        cookie: "opensteer.session=test",
+        origin: "https://hostile.example",
+      });
+      expect(hostile.statusCode).toBe(403);
+      expect(uninstallIntegration).toHaveBeenCalledOnce();
 
       const fromBrowser = await injectRpcRequest(app, "commands.dispatch", command, {
         cookie: "opensteer.session=test",
@@ -1529,7 +1539,7 @@ describe("rpc envelope", () => {
     }
   });
 
-  it("refuses a listed command to a Personal remote session and leaves disconnecting open to it", async () => {
+  it("allows Personal remote administration and disconnecting", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const authenticator = new HostAuthenticator({
       identity: { ...testIdentity, requireSession: async () => session } as never,
@@ -1580,8 +1590,8 @@ describe("rpc envelope", () => {
         },
         remote,
       );
-      expect(uninstall.statusCode).toBe(403);
-      expect(uninstallIntegration).not.toHaveBeenCalled();
+      expect(uninstall.statusCode, uninstall.body).toBe(200);
+      expect(uninstallIntegration).toHaveBeenCalledOnce();
 
       // Disconnecting an account only ever reduces what agents can reach, and
       // the owner has to be able to do it from wherever they are.
@@ -1654,7 +1664,11 @@ describe("Agent Phone pairing target", () => {
         ? {}
         : {
             personalRemoteAccess: {
-              service: { accessRoute, accountSessionExchangeEnabled: () => false } as never,
+              service: {
+                administration: { close: () => {} },
+                accessRoute,
+                accountSessionExchangeEnabled: () => false,
+              } as never,
             },
           }),
     } satisfies HostServerTestOverrides);

@@ -240,14 +240,6 @@ async function run(): Promise<void> {
       sendWebSocket: unused,
     },
     ipcMain,
-    personalRemote: {
-      configure: unused,
-      issuePairingCode: unused,
-      get status() {
-        return unused();
-      },
-      subscribe,
-    },
     portal: { openExternal: unused, pickFolder: unused },
     runner: { portableFs: unused, remove: unused, start: unused, status: unused, subscribe },
   });

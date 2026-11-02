@@ -112,7 +112,7 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
-): HostApiHandlers {
+): Omit<HostApiHandlers, "personal.remoteAccess.get"> {
   return {
     "computer.app.windows": async (input, context) => {
       const owner = requireSession(context).user.id;
@@ -196,7 +196,7 @@ export function createHostApiHandlers(
       const output = await handleCoreCommand(command, context);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
     },
-  } satisfies HostApiHandlers;
+  } satisfies Omit<HostApiHandlers, "personal.remoteAccess.get">;
 }
 
 type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;

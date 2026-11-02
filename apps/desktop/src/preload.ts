@@ -1,4 +1,10 @@
 import {
+  IssuePersonalHostAccountLinkChallengeRequestSchema,
+  IssuePersonalHostAccountLinkChallengeResponseSchema,
+  CompletePersonalHostAccountLinkRequestSchema,
+  CompletePersonalHostAccountLinkResponseSchema,
+} from "@opensteer/control-plane-protocol";
+import {
   type DesktopAgentPhoneAdbBridge,
   DesktopAgentPhoneAdbOpenSchema,
   DesktopAgentPhoneAdbOpenResultSchema,
@@ -54,7 +60,6 @@ import type {
   DesktopComputerUseApprovalPresentation,
   DesktopComputerUseApprovalRespondInput,
   DesktopComputerUsePermissionsResult,
-  DesktopConfigurePersonalRemoteAccessInput,
   DesktopConnectPrivateDeploymentInput,
   DesktopFullDiskAccessStatus,
   DesktopOpenComputerUsePermissionsPanelResult,
@@ -78,8 +83,6 @@ import type {
   DesktopOpenIntegrationAuthorizationInput,
   DesktopOpenIntegrationAuthorizationResult,
   DesktopPickFolderResult,
-  DesktopPersonalPairingCode,
-  DesktopPersonalRemoteAccessStatus,
   DesktopRequestFullDiskAccessResult,
   DesktopRemoveAccountDeploymentInput,
   DesktopBadgeCountInput,
@@ -125,7 +128,6 @@ import {
   DesktopComputerUsePermissionsResultSchema,
   DesktopOpenComputerUsePermissionsPanelResultSchema,
   DesktopOpenComputerUseSettingsInputSchema,
-  DesktopConfigurePersonalRemoteAccessInputSchema,
   DesktopCloudDeploymentOperationInputSchema,
   DesktopDeleteCloudDeploymentInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
@@ -149,8 +151,6 @@ import {
   DesktopOpenHostWebSocketResultSchema,
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
-  DesktopPersonalPairingCodeSchema,
-  DesktopPersonalRemoteAccessStatusSchema,
   DesktopRequestFullDiskAccessResultSchema,
   DesktopRemoveAccountDeploymentInputSchema,
   DesktopBadgeCountInputSchema,
@@ -603,11 +603,22 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.closeHostWebSocket,
       DesktopCloseHostWebSocketInputSchema.parse(input),
     ),
-  configurePersonalRemoteAccess: async (input: DesktopConfigurePersonalRemoteAccessInput) =>
-    DesktopPersonalRemoteAccessStatusSchema.parse(
-      await invoke<DesktopPersonalRemoteAccessStatus>(
-        desktopBridgeChannels.configurePersonalRemoteAccess,
-        DesktopConfigurePersonalRemoteAccessInputSchema.parse(input),
+  issuePersonalAccountLinkChallenge: async (
+    input: import("@opensteer/control-plane-protocol").IssuePersonalHostAccountLinkChallengeRequest,
+  ) =>
+    IssuePersonalHostAccountLinkChallengeResponseSchema.parse(
+      await invoke(
+        desktopBridgeChannels.issuePersonalAccountLinkChallenge,
+        IssuePersonalHostAccountLinkChallengeRequestSchema.parse(input),
+      ),
+    ),
+  completePersonalAccountLink: async (
+    input: import("@opensteer/control-plane-protocol").CompletePersonalHostAccountLinkRequest,
+  ) =>
+    CompletePersonalHostAccountLinkResponseSchema.parse(
+      await invoke(
+        desktopBridgeChannels.completePersonalAccountLink,
+        CompletePersonalHostAccountLinkRequestSchema.parse(input),
       ),
     ),
   connectPrivate: (input: DesktopConnectPrivateDeploymentInput) =>
@@ -642,12 +653,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   listCloudDeployments: async () =>
     ListCloudDeploymentsResponseSchema.parse(
       await invoke<ListCloudDeploymentsResponse>(desktopBridgeChannels.listCloudDeployments),
-    ),
-  getPersonalRemoteAccessStatus: async () =>
-    DesktopPersonalRemoteAccessStatusSchema.parse(
-      await invoke<DesktopPersonalRemoteAccessStatus>(
-        desktopBridgeChannels.getPersonalRemoteAccessStatus,
-      ),
     ),
   hostRequest: async (input: DesktopHostHttpRequest) =>
     DesktopHostHttpResultSchema.parse(
@@ -696,10 +701,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.installPortableFs,
       DesktopLocalExecutionInputSchema.parse(input),
     ),
-  issuePersonalPairingCode: async () =>
-    DesktopPersonalPairingCodeSchema.parse(
-      await invoke<DesktopPersonalPairingCode>(desktopBridgeChannels.issuePersonalPairingCode),
-    ),
   onDeploymentAccessSnapshotChanged: (listener: (snapshot: DeploymentAccessSnapshot) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
       listener(DeploymentAccessSnapshotSchema.parse(value));
@@ -722,16 +723,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ipcRenderer.on(desktopBridgeChannels.localExecutionStatusChanged, receive);
     return () =>
       ipcRenderer.removeListener(desktopBridgeChannels.localExecutionStatusChanged, receive);
-  },
-  onPersonalRemoteAccessStatusChanged: (
-    listener: (status: DesktopPersonalRemoteAccessStatus) => void,
-  ) => {
-    const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {
-      listener(DesktopPersonalRemoteAccessStatusSchema.parse(value));
-    };
-    ipcRenderer.on(desktopBridgeChannels.personalRemoteAccessStatusChanged, receive);
-    return () =>
-      ipcRenderer.removeListener(desktopBridgeChannels.personalRemoteAccessStatusChanged, receive);
   },
   onNotificationActivated: (listener: (target: DesktopNotificationTarget) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => {

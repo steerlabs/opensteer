@@ -914,7 +914,7 @@ export async function createHostRuntime(
     const browserSources = new BrowserSourceService({
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
-      currentRoute: async () => (await personalRemoteAccess?.status("remote"))?.route ?? null,
+      currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
       sign: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
       store: new BrowserSourceStore(database),
       requests: store.requests,

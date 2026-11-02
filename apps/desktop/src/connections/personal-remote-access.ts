@@ -8,8 +8,6 @@ import {
   type PersonalRemoteAccessStatus,
 } from "@opensteer/protocol";
 import type { ConnectOperationId } from "@opensteer/control-plane-protocol";
-import type { NativeOAuthManager } from "@opensteer/client/auth";
-import type { DesktopPersonalAccountLinkCoordinator } from "../account/personal-account-link.js";
 import { DesktopPersonalAccountMutationCoordinator } from "../account/personal-account-mutation.js";
 import type { DesktopPersonalHostRemoteAdapter } from "../supervisor/personal-host-remote-adapter.js";
 import type {
@@ -32,7 +30,6 @@ export interface PersonalHostConnectComponents {
 /** Desktop-owned policy coordinator for Off, Connect, and Private network.
  * Host revocation always commits before external connector work. */
 export class DesktopPersonalRemoteAccessService {
-  readonly #auth: Pick<NativeOAuthManager, "accountAuthorizationHeader" | "beginAccountSignIn">;
   readonly #connectFactory: (runtime: PersonalHostRuntimeRecord) => PersonalHostConnectComponents;
   #connectInstance: {
     readonly authority: string;
@@ -47,17 +44,14 @@ export class DesktopPersonalRemoteAccessService {
     | "issuePairingCode"
     | "status"
   >;
-  readonly #link: DesktopPersonalAccountLinkCoordinator;
   readonly #listeners = new Set<Listener>();
   readonly #mutations: DesktopPersonalAccountMutationCoordinator;
   readonly #runtime: PersonalHostRuntimeSource;
-  #pendingConnect = false;
   #shutdown = false;
   #shutdownPromise: Promise<void> | undefined;
   #status: DesktopPersonalRemoteAccessStatus = emptyStatus();
 
   constructor(options: {
-    readonly auth: Pick<NativeOAuthManager, "accountAuthorizationHeader" | "beginAccountSignIn">;
     readonly connectFactory: (runtime: PersonalHostRuntimeRecord) => PersonalHostConnectComponents;
     readonly connectUnavailableDetail?: string | null;
     readonly host: Pick<
@@ -68,15 +62,12 @@ export class DesktopPersonalRemoteAccessService {
       | "issuePairingCode"
       | "status"
     >;
-    readonly link: DesktopPersonalAccountLinkCoordinator;
     readonly mutations?: DesktopPersonalAccountMutationCoordinator;
     readonly runtime: PersonalHostRuntimeSource;
   }) {
-    this.#auth = options.auth;
     this.#connectFactory = options.connectFactory;
     this.#connectUnavailableDetail = options.connectUnavailableDetail ?? null;
     this.#host = options.host;
-    this.#link = options.link;
     this.#mutations = options.mutations ?? new DesktopPersonalAccountMutationCoordinator();
     this.#runtime = options.runtime;
   }
@@ -97,13 +88,6 @@ export class DesktopPersonalRemoteAccessService {
       if (!runtime) return this.#set(emptyStatus());
       const parsedRuntime = PersonalHostRuntimeRecordSchema.parse(runtime);
       const hostStatus = await this.#host.status();
-      if (this.#pendingConnect) {
-        const authorization = await this.#auth.accountAuthorizationHeader();
-        if (!authorization) {
-          return this.#set(fromHost(parsedRuntime, hostStatus, "linking-account", null, true));
-        }
-        return this.#enableConnect(parsedRuntime);
-      }
       const components = this.#connectFor(parsedRuntime);
       if (hostStatus.mode === "private") {
         // Private is an independent Host-owned route. Any stale Connect intent
@@ -147,7 +131,6 @@ export class DesktopPersonalRemoteAccessService {
       const runtime = await this.#requireRuntime();
       const current = await this.#host.status();
       if (request.mode === "connect") return this.#startConnect(runtime, current);
-      this.#pendingConnect = false;
       if (current.mode === "connect") {
         this.#set(fromHost(runtime, current, "revoking", null, true));
         const components = this.#connectFor(runtime);
@@ -187,13 +170,24 @@ export class DesktopPersonalRemoteAccessService {
     });
   }
 
+  rotate(operationId: ConnectOperationId): Promise<DesktopPersonalRemoteAccessStatus> {
+    return this.#serialize(async () => {
+      const runtime = await this.#requireRuntime();
+      const management = this.#connectFor(runtime).management;
+      if (!management) throw new Error("Connect is unavailable in this build.");
+      const result = await management.rotate(operationId);
+      if (result.state !== "enabled")
+        throw new Error(result.detail ?? "Connect credential rotation failed.");
+      return this.#set(fromHost(runtime, await this.#host.status()));
+    });
+  }
+
   resumeDesiredConnect(): Promise<DesktopPersonalRemoteAccessStatus> {
     return this.initialize();
   }
 
   shutdown(signal?: AbortSignal): Promise<void> {
     this.#shutdown = true;
-    this.#pendingConnect = false;
     this.#shutdownPromise ??= (async () => {
       if (!this.#connectInstance) return;
       const { management, teardown } = this.#connectInstance.value;
@@ -206,7 +200,6 @@ export class DesktopPersonalRemoteAccessService {
   disableConnectForUnlink(): Promise<DesktopPersonalRemoteAccessStatus> {
     return this.#runWithStatus(async () => {
       const runtime = await this.#requireRuntime();
-      this.#pendingConnect = false;
       const components = this.#connectFor(runtime);
       await this.#quiesceConnect(components);
       const current = await this.#host.status();
@@ -226,13 +219,10 @@ export class DesktopPersonalRemoteAccessService {
     runtime: PersonalHostRuntimeRecord,
     current: PersonalRemoteAccessStatus,
   ): Promise<DesktopPersonalRemoteAccessStatus> {
-    this.#pendingConnect = true;
-    const authorization = await this.#auth.accountAuthorizationHeader();
-    if (!authorization) {
-      this.#set(fromHost(runtime, current, "linking-account", null, true));
-      await this.#auth.beginAccountSignIn();
-      return this.#status;
-    }
+    if (current.accountLink?.state !== "active")
+      throw new Error(
+        "Link an Opensteer Account from the device signing in before enabling Connect.",
+      );
     return this.#enableConnect(runtime);
   }
 
@@ -244,7 +234,8 @@ export class DesktopPersonalRemoteAccessService {
       throw new Error(this.#connectUnavailableDetail ?? "Opensteer Connect is unavailable.");
     }
     this.#set(fromHost(runtime, await this.#host.status(), "linking-account", null, true));
-    await this.#link.ensureLinkedForMutation();
+    if ((await this.#host.status()).accountLink?.state !== "active")
+      throw new Error("Link an Opensteer Account before enabling Connect.");
     const current = await this.#host.status();
     if (current.mode === "private") await this.#host.disableConnect();
     this.#set(fromHost(runtime, await this.#host.status(), "provisioning", null, true));
@@ -252,7 +243,6 @@ export class DesktopPersonalRemoteAccessService {
     if (result.state !== "enabled") {
       throw new Error(result.detail ?? "Opensteer Connect could not be enabled.");
     }
-    this.#pendingConnect = false;
     return this.#set(fromHost(runtime, await this.#host.status()));
   }
 
