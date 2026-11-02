@@ -2,7 +2,7 @@ import { show } from "./navigation.js";
 import { voicePlaces } from "./places.js";
 import { VoiceController } from "@opensteer/client/voice";
 import { handlePersonShow } from "@opensteer/client/host";
-import { AppState, Keyboard } from "react-native";
+import { AppState } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useState, type ReactNode } from "react";
 import { paramsDestination } from "../browser/surface-route.js";
@@ -35,9 +35,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
         message,
         {
           foreground:
-            AppState.currentState === "active" &&
-            !Keyboard.isVisible() &&
-            params?.deploymentId === snapshot.deploymentId,
+            AppState.currentState === "active" && params?.deploymentId === snapshot.deploymentId,
           threadId:
             route?.name === "Home"
               ? snapshot.homeThreadId

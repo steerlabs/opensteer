@@ -1428,9 +1428,11 @@ function PersonShowNavigation({ hostClient }: { readonly hostClient: HostClient 
   const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
   personShowPort.current = (message) => {
     const match = /^\/threads\/([^/]+)/.exec(location.pathname);
-    const editing = document.activeElement?.closest(
+    // The composer is where the person asked; any other field is work in progress.
+    const field = document.activeElement?.closest(
       "input, textarea, [contenteditable=true], iframe",
     );
+    const editing = field && !field.hasAttribute("data-composer-input");
     handlePersonShow(
       hostClient.getSnapshot(),
       message,
