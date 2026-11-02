@@ -9,6 +9,25 @@ const cases = parseCases(
 
 describe("browser profile corpus", () => {
   it.each([
+    "show-old-asleep-gmail",
+    "show-gmail-follows-search-cursor",
+    "show-duplicate-tab-titles",
+    "show-current-run-place",
+  ])("rejects claimed viewing in %s", (id) => {
+    const testCase = cases.find((testCase) => testCase.id === id)!;
+    const calls = testCase.expect.calls.map((call) => ({ ...call, valid: true }));
+    expect(
+      grade(
+        testCase.expect,
+        calls,
+        "I sent a request to your connected devices; viewing is unconfirmed.",
+      ).every((check) => check.pass),
+    ).toBe(true);
+    expect(
+      grade(testCase.expect, calls, "I've shown it to you.").every((check) => check.pass),
+    ).toBe(false);
+  });
+  it.each([
     [
       "native-profile-site-data-unknown",
       "Site data is unknown; I cannot tell whether this profile is signed in.",

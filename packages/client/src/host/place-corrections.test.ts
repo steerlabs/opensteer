@@ -27,7 +27,7 @@ describe("round two place contracts", () => {
       client.dispose();
     }
   });
-  it("keeps latest-place across cursor expiry and reports a nullable destination on close", async () => {
+  it("keeps the Run place through cursor expiry and a closed browser", async () => {
     vi.useFakeTimers();
     const client = new MockHostClient({ latencyMs: 0, now: () => new Date(Date.now()) });
     try {
@@ -38,25 +38,19 @@ describe("round two place contracts", () => {
         (place) => place.kind === "browser" && place.occupants.some((occupant) => occupant.acting),
       )!;
       const threadId = place.occupants[0]!.threadId;
+      const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
       const changed = vi.fn();
-      client.subscribeLatestPlace(threadId, changed);
-      const latest = client.latestPlaceOfThread(threadId)!;
+      client.subscribeRunPlace(runId, changed);
+      const latest = client.runPlace(runId)!;
       expect(latest).not.toBeNull();
-      expect(latest.runId).toBe(
-        client.getSnapshot().runQueue.find((run) => run.threadId === threadId)?.id,
-      );
-      if (latest.destination?.kind !== "browser" || !latest.destination.tabId)
-        throw new Error("Expected browser");
+      const identity = latest.data.place;
+      if (identity.kind !== "browser") throw new Error("Expected browser");
       const session = client
         .getSnapshot()
-        .browserSessions.find(
-          ({ id }) => latest.destination?.kind === "browser" && id === latest.destination.sessionId,
-        )!;
-      await client.closeBrowserTab(session.id, latest.destination.tabId, session.tabCatalog!);
-      expect(client.latestPlaceOfThread(threadId)?.placeKey).toBe(latest.placeKey);
-      expect(client.latestPlaceOfThread(threadId)?.runId).toBe(latest.runId);
-      expect(client.latestPlaceOfThread(threadId)?.destination).toBeNull();
-      expect(changed).toHaveBeenCalled();
+        .browserSessions.find(({ id }) => id === identity.sessionId)!;
+      await client.closeBrowserTab(session.id, identity.surfaceId, session.tabCatalog!);
+      expect(client.runPlace(runId)).toBe(latest);
+      expect(changed).not.toHaveBeenCalled();
     } finally {
       client.dispose();
       vi.useRealTimers();

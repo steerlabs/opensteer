@@ -124,6 +124,8 @@ function expectedResponseType(type: AgentControlRequest["type"]): AgentControlRe
       return "assignment.cancel.result";
     case "person.notify":
       return "person.notify.result";
+    case "person.show":
+      return "person.show.result";
     case "thread.message":
       return "thread.message.result";
     case "thread.write":

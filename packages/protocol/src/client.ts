@@ -1,6 +1,7 @@
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
+  PlaceEnteredEventViewSchema,
   EnvironmentIdSchema,
   LiveRunProgressViewSchema,
   MessageViewSchema,
@@ -21,7 +22,11 @@ import {
 } from "@opensteer/core";
 import { BrowserProfileIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
-import { ThreadPlaceChangedSchema, PlaceActivityNoticeViewSchema } from "./places.js";
+import {
+  PersonShowMessageSchema,
+  ThreadPlaceChangedSchema,
+  PlaceActivityNoticeViewSchema,
+} from "./places.js";
 import { BrowserTabsChangedSchema, BrowserPresenceSchema } from "./browser.js";
 import { ProtocolErrorSchema } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
@@ -172,6 +177,8 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
     placeEvents: z.literal("include").optional(),
+    /** Requires `person-show-v1`; old subscribers receive no navigation requests. */
+    personShow: z.literal("accept").optional(),
     threadId: ThreadIdSchema.nullable(),
     workspaceId: WorkspaceIdSchema,
   }),
@@ -202,6 +209,15 @@ export const WorkspaceSnapshotSchema = z
     ),
     pendingRequestWindow: DurableWindowSchema,
     runQueue: z.array(ThreadRunQueueEntryViewSchema).max(workspaceSnapshotMaxRunQueueEntries),
+    /**
+     * Each nonterminal Run's newest `place.entered`, whatever the transcript
+     * window holds. Sent only to a subscriber that asked for place events;
+     * absence means the Host does not say, not that no Run is anywhere.
+     */
+    runPlaces: z
+      .array(PlaceEnteredEventViewSchema)
+      .max(workspaceSnapshotMaxRunQueueEntries)
+      .optional(),
     sequence: SequenceSchema,
     serializedBytes: z.number().int().positive().max(workspaceSnapshotMaxSerializedBytes),
     threadWindow: DurableWindowSchema,
@@ -293,6 +309,7 @@ export type ThreadEventPage = z.infer<typeof ThreadEventPageSchema>;
 const ProtocolErrorViewSchema = z.object(ProtocolErrorSchema.shape);
 
 export const HostToClientMessageSchema = z.discriminatedUnion("type", [
+  PersonShowMessageSchema,
   ComputerViewChangedSchema,
   ComputerViewRemovedSchema,
   z.object({

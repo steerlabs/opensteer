@@ -1,3 +1,5 @@
+import { placeIdentityKey } from "@opensteer/protocol";
+import { runPlaceDestination } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -244,9 +246,14 @@ describe("the review's findings", () => {
           release();
         };
       });
-      const latest = source.latestPlaceOfThread(source.getSnapshot().homeThreadId!);
+      const run = source
+        .getSnapshot()
+        .runQueue.find((run) => run.threadId === source.getSnapshot().homeThreadId);
+      const latest = run ? source.runPlace(run.id) : null;
       const other = placeList(source.getSnapshot()).find(
-        (item) => item.kind === "browser" && item.key !== latest?.placeKey,
+        (item) =>
+          item.kind === "browser" &&
+          item.key !== (latest ? placeIdentityKey(latest.data.place) : null),
       )!;
       return `/${tabSearch(other)}`;
     });
@@ -712,16 +719,23 @@ describe("the v7 web review's findings", () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
     await mount(`/threads/${threadId}`);
     await settle(200);
-    const before = client.latestPlaceOfThread(threadId);
-    expect(before?.placeKey).toMatch(/^phone:/u);
-    expect(before?.destination).toMatchObject({
+    const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
+    const before = client.runPlace(runId)!;
+    const destination = runPlaceDestination(before, client.getSnapshot());
+    expect(before.data.place.kind).toBe("phone");
+    expect(destination).toMatchObject({
       kind: "phone",
       computerSessionId: expect.any(String),
     });
     expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
     await openTile("Pixel 7");
     expect(element(".owner-view")).toBeTruthy();
-    const row = placeList(client.getSnapshot()).find((item) => item.key === before!.placeKey)!;
+    const row = placeList(client.getSnapshot()).find(
+      (item) =>
+        item.destination.kind === "phone" &&
+        destination?.kind === "phone" &&
+        item.destination.computerSessionId === destination.computerSessionId,
+    )!;
     // The sidebar keeps the task's row and the person's independent view.
     expect(row.destination).toMatchObject({ kind: "phone", computerSessionId: expect.any(String) });
     expect(row.ownerView).toBeNull();
@@ -729,7 +743,7 @@ describe("the v7 web review's findings", () => {
       placeList(client.getSnapshot()).some((place) => place.ownerView?.target.kind === "phone"),
     ).toBe(true);
     expect(row.occupants.map((occupant) => occupant.threadId)).toContain(threadId);
-    expect(client.latestPlaceOfThread(threadId)?.destination).toEqual(before!.destination);
+    expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
     expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
     // The person's view ending is not the task's: its reference stays live.
     const view = ownerViews().find((candidate) => candidate.target.kind === "phone")!;
@@ -737,7 +751,7 @@ describe("the v7 web review's findings", () => {
       await client.closeComputerView(view.viewId, view.generation);
     });
     await settle(60);
-    expect(client.latestPlaceOfThread(threadId)?.destination).toEqual(before!.destination);
+    expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
     expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
   });
 

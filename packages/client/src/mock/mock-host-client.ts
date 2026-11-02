@@ -1,3 +1,5 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
+import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
@@ -9,6 +11,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import {
   AgentEventSchema,
+  PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
   placeIdentityKey,
   type EventData,
@@ -3416,6 +3419,20 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
+  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
+    this.#personShowListeners.add(listener);
+    return () => this.#personShowListeners.delete(listener);
+  }
+  /** A transient Host delivery for local demos, with the same lifecycle filter. */
+  receivePersonShow(message: PersonShowMessage): void {
+    if (
+      this.getSnapshot().session !== "authenticated" ||
+      this.#lifecycle?.getSnapshot().visibility === "background"
+    )
+      return;
+    for (const listener of this.#personShowListeners) listener(message);
+  }
   readonly browserPasskeys = new BrowserPasskeys();
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
@@ -3559,6 +3576,10 @@ export class MockHostClient implements HostClient {
     });
     const frames: BrowserFrameStore = {
       scope: this.#browserPresentationScope,
+      invalidationKey: () => {
+        const snapshot = this.#state.getSnapshot();
+        return JSON.stringify([snapshot.deploymentId, snapshot.user?.id, snapshot.session]);
+      },
       accept: (sessionId, surfaceId, token) =>
         this.#places.accept(
           sessionId,
@@ -3820,7 +3841,9 @@ export class MockHostClient implements HostClient {
   readonly placeActivity = (placeKey: string) => this.#places.activity.get(placeKey);
   readonly subscribePlaceActivity = (placeKey: string, listener: () => void) =>
     this.#places.subscribeActivity(placeKey, listener);
-  readonly latestPlaceOfThread = (threadId: string) => this.#places.latest.get(threadId);
+  readonly runPlace = (runId: string) => this.#state.runPlaces.get(runId);
+  readonly enterPlace = (runId: string, threadId: string, data: EventData<"place.entered">) =>
+    this.#state.enterPlace(runId, threadId, data);
   readonly actInPlace = (threadId: string, placeKey: string) =>
     this.#places.actInPlace(threadId, placeKey);
   /** A mock helper's current window for one held app. */
@@ -3858,9 +3881,9 @@ export class MockHostClient implements HostClient {
   }
   /** For journeys: cursors move only for the notices applied through the returned script. */
   readonly scriptPlaces = (): MockPlaceScript => this.#places.script();
-  readonly subscribeLatestPlace = (threadId: string, listener: () => void) => {
+  readonly subscribeRunPlace = (runId: string, listener: () => void) => {
     this.#places.start();
-    return this.#places.latest.subscribe(threadId, listener);
+    return this.#state.runPlaces.subscribe(runId, listener);
   };
   readonly readBrowserContextCandidate = (sessionId: string, tabId: string) =>
     this.#places.candidate(sessionId, tabId);
@@ -4399,6 +4422,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();
     this.browserHistory.dispose();
@@ -4587,6 +4611,7 @@ export class MockHostClient implements HostClient {
 }
 
 class MockHostState {
+  readonly runPlaces = new RunPlaceStore();
   readonly searchSuggestionRequests: { readonly query: string; readonly at: number }[] = [];
   computerViews: MockComputerViews | undefined;
   computerConnections() {
@@ -8467,6 +8492,7 @@ class MockHostState {
     this.#provisionalTitles.clear();
     this.#provisionalIcons.clear();
     this.activeRuns.clear();
+    this.runPlaces.dispose();
   }
 
   async load(): Promise<void> {
@@ -8638,10 +8664,9 @@ class MockHostState {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     if (!thread) return;
     const transcript = this.snapshot.transcripts[threadId] ?? [];
-    const last = transcript.findLast((entry) => entry.kind === "place" && entry.runId === runId);
-    if (last?.kind === "place" && placeIdentityKey(last.place) === placeIdentityKey(data.place))
-      return;
-    const event = AgentEventSchema.parse({
+    const last = this.runPlaces.get(runId);
+    if (last && placeIdentityKey(last.data.place) === placeIdentityKey(data.place)) return;
+    const event = PlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
       data,
       environmentId: thread.environmentId,
@@ -8652,6 +8677,7 @@ class MockHostState {
       type: "place.entered",
       workspaceId: thread.workspaceId,
     });
+    this.runPlaces.accept(event, false);
     this.update({
       ...this.snapshot,
       transcripts: {
@@ -10590,6 +10616,15 @@ class MockHostState {
   }
 
   private update(snapshot: HostSnapshot): void {
+    if (
+      snapshot.deploymentId !== this.snapshot.deploymentId ||
+      snapshot.user?.id !== this.snapshot.user?.id ||
+      snapshot.session !== "authenticated"
+    )
+      this.runPlaces.clear();
+    for (const run of this.snapshot.runQueue)
+      if (!snapshot.runQueue.some((next) => next.id === run.id)) this.runPlaces.end(run.id, false);
+
     const tabsChanged = snapshot.browserSessions !== this.snapshot.browserSessions;
     if (tabsChanged) {
       const at = this.now().toISOString();
@@ -10714,6 +10749,7 @@ class MockHostState {
         savedViewReadiness: { tasksReady: true, workspaceRefusal: held.workspaceRefusal, home },
       };
     }
+    this.runPlaces.flush();
     this.emit();
   }
 

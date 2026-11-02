@@ -829,7 +829,7 @@ describe("page rail", () => {
       );
     return { client, container, show, draw, stop, session };
   }
-  it("opens the exact recorded stop, preserves modifier clicks and makes ended stops non-links", () => {
+  it("opens the exact recorded stop, preserves modifier clicks and makes ended stops non-links", async () => {
     const f = fixture();
     try {
       f.draw([{ ...run, status: "running" }, f.stop]);
@@ -842,7 +842,7 @@ describe("page rail", () => {
           cancelable: true,
           [modifier]: true,
         });
-        act(() => link.dispatchEvent(event));
+        await act(() => link.dispatchEvent(event));
         expect(event.defaultPrevented).toBe(false);
       }
       expect(f.show).not.toHaveBeenCalled();
@@ -855,6 +855,36 @@ describe("page rail", () => {
       f.draw([{ ...run, status: "running" }, f.stop], [{ ...f.session, state: "closed" }]);
       expect(f.container.querySelector("a.trace-place")).toBeNull();
       expect(f.container.querySelector('.trace-place--ended[role="img"]')).not.toBeNull();
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("renders app and phone place entries in the trace and keeps their chips at Run end without usage reads", () => {
+    const f = fixture();
+    try {
+      const app: PlaceEntry = {
+        ...f.stop,
+        id: "native-app",
+        title: "Notes",
+        site: null,
+        place: { kind: "app", machineId: createId("runner"), appKey: "com.apple.notes" },
+      };
+      const phone: PlaceEntry = {
+        ...f.stop,
+        id: "native-phone",
+        title: "Pixel 7",
+        site: null,
+        place: { kind: "phone", machineId: createId("runner"), display: "main" },
+      };
+      f.draw([{ ...run, status: "running" }, app, phone], []);
+      const stops = f.container.querySelectorAll(".trace-place");
+      expect(stops).toHaveLength(2);
+      expect(stops[0]!.textContent).toContain("Notes");
+      expect(stops[1]!.textContent).toContain("Pixel 7");
+      f.draw([run, app, phone], []);
+      expect(
+        [...f.container.querySelectorAll(".surface-chip__title")].map((node) => node.textContent),
+      ).toEqual(["Notes", "Pixel 7"]);
     } finally {
       f.client.dispose();
     }

@@ -1278,7 +1278,7 @@ it.each([
     );
     const current = toolsForCapabilityProfile(profile)
       .map(({ name }) => name)
-      .filter((name) => name !== "person_notify");
+      .filter((name) => name !== "person_notify" && name !== "person_show");
     expect(served.filter((name) => current.some((tool) => tool === name)).sort()).toEqual(
       [...current].sort(),
     );
@@ -1383,7 +1383,9 @@ it.each([false, true])(
               .map(({ name }) => name)
               .filter(
                 (name) =>
-                  name !== "environment_list" && (name !== "person_notify" || !legacyBrowser),
+                  name !== "person_show" &&
+                  name !== "environment_list" &&
+                  (name !== "person_notify" || !legacyBrowser),
               );
         expect(
           legacy
@@ -1428,7 +1430,7 @@ it.each([false, true])(
         );
         const currentNames = toolsForCapabilityProfile(profile)
           .map(({ name }) => name)
-          .filter((name) => name !== "person_notify" || !legacyBrowser);
+          .filter((name) => name !== "person_show" && (name !== "person_notify" || !legacyBrowser));
         // These are the enabled names the release-local Codex inventory check compares.
         expect(
           current
@@ -1511,6 +1513,61 @@ it("pins person_notify to the calling Runner capability and returns the exact me
     expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain(
       "person_notify",
     );
+  } finally {
+    await client.close();
+    await fixture.service.close();
+  }
+});
+
+it("negotiates person_show and saved-tab query with the calling Runner", async () => {
+  let supported = true;
+  const handle = vi.fn(async (_token: string, input: unknown) => {
+    const request = AgentControlRequestSchema.parse(input);
+    return {
+      type: "person.show.result" as const,
+      requestId: request.requestId,
+      status: "sent-unconfirmed" as const,
+      connectedDevices: 2,
+    };
+  });
+  const fixture = await startService({
+    agentControl: { handle } as unknown as AgentControlService,
+    profiles: { token: "main" },
+    runnerCapabilities: async () => (supported ? ["person-show-v1"] : []),
+  });
+  const client = await connectClient(fixture.url, "token");
+  try {
+    const tools = (await client.listTools()).tools;
+    expect(tools.map((tool) => tool.name)).toContain("person_show");
+    expect(
+      tools.find((tool) => tool.name === "browser_tab_read")?.inputSchema.properties,
+    ).toHaveProperty("query");
+    const result = await client.callTool({
+      name: "person_show",
+      arguments: { target: { tabId: "gmail" } },
+    });
+    expect(result.structuredContent).toEqual({ status: "sent-unconfirmed", connectedDevices: 2 });
+    expect(handle).toHaveBeenCalledWith(
+      "token",
+      expect.objectContaining({ type: "person.show", target: { tabId: "gmail" } }),
+    );
+    const current = await client.callTool({
+      name: "person_show",
+      arguments: { target: { current: true } },
+    });
+    expect(current.structuredContent).toEqual({ status: "sent-unconfirmed", connectedDevices: 2 });
+    expect(handle).toHaveBeenLastCalledWith(
+      "token",
+      expect.objectContaining({ type: "person.show", target: { current: true } }),
+    );
+    supported = false;
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_show");
+    await fixture.service.close();
+    const legacy = (await client.listTools()).tools;
+    expect(legacy.map((tool) => tool.name)).not.toContain("person_show");
+    expect(
+      legacy.find((tool) => tool.name === "browser_tab_read")?.inputSchema.properties,
+    ).not.toHaveProperty("query");
   } finally {
     await client.close();
     await fixture.service.close();

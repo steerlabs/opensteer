@@ -1,5 +1,24 @@
 import { z } from "zod";
-import { RunIdSchema, ThreadIdSchema, IsoDateTimeSchema } from "@opensteer/core";
+import {
+  RunIdSchema,
+  ThreadIdSchema,
+  IsoDateTimeSchema,
+  BrowserSurfaceIdSchema,
+  WorkspaceIdSchema,
+} from "@opensteer/core";
+
+export const PersonShowMessageSchema = z.object({
+  type: z.literal("host.show"),
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  runId: RunIdSchema,
+  target: z.union([
+    z.object({ tabId: BrowserSurfaceIdSchema }),
+    z.object({ threadId: ThreadIdSchema }),
+    z.object({ place: PlaceIdentityViewSchema }),
+  ]),
+});
+export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;
 
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export {

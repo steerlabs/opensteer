@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { type SurfaceItem, type ThreadPlace, surfaceDestination } from "@opensteer/client/host";
-import { agentSurface, surfaceGlyph } from "./agent-surface.js";
+import { type SurfaceItem } from "@opensteer/client/host";
+import { actingFor, surfaceGlyph } from "./agent-surface.js";
 
 /** A page whose browser names `actingThread` as the one acting in the tab, or no one. */
 const page = (key: string, actingThread: string | null): SurfaceItem =>
@@ -40,33 +40,21 @@ const phone = {
   computerSessionId: "phone-session",
 } as unknown as SurfaceItem;
 const own = new Set(["conversation", "worker"]);
-const latest = (item: SurfaceItem): ThreadPlace => ({
-  destination: surfaceDestination(item),
-  placeKey: item.key,
-  runId: null,
-  title: "Latest",
-  site: null,
-});
-
 describe("the surface the conversation's agent is using", () => {
-  it("prefers a surface its own agents act in over the Host's latest place and newest item", () => {
-    const acting = page("acting", "worker");
-    expect(agentSurface([acting, { ...app, acting: true }, phone], own, latest(phone))).toBe(
-      acting,
+  it("counts only this conversation's agents acting in ready shared tabs", () => {
+    expect(actingFor(page("own", "conversation"), own)).toBe(true);
+    expect(actingFor(page("delegated", "worker"), own)).toBe(true);
+    expect(actingFor(page("shared", "someone-else"), own)).toBe(false);
+    expect(actingFor(browser, own)).toBe(false);
+    const closed = page("closed", "conversation");
+    if (closed.kind !== "browser") throw new Error("Expected a browser tab");
+    expect(actingFor({ ...closed, session: { ...closed.session, state: "closed" } }, own)).toBe(
+      false,
     );
-  });
-  it("does not follow another conversation acting in a shared browser", () => {
-    const elsewhere = page("shared", "someone-else");
-    expect(agentSurface([elsewhere, app, phone], own, latest(app))).toBe(app);
-  });
-  it("uses the Host's exact latest destination when idle", () => {
-    expect(agentSurface([browser, app, phone], own, latest(app))).toBe(app);
-    expect(agentSurface([browser, app, phone], own, latest(browser))).toBe(browser);
-  });
-  it("falls back to the newest item for a missing or unrelated latest place, and null for none", () => {
-    expect(agentSurface([browser, app], own, null)).toBe(app);
-    expect(agentSurface([browser, app], own, latest(phone))).toBe(app);
-    expect(agentSurface([], own, latest(phone))).toBeNull();
+    for (const item of [app, phone]) {
+      expect(actingFor(item, own)).toBe(false);
+      expect(actingFor({ ...item, acting: true }, own)).toBe(true);
+    }
   });
   it.each([
     [browser, "globe"],

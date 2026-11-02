@@ -21,6 +21,7 @@ export interface RunnerVoiceCall {
 }
 interface Entry {
   readonly agent: boolean;
+  readonly find: boolean;
   readonly ownerUserId: UserId;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly abort: AbortController;
@@ -48,6 +49,7 @@ export class VoiceCalls {
   readonly open: (input: {
     harnessInstanceId: HarnessInstanceId;
     agent: boolean;
+    find: boolean;
     offer: string;
     signal: AbortSignal;
     directory: string;
@@ -57,6 +59,7 @@ export class VoiceCalls {
     open: (input: {
       harnessInstanceId: HarnessInstanceId;
       agent: boolean;
+      find: boolean;
       offer: string;
       signal: AbortSignal;
       directory: string;
@@ -83,6 +86,7 @@ export class VoiceCalls {
           ok: true,
           answer: (await this.#start(userId, command)).answer,
           ...(command.agent ? { agent: true } : {}),
+          ...(command.find ? { find: command.agent === true } : {}),
         };
       const entry = this.#entries.get(command.sessionId);
       if (
@@ -149,7 +153,8 @@ export class VoiceCalls {
     if (existing)
       return existing.ownerUserId === userId &&
         existing.harnessInstanceId === command.harnessInstanceId &&
-        existing.agent === (command.agent === true)
+        existing.agent === (command.agent === true) &&
+        existing.find === (command.agent === true && command.find === true)
         ? existing.starting
         : Promise.reject(ended());
     const previous = [...this.#entries]
@@ -158,6 +163,7 @@ export class VoiceCalls {
     const abort = new AbortController();
     const entry: Entry = {
       agent: command.agent === true,
+      find: command.agent === true && command.find === true,
       ownerUserId: userId,
       harnessInstanceId: command.harnessInstanceId,
       abort,
@@ -171,6 +177,7 @@ export class VoiceCalls {
           const call = await this.open({
             harnessInstanceId: command.harnessInstanceId,
             agent: command.agent === true,
+            find: command.agent === true && command.find === true,
             offer: command.offer,
             signal: abort.signal,
             directory: this.directory,

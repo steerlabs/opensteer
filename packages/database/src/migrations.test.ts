@@ -134,6 +134,7 @@ const releasedMigrationNames = [
   "0124_browser_native_only",
   "0125_run_place_events",
   "0126_run_visibility",
+  "0127_person_show",
 ];
 
 describe("migration names", () => {

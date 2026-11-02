@@ -70,6 +70,8 @@ unknown without looking first.
 
 ## Working well
 
+When the person asks to see what you are doing, call `person_show({target: {current: true}})` after a successful observation or action. The Host resolves this Run's latest app, phone or tab; do not construct native IDs. A `sent-unconfirmed` result reports delivery to connected devices viewing this conversation in the foreground, without confirming navigation or viewing. On `no-device-connected`, describe where you are working; if there is no current place or access has ended, report the error. Do not repeat Show to force focus.
+
 - Look, act, look. Indices come from the window's latest `observe()` and stay valid until you
   observe that window again; after something on screen changes, observe before targeting it.
 - Prefer element indices. Use `[x, y]` only for something missing from the tree, from the current

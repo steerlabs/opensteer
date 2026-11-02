@@ -18,6 +18,7 @@ import {
   voiceReply,
   voiceTestId,
   voiceTestNow,
+  voiceSavedTabs,
 } from "./voice.test-support.js";
 
 beforeEach(() => {
@@ -35,7 +36,7 @@ function setup(
 ) {
   const f = voiceHost(options.home);
   const voice = semanticVoice();
-  const navigate = vi.fn();
+  const navigate = vi.fn(() => true);
   const onStart = vi.fn();
   const controller = new VoiceController({
     hostClient: f.host,
@@ -538,6 +539,63 @@ it("agent captions never auto-send; redelivered back executes once and unknown t
   f.tool({ id: "late", tool: "show", input: { link: "opensteer://back" }, heard: [] });
   await vi.advanceTimersByTimeAsync(10_000);
   expect(f.navigate).toHaveBeenCalledTimes(1);
+  f.dispose();
+});
+
+it("shows Chat's old asleep tab from context or find and reports refused navigation honestly", async () => {
+  const f = agentSetup();
+  Object.assign(f.call, { find: true });
+  f.publish(voiceSavedTabs(f.host));
+  await f.controller.start();
+  await settle();
+  const text = f.context.mock.calls[0]![0].text;
+  const link = text
+    .split("\n")
+    .find((line) => line.startsWith("Chat is working in:"))!
+    .match(/opensteer:\/\/place\/\d+/)![0];
+  f.tool({ id: "context-show", tool: "show", input: { link }, heard: [] });
+  await settle();
+  expect(f.navigate).toHaveBeenLastCalledWith(
+    expect.objectContaining({ destination: expect.objectContaining({ tabId: "tab_gmail" }) }),
+  );
+  f.tool({ id: "find", tool: "find", input: { query: "gmail" }, heard: [] });
+  await settle();
+  expect(f.answer.mock.calls.at(-1)![0]).toMatchObject({
+    ok: true,
+    text: expect.stringContaining(link),
+  });
+  const found = f.answer.mock.calls.at(-1)![0].text.match(/opensteer:\/\/place\/\d+/)![0];
+  f.tool({ id: "found-show", tool: "show", input: { link: found }, heard: [] });
+  await settle();
+  expect(f.answer.mock.calls.at(-1)![0]).toMatchObject({ ok: true, text: "Showing Gmail." });
+  f.navigate.mockReturnValue(false);
+  f.tool({ id: "no-navigation", tool: "show", input: { link }, heard: [] });
+  await settle();
+  expect(f.answer.mock.calls.at(-1)![0]).toMatchObject({ ok: false });
+  expect(f.answer.mock.calls.at(-1)![0].text).not.toContain("Showing");
+  f.dispose();
+});
+
+it("waits for navigation to finish before answering show", async () => {
+  let finish!: (changed: boolean) => void;
+  const navigate = vi.fn(
+    () =>
+      new Promise<boolean>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const f = agentSetup({ navigate });
+  await f.controller.start();
+  f.tool({ id: "pending-show", tool: "show", input: { link: "opensteer://back" }, heard: [] });
+  await settle();
+  expect(navigate).toHaveBeenCalledOnce();
+  expect(f.answer).not.toHaveBeenCalled();
+  finish(false);
+  await settle();
+  expect(f.answer.mock.calls.at(-1)![0]).toMatchObject({
+    ok: false,
+    text: "The screen did not change on this device.",
+  });
   f.dispose();
 });
 

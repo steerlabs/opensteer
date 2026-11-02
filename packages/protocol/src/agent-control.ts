@@ -18,6 +18,7 @@ import {
   ModelProviderIdSchema,
   ModelSelectionSchema,
   PersonNotifyMessageSchema,
+  PersonShowTargetSchema,
   PlaceContentPartSchema,
   RequestIdSchema,
   RequestKindSchema,
@@ -222,6 +223,11 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("person.notify"),
     requestId: z.uuid(),
     message: PersonNotifyMessageSchema,
+  }),
+  z.strictObject({
+    ...requestBase,
+    type: z.literal("person.show"),
+    target: PersonShowTargetSchema,
   }),
   z.strictObject({
     ...requestBase,
@@ -585,6 +591,12 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("person.notify.result"),
     requestId: z.uuid(),
     messageId: MessageIdSchema,
+  }),
+  z.strictObject({
+    ...responseBase,
+    type: z.literal("person.show.result"),
+    status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
+    connectedDevices: z.number().int().nonnegative(),
   }),
   z.strictObject({
     ...responseBase,

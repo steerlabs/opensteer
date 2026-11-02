@@ -269,7 +269,11 @@ export interface PhoneDisplayPictureState {
  * or a transient reconnect keeps the last picture, which stays true until
  * something newer decodes.
  */
-function hidesPicture({ connection, closeCode, display }: DisplaySnapshot): boolean {
+export function hidesPhoneDisplayPicture({
+  connection,
+  closeCode,
+  display,
+}: DisplaySnapshot): boolean {
   return (
     connection === "closed" ||
     closeCode === displayViewerCloseCodes.loginEnded ||
@@ -323,7 +327,7 @@ export class PhoneDisplayPicture {
     const unframe = lease.onFrame((frame) => this.#push(frame));
     const unlisten = lease.subscribe(() => {
       const snapshot = lease.getSnapshot();
-      if (hidesPicture(snapshot)) this.clear();
+      if (hidesPhoneDisplayPicture(snapshot)) this.clear();
       else if (snapshot.connection !== "open" && this.#state.shown) {
         this.#current = null;
         this.#update({ stale: true });
@@ -365,20 +369,28 @@ export class PhoneDisplayPicture {
     this.#update({ shown: null, stale: false });
   }
 
-  dispose(): void {
+  dispose(preservePixels = false): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#unsubscribe();
-    this.clear();
+    if (preservePixels) {
+      if (this.#drawRequest !== null) cancelAnimationFrame(this.#drawRequest);
+      this.#drawRequest = null;
+      this.#latest?.picture.close();
+      this.#latest = null;
+      this.#update({ stale: true });
+    } else this.clear();
     this.#decoder.close();
-    this.#canvases.clear();
-    this.#listeners.clear();
+    if (!preservePixels) {
+      this.#canvases.clear();
+      this.#listeners.clear();
+    }
     this.#lease.release();
   }
 
   #push(frame: DisplayFrame): void {
     // Defence in depth: the Host forwards nothing while the phone is hidden.
-    if (this.#disposed || hidesPicture(this.#lease.getSnapshot())) {
+    if (this.#disposed || hidesPhoneDisplayPicture(this.#lease.getSnapshot())) {
       frame.done();
       return;
     }
@@ -461,7 +473,7 @@ export function retainPhoneDisplayPicture(
   streams: DisplayStreams,
   target: ComputerDisplayTarget,
   acceleration: HardwareAcceleration,
-): { readonly picture: PhoneDisplayPicture; readonly release: () => void } {
+): { readonly picture: PhoneDisplayPicture; readonly release: (preservePixels?: boolean) => void } {
   let pool = pictures.get(streams);
   if (!pool) {
     pool = new Map();
@@ -479,13 +491,13 @@ export function retainPhoneDisplayPicture(
   let released = false;
   return {
     picture: entry.picture,
-    release: () => {
+    release: (preservePixels = false) => {
       if (released) return;
       released = true;
       entry.holds -= 1;
       if (entry.holds > 0) return;
       if (shared.get(key) === entry) shared.delete(key);
-      entry.picture.dispose();
+      entry.picture.dispose(preservePixels);
     },
   };
 }

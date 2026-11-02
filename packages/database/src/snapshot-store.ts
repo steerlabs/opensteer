@@ -19,6 +19,7 @@ import {
 import {
   type WorkspaceSnapshot,
   type WorkspaceView,
+  workspaceSnapshotMaxRunQueueEntries,
   workspaceSnapshotMaxThreads,
   workspaceSnapshotMaxMessages,
   workspaceSnapshotMaxSerializedBytes,
@@ -71,6 +72,7 @@ export interface DurableWindowReadOptions {
 export interface WorkspaceSnapshotReadOptions {
   /** Skip message history and its counts; clients must read durable history on open. */
   readonly omitMessages?: boolean;
+  readonly placeEvents?: "include";
   readonly viewerId?: UserId;
   readonly maxMessages?: number;
   readonly maxSerializedBytes?: number;
@@ -99,6 +101,7 @@ function buildWorkspaceSnapshot(input: {
   readonly pendingRequestTotal: number;
   readonly pendingRequestsDesc: readonly PendingRequest[];
   readonly runQueue: readonly ThreadRunQueueEntry[];
+  readonly runPlaces: WorkspaceSnapshot["runPlaces"];
   readonly sequence: Sequence;
   readonly threadTotal: number;
   readonly threads: readonly Thread[];
@@ -140,6 +143,7 @@ function buildWorkspaceSnapshot(input: {
       totalItems: input.pendingRequestTotal,
     },
     runQueue: [...input.runQueue],
+    ...(input.runPlaces === undefined ? {} : { runPlaces: input.runPlaces }),
     sequence: input.sequence,
     serializedBytes: 1,
     threads: [...input.threads],
@@ -193,6 +197,50 @@ export async function workspaceSnapshot(
         .executeTakeFirst();
       if (!workspace)
         throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
+      // The lateral lookup uses workspace_events_run_places and reads only one
+      // event per live Run, including Threads outside this snapshot's window.
+      let runPlaces =
+        options.placeEvents === "include"
+          ? (
+              await transaction
+                .selectFrom("runs")
+                .innerJoin("threads", "threads.id", "runs.threadId")
+                .innerJoinLateral(
+                  (query) =>
+                    query
+                      .selectFrom("workspaceEvents")
+                      .selectAll("workspaceEvents")
+                      .whereRef("workspaceEvents.runId", "=", "runs.id")
+                      .where("workspaceEvents.type", "=", "place.entered")
+                      .orderBy("workspaceEvents.sequence", "desc")
+                      .limit(1)
+                      .as("place"),
+                  (join) => join.onTrue(),
+                )
+                .selectAll("place")
+                .where("threads.workspaceId", "=", workspaceId)
+                .where("runs.status", "in", nonTerminalRunStatuses)
+                .$if(options.viewerId !== undefined, (query) =>
+                  query.where(({ exists, selectFrom }) =>
+                    exists(
+                      selectFrom("workspaceMemberships")
+                        .select("workspaceMemberships.id")
+                        .whereRef("workspaceMemberships.workspaceId", "=", "threads.workspaceId")
+                        .where("workspaceMemberships.userId", "=", options.viewerId!)
+                        .where("workspaceMemberships.state", "=", "active"),
+                    ),
+                  ),
+                )
+                .orderBy("place.sequence", "desc")
+                .limit(workspaceSnapshotMaxRunQueueEntries + 1)
+                .execute()
+            )
+              .map(eventFromRow)
+              .filter((event) => event.type === "place.entered")
+          : undefined;
+      // Absence is unknown; a partial seed would falsely end every omitted Run on clients.
+      if (runPlaces && runPlaces.length > workspaceSnapshotMaxRunQueueEntries)
+        runPlaces = undefined;
       const [threadRows, threadCountRow] = await Promise.all([
         transaction
           .selectFrom("threads")
@@ -322,6 +370,7 @@ export async function workspaceSnapshot(
         pendingRequestTotal: safeCount(pendingCountRow.count),
         pendingRequestsDesc,
         runQueue,
+        runPlaces,
         sequence: workspace.eventSequence as Sequence,
         threadTotal: safeCount(threadCountRow.count),
         threads: threads.items,
@@ -338,6 +387,7 @@ export async function workspaceSnapshot(
           pendingRequestTotal: safeCount(pendingCountRow.count),
           pendingRequestsDesc,
           runQueue,
+          runPlaces,
           sequence: workspace.eventSequence as Sequence,
           threadTotal: safeCount(threadCountRow.count),
           threads: threads.items,
@@ -355,6 +405,25 @@ export async function workspaceSnapshot(
           pendingRequestTotal: safeCount(pendingCountRow.count),
           pendingRequestsDesc,
           runQueue,
+          runPlaces,
+          sequence: workspace.eventSequence as Sequence,
+          threadTotal: safeCount(threadCountRow.count),
+          threads: threads.items,
+          workspace: workspaceView,
+        });
+      }
+      if (runPlaces !== undefined && snapshot.serializedBytes > maxSerializedBytes) {
+        runPlaces = undefined;
+        snapshot = buildWorkspaceSnapshot({
+          readStates,
+          notificationPreferences,
+          messageTotals,
+          omitMessages: options.omitMessages === true,
+          messagesDesc,
+          pendingRequestTotal: safeCount(pendingCountRow.count),
+          pendingRequestsDesc,
+          runQueue,
+          runPlaces,
           sequence: workspace.eventSequence as Sequence,
           threadTotal: safeCount(threadCountRow.count),
           threads: threads.items,

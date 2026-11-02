@@ -1,3 +1,4 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import type {
   ChannelAccessPolicy,
   ChannelAccount,
@@ -27,6 +28,7 @@ import type {
   ModelSelection,
   NotificationView,
   PhoneContentPart,
+  PlaceEnteredEventView,
   ProviderContinuationIdentity,
   Request,
   RequestResponse,
@@ -107,12 +109,10 @@ import type {
   BrowserTabCloseResult,
   BrowserTabOpenResult,
   PlaceIdentity,
-  ThreadPlaceReference,
 } from "@opensteer/protocol";
 import type { BrowserWatchState } from "./browser-watch.js";
 import type { ClientNetworkState } from "./lifecycle.js";
 import type { PlaceActivity } from "./place-activity.js";
-import type { ThreadPlace } from "./places.js";
 
 export type BrowserTabOpenInput =
   | { readonly sessionId: string }
@@ -672,6 +672,8 @@ export interface BrowserRasterDemand {
 }
 
 export interface BrowserFrameStore {
+  /** Changes only when previously displayed pixels lose authorization. */
+  readonly invalidationKey?: (sessionId: string, surfaceId: string) => string | number;
   readonly editing?: BrowserEditingStore;
   /** Application/auth scope shared by Control and Watch picture presenters. */
   readonly scope?: object;
@@ -706,6 +708,8 @@ export interface BrowserSessionUseSummary {
 }
 
 export interface BrowserSessionSummary {
+  /** Host freshness for bootstrap lifecycle reconciliation. */
+  updatedAt?: string;
   navigationVersion?: 1 | undefined;
   workspaceTabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
@@ -763,7 +767,6 @@ export type ThreadLookupState = "failed" | "loading" | "missing";
 export interface HostSnapshot {
   readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
-  readonly latestPlaces?: readonly ThreadPlaceReference[];
   /**
    * Per conversation this client shows, whether its browser usage has been
    * read: `loading` only until the first answer, never on a later reread.
@@ -881,6 +884,7 @@ export interface HostSnapshot {
   /** The Host advertises voice-v1; absent on older Hosts. */
   voiceAvailable?: boolean;
   voiceAgentAvailable?: boolean;
+  voiceFindAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
@@ -1125,6 +1129,7 @@ export interface HostClient {
    * replayed: what was missed is still unread in its Thread.
    */
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
+  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
   setTaskDone(threadId: string, done: boolean): Promise<Thread>;
@@ -1218,8 +1223,9 @@ export interface HostClient {
   ): () => void;
   placeActivity(placeKey: string): readonly PlaceActivity[];
   subscribePlaceActivity(placeKey: string, listener: () => void): () => void;
-  latestPlaceOfThread(threadId: string): ThreadPlace | null;
-  subscribeLatestPlace(threadId: string, listener: () => void): () => void;
+  /** Newest ordered place.entered for this nonterminal Run, independent of loaded history. */
+  runPlace(runId: string): PlaceEnteredEventView | null;
+  subscribeRunPlace(runId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
   browserPresentationDeadline?(sessionId: string, tabId: string): number | null;
   markBrowserPagePresented?(sessionId: string, tabId: string): void;

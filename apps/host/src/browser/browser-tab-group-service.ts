@@ -26,6 +26,7 @@ import {
   type BrowserTabWriteResult,
 } from "@opensteer/protocol";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import type { BrowserService, BrowserSessionRecord } from "./browser-service.js";
 
 export type BrowserTabActor =
@@ -39,6 +40,7 @@ export type BrowserTabActor =
     };
 type AgentActor = Extract<BrowserTabActor, { kind: "agent" }>;
 const CursorSchema = z.strictObject({
+  queryFingerprint: z.string().length(64).optional(),
   ownerId: UserIdSchema,
   workspaceId: WorkspaceIdSchema,
   createdAt: z.iso.datetime({ precision: 6 }),
@@ -121,6 +123,8 @@ export class BrowserTabGroupService {
 
   async read(actor: AgentActor, input: BrowserTabReadInput): Promise<BrowserTabReadResult> {
     await this.#browser.flushPendingTabDescriptors();
+    const query = input.query?.normalize("NFKC").toLowerCase();
+    const queryFingerprint = query ? createHash("sha256").update(query).digest("hex") : undefined;
     let cursor: z.infer<typeof CursorSchema> | undefined;
     if (input.cursor) {
       try {
@@ -132,6 +136,8 @@ export class BrowserTabGroupService {
       }
       if (cursor.ownerId !== actor.ownerId || cursor.workspaceId !== actor.workspaceId)
         badRequest("This saved-tab cursor belongs to a different reader.");
+      if (cursor.queryFingerprint !== queryFingerprint)
+        badRequest("This saved-tab cursor belongs to a different search.");
     }
     const mayReach = this.#reach(actor);
     const ordered = await this.#groups.orderedTabs(actor.ownerId);
@@ -161,11 +167,36 @@ export class BrowserTabGroupService {
     const membership = new Map(
       visibleGroups.flatMap((group) => group.tabIds.map((tabId) => [tabId, group.id] as const)),
     );
+    const profiles = query
+      ? await this.#browser.listGrantedProfiles(actor.ownerId, actor.workspaceId)
+      : [];
+    const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
+    const groupTitles = new Map(groups.map((group) => [group.id, group.title]));
+    const matches = new Map<string, Array<"title" | "site" | "group" | "profile">>();
+    if (query) {
+      for (const row of ordered.tabs) {
+        if (!reachableIds.has(row.id)) continue;
+        const session = await mayReach(row.latestSessionId);
+        const fields = {
+          title: row.title,
+          site: browserPageSite(row.url),
+          group: groupTitles.get(membership.get(BrowserSurfaceIdSchema.parse(row.id))!) ?? "",
+          profile: session?.profileId ? (profileNames.get(session.profileId) ?? "") : "Guest",
+        };
+        matches.set(
+          row.id,
+          (Object.keys(fields) as Array<keyof typeof fields>).filter((field) =>
+            fields[field].normalize("NFKC").toLowerCase().includes(query),
+          ),
+        );
+      }
+    }
     // Positions need the full visible order; page that same snapshot instead of rescanning it.
     const candidates = ordered.tabs
       .filter(
         (row) =>
           reachableIds.has(row.id) &&
+          (!query || Boolean(matches.get(row.id)?.length)) &&
           (!cursor ||
             row.lineageTimestamp < cursor.createdAt ||
             (row.lineageTimestamp === cursor.createdAt &&
@@ -202,6 +233,7 @@ export class BrowserTabGroupService {
       const tab: BrowserTabReadResult["tabs"][number] = {
         tabId,
         title: row.title.slice(0, 256),
+        ...(query ? { matchedFields: matches.get(row.id) } : {}),
         site: browserPageSite(row.url).slice(0, 2048),
         state: row.state === "live" ? "open" : row.state === "restoring" ? "opening" : "asleep",
         sessionId: row.state === "live" ? row.latestSessionId : null,
@@ -221,6 +253,9 @@ export class BrowserTabGroupService {
     return BrowserTabReadResultSchema.parse({
       groups,
       tabs,
+      ...(query
+        ? { totalMatches: [...matches.values()].filter((fields) => fields.length > 0).length }
+        : {}),
       nextCursor:
         last && (!exhausted || candidates.length > tabs.length)
           ? Buffer.from(
@@ -230,10 +265,16 @@ export class BrowserTabGroupService {
                 createdAt: last.lineageTimestamp,
                 lineageId: last.groupId,
                 tabId: last.id,
+                ...(queryFingerprint ? { queryFingerprint } : {}),
               }),
             ).toString("base64url")
           : null,
     });
+  }
+
+  async authorizeShow(actor: AgentActor, tabId: string): Promise<void> {
+    await this.#browser.flushPendingTabDescriptors();
+    await this.#authorize(actor, [tabId]);
   }
 
   async group(

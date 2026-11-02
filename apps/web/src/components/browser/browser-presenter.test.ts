@@ -199,3 +199,148 @@ it("leases the raster density each targeted pane displays and releases it on unm
   legacy();
   await Promise.resolve();
 });
+
+it("retains drawn pixels through missing frames and same-surface session restore, clearing on authorization or target change", async () => {
+  const paints = new Map<number, FrameRequestCallback>();
+  let requestId = 0;
+  vi.stubGlobal("requestAnimationFrame", (paint: FrameRequestCallback) => {
+    const id = ++requestId;
+    paints.set(id, paint);
+    return id;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => paints.delete(id));
+  vi.stubGlobal(
+    "createImageBitmap",
+    vi.fn(async () => ({ width: 800, height: 600, close: vi.fn() })),
+  );
+  const clear = vi.fn(),
+    draw = vi.fn();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    drawImage: draw,
+    clearRect: clear,
+  } as unknown as CanvasRenderingContext2D);
+  const canvas = document.createElement("canvas");
+  document.body.append(canvas);
+  const surface = BrowserSurfaceIdSchema.parse("retained-tab");
+  let frame: BrowserFrameView | null = {
+    data: new Uint8Array([1]),
+    header: {
+      encoding: "jpeg",
+      frameId: 1,
+      surfaceId: surface,
+      geometryRevision: 1,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      rasterWidth: 800,
+      rasterHeight: 600,
+    },
+  };
+  let authorization = 0;
+  const listeners = new Set<() => void>();
+  const source: BrowserFrameStore = {
+    get: () => frame,
+    invalidationKey: () => authorization,
+    subscribe: (_session, listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  let detach = attachBrowserCanvas(source, "first", surface, true, canvas, () => {}, false, {
+    preservePixels: true,
+  });
+  try {
+    await vi.waitFor(() => expect(paints.size).toBe(1));
+    for (const paint of paints.values()) paint(0);
+    paints.clear();
+    expect(draw).toHaveBeenCalledTimes(1);
+    clear.mockClear();
+    const width = canvas.width;
+    frame = null;
+    listeners.forEach((listener) => listener());
+    expect(clear).not.toHaveBeenCalled();
+    expect(canvas.width).toBe(width);
+    detach();
+    detach = attachBrowserCanvas(source, "restored", surface, true, canvas, () => {}, false, {
+      preservePixels: true,
+      active: false,
+    });
+    expect(clear).not.toHaveBeenCalled();
+    expect(canvas.width).toBe(width);
+    authorization++;
+    listeners.forEach((listener) => listener());
+    expect(clear).toHaveBeenCalledTimes(1);
+  } finally {
+    detach();
+    await Promise.resolve();
+  }
+});
+
+it("cannot draw an old authorization's pending decode after the new one uses the same geometry", async () => {
+  const paints = new Map<number, FrameRequestCallback>();
+  let requestId = 0;
+  vi.stubGlobal("requestAnimationFrame", (paint: FrameRequestCallback) => {
+    const id = ++requestId;
+    paints.set(id, paint);
+    return id;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => paints.delete(id));
+  const decoding = Promise.withResolvers<ImageBitmap>();
+  const oldBitmap = { width: 800, height: 600, close: vi.fn() } as unknown as ImageBitmap;
+  const nextBitmap = { width: 800, height: 600, close: vi.fn() } as unknown as ImageBitmap;
+  const decode = vi.fn().mockReturnValueOnce(decoding.promise).mockResolvedValue(nextBitmap);
+  vi.stubGlobal("createImageBitmap", decode);
+  const draw = vi.fn();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    drawImage: draw,
+    clearRect: vi.fn(),
+  } as unknown as CanvasRenderingContext2D);
+  const canvas = document.createElement("canvas");
+  document.body.append(canvas);
+  const surfaceId = BrowserSurfaceIdSchema.parse("reauthorized-tab");
+  const first: BrowserFrameView = {
+    data: new Uint8Array([1]),
+    header: {
+      encoding: "jpeg",
+      frameId: 1,
+      surfaceId,
+      geometryRevision: 1,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      rasterWidth: 800,
+      rasterHeight: 600,
+    },
+  };
+  let frame: BrowserFrameView | null = first,
+    authorization = 0;
+  const listeners = new Set<() => void>();
+  const source: BrowserFrameStore = {
+    get: () => frame,
+    invalidationKey: () => authorization,
+    subscribe: (_session, listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const detach = attachBrowserCanvas(source, "session", surfaceId, true, canvas, () => {}, false, {
+    preservePixels: true,
+  });
+  try {
+    await vi.waitFor(() => expect(decode).toHaveBeenCalledTimes(1));
+    authorization++;
+    frame = null;
+    listeners.forEach((listener) => listener());
+    frame = { ...first, data: new Uint8Array([2]) };
+    listeners.forEach((listener) => listener());
+    decoding.resolve(oldBitmap);
+    await vi.waitFor(() => expect(paints.size).toBe(1));
+    const due = [...paints.values()];
+    paints.clear();
+    for (const paint of due) paint(0);
+    expect(draw.mock.calls.some(([bitmap]) => bitmap === oldBitmap)).toBe(false);
+    expect(oldBitmap.close).toHaveBeenCalledTimes(1);
+  } finally {
+    decoding.resolve(oldBitmap);
+    detach();
+    await Promise.resolve();
+  }
+});

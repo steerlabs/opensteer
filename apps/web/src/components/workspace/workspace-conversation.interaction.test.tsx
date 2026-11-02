@@ -205,7 +205,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     placeList(client.getSnapshot()).filter(
       (item) => item.kind === "browser" && item.availability === "ready",
     );
-  /** Settles until the picture shows `key`, past any hold on the page before it. */
+  /** Waits for the render that shows this Run place. */
   async function pictureShows(key: string) {
     await vi.waitFor(
       () => {
@@ -249,7 +249,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(client.getSnapshot().homeThreadId).toBe(home);
   });
 
-  it("a page whose browser ended leaves no card behind", async () => {
+  it("a page whose browser ended keeps the Run card until the Run ends", async () => {
     await mount("/");
     const { place } = await chatWorkingIn("Weekend ideas");
     const { session } = tabOf(place);
@@ -262,8 +262,8 @@ describe("a reply's live picture belongs to its working Run", () => {
         })
         .catch(() => undefined);
     });
-    expect(picture()).toBeNull();
-    expect(document.querySelector(".viewfinder--ended")).toBeNull();
+    expect(picture()?.dataset.placeKey).toBe(place.key);
+    expect(picture()?.querySelector(".live-dot")).toBeNull();
   });
 
   it("a finished reply's page never follows the conversation afterwards", async () => {
@@ -298,32 +298,15 @@ describe("a reply's live picture belongs to its working Run", () => {
     await pictureShows(place.key);
   });
 
-  it("holds a page for two seconds before cutting across rapid page changes", async () => {
-    const now = Date.now();
-    // Keep mock activity timestamps and the picture's hold on the same clock,
-    // including the first render, before switching to manually advanced timers.
-    vi.spyOn(Date, "now").mockReturnValue(now);
-    await mount("/", { now: () => new Date(Date.now()) });
+  it("switches immediately on each new place entry while retaining the card", async () => {
+    await mount("/");
     const { home, place: first } = await chatWorkingIn("Weekend ideas");
+    const card = picture();
     const second = browserPlaces().find((item) => item.title === "Your reading list")!;
-    vi.useFakeTimers({ now, toFake: ["Date", "setTimeout", "clearTimeout"] });
-    try {
-      await act(async () => client.actInPlace(home, second.key));
-      expect(picture()!.dataset.placeKey).toBe(first.key);
-      await act(async () => vi.advanceTimersByTimeAsync(1800));
-      expect(picture()!.dataset.placeKey).toBe(first.key);
-      await act(async () => client.actInPlace(home, first.key));
-      await act(async () => client.actInPlace(home, second.key));
-      await act(async () => vi.advanceTimersByTimeAsync(199));
-      expect(picture()!.dataset.placeKey, "The picture cut before the two-second hold").toBe(
-        first.key,
-      );
-      await act(async () => vi.advanceTimersByTimeAsync(1));
-      expect(picture()!.dataset.placeKey, "The picture did not cut at the two-second hold").toBe(
-        second.key,
-      );
-    } finally {
-      vi.useRealTimers();
+    for (const place of [second, first, second]) {
+      await act(async () => client.actInPlace(home, place.key));
+      expect(picture()).toBe(card);
+      expect(picture()!.dataset.placeKey).toBe(place.key);
     }
   });
 
@@ -350,13 +333,15 @@ describe("a reply's live picture belongs to its working Run", () => {
       expect(document.body.textContent).toContain(place.title);
   });
 
-  it("closing the page it is working in takes the picture away and leaves its chip, muted", async () => {
+  it("closing its page keeps the card, then Run end hands off to its muted chip", async () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Weekend ideas");
     const { session, tabId } = tabOf(place);
     await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
-    expect(picture()).toBeNull();
+    expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
+    expect(picture()).toBeNull();
+    expect(document.querySelector(".transcript .surface-chip--ended")).not.toBeNull();
     await vi.waitFor(
       () =>
         expect(
@@ -391,7 +376,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(chipTitles(row)).toContain(place.title);
   });
 
-  it("a tab closed in a browser that stays open mutes its chip and takes the picture", async () => {
+  it("a tab closed in a browser that stays open keeps its card and later mutes its chip", async () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Your reading list");
     const { session, tabId } = tabOf(place);
@@ -400,8 +385,10 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(
       client.getSnapshot().browserSessions.find((candidate) => candidate.id === session.id)?.state,
     ).toBe("ready");
-    expect(picture()).toBeNull();
+    expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
+    expect(picture()).toBeNull();
+    expect(document.querySelector(".transcript .surface-chip--ended")).not.toBeNull();
     await vi.waitFor(
       () =>
         expect(
@@ -416,15 +403,15 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(chip?.classList.contains("surface-chip--ended")).toBe(true);
   });
 
-  it("a held page that closes gives way at once to the page the Run is in", async () => {
+  it("closing a previous page leaves the current card alone", async () => {
     await mount("/");
     const { home, place: held } = await chatWorkingIn("Your reading list");
     const next = browserPlaces().find((item) => item.title === "Weekend ideas")!;
     await act(async () => client.actInPlace(home, next.key));
-    expect(picture()!.dataset.placeKey).toBe(held.key);
+    expect(picture()!.dataset.placeKey).toBe(next.key);
     const { session, tabId } = tabOf(held);
     await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
-    // Well inside the hold: the closed page is not kept, and nothing older takes its place.
+    // Closing another page does not change this Run's current place.
     expect(picture()!.dataset.placeKey).toBe(next.key);
   });
 

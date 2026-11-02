@@ -53,6 +53,16 @@ export class BrowserWatchStore {
     if (this.diagnostics.length === 256) this.diagnostics.shift();
     this.diagnostics.push(record);
   }
+  #clearVersion = 0;
+  readonly #revoked = new Map<string, number>();
+  readonly invalidationKey = (sessionId: string, surfaceId: string): string =>
+    `${this.#clearVersion}:${this.#revoked.get(this.#key(sessionId, surfaceId)) ?? 0}`;
+  #revoke(target: Watch): void {
+    const key = this.#key(target.sessionId, target.surfaceId);
+    this.#revoked.set(key, (this.#revoked.get(key) ?? 0) + 1);
+  }
+  readonly #authorityDenied = new Set<string>();
+  #authorized: (sessionId: string, surfaceId: string) => boolean = () => true;
   #suspended = false;
   #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
@@ -333,7 +343,7 @@ export class BrowserWatchStore {
   suspend(suspended: boolean, keepControlOnly = false): void {
     this.#suspended = suspended;
     this.#keepControlOnly = keepControlOnly;
-    this.reconcile(this.#allowed);
+    this.reconcile(this.#allowed, this.#authorized);
   }
   #paused(target: Watch): boolean {
     return (
@@ -341,12 +351,33 @@ export class BrowserWatchStore {
       !(this.#keepControlOnly && this.mode === "control" && target.pictureHolds === 0)
     );
   }
-  reconcile(allowed: (sessionId: string, surfaceId: string) => boolean): void {
+  reconcile(
+    allowed: (sessionId: string, surfaceId: string) => boolean = this.#allowed,
+    authorized: (sessionId: string, surfaceId: string) => boolean = this.#authorized,
+  ): void {
     this.#allowed = allowed;
-    for (const target of this.#targets.values()) {
-      if (!allowed(target.sessionId, target.surfaceId)) {
+    this.#authorized = authorized;
+    // A displayed canvas can outlive its transport lease. Revoke those listeners too.
+    for (const key of new Set([...this.#targets.keys(), ...this.#listeners.keys()])) {
+      const [sessionId, surfaceId] = JSON.parse(key) as [string, string];
+      if (authorized(sessionId, surfaceId)) {
+        this.#authorityDenied.delete(key);
+        continue;
+      }
+      if (this.#authorityDenied.has(key)) continue;
+      this.#authorityDenied.add(key);
+      this.#revoked.set(key, (this.#revoked.get(key) ?? 0) + 1);
+      const target = this.#targets.get(key);
+      if (target) {
         this.#close(target);
         this.#set(target, empty);
+      } else for (const listener of this.#listeners.get(key) ?? []) listener();
+    }
+    for (const target of this.#targets.values()) {
+      if (!authorized(target.sessionId, target.surfaceId)) continue;
+      if (!allowed(target.sessionId, target.surfaceId)) {
+        this.#close(target);
+        this.#set(target, this.#kept(target));
       } else if (this.#paused(target)) {
         if (!target.socket && !target.timer) continue;
         this.#close(target);
@@ -364,7 +395,7 @@ export class BrowserWatchStore {
       this.#close(target);
       this.#set(target, this.#kept(target));
     }
-    this.reconcile(this.#allowed);
+    this.reconcile(this.#allowed, this.#authorized);
   }
   capabilitiesChanged(): void {
     for (const target of this.#targets.values()) {
@@ -378,10 +409,15 @@ export class BrowserWatchStore {
     }
   }
   clear(): void {
+    this.#clearVersion++;
+    this.#revoked.clear();
+    this.#authorityDenied.clear();
     for (const target of this.#targets.values()) {
       this.#close(target);
       this.#set(target, empty);
     }
+    for (const [key, listeners] of this.#listeners)
+      if (!this.#targets.has(key)) for (const listener of listeners) listener();
   }
   dispose(): void {
     this.clear();
@@ -392,7 +428,12 @@ export class BrowserWatchStore {
     this.#demands.clear();
   }
   #open(target: Watch): void {
-    if (this.#paused(target) || !this.#allowed(target.sessionId, target.surfaceId)) return;
+    if (
+      this.#paused(target) ||
+      !this.#allowed(target.sessionId, target.surfaceId) ||
+      !this.#authorized(target.sessionId, target.surfaceId)
+    )
+      return;
     let socket: WebSocketClient;
     try {
       socket = this.connect(target.sessionId, target.surfaceId);
@@ -454,9 +495,14 @@ export class BrowserWatchStore {
           } else if (message.type === "browser.stream.state") {
             if (message.surfaceId !== target.surfaceId)
               throw new Error("The capture outcome does not match the subscribed target.");
-            if (message.state === "capacity")
-              this.#set(target, { ...empty, error: "Too many browser capture targets." });
-            else if (target.pictureHolds && target.state.status !== "live")
+            if (message.state === "capacity") {
+              for (const token of target.awaiting.keys())
+                this.accept(target.sessionId, target.surfaceId, token);
+              this.#set(target, {
+                ...this.#kept(target),
+                error: "Too many browser capture targets.",
+              });
+            } else if (target.pictureHolds && target.state.status !== "live")
               this.#set(target, {
                 ...this.#kept(target),
                 admitted: true,
@@ -551,15 +597,12 @@ export class BrowserWatchStore {
       target.synchronized = false;
       target.awaiting.clear();
       target.terminal = event.code === 4002 || event.code === 4003;
-      // A login that ended takes its picture with it, though the next may see it again.
-      this.#set(
-        target,
-        target.terminal
-          ? { ...empty, error: "The browser target is no longer available." }
-          : event.code === 1008
-            ? empty
-            : this.#kept(target),
-      );
+      const revoked = event.code === 4003 || event.code === 1008;
+      if (revoked) this.#revoke(target);
+      this.#set(target, {
+        ...(revoked ? empty : this.#kept(target)),
+        error: target.terminal ? "The browser target is no longer available." : null,
+      });
       if (!this.#paused(target) && target.holds && target.state.error === null)
         target.timer = setTimeout(() => {
           target.timer = null;

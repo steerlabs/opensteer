@@ -1473,6 +1473,7 @@ export const WorkspaceTabsCloseResultSchema = z.object({
  * agent can reach every one of its tabs.
  */
 export const BrowserTabReadResultSchema = z.object({
+  totalMatches: z.number().int().nonnegative().optional(),
   groups: z
     .array(
       z.object({
@@ -1490,6 +1491,7 @@ export const BrowserTabReadResultSchema = z.object({
       z.object({
         tabId: BrowserSurfaceIdSchema,
         title: z.string().max(256),
+        matchedFields: z.array(z.enum(["title", "site", "group", "profile"])).optional(),
         site: z.string().max(2_048),
         /** `open` tabs have a live session to drive; restore an `asleep` one first. */
         state: z.enum(["open", "opening", "asleep"]),

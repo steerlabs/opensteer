@@ -664,7 +664,7 @@ export class ReconnectingHostConnection {
       capabilities: [
         ...runnerCapabilities(),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
-          ? ["voice-v1" as const, "voice-agent-v1" as const]
+          ? ["voice-v1" as const, "voice-agent-v1" as const, "voice-find-v1" as const]
           : []),
         ...(agents?.earlierBootsContained ? ["earlier-boots-contained-v1" as const] : []),
       ],
@@ -1945,6 +1945,7 @@ function runnerCapabilities(): RunnerCapability[] {
     "thread-icon-v1",
     "task-done-v1",
     "person-notify-v1",
+    "person-show-v1",
   ];
 }
 

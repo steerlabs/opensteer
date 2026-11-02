@@ -68,6 +68,14 @@ undocumented Codex API; every engine pin bump must re-qualify a live call
 - Links name exactly what was offered: a place link is an opaque per-call
   reference to the exact destination, including an owner view's generation,
   and resolves only while that destination is still offered.
+- With `voice-find-v1` agreed by the client, Host and Runner, the context is a
+  short, partial list. The agent can search every place this device can show,
+  including asleep tabs, and every Thread the client holds, then continue
+  through all matches. Search and context offer links through the same call-local
+  map. No match means no match on this device. Without that agreement, the
+  existing tools and context size remain available. Showing succeeds only
+  after the device accepts the navigation; a disconnected or unready navigator
+  reports failure.
 - Hand-off is the agent's decision but the person's words: Chat receives the
   person's own recent utterances verbatim, never text the agent wrote. Titles
   and pages in the agent's context are untrusted, and Chat treats a human

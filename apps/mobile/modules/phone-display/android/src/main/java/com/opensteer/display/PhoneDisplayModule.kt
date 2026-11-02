@@ -42,6 +42,7 @@ class PhoneDisplayModule : Module() {
       Events("onReady", "onNeedsKeyframe")
       OnViewDestroys { view: PhoneDisplayView -> view.destroy() }
       AsyncFunction("reset") { view: PhoneDisplayView, epoch: String -> view.reset(epoch) }
+      AsyncFunction("resetKeepingPicture") { view: PhoneDisplayView, epoch: String -> view.reset(epoch, keepPicture = true) }
       AsyncFunction("decode") { view: PhoneDisplayView, frame: FramePacket, promise: Promise ->
         val data = frame.data
         if (data.length > 5_592_408) { view.lost(frame.epoch); promise.resolve(false) }
@@ -118,6 +119,7 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   @Volatile private var pictureWidth = 0
   @Volatile private var pictureHeight = 0
   private var initialized = false
+  private var announced = false
   private val drain = object : Runnable {
     override fun run() {
       val decoder = codec ?: return
@@ -140,13 +142,20 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
     val x = (width - fittedWidth) / 2; val y = (height - fittedHeight) / 2
     surface.layout(x, y, x + fittedWidth, y + fittedHeight); cover.layout(0, 0, width, height)
   }
-  fun reset(next: String) {
+  fun reset(next: String, keepPicture: Boolean = false) {
     epoch = next
     revision++
     fence.lost()
-    onNeedsKeyframe(mapOf("epoch" to next, "pictureGone" to true))
-    cover.visibility = View.VISIBLE
-    worker.post { release() }
+    announced = false
+    if (!keepPicture) {
+      onNeedsKeyframe(mapOf("epoch" to next, "pictureGone" to true))
+      cover.visibility = View.VISIBLE
+    }
+    worker.post {
+      if (keepPicture) {
+        try { codec?.flush(); output.clear() } catch (_: Exception) { recover() }
+      } else release()
+    }
   }
   fun lost(wanted: String) { if (wanted == epoch) fence.lost() }
   private fun recover() {
@@ -157,6 +166,7 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
     release()
     post {
       if (wanted == epoch && stamp == revision) {
+        announced = false
         cover.visibility = View.VISIBLE
         onNeedsKeyframe(mapOf("epoch" to wanted, "pictureGone" to true))
       }
@@ -183,6 +193,7 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
       try {
         if (wanted != epoch || stamp != revision || !available || !visible || !attached) { promise.resolve(false); return@post }
         if (!fence.allows(key)) { promise.resolve(false); return@post }
+        if (key && codec != null && (pictureWidth != width || pictureHeight != height)) release()
         if (codec == null) {
           if (!key) { promise.resolve(false); return@post }
           pictureWidth = width; pictureHeight = height
@@ -199,14 +210,14 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
               decoder.codecInfo.getCapabilitiesForType("video/avc").isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency))
               format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             decoder.configure(format, surface.holder.surface, null, 0)
-            decoder.setOnFrameRenderedListener({ _, _, _ -> post {
-              if (wanted == epoch && stamp == revision && available && visible && attached && cover.visibility != View.GONE) { cover.visibility = View.GONE; onReady(mapOf("epoch" to wanted, "width" to width, "height" to height)) }
-            } }, worker)
             decoder.start(); codec = decoder
             worker.post(drain)
           } catch (error: Exception) { decoder.release(); throw error }
         }
         val decoder = requireNotNull(codec)
+        if (key) decoder.setOnFrameRenderedListener({ _, _, _ -> post {
+          if (wanted == epoch && stamp == revision && available && visible && attached && !announced) { announced = true; cover.visibility = View.GONE; onReady(mapOf("epoch" to wanted, "width" to width, "height" to height)) }
+        } }, worker)
         drainOutput(decoder)
         // Replay can arrive faster than output. Wait on this decoder worker before resetting it.
         if (output.values.sumOf { it.size } >= 4) drainOutput(decoder, 500_000)

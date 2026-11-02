@@ -19,6 +19,7 @@ import {
   DisplayEditingSession,
   displayEditingAbilities,
   computerDisplayScope,
+  computerDisplayAuthorityKey,
   computerDisplayStatus,
   sharedDisplayStreams,
   type DisplayLease,
@@ -43,6 +44,7 @@ import {
 } from "./phone-display-input.js";
 import {
   knownPhoneDisplayDecoding,
+  hidesPhoneDisplayPicture,
   phoneDisplayDecoding,
   retainPhoneDisplayPicture,
   type PhoneDisplayPicture,
@@ -113,7 +115,11 @@ export function useComputerDisplay({
   source,
   streamable,
   macWindow,
+  preserveLastFrame = false,
+  machineId,
 }: {
+  readonly preserveLastFrame?: boolean;
+  readonly machineId?: string | null;
   readonly enabled: boolean;
   readonly disabledReason?: DisplayClientDiagnostic["reason"] | undefined;
   readonly hostClient: HostClient;
@@ -143,32 +149,58 @@ export function useComputerDisplay({
     ],
   );
   const scope = useHostSelector(hostClient, selectScope);
+  const selectAuthority = useCallback(
+    (snapshot: HostSnapshot) => computerDisplayAuthorityKey(snapshot, source, machineId),
+    [machineId, source],
+  );
+  const authorityKey = useHostSelector(hostClient, selectAuthority);
   const [held, setHeld] = useState<{
     readonly lease: DisplayLease;
     readonly media: PhoneDisplayPicture;
     readonly editing: DisplayEditingSession;
+    readonly retained: PhoneDisplayPictureState | null;
   } | null>(null);
   const [input, setInput] = useState<PhoneDisplayInput | null>(null);
   // Bumped when the Host invalidates this scope, so a scope that comes back
   // unchanged in the same batch still gets a fresh socket.
   const [generation, setGeneration] = useState(0);
   const sourceKey = source ? JSON.stringify(source) : null;
+  const pictureKey =
+    preserveLastFrame && source?.kind === "task-session"
+      ? JSON.stringify([machineId, source.appKey ?? "main"])
+      : sourceKey;
   const pictureOwner = useRef<{
     hostClient: HostClient;
     scope: string | null;
-    sourceKey: string | null;
+    authorityKey: string | null;
+    pictureKey: string | null;
   } | null>(null);
   useLayoutEffect(() => {
     const previous = pictureOwner.current;
     if (
       previous &&
       (previous.hostClient !== hostClient ||
-        previous.scope !== scope ||
-        previous.sourceKey !== sourceKey)
-    )
+        (preserveLastFrame ? previous.authorityKey !== authorityKey : previous.scope !== scope) ||
+        previous.pictureKey !== pictureKey)
+    ) {
       held?.media.clear();
-    pictureOwner.current = { hostClient, scope, sourceKey };
-  }, [hostClient, scope, sourceKey, held?.media]);
+      setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
+    }
+    pictureOwner.current = { hostClient, scope, pictureKey, authorityKey };
+  }, [hostClient, scope, pictureKey, held?.media, authorityKey, preserveLastFrame]);
+  useLayoutEffect(() => {
+    if (!held) return;
+    const check = () => {
+      if (
+        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) !== authorityKey
+      ) {
+        held.media.clear();
+        setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
+      }
+    };
+    check();
+    return hostClient.subscribe(check);
+  }, [authorityKey, held, hostClient, machineId, sourceKey]);
   const lease = held?.lease ?? null;
   const snapshot = useSyncExternalStore(
     lease?.subscribe ?? noStore.subscribe,
@@ -219,9 +251,23 @@ export function useComputerDisplay({
     };
   }, [enabled, holding, lease, editing]);
 
-  const diagnosticInputs = useRef({ enabled, disabledReason, hostClient, scope, sourceKey });
+  const diagnosticInputs = useRef({
+    enabled,
+    disabledReason,
+    hostClient,
+    scope,
+    sourceKey,
+    pictureKey,
+  });
   useLayoutEffect(() => {
-    diagnosticInputs.current = { enabled, disabledReason, hostClient, scope, sourceKey };
+    diagnosticInputs.current = {
+      enabled,
+      disabledReason,
+      hostClient,
+      scope,
+      sourceKey,
+      pictureKey,
+    };
   });
   const mounted = useRef(false);
   useLayoutEffect(() => {
@@ -231,7 +277,7 @@ export function useComputerDisplay({
     };
   }, []);
   useEffect(() => {
-    if (!enabled || !streamable || !scope || !source || !decoding) return;
+    if (!enabled || !streamable || !scope || !source || !decoding || authorityKey === null) return;
     const streams = sharedDisplayStreams(hostClient, reportDisplayDiagnostic);
     const target = { scope, source, editing: 1 as const };
     const current = streams.retain(target);
@@ -242,12 +288,29 @@ export function useComputerDisplay({
       ...displayDiagnosticSource(source),
     });
     const editing = new DisplayEditingSession(current);
-    setHeld({ lease: current, media: shared.picture, editing });
+    setHeld((previous) => ({
+      lease: current,
+      media: shared.picture,
+      editing,
+      retained:
+        preserveLastFrame && previous
+          ? previous.media.getSnapshot().shown
+            ? previous.media.getSnapshot()
+            : previous.retained
+          : null,
+    }));
     let invalidated = false;
     // The old login's socket closes with the Host's change, not React's next effect.
     const unsubscribe = hostClient.subscribe(() => {
       if (invalidated || computerDisplayScope(hostClient.getSnapshot(), source) === scope) return;
       invalidated = true;
+      if (
+        preserveLastFrame &&
+        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey
+      ) {
+        setGeneration((value) => value + 1);
+        return;
+      }
       shared.picture.clear();
       streams.invalidate(
         (candidate) =>
@@ -275,8 +338,19 @@ export function useComputerDisplay({
       editing.dispose();
       current.resetInput();
       current.release();
-      shared.release();
-      setHeld(null);
+      const preserve =
+        preserveLastFrame &&
+        mounted.current &&
+        next.hostClient === hostClient &&
+        next.pictureKey === pictureKey &&
+        authorityKey !== null &&
+        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey;
+      shared.release(preserve);
+      if (!preserve) {
+        if (preserveLastFrame)
+          setHeld((held) => (held?.retained ? { ...held, retained: null } : held));
+        else setHeld(null);
+      }
     };
   }, [
     decoding,
@@ -288,10 +362,20 @@ export function useComputerDisplay({
     source?.kind === "task-session" ? source.sessionId : source?.viewId,
     source?.kind === "owner-view" ? source.generation : (source?.appKey ?? null),
     streamable,
+    preserveLastFrame,
+    machineId,
+    authorityKey,
   ]);
 
   const display = snapshot ?? idleSnapshot;
-  const media = pictureState ?? idlePicture;
+  const media =
+    pictureState?.shown || !held?.retained || hidesPhoneDisplayPicture(display)
+      ? (pictureState ?? idlePicture)
+      : { ...held.retained, stale: true };
+  useEffect(() => {
+    if (pictureState?.shown || hidesPhoneDisplayPicture(display))
+      setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
+  }, [pictureState?.shown, display]);
   const streamGeneration = Math.max(display.display?.generation ?? 0, media.generation);
   useEffect(() => {
     input?.geometryChanged(streamGeneration);
@@ -312,7 +396,7 @@ export function useComputerDisplay({
     const timer = setTimeout(() => setStartingSlow(true), 5_000);
     return () => clearTimeout(timer);
   }, [enabled, awaiting]);
-  const shown = media.stale && startingSlow ? null : media.shown;
+  const shown = !preserveLastFrame && media.stale && startingSlow ? null : media.shown;
   const geometry =
     shown &&
     !media.stale &&

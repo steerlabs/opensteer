@@ -2,9 +2,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createId,
+  SequenceSchema,
   HarnessIdSchema,
   ModelSelectionSchema,
   provisionalThreadTitle,
+  OpensteerError,
   ThreadAccessModeSchema,
   type AgentEvent,
   type Message,
@@ -12,9 +14,24 @@ import {
   type Thread,
   type UserId,
 } from "@opensteer/core";
-import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
-import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
-import { HarnessInputSchema, type RunnerDescriptor } from "@opensteer/protocol";
+import {
+  BrowserTabGroupStore,
+  WorkspaceTabStore,
+  createDatabase,
+  migrateToLatest,
+  OpensteerStore,
+} from "@opensteer/database";
+import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
+import {
+  BrowserSurfaceIdSchema,
+  createBrowserSessionId,
+  HarnessInputSchema,
+  ComputerUseSessionSummarySchema,
+  mintComputerUseSessionId,
+  type RunnerDescriptor,
+} from "@opensteer/protocol";
+import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
+import { BrowserService } from "../browser/browser-service.js";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -45,6 +62,18 @@ integration("agent-to-agent messaging round trip", () => {
     maxConnections: 4,
   });
   const store = new OpensteerStore(database);
+  const realtime = new RealtimeHub({ store });
+  const browserTabs = new BrowserTabGroupService({
+    groups: new BrowserTabGroupStore(database),
+    browser: {
+      flushPendingTabDescriptors: async () => undefined,
+      agentReachableSavedSession: BrowserService.prototype.agentReachableSavedSession,
+      agentMayAccessSession: BrowserService.prototype.agentMayAccessSession,
+      listGrantedProfiles: async () => [],
+      tabOccupants: () => [],
+    } as unknown as BrowserService,
+    publish: vi.fn(),
+  });
   const claimsByToken = new Map<string, AgentControlRunScope>();
   const admission = new KeyedAdmissionQueue({
     maxInFlight: 4,
@@ -57,7 +86,20 @@ integration("agent-to-agent messaging round trip", () => {
     onWorkspaceEvent: vi.fn(),
     store,
   });
+  const computerUse = {
+    sessionsForRunner: vi.fn<
+      import("../computer-use/computer-use-service.js").ComputerUseService["sessionsForRunner"]
+    >(() => []),
+    authorizeDisplay:
+      vi.fn<
+        import("../computer-use/computer-use-service.js").ComputerUseService["authorizeDisplay"]
+      >(),
+  };
+  const drainRunPlaces = vi.fn(async (_runId: Run["id"]) => undefined);
   const service = new AgentControlService({
+    computerUse,
+    browserTabs,
+    personShow: (userId, message) => realtime.showToPerson(userId, message),
     browserSources: {
       agentSignIn: async () => {
         throw new Error("Unexpected browser sign-in");
@@ -69,6 +111,7 @@ integration("agent-to-agent messaging round trip", () => {
       },
     },
     browser: {
+      drainRunPlaces,
       createProfile: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
@@ -145,6 +188,355 @@ integration("agent-to-agent messaging round trip", () => {
 
   afterAll(async () => {
     await database.destroy();
+  });
+
+  it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
+    const f = await createMessagingFixture();
+    const strangerId = await store.createUser("Other person");
+    const otherWorkspace = await store.createWorkspace({
+      createdBy: strangerId,
+      idempotencyKey: randomUUID(),
+      name: "Private",
+      status: "ready",
+      backing: {
+        kind: "portablefs",
+        generation: 1,
+        serviceId: "test-portablefs",
+        volumeId: randomUUID(),
+      },
+      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 1000000, inodeHardLimit: 1000 },
+    });
+    const otherThreadId = createId("thread");
+    const original = await database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", f.threadB.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("threads")
+      .values({
+        ...original,
+        id: otherThreadId,
+        lineageRootThreadId: otherThreadId,
+        workspaceId: otherWorkspace.id,
+        createdBy: strangerId,
+      })
+      .execute();
+    const sessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: sessionId,
+      runnerId: f.runnerId,
+      origin: "workspace",
+      placementKey: "test",
+      profileId: null,
+      runtimeId: "test",
+      workspaceId: f.threadA.workspaceId,
+    });
+    const tabId = BrowserSurfaceIdSchema.parse("saved-gmail");
+    const tabs = new WorkspaceTabStore(database);
+    await tabs.record(
+      sessionId,
+      [
+        {
+          id: tabId,
+          title: "Gmail",
+          url: "https://mail.google.com/mail/u/0",
+          order: 0,
+          openerId: null,
+        },
+      ],
+      [],
+    );
+    await tabs.suspend(sessionId);
+    const show = (
+      token: string,
+      target: { tabId: string } | { threadId: string } | { current: true },
+    ) => service.handle(token, { type: "person.show", requestId: randomUUID(), target });
+    await expect(show(f.tokenA, { tabId })).resolves.toMatchObject({
+      type: "person.show.result",
+      status: "no-device-connected",
+      connectedDevices: 0,
+    });
+    const otherSession = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: otherSession,
+      runnerId: f.runnerId,
+      origin: "workspace",
+      placementKey: "other",
+      profileId: null,
+      runtimeId: "test",
+      workspaceId: otherWorkspace.id,
+    });
+    await tabs.record(
+      otherSession,
+      [
+        {
+          id: BrowserSurfaceIdSchema.parse("private-tab"),
+          title: "Private",
+          url: "https://private.test",
+          order: 0,
+          openerId: null,
+        },
+      ],
+      [],
+    );
+    await expect(show(f.tokenA, { tabId: "private-tab" })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(show(f.tokenA, { threadId: otherThreadId })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(show(f.tokenA, { threadId: f.threadB.id })).resolves.toMatchObject({
+      status: "no-device-connected",
+    });
+    const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
+    const legacyFrames: import("@opensteer/protocol").HostToClientMessage[] = [];
+    const subscription = {
+      afterSequence: SequenceSchema.parse("0"),
+      userId: f.userId,
+      workspaceId: f.threadA.workspaceId,
+    };
+    const opted = () =>
+      realtime.subscribe({
+        ...subscription,
+        personShow: "accept",
+        sink: {
+          id: randomUUID(),
+          send: async (message) => {
+            frames.push(message);
+          },
+          close: vi.fn(),
+        },
+      });
+    let release = await opted();
+    const releaseLegacy = await realtime.subscribe({
+      ...subscription,
+      sink: {
+        id: randomUUID(),
+        send: async (message) => {
+          legacyFrames.push(message);
+        },
+        close: vi.fn(),
+      },
+    });
+    try {
+      const request = { type: "person.show", requestId: randomUUID(), target: { tabId } };
+      await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
+        status: "sent-unconfirmed",
+        connectedDevices: 1,
+      });
+      expect(frames.filter((message) => message.type === "host.show")).toEqual([
+        {
+          type: "host.show",
+          workspaceId: f.threadA.workspaceId,
+          threadId: f.threadA.id,
+          runId: f.runA.id,
+          target: { tabId },
+        },
+      ]);
+      expect(legacyFrames.some((message) => message.type === "host.show")).toBe(false);
+      await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
+        status: "already-requested",
+        connectedDevices: 0,
+      });
+      expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
+      await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
+        code: "bad_request",
+        message: "This Run has no current place to show.",
+      });
+      const place = { kind: "browser" as const, sessionId, surfaceId: tabId };
+      drainRunPlaces.mockImplementationOnce(async () => {
+        await store.recordRunPlace({
+          runId: f.runA.id,
+          bindingGeneration: 1,
+          data: { place, title: "Gmail", site: "https://mail.google.com" },
+        });
+      });
+      await expect(show(f.tokenA, { current: true })).resolves.toMatchObject({
+        status: "sent-unconfirmed",
+      });
+      expect(frames.at(-1)).toMatchObject({
+        type: "host.show",
+        runId: f.runA.id,
+        target: { place },
+      });
+      release();
+      frames.length = 0;
+      release = await opted();
+      expect(frames.some((message) => message.type === "host.show")).toBe(false);
+    } finally {
+      release();
+      releaseLegacy();
+    }
+    await tabs.close(f.userId, tabId);
+    await expect(show(f.tokenA, { tabId })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it.each(["app", "phone"] as const)(
+    "shows the Run's newest %s place through its authorized session",
+    async (kind) => {
+      const f = await createMessagingFixture();
+      const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
+      const session = ComputerUseSessionSummarySchema.parse({
+        sessionId: mintComputerUseSessionId(),
+        runId: f.runA.id,
+        threadId: f.threadA.id,
+        threadTitle: "Work",
+        openedAt: new Date().toISOString(),
+        actionCount: 1,
+        apps: kind === "app" ? [app] : [],
+        display: kind === "phone",
+      });
+      computerUse.sessionsForRunner.mockReturnValue([session]);
+      computerUse.authorizeDisplay.mockResolvedValue(f.runnerId);
+      const place =
+        kind === "app"
+          ? { kind, machineId: f.runnerId, appKey: "com.apple.notes" }
+          : { kind, machineId: f.runnerId, display: "main" };
+      await store.recordRunPlace({
+        runId: f.runA.id,
+        bindingGeneration: 1,
+        data: {
+          place: { kind: "app", machineId: f.runnerId, appKey: "earlier-app" },
+          title: "Earlier",
+          site: null,
+        },
+      });
+      await store.recordRunPlace({
+        runId: f.runA.id,
+        bindingGeneration: 1,
+        data: { place, title: kind, site: null },
+      });
+      const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
+      const release = await realtime.subscribe({
+        afterSequence: SequenceSchema.parse("0"),
+        userId: f.userId,
+        workspaceId: f.threadA.workspaceId,
+        personShow: "accept",
+        sink: {
+          id: randomUUID(),
+          send: async (message) => {
+            frames.push(message);
+          },
+          close: vi.fn(),
+        },
+      });
+      const show = () =>
+        service.handle(f.tokenA, {
+          type: "person.show",
+          requestId: randomUUID(),
+          target: { current: true },
+        });
+      try {
+        await expect(show()).resolves.toMatchObject({
+          status: "sent-unconfirmed",
+          connectedDevices: 1,
+        });
+        expect(frames.filter((message) => message.type === "host.show")).toEqual([
+          {
+            type: "host.show",
+            workspaceId: f.threadA.workspaceId,
+            threadId: f.threadA.id,
+            runId: f.runA.id,
+            target: { place },
+          },
+        ]);
+        expect(computerUse.authorizeDisplay).toHaveBeenLastCalledWith(
+          session.sessionId,
+          f.userId,
+          kind === "app" ? "com.apple.notes" : undefined,
+        );
+        computerUse.authorizeDisplay.mockRejectedValueOnce(
+          new OpensteerError({
+            code: "forbidden",
+            message: "Access revoked",
+          }),
+        );
+        await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+        computerUse.sessionsForRunner.mockReturnValue([{ ...session, runId: createId("run") }]);
+        await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+        expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
+      } finally {
+        release();
+        computerUse.sessionsForRunner.mockReset();
+        computerUse.authorizeDisplay.mockReset();
+      }
+    },
+  );
+
+  it("searches asleep saved tabs before pagination and reports matching fields", async () => {
+    const f = await createMessagingFixture();
+    const sessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: sessionId,
+      runnerId: f.runnerId,
+      origin: "workspace",
+      placementKey: "test",
+      profileId: null,
+      runtimeId: "test",
+      workspaceId: f.threadA.workspaceId,
+    });
+    const tabs = new WorkspaceTabStore(database);
+    const rows = Array.from({ length: 70 }, (_, index) => ({
+      id: BrowserSurfaceIdSchema.parse(`tab-${String(index).padStart(3, "0")}`),
+      title: index < 65 ? "Recent" : "Gmail",
+      url: index < 65 ? "https://example.com" : "https://mail.google.com",
+      order: index,
+      openerId: null,
+    }));
+    await tabs.record(sessionId, rows.slice(64), []);
+    await tabs.suspend(sessionId);
+    const recentSessionId = createBrowserSessionId();
+    await store.createBrowserSession({
+      id: recentSessionId,
+      runnerId: f.runnerId,
+      origin: "workspace",
+      placementKey: "recent",
+      profileId: null,
+      runtimeId: "test",
+      workspaceId: f.threadA.workspaceId,
+    });
+    await tabs.record(recentSessionId, rows.slice(0, 64), []);
+    const read = async (input: Record<string, string>) => {
+      const result = await service.handle(f.tokenA, {
+        type: "browser.tab.read",
+        requestId: randomUUID(),
+        input,
+      });
+      if (result.type !== "browser.tab.read.result") throw new Error("Expected tab read");
+      return result.result;
+    };
+    const first = await read({});
+    expect(first.tabs).toHaveLength(64);
+    expect(first.tabs.every((tab) => tab.title === "Recent")).toBe(true);
+    const found = await read({ query: "gmail" });
+    expect(found.tabs).toHaveLength(5);
+    expect(
+      found.tabs.every((tab) => tab.state === "asleep" && tab.matchedFields?.includes("title")),
+    ).toBe(true);
+    expect(found.totalMatches).toBe(5);
+    await new BrowserTabGroupStore(database).group(f.userId, {
+      tabIds: [rows[69]!.id],
+      title: "Archive",
+      idempotencyKey: randomUUID(),
+    });
+    expect((await read({ query: "archive" })).tabs).toMatchObject([
+      { tabId: rows[69]!.id, matchedFields: ["group"] },
+    ]);
+    expect(
+      (await read({ query: "Guest" })).tabs.every((tab) => tab.matchedFields?.includes("profile")),
+    ).toBe(true);
+    const paged = await read({ query: "example" });
+    expect(paged.tabs).toHaveLength(64);
+    expect(paged.totalMatches).toBe(65);
+    expect(paged.nextCursor).toBeTruthy();
+    expect((await read({ query: "example", cursor: paged.nextCursor! })).tabs).toHaveLength(1);
+    await expect(read({ query: "gmail", cursor: paged.nextCursor! })).rejects.toThrow(
+      "different search",
+    );
+    await tabs.close(f.userId, rows[69]!.id);
+    expect((await read({ query: "gmail" })).totalMatches).toBe(4);
   });
 
   it("round-trips typed agent authorship across Threads", async () => {

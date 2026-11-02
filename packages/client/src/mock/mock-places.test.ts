@@ -1,6 +1,7 @@
 import { BrowserSurfaceIdSchema, BrowserTabGroupIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "./mock-host-client.js";
+import { placeIdentityKey } from "@opensteer/protocol";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { placeList } from "../host/places.js";
 import { runPages } from "../host/surfaces.js";
@@ -27,10 +28,9 @@ describe("moving mock workspace", () => {
       const homeRun = snapshot.runQueue.find((run) => run.threadId === homeThreadId)!;
       const homePlace = places.find((place) => place.title === "Weekend ideas")!;
       expect(homeRun.status).toBe("running");
-      expect(client.latestPlaceOfThread(homeThreadId)).toMatchObject({
-        placeKey: homePlace.key,
+      expect(client.runPlace(homeRun.id)).toMatchObject({
         runId: homeRun.id,
-        destination: homePlace.destination,
+        data: { title: homePlace.title },
       });
       expect(client.placeActivity(homePlace.key)[0]?.runId).toBe(homeRun.id);
       expect(runPages(snapshot.browserSessions, [homeRun.id])).toEqual([
@@ -52,10 +52,9 @@ describe("moving mock workspace", () => {
       )!;
       const phoneThreadId = phone.occupants.find((occupant) => occupant.acting)!.threadId;
       const phoneRun = snapshot.runQueue.find((run) => run.threadId === phoneThreadId)!;
-      expect(client.latestPlaceOfThread(phoneThreadId)).toMatchObject({
-        placeKey: phone.key,
+      expect(client.runPlace(phoneRun.id)).toMatchObject({
         runId: phoneRun.id,
-        destination: phone.destination,
+        data: { title: phone.title },
       });
       const updates = vi.fn();
       client.subscribePlaceActivity(browser.key, updates);
@@ -127,7 +126,7 @@ describe("moving mock workspace", () => {
       vi.useRealTimers();
     }
   });
-  it("keeps a stopped Run's latest reference without publishing new activity", async () => {
+  it("drops a stopped Run's place without publishing new activity", async () => {
     vi.useFakeTimers();
     const client = new MockHostClient({ latencyMs: 0, now: () => new Date(Date.now()) });
     try {
@@ -135,15 +134,13 @@ describe("moving mock workspace", () => {
       await vi.advanceTimersByTimeAsync(0);
       await loading;
       const threadId = client.getSnapshot().homeThreadId!;
-      const latest = client.latestPlaceOfThread(threadId)!;
+      const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
+      const latest = client.runPlace(runId)!;
       expect(latest.runId).toBeTruthy();
       await client.stopRun(threadId);
       await vi.advanceTimersByTimeAsync(250);
-      expect(client.latestPlaceOfThread(threadId)).toMatchObject({
-        placeKey: latest.placeKey,
-        runId: latest.runId,
-      });
-      expect(client.placeActivity(latest.placeKey)).toEqual([]);
+      expect(client.runPlace(runId)).toBeNull();
+      expect(client.placeActivity(placeIdentityKey(latest.data.place))).toEqual([]);
     } finally {
       client.dispose();
       vi.useRealTimers();

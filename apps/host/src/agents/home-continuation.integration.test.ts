@@ -960,6 +960,7 @@ integration("durable Thread changes native continuation", () => {
       browser: {
         createProfile: unexpected,
         closeAgentSession: unexpected,
+        drainRunPlaces: async () => undefined,
         listAgentSessions: unexpected,
         listGrantedProfiles: unexpected,
         openAgentSession: unexpected,
@@ -1158,6 +1159,7 @@ integration("durable Thread changes native continuation", () => {
       browser: {
         createProfile: unexpected,
         closeAgentSession: unexpected,
+        drainRunPlaces: async () => undefined,
         listAgentSessions: unexpected,
         listGrantedProfiles: unexpected,
         openAgentSession: unexpected,

@@ -1,3 +1,4 @@
+import { AppMark } from "./computer-apps/computer-use-section.js";
 import { useTaskSnapshot } from "./task-rows.js";
 import { taskMark, threadMark } from "@opensteer/client/host";
 import {
@@ -33,7 +34,7 @@ import {
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   messagePages,
-  placePage,
+  placeReply,
   replyPlaces,
   threadActivityIndicator,
   toolBody,
@@ -1288,8 +1289,17 @@ function WorkRowView({
 function TracePlace({ entry, turn }: { entry: PlaceEntry; turn: Turn }) {
   const sessions = useContext(TranscriptBrowsers);
   const { threadId } = useContext(Speakers);
-  const page = useMemo(() => placePage(entry, sessions, threadId), [entry, sessions, threadId]);
-  if (page === null) return null;
+  const computers = useContext(ReaderComputers);
+  const place = useMemo(
+    () => placeReply(entry, sessions, computers?.machines ?? [], threadId),
+    [entry, sessions, computers?.machines, threadId],
+  );
+  const page =
+    place.kind === "page"
+      ? pageChip(place.page, sessions)
+      : place.kind === "app"
+        ? appChip(place.app)
+        : phoneChip(place.phone);
   // An agent is in one tab at a time, so only the turn's latest stop can be live.
   const acting =
     turnState(turn) !== "settled" &&
@@ -1310,7 +1320,13 @@ function TracePlace({ entry, turn }: { entry: PlaceEntry; turn: Turn }) {
       }
     >
       <span className="trace-place__stop">
-        <SiteMark favicon={page.favicon} />
+        {place.kind === "phone" ? (
+          <Icon name="phone" />
+        ) : place.kind === "app" ? (
+          <AppMark identity={place.app.app} />
+        ) : (
+          <SiteMark favicon={page.favicon ?? null} />
+        )}
       </span>
       <span className="trace-place__title">{page.title}</span>
       {site ? <span className="trace-place__site">{site}</span> : null}

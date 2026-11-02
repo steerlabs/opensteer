@@ -10,6 +10,7 @@ import { browserTabTitle } from "./browser-presentation.js";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import type { Turn } from "./agent-activity-model.js";
 import type { BrowserSessionSummary, HostSnapshot, PlaceEntry } from "./client.js";
+import { runPlaceDestination } from "./run-place.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadsWaitingOnReader } from "./waiting-requests.js";
 
@@ -606,6 +607,54 @@ export type ReplyPlace =
   | { readonly kind: "phone"; readonly phone: TurnPhone }
   | { readonly kind: "app"; readonly app: TurnApp };
 
+/** A recorded stop stays readable even after its native session or browser leaves. */
+export function placeReply(
+  entry: PlaceEntry,
+  sessions: readonly BrowserSessionSummary[],
+  machines: readonly MachineSummary[],
+  threadId: string | null,
+): ReplyPlace {
+  const place = entry.place;
+  if (place.kind === "browser")
+    return { kind: "page", page: placePage(entry, sessions, threadId)! };
+  const destination = runPlaceDestination({ runId: entry.runId, data: entry }, { machines });
+  if (place.kind === "app") {
+    const machine = machines.find((machine) => machine.id === place.machineId);
+    const session = machine?.computerUse?.sessions.find((session) => session.runId === entry.runId);
+    const app = session?.apps.find((app) => computerAppIdentityKey(app) === place.appKey) ?? {
+      bundleId: place.appKey,
+      displayName: entry.title,
+      teamId: null,
+    };
+    return {
+      kind: "app",
+      app: {
+        key: `app:${place.machineId}:${place.appKey}`,
+        title: entry.title,
+        app,
+        firstUsedAt: entry.createdAt,
+        destination: destination?.kind === "app" ? destination : null,
+        ended: destination === null,
+        acting: session?.actingAppKeys?.includes(place.appKey) === true,
+      },
+    };
+  }
+  const session = machines
+    .find((machine) => machine.id === place.machineId)
+    ?.computerUse?.sessions.find((session) => session.runId === entry.runId && session.display);
+  return {
+    kind: "phone",
+    phone: {
+      key: `phone:${place.machineId}${place.display === "main" ? "" : `:${place.display}`}`,
+      title: entry.title,
+      firstUsedAt: entry.createdAt,
+      destination: destination?.kind === "phone" ? destination : null,
+      ended: destination === null,
+      acting: session?.actingDisplay === true,
+    },
+  };
+}
+
 /**
  * Every place a reply's Run used, whatever its kind, in the order it first
  * used them: a place used later always comes after, so none ever moves.
@@ -629,9 +678,20 @@ export function replyPlaces(
       place: { kind: "app" as const, app },
     })),
   ];
-  return used
-    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at))
-    .map(({ place }) => place);
+  for (const entry of [...turn.work, ...Object.values(turn.subagentWork).flat()])
+    if (entry.kind === "place")
+      used.push({ at: entry.createdAt, place: placeReply(entry, sessions, machines, null) });
+  const unique = new Map<string, ReplyPlace>();
+  for (const { place } of used.sort((left, right) => Date.parse(left.at) - Date.parse(right.at))) {
+    const key =
+      place.kind === "page"
+        ? `page:${place.page.key}`
+        : place.kind === "app"
+          ? place.app.key
+          : place.phone.key;
+    if (!unique.has(key)) unique.set(key, place);
+  }
+  return [...unique.values()];
 }
 
 /**

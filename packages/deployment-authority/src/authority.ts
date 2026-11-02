@@ -281,6 +281,7 @@ export const HostCapabilitySchema = z.enum([
    */
   "history-conversation-v1",
   "place-events-v1",
+  "person-show-v1",
   "shared-task-done-v1",
   /** A native-user Runner can inspect and update a person's installed engine CLI. */
   "harness-update-v1",
@@ -290,6 +291,7 @@ export const HostCapabilitySchema = z.enum([
   "voice-v1",
   /** A call can run its own agent: `agent` on `voice.start`, then `voice.next`, `voice.answer` and `voice.context`. */
   "voice-agent-v1",
+  "voice-find-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

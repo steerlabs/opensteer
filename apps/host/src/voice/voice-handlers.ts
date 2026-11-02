@@ -82,7 +82,7 @@ export function createVoiceHandlers(dependencies: {
           sessionId: input.sessionId,
           harnessInstanceId: input.harnessInstanceId,
           offer: input.offer,
-          ...(input.agent ? { agent: true } : {}),
+          ...(input.agent ? { agent: true, ...(input.find ? { find: true } : {}) } : {}),
         },
         context,
       );
@@ -95,6 +95,7 @@ export function createVoiceHandlers(dependencies: {
       return rpcSuccess({
         answer: result.answer,
         ...(input.agent ? { agent: result.agent === true } : {}),
+        ...(input.find ? { find: result.agent === true && result.find === true } : {}),
       });
     },
     "voice.next": async (input, context) => {

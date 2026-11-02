@@ -17,6 +17,7 @@ import {
   type DisplayViewerFrameHeader,
   type DisplayViewerServerMessage,
   type DisplayViewerState,
+  type MachineSummary,
 } from "@opensteer/protocol";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { WebSocketClient } from "../host/host-session-client.js";
@@ -904,6 +905,7 @@ export function computerDisplayScope(
   const machine = snapshot.machines.find(
     (candidate) =>
       canStreamComputerDisplay(candidate) &&
+      !captureRefused(candidate) &&
       (source.kind === "task-session"
         ? candidate.computerUse?.sessions.some(
             (session) =>
@@ -932,6 +934,37 @@ export function computerDisplayScope(
         source.kind === "owner-view" ? source.generation : null,
       ])
     : null;
+}
+
+function captureRefused(machine: MachineSummary): boolean {
+  return (
+    machine.computerUse?.permissions?.screenRecording === "denied" ||
+    machine.computerUse?.state === "permission-required"
+  );
+}
+
+/** A temporary task binding gap does not withdraw the viewer's authority over its picture. */
+export function computerDisplayAuthorityKey(
+  snapshot: HostSnapshot,
+  source: NativeViewerSource | null,
+  machineId?: string | null,
+): string | null {
+  if (!source || snapshot.session !== "authenticated" || !snapshot.user) return null;
+  if (source.kind === "owner-view") return computerDisplayScope(snapshot, source);
+  const machine = snapshot.machines.find((machine) =>
+    machineId
+      ? machine.id === machineId
+      : machine.computerUse?.sessions.some((session) => session.sessionId === source.sessionId),
+  );
+  if (
+    machine &&
+    (machine.ownership === "other" ||
+      captureRefused(machine) ||
+      (machine.allowedModules && !machine.allowedModules.includes("integrations")) ||
+      (machine.status === "online" && machine.computerUse === null))
+  )
+    return null;
+  return JSON.stringify([snapshot.deploymentId, snapshot.user.id]);
 }
 
 /** The stream's state in the terms of the shared Watch words (`computerWatchStatus`). */

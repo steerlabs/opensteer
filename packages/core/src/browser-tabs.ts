@@ -46,6 +46,13 @@ export const BrowserTabMoveSchema = z.strictObject({
 });
 export type BrowserTabMove = z.infer<typeof BrowserTabMoveSchema>;
 export const BrowserTabReadInputSchema = z.strictObject({
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Search title, site, group or profile; keep it when following nextCursor."),
   cursor: z
     .string()
     .min(1)

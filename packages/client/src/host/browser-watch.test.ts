@@ -297,7 +297,7 @@ describe("BrowserWatchStore", () => {
     expect(acknowledgements()).toHaveLength(3);
     socket.receive({ type: "browser.stream.state", surfaceId, state: "capacity" });
     expect(socket.closes).toEqual([]);
-    expect(store.get(sessionId, surfaceId).frame).toBeNull();
+    expect(store.get(sessionId, surfaceId).frame?.header.frameId).toBe(5);
     store.accept(sessionId, surfaceId, "00000000-0000-4000-8000-000000000004");
     socket.picture(6);
     socket.picture(7);
@@ -430,3 +430,76 @@ describe("retained browser pictures", () => {
     expect(store.get(sessionId, surfaceId).frame).toBeNull();
   });
 });
+
+it("keeps a retained target's frame through eligibility gaps, releases transport and credit, and clears on access loss", () => {
+  const sockets: TargetSocket[] = [];
+  const store = new BrowserWatchStore(
+    () => {
+      const socket = new TargetSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    "watch",
+    undefined,
+    () => 100,
+  );
+  const release = store.retain(sessionId, surfaceId);
+  try {
+    const first = sockets[0]!;
+    first.open();
+    first.admit();
+    first.picture();
+    const frame = store.get(sessionId, surfaceId).frame;
+    expect(frame).not.toBeNull();
+    store.reconcile(() => false);
+    expect(first.readyState).toBe(3);
+    expect(store.get(sessionId, surfaceId)).toMatchObject({ frame, status: "unavailable" });
+    store.reconcile(() => true);
+    expect(sockets).toHaveLength(2);
+    const restored = sockets[1]!;
+    restored.open();
+    restored.admit();
+    expect(store.get(sessionId, surfaceId).frame).toBe(frame);
+    restored.drop(4003);
+    expect(store.get(sessionId, surfaceId).frame).toBeNull();
+  } finally {
+    release();
+    store.dispose();
+  }
+});
+
+it.each([false, true])(
+  "clears catalog-revoked frames and inactive presenter fences before socket close (released %s)",
+  (released) => {
+    const socket = new TargetSocket();
+    const store = new BrowserWatchStore(
+      () => socket,
+      "watch",
+      undefined,
+      () => 100,
+    );
+    const changed = vi.fn();
+    const unsubscribe = store.subscribe(sessionId, surfaceId, changed);
+    const release = store.retain(sessionId, surfaceId);
+    try {
+      socket.open();
+      socket.admit();
+      socket.picture();
+      const before = store.invalidationKey(sessionId, surfaceId);
+      if (released) release();
+      else store.reconcile(() => false);
+      changed.mockClear();
+      store.reconcile(
+        () => false,
+        () => false,
+      );
+      expect(store.get(sessionId, surfaceId).frame).toBeNull();
+      expect(store.invalidationKey(sessionId, surfaceId)).not.toBe(before);
+      expect(changed).toHaveBeenCalled();
+    } finally {
+      release();
+      unsubscribe();
+      store.dispose();
+    }
+  },
+);

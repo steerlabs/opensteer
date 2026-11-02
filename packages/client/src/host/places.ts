@@ -498,26 +498,6 @@ export function placeDestinationEnded(
     : !session.apps.some((app) => computerAppIdentityKey(app) === destination.appKey);
 }
 
-/** A Thread's newest place, as the Host last named it. */
-export interface ThreadPlace {
-  readonly placeKey: string;
-  /** The Run that acted there; null when the Host did not say. */
-  readonly runId: string | null;
-  /** Where its picture is live now; null once the place ended or cannot be shown. */
-  readonly destination: SurfaceDestination | null;
-  readonly title: string;
-  readonly site: string | null;
-}
-
-/**
- * A Run's place while its picture is live: the Thread's newest place when that
- * Run is the one that acted there and the place has not ended. Never an older
- * place, and never another Run's.
- */
-export function runPlace(latest: ThreadPlace | null, runId: string | null): ThreadPlace | null {
-  return runId !== null && latest?.runId === runId && latest.destination !== null ? latest : null;
-}
-
 export interface BrowserTabCloseImpact {
   readonly heldByLiveWork: boolean;
   readonly discardsFreshSignIns: boolean;

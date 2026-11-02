@@ -666,16 +666,18 @@ function handleClientMethod(message) {
       send({ id: message.id, result: {} });
       if (scenario === "voice-agent") {
         const specs =
-          message.params.text === "invalid"
-            ? [
-                ["unknown", {}],
-                ["show", { link: 4 }],
-                ["send_to_chat", { messages: 6 }],
-                ["show", { link: "x", extra: true }],
-              ]
-            : message.params.text === "queue"
-              ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
-              : [["show", { link: "opensteer://chat" }]];
+          message.params.text === "find"
+            ? [["find", { query: "gmail", offset: 5 }]]
+            : message.params.text === "invalid"
+              ? [
+                  ["unknown", {}],
+                  ["show", { link: 4 }],
+                  ["send_to_chat", { messages: 6 }],
+                  ["show", { link: "x", extra: true }],
+                ]
+              : message.params.text === "queue"
+                ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
+                : [["show", { link: "opensteer://chat" }]];
         // The delegated speech that starts the agent's turn precedes its tool calls.
         send({
           method: "item/started",

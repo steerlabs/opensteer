@@ -1,8 +1,10 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { autoPlacePart } from "./workspace/composer-context.js";
 import { destinationPlaceKey } from "./workspace/navigation.js";
 import { useBrowserTabStrip } from "@opensteer/client/react";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
+import { handlePersonShow } from "@opensteer/client/host";
 import { useDictation } from "./dictation.js";
 import {
   desktopWebLinksReady,
@@ -72,6 +74,7 @@ import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import {
   WorkspaceProvider,
+  useWorkspace,
   drawerQuery,
   type LocalMachine,
 } from "./workspace/workspace-context.js";
@@ -312,13 +315,20 @@ export function AppShell({
   const voicePlaces = useBrowserTabStrip(hostClient).ordered;
   const voice = useVoiceRuntime(
     hostClient,
-    (target) => {
-      if (target.kind === "back") void routerNavigate(-1);
+    async (target) => {
+      if (target.kind === "back") {
+        if (!(window.history.state?.idx > 0)) return false;
+        await routerNavigate(-1);
+        return true;
+      }
+      const before = nav.address();
       // Settings covers places, so a shown place opens over Chat instead.
-      else if (target.kind === "place")
+      if (target.kind === "place")
         if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
         else nav.showPlace(target.destination);
       else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
+      const after = nav.address();
+      return before.pathname !== after.pathname || before.search !== after.search;
     },
     dictation,
     async () => {
@@ -1034,6 +1044,7 @@ export function AppShell({
         openDrawer={openMobileNavigation}
         openWebLink={openWebLink}
       >
+        <PersonShowNavigation hostClient={hostClient} />
         {webLinkFailure ? (
           <DesktopWebLinkFailureNotice
             {...webLinkFailure}
@@ -1409,4 +1420,41 @@ export function DesktopWebLinkFailureNotice({
       </button>
     </div>
   );
+}
+
+function PersonShowNavigation({ hostClient }: { readonly hostClient: HostClient }): null {
+  const location = useLocation();
+  const { nav, work, phone, dock } = useWorkspace();
+  const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
+  personShowPort.current = (message) => {
+    const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+    // The composer is where the person asked; any other field is work in progress.
+    const field = document.activeElement?.closest(
+      'input, textarea, [contenteditable]:not([contenteditable="false"]), iframe',
+    );
+    const editing = field && !field.hasAttribute("data-composer-input");
+    handlePersonShow(
+      hostClient.getSnapshot(),
+      message,
+      {
+        foreground: document.visibilityState === "visible" && document.hasFocus(),
+        threadId:
+          !editing && (!work || (!phone && dock.open)) && (match || location.pathname === "/")
+            ? match
+              ? decodeURIComponent(match[1]!)
+              : hostClient.getSnapshot().homeThreadId
+            : null,
+      },
+      (target) => {
+        if (target.kind === "place") nav.showPlace(target.destination);
+        else if (target.kind === "thread") nav.openConversation(nav.threadPath(target.threadId));
+        else if (target.kind === "chat") nav.openConversation("/");
+      },
+    );
+  };
+  useEffect(
+    () => hostClient.subscribePersonShow((message) => personShowPort.current(message)),
+    [hostClient],
+  );
+  return null;
 }

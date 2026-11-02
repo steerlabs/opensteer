@@ -1,3 +1,4 @@
+import type { PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
 import { PendingBrowserTabs } from "./pending-browser-tabs.js";
@@ -122,7 +123,7 @@ import { HostClientRequestError, isHostRefusal } from "./client.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
-import { LatestPlaceStore } from "./latest-place.js";
+import { RunPlaceStore } from "./run-place.js";
 import {
   realtimeIdleProbeDeadlineMs,
   realtimeIdleProbeMs,
@@ -136,7 +137,7 @@ import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { newerBrowserTabCatalog, placeList } from "./places.js";
-import { RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
+import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
@@ -629,9 +630,16 @@ export class HttpHostClient {
   /** The latest presence patch of each browser, kept for one the catalog does not list yet. */
   readonly #browserPresence = new Map<string, BrowserPresence>();
   #presenceCounter = 0;
+  #browserStateCounter = 0;
+  readonly #browserStateMarks = new Map<string, number>();
+  // Released presenters still need the authority of their session during catalog gaps.
+  readonly #browserTargetAuthorities = new Map<
+    string,
+    Pick<BrowserSessionSummary, "workspaceId" | "profileId">
+  >();
   readonly #tabCatalogs = new Map<string, BrowserTabCatalog>();
   readonly #placeActivity = new PlaceActivityStore();
-  readonly #latestPlace = new LatestPlaceStore();
+  readonly #runPlaces = new RunPlaceStore();
   readonly #targetedControl = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
@@ -646,7 +654,12 @@ export class HttpHostClient {
         );
       else this.#browserEditing.receive(sessionId, message);
       if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-        this.#patchBrowserSession(sessionId, { tabs: browserTabs(message.surfaces) });
+        this.#patchBrowserSession(sessionId, {
+          tabs: browserTabs(message.surfaces),
+          ...(message.type === "browser.snapshot" ? { state: message.state } : {}),
+        });
+      if (message.type === "browser.status")
+        this.#patchBrowserSession(sessionId, { state: message.state });
       if (message.type === "browser.snapshot" || message.type === "browser.dialog.changed")
         this.#patchBrowserSession(sessionId, { dialog: message.dialog });
     },
@@ -662,7 +675,10 @@ export class HttpHostClient {
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
     "watch",
-    undefined,
+    (sessionId, message) => {
+      if (message.type === "browser.snapshot" || message.type === "browser.status")
+        this.#patchBrowserSession(sessionId, { state: message.state });
+    },
     (attempt) => this.#reconnectDelay(attempt),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     undefined,
@@ -724,8 +740,8 @@ export class HttpHostClient {
   };
   readonly placeActivity = this.#placeActivity.get;
   readonly subscribePlaceActivity = this.#placeActivity.subscribe;
-  readonly latestPlaceOfThread = this.#latestPlace.get;
-  readonly subscribeLatestPlace = this.#latestPlace.subscribe;
+  readonly runPlace = this.#runPlaces.get;
+  readonly subscribeRunPlace = this.#runPlaces.subscribe;
   readonly browserWatchState = this.#targetedWatch.get;
   readonly browserViewerState = this.#targetedControl.status;
   readonly subscribeBrowserViewer = this.#targetedControl.subscribeStatus;
@@ -1069,6 +1085,7 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
+  readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
   >();
@@ -1253,6 +1270,7 @@ export class HttpHostClient {
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-v1") === true,
       voiceAgentAvailable: this.#capabilities?.includes("voice-agent-v1") === true,
+      voiceFindAvailable: this.#capabilities?.includes("voice-find-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
@@ -1313,6 +1331,7 @@ export class HttpHostClient {
   );
   readonly #browserPresentationScope = {};
   readonly browserFrames: BrowserFrameStore = {
+    invalidationKey: this.#targetedControl.invalidationKey,
     editing: this.#browserEditing,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
@@ -1344,6 +1363,7 @@ export class HttpHostClient {
     },
   };
   readonly browserWatchFrames: BrowserFrameStore = {
+    invalidationKey: this.#targetedWatch.invalidationKey,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
       if (surfaceId) this.#targetedWatch.claim(sessionId, surfaceId, token);
@@ -2503,6 +2523,11 @@ export class HttpHostClient {
     return () => this.#notificationListeners.delete(listener);
   }
 
+  subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
+    this.#personShowListeners.add(listener);
+    return () => this.#personShowListeners.delete(listener);
+  }
+
   #applyReadStates(
     incoming: readonly ThreadReadState[],
     markers?: ReadonlyMap<string, Sequence>,
@@ -3541,7 +3566,7 @@ export class HttpHostClient {
     this.#browserPresence.clear();
     this.#tabCatalogs.clear();
     this.#placeActivity.clear();
-    this.#latestPlace.clear();
+    this.#runPlaces.clear();
     this.#targetedWatch.clear();
     this.#targetedControl.clear();
     this.#threadState.clear();
@@ -3572,9 +3597,10 @@ export class HttpHostClient {
     this.#clearBrowserFrames();
     this.#forgetLiveRereads();
     this.#listeners.clear();
+    this.#personShowListeners.clear();
     this.#lifecycleListeners.clear();
     this.#placeActivity.dispose();
-    this.#latestPlace.dispose();
+    this.#runPlaces.dispose();
     this.#targetedWatch.dispose();
     this.#targetedControl.dispose();
     this.#browserEditing.dispose();
@@ -3915,6 +3941,7 @@ export class HttpHostClient {
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       voiceAvailable: capabilities.includes("voice-v1"),
       voiceAgentAvailable: capabilities.includes("voice-agent-v1"),
+      voiceFindAvailable: capabilities.includes("voice-find-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
     if (changed) {
@@ -3928,6 +3955,7 @@ export class HttpHostClient {
   async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
     const presenceMark = this.#presenceCounter;
+    const browserStateMark = this.#browserStateCounter;
     const ownerViewRevision = this.#ownerViews.revision;
     if (this.#snapshot.session === "checking" || this.#snapshot.connection === "offline") {
       this.#update({ ...this.#snapshot, connection: "connecting" });
@@ -4067,7 +4095,30 @@ export class HttpHostClient {
     const patchedSince = (sessionId: string) =>
       (this.#presenceMarks.get(sessionId) ?? 0) > presenceMark;
     const usesBySession = this.#browserUsesBySession();
-    const browserSessions = payload.browser.sessions.map((session) => {
+    const browserSessions = payload.browser.sessions.map((readSession) => {
+      const existing = this.#snapshot.browserSessions.find(
+        (session) => session.id === readSession.id,
+      );
+      const evidence = this.#browserStateMarks.get(readSession.id);
+      // Socket state is ordered. A read begun before that fact, or an unchanged
+      // Host record, cannot supersede it; a later Host lifecycle change can.
+      // Even a superseded read advances the lower bound on the Host record's age.
+      const keepState =
+        existing &&
+        ((evidence &&
+          (evidence > browserStateMark ||
+            (existing.updatedAt !== undefined && readSession.updatedAt <= existing.updatedAt))) ||
+          (existing.updatedAt !== undefined && readSession.updatedAt < existing.updatedAt));
+      const session = keepState
+        ? {
+            ...readSession,
+            state: existing.state,
+            updatedAt:
+              existing.updatedAt && existing.updatedAt > readSession.updatedAt
+                ? existing.updatedAt
+                : readSession.updatedAt,
+          }
+        : readSession;
       const terminal = session.state === "closed" || session.state === "failed";
       if (terminal) this.#tabCatalogs.delete(session.id);
       const catalog = terminal
@@ -4135,7 +4186,6 @@ export class HttpHostClient {
         ...deletion,
       })),
       browserSessions,
-      latestPlaces: payload.latestPlaces ?? [],
       connection: workspaces.length ? this.#snapshot.connection : "connected",
       deploymentShape: payload.deploymentShape,
       deploymentId: payload.deploymentId,
@@ -4577,6 +4627,7 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
+            ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("place-events-v1")
               ? { placeEvents: "include" as const }
               : {}),
@@ -4728,7 +4779,8 @@ export class HttpHostClient {
     }
     const message = HostToClientMessageSchema.parse(value);
     if (
-      (message.type === "host.read-states" ||
+      (message.type === "host.show" ||
+        message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
         message.type === "host.triggers-changed" ||
         message.type === "host.browser-usage-changed" ||
@@ -4747,6 +4799,28 @@ export class HttpHostClient {
     // Notices addressed to the person arrive on every socket they hold, so
     // only what this channel's own subscription sends shows it is delivering.
     if (showsSubscriptionProgress(message, channel)) channel.progressAt = Date.now();
+    if (message.type === "host.show") {
+      if (
+        this.#visibility !== "foreground" ||
+        this.#disposed ||
+        this.#snapshot.session !== "authenticated" ||
+        viewer.userId === null ||
+        this.#snapshot.user?.id !== viewer.userId ||
+        this.#snapshot.deploymentId !== viewer.deploymentId ||
+        this.#forbiddenWorkspaces.has(message.workspaceId)
+      )
+        return;
+      for (const listener of this.#personShowListeners) {
+        try {
+          listener(message);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+      return;
+    }
     if (message.type === "host.pong") {
       // Only a probe is correlated; an uncorrelated pong answers nobody.
       if (message.nonce === channel.probeNonce) this.#clearProbe(channel);
@@ -4846,7 +4920,6 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.thread-place-changed") {
-      this.#latestPlace.accept(message.reference);
       return;
     }
     if (message.type === "host.browser-tabs-changed") {
@@ -4940,6 +5013,8 @@ export class HttpHostClient {
 
   #applyWorkspaceSnapshot(snapshot: WorkspaceSnapshot): void {
     const workspace = this.#toWorkspaceSummary(snapshot.workspace);
+    if (snapshot.runPlaces)
+      this.#runPlaces.reconcile(workspace.id, snapshot.sequence, snapshot.runPlaces);
     const inFlight = [...this.#hydrationBuffers.keys()];
     const coversSnapshot = (threadId: string) => {
       const sequence = this.#hydratedThreads.get(threadId);
@@ -5218,6 +5293,15 @@ export class HttpHostClient {
         channel.cursor = event.sequence;
         continue;
       }
+      if (event.type === "place.entered") this.#runPlaces.accept(event, false);
+      if (
+        event.runId !== null &&
+        (event.type === "run.completed" ||
+          event.type === "run.failed" ||
+          event.type === "run.interrupted" ||
+          (event.type === "run.status" && !isActiveRunStatus(event.data.status)))
+      )
+        this.#runPlaces.end(event.runId, false);
       const current = next.threads.find(({ id }) => id === event.threadId);
       const ownsState = this.#threadState.record(event);
       const retained =
@@ -5246,6 +5330,7 @@ export class HttpHostClient {
       this.#update(next);
       if (this.#activeThreadId) this.activateThread(this.#activeThreadId);
     }
+    this.#runPlaces.flush();
     this.#releaseHeldLive(channel);
     this.#refreshInputQueues(touchedInputQueues);
   }
@@ -5573,6 +5658,8 @@ export class HttpHostClient {
   }
 
   #patchBrowserSession(sessionId: string, patch: Partial<BrowserSessionSummary>): void {
+    if (patch.state !== undefined)
+      this.#browserStateMarks.set(sessionId, ++this.#browserStateCounter);
     const browserSessions = this.#snapshot.browserSessions.map((session) =>
       session.id === sessionId ? { ...session, ...patch } : session,
     );
@@ -5760,7 +5847,7 @@ export class HttpHostClient {
     this.#browserPresence.clear();
     this.#tabCatalogs.clear();
     this.#placeActivity.clear();
-    this.#latestPlace.clear();
+    this.#runPlaces.clear();
     this.#targetedWatch.clear();
     this.#targetedControl.clear();
     this.#reportedTimeZone = null;
@@ -5826,6 +5913,20 @@ export class HttpHostClient {
     }
   }
 
+  #browserTargetAuthorized(snapshot: HostSnapshot, sessionId: string): boolean {
+    const authority = this.#browserTargetAuthorities.get(sessionId);
+    if (!authority) return true;
+    if (this.#forbiddenWorkspaces.has(authority.workspaceId)) return false;
+    return (
+      authority.profileId === null ||
+      (snapshot.browserProfiles.some((profile) => profile.id === authority.profileId) &&
+        snapshot.browserProfileGrants.some(
+          (grant) =>
+            grant.profileId === authority.profileId && grant.workspaceId === authority.workspaceId,
+        ))
+    );
+  }
+
   #refuseWorkspace(workspaceId: string): void {
     this.#savedViewReadiness = {
       ...emptySavedViewReadiness(),
@@ -5836,16 +5937,10 @@ export class HttpHostClient {
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#forbiddenWorkspaces.add(workspaceId);
-    this.#targetedControl.reconcile(
-      (sessionId) =>
-        this.#snapshot.browserSessions.find((session) => session.id === sessionId)?.workspaceId !==
-        workspaceId,
-    );
-    this.#targetedWatch.reconcile(
-      (sessionId) =>
-        this.#snapshot.browserSessions.find((session) => session.id === sessionId)?.workspaceId !==
-        workspaceId,
-    );
+    const authorized = (sessionId: string) =>
+      this.#browserTargetAuthorized(this.#snapshot, sessionId);
+    this.#targetedControl.reconcile(undefined, authorized);
+    this.#targetedWatch.reconcile(undefined, authorized);
     this.#notificationPreferences.delete(workspaceId);
     this.#workspaceTaskScopes.delete(workspaceId);
     for (const [threadId, ownerWorkspaceId] of this.#threadWorkspace) {
@@ -5969,6 +6064,11 @@ export class HttpHostClient {
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#runPlaces.clear();
+      this.#targetedWatch.clear();
+      this.#targetedControl.clear();
+      this.#browserStateMarks.clear();
+      this.#browserTargetAuthorities.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
@@ -5994,7 +6094,7 @@ export class HttpHostClient {
     let reconcileBrowserTargets: (() => void) | undefined;
     if (snapshot.session !== "authenticated") {
       this.#placeActivity.clear();
-      this.#latestPlace.clear();
+      this.#runPlaces.clear();
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
     } else {
@@ -6004,24 +6104,34 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        snapshot.latestPlaces !== this.#snapshot.latestPlaces
+        snapshot.workspaceTabs !== this.#snapshot.workspaceTabs ||
+        snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
+        snapshot.browserProfileGrants !== this.#snapshot.browserProfileGrants ||
+        snapshot.workspaces !== this.#snapshot.workspaces
       ) {
-        this.#latestPlace.reconcile(snapshot, snapshot.latestPlaces);
         const places = placeList(snapshot);
         if (snapshot.connection === "connected")
           this.#placeActivity.reconcile(
             new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),
           );
-        // Browser viewers follow the catalog, never the realtime channel: the
-        // Host admits and revokes each one on its own socket.
+        for (const session of [
+          ...snapshot.browserSessions,
+          ...(snapshot.workspaceTabs ?? []).map((group) => group.session),
+        ])
+          this.#browserTargetAuthorities.set(session.id, {
+            workspaceId: session.workspaceId,
+            profileId: session.profileId,
+          });
+        const authorized = (sessionId: string) =>
+          this.#browserTargetAuthorized(snapshot, sessionId);
         const allowed = (sessionId: string, surfaceId: string) =>
           places.some(
             (place) =>
               place.key === `browser:${sessionId}:${surfaceId}` && place.availability === "ready",
           );
         reconcileBrowserTargets = () => {
-          this.#targetedWatch.reconcile(allowed);
-          this.#targetedControl.reconcile(allowed);
+          this.#targetedWatch.reconcile(allowed, authorized);
+          this.#targetedControl.reconcile(allowed, authorized);
         };
       }
     }
@@ -6136,6 +6246,7 @@ export class HttpHostClient {
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-v1") === true,
       voiceAgentAvailable: this.#capabilities?.includes("voice-agent-v1") === true,
+      voiceFindAvailable: this.#capabilities?.includes("voice-find-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       // An unchanged Thread keeps its identity: screens compare records by
       // reference, and every publish passes through here.
@@ -6150,6 +6261,7 @@ export class HttpHostClient {
     };
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
+    this.#runPlaces.flush();
     reconcileBrowserTargets?.();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
@@ -6657,6 +6769,7 @@ function toBrowserSessionSummary(
       : {}),
     attachedRunIds: [...(session.attachedRunIds ?? [])],
     createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
     threadIds: [...(session.threadIds ?? existing?.threadIds ?? [])],
     uses: sameElements(existing?.uses ?? [], uses) ? (existing?.uses ?? []) : uses,
     dialog: terminal ? null : (existing?.dialog ?? null),

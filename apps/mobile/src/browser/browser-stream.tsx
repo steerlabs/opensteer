@@ -75,7 +75,9 @@ export interface BrowserStreamProps {
   readonly onTap?: () => void;
   /** The person scrolled the page. */
   readonly onScroll?: () => void;
-  readonly session: BrowserSessionSummary;
+  readonly session: Pick<BrowserSessionSummary, "id" | "state">;
+  /** Passive Run preview: retain displayed pixels across feed gaps and same-tab rebinding. */
+  readonly preserveLastFrame?: boolean;
   readonly style?: StyleProp<ViewStyle>;
   /**
    * How far this phone has pinched the picture in. A drag is measured on the
@@ -88,6 +90,9 @@ interface FrameSlot {
   readonly frame: MobileBrowserFrame;
   /** The feed's delivery, whose token says the view is done with it. */
   readonly source: BrowserFrameView;
+  readonly invalidation: string | number;
+  readonly frames: BrowserFrameStore;
+  readonly settle: () => void;
 }
 
 interface FrameSlots {
@@ -126,6 +131,7 @@ export function BrowserStream({
   style,
   interactive = false,
   inputEnabled = true,
+  preserveLastFrame = false,
   tabId,
   zoom,
 }: BrowserStreamProps) {
@@ -143,10 +149,21 @@ export function BrowserStream({
     requestedActive && ready && interactive,
   );
   const active = requestedActive && !presentationError;
+  const preserve = preserveLastFrame && !interactive;
   const frames = interactive ? hostClient.browserFrames : hostClient.browserWatchFrames;
   // Fixed for the binary's lifetime, so one presenter owns this view's receipts.
   const [Picture] = useState(nativePictureView);
   const native = Picture !== null;
+  const invalidation = useSyncExternalStore(
+    useCallback(
+      (listener) => frames.subscribe(session.id, listener, tabId),
+      [frames, session.id, tabId],
+    ),
+    useCallback(
+      () => frames.invalidationKey?.(session.id, tabId) ?? 0,
+      [frames, session.id, tabId],
+    ),
+  );
   const received = useBrowserFrame(frames, session.id, tabId, active && !native);
   const [slots, setSlots] = useState<FrameSlots>(emptySlots);
   const slotsRef = useRef(slots);
@@ -196,6 +213,7 @@ export function BrowserStream({
     sessionId: session.id,
     tabId,
     settle: finish,
+    preserveLastFrame: preserve,
   });
   const frame = native
     ? picture.drawn
@@ -209,7 +227,7 @@ export function BrowserStream({
       const delivery = frames.get(session.id, tabId);
       if (delivery) finish(delivery);
       const decoding = slotsRef.current.decoding;
-      if (decoding) finish(decoding.source);
+      if (decoding) decoding.settle();
     },
     [finish, frames, native, session.id, tabId],
   );
@@ -218,9 +236,9 @@ export function BrowserStream({
   // hidden in render below.
   useLayoutEffect(() => {
     if (native) return;
-    if (!active || !ready || frame === null) {
+    if (!active || !ready || (frame === null && !preserve)) {
       const decoding = slotsRef.current.decoding;
-      if (decoding) finish(decoding.source);
+      if (decoding) decoding.settle();
       const discarded = received ?? frames.get(session.id, tabId);
       if (discarded) finish(discarded);
       setSlots(emptySlots);
@@ -228,19 +246,38 @@ export function BrowserStream({
     }
     // Another tab's picture never stands in for the one now in front.
     const decoding = slotsRef.current.decoding;
-    if (decoding && decoding.source.header.surfaceId !== frame.header.surfaceId)
-      finish(decoding.source);
+    if (
+      decoding &&
+      (decoding.source.header.surfaceId !== tabId || decoding.invalidation !== invalidation)
+    )
+      decoding.settle();
     setSlots((current) => ({
       decoding:
-        current.decoding?.source.header.surfaceId === frame.header.surfaceId
+        current.decoding?.source.header.surfaceId === tabId &&
+        current.decoding.invalidation === invalidation &&
+        current.decoding.frames === frames
           ? current.decoding
           : null,
       displayed:
-        current.displayed?.source.header.surfaceId === frame.header.surfaceId
+        current.displayed?.source.header.surfaceId === tabId &&
+        current.displayed.invalidation === invalidation &&
+        current.displayed.frames === frames
           ? current.displayed
           : null,
     }));
-  }, [active, finish, frame, frames, native, ready, received, session.id, tabId]);
+  }, [
+    active,
+    finish,
+    frame,
+    frames,
+    invalidation,
+    native,
+    preserve,
+    ready,
+    received,
+    session.id,
+    tabId,
+  ]);
 
   // Only convert when the native decoder slot is free. With one picture in
   // flight at a time, the feed's value once the slot frees is the latest.
@@ -255,12 +292,15 @@ export function BrowserStream({
       settledFrameKey: settledKey.current,
     });
     if (next !== null) {
-      setSlots((current) => ({ ...current, decoding: { frame: next, source: frame } }));
+      setSlots((current) => ({
+        ...current,
+        decoding: { frame: next, source: frame, invalidation, frames, settle: () => finish(frame) },
+      }));
     } else if (mobileBrowserFrameKey(frame) !== settledKey.current) {
       // Too large to convert here: dropped, so the feed can move on.
       finish(frame);
     }
-  }, [active, decodingBusy, finish, frame, native, ready]);
+  }, [active, decodingBusy, finish, frame, frames, invalidation, native, ready]);
 
   const loaded = (slot: FrameSlot) => {
     if (slotsRef.current.decoding !== slot) return;
@@ -277,21 +317,34 @@ export function BrowserStream({
         latest.header.capture?.revision === slot.source.header.capture?.revision
       : latest === slot.source;
     setSlots((previous) => ({ decoding: null, displayed: current ? slot : previous.displayed }));
-    finish(slot.source);
+    slot.settle();
   };
   const failed = (slot: FrameSlot) => {
     if (slotsRef.current.decoding !== slot) return;
     setSlots((previous) => ({ ...previous, decoding: null }));
-    finish(slot.source);
+    slot.settle();
   };
 
   // Hidden in the render that loses the feed's picture, not an effect later.
-  const visible = active && ready && frame !== null;
-  const displayedSlot = visible && !native ? slots.displayed : null;
+  const visible = active && ready && (frame !== null || preserve);
+  const displayedSlot =
+    visible &&
+    !native &&
+    slots.displayed?.source.header.surfaceId === tabId &&
+    slots.displayed.invalidation === invalidation &&
+    slots.displayed.frames === frames
+      ? slots.displayed
+      : null;
   const displayed: { readonly source: BrowserFrameView } | null = native
     ? picture.drawn && { source: picture.drawn }
     : displayedSlot;
-  const decoding = visible && !native ? slots.decoding : null;
+  const decoding =
+    visible &&
+    !native &&
+    slots.decoding?.invalidation === invalidation &&
+    slots.decoding.frames === frames
+      ? slots.decoding
+      : null;
   useEffect(() => {
     if (displayed !== null) presentationPresented();
   }, [displayed, presentationPresented]);
@@ -524,9 +577,9 @@ export function BrowserStream({
     >
       {Picture === null ? null : (
         <View
-          key={`${session.id}:${tabId}`}
+          key={preserve ? tabId : `${session.id}:${tabId}`}
           pointerEvents="none"
-          style={[styles.image, { opacity: active && ready && picture.present ? 1 : 0 }]}
+          style={[styles.image, { opacity: picture.drawn ? 1 : 0 }]}
         >
           <Picture
             accessibilityElementsHidden={displayed === null}

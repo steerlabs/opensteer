@@ -3,6 +3,7 @@ import {
   computerUseStops,
   computerReasonWords,
   computerDisplayScope,
+  computerDisplayAuthorityKey,
   computerDisplayStatus,
   sharedDisplayStreams,
   type DisplayFrame,
@@ -10,7 +11,11 @@ import {
   type DisplayLease,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
-import { displayViewerWindowFrames, type ComputerAppIdentity } from "@opensteer/protocol";
+import {
+  displayViewerCloseCodes,
+  displayViewerWindowFrames,
+  type ComputerAppIdentity,
+} from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
@@ -80,11 +85,13 @@ export function ComputerDisplay({
   onPageSize,
   interactive = false,
   onReopen,
+  preserveLastFrame = false,
 }: {
   readonly bar?: ComputerBar | undefined;
   readonly onReopen?: (() => void) | undefined;
   readonly active: boolean;
   readonly interactive?: boolean;
+  readonly preserveLastFrame?: boolean;
   readonly hostClient: HostClient;
   readonly source: NativeViewerSource;
   readonly phone: boolean;
@@ -136,13 +143,21 @@ export function ComputerDisplay({
       mounted.current = false;
     };
   }, []);
-  const resetDecoder = useCallback((next: number) => {
+  const resetDecoder = useCallback((next: number, keepPicture = false) => {
     const native = decoder.current;
     if (!native) return;
-    void native.reset(String(next)).catch(() => {
+    if (keepPicture && !native.resetKeepingPicture) {
+      setPicture(null);
+      setShown(false);
+    }
+    const reset =
+      keepPicture && native.resetKeepingPicture
+        ? native.resetKeepingPicture(String(next))
+        : native.reset(String(next));
+    void reset.catch(() => {
       // Native teardown already clears its surface. A bridge call queued before
       // removal can reject after that view's tag is gone.
-      if (!mounted.current || decoder.current !== native) return;
+      if (!mounted.current || decoder.current !== native || epoch.current !== next) return;
       setShown(false);
       setWords("Video sharing is unavailable");
     });
@@ -152,6 +167,46 @@ export function ComputerDisplay({
     [source],
   );
   const scope = useHostSelector(hostClient, selectScope);
+  const preserve = preserveLastFrame && !interactive;
+  const selectAuthority = useCallback(
+    (snapshot: HostSnapshot) => computerDisplayAuthorityKey(snapshot, source, machineId),
+    [source, machineId],
+  );
+  const authorityKey = useHostSelector(hostClient, selectAuthority);
+  const sourceKey = JSON.stringify(source);
+  const pictureKey =
+    preserve && source.kind === "task-session"
+      ? JSON.stringify([machineId, source.appKey ?? "main"])
+      : sourceKey;
+  const identity = useRef({ hostClient, pictureKey, authorityKey });
+  useLayoutEffect(() => {
+    const previous = identity.current;
+    identity.current = { hostClient, pictureKey, authorityKey };
+    if (
+      previous.hostClient !== hostClient ||
+      previous.pictureKey !== pictureKey ||
+      previous.authorityKey !== authorityKey
+    ) {
+      setPicture(null);
+      decodingPicture.current = null;
+      setShown(false);
+      resetDecoder(++epoch.current);
+    }
+  }, [hostClient, pictureKey, authorityKey, resetDecoder]);
+  useLayoutEffect(
+    () =>
+      hostClient.subscribe(() => {
+        if (
+          computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey
+        )
+          return;
+        setPicture(null);
+        decodingPicture.current = null;
+        setShown(false);
+        resetDecoder(++epoch.current);
+      }),
+    [hostClient, source, machineId, authorityKey, resetDecoder],
+  );
   useVisibleOwnerRetention(hostClient, source, active && foreground && scope !== null);
   const updateName = useHostSelector(
     hostClient,
@@ -172,9 +227,12 @@ export function ComputerDisplay({
     return () => listener.remove();
   }, []);
   useLayoutEffect(() => {
-    if (unavailable || !active || !foreground || !scope) {
-      setShown(false);
-      resetDecoder(++epoch.current);
+    if (unavailable || !active || !foreground || !scope || authorityKey === null) {
+      const keepPicture = preserve && active && foreground && authorityKey !== null;
+      if (!keepPicture) {
+        setShown(false);
+      }
+      resetDecoder(++epoch.current, keepPicture);
       return;
     }
     const pool = sharedDisplayStreams(hostClient);
@@ -191,13 +249,15 @@ export function ComputerDisplay({
     let bytes = 0;
     let awaitingKey = false;
     const pending = new Set<DisplayFrame>();
-    const clear = () => {
+    const clear = (keepPicture = false) => {
       epoch.current++;
-      setPicture(null);
       decodingPicture.current = null;
+      if (!keepPicture) {
+        setPicture(null);
+        setShown(false);
+      }
+      resetDecoder(epoch.current, keepPicture);
       generation = -1;
-      setShown(false);
-      resetDecoder(epoch.current);
       for (const frame of pending) frame.done();
       pending.clear();
       queued.length = 0;
@@ -215,7 +275,8 @@ export function ComputerDisplay({
       setTerminal(snapshot.connection === "closed");
       if (
         snapshot.connection === "closed" ||
-        snapshot.connection === "connecting" ||
+        snapshot.closeCode === displayViewerCloseCodes.loginEnded ||
+        (!preserve && snapshot.connection === "connecting") ||
         (snapshot.display && !["starting", "live"].includes(snapshot.display.state))
       )
         clear();
@@ -223,6 +284,11 @@ export function ComputerDisplay({
     const unsubscribe = lease.subscribe(changed);
     const invalidate = hostClient.subscribe(() => {
       if (computerDisplayScope(hostClient.getSnapshot(), source) === scope) return;
+      if (
+        preserve &&
+        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey
+      )
+        return;
       clear();
       pool.invalidate(
         (target) => computerDisplayScope(hostClient.getSnapshot(), target.source) === target.scope,
@@ -286,7 +352,7 @@ export function ComputerDisplay({
           lease.requestKeyframe();
           return;
         }
-        clear();
+        clear(preserve);
         connection = frame.connection;
         generation = frame.header.generation;
       }
@@ -328,7 +394,15 @@ export function ComputerDisplay({
       frames();
       unsubscribe();
       invalidate();
-      clear();
+      const next = identity.current;
+      clear(
+        preserve &&
+          mounted.current &&
+          next.hostClient === hostClient &&
+          next.pictureKey === pictureKey &&
+          next.authorityKey === authorityKey &&
+          authorityKey !== null,
+      );
       lease.release();
     };
   }, [
@@ -343,6 +417,10 @@ export function ComputerDisplay({
     unavailable,
     interactive,
     binary,
+    preserve,
+    authorityKey,
+    machineId,
+    sourceKey,
   ]);
   const navigable =
     interactive && phone && inputLease !== null && shown && displayState?.input === "available";
@@ -400,7 +478,7 @@ export function ComputerDisplay({
           </AppText>
         </GlassSurface>
       ) : null}
-      {unavailable || !shown || words || updateName !== null ? (
+      {unavailable || !shown || (!preserve && (words || updateName !== null)) ? (
         <View style={styles.status}>
           {!unavailable && !words && updateName === null ? (
             <ActivityIndicator color={color.muted} />
