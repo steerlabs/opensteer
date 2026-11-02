@@ -78,6 +78,7 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
         fpsValues,
         scenarios,
         duration,
+        legacyHost: process.env.OPENSTEER_MAC_BENCH_LEGACY === "1",
         note: "Synthetic producer bypasses the Runner's 30 fps cap; default GOP=6; paint means headless canvas draw, not physical presentation.",
       },
       null,
@@ -219,7 +220,7 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
             if (timer) clearTimeout(timer);
             producer?.terminate();
           }
-        });
+        }, { legacy: process.env.OPENSTEER_MAC_BENCH_LEGACY === "1" });
         cleanup.push(host.close);
         const ackSamples = new Map<string, { at: number; delay: number }[]>();
         const attach = host.hub.attachViewer.bind(host.hub);

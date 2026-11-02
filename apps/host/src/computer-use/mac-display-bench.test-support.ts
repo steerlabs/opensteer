@@ -16,8 +16,14 @@ import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { registerComputerUseDisplayRoutes } from "./computer-use-display-routes.js";
 
-/** The same in-process Mac binding/fence admission as display-stream-hub.test.ts. */
-export async function macHub(onCommand: (message: HostIntegrationsOperation) => void) {
+/**
+ * The same in-process Mac binding/fence admission as display-stream-hub.test.ts.
+ * `legacy` stands in for a desktop without the negotiated video profile.
+ */
+export async function macHub(
+  onCommand: (message: HostIntegrationsOperation) => void,
+  { legacy = false }: { legacy?: boolean } = {},
+) {
   const app = Fastify();
   const sockets: WebSocket[] = [];
   const actors = new Map<string, ReturnType<typeof createId<"user">>>();
@@ -48,6 +54,7 @@ export async function macHub(onCommand: (message: HostIntegrationsOperation) => 
           computerUseVersion: 2,
           ownerViewVersion: 3,
           macWindowVideoVersion: 1,
+          ...(legacy ? {} : { displayProfile: 1 }),
         },
       },
     },
