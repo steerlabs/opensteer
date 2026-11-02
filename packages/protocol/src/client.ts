@@ -1,6 +1,7 @@
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
+  PlaceEnteredEventViewSchema,
   EnvironmentIdSchema,
   LiveRunProgressViewSchema,
   MessageViewSchema,
@@ -202,6 +203,15 @@ export const WorkspaceSnapshotSchema = z
     ),
     pendingRequestWindow: DurableWindowSchema,
     runQueue: z.array(ThreadRunQueueEntryViewSchema).max(workspaceSnapshotMaxRunQueueEntries),
+    /**
+     * Each nonterminal Run's newest `place.entered`, whatever the transcript
+     * window holds. Sent only to a subscriber that asked for place events;
+     * absence means the Host does not say, not that no Run is anywhere.
+     */
+    runPlaces: z
+      .array(PlaceEnteredEventViewSchema)
+      .max(workspaceSnapshotMaxRunQueueEntries)
+      .optional(),
     sequence: SequenceSchema,
     serializedBytes: z.number().int().positive().max(workspaceSnapshotMaxSerializedBytes),
     threadWindow: DurableWindowSchema,

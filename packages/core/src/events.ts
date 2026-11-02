@@ -596,6 +596,12 @@ export const AgentEventSchema = z
     `Agent event must not exceed ${agentEventMaxSerializedBytes} serialized bytes`,
   );
 
+/** A Run entering a place, as a reader sees it: also how a snapshot names each working Run's place. */
+export const PlaceEnteredEventViewSchema = makeEventViewVariant("place.entered").extend({
+  runId: RunIdSchema,
+});
+export type PlaceEnteredEventView = z.infer<typeof PlaceEnteredEventViewSchema>;
+
 export const AgentEventViewSchema = z
   .discriminatedUnion("type", [
     makeEventViewVariant("assignment.created"),
@@ -632,7 +638,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("thread.state-changed"),
     makeEventViewVariant("thread.continuation-established"),
     makeEventViewVariant("thread.access-mode-updated"),
-    makeEventViewVariant("place.entered").extend({ runId: RunIdSchema }),
+    PlaceEnteredEventViewSchema,
   ])
   .refine(
     (event) =>
