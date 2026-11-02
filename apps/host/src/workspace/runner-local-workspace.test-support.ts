@@ -59,7 +59,16 @@ export function attachLocalWorkspaceDisk(
     switch (request.type) {
       case "host.workspace.local.provision": {
         provisioned.push(request.binding.workspaceId);
-        socket.send(JSON.stringify({ ...answered, type: "runner.workspace.local.provisioned" }));
+        socket.send(
+          JSON.stringify({
+            ...answered,
+            path:
+              request.fingerprint.workspaceKind === "main"
+                ? "/Main"
+                : `/Main/Projects/${request.fingerprint.slug ?? request.binding.workspaceId}`,
+            type: "runner.workspace.local.provisioned",
+          }),
+        );
         return;
       }
       case "host.workspace.local.inspect": {

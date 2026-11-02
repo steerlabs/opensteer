@@ -1,3 +1,4 @@
+import { posix, win32 } from "node:path";
 import { createHash } from "node:crypto";
 import {
   OpensteerError,
@@ -190,6 +191,26 @@ export class WorkspaceService {
     });
     if (["ready", "deleting", "deleted"].includes(workspace.status)) return workspace;
     return this.provision(workspace);
+  }
+
+  async projectPath(workspace: Workspace): Promise<string> {
+    if (workspace.kind !== "project" || !workspace.slug || workspace.status !== "ready")
+      throw new Error("Project storage is not ready");
+    const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
+    const root = main ? this.#drivers.local?.storageLocation?.(main) : null;
+    if (
+      !root ||
+      workspace.backing.kind !== "local-directory" ||
+      main?.backing.kind !== "local-directory" ||
+      workspace.backing.ownerEnvironmentId !== main.backing.ownerEnvironmentId ||
+      workspace.backing.storageAuthorityId !== main.backing.storageAuthorityId
+    )
+      throw new Error("The computer holding this Project is unavailable");
+    return (win32.isAbsolute(root) && !posix.isAbsolute(root) ? win32 : posix).join(
+      root,
+      "Projects",
+      workspace.slug,
+    );
   }
 
   setIcon(input: {

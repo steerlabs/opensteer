@@ -828,7 +828,7 @@ async function startWithin(
                     };
                     const signal = AbortSignal.timeout(30_000);
                     if (request.type === "host.workspace.local.provision") {
-                      await localAuthority.provision(
+                      const path = await localAuthority.provision(
                         {
                           binding: request.binding,
                           fingerprint: request.fingerprint,
@@ -836,7 +836,7 @@ async function startWithin(
                         },
                         signal,
                       );
-                      return { ...echo, type: "runner.workspace.local.provisioned" };
+                      return { ...echo, path, type: "runner.workspace.local.provisioned" };
                     }
                     if (request.type === "host.workspace.local.inspect") {
                       const health = await localAuthority.inspect(request.binding, signal);

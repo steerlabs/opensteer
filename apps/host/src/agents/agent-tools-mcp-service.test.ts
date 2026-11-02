@@ -225,41 +225,6 @@ describe("AgentToolsMcpService", () => {
     await fixture.service.close();
   });
 
-  it("accepts legacy message delivery syntax for a version 1 Trigger session", async () => {
-    const handle = vi.fn(async (_token: string, request: unknown) => ({
-      requestId: (request as { requestId: string }).requestId,
-      result: { accepted: true },
-      type: "thread.message.result" as const,
-    }));
-    const fixture = await startService({
-      agentControl: { handle: vi.fn() } as unknown as AgentControlService,
-      profiles: {},
-      triggerControl: { handle } as unknown as TriggerControlService,
-      triggerToken: "legacy-trigger",
-    });
-    const client = await connectClient(fixture.url, "legacy-trigger");
-    const listed = await client.listTools();
-    expect(listed.tools.find(({ name }) => name === "thread_message")?.description).toContain(
-      "delivery queue records passive context",
-    );
-    expect(listed.tools.find(({ name }) => name === "trigger_write")?.description).toContain(
-      "do not accept toolContractVersion",
-    );
-
-    for (const delivery of ["queue", "trigger"] as const) {
-      const result = await client.callTool({
-        arguments: { delivery, message: "legacy", threadId: createId("thread") },
-        name: "thread_message",
-      });
-      expect(result.isError).not.toBe(true);
-    }
-    expect(
-      handle.mock.calls.map(([, request]) => (request as { delivery: string }).delivery),
-    ).toEqual(["queue", "trigger"]);
-    await client.close();
-    await fixture.service.close();
-  });
-
   it("projects the complete Main profile through authenticated Streamable HTTP", async () => {
     const workspaceId = createId("workspace");
     const createdRequest = pendingBrowserRequest(workspaceId);
@@ -312,10 +277,10 @@ describe("AgentToolsMcpService", () => {
           type: "browser.access.request.result" as const,
         };
       }
-      if (value.type === "workspace.create") {
+      if (value.type === "project.create") {
         return {
           requestId: value.requestId,
-          type: "workspace.create.result" as const,
+          type: "project.create.result" as const,
           path: "/main/Projects/travel",
           slug: "travel",
           workspace: {
@@ -331,7 +296,7 @@ describe("AgentToolsMcpService", () => {
           },
         };
       }
-      if (value.type !== "workspace.list") throw new Error("unexpected tool request");
+      if (value.type !== "project.list") throw new Error("unexpected tool request");
       return {
         environments: [],
         environmentsTruncated: false,
@@ -340,7 +305,7 @@ describe("AgentToolsMcpService", () => {
         requestId: value.requestId,
         threads: [],
         threadWindow: emptyWindow(),
-        type: "workspace.list.result" as const,
+        type: "project.list.result" as const,
         workspaces: [
           {
             id: workspaceId,
@@ -408,7 +373,7 @@ describe("AgentToolsMcpService", () => {
       expect.objectContaining({
         icon: "plane",
         name: "Travel",
-        type: "workspace.create",
+        type: "project.create",
       }),
     );
     const misplacedMachine = await client.callTool({
@@ -426,7 +391,7 @@ describe("AgentToolsMcpService", () => {
     });
     expect(handle).toHaveBeenCalledWith(
       "main-token",
-      expect.objectContaining({ limit: 10, type: "workspace.list" }),
+      expect.objectContaining({ limit: 10, type: "project.list" }),
     );
     const browserProfiles = await client.callTool({
       arguments: {},
@@ -525,7 +490,7 @@ describe("AgentToolsMcpService", () => {
     };
     const handle = vi.fn(async (_token: string, request: unknown) => {
       const value = request as { readonly requestId: string; readonly type: string };
-      if (value.type === "workspace.list") {
+      if (value.type === "project.list") {
         return {
           environments: [environment],
           environmentsTruncated: false,
@@ -534,7 +499,7 @@ describe("AgentToolsMcpService", () => {
           requestId: value.requestId,
           threads: [],
           threadWindow: emptyWindow(),
-          type: "workspace.list.result" as const,
+          type: "project.list.result" as const,
           workspaces: [workspace],
           window: { ...emptyWindow(), itemCount: 1, totalItems: 1 },
         };

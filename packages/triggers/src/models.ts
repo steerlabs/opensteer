@@ -24,9 +24,9 @@ export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
  */
 export const triggerProgramContract = [
   "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
-  "with the anchor Workspace mounted as the working directory, so relative paths and relative imports",
+  "with the anchor Workspace folder as the working directory, so relative paths and relative imports",
   "resolve from the Workspace root. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 3 for new programs. Version 3 uses report/queue/steer delivery and environment_list for environment, engine and model discovery; workspace_list returns only Workspaces and its window. Saved version 2 programs preserve report/queue/steer delivery and the previous workspace_list discovery schema/results; saved version 1 programs also preserve queue/trigger delivery semantics. Editing timing or status preserves the saved program version.",
+  "The program object must declare toolContractVersion: use 3 for new programs. Use environment_list for environment, engine and model discovery, and project_list to find Projects.",
   "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
   '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
@@ -36,7 +36,7 @@ export const triggerProgramContract = [
   "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when the Workspace has no browser grant.",
   "For a watch, every non-null capability also has expiresAt.",
   "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
-  "`opensteer.callTool(name, input)` calls Opensteer product tools (Workspaces, Threads, Triggers);",
+  "`opensteer.callTool(name, input)` calls Opensteer product tools (Projects, Threads, Triggers);",
   "`opensteer.integrations.callTool(name, input)` calls integration tools already granted to the Workspace.",
   "Supply a stable observationId with each watch call to thread_message or thread_delegate; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
   "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in the Workspace's own node_modules are available;",

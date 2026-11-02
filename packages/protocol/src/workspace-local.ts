@@ -140,6 +140,7 @@ export const RunnerWorkspaceLocalResultSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...workspaceLocalResultBase,
+    path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u),
     type: z.literal("runner.workspace.local.provisioned"),
   }),
   z.strictObject({

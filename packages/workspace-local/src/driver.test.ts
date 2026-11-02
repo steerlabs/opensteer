@@ -297,7 +297,11 @@ describe("LocalWorkspaceAuthority", () => {
     const restarted = new LocalWorkspaceAuthority(fixture.options);
 
     expect(await restarted.inspect(request.binding)).toEqual({ status: "ready" });
-    await expect(restarted.provision(request)).resolves.toBeUndefined();
+    await expect(restarted.provision(request)).resolves.toBe(
+      (await restarted.inventory()).bindings.find(
+        ({ bindingId }) => bindingId === request.binding.bindingId,
+      )?.path,
+    );
     expect((await registryDocument(fixture.registryFilePath)).bindings).toHaveLength(1);
   });
 

@@ -32,12 +32,7 @@ import type { TriggerControlInput } from "@opensteer/triggers";
 import { z } from "zod";
 import { SignedTokenClaimsSchema, type SignedTokenService } from "../identity/host-keys.js";
 import { runCapabilityLifetimeSeconds } from "../agents/run-capability.js";
-import {
-  delegationEngines,
-  delegationHarnessPage,
-  delegationPlacement,
-} from "../agents/delegation-placement.js";
-import { requestFingerprintForToolContract, requestForToolContract } from "./tool-contract.js";
+import { delegationPlacement } from "../agents/delegation-placement.js";
 import {
   assertProgramToolAllowed,
   assertProgramThreadScope,
@@ -116,7 +111,7 @@ export interface TriggerManager {
 
 type TriggerWorkspaceCreator = Pick<
   import("../workspace/workspace-service.js").WorkspaceService,
-  "create"
+  "create" | "projectPath"
 >;
 
 export class TriggerControlService {
@@ -156,9 +151,7 @@ export class TriggerControlService {
 
   async handle(token: string, value: unknown): Promise<AgentControlResponse> {
     const claims = await this.#tokens.authenticate(token);
-    const request = AgentControlRequestSchema.parse(
-      requestForToolContract(claims.toolContractVersion, value),
-    );
+    const request = AgentControlRequestSchema.parse(value);
     const anchor = await this.#store.getThreadForOwner(claims.threadId, claims.requestedBy);
     if (
       !anchor ||
@@ -188,7 +181,7 @@ export class TriggerControlService {
         type: "environment.list.result",
       });
     }
-    if (request.type === "workspace.list") {
+    if (request.type === "project.list") {
       const page = await this.#store.workspacePageForOwner({
         ownerId: claims.requestedBy,
         maxBytes: 64 * 1_024,
@@ -197,7 +190,7 @@ export class TriggerControlService {
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
-        type: "workspace.list.result",
+        type: "project.list.result",
         window: page.window,
         workspaces: page.workspaces.map(({ id, kind, name, status }) => ({
           id,
@@ -208,69 +201,7 @@ export class TriggerControlService {
       });
     }
 
-    if (request.type === "workspace.inspect") {
-      const [workspacePage, threadPage, environmentRows] = await Promise.all([
-        this.#store.workspacePageForOwner({
-          ...(request.workspaceBefore ? { before: request.workspaceBefore } : {}),
-          maxBytes: 64 * 1_024,
-          maxItems: request.maxWorkspaces ?? 25,
-          ownerId: claims.requestedBy,
-        }),
-        this.#store.ownerThreadPageForOwner({
-          ...(request.threadBefore ? { before: request.threadBefore } : {}),
-          maxBytes: 64 * 1_024,
-          maxItems: request.maxThreads ?? 50,
-          ownerId: claims.requestedBy,
-        }),
-        this.#store.listEnvironmentsForUser(claims.requestedBy, 65),
-      ]);
-      const environments = environmentRows.slice(0, 64);
-      const harnessPage = await delegationHarnessPage(this.#store, claims.requestedBy, request);
-      const harnesses = harnessPage.harnesses;
-      return AgentControlResponseSchema.parse({
-        environments: environments.map(({ id, kind, name }) => ({
-          compatibleHarnessInstanceIds: harnesses
-            .filter(
-              (harness) =>
-                harness.environmentId === id && this.#canRunHarness(id, harness.driverKind),
-            )
-            .map((harness) => harness.id),
-          connected: this.#isEnvironmentConnected(id),
-          id,
-          kind,
-          name,
-          workspaceBackings: this.#environmentWorkspaceBackings(id),
-        })),
-        environmentsTruncated: environmentRows.length > 64,
-        delegationDefault: {
-          environmentId: anchor.environmentId,
-          harnessInstanceId: anchor.harnessInstanceId,
-          model: {
-            modelId: anchor.modelSelection.modelId,
-            options: anchor.modelSelection.options,
-            providerId: anchor.modelSelection.providerId,
-          },
-        },
-        harnesses: await delegationEngines(this.#store, harnesses, request.modelPage),
-        harnessesTruncated: harnessPage.nextCursor !== undefined,
-        ...(harnessPage.nextCursor !== undefined
-          ? { harnessesNextCursor: harnessPage.nextCursor }
-          : {}),
-        requestId: request.requestId,
-        threadWindow: threadPage.window,
-        threads: threadPage.threads,
-        type: "workspace.inspect.result",
-        workspaceWindow: workspacePage.window,
-        workspaces: workspacePage.workspaces.map(({ id, kind, name, status }) => ({
-          id,
-          kind,
-          name,
-          status,
-        })),
-      });
-    }
-
-    if (request.type === "workspace.create") {
+    if (request.type === "project.create") {
       const workspace = await this.#workspaces.create({
         createdBy: claims.requestedBy,
         ...(request.icon ? { icon: request.icon } : {}),
@@ -281,8 +212,10 @@ export class TriggerControlService {
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
-        type: "workspace.create.result",
+        type: "project.create.result",
         workspace: agentWorkspaceView(workspace),
+        slug: workspace.slug,
+        path: await this.#workspaces.projectPath(workspace),
       });
     }
 
@@ -505,10 +438,7 @@ export class TriggerControlService {
       executionGeneration: claims.executionGeneration,
       occurrenceId: claims.occurrenceId,
       requestFingerprint: createHash("sha256")
-        .update(
-          JSON.stringify(requestFingerprintForToolContract(claims.toolContractVersion, request)),
-          "utf8",
-        )
+        .update(JSON.stringify(request), "utf8")
         .digest("hex"),
       requestId: request.requestId,
       requestedBy: claims.requestedBy,

@@ -1296,11 +1296,9 @@ export interface AgentControlRequestTable {
     | "thread.write"
     | "trigger.read"
     | "trigger.write"
-    | "workspace.create"
+    | "project.create"
     | "environment.list"
-    | "workspace.list"
-    | "workspace.inspect"
-    | "workspace.mount";
+    | "project.list";
   actionClass:
     | "person.show"
     | "assignment.cancel"
@@ -1323,10 +1321,9 @@ export interface AgentControlRequestTable {
     | "thread.write"
     | "trigger.read"
     | "trigger.write"
-    | "workspace.create"
+    | "project.create"
     | "environment.list"
-    | "workspace.inspect"
-    | "workspace.mount";
+    | "project.list";
   requestFingerprint: string;
   createdAt: Timestamp;
 }

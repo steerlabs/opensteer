@@ -4680,6 +4680,7 @@ export function migrationProvider() {
         "0128_projects": projectsMigration,
         "0129_project_slugs": projectSlugsMigration,
         "0130_project_relocation": projectRelocationMigration,
+        "0131_project_control_actions": projectControlActionsMigration,
       };
     },
   };
@@ -6715,5 +6716,47 @@ const projectRelocationMigration: Migration = {
         `alter table public.workspaces add constraint workspaces_storage_error_shape_check ${definition.replace("'local-registry-invalid'::text", "'local-registry-invalid'::text, 'relocation-required'::text, 'relocation-pending'::text")}`,
       )
       .execute(database);
+  },
+};
+
+const projectControlActionsMigration: Migration = {
+  async up(database) {
+    for (const table of ["agent_control_requests", "trigger_control_requests"] as const) {
+      for (const column of ["action", "action_class"] as const) {
+        const name = `${table}_${column}_check`;
+        const result = await sql<{
+          definition: string;
+        }>`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = ${table}::regclass and conname = ${name}`.execute(
+          database,
+        );
+        const definition = result.rows[0]?.definition;
+        if (!definition) throw new Error(`Missing ${name}`);
+        await sql.raw(`alter table ${table} drop constraint ${name}`).execute(database);
+        const next = definition
+          .replaceAll("'workspace.create'::text", "'project.create'::text")
+          .replaceAll("'workspace.list'::text", "'project.list'::text")
+          .replace("'workspace.inspect'::text", "'workspace.inspect'::text, 'project.list'::text");
+        await sql
+          .raw(`alter table ${table} add constraint ${name} ${next} not valid`)
+          .execute(database);
+      }
+      await sql
+        .raw(`alter table ${table} drop constraint ${table}_action_mapping_check`)
+        .execute(database);
+      await sql
+        .raw(
+          `update ${table} set action = case action when 'workspace.create' then 'project.create' when 'workspace.list' then 'project.list' else action end, action_class = case when action = 'workspace.list' then 'project.list' when action_class = 'workspace.create' then 'project.create' else action_class end`,
+        )
+        .execute(database);
+      await sql
+        .raw(
+          `alter table ${table} add constraint ${table}_action_mapping_check check (action_class = case when action = 'person.notify' then 'thread.message' else action end)`,
+        )
+        .execute(database);
+      for (const column of ["action", "action_class"] as const)
+        await sql
+          .raw(`alter table ${table} validate constraint ${table}_${column}_check`)
+          .execute(database);
+    }
   },
 };

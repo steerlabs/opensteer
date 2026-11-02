@@ -925,7 +925,7 @@ describe("wire protocol", () => {
       nextBefore: "cursor",
       totalItems: 101,
     };
-    // Every model an inspection may show, each at its longest names.
+    // Every model a discovery page may show, each at its longest names.
     const longestModel = (index: number) => ({
       modelId: `${index}`.padEnd(255, "m"),
       providerId: `p${index}`.padEnd(100, "p"),
@@ -942,31 +942,19 @@ describe("wire protocol", () => {
         },
       },
       environments,
-      environmentsTruncated: false,
       harnesses: harnessIds.map((id, index) => ({
         driverKind: "d".repeat(100),
         enabled: true,
         environmentId: environments[index % environments.length]!.id,
         id,
         models:
-          index < 5
-            ? Array.from({ length: 20 }, (_, model) => longestModel(index * 20 + model))
-            : [],
-        modelsOmitted: index < 5 ? 8_172 : 0,
+          index < 5 ? Array.from({ length: 8 }, (_, model) => longestModel(index * 8 + model)) : [],
+        modelsOmitted: index < 5 ? 8_184 : 0,
+        status: "ready",
         name: "h".repeat(120),
       })),
-      harnessesTruncated: false,
       requestId,
-      threads,
-      threadWindow: window,
-      type: "workspace.inspect.result",
-      workspaces: Array.from({ length: 50 }, () => ({
-        id: createId("workspace"),
-        kind: "project" as const,
-        name: "w".repeat(160),
-        status: "ready" as const,
-      })),
-      workspaceWindow: { ...window, itemCount: 50 },
+      type: "environment.list.result",
     });
     expect(Buffer.byteLength(JSON.stringify(catalog), "utf8")).toBeLessThanOrEqual(
       agentToolPayloadMaxSerializedBytes,

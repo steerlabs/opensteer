@@ -42,26 +42,20 @@ describe("HttpAgentControlClient", () => {
       expect(input.toString()).toBe(plan.url);
       expect(init).toMatchObject({ method: "POST", redirect: "error" });
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${plan.token}`);
-      expect(JSON.parse(String(init?.body))).toEqual({ requestId, type: "workspace.inspect" });
+      expect(JSON.parse(String(init?.body))).toEqual({ requestId, type: "environment.list" });
       return Response.json({
         delegationDefault,
         environments: [],
-        environmentsTruncated: false,
         harnesses: [],
-        harnessesTruncated: false,
         requestId,
-        threadWindow: emptyWindow(),
-        threads: [],
-        type: "workspace.inspect.result",
-        workspaceWindow: emptyWindow(),
-        workspaces: [],
+        type: "environment.list.result",
       });
     });
     const client = new HttpAgentControlClient({ fetch, plan, transport: productionCloudTransport });
 
     await expect(
-      client.request({ requestId, type: "workspace.inspect" }, new AbortController().signal),
-    ).resolves.toMatchObject({ requestId, type: "workspace.inspect.result" });
+      client.request({ requestId, type: "environment.list" }, new AbortController().signal),
+    ).resolves.toMatchObject({ requestId, type: "environment.list.result" });
     expect(fetch).toHaveBeenCalledOnce();
     // New authorization results and historical readers share the wire parser.
     for (const result of [
@@ -207,7 +201,7 @@ describe("HttpAgentControlClient", () => {
 
   it("fails closed on correlation/type drift, oversized responses, and Host errors", async () => {
     const requestId = randomUUID();
-    const request = { requestId, type: "workspace.inspect" } as const;
+    const request = { requestId, type: "environment.list" } as const;
     const clientFor = (response: Response) =>
       new HttpAgentControlClient({
         fetch: async () => response,
@@ -220,15 +214,9 @@ describe("HttpAgentControlClient", () => {
         Response.json({
           delegationDefault,
           environments: [],
-          environmentsTruncated: false,
           harnesses: [],
-          harnessesTruncated: false,
           requestId: randomUUID(),
-          threadWindow: emptyWindow(),
-          threads: [],
-          type: "workspace.inspect.result",
-          workspaceWindow: emptyWindow(),
-          workspaces: [],
+          type: "environment.list.result",
         }),
       ).request(request, new AbortController().signal),
     ).rejects.toThrow("another request");
@@ -304,7 +292,7 @@ describe("HttpAgentControlClient", () => {
     let caught: unknown;
     try {
       await client.request(
-        { requestId: randomUUID(), type: "workspace.inspect" },
+        { requestId: randomUUID(), type: "environment.list" },
         new AbortController().signal,
       );
     } catch (error) {

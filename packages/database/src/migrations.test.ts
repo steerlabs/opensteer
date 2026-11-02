@@ -138,6 +138,7 @@ const releasedMigrationNames = [
   "0128_projects",
   "0129_project_slugs",
   "0130_project_relocation",
+  "0131_project_control_actions",
 ];
 
 describe("migration names", () => {

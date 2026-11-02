@@ -104,16 +104,12 @@ function errorMessage(value: unknown): string | undefined {
 
 function expectedResponseType(type: AgentControlRequest["type"]): AgentControlResponse["type"] {
   switch (type) {
-    case "workspace.create":
-      return "workspace.create.result";
+    case "project.create":
+      return "project.create.result";
     case "environment.list":
       return "environment.list.result";
-    case "workspace.list":
-      return "workspace.list.result";
-    case "workspace.inspect":
-      return "workspace.inspect.result";
-    case "workspace.mount":
-      return "workspace.mount.result";
+    case "project.list":
+      return "project.list.result";
     case "thread.read":
       return "thread.read.result";
     case "thread.list":

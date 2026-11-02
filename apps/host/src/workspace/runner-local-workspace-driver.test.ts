@@ -91,7 +91,7 @@ describe("RunnerLocalWorkspaceDriver", () => {
         storageAuthorityId,
         answer: async (request, fence) => {
           if (request.type !== "host.workspace.local.provision") return unexpected(request, fence);
-          await authority.provision({
+          const path = await authority.provision({
             binding: request.binding,
             fingerprint: request.fingerprint,
             idempotencyKey: request.operationId,
@@ -101,6 +101,7 @@ describe("RunnerLocalWorkspaceDriver", () => {
             fence,
             operationId: request.operationId,
             requestId: request.requestId,
+            path,
             type: "runner.workspace.local.provisioned",
           };
         },
@@ -122,6 +123,9 @@ describe("RunnerLocalWorkspaceDriver", () => {
         workspace: { ...localWorkspace(backing), slug: "research" },
       }),
     ).resolves.toMatchObject({ status: "ready" });
+    expect(
+      driver.storageLocation({ ...localWorkspace(mainBacking), id: mainId, kind: "main" }),
+    ).toBe(path.join(root, "workspaces", "main"));
     await expect(authority.inventory()).resolves.toMatchObject({
       bindings: expect.arrayContaining([expect.objectContaining({ bindingId: backing.bindingId })]),
     });
@@ -215,6 +219,7 @@ describe("RunnerLocalWorkspaceDriver", () => {
             fence,
             operationId: request.operationId,
             requestId: request.requestId,
+            path: "/Main/Projects/research",
             type: "runner.workspace.local.provisioned",
           };
         },
@@ -338,9 +343,10 @@ function registry(options: {
   const connected = options.connected ?? true;
   const storageAuthorityId =
     options.storageAuthorityId === undefined ? fixedStorageAuthorityId : options.storageAuthorityId;
+  const identity = runnerIdentity(storageAuthorityId);
   return {
     identityForEnvironment: (candidate: EnvironmentId) =>
-      connected && candidate === environmentId ? runnerIdentity(storageAuthorityId) : undefined,
+      connected && candidate === environmentId ? identity : undefined,
     requestWorkspaceLocal: async (candidate, request) => {
       if (!connected) {
         throw new OpensteerError({

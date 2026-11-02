@@ -105,7 +105,7 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "project.list",
       }),
     ).rejects.toThrow("does not allow project.list");
   });
@@ -158,7 +158,7 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "environment.list",
       }),
     ).rejects.toThrow("Main coordination requires active owner authority");
   });
@@ -177,11 +177,11 @@ describe("AgentControlService", () => {
     const response = await service.handle("run-token", {
       name: "Analysis",
       requestId: crypto.randomUUID(),
-      type: "workspace.create",
+      type: "project.create",
     });
 
     expect(response).toMatchObject({
-      type: "workspace.create.result",
+      type: "project.create.result",
       slug: "analysis",
       path: `/main/Projects/${created.slug}`,
       workspace: {
@@ -191,7 +191,7 @@ describe("AgentControlService", () => {
         name: created.name,
       },
     });
-    if (response.type !== "workspace.create.result") throw new Error("Unexpected response type");
+    if (response.type !== "project.create.result") throw new Error("Unexpected response type");
     expect(response.workspace).not.toHaveProperty("backing");
     expect(response.workspace).not.toHaveProperty("capacityPolicy");
     expect(response.workspace).not.toHaveProperty("createdBy");
@@ -206,7 +206,7 @@ describe("AgentControlService", () => {
       icon: "plane",
       name: "Travel",
       requestId: crypto.randomUUID(),
-      type: "workspace.create",
+      type: "project.create",
     });
     expect(createWorkspace).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -265,7 +265,7 @@ describe("AgentControlService", () => {
 
     const inspectId = crypto.randomUUID();
     await expect(
-      service.handle("run-token", { requestId: inspectId, type: "workspace.inspect" }),
+      service.handle("run-token", { requestId: inspectId, type: "environment.list" }),
     ).resolves.toMatchObject({
       environments: [
         {
@@ -289,12 +289,7 @@ describe("AgentControlService", () => {
         expect.objectContaining({ enabled: true, id: targetCodexHarnessId }),
       ]),
       requestId: inspectId,
-      threads: [current, target],
-      type: "workspace.inspect.result",
-      workspaces: [
-        { id: workspaceId, name: "Main workspace", status: "ready" },
-        { id: targetWorkspaceId, name: "Client", status: "ready" },
-      ],
+      type: "environment.list.result",
     });
 
     const readId = crypto.randomUUID();
@@ -362,7 +357,7 @@ describe("AgentControlService", () => {
     });
     expect(authenticate).toHaveBeenCalledTimes(4);
     expect(authenticate).toHaveBeenCalledWith("run-token");
-    expect(listEnvironmentsForUser).toHaveBeenCalledWith(ownerId, 65);
+    expect(listEnvironmentsForUser).toHaveBeenCalledWith(ownerId, 65, {});
     expect(workspaceSnapshot).not.toHaveBeenCalled();
   });
 
@@ -410,12 +405,11 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "environment.list",
       }),
     ).resolves.toMatchObject({
       environments: [{ compatibleHarnessInstanceIds: [nativeHarnessId], id: environmentId }],
       harnesses: [{ id: nativeHarnessId }],
-      harnessesTruncated: false,
     });
     expect(listHarnessInstances).toHaveBeenCalledWith({ environmentIds: [environmentId] });
   });
@@ -922,13 +916,11 @@ describe("AgentControlService", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        type: "workspace.inspect",
+        type: "environment.list",
       }),
     ).resolves.toMatchObject({
       environments: [{ compatibleHarnessInstanceIds: [codexHarnessId] }],
       harnesses: [{ id: codexHarnessId }],
-      threads: [current, target],
-      workspaces: [{ id: workspaceId }],
     });
 
     await expect(

@@ -38,7 +38,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { baselineWorkspaceCreateResponse } from "./agent-control-baseline.test-support.js";
 import {
   AgentControlService,
   type AgentControlRunScope,
@@ -133,7 +132,9 @@ integration("agent-to-agent messaging round trip", () => {
     } as unknown as AgentControlTokenService,
     defaultWorkspaceBacking: "portablefs",
     environmentWorkspaceBackings: () => ["portablefs"],
-    workspaceMounts: { mount: unexpected },
+    workspaceMounts: {
+      mount: async ({ workspace }) => ({ path: `/Main/Projects/${workspace.slug}` }),
+    },
     workspaces: {
       create: async (input) =>
         store.createWorkspace({
@@ -944,17 +945,17 @@ integration("agent-to-agent messaging round trip", () => {
     },
   );
 
-  it("keeps agent Workspace create compatible with the baseline Runner while storing the requested colour", async () => {
+  it("creates a Project while storing the requested colour", async () => {
     const f = await createMessagingFixture();
     const response = await service.handle(f.tokenA, {
-      type: "workspace.create",
+      type: "project.create",
       requestId: randomUUID(),
       name: "Travel",
       icon: "plane",
       color: "teal",
     });
-    expect(baselineWorkspaceCreateResponse.parse(response)).toEqual(response);
-    if (response.type !== "workspace.create.result") throw new Error("Expected Workspace");
+    if (response.type !== "project.create.result") throw new Error("Expected Project");
+    expect(response).toMatchObject({ slug: "travel", path: "/Main/Projects/travel" });
     expect(await store.getWorkspaceForOwner(response.workspace.id, f.userId)).toMatchObject({
       icon: "plane",
       color: "teal",

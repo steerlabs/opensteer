@@ -15,7 +15,6 @@ import type { CommandService } from "@opensteer/orchestration";
 import {
   AgentControlRequestSchema,
   AgentControlResponseSchema,
-  type AgentControlRequest,
   type AgentControlResponse,
 } from "@opensteer/protocol";
 import type { WatchControlScope, WatchControlTokenService } from "./watch-capability.js";
@@ -25,7 +24,6 @@ import {
   assertProgramDelegationScope,
 } from "./program-authority.js";
 import { delegationPlacement } from "../agents/delegation-placement.js";
-import { requestFingerprintForToolContract, requestForToolContract } from "./tool-contract.js";
 
 type WatchCommandService = Pick<
   CommandService,
@@ -71,9 +69,7 @@ export class WatchControlService {
 
   async handle(token: string, value: unknown): Promise<AgentControlResponse> {
     const claims = await this.#tokens.authenticate(token);
-    const request = AgentControlRequestSchema.parse(
-      requestForToolContract(claims.toolContractVersion, value),
-    );
+    const request = AgentControlRequestSchema.parse(value);
     if (
       request.type !== "thread.delegate" &&
       request.type !== "thread.message" &&
@@ -243,11 +239,7 @@ function watchAdmission(
   >,
   observationId: string,
 ): WatchControlAdmissionInput {
-  const versioned = requestFingerprintForToolContract(
-    claims.toolContractVersion,
-    request,
-  ) as AgentControlRequest;
-  const { requestId: _requestId, ...fingerprinted } = versioned;
+  const { requestId: _requestId, ...fingerprinted } = request;
   return {
     action: request.type,
     activationId: claims.activationId,

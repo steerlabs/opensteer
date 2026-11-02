@@ -32,11 +32,7 @@ export function assertProgramToolAllowed(
   request: AgentControlRequest,
 ): void {
   const tool = AgentToolIdSchema.safeParse(
-    request.type === "trigger.control"
-      ? request.tool
-      : request.type === "workspace.inspect"
-        ? "workspace.list"
-        : request.type,
+    request.type === "trigger.control" ? request.tool : request.type,
   );
   if (!tool.success || !programAllowsTool(kind, anchor.capabilityProfileId, tool.data)) {
     throw forbidden(

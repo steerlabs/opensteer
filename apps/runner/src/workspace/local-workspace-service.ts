@@ -100,7 +100,7 @@ export class LocalWorkspaceService {
           return { ...echo, type: "runner.workspace.local.relocated" };
         }
         case "host.workspace.local.provision": {
-          await this.#authority.provision(
+          const path = await this.#authority.provision(
             {
               binding,
               fingerprint: request.fingerprint,
@@ -108,7 +108,7 @@ export class LocalWorkspaceService {
             },
             signal,
           );
-          return { ...echo, type: "runner.workspace.local.provisioned" };
+          return { ...echo, path, type: "runner.workspace.local.provisioned" };
         }
         case "host.workspace.local.inspect": {
           const health = await this.#authority.inspect(binding, signal);

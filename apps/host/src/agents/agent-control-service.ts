@@ -43,11 +43,7 @@ import type { PlaceContextService } from "../computer-use/place-context-service.
 import type { ComputerUseService } from "../computer-use/computer-use-service.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
-import {
-  delegationEngines,
-  delegationHarnessPage,
-  delegationPlacement,
-} from "./delegation-placement.js";
+import { delegationPlacement } from "./delegation-placement.js";
 import { environmentDiscovery } from "./environment-discovery.js";
 import {
   RunCapabilityTokenService,
@@ -217,7 +213,7 @@ export class AgentControlService {
   async handle(token: string, input: unknown): Promise<AgentControlResponse> {
     const claims = await this.#tokens.authenticate(token);
     const request = AgentControlRequestSchema.parse(input);
-    if (request.type === "workspace.mount" || request.type === "browser.sign-in")
+    if (request.type === "browser.sign-in")
       throw badRequest("This agent operation has been removed");
     if (request.type === "thread.delegate" && request.places)
       request.places = request.places.map((part) => {
@@ -370,7 +366,7 @@ export class AgentControlService {
         type: "environment.list.result",
       });
     }
-    if (request.type === "workspace.list") {
+    if (request.type === "project.list") {
       await this.#admit(claims, request);
       const page = await this.#store.workspacePageForOwner({
         ownerId: claims.requestedBy,
@@ -380,7 +376,7 @@ export class AgentControlService {
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
-        type: "workspace.list.result",
+        type: "project.list.result",
         window: page.window,
         workspaces: page.workspaces.map(({ id, kind, name, status }) => ({
           id,
@@ -391,70 +387,7 @@ export class AgentControlService {
       });
     }
 
-    if (request.type === "workspace.inspect") {
-      await this.#admit(claims, request);
-      const [workspacePage, threadPage, environmentRows] = await Promise.all([
-        this.#store.workspacePageForOwner({
-          ...(request.workspaceBefore ? { before: request.workspaceBefore } : {}),
-          maxBytes: 64 * 1_024,
-          maxItems: request.maxWorkspaces ?? 25,
-          ownerId: claims.requestedBy,
-        }),
-        this.#store.ownerThreadPageForOwner({
-          ...(request.threadBefore ? { before: request.threadBefore } : {}),
-          maxBytes: 64 * 1_024,
-          maxItems: request.maxThreads ?? 50,
-          ownerId: claims.requestedBy,
-        }),
-        this.#store.listEnvironmentsForUser(claims.requestedBy, 65),
-      ]);
-      const environments = environmentRows.slice(0, 64);
-      const harnessPage = await delegationHarnessPage(this.#store, claims.requestedBy, request);
-      const harnesses = harnessPage.harnesses;
-      return AgentControlResponseSchema.parse({
-        environments: environments.map(({ id, kind, name }) => ({
-          compatibleHarnessInstanceIds: harnesses
-            .filter(
-              (harness) =>
-                harness.environmentId === id && this.#canRunHarness(id, harness.driverKind),
-            )
-            .map((harness) => harness.id),
-          connected: this.#isEnvironmentConnected(id),
-          id,
-          kind,
-          name,
-          workspaceBackings: this.#environmentWorkspaceBackings(id),
-        })),
-        environmentsTruncated: environmentRows.length > 64,
-        delegationDefault: {
-          environmentId: currentThread.environmentId,
-          harnessInstanceId: currentThread.harnessInstanceId,
-          model: {
-            modelId: currentThread.modelSelection.modelId,
-            options: currentThread.modelSelection.options,
-            providerId: currentThread.modelSelection.providerId,
-          },
-        },
-        harnesses: await delegationEngines(this.#store, harnesses, request.modelPage),
-        harnessesTruncated: harnessPage.nextCursor !== undefined,
-        ...(harnessPage.nextCursor !== undefined
-          ? { harnessesNextCursor: harnessPage.nextCursor }
-          : {}),
-        requestId: request.requestId,
-        threads: threadPage.threads,
-        threadWindow: threadPage.window,
-        type: "workspace.inspect.result",
-        workspaces: workspacePage.workspaces.map(({ id, kind, name, status }) => ({
-          id,
-          kind,
-          name,
-          status,
-        })),
-        workspaceWindow: workspacePage.window,
-      });
-    }
-
-    if (request.type === "workspace.create") {
+    if (request.type === "project.create") {
       await this.#admit(claims, request);
       const workspace = await this.#workspaces.create({
         createdBy: claims.requestedBy,
@@ -466,7 +399,7 @@ export class AgentControlService {
       });
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
-        type: "workspace.create.result",
+        type: "project.create.result",
         workspace: agentWorkspaceView(workspace),
         slug: workspace.slug,
         path: (
@@ -1091,9 +1024,8 @@ const toolForAction: Readonly<
   "person.show": "person.show",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
-  "workspace.create": "project.create",
-  "workspace.inspect": "project.list",
-  "workspace.list": "project.list",
+  "project.create": "project.create",
+  "project.list": "project.list",
   "environment.list": "environment.list",
 };
 

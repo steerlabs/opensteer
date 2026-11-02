@@ -41,11 +41,10 @@ export const agentControlActionLimits = {
   "thread.write": 32,
   "trigger.read": 128,
   "trigger.write": 32,
-  "workspace.create": 16,
-  "workspace.inspect": 16,
+  "project.create": 16,
+  "project.list": 16,
   // A maximum-size catalog takes 1,024 focused pages before directory discovery.
   "environment.list": 2048,
-  "workspace.mount": 32,
 } as const;
 
 export const agentControlMaxDelegationDepth = agentDelegationMaxDepth;
@@ -73,11 +72,9 @@ export type AgentControlAction =
   | "thread.write"
   | "trigger.read"
   | "trigger.write"
-  | "workspace.create"
+  | "project.create"
   | "environment.list"
-  | "workspace.list"
-  | "workspace.inspect"
-  | "workspace.mount";
+  | "project.list";
 
 export type AgentControlActionClass = keyof typeof agentControlActionLimits;
 
@@ -172,11 +169,9 @@ const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass
   "thread.write": "thread.write",
   "trigger.read": "trigger.read",
   "trigger.write": "trigger.write",
-  "workspace.create": "workspace.create",
-  "workspace.inspect": "workspace.inspect",
-  "workspace.list": "workspace.inspect",
+  "project.create": "project.create",
+  "project.list": "project.list",
   "environment.list": "environment.list",
-  "workspace.mount": "workspace.mount",
 };
 
 export async function admitAgentControlRequest(

@@ -36,11 +36,11 @@ describe("TriggerControlService", () => {
     const { admitTriggerControlRequest, occurrenceId, service } = makeService({});
     const requestId = crypto.randomUUID();
 
-    await service.handle("trigger-token", { requestId, type: "workspace.inspect" });
+    await service.handle("trigger-token", { requestId, type: "project.list" });
 
     expect(admitTriggerControlRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "workspace.inspect",
+        action: "project.list",
         environmentId,
         executionGeneration: 1,
         occurrenceId,
@@ -52,6 +52,23 @@ describe("TriggerControlService", () => {
         workspaceId,
       }),
     );
+  });
+
+  it("returns a created Project's slug and absolute path", async () => {
+    const created = { ...workspace(createId("workspace"), "Analysis"), slug: "analysis" };
+    const { service } = makeService({ create: async () => created });
+    await expect(
+      service.handle("trigger-token", {
+        name: "Analysis",
+        requestId: crypto.randomUUID(),
+        type: "project.create",
+      }),
+    ).resolves.toMatchObject({
+      type: "project.create.result",
+      workspace: { id: created.id },
+      slug: "analysis",
+      path: "/Main/Projects/analysis",
+    });
   });
 
   it("admits a queued Thread message against the Occurrence ledger", async () => {
@@ -97,42 +114,6 @@ describe("TriggerControlService", () => {
         policy: "queue",
         source: { kind: "trigger", occurrenceId },
       }),
-    );
-  });
-
-  it("preserves version 1 Trigger message delivery semantics", async () => {
-    const anchor = thread();
-    const targetRun = run(anchor);
-    const delivered = message(anchor.id, targetRun.id);
-    const enqueueThreadInput = vi.fn(async () => ({
-      disposition: "pending" as const,
-      input: inboxInput(delivered, targetRun, "report"),
-      message: delivered,
-      run: null,
-    }));
-    const { service } = makeService({
-      commands: { enqueueThreadInput } as unknown as CommandService,
-      toolContractVersion: 1,
-    });
-
-    await service.handle("trigger-token", {
-      content: [{ text: "Passive status", type: "text" }],
-      delivery: "queue",
-      requestId: crypto.randomUUID(),
-      threadId,
-      type: "thread.message",
-    });
-    expect(enqueueThreadInput).toHaveBeenCalledWith(expect.objectContaining({ policy: "report" }));
-
-    await service.handle("trigger-token", {
-      content: [{ text: "Run the child", type: "text" }],
-      delivery: "trigger",
-      requestId: crypto.randomUUID(),
-      threadId,
-      type: "thread.message",
-    });
-    expect(enqueueThreadInput).toHaveBeenLastCalledWith(
-      expect.objectContaining({ policy: "queue" }),
     );
   });
 
@@ -447,6 +428,7 @@ function makeService(options: {
           }),
       },
       workspaces: {
+        projectPath: async (workspace) => `/Main/Projects/${workspace.slug}`,
         create:
           options.create ??
           vi.fn(async () => {

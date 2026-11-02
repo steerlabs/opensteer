@@ -470,12 +470,14 @@ function localService(
   store: ReturnType<typeof createStore>["store"],
   options: {
     readonly relocate?: WorkspaceBackingLifecycleDriver<"local-directory">["relocate"];
+    readonly storageLocation?: WorkspaceBackingLifecycleDriver<"local-directory">["storageLocation"];
     readonly inspect?: WorkspaceBackingLifecycleDriver<"local-directory">["inspect"];
     readonly provision?: WorkspaceBackingLifecycleDriver<"local-directory">["provision"];
   },
 ): WorkspaceService {
   const driver: WorkspaceBackingLifecycleDriver<"local-directory"> = {
     ...(options.relocate ? { relocate: options.relocate } : {}),
+    ...(options.storageLocation ? { storageLocation: options.storageLocation } : {}),
     destroy: async () => undefined,
     initialBacking: (input) => ({
       bindingId: createId("workspaceBinding"),
@@ -759,3 +761,26 @@ it("records PortableFS relocation even while the shared authority is unavailable
     service.ensureExecutionReady(harness.workspaces.find((item) => item.id === project.id)!),
   ).rejects.toThrow(/Move this Project/);
 });
+
+it.each(["/Users/person/Main", "C:\\Users\\person\\Main"])(
+  "resolves a new Project under its owning Main at %s",
+  async (root) => {
+    const main = { ...localWorkspace(), kind: "main" as const };
+    const project = {
+      ...localWorkspace(),
+      kind: "project" as const,
+      slug: "research",
+      createdBy: main.createdBy,
+    };
+    const harness = createStore([main, project]);
+    const service = localService(harness.store, {
+      storageLocation: (workspace) => (workspace.id === main.id ? root : null),
+    });
+    const separator = root.startsWith("/") ? "/" : "\\";
+    await expect(service.projectPath(project)).resolves.toBe(
+      `${root}${separator}Projects${separator}research`,
+    );
+    const offline = localService(harness.store, {});
+    await expect(offline.projectPath(project)).rejects.toThrow("unavailable");
+  },
+);

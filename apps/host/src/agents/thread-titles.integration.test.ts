@@ -1,5 +1,4 @@
 import { mayNotify } from "@opensteer/database";
-import { baselineWorkspaceCreateResponse } from "./agent-control-baseline.test-support.js";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -802,6 +801,7 @@ integration.sequential("Thread title lifecycle", () => {
             },
           },
           workspaces: {
+            projectPath: async (workspace) => `/Main/Projects/${workspace.slug}`,
             create: async (input) =>
               store.createWorkspace({
                 ...input,
@@ -822,14 +822,13 @@ integration.sequential("Thread title lifecycle", () => {
         });
         handle = (value) => service.handle("test-token", value);
         const response = await handle({
-          type: "workspace.create",
+          type: "project.create",
           requestId: randomUUID(),
           name: "Travel",
           icon: "plane",
           color: "teal",
         });
-        expect(baselineWorkspaceCreateResponse.parse(response)).toEqual(response);
-        if (response.type !== "workspace.create.result") throw new Error("Expected Workspace");
+        if (response.type !== "project.create.result") throw new Error("Expected Workspace");
         expect(await store.getWorkspaceForOwner(response.workspace.id, f.userId)).toMatchObject({
           icon: "plane",
           color: "teal",

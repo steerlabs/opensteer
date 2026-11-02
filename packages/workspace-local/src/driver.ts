@@ -123,7 +123,7 @@ export class LocalWorkspaceAuthority {
       readonly idempotencyKey: string;
     },
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<string> {
     await this.#assertAuthority(input.binding, signal);
     const fingerprint: ProvisionFingerprint = {
       ...(input.fingerprint.slug ? { slug: input.fingerprint.slug } : {}),
@@ -145,13 +145,14 @@ export class LocalWorkspaceAuthority {
         message: "The local Workspace binding does not match its creation intent.",
       });
     }
-    await this.#registry.provision({
+    const provisioned = await this.#registry.provision({
       bindingId: input.binding.bindingId,
       fingerprint,
       generation: input.binding.generation,
       idempotencyKey: input.idempotencyKey,
       ...(signal === undefined ? {} : { signal }),
     });
+    return this.#registry.resolvePath(provisioned);
   }
 
   async inspect(

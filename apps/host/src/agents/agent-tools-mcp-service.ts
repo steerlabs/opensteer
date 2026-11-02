@@ -23,7 +23,6 @@ import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
   requiredTriggerToolField,
-  TriggerProgramSchema,
   TriggerReadInputSchema,
   triggerSourceFromInput,
   TriggerWriteInputSchema,
@@ -74,34 +73,6 @@ interface ToolAuthorization {
 
 interface AgentToolControl {
   handle(token: string, input: unknown): Promise<AgentControlResponse>;
-}
-
-function toolInputSchema(
-  definition: { readonly inputSchema: z.ZodType; readonly name: string },
-  version: 1 | 2 | 3 | null,
-): z.ZodObject {
-  const inputSchema = definition.inputSchema as z.ZodObject;
-  if (version !== 1) return inputSchema;
-  if (definition.name === "thread_message") {
-    return inputSchema.extend({ delivery: z.enum(["queue", "trigger"]) });
-  }
-  if (definition.name === "trigger_write") {
-    return inputSchema.extend({
-      program: TriggerProgramSchema.omit({ toolContractVersion: true }).optional(),
-    });
-  }
-  return inputSchema;
-}
-
-function toolDescription(name: string, current: string, version: 1 | 2 | 3 | null): string {
-  if (version !== 1) return current;
-  if (name === "thread_message") {
-    return "Send a message to a Thread. delivery queue records passive context; delivery trigger queues actionable work.";
-  }
-  if (name === "trigger_write") {
-    return "Create or change a Trigger using the version 1 program input contract. Nested programs contain language and source and do not accept toolContractVersion.";
-  }
-  return current;
 }
 
 export class AgentToolsMcpService {
@@ -364,7 +335,7 @@ export class AgentToolsMcpService {
           !programAllowsTool(input.scope, anchor.capabilityProfileId, definition.id))
       )
         continue;
-      const fullInputSchema = toolInputSchema(definition, input.toolContractVersion);
+      const fullInputSchema = definition.inputSchema as z.ZodObject;
       const inputSchema =
         definition.name === "browser_tab_read" && lacks("person-show-v1")
           ? fullInputSchema.omit({ query: true })
@@ -374,7 +345,7 @@ export class AgentToolsMcpService {
         description:
           definition.name === "browser_tab_read" && lacks("person-show-v1")
             ? "Find saved tabs, open or asleep, and their groups. Follow nextCursor to read every page. tabId is Browser Harness surfaceId. profileId is null for Guest. Groups organize the sidebar and grant no access."
-            : toolDescription(definition.name, definition.description, input.toolContractVersion),
+            : definition.description,
         inputSchema,
         title: definition.annotations.title,
       };
@@ -382,9 +353,7 @@ export class AgentToolsMcpService {
         ...registration,
         name: definition.name,
         inputSchema: advertisedJsonSchema(
-          (input.toolContractVersion !== 1 && "advertisedInputSchema" in definition
-            ? definition.advertisedInputSchema
-            : undefined) ??
+          ("advertisedInputSchema" in definition ? definition.advertisedInputSchema : undefined) ??
             toJsonSchemaCompat(inputSchema, { strictUnions: true, pipeStrategy: "input" }),
         ) as Tool["inputSchema"],
         execution: { taskSupport: "forbidden" },
@@ -397,18 +366,7 @@ export class AgentToolsMcpService {
           definition.name,
         );
         try {
-          let parsedInput = inputSchema.parse(args) as Record<string, unknown>;
-          if (
-            input.toolContractVersion === 1 &&
-            definition.name === "trigger_write" &&
-            parsedInput.program &&
-            typeof parsedInput.program === "object"
-          ) {
-            parsedInput = {
-              ...parsedInput,
-              program: { ...parsedInput.program, toolContractVersion: 1 },
-            };
-          }
+          const parsedInput = inputSchema.parse(args) as Record<string, unknown>;
           const token = extra.authInfo?.token;
           if (!token) throw new Error("Agent tools authorization is missing");
           const result = await this.#callTool({
@@ -460,9 +418,9 @@ export class AgentToolsMcpService {
         const response = await control.handle(token, {
           ...input,
           requestId,
-          type: "workspace.list",
+          type: "project.list",
         });
-        if (response.type !== "workspace.list.result") throw unexpectedToolResponse();
+        if (response.type !== "project.list.result") throw unexpectedToolResponse();
         return {
           projects: response.workspaces.filter(({ kind }) => kind === "project"),
           window: response.window,
@@ -472,9 +430,9 @@ export class AgentToolsMcpService {
         const response = await control.handle(token, {
           ...input,
           requestId,
-          type: "workspace.create",
+          type: "project.create",
         });
-        if (response.type !== "workspace.create.result") throw unexpectedToolResponse();
+        if (response.type !== "project.create.result") throw unexpectedToolResponse();
         return { id: response.workspace.id, slug: response.slug, path: response.path };
       }
       case "thread_read": {

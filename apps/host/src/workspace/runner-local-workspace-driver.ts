@@ -41,6 +41,7 @@ const requestTimeoutMs = 30_000;
 export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriver<"local-directory"> {
   readonly kind = "local-directory" as const;
   readonly #runners: RunnerStorageRegistry;
+  readonly #provisionedPaths = new WeakMap<object, Map<Workspace["id"], string>>();
 
   constructor(options: { readonly runners: RunnerStorageRegistry }) {
     this.#runners = options.runners;
@@ -102,7 +103,10 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
     input: { readonly idempotencyKey: string; readonly workspace: LocalWorkspace },
     signal?: AbortSignal,
   ): Promise<ProvisionWorkspaceResult<"local-directory">> {
-    await this.#request(
+    const identity = this.#runners.identityForEnvironment(
+      input.workspace.backing.ownerEnvironmentId,
+    );
+    const result = await this.#request(
       input.workspace.backing,
       {
         binding: bindingRef(input.workspace.backing, input.workspace.id),
@@ -122,6 +126,12 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
       "runner.workspace.local.provisioned",
       signal,
     );
+    if (identity) {
+      const paths =
+        this.#provisionedPaths.get(identity.fence) ?? new Map<Workspace["id"], string>();
+      paths.set(input.workspace.id, result.path);
+      this.#provisionedPaths.set(identity.fence, paths);
+    }
     return { backing: input.workspace.backing, status: "ready" };
   }
 
@@ -130,7 +140,11 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
     const identity = this.#runners.identityForEnvironment(workspace.backing.ownerEnvironmentId);
     const inventory = identity?.modules.agents?.localStorage;
     if (inventory?.storageAuthorityId !== workspace.backing.storageAuthorityId) return null;
-    return inventory.bindings.find((binding) => binding.workspaceId === workspace.id)?.path ?? null;
+    return (
+      inventory.bindings.find((binding) => binding.workspaceId === workspace.id)?.path ??
+      (identity ? this.#provisionedPaths.get(identity.fence)?.get(workspace.id) : null) ??
+      null
+    );
   }
 
   async relocate(workspace: LocalWorkspace, adopt = false): Promise<void> {

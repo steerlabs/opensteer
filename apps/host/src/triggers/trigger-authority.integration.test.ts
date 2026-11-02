@@ -37,7 +37,6 @@ import {
   type HostApiServerContext,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
-import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import {
   TriggerControlInputSchema,
   TriggerRevisionSchema,
@@ -48,7 +47,7 @@ import {
 } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -157,7 +156,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
     environmentWorkspaceBackings: () => ["portablefs"] as const,
     isEnvironmentConnected: () => true,
     store,
-    workspaces: { create: createWorkspace },
+    workspaces: {
+      create: createWorkspace,
+      projectPath: async (workspace: Workspace) => `/Main/Projects/${workspace.slug}`,
+    },
   };
   function triggerService(backing = triggerStore) {
     return new TriggerService({
@@ -612,8 +614,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
       ["Watch", watches, watchToken],
     ] as const) {
       for (const request of [
-        { type: "workspace.inspect" },
-        { type: "workspace.create", name: "Unauthorized Workspace" },
+        { type: "project.list" },
+        { type: "project.create", name: "Unauthorized Workspace" },
         { type: "thread.delegate", workspaceId: f.main.id, task: "Cross Workspace" },
         { type: "thread.delegate", threadId: f.unrelated.id, task: "Outside lineage" },
         { type: "thread.read", threadId: f.unrelated.id },
@@ -798,8 +800,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const own = await personCreate(f, f.chat);
     const token = await startProgram(f, own);
     for (const request of [
-      { type: "workspace.inspect" },
-      { type: "workspace.create", name: "Program-created Workspace" },
+      { type: "project.list" },
+      { type: "project.create", name: "Program-created Workspace" },
       { type: "thread.read", threadId: f.specialist.id },
       { type: "thread.delegate", workspaceId: f.project.id, task: "Owner-wide delegation" },
       {
@@ -1539,7 +1541,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
         chatClient,
         toolsForCapabilityProfile("trigger").map(({ name }) => name),
       ],
-      ["delegated Watch", f.crossChild.id, watchClient, ["thread_message", "thread_delegate"]],
+      [
+        "delegated Watch",
+        f.crossChild.id,
+        watchClient,
+        ["environment_list", "thread_message", "thread_delegate"],
+      ],
     ] as const) {
       await check(
         `F16c ${label} tools`,
@@ -1552,8 +1559,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
           if (label === "delegated Trigger") {
             expect(names).toContain("trigger_read");
             expect(names).toContain("trigger_write");
-            expect(names).not.toContain("workspace_list");
-            expect(names).not.toContain("workspace_create");
+            expect(names).not.toContain("project_list");
+            expect(names).not.toContain("project_create");
           }
           return names;
         },
@@ -1625,24 +1632,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
           plusThirty,
         );
         return result;
-      },
-    );
-    const legacy = await personCreate(f, f.chat, cron, { ...program, toolContractVersion: 1 });
-    const legacyClient = await connectMcp(endpoint, await startProgram(f, legacy));
-    await check(
-      "F24 previous program contract",
-      f.chat.id,
-      "version 1 thread_message",
-      "passive report",
-      async () => {
-        const response = await legacyClient.callTool({
-          name: "thread_message",
-          arguments: { delivery: "queue", threadId: "home", message: "Version 1 passive report" },
-        });
-        expect(response.isError).not.toBe(true);
-        const result = response.structuredContent as { input?: { policy?: string } } | undefined;
-        expect(result?.input?.policy).toBe("report");
-        return response;
       },
     );
   });
@@ -2065,7 +2054,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           const legacyTool = (await client.listTools()).tools.find(
             ({ name }) => name === "trigger_write",
           );
-          expect(legacyTool?.description).not.toContain("load opensteer-triggers");
+          expect(legacyTool?.description).toContain("load opensteer-triggers");
           return { refused, capabilities, supported };
         },
       );
@@ -2108,129 +2097,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     expect(moved.isError, JSON.stringify(moved)).not.toBe(true);
   });
-
-  it.each(["workspace", "delegated"] as const)(
-    "serves the frozen legacy Trigger contract to %s MCP sessions",
-    async (profile) => {
-      const previous = z
-        .object({ description: z.string(), inputSchema: z.record(z.string(), z.unknown()) })
-        .parse(
-          JSON.parse(
-            await readFile(
-              new URL(
-                "../../../../packages/agent-tools/src/fixtures/trigger-write-e45e4ecdc.json",
-                import.meta.url,
-              ),
-              "utf8",
-            ),
-          ),
-        );
-      const f = await fixture([]);
-      const token = profile === "workspace" ? f.specialistToken : f.fullChildToken;
-      const client = await connectMcp(await mcpEndpoint(), token);
-      const current = await connectMcp(await mcpEndpoint(false), token);
-      await check(
-        "legacy Trigger inventory",
-        profile,
-        "tools/list",
-        "e45e4ecdc description and schema",
-        async () => {
-          const tool = (await client.listTools()).tools.find(
-            ({ name }) => name === "trigger_write",
-          )!;
-          expect(tool.description).toBe(previous.description);
-          // MCP deliberately removes patterns and $schema from advertised inputs.
-          expect(tool.inputSchema).toEqual(advertisedJsonSchema(previous.inputSchema));
-          const currentTool = (await current.listTools()).tools.find(
-            ({ name }) => name === "trigger_write",
-          )!;
-          expect(currentTool.description).toContain("load opensteer-triggers");
-          expect(JSON.stringify(currentTool.inputSchema)).toContain('"enum":[1,2,3]');
-          return { legacy: tool, current: currentTool };
-        },
-      );
-    },
-  );
-
-  it.each([1, 2, 3] as const)(
-    "saved program contract %s selects discovery and preserves delivery through MCP",
-    async (version) => {
-      const f = await fixture();
-      const saved = await personCreate(f, f.chat, cron, {
-        ...program,
-        toolContractVersion: version,
-      });
-      expect((await personDetail(f, saved.trigger.id)).revision.program.toolContractVersion).toBe(
-        version,
-      );
-      const token = await startProgram(f, saved);
-      const watch = await personCreate(
-        f,
-        f.fullChild,
-        { kind: "watch" },
-        { ...program, toolContractVersion: version },
-      );
-      const watchToken = await startWatch(f, watch);
-      const endpoint = await mcpEndpoint();
-      const client = await connectMcp(endpoint, token);
-      const watchClient = await connectMcp(endpoint, watchToken);
-      const names = (await client.listTools()).tools.map(({ name }) => name);
-      const watchNames = (await watchClient.listTools()).tools.map(({ name }) => name).sort();
-      expect(names.includes("environment_list")).toBe(version === 3);
-      expect(watchNames).toEqual(
-        (version === 3
-          ? ["environment_list", "thread_delegate", "thread_message"]
-          : ["thread_delegate", "thread_message"]
-        ).sort(),
-      );
-      const discovery = await client.callTool({
-        name: version === 3 ? "environment_list" : "workspace_list",
-        arguments: {},
-      });
-      expect(discovery.isError).not.toBe(true);
-      expect(discovery.structuredContent).toHaveProperty("delegationDefault");
-      if (version === 3) {
-        const workspace = await client.callTool({ name: "workspace_list", arguments: {} });
-        expect(Object.keys(workspace.structuredContent ?? {}).sort()).toEqual([
-          "window",
-          "workspaces",
-        ]);
-        const watchDiscovery = await watchClient.callTool({
-          name: "environment_list",
-          arguments: {},
-        });
-        expect(watchDiscovery.isError).not.toBe(true);
-        expect(watchDiscovery.structuredContent).toHaveProperty("delegationDefault");
-        await check(
-          "v3 Watch discovery",
-          f.fullChild.id,
-          "environment_list",
-          "authorized discovery",
-          async () => watchDiscovery,
-        );
-      } else {
-        expect(discovery.structuredContent).toHaveProperty("workspaces");
-        expect(discovery.structuredContent).toHaveProperty("harnessesTruncated");
-      }
-      const message = await client.callTool({
-        name: "thread_message",
-        arguments: {
-          threadId: "home",
-          delivery: version === 1 ? "queue" : "report",
-          message: `Contract ${version} passive context`,
-        },
-      });
-      expect(message.isError).not.toBe(true);
-      expect(message.structuredContent).toMatchObject({ input: { policy: "report" } });
-      await check(
-        `saved contract ${version} MCP`,
-        f.chat.id,
-        "discovery and delivery",
-        "compatible",
-        async () => ({ names, watchNames, discovery, message }),
-      );
-    },
-  );
 
   it("F23/F25: migrates populated rows and parses old Host details", async () => {
     const f = await fixture();
