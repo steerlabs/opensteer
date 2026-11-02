@@ -1,16 +1,16 @@
 import Foundation
 import PasswordsCore
 
-/// The broker IPC, v4 and v5: exactly the shapes `packages/protocol/src/passwords-broker.ts`
+/// The broker IPC, v4, v5 and v6: exactly the shapes `packages/protocol/src/passwords-broker.ts`
 /// declares. Frames are parsed with the strict JSON parser (no duplicate keys,
 /// integers only) and every object is closed, as `z.strictObject` is. Answers
 /// are encoded canonically. `Tests/Fixtures/passwords-wire.json` is written
 /// from these types and parsed by the protocol's schemas.
 public enum Wire {
-  /// Legacy callers keep their existing wire; new authorities opt in to 5.
-  public static let protocolVersion: Int64 = 4
-  public static let latestProtocolVersion: Int64 = 5
-  public static let supportedProtocolVersions: [Int64] = [4, 5]
+  /// Legacy read/release callers keep their scope; new consent requires version 6.
+  public static let protocolVersion: Int64 = 6
+  public static let latestProtocolVersion: Int64 = 6
+  public static let supportedProtocolVersions: [Int64] = [4, 5, 6]
   public static let maxAccounts = 100
 
   public enum Method: String, CaseIterable, Sendable {
@@ -20,6 +20,7 @@ public enum Wire {
     case signInProbe = "signin.probe"
     case signInRequest = "signin.request"
     case signInApprove = "signin.approve"
+    case signInCommit = "signin.commit"
     case signInRelease = "signin.release"
     case signInCancel = "signin.cancel"
   }
@@ -161,6 +162,7 @@ public enum Wire {
       case workspace
     }
     public let scope: Scope
+    public let protocolVersion: Int64
     public let permissionVersion: Int64
     public let site: String
     /// The site's registrable domain, e.g. `github.com`.
@@ -172,16 +174,22 @@ public enum Wire {
 
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
-      if let negotiated { version = negotiated }
-      else if case .object(let fields) = json, fields["protocolVersion"] != nil { version = 5 }
-      else { version = 4 }
+      if let negotiated {
+        version = negotiated
+      } else if case .object(let fields) = json,
+        case .integer(let offered)? = fields["protocolVersion"]
+      {
+        version = offered
+      } else {
+        version = 4
+      }
       var keys: Set<String> = [
         "deploymentId", "deploymentName", "expiresAt", "reason", "site", "threadTitle",
         "transactionId", "workspaceId", "workspaceName",
       ]
       switch version {
       case 4: keys.formUnion(["runtimeId", "sessionId"])
-      case 5: keys.formUnion(["protocolVersion", "permissionVersion"])
+      case 5, 6: keys.formUnion(["protocolVersion", "permissionVersion"])
       default: throw Failure.invalid("signin.request needs a supported protocol.")
       }
       let object = try strict(json, keys)
@@ -197,12 +205,13 @@ public enum Wire {
         else { throw Failure.invalid("signin.request needs a runtime and session.") }
         scope = .browser(runtimeId: runtimeId, sessionId: sessionId)
       } else {
-        guard try integer(object, "protocolVersion") == 5,
+        guard try integer(object, "protocolVersion") == version,
           try integer(object, "permissionVersion") == 5
         else { throw Failure.invalid("signin.request needs protocol and permission version 5.") }
         scope = .workspace
       }
-      permissionVersion = version
+      protocolVersion = version
+      permissionVersion = version == 4 ? 4 : 5
       site = try string(object, "site")
       threadTitle = try string(object, "threadTitle")
       transactionId = try string(object, "transactionId")
@@ -264,7 +273,7 @@ public enum Wire {
         fields["runtimeId"] = .string(runtimeId)
         fields["sessionId"] = .string(sessionId)
       case .workspace:
-        fields["protocolVersion"] = .integer(5)
+        fields["protocolVersion"] = .integer(protocolVersion)
         fields["permissionVersion"] = .integer(permissionVersion)
       }
       return .object(fields)
@@ -278,8 +287,10 @@ public enum Wire {
     public let remember: Bool
     public let revision: Int64
     public let transactionId: String
+    public let permissionVersion: Int64
 
     public init(loginId: String, remember: Bool, revision: Int64, transactionId: String) {
+      self.permissionVersion = 5
       self.loginId = loginId
       self.remember = remember
       self.revision = revision
@@ -287,7 +298,12 @@ public enum Wire {
     }
 
     public init(json: JSONValue) throws {
-      let object = try strict(json, ["loginId", "remember", "revision", "transactionId"])
+      let object = try strict(
+        json, ["loginId", "remember", "revision", "transactionId", "permissionVersion"])
+      permissionVersion = try integer(object, "permissionVersion")
+      guard permissionVersion == 5 else {
+        throw Failure.invalid("Update Opensteer to approve this sign-in.")
+      }
       loginId = try string(object, "loginId")
       remember = try bool(object, "remember")
       revision = try integer(object, "revision")
@@ -300,6 +316,7 @@ public enum Wire {
 
     public var json: JSONValue {
       .object([
+        "permissionVersion": .integer(permissionVersion),
         "loginId": .string(loginId), "remember": .bool(remember), "revision": .integer(revision),
         "transactionId": .string(transactionId),
       ])
@@ -344,15 +361,19 @@ public enum Wire {
 
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
-      if let negotiated { version = negotiated }
-      else if case .object(let fields) = json, fields["kind"] != nil { version = 5 }
-      else { version = 4 }
+      if let negotiated {
+        version = negotiated
+      } else if case .object(let fields) = json, fields["kind"] != nil {
+        version = 5
+      } else {
+        version = 4
+      }
       let object: StrictObject
       switch version {
       case 4:
         object = try strict(json, ["transactionId", "field", "origin"])
         destination = .browser(origin: try string(object, "origin"))
-      case 5:
+      case 5, 6:
         // The discriminant is mandatory; an absent origin never grants app scope.
         guard case .object(let fields) = json, case .string(let kind)? = fields["kind"] else {
           throw Failure.invalid("signin.release needs an explicit destination kind.")
@@ -387,7 +408,7 @@ public enum Wire {
       case .app: fields["kind"] = .string("app")
       case .browser(let origin):
         fields["origin"] = .string(origin)
-        if protocolVersion == 5 { fields["kind"] = .string("browser") }
+        if protocolVersion >= 5 { fields["kind"] = .string("browser") }
       }
       return .object(fields)
     }

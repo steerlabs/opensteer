@@ -203,7 +203,7 @@ describe("ComputerAppHub", () => {
       identity: {
         ...base.identity,
         modules: {
-          integrations: { platform: "darwin", protocolVersion: 5, loginText: 1, passwordSignIn: 1 },
+          integrations: { platform: "darwin", protocolVersion: 5, loginText: 1, passwordSignIn: 2 },
         },
       },
     } as RunnerAuxiliaryStream;
@@ -222,7 +222,7 @@ describe("ComputerAppHub", () => {
       type: "runner.integrations.status",
       apps: [],
       loginText: key,
-      passwordSignIn: 1,
+      passwordSignIn: 2,
     });
     expect(hub.loginReceiver(runnerId)).toEqual(key);
     expect(hub.passwordSignInSupported(runnerId)).toBe(true);
@@ -468,7 +468,7 @@ describe("ComputerAppHub", () => {
       ]),
       ownerViewVersion: 1,
       displayAvailable: true,
-      passwordSignIn: 1,
+      passwordSignIn: 2,
     });
     expect(hub.status(runnerId)?.map(({ definitionId }) => definitionId)).toEqual([
       "apple-calendar",

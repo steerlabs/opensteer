@@ -1,3 +1,4 @@
+import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import {
   ChannelAccessGrantViewSchema,
   ChannelAccessPolicySchema,
@@ -955,13 +956,17 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("browser.sign-in.respond"),
   }),
   /**
-   * Declines a saved-password sign-in from any device. It is settled by the
-   * Mac's answer: a sign-in already handed over is reported as signed in.
+   * Answers saved-login consent as its requester from any authenticated client.
+   * The Host commits the broker only after the Request's durable settlement.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
-    type: z.literal("browser.password-sign-in.decline"),
+    type: z.literal("browser.password-sign-in.respond"),
+    decision: z.union([
+      z.strictObject({ kind: z.literal("decline") }),
+      z.strictObject({ kind: z.literal("approve"), ...PasswordSignInApprovalSchema.shape }),
+    ]),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1314,8 +1319,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     outcome: BrowserSignInOutcomeSchema.nullable(),
   }),
   z.object({
-    type: z.literal("browser.password-sign-in.decline"),
-    /** How the Request ended; `pending` only if the Mac has not answered yet. */
+    type: z.literal("browser.password-sign-in.respond"),
+    card: PasswordSignInCardViewSchema.optional(),
+    message: z.string().max(200).optional(),
+    /** How the Request ended. */
     status: z.enum(["declined", "fulfilled", "pending", "withdrawn", "cancelled"]),
   }),
   CreateBrowserProfileGrantResponseSchema.extend({ type: z.literal("browser.profile.grant") }),
@@ -1394,6 +1401,11 @@ export const hostApi = defineRpc({
     AttachmentReferenceInputSchema,
     AttachmentContentSchema,
     true,
+  ),
+  "browser.password-sign-in.get": declaration(
+    "POST",
+    z.strictObject({ requestId: RequestIdSchema }),
+    PasswordSignInCardViewSchema,
   ),
   "browser.sources.get": declaration("GET", emptyInputSchema, BrowserSourcesStateSchema),
   "browser.sources.inspect": declaration(

@@ -60,7 +60,10 @@ export function createHostApiHandlers(
   integrationPlatform: IntegrationPlatformRpcOptions,
   channelHandlers: Pick<HostApiHandlers, "channel.connection.check" | "channels.get">,
   channels: ChannelService,
-  browserSourceHandlers: Pick<HostApiHandlers, "browser.sources.get" | "browser.sources.inspect">,
+  browserSourceHandlers: Pick<
+    HostApiHandlers,
+    "browser.sources.get" | "browser.sources.inspect" | "browser.password-sign-in.get"
+  >,
   browserSources: BrowserSourceRpcOptions,
   coreHandlers: Pick<
     HostApiHandlers,

@@ -18,7 +18,7 @@ import { hostApi } from "@opensteer/protocol";
 import type { ThreadSummary, CreateThreadInput } from "../host/client.js";
 import { threadStopTarget } from "../host/thread-activity.js";
 import { defaultThreadPlacement, threadPlacementOptions } from "../host/thread-placement.js";
-import { MockHostClient } from "./mock-host-client.js";
+import { MockHostClient, mockPasswordSignInRequest } from "./mock-host-client.js";
 
 it("carries pending profile erasure through the mock catalog and clears completed jobs", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
@@ -1143,6 +1143,39 @@ it("accepts a conversation-view history read without a durable mock event log", 
     expect(result.threadId).toBe(threadId);
     expect(result.events).toEqual([]);
     expect(result.window.hasMore).toBe(false);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("offers transient Passwords choices and settles the pinned shared command in mock mode", async () => {
+  const request = mockPasswordSignInRequest();
+  const client = new MockHostClient({ latencyMs: 0, pendingRequests: [request] });
+  try {
+    const card = unwrap(
+      await client.rpc["browser.password-sign-in.get"]({ requestId: request.id }),
+    );
+    expect(card.stage).toBe("approval");
+    if (card.stage !== "approval") throw new Error("Missing chooser");
+    const account = card.accounts[0]!;
+    expect(JSON.stringify(client.getSnapshot())).not.toContain(account.username);
+    const result = await client.dispatch({
+      type: "browser.password-sign-in.respond",
+      idempotencyKey: "mock-password-approval",
+      requestId: request.id,
+      decision: {
+        kind: "approve",
+        loginId: account.id,
+        revision: account.revision,
+        remember: true,
+        permissionVersion: 5,
+      },
+    });
+    expect(result).toMatchObject({ type: "browser.password-sign-in.respond", status: "fulfilled" });
+    expect(
+      unwrap(await client.rpc["browser.password-sign-in.get"]({ requestId: request.id })),
+    ).toEqual({ stage: "gone" });
+    expect(JSON.stringify(client.getSnapshot())).not.toContain(account.username);
   } finally {
     client.dispose();
   }

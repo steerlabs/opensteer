@@ -122,7 +122,7 @@ export type ComputerAppStatusEntry = z.infer<typeof ComputerAppStatusEntrySchema
 export const RunnerIntegrationsStatusSchema = z.strictObject({
   ...integrationsFrameBase,
   loginText: LoginReceiverKeySchema.optional(),
-  passwordSignIn: z.literal(1).optional(),
+  passwordSignIn: z.literal(2).optional(),
   apps: z.array(ComputerAppStatusEntrySchema).max(computerAppMaxStatusEntries),
   captureSupported: z.boolean().optional(),
   displayAvailable: z.boolean().optional(),

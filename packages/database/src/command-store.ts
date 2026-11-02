@@ -1,3 +1,4 @@
+import { requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -27,6 +28,7 @@ import {
   type WorkspaceId,
   type Request,
   RequestIdSchema,
+  RequestSettlementProvenanceSchema,
   UserIdSchema,
   RequestResponseSchema,
   hasSecretRequestFields,
@@ -95,6 +97,7 @@ export type RunnerControlInput =
   | {
       readonly idempotencyKey: string;
       readonly requestId: RequestId;
+      readonly settlementSessionId?: string;
       readonly requestedBy: UserId;
       readonly response: RequestResponse;
       readonly sealedResponse: {
@@ -488,6 +491,9 @@ async function succeedCommandInTransaction(
       .set({
         resolvedAt: now,
         resolvedBy: responsePayload.requestedBy,
+        settlementProvenance: responsePayload.settlementProvenance
+          ? jsonValue(responsePayload.settlementProvenance)
+          : null,
         response: jsonValue(responsePayload.response),
         responseCommandId: null,
         status: requestStatusFromValidatedResponse(request, responsePayload.response),
@@ -726,7 +732,11 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
 
 function omitRequestResponse(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
-  const { response: _response, ...safe } = payload as Readonly<Record<string, unknown>>;
+  const {
+    response: _response,
+    settlementProvenance: _provenance,
+    ...safe
+  } = payload as Readonly<Record<string, unknown>>;
   return safe;
 }
 
@@ -734,12 +744,18 @@ function requestResponseCommandPayload(payload: unknown): {
   readonly requestId: RequestId;
   readonly requestedBy: UserId;
   readonly response: RequestResponse;
+  readonly settlementProvenance?: { sessionId: string; deviceLabel: string };
 } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new OpensteerError({ code: "internal", message: "Request response command is invalid" });
   }
   const value = payload as Readonly<Record<string, unknown>>;
   return {
+    ...(value.settlementProvenance
+      ? {
+          settlementProvenance: RequestSettlementProvenanceSchema.parse(value.settlementProvenance),
+        }
+      : {}),
     requestId: RequestIdSchema.parse(value.requestId),
     requestedBy: UserIdSchema.parse(value.requestedBy),
     response: RequestResponseSchema.parse(value.response),
@@ -1001,7 +1017,15 @@ export async function enqueueRunnerControl(
       lastError: null,
       payload: jsonValue(
         reservedRequest
-          ? { ...controlPayload, response: reservedRequest.response }
+          ? {
+              ...controlPayload,
+              response: reservedRequest.response,
+              settlementProvenance: await requestSettlementActor(
+                transaction,
+                input.requestedBy,
+                input.type === "request.respond" ? input.settlementSessionId : undefined,
+              ),
+            }
           : controlPayload,
       ),
       ...(input.type === "request.respond"

@@ -24,6 +24,8 @@ import {
   type PasswordSignInAvailability,
   type PasswordSignInCancelReason,
   type LoginAuthorizationOutcome,
+  type PasswordSignInCard,
+  type PasswordSignInAuthorityCommand,
 } from "@opensteer/protocol";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
 import type { ComputerAppHub, PasswordSignInHubEvent } from "../computer-apps/computer-app-hub.js";
@@ -79,6 +81,9 @@ interface Operation {
   settling: Promise<Finish> | null;
   settled: boolean;
   authorityEnded: boolean;
+  pendingLease: PasswordLoginLease | null;
+  deciding: boolean;
+  settlementSessionId?: string | undefined;
 }
 
 export interface PasswordLoginLease {
@@ -271,6 +276,8 @@ export class PasswordSignInService {
       this.#closed ||
       this.#now() >= lease.expiresAt ||
       !operation ||
+      operation.authorityEnded ||
+      operation.cancelSent !== null ||
       !this.#authority.passwordSignInSupported(operation.target.runnerId)
     ) {
       this.#leases.delete(loginRef);
@@ -308,6 +315,7 @@ export class PasswordSignInService {
   }
 
   #dropLeases(operation: Operation): void {
+    operation.pendingLease = null;
     for (const lease of this.#leases.values()) {
       if (lease.operationId === operation.id) this.#leases.delete(lease.loginRef);
     }
@@ -398,6 +406,8 @@ export class PasswordSignInService {
         settling: null,
         settled: false,
         authorityEnded: false,
+        pendingLease: null,
+        deciding: false,
       };
       this.#operations.set(operation.id, operation);
       this.#bySite.set(key, operation);
@@ -435,8 +445,124 @@ export class PasswordSignInService {
     return this.#answer(operation, input, operation.starter !== input);
   }
 
-  async decline(input: {
+  async get(input: { ownerId: UserId; requestId: RequestId }): Promise<PasswordSignInCard> {
+    const request = await this.#requester(input);
+    if (request.status !== "pending") return { stage: "gone" };
+    if (
+      request.originatingRunId === null ||
+      !(await this.#requests.hasPasswordSignInAuthority({
+        originatingRunId: request.originatingRunId,
+        originatingThreadId: request.originatingThreadId,
+        originatingWorkspaceId: request.originatingWorkspaceId,
+        requestedBy: request.requestedBy,
+        targetWorkspaceId: request.targetWorkspaceId,
+      }))
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This sign-in no longer has Workspace authority.",
+      });
+    const operation = this.#operations.get(
+      request.payload.kind === "browser.password-sign-in" ? request.payload.operationId : "",
+    );
+    if (
+      !operation ||
+      operation.cancelSent ||
+      operation.settlement ||
+      this.#now() >= operation.expiresAt
+    )
+      return { stage: "gone" };
+    const result = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
+      type: "login.get",
+      operationId: operation.id,
+    });
+    return result.type === "login.get.result" ? result.card : { stage: "gone" };
+  }
+
+  async #requester(input: { ownerId: UserId; requestId: RequestId }) {
+    const request = await this.#requests.get(input.requestId);
+    if (
+      !request ||
+      request.kind !== "browser.password-sign-in" ||
+      request.requestedBy !== input.ownerId ||
+      request.requiredActor !== "requester"
+    )
+      throw new OpensteerError({ code: "not_found", message: "Sign-in request not found." });
+    return request;
+  }
+
+  async respond(input: {
+    ownerId: UserId;
+    requestId: RequestId;
+    sessionId: string;
+    revalidate: () => Promise<void>;
+    decision:
+      | { kind: "decline" }
+      | (Omit<
+          Extract<PasswordSignInAuthorityCommand, { type: "login.approve" }>,
+          "type" | "operationId"
+        > & { kind: "approve" });
+  }): Promise<{ status: Request["status"]; card?: PasswordSignInCard; message?: string }> {
+    const request = await this.#requester(input);
+    if (request.status !== "pending") return { status: request.status };
+    const operation = this.#operations.get(
+      request.payload.kind === "browser.password-sign-in" ? request.payload.operationId : "",
+    );
+    if (operation?.deciding)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This sign-in is already being answered.",
+      });
+    if (operation) operation.deciding = true;
+    try {
+      await input.revalidate();
+      if (input.decision.kind === "decline")
+        return { status: await this.#decline({ ...input, settlementSessionId: input.sessionId }) };
+      if (
+        !operation ||
+        operation.settlement ||
+        operation.cancelSent ||
+        this.#now() >= operation.expiresAt
+      )
+        return {
+          status: (await this.#requests.get(input.requestId))?.status ?? "cancelled",
+          card: { stage: "gone" },
+        };
+      if (!(await this.#requests.hasPasswordSignInAuthority(authority(operation.starter))))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This sign-in no longer has Workspace authority.",
+        });
+      await input.revalidate();
+      operation.settlementSessionId = input.sessionId;
+      const { kind: _kind, ...choice } = input.decision;
+      const result = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
+        type: "login.approve",
+        operationId: operation.id,
+        ...choice,
+      });
+      if (result.type !== "login.approve.result") {
+        await this.#cancel(operation, "authority-lost");
+        await this.#finish(operation, interrupted());
+        return {
+          status: (await this.#requests.get(input.requestId))?.status ?? "cancelled",
+          card: { stage: "gone" },
+        };
+      }
+      if (!result.result.ok) {
+        operation.settlementSessionId = undefined;
+        return { status: "pending", card: result.result.card, message: result.result.message };
+      }
+      if (operation.settling) await operation.settling;
+      return { status: (await this.#requests.get(input.requestId))?.status ?? "pending" };
+    } finally {
+      if (operation) operation.deciding = false;
+    }
+  }
+
+  async #decline(input: {
     readonly ownerId: UserId;
+    readonly settlementSessionId?: string | undefined;
     readonly requestId: RequestId;
   }): Promise<Request["status"]> {
     const request = await this.#requests.get(input.requestId);
@@ -454,9 +580,11 @@ export class PasswordSignInService {
         ownerId: input.ownerId,
         requestId: input.requestId,
         settlement: { status: "declined" },
+        ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       });
       if (result) this.#announce(result);
     } else {
+      operation.settlementSessionId = input.settlementSessionId;
       await this.#cancel(operation, "declined");
       await this.#wait(operation, this.#declineAnswerMs, true);
       if (!operation.settlement) await this.#finish(operation, { status: "declined" });
@@ -638,6 +766,15 @@ export class PasswordSignInService {
         });
       return;
     }
+    if (
+      event.outcome.kind === "authorized" &&
+      (operation.requestId || operation.opening || operation.need === "approval") &&
+      !operation.settlementSessionId
+    ) {
+      await this.#cancel(operation, "authority-lost");
+      await this.#finish(operation, interrupted());
+      return;
+    }
     if (event.outcome.kind === "authorized") {
       const expiresAt = Date.parse(event.outcome.expiresAt);
       if (
@@ -649,14 +786,14 @@ export class PasswordSignInService {
         await this.#finish(operation, interrupted());
         return;
       }
-      this.#leases.set(operation.loginRef, {
+      operation.pendingLease = {
         loginRef: operation.loginRef,
         account: event.outcome.account,
         expiresAt,
         workspaceId: operation.starter.workspaceId,
         site: operation.site,
         operationId: operation.id,
-      });
+      };
     }
     if (event.outcome.kind === "busy") operation.result = unavailable(operation.site, "busy");
     await this.#finish(operation, settlementFor(event.outcome));
@@ -746,7 +883,12 @@ export class PasswordSignInService {
     if (this.#bySite.get(key) === operation) this.#bySite.delete(key);
     operation.need = null;
     this.#notify(operation);
-    if (!operation.requestId) return mine ? "settled" : "ended-elsewhere";
+    if (!operation.requestId) {
+      if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded)
+        this.#leases.set(operation.loginRef, operation.pendingLease);
+      this.#notify(operation);
+      return mine ? "settled" : "ended-elsewhere";
+    }
     if (operation.settled) return "ended-elsewhere";
     if (operation.settling) {
       const result = await operation.settling;
@@ -758,16 +900,44 @@ export class PasswordSignInService {
           ownerId: operation.starter.ownerId,
           requestId: operation.requestId!,
           settlement: operation.settlement!,
+          ...(operation.settlementSessionId &&
+          (operation.settlement!.status === "declined" ||
+            (operation.settlement!.status === "fulfilled" &&
+              operation.settlement!.response.outcome === "authorized"))
+            ? { settlementSessionId: operation.settlementSessionId }
+            : {}),
         });
         operation.settled = true;
         if (!result) {
           await this.#cancel(operation, "authority-lost");
           return "ended-elsewhere";
         }
+        if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded) {
+          const committed = operation.settlementSessionId
+            ? await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
+                type: "login.commit",
+                operationId: operation.id,
+              })
+            : { type: "login.committed" as const, committed: true };
+          if (
+            committed.type === "login.committed" &&
+            committed.committed &&
+            !operation.cancelSent &&
+            !operation.authorityEnded &&
+            this.#now() < operation.expiresAt
+          )
+            this.#leases.set(operation.loginRef, operation.pendingLease);
+          else await this.#cancel(operation, "authority-lost");
+        }
         this.#announce(result);
+        this.#notify(operation);
         return mine ? "settled" : "ended-elsewhere";
       } catch (error) {
         this.#onError(error);
+        operation.pendingLease = null;
+        operation.settlementSessionId = undefined;
+        operation.settlement = interrupted();
+        await this.#cancel(operation, "authority-lost");
         return mine ? "retrying" : "ended-elsewhere";
       }
     })();

@@ -4677,6 +4677,7 @@ export function migrationProvider() {
         "0125_run_place_events": runPlaceEventsMigration,
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
+        "0128_request_settlement_provenance": requestSettlementProvenanceMigration,
       };
     },
   };
@@ -6611,5 +6612,11 @@ const personShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+const requestSettlementProvenanceMigration: Migration = {
+  async up(database) {
+    await sql`alter table requests add column settlement_provenance jsonb`.execute(database);
   },
 };

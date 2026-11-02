@@ -12,7 +12,11 @@ import {
   SealedLoginEnvelopeSchema,
 } from "@opensteer/protocol";
 import { openAuxiliaryStream } from "../runtime/computer-apps.test-support.js";
-import { closed, type PrimaryConnection } from "../runtime/machine-access.test-support.js";
+import {
+  closed,
+  waitForMessage,
+  type PrimaryConnection,
+} from "../runtime/machine-access.test-support.js";
 
 export const passwordFixture = {
   site: "https://passwords-fixture.test",
@@ -70,7 +74,7 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
     send({
       type: "runner.integrations.status",
       apps: [],
-      ...(available ? { passwordSignIn: 1 } : {}),
+      ...(available ? { passwordSignIn: 2 } : {}),
     });
   stream.socket.on("message", (raw, binary) => {
     if (binary) return;
@@ -92,6 +96,36 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
     switch (command.type) {
       case "signin.probe":
         reply({ type: "signin.probe.result", passwords: "has-login" });
+        break;
+      case "login.get":
+        reply({
+          type: "login.get.result",
+          card: {
+            stage: "approval",
+            permissionVersion: 5,
+            accounts: [
+              {
+                id: "00000000-0000-4000-8000-000000000001",
+                revision: 1,
+                username: passwordFixture.username,
+                host: "passwords-fixture.test",
+                onPage: false,
+                updatedAt: new Date().toISOString(),
+                label: null,
+              },
+            ],
+          },
+        });
+        break;
+      case "login.approve":
+        authorize(command.operationId);
+        reply({ type: "login.approve.result", result: { ok: true } });
+        break;
+      case "login.commit":
+        reply({
+          type: "login.committed",
+          committed: !policy.revoked && !policy.expired && !policy.revisionChanged,
+        });
         break;
       case "login.authorize":
         operations.set(command.operationId, command);
@@ -145,9 +179,19 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
     authorize,
     status,
     runnerId: primary.fence.runnerId,
-    end: (operationId: string) => {
+    end: async (operationId: string) => {
       operations.delete(operationId);
       event({ type: "login.ended", operationId });
+      // A domain heartbeat is ordered behind the event in the Host's auxiliary inbox.
+      const acknowledged = waitForMessage(
+        stream.socket,
+        (frame) => frame.type === "host.auxiliary.lease-renewed",
+        5_000,
+      );
+      send({ type: "runner.auxiliary.heartbeat", sentAt: new Date().toISOString() });
+      await acknowledged.catch(() => {
+        throw new Error("Host did not acknowledge the Passwords authority event.");
+      });
     },
     releaseHeld: () => {
       const ready = held;

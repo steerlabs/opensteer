@@ -1258,7 +1258,12 @@ export const computerUseBridgePasswordsResults = {
   "passwords.control": PasswordSignInAuthorityResultSchema,
   "passwords.capabilities": z.strictObject({
     receiver: LoginReceiverKeySchema.nullable(),
-    authority: z.literal(1).nullable(),
+    authority: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .transform((version) => (version === 2 ? (2 as const) : null)),
   }),
 } as const;
 

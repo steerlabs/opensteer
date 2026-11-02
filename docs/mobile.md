@@ -9,9 +9,12 @@ to maintain. [Connections](connections.md) owns discovery and credentials;
 [Host boundaries](host-boundaries.md) owns compatibility and machine-local authority.
 
 A phone always resolves with a null local runtime. It cannot exercise the computer's
-owner arm. Mac app approval and saved-password approval happen on the named Mac;
-the phone may decline, narrow access or stop use, but cannot register that Mac's
-approval key. Agent Phone access follows [its owner contract](agent-phone.md#7-access-and-stop).
+owner arm. Saved-password consent uses the requester's Host session from any signed-in
+device; the native mobile app confirms each Allow/Only this time with OS
+device-owner authentication. Account choices stay in transient UI memory. Adding
+this native module or its Face ID usage description requires rebuilding the native
+client; a JavaScript update alone does not enable it. Mac app approval uses its
+computer-access contract. Agent Phone access follows [its owner contract](agent-phone.md#7-access-and-stop).
 
 ## Attachment and identity
 

@@ -1,3 +1,4 @@
+import { computerUseBridgePasswordsResults } from "./computer-use.js";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
@@ -925,4 +926,21 @@ it("bounds helper video fps and bitrate while preserving the legacy shape", () =
       }).success,
     ).toBe(valid);
   }
+});
+
+it("ignores unknown Passwords authority versions without discarding the receiver", () => {
+  for (const authority of [1, 3, 99]) {
+    expect(
+      computerUseBridgePasswordsResults["passwords.capabilities"].parse({
+        authority,
+        receiver: null,
+      }),
+    ).toEqual({ authority: null, receiver: null });
+  }
+  expect(
+    computerUseBridgePasswordsResults["passwords.capabilities"].parse({
+      authority: 2,
+      receiver: null,
+    }).authority,
+  ).toBe(2);
 });

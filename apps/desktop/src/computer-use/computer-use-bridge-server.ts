@@ -746,7 +746,7 @@ export class ComputerUseBridgeServer {
         return;
       }
       answer({
-        authority: this.#passwords ? 1 : null,
+        authority: this.#passwords ? 2 : null,
         receiver: this.#helper.loginReceiver?.() ?? null,
       });
       return;

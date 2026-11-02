@@ -83,7 +83,7 @@ export function prepareIntegrationsModule(options: {
             macOwnerInputVersion: 2,
             computerAppApprovals: true,
             loginText: 1,
-            passwordSignIn: 1,
+            passwordSignIn: 2,
           }
         : {}),
       platform,

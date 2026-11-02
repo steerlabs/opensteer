@@ -3,7 +3,6 @@ import type { DesktopPasskeyRequests } from "../passkeys/passkey-requests.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { DesktopUpdater } from "../app/desktop-updater.js";
 import type { DesktopBrowserPresentationManager } from "../browser/browser-presentation.js";
-import type { PasswordsSignInOperations } from "../passwords/sign-in-operations.js";
 import type { IpcMain, IpcMainInvokeEvent, NativeImage, WebContents, WebFrameMain } from "electron";
 import type { DeploymentId } from "@opensteer/core";
 import type {
@@ -184,7 +183,6 @@ export interface DesktopBridgeOptions {
    */
   readonly passwords: {
     readonly open: () => Promise<void>;
-    readonly signIns: Pick<PasswordsSignInOperations, "get" | "approve" | "subscribe">;
     readonly status: () => Promise<DesktopPasswordsStatus>;
     readonly subscribe: (listener: (status: DesktopPasswordsStatus) => void) => () => void;
   };
@@ -214,7 +212,6 @@ export interface DesktopBridgeContext {
    * Sign-in toolbars that read their window through the bridge: the only
    * renderers a window's change is pushed to, and each only its own.
    */
-  readonly passwordsSignInCards: Map<WebContents, Set<string>>;
   readonly personalRemoteSenders: Set<WebContents>;
   readonly trackedHostSenders: Set<number>;
 }

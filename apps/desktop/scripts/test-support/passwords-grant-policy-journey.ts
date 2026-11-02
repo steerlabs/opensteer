@@ -119,6 +119,7 @@ export async function runPasswordsGrantPolicyJourney(
           loginId: account.id,
           revision: account.revision,
           remember: true,
+          permissionVersion: 5 as const,
         })
       ).decision,
       "authorized",
@@ -134,7 +135,7 @@ export async function runPasswordsGrantPolicyJourney(
         ...scope,
         transactionId,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        protocolVersion: 5,
+        protocolVersion: 6,
         permissionVersion: 5,
       });
     const modernId = randomUUID();
@@ -152,6 +153,7 @@ export async function runPasswordsGrantPolicyJourney(
           loginId: account.id,
           revision: account.revision,
           remember: false,
+          permissionVersion: 5 as const,
         })
       ).decision,
       "authorized",

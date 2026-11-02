@@ -15,7 +15,6 @@ import {
   DisplayClientDiagnosticSchema,
   DeploymentAccessSnapshotSchema,
   DesktopLocalExecutionStatusSchema,
-  DesktopPasswordsSignInCardChangedSchema,
   DesktopPasswordsStatusSchema,
   DesktopPersonalRemoteAccessStatusSchema,
 } from "@opensteer/protocol/desktop";
@@ -101,12 +100,7 @@ import {
   handleStartLocalRunner,
   handleStopLocalRunner,
 } from "./methods/local-execution.js";
-import {
-  handleGetPasswordsSignIn,
-  handleApprovePasswordsSignIn,
-  handleGetPasswordsStatus,
-  handleOpenPasswords,
-} from "./methods/passwords.js";
+import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
 import {
   handleConfigurePersonalRemoteAccess,
   handleGetPersonalRemoteAccessStatus,
@@ -122,7 +116,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     localExecutionSenders: new Map(),
     options,
     passwordsSenders: new Set(),
-    passwordsSignInCards: new Map(),
     personalRemoteSenders: new Set(),
     trackedHostSenders: new Set(),
   };
@@ -187,13 +180,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
       if (!sender.isDestroyed()) {
         sender.send(desktopBridgeChannels.passwordsStatusChanged, parsed);
       }
-    }
-  });
-  const unsubscribeSignIns = options.passwords.signIns.subscribe((change) => {
-    const parsed = DesktopPasswordsSignInCardChangedSchema.parse(change);
-    for (const [sender, operations] of context.passwordsSignInCards) {
-      if (operations.has(change.operationId) && !sender.isDestroyed())
-        sender.send(desktopBridgeChannels.passwordsSignInChanged, parsed);
     }
   });
   const visibilitySenders = new Set<WebContents>();
@@ -287,8 +273,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   );
   register(desktopBridgeChannels.getPasswordsStatus, handleGetPasswordsStatus(context));
   register(desktopBridgeChannels.openPasswords, handleOpenPasswords(context));
-  register(desktopBridgeChannels.getPasswordsSignIn, handleGetPasswordsSignIn(context));
-  register(desktopBridgeChannels.approvePasswordsSignIn, handleApprovePasswordsSignIn(context));
   register(
     desktopBridgeChannels.acknowledgePortableFsApproval,
     handleAcknowledgePortableFsApproval(context),
@@ -381,8 +365,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     unsubscribeLocalExecution();
     unsubscribePersonalRemote();
     unsubscribePasswords();
-    unsubscribeSignIns();
-    context.passwordsSignInCards.clear();
     context.accessSenders.clear();
     context.localExecutionSenders.clear();
     context.passwordsSenders.clear();

@@ -68,6 +68,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
         loginId: transactionId,
         revision: 1,
         remember: false,
+        permissionVersion: 5 as const,
       }),
     ).resolves.toEqual(answer);
   });
@@ -315,7 +316,13 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     const decision = harness.client
       .call(
         "signin.approve",
-        { transactionId, loginId: transactionId, revision: 1, remember: false },
+        {
+          transactionId,
+          loginId: transactionId,
+          revision: 1,
+          remember: false,
+          permissionVersion: 5 as const,
+        },
         { signal: controller.signal },
       )
       .catch((error: unknown) => error);
@@ -415,7 +422,13 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     const problem = harness.client
       .call(
         "signin.approve",
-        { loginId: transactionId, revision: 1, remember: false, transactionId },
+        {
+          loginId: transactionId,
+          revision: 1,
+          remember: false,
+          permissionVersion: 5 as const,
+          transactionId,
+        },
         { signal: new AbortController().signal },
       )
       .catch((error: unknown) => error);

@@ -14,7 +14,6 @@ import { passwordsBrokerAppName, passwordsBrokerSocketPath } from "./paths.js";
 import { PasswordsService } from "./passwords-service.js";
 import { HostSignIns } from "../../../../packages/browser-runtime-core/src/browser/host-sign-ins.js";
 import { PasswordsLoginAuthority } from "./login-authority.js";
-import { PasswordsSignInOperations } from "./sign-in-operations.js";
 import { openLoginEnvelope } from "./login-envelope.js";
 import { fakePasswordsLogin } from "./test-support/fake-broker-session.js";
 import {
@@ -262,7 +261,13 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
       ],
     });
     await decision;
-    const params = { transactionId, loginId: credential.login.id, revision: 3, remember: true };
+    const params = {
+      transactionId,
+      loginId: credential.login.id,
+      revision: 3,
+      remember: true,
+      permissionVersion: 5 as const,
+    };
     harness.broker.fail("signin.approve", {
       code: "invalid",
       message: "Authentication was cancelled.",
@@ -428,7 +433,6 @@ describe.runIf(process.platform === "darwin")("Workspace login release across su
       });
       const authority = new PasswordsLoginAuthority({
         broker: harness.service.broker(),
-        operations: new PasswordsSignInOperations(),
         ownOrigins: () => [],
       });
       cleanups.push(async () => {
@@ -581,7 +585,7 @@ async function serviceHarness(
     readonly bundled?: boolean;
     readonly development?: boolean;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5;
+    readonly clientProtocolVersion?: 4 | 5 | 6;
     readonly status?: PasswordsBrokerStatus;
   } = {},
 ) {
@@ -631,9 +635,7 @@ async function serviceHarness(
   const log = vi.fn();
   const service = new PasswordsService({
     appVersion: "9.9.9",
-    ...(options.clientProtocolVersion === undefined
-      ? {}
-      : { protocolVersion: options.clientProtocolVersion }),
+    protocolVersion: options.clientProtocolVersion ?? 4,
     bundledBrokerPath: () => bundledAppPath,
     client: {
       connectTimeoutMs: 3_000,

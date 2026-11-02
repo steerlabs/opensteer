@@ -2,7 +2,7 @@ import { release } from "node:os";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import type {
   PasswordsBrokerSignInRequestParams,
-  PasswordsBrokerSignInRequestV5Params,
+  PasswordsBrokerSignInRequestV6Params,
   PasswordsBrokerSignInProbeParams,
   PasswordsBrokerSignInProbeResult,
   PasswordsBrokerStatus,
@@ -38,7 +38,7 @@ const notRunningSentence =
 
 export interface PasswordsServiceOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5;
+  readonly protocolVersion?: 4 | 5 | 6;
   /** The broker this build ships, already resolved for packaged/development. */
   readonly bundledBrokerPath: () => string;
   /** Test seams for the broker connection; production uses the defaults. */
@@ -125,14 +125,18 @@ export class PasswordsService {
   }
 
   /** The narrow surface the login authority uses. */
-  broker(protocolVersion: 4 | 5 = this.#options.protocolVersion ?? 4): PasswordsBrokerSession {
+  broker(protocolVersion: 4 | 5 | 6 = this.#options.protocolVersion ?? 6): PasswordsBrokerSession {
     // Browser-only consent from a previous-release Host must stay on protocol4.
-    if (protocolVersion !== (this.#options.protocolVersion ?? 4)) {
+    if (protocolVersion !== (this.#options.protocolVersion ?? 6)) {
       this.#compatibilityService ??= new PasswordsService({ ...this.#options, protocolVersion });
       return this.#compatibilityService.broker();
     }
     return {
-      protocolVersion: this.#options.protocolVersion ?? 4,
+      commit: async (transactionId, signal) =>
+        await this.#bound(transactionId, "signin.commit", (client, connection) =>
+          client.call("signin.commit", { transactionId }, { connection, signal }),
+        ),
+      protocolVersion: this.#options.protocolVersion ?? 6,
       cancel: async (transactionId) => await this.#cancel(transactionId),
       probe: async (params) => await this.#probe(params),
       approve: async (params, signal) =>
@@ -170,7 +174,7 @@ export class PasswordsService {
   }
 
   async #request(
-    params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV5Params,
+    params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
     signal: AbortSignal,
   ): Promise<PasswordsBrokerSignInGrant> {
     this.#assertSupported();
@@ -349,7 +353,7 @@ export class PasswordsService {
     const client = new PasswordsBrokerClient({
       ...this.#options.client,
       appVersion: this.#options.appVersion,
-      protocolVersion: this.#options.protocolVersion ?? 4,
+      protocolVersion: this.#options.protocolVersion ?? 6,
       brokerAppPath: installed.path,
       development,
       launchFreshInstance: installed.launchFreshInstance,

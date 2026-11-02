@@ -50,6 +50,7 @@ export function requestFromRow(row: RequestRow): Request {
     requiredActor: row.requiredActor,
     resolvedAt: row.resolvedAt?.toISOString() ?? null,
     resolvedBy: row.resolvedBy,
+    settlementProvenance: row.settlementProvenance ?? null,
     response: row.response,
     status: row.status,
     targetWorkspaceId: row.targetWorkspaceId,
@@ -75,6 +76,9 @@ export function requestInsert(request: Request) {
     requiredActor: request.requiredActor,
     resolvedAt: request.resolvedAt ? new Date(request.resolvedAt) : null,
     resolvedBy: request.resolvedBy,
+    settlementProvenance: request.settlementProvenance
+      ? jsonValue(request.settlementProvenance)
+      : null,
     response: request.response ? jsonValue(request.response) : null,
     status: request.status,
     targetWorkspaceId: request.targetWorkspaceId,

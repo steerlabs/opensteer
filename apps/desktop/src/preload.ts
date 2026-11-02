@@ -86,9 +86,6 @@ import type {
   DesktopNotificationResult,
   DesktopNotificationSupport,
   DesktopNotificationTarget,
-  DesktopPasswordsSignInCardInput,
-  DesktopPasswordsSignInCardState,
-  DesktopPasswordsSignInApproveInput,
   DesktopPasswordsStatus,
   DesktopSelectDeploymentInput,
   DesktopStartLocalRunnerInput,
@@ -157,11 +154,6 @@ import {
   DesktopNotificationResultSchema,
   DesktopNotificationSupportSchema,
   DesktopNotificationTargetSchema,
-  DesktopPasswordsSignInCardInputSchema,
-  DesktopPasswordsSignInCardStateSchema,
-  DesktopPasswordsSignInCardChangedSchema,
-  DesktopPasswordsSignInApproveInputSchema,
-  DesktopPasswordsSignInApproveResultSchema,
   DesktopPasswordsStatusSchema,
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
@@ -478,32 +470,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     return () => ipcRenderer.removeListener(desktopBridgeChannels.passwordsStatusChanged, receive);
   },
   passwordsOpen: () => invokePasswords<void>(desktopBridgeChannels.openPasswords),
-  passwordsSignInGet: async (input: DesktopPasswordsSignInCardInput) =>
-    DesktopPasswordsSignInCardStateSchema.parse(
-      await invokePasswords<DesktopPasswordsSignInCardState>(
-        desktopBridgeChannels.getPasswordsSignIn,
-        DesktopPasswordsSignInCardInputSchema.parse(input),
-      ),
-    ),
-  onPasswordsSignInChanged: (
-    input: DesktopPasswordsSignInCardInput,
-    listener: (state: DesktopPasswordsSignInCardState) => void,
-  ) => {
-    const { operationId } = DesktopPasswordsSignInCardInputSchema.parse(input);
-    const receive = (_event: unknown, value: unknown): void => {
-      const change = DesktopPasswordsSignInCardChangedSchema.parse(value);
-      if (change.operationId === operationId) listener(change.state);
-    };
-    ipcRenderer.on(desktopBridgeChannels.passwordsSignInChanged, receive);
-    return () => ipcRenderer.removeListener(desktopBridgeChannels.passwordsSignInChanged, receive);
-  },
-  passwordsSignInApprove: async (input: DesktopPasswordsSignInApproveInput) =>
-    DesktopPasswordsSignInApproveResultSchema.parse(
-      await invokePasswords(
-        desktopBridgeChannels.approvePasswordsSignIn,
-        DesktopPasswordsSignInApproveInputSchema.parse(input),
-      ),
-    ),
   useComputerViewOnThisMac: async (input: unknown) =>
     DesktopUseComputerViewResultSchema.parse(
       await invoke(

@@ -25,6 +25,7 @@ import { hostInternalRoutePaths } from "./internal-routes.js";
 
 export interface BrowserSourceRpcOptions {
   readonly service: BrowserSourceService;
+  readonly revalidateSession: (context: HostApiServerContext) => Promise<void>;
   readonly canonicalOrigin: string;
   readonly authority: HostDiscoveryEnvelope;
   /** Personal Deployments offer Chrome on the same Mac the loopback origin too. */
@@ -36,8 +37,20 @@ export interface BrowserSourceRpcOptions {
 
 export function createBrowserSourceRpcHandlers(
   options: BrowserSourceRpcOptions,
-): Pick<HostApiHandlers, "browser.sources.get" | "browser.sources.inspect"> {
+): Pick<
+  HostApiHandlers,
+  "browser.sources.get" | "browser.sources.inspect" | "browser.password-sign-in.get"
+> {
   return {
+    "browser.password-sign-in.get": async (input, context) => {
+      context.setHeader("cache-control", "no-store");
+      return rpcSuccess(
+        await options.service.passwordSignInGet({
+          ownerId: requireOwner(context),
+          requestId: input.requestId,
+        }),
+      );
+    },
     "browser.sources.get": async (_input, context) =>
       rpcSuccess(
         hostApi["browser.sources.get"].success.parse(
@@ -61,7 +74,7 @@ export type BrowserSourceCommand = Extract<
       | "browser.site.remove"
       | "browser.session.sign-in"
       | "browser.sign-in.respond"
-      | "browser.password-sign-in.decline";
+      | "browser.password-sign-in.respond";
   }
 >;
 
@@ -71,7 +84,7 @@ export function isBrowserSourceCommand(command: HostApiCommand): command is Brow
     command.type === "browser.site.remove" ||
     command.type === "browser.session.sign-in" ||
     command.type === "browser.sign-in.respond" ||
-    command.type === "browser.password-sign-in.decline"
+    command.type === "browser.password-sign-in.respond"
   );
 }
 
@@ -118,16 +131,27 @@ export async function handleBrowserSourceCommand(
         type: command.type,
         outcome: await options.service.respond({
           decision: command.decision,
+          ...(context.session ? { settlementSessionId: context.session.id } : {}),
           ownerId,
           requestId: command.requestId,
         }),
       };
-    case "browser.password-sign-in.decline": {
-      const status = await options.service.declinePasswordSignIn({
-        ownerId,
-        requestId: command.requestId,
-      });
-      return { type: command.type, status };
+    case "browser.password-sign-in.respond": {
+      if (!context.session)
+        throw new OpensteerError({
+          code: "unauthorized",
+          message: "Sign in to answer this Request.",
+        });
+      return {
+        type: command.type,
+        ...(await options.service.passwordSignInRespond({
+          ownerId,
+          requestId: command.requestId,
+          decision: command.decision,
+          sessionId: context.session.id,
+          revalidate: () => options.revalidateSession(context),
+        })),
+      };
     }
   }
 }

@@ -289,6 +289,7 @@ export interface BrowserSessionRepository {
     resolveBrowserRequest(input: {
       readonly requestId: RequestId;
       readonly resolvedBy: UserId;
+      readonly settlementSessionId?: string;
       readonly response: RequestResponse;
     }): Promise<{
       readonly events: readonly AgentEvent[];
@@ -3186,6 +3187,7 @@ export class BrowserService {
   async resolveRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<{
     readonly grant: BrowserProfileGrant | null;
@@ -3208,6 +3210,7 @@ export class BrowserService {
     const resolved = await this.#repository.requests.resolveBrowserRequest({
       requestId: input.requestId,
       resolvedBy: input.resolvedBy,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       response: input.response,
     });
     for (const event of resolved.events) this.#onWorkspaceEvent(event);

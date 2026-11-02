@@ -12,49 +12,15 @@ import {
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import type { PasswordsBrokerAccount } from "@opensteer/protocol/passwords-broker";
 import { browserSignInProblemCopy, browserSiteLabel } from "./browser-sign-in.js";
-import { fullAccessOnThisMac } from "./macos-permissions.js";
 
-/**
- * Words and small decisions every client shares for saved-password sign-ins,
- * so the web, desktop and phone say the same thing about the same Request.
- * The card on the Mac named in the Request approves one; any device may
- * decline it.
- */
+/** Shared copy for requester consent from any signed-in device. */
 
-/** The Mac's own window, named the way the Mac names it. */
+/** The Mac's own vault-management window. */
 export const passwordsAppName = "Opensteer Passwords";
-
-/**
- * Whether the reader is at the Mac a sign-in Request names. Only the desktop
- * app can reach that Mac's Passwords, so a browser tab on that very Mac is
- * elsewhere too; the rule is otherwise the one Full Disk Access uses.
- */
-export function passwordsHere(input: {
-  readonly hostsDeploymentOnThisComputer: boolean;
-  readonly inDesktopApp: boolean;
-  /** The Runner this desktop app supervises, when it lends one. */
-  readonly localRunnerId: string | null;
-  /** Whether the Request's Runner is the Mac this Personal Opensteer runs on. */
-  readonly runnerHostsDeployment: boolean;
-  /** The Runner the Request names to approve it. */
-  readonly runnerId: string;
-}): boolean {
-  return fullAccessOnThisMac({
-    hostsDeployment: input.runnerHostsDeployment,
-    hostsDeploymentOnThisComputer: input.hostsDeploymentOnThisComputer,
-    inDesktopApp: input.inDesktopApp,
-    lentByThisDesktop: input.localRunnerId !== null && input.localRunnerId === input.runnerId,
-  });
-}
 
 /* ------------------------------------------------------------------------- *
  * The sign-in card
  * ------------------------------------------------------------------------- */
-
-/** Where the sign-in waits, for a reader on any other device. */
-export function passwordSignInWaitingOn(computerName: string): string {
-  return `Waiting for you on ${computerName}`;
-}
 
 /** The promise every sign-in card makes, word for word the same everywhere. */
 export function passwordSignInPrivacy(site: string, permissionVersion?: 5): string {
@@ -81,10 +47,10 @@ export const passwordSignInAllowLabel = "Allow";
 export const passwordSignInOnceLabel = "Only this time";
 export const passwordSignInDeclineLabel = "Don’t allow";
 export const passwordSignInDecliningLabel = "Declining…";
-/** While the Mac asks the person to confirm Allow or Only this time. */
-export const passwordSignInConfirming = "Confirm with Touch ID or your Mac password.";
+/** While the Host settles Allow or Only this time. */
+export const passwordSignInConfirming = "Allowing agents to sign in…";
 /** The Mac no longer runs a sign-in whose Request the Host has not settled yet. */
-export const passwordSignInGone = "This sign-in is no longer running on this Mac.";
+export const passwordSignInGone = "This sign-in is no longer running.";
 
 export function passwordSignInNoAccount(site: string): string {
   return `No saved password for ${browserSiteLabel(site)}.`;
@@ -289,7 +255,15 @@ export interface PasswordSignInOutcome {
  */
 export function passwordSignInOutcome(request: Request): PasswordSignInOutcome | null {
   if (request.status === "pending") return null;
-  if (request.status === "declined") return { signedIn: false, text: "Not allowed" };
+  if (request.status === "declined")
+    return {
+      signedIn: false,
+      text:
+        "Not allowed" +
+        (request.settlementProvenance
+          ? ` · Declined on ${request.settlementProvenance.deviceLabel}`
+          : ""),
+    };
   if (request.status !== "fulfilled" || request.payload.kind !== "browser.password-sign-in") {
     return { signedIn: false, text: "No longer waiting" };
   }
@@ -299,7 +273,11 @@ export function passwordSignInOutcome(request: Request): PasswordSignInOutcome |
   if (!response.success) return { signedIn: false, text: "Answered" };
   return {
     signedIn: response.data.outcome === "signed-in" || response.data.outcome === "authorized",
-    text: passwordSignInResponseMessage(response.data, request.payload),
+    text:
+      passwordSignInResponseMessage(response.data, request.payload) +
+      (request.settlementProvenance
+        ? ` · Allowed on ${request.settlementProvenance.deviceLabel}`
+        : ""),
   };
 }
 
@@ -457,7 +435,7 @@ const unsupportedMessages = {
 } as const;
 
 export const passwordsSetUpLead =
-  "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account with Touch ID or your Mac password.";
+  "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any signed-in device.";
 export const passwordsSetUpFacts = [
   "Import from Chrome, Safari, Firefox, 1Password or Bitwarden.",
   "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
@@ -485,7 +463,7 @@ export function passwordsWaitingDetail(count: number): string {
     : `${count} sign-ins to answer in their conversations`;
 }
 export const passwordsHowItWorks = [
-  "You allow an account once per Workspace with Touch ID or your Mac password. After that, agents there sign in with it on their own.",
+  "You allow an account once per Workspace from any signed-in device. After that, agents there sign in with it on their own.",
   "Take that access away any time in the Passwords window.",
   "Sign-ins can stay saved in the browser profile.",
   "Sites you allowed from Chrome keep using Chrome.",

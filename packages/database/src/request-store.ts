@@ -1,3 +1,4 @@
+import { requestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
@@ -381,6 +382,7 @@ export class RequestStore {
     readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedIntegrationAccessRequest> {
     return withRequestWorkspaceLocks(
@@ -483,6 +485,11 @@ export class RequestStore {
             .set({
               resolvedAt: now,
               resolvedBy: input.resolvedBy,
+              settlementProvenance: await requestSettlementProvenance(
+                transaction,
+                input.resolvedBy,
+                input.settlementSessionId,
+              ),
               response: jsonValue(response),
               status: "declined",
             })
@@ -646,6 +653,11 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.resolvedBy,
+              input.settlementSessionId,
+            ),
             response: jsonValue(persistedResponse),
             status: decision.decision === "fulfilled" ? "fulfilled" : "declined",
           })
@@ -721,6 +733,7 @@ export class RequestStore {
     readonly preparedFulfillment?: PreparedIntegrationInstallFulfillment;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedIntegrationInstallRequest> {
     return withRequestWorkspaceLocks(
@@ -840,6 +853,11 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.resolvedBy,
+              input.settlementSessionId,
+            ),
             response: jsonValue(response),
             status: fulfilled ? "fulfilled" : "declined",
           })
@@ -862,6 +880,7 @@ export class RequestStore {
   async loadIntegrationInstallManifest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
   }): Promise<IntegrationInstallManifest> {
     const row = await this.#database
       .selectFrom("requests")
@@ -885,6 +904,7 @@ export class RequestStore {
   async loadIntegrationAccessInstallManifest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
   }): Promise<IntegrationInstallManifest> {
     const row = await this.#database
       .selectFrom("requests")
@@ -911,6 +931,7 @@ export class RequestStore {
   async tryBindExistingIntegrationAccessInstallation(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation | null> {
     return withRequestWorkspaceLocks(
       this.#database,
@@ -993,6 +1014,7 @@ export class RequestStore {
     readonly preparedFulfillment: PreparedIntegrationInstallFulfillment;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation> {
     return withRequestWorkspaceLocks(
       this.#database,
@@ -1143,6 +1165,7 @@ export class RequestStore {
     readonly requestId: RequestId;
     readonly requestedServerId: IntegrationServerId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
   }): Promise<SelectedIntegrationAccessServer> {
     return withRequestWorkspaceLocks(
       this.#database,
@@ -1822,6 +1845,7 @@ export class RequestStore {
    */
   async declineComputerAppAccessRequest(input: {
     readonly actorUserId: UserId;
+    readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly response?: RequestResponse;
   }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
@@ -1911,6 +1935,11 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.actorUserId,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.actorUserId,
+              input.settlementSessionId,
+            ),
             response: jsonValue(response),
             responseCommandId: null,
             status: "declined",
@@ -1935,6 +1964,7 @@ export class RequestStore {
   async declineMachineFullDiskAccessRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
     // Only "not now" is a person's to say; the grant itself arrives from the
@@ -1976,6 +2006,11 @@ export class RequestStore {
             status: "declined",
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.resolvedBy,
+              input.settlementSessionId,
+            ),
             response: jsonValue(input.response),
           })
           .where("id", "=", input.requestId)
@@ -2056,6 +2091,7 @@ export class RequestStore {
   async resolveBrowserRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedBrowserRequest> {
     return withRequestWorkspaceLocks(
@@ -2169,6 +2205,11 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.resolvedBy,
+              input.settlementSessionId,
+            ),
             response: jsonValue(storedResponse),
             status: decision.decision === "declined" ? "declined" : "fulfilled",
           })
@@ -2192,6 +2233,7 @@ export class RequestStore {
   async declineBrowserSignInRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
   }): Promise<RequestMutation> {
     return withRequestWorkspaceLocks(
       this.#database,
@@ -2229,6 +2271,11 @@ export class RequestStore {
             status: "declined",
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.resolvedBy,
+              input.settlementSessionId,
+            ),
             response: jsonValue({ kind: "external", value: { decision: "declined" } }),
           })
           .where("id", "=", input.requestId)
@@ -2513,6 +2560,7 @@ export class RequestStore {
    */
   async settlePasswordSignInRequest(input: {
     readonly ownerId: UserId;
+    readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly settlement:
       | { readonly status: "declined" }
@@ -2545,6 +2593,13 @@ export class RequestStore {
           .forNoKeyUpdate()
           .executeTakeFirst();
         if (!pending(row)) return null;
+        if (
+          input.settlement.status === "fulfilled" &&
+          input.settlement.response.outcome === "authorized" &&
+          (row.payload.kind !== "browser.password-sign-in" ||
+            Date.parse(row.payload.expiresAt) <= Date.now())
+        )
+          return null;
         const now = new Date();
         const response =
           input.settlement.status === "declined"
@@ -2559,6 +2614,11 @@ export class RequestStore {
             status: input.settlement.status,
             resolvedAt: now,
             resolvedBy: input.ownerId,
+            settlementProvenance: await requestSettlementProvenance(
+              transaction,
+              input.ownerId,
+              input.settlementSessionId,
+            ),
             response: jsonValue(response),
           })
           .where("id", "=", input.requestId)
@@ -3734,6 +3794,7 @@ async function terminalEvents(
 }
 
 type BrowserSignInRequestScope = {
+  readonly settlementSessionId?: string;
   readonly requestId: RequestId;
   readonly ownerId: UserId;
   readonly scope?: {
@@ -3833,6 +3894,11 @@ export async function fulfilBrowserSignInRequestInTransaction(
       status: "fulfilled",
       resolvedAt: now,
       resolvedBy: input.ownerId,
+      settlementProvenance: await requestSettlementProvenance(
+        transaction,
+        input.ownerId,
+        input.settlementSessionId,
+      ),
       response: jsonValue(response),
     })
     .where("id", "=", input.requestId)

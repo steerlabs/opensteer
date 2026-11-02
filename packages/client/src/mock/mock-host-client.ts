@@ -1,3 +1,4 @@
+import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
@@ -1888,6 +1889,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
     "attachment.content": async ({ attachmentId }) =>
       rpcSuccess(client.readAttachment(attachmentId)),
+    "browser.password-sign-in.get": async ({ requestId }) =>
+      rpcSuccess(client.passwordSignInCard(requestId)),
     "browser.sources.get": async () => rpcSuccess(client.chrome.state()),
     "browser.sources.inspect": async (input) => {
       try {
@@ -2921,8 +2924,8 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ outcome: client.signInBrowserSession(command), type: command.type });
     case "browser.sign-in.respond":
       return rpcSuccess({ outcome: client.respondBrowserSignIn(command), type: command.type });
-    case "browser.password-sign-in.decline":
-      return rpcSuccess({ status: client.declinePasswordSignIn(command), type: command.type });
+    case "browser.password-sign-in.respond":
+      return rpcSuccess({ status: client.respondPasswordSignIn(command), type: command.type });
     case "browser.profile.grant":
       await client.grantBrowserProfile(command);
       return unsupportedMockRpc();
@@ -7376,9 +7379,37 @@ class MockHostState {
    * Declines a saved-password sign-in from any device. The preview has no Mac
    * to race, so the decline always settles the Request.
    */
-  declinePasswordSignIn(
-    command: Extract<HostApiCommand, { readonly type: "browser.password-sign-in.decline" }>,
-  ): "declined" {
+  passwordSignInCard(requestId: string): PasswordSignInCard {
+    const request = Object.values(this.snapshot.requests)
+      .flat()
+      .find(({ id }) => id === requestId);
+    if (
+      !request ||
+      request.status !== "pending" ||
+      request.payload.kind !== "browser.password-sign-in" ||
+      request.payload.permissionVersion !== 5
+    )
+      return { stage: "gone" };
+    return {
+      stage: "approval",
+      permissionVersion: 5,
+      accounts: [
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          revision: 1,
+          username: "passwords-preview@example.test",
+          host: new URL(request.payload.site).hostname,
+          onPage: false,
+          updatedAt: request.createdAt,
+          label: null,
+        },
+      ],
+    };
+  }
+
+  respondPasswordSignIn(
+    command: Extract<HostApiCommand, { readonly type: "browser.password-sign-in.respond" }>,
+  ): "declined" | "fulfilled" {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === command.requestId);
@@ -7388,6 +7419,22 @@ class MockHostState {
       request.payload.kind !== "browser.password-sign-in"
     ) {
       throw mockConflict("This sign-in Request is no longer waiting.");
+    }
+    if (command.decision.kind === "approve") {
+      const choice = command.decision;
+      const card = this.passwordSignInCard(request.id);
+      if (
+        card.stage !== "approval" ||
+        !card.accounts.some(
+          ({ id, revision }) => id === choice.loginId && revision === choice.revision,
+        )
+      )
+        throw mockConflict("Choose a current saved account.");
+      this.settleBrowserSignIn(request, "fulfilled", {
+        outcome: "authorized",
+        account: "p•••@example.test",
+      });
+      return "fulfilled";
     }
     this.settleBrowserSignIn(request, "declined", { decision: "declined" });
     return "declined";
@@ -12332,7 +12379,8 @@ export function mockPasswordSignInRequest(
       operationId: `0192f4a1-7777-4000-8000-${String(index).padStart(12, "0")}`,
       reason: `Download the October statement from ${domain} to finish the reconciliation.`,
       runnerId: "rnr_11111111-1111-4111-8111-111111111111",
-      sessionId: "bss_preview",
+      scope: "workspace",
+      permissionVersion: 5,
       site,
     },
     presentation: {
@@ -12341,7 +12389,7 @@ export function mockPasswordSignInRequest(
       title: `Sign in to ${domain}`,
     },
     requestedBy: mockUserId,
-    requiredActor: "workspace-owner",
+    requiredActor: "requester",
     resolvedAt: status === "pending" ? null : createdAt,
     resolvedBy: status === "pending" ? null : mockUserId,
     response:

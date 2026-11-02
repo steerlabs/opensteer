@@ -1,3 +1,4 @@
+import { authenticatePasswordApproval } from "./password-approval-auth.js";
 // @vitest-environment happy-dom
 
 import type { SurfaceModel } from "@opensteer/client/host";
@@ -9,6 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockTmdbProposal } from "@opensteer/client/mock";
 import { createThreadMutationGate } from "./thread-mutation-gate.js";
 
+vi.mock("./password-approval-auth.js", () => ({
+  authenticatePasswordApproval: vi.fn(async () => true),
+}));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Medium: "medium" },
   NotificationFeedbackType: { Error: "error", Success: "success" },
@@ -134,7 +138,7 @@ describe("RequestCard saved-password sign-ins", () => {
     expect(text()).toContain("Sign in to github.com");
 
     await click("Review request");
-    expect(text()).toContain("Waiting for you on Studio");
+    expect(text()).toContain("Sign in to github.com");
     expect(text()).toContain(
       "Opensteer fills your password into github.com for them — it never sends it to the agent, but the website page holds it once filled.",
     );
@@ -148,20 +152,61 @@ describe("RequestCard saved-password sign-ins", () => {
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({
       idempotencyKey: expect.any(String),
       requestId: passwordSignInRequest().id,
-      type: "browser.password-sign-in.decline",
+      type: "browser.password-sign-in.respond",
+      decision: { kind: "decline" },
     });
     // Its own busy state: the decline control is the one that says Sending….
     expect(button("Sending…").disabled).toBe(true);
     await act(async () =>
-      answer?.({ status: "declined", type: "browser.password-sign-in.decline" }),
+      answer?.({ status: "declined", type: "browser.password-sign-in.respond" }),
     );
+  });
+
+  it("requires successful device-owner authentication before allowing the pinned account", async () => {
+    const account = {
+      id: "00000000-0000-4000-8000-000000000001",
+      revision: 7,
+      username: "person@example.com",
+      host: "github.com",
+      onPage: false,
+      updatedAt: new Date().toISOString(),
+      label: null,
+    };
+    const dispatch = vi.fn(async () => ({
+      type: "browser.password-sign-in.respond",
+      status: "fulfilled",
+    }));
+    const passwordRead = vi.fn(async () => ({
+      ok: true,
+      data: { stage: "approval", permissionVersion: 5, accounts: [account] },
+    }));
+    vi.mocked(authenticatePasswordApproval)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
+    await click("Review request");
+    await click("Allow");
+    expect(dispatch).not.toHaveBeenCalled();
+    await click("Only this time");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        decision: {
+          kind: "approve",
+          loginId: account.id,
+          revision: 7,
+          remember: false,
+          permissionVersion: 5,
+        },
+      }),
+    );
+    expect(passwordRead).toHaveBeenCalledTimes(1);
   });
 
   it("retries a failed decline with the same idempotency key", async () => {
     const dispatch = vi
       .fn()
       .mockRejectedValueOnce(new Error("network lost"))
-      .mockResolvedValueOnce({ status: "declined", type: "browser.password-sign-in.decline" });
+      .mockResolvedValueOnce({ status: "declined", type: "browser.password-sign-in.respond" });
     await render(surface(passwordSignInRequest()), dispatch);
 
     await click("Review request");
@@ -443,6 +488,7 @@ async function render(
     readonly canRespond?: boolean;
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
+    readonly passwordRead?: ReturnType<typeof vi.fn>;
   } = {},
 ): Promise<void> {
   const container = document.createElement("div");
@@ -463,7 +509,11 @@ async function render(
               identityConfig: { deployment: { name: "Alex’s Opensteer" } },
               workspaces: [{ id: workspaceId, name: "Research" }],
             }),
-            rpc: { "browser.sources.inspect": options.inspect ?? vi.fn() },
+            rpc: {
+              "browser.sources.inspect": options.inspect ?? vi.fn(),
+              "browser.password-sign-in.get":
+                options.passwordRead ?? vi.fn(async () => ({ ok: true, data: { stage: "gone" } })),
+            },
           } as never
         }
         machines={options.machines ?? [studio]}

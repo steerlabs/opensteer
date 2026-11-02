@@ -156,7 +156,6 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.deploymentAccessSnapshotChanged,
       desktopBridgeChannels.hostWebSocketEvent,
       desktopBridgeChannels.localExecutionStatusChanged,
-      desktopBridgeChannels.passwordsSignInChanged,
       desktopBridgeChannels.passwordsStatusChanged,
       desktopBridgeChannels.personalRemoteAccessStatusChanged,
       desktopBridgeChannels.notificationActivated,

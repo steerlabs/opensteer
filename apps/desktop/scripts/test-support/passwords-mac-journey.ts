@@ -35,7 +35,6 @@ import {
   ComputerUseBridgeError,
 } from "../../../runner/src/computer-apps/computer-use-bridge-client.js";
 import { PasswordsLoginAuthority } from "../../src/passwords/login-authority.js";
-import { PasswordsSignInOperations } from "../../src/passwords/sign-in-operations.js";
 import type { PasswordsBrokerSession } from "../../src/passwords/broker-session.js";
 import { PasswordsJourneyEvidence } from "../../../host/src/browser/passwords-evidence.test-support.js";
 
@@ -111,7 +110,6 @@ export async function runPasswordsMacJourney(): Promise<void> {
   const traffic: unknown[] = [];
   const brokerCalls: unknown[] = [];
   const lifetime = new AbortController();
-  const cards = new PasswordsSignInOperations();
   const login = {
     id: randomUUID(),
     revision: 1,
@@ -120,7 +118,8 @@ export async function runPasswordsMacJourney(): Promise<void> {
   };
   const policy = { hasTOTP: true, approvalCount: 0 };
   const broker: PasswordsBrokerSession = {
-    protocolVersion: 5,
+    protocolVersion: 6,
+    commit: async () => ({ committed: true }),
     probe: async () => ({ passwords: "has-login" }),
     request: async (params) => {
       brokerCalls.push({ method: "request", params });
@@ -159,16 +158,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
   };
   const authority = new PasswordsLoginAuthority({
     broker,
-    operations: cards,
     ownOrigins: () => [],
-  });
-  const detachCards = cards.subscribe(({ operationId, state }) => {
-    if (state.stage === "approval") {
-      assert.equal(state.permissionVersion, 5);
-      void cards
-        .approve({ operationId, loginId: login.id, revision: login.revision, remember: false })
-        .catch((error: unknown) => traffic.push({ approvalError: String(error) }));
-    }
   });
   const operationId = randomUUID();
   const loginRef = `lgn_${randomUUID().replaceAll("-", "")}`;
@@ -223,6 +213,15 @@ export async function runPasswordsMacJourney(): Promise<void> {
         },
       });
       assert.equal(result.type, "login.authorize.started");
+      await control({
+        type: "login.approve",
+        operationId,
+        loginId: login.id,
+        revision: login.revision,
+        remember: false,
+        permissionVersion: 5,
+      });
+      await control({ type: "login.commit", operationId });
       await until(async () =>
         events.some(
           (e) =>
@@ -234,7 +233,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
     };
     await evidence.run("workspace-consent-before-helper", async () => {
       const capabilities = z
-        .object({ authority: z.literal(1), receiver: z.null() })
+        .object({ authority: z.literal(2), receiver: z.null() })
         .parse(await request("passwords.capabilities", {}));
       assert.equal(capabilities.receiver, null);
       await authorize();
@@ -668,7 +667,6 @@ export async function runPasswordsMacJourney(): Promise<void> {
     });
     await evidence.write("fixture-auth-assertions.json", await state());
   } finally {
-    detachCards();
     client?.close();
     const cleanupErrors: string[] = [];
     for (const close of [

@@ -17,18 +17,14 @@ import {
   type LoginAuthorizationOutcome,
   type LoginFillStatus,
   type LoginSealResult,
+  type PasswordSignInCard,
 } from "@opensteer/protocol";
-import type {
-  DesktopPasswordsSignInApproveInput,
-  DesktopPasswordsSignInCardState,
-} from "@opensteer/protocol/desktop";
 import {
   PasswordsBrokerSignInRequestParamsSchema,
-  PasswordsBrokerSignInRequestV5ParamsSchema,
+  PasswordsBrokerSignInRequestV6ParamsSchema,
 } from "@opensteer/protocol/passwords-broker";
 import { PasswordsBrokerFailure, type PasswordsBrokerSession } from "./broker-session.js";
 import { sealLoginEnvelope } from "./login-envelope.js";
-import type { PasswordsSignInOperations } from "./sign-in-operations.js";
 
 type ModernAuthorizeInput = Omit<BrowserLoginAuthorizeInput, "runtimeId" | "sessionId"> & {
   readonly loginRef: string;
@@ -45,12 +41,20 @@ interface Operation {
   readonly broker: PasswordsBrokerSession;
   queue: Promise<void>;
   authorized: boolean;
+  committed: boolean;
+  card: {
+    state: () => PasswordSignInCard;
+    approve: (
+      approval: Extract<PasswordSignInAuthorityCommand, { type: "login.approve" }>,
+    ) => Promise<
+      Extract<PasswordSignInAuthorityResult, { type: "login.approve.result" }>["result"]
+    >;
+  } | null;
 }
 
 export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   readonly #broker: PasswordsBrokerSession;
   readonly #legacyBroker: PasswordsBrokerSession;
-  readonly #cards: PasswordsSignInOperations;
   readonly #ownOrigins: () => readonly string[];
   readonly #operations = new Map<string, Operation>();
   readonly #references = new Map<string, string>();
@@ -59,12 +63,10 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   constructor(options: {
     broker: PasswordsBrokerSession;
     legacyBroker?: PasswordsBrokerSession;
-    operations: PasswordsSignInOperations;
     ownOrigins: () => readonly string[];
   }) {
     this.#broker = options.broker;
     this.#legacyBroker = options.legacyBroker ?? options.broker;
-    this.#cards = options.operations;
     this.#ownOrigins = options.ownOrigins;
   }
 
@@ -84,8 +86,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     const authority = new AbortController();
     let settled = false;
     let approving = false;
-    let state: DesktopPasswordsSignInCardState = { stage: "gone" };
-    let unregister = () => {};
+    let state: PasswordSignInCard = { stage: "gone" };
     let unsubscribeLifetime = () => {};
     const finish = (outcome: EndedOutcome) => {
       if (settled) return;
@@ -113,45 +114,53 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       broker,
       queue: Promise.resolve(),
       authorized: false,
+      committed: false,
+      card: null,
       expiresAt: input.expiresAt.getTime(),
       site: input.site,
       close: () => {
         signal.removeEventListener("abort", cancelled);
         unsubscribeLifetime();
-        unregister();
+        operation.card = null;
         finish({ kind: "cancelled", reason: "authority-lost" });
       },
     };
     this.#operations.set(input.operationId, operation);
     signal.addEventListener("abort", cancelled, { once: true });
     if (signal.aborted) cancelled();
-    const authorized = (account: string) => {
+    const authorized = (account: string, prepared = false) => {
       if (settled || signal.aborted || authority.signal.aborted) return;
       if (Date.now() >= operation.expiresAt) {
         finish({ kind: "expired" });
         return;
       }
       operation.authorized = true;
-      state = {
-        stage: "authorized",
-        account,
-        ...(operation.modern ? { permissionVersion: 5 as const } : {}),
-      };
-      registration.changed();
+      operation.committed = !prepared;
+      state = { stage: "authorized" };
       settled = true;
       needs(null);
       resolve({ kind: "authorized", account, authority: authority.signal });
     };
     const unavailable = (reason: "busy" | "passwords-off" | "not-set-up") =>
       finish(reason === "busy" ? { kind: "busy" } : { kind: "unavailable", reason });
-    const registration = this.#cards.register(input.operationId, {
+    operation.card = {
       state: () => state,
-      approve: async (approval: DesktopPasswordsSignInApproveInput) => {
+      approve: async (
+        approval: Extract<PasswordSignInAuthorityCommand, { type: "login.approve" }>,
+      ) => {
         if (settled || approving || signal.aborted || state.stage !== "approval")
-          return { ok: false, message: "That sign-in is no longer waiting for approval." };
+          return {
+            ok: false,
+            card: state,
+            message: "That sign-in is no longer waiting for approval.",
+          };
         if (Date.now() >= operation.expiresAt) {
           finish({ kind: "expired" });
-          return { ok: false, message: "That sign-in expired. Ask the agent to request it again." };
+          return {
+            ok: false,
+            card: state,
+            message: "That sign-in expired. Ask the agent to request it again.",
+          };
         }
         approving = true;
         try {
@@ -161,16 +170,18 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
               loginId: approval.loginId,
               revision: approval.revision,
               remember: approval.remember,
+              permissionVersion: approval.permissionVersion,
             },
             signal,
           );
           if (result.decision === "authorized") {
-            authorized(result.login.account);
+            authorized(result.login.account, true);
             return { ok: true };
           }
           if (result.decision === "unavailable") {
             unavailable(result.reason);
             return {
+              card: state,
               ok: false,
               message: "Opensteer Passwords is no longer available for this sign-in.",
             };
@@ -178,31 +189,32 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
           state = {
             stage: "approval",
             accounts: result.accounts,
-            site: input.site,
-            ...(operation.modern ? { permissionVersion: 5 as const } : {}),
+            permissionVersion: 5 as const,
           };
-          registration.changed();
-          return { ok: false, message: result.message };
+          return { ok: false, card: state, message: result.message };
         } catch (error) {
           if (error instanceof PasswordsBrokerFailure && error.code === "invalid")
-            return { ok: false, message: error.message };
+            return { ok: false, card: state, message: error.message };
           if (signal.aborted) cancelled();
           else finish({ kind: "unavailable", reason: "not-responding" });
-          return { ok: false, message: "Opensteer Passwords could not authorize this sign-in." };
+          return {
+            ok: false,
+            card: state,
+            message: "Opensteer Passwords could not authorize this sign-in.",
+          };
         } finally {
           approving = false;
         }
       },
-    });
-    unregister = registration.unregister;
+    };
     try {
       if (!settled) {
         const grant = await broker.request(
           operation.modern
-            ? PasswordsBrokerSignInRequestV5ParamsSchema.parse({
+            ? PasswordsBrokerSignInRequestV6ParamsSchema.parse({
                 ...input.requester,
                 expiresAt: input.expiresAt.toISOString(),
-                protocolVersion: 5,
+                protocolVersion: 6,
                 permissionVersion: 5,
                 site: input.site,
                 transactionId: input.operationId,
@@ -238,10 +250,8 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
             state = {
               stage: "approval",
               accounts: decision.accounts,
-              site: input.site,
-              ...(operation.modern ? { permissionVersion: 5 as const } : {}),
+              permissionVersion: 5 as const,
             };
-            registration.changed();
             needs("approval");
           }
         }
@@ -262,6 +272,35 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     const command = parsed.data;
     try {
       switch (command.type) {
+        case "login.get":
+          return {
+            type: "login.get.result",
+            card: this.#operations.get(command.operationId)?.card?.state() ?? { stage: "gone" },
+          };
+        case "login.approve": {
+          const card = this.#operations.get(command.operationId)?.card;
+          return {
+            type: "login.approve.result",
+            result: card
+              ? await card.approve(command)
+              : {
+                  ok: false,
+                  message: "This sign-in is no longer waiting.",
+                  card: { stage: "gone" },
+                },
+          };
+        }
+        case "login.commit": {
+          const operation = this.#operations.get(command.operationId);
+          if (!operation || !operation.authorized || !this.#live(command.operationId, operation))
+            return { type: "login.committed", committed: false };
+          const result = await operation.broker.commit(
+            command.operationId,
+            operation.authority.signal,
+          );
+          operation.committed = result.committed && this.#live(command.operationId, operation);
+          return { type: "login.committed", committed: operation.committed };
+        }
         case "signin.probe":
           return { type: "signin.probe.result", passwords: await this.probe(command) };
         case "login.cancel": {
@@ -373,7 +412,8 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       type: "login.seal.result",
       status: operation?.authority.signal.reason === "denied" ? "denied" : "expired",
     });
-    if (!operation || !operation.authorized || !operation.modern) return expired();
+    if (!operation || !operation.authorized || !operation.committed || !operation.modern)
+      return expired();
     if (
       command.binding.connectionId !== command.receiver.connectionId ||
       command.binding.connectionGeneration !== command.receiver.connectionGeneration
@@ -476,7 +516,13 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
 
   async #fill(input: Parameters<BrowserLoginAuthority["fill"]>[0]): Promise<LoginFillStatus> {
     const operation = this.#operations.get(input.operationId);
-    if (!operation || input.lease.aborted || Date.now() >= operation.expiresAt) return "expired";
+    if (
+      !operation ||
+      !operation.committed ||
+      input.lease.aborted ||
+      Date.now() >= operation.expiresAt
+    )
+      return "expired";
     if (operation.authority.signal.aborted)
       return operation.authority.signal.reason === "denied" ? "denied" : "expired";
     const key = `__opensteer_fill_${randomBytes(24).toString("hex")}`;

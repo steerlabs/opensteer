@@ -365,8 +365,7 @@ const requestPayloadVariants = [
    * approve it from anywhere else, only decline it.
    */
   /**
-   * The vault Mac alone approves saved-login use, with the person present;
-   * any client may decline it. Workspace consent covers websites and apps
+   * The requester approves or declines saved-login use from any signed-in client. Workspace consent covers websites and apps
    * and outlives Browser Sessions. The legacy session payload remains readable
    * so historical Requests retain their original scope and consent wording.
    * `operationId` names live vault authority, never a persisted credential or
@@ -440,7 +439,14 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
+export const RequestSettlementProvenanceSchema = z.strictObject({
+  sessionId: z.string().min(1).max(256),
+  deviceLabel: z.string().min(1).max(200),
+});
+export type RequestSettlementProvenance = z.infer<typeof RequestSettlementProvenanceSchema>;
+
 const requestBaseShape = {
+  settlementProvenance: RequestSettlementProvenanceSchema.nullable().optional(),
   callId: RequestIdentifierSchema,
   createdAt: IsoDateTimeSchema,
   id: RequestIdSchema,
@@ -465,6 +471,7 @@ const requestBaseShape = {
 } as const;
 const requestViewBaseShape = {
   ...requestBaseShape,
+  settlementProvenance: z.object(RequestSettlementProvenanceSchema.shape).nullable().optional(),
   payload: RequestPayloadViewSchema,
   presentation: RequestPresentationViewSchema,
 } as const;
