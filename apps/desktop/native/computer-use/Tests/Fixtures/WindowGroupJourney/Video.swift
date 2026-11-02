@@ -253,9 +253,7 @@ import VideoToolbox
   func nextKey() async throws -> Data {
     let deadline = DispatchTime.now().uptimeNanoseconds + 12_000_000_000
     while let frame = try await media.nextMediaFrame(until: deadline) {
-      let length = frame.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
-      let header = try JSONSerialization.jsonObject(with: frame.subdata(in: 4..<(4 + length))) as? [String: Any]
-      if header?["key"] as? Bool == true { return frame }
+      if frame.header["key"] as? Bool == true { return frame.frame }
     }
     throw JourneyFailure.failed("No refreshed key frame from the capped producer")
   }
