@@ -751,6 +751,7 @@ export async function threadEventPageForOwner(
 
 /** Bound raw work even when a long automatic span yields no visible events. */
 export const conversationHistoryScanCap = 8192;
+const conversationHistoryScanChunk = 1024;
 
 /** The bounded metadata scan; exported for PostgreSQL plan verification. */
 export function conversationHistoryMetadata(
@@ -801,12 +802,49 @@ async function conversationTurns(
     readonly placeEvents?: "include" | undefined;
   },
 ): Promise<{ events: AgentEvent[]; hasMore: boolean; nextBefore: string | null }> {
-  const raw = await conversationHistoryMetadata(transaction, threadId, before, bounds.placeEvents)
-    .orderBy("sequence", "desc")
-    .limit(conversationHistoryScanCap + 1)
-    .execute();
-  const scanned = raw.slice(0, conversationHistoryScanCap);
-  const visible = scanned.filter((row) => !row.omitted);
+  // Read the newest rows in chunks and stop once the page is full, so a
+  // conversation whose recent turns show reads no more than it returns; only a
+  // long automatic span walks on toward the cap.
+  const scanned: Awaited<ReturnType<ReturnType<typeof conversationHistoryMetadata>["execute"]>> =
+    [];
+  let visible: typeof scanned = [];
+  let cursor = before;
+  let exhausted = false;
+  while (scanned.length < conversationHistoryScanCap) {
+    const limit = Math.min(
+      conversationHistoryScanChunk,
+      conversationHistoryScanCap - scanned.length,
+    );
+    const chunk = await conversationHistoryMetadata(
+      transaction,
+      threadId,
+      cursor,
+      bounds.placeEvents,
+    )
+      .orderBy("sequence", "desc")
+      .limit(limit)
+      .execute();
+    scanned.push(...chunk);
+    visible = scanned.filter((row) => !row.omitted);
+    if (chunk.length < limit) {
+      exhausted = true;
+      break;
+    }
+    cursor = chunk.at(-1)!.sequence as Sequence;
+    if (historyPageLength(visible, bounds) < visible.length) break;
+  }
+  // A scan that stopped at the cap probes for one older row, so a Thread whose
+  // past ends exactly there is reported exhausted.
+  if (!exhausted && scanned.length >= conversationHistoryScanCap) {
+    const older = await transaction
+      .selectFrom("workspaceEvents")
+      .select("sequence")
+      .where("threadId", "=", threadId)
+      .where("sequence", "<", cursor ?? scanned.at(-1)!.sequence)
+      .limit(1)
+      .executeTakeFirst();
+    exhausted = older === undefined;
+  }
   const estimated = historyPageLength(visible, bounds);
   const selected = visible.slice(0, estimated);
   const rows =
@@ -833,7 +871,7 @@ async function conversationTurns(
   );
   // Stop at the last returned event if a bound trimmed anything; do not jump over it.
   const stopped = kept < visible.length ? selected[kept - 1]?.sequence : scanned.at(-1)?.sequence;
-  const hasMore = kept < visible.length || raw.length > scanned.length;
+  const hasMore = kept < visible.length || !exhausted;
   return {
     events: candidates.slice(0, kept).reverse(),
     hasMore,

@@ -157,6 +157,8 @@ const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
 const historyScanMaxPages = 20;
 const historyScanMaxBytes = 2 * 1024 * 1024;
+/** Pages an older Host's opening may read to fill a screen once something draws. */
+const historyFillMaxPages = 4;
 const defaultReconnectBaseDelayMs = 300;
 /** How long a missed live frame waits before its Thread's streams are reread. */
 const liveRefreshDelayMs = 250;
@@ -2742,15 +2744,23 @@ export class HttpHostClient {
     // silent stretch is not folded again for every page read.
     let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
     let assignments = withAssignmentsFrom(this.#snapshot.assignments, history);
-    const targetRows = thread.role === "conversation" ? historyPageTurns : 1;
+    // A conversation view already counts only turns that can show, so it reads
+    // on only while nothing draws. An older Host pages every turn: it also fills
+    // a screen, within a few pages so the first paint never waits long.
+    const conversationView = this.#capabilities?.includes("history-conversation-v1") === true;
+    const fillRows = thread.role === "conversation" && !conversationView ? historyPageTurns : 1;
     let pages = 1;
     let bytes = window.byteCount;
     const cursors = new Set<string>();
+    const wantsMore = () => {
+      const drawn = this.#drawnRowCount(thread, entries, assignments);
+      return drawn === 0 || (drawn < fillRows && pages < historyFillMaxPages);
+    };
     while (
       window.hasMore &&
-      this.#drawnRowCount(thread, entries, assignments) < targetRows &&
       pages < historyScanMaxPages &&
-      bytes < historyScanMaxBytes
+      bytes < historyScanMaxBytes &&
+      wantsMore()
     ) {
       const before = window.nextBefore;
       if (!before || cursors.has(before))
@@ -2776,7 +2786,9 @@ export class HttpHostClient {
       history,
       page,
       window,
-      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) >= targetRows,
+      // Only a window that reached what the Thread draws may stand in for it in
+      // the saved Home; a capped scan that drew nothing must not replace it.
+      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) > 0,
     };
   }
 

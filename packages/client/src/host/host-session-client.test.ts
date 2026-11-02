@@ -3231,6 +3231,7 @@ describe("HttpHostClient durable realtime", () => {
         stuck?: boolean;
         earlier?: boolean;
         conversation?: boolean;
+        conversationRows?: number;
         asOf?: string;
         budget?: number;
         scan?: boolean;
@@ -3295,7 +3296,7 @@ describe("HttpHostClient durable realtime", () => {
       }
       if (options.conversation) {
         pages.newest = {
-          events: Array.from({ length: 10 }, (_, index) => {
+          events: Array.from({ length: options.conversationRows ?? 10 }, (_, index) => {
             const message = makeMessage(thread.id, "input", `Visible question ${index}`);
             return agentEvent(
               workspace.id,
@@ -3390,6 +3391,23 @@ describe("HttpHostClient durable realtime", () => {
         expect(f.requests).toHaveLength(1);
         expect(f.requests[0]).toMatchObject({ turns: 10, view: "conversation" });
         expect(openingRows(f)).toHaveLength(10);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("installs a conversation view's first page that draws less than a screen", async () => {
+      const f = await openThread("conversation", ["history-turns-v1", "history-conversation-v1"], {
+        conversation: true,
+        conversationRows: 3,
+      });
+      try {
+        // The Host already counted only turns that show; reading on would cost
+        // a round trip each time before anything paints.
+        await finishOpening(f);
+        expect(f.requests).toHaveLength(1);
+        expect(openingRows(f)).toHaveLength(3);
+        expect(f.client.getSnapshot().transcriptWindows[f.thread.id]?.nextBefore).toBe("older");
       } finally {
         f.client.dispose();
       }
