@@ -833,7 +833,10 @@ export function incomingTranscriptMessages(
   // A turn's intermediate messages are inside its steps. Only its reply is
   // a message in the conversation, even after that turn has finished.
   const messages = conversation
-    ? groupTranscriptEntries(entries).flatMap((group) =>
+    ? conversationRows(groupTranscriptEntries(entries), {
+        live: false,
+        atComputer: () => false,
+      }).flatMap(({ group }) =>
         group.kind === "message"
           ? [group.entry]
           : group.kind === "turn" && group.turn.reply !== null

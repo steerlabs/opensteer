@@ -82,6 +82,8 @@ export class NotificationStateStore {
         where message.thread_id = thread.id
           and message.sequence > coalesce(marker.sequence, -1)
           and ${visibleMessage}
+          and (thread.role <> 'conversation' or message.kind <> 'input'
+            or message.author->>'kind' = 'human')
           and (message.author->>'kind' <> 'human'
             or coalesce(message.author->>'userId', inbox.requested_by) is distinct from ${input.userId})
         order by message.sequence desc
