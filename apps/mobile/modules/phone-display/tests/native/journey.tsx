@@ -554,13 +554,22 @@ function Journey() {
           `${name} replay key admitted`,
           await decodeDisplayFrame(native, binary, units[0]!, metadata(true, true)),
         );
-        await check(`${name}-replay-hidden`, pixels([0, 255, 0]), { never: true, ms: 800 });
+        await check(`${name}-replay-hidden`, pixels(black));
+        await check(`${name}-replay-never-displayed`, pixels([0, 255, 0]), {
+          never: true,
+          ms: 800,
+        });
         const first = ready.next((value) => value.epoch === epoch, `${name} onReady`);
         await expect(
           `${name} delta admitted`,
           await decodeDisplayFrame(native, binary, units[1]!, metadata(false)),
         );
-        await first;
+        const size = await first;
+        await expect(
+          `${name} announces new geometry`,
+          size.width === width && size.height === height,
+          size,
+        );
         await check(`${name}-delta`, pixels([0, 0, 255]));
         await expect(
           `${name} invalid sample dropped`,
