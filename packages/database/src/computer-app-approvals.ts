@@ -4,6 +4,7 @@ import {
   OpensteerError,
   type AgentEvent,
   type RequestId,
+  type RequestSettlementProvenance,
   type RunnerId,
   type ThreadId,
   type UserId,
@@ -276,12 +277,20 @@ function taskFields(task: ComputerAppApprovalTask | null) {
  */
 export async function declineComputerAppAccessRequestsInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly setupRequestIds: readonly string[] },
+  input: {
+    readonly setupRequestIds: readonly string[];
+    readonly settlementActor?: RequestSettlementProvenance | null;
+  },
 ): Promise<ComputerAppAccessSettlement> {
   const requestEvents: AgentEvent[] = [];
   const requestIds: RequestId[] = [];
   for (const row of await linkedPendingRequests(transaction, input.setupRequestIds)) {
-    const resolved = await resolveComputerAppAccessRequest(transaction, row, null);
+    const resolved = await resolveComputerAppAccessRequest(
+      transaction,
+      row,
+      null,
+      input.settlementActor,
+    );
     if (!resolved) continue;
     requestEvents.push(...resolved.events);
     requestIds.push(resolved.requestId);
@@ -325,6 +334,7 @@ export async function settleComputerAppApprovalInTransaction(
   input: {
     readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
     readonly additionalRequestIds: readonly RequestId[];
+    readonly settlementActor?: RequestSettlementProvenance | null;
     readonly connection: SettledComputerConnection;
     readonly consumedSetupRequestId: string | null;
     readonly reissueWaiting: boolean;
@@ -434,6 +444,7 @@ export async function settleComputerAppApprovalInTransaction(
         transaction,
         row,
         connection.connectionId,
+        input.settlementActor,
       );
       if (!resolved) continue;
       requestEvents.push(...resolved.events);
@@ -524,12 +535,14 @@ async function resolveComputerAppAccessRequest(
   transaction: Transaction<DatabaseSchema>,
   row: RequestRow,
   connectionId: IntegrationConnectionId | null,
+  settlementActor?: RequestSettlementProvenance | null,
 ): Promise<{ readonly events: readonly AgentEvent[]; readonly requestId: RequestId } | null> {
   const observed = requestFromRow(row);
   const now = new Date();
   const resolvedRow = await transaction
     .updateTable("requests")
     .set({
+      settlementProvenance: settlementActor ? jsonValue(settlementActor) : null,
       resolvedAt: now,
       resolvedBy: observed.requestedBy,
       response: jsonValue(

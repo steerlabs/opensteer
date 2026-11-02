@@ -1,3 +1,4 @@
+import { requestSettlementLabel } from "@opensteer/client/host";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { HostClient, SurfaceModel } from "@opensteer/client/host";
@@ -791,7 +792,10 @@ function RequestBody(props: {
     return (
       <Notice
         detail="It has already been answered or withdrawn."
-        title="This request is no longer waiting"
+        title={
+          (request.kind === "computer.app.access" && requestSettlementLabel(request)) ||
+          "This request is no longer waiting"
+        }
         tone="neutral"
       />
     );
@@ -878,7 +882,6 @@ function RequestBody(props: {
         </View>
       ) : request.kind === "computer.app.access" &&
         request.payload.kind === "computer.app.access" ? (
-        // Mac approval happens there; phone access can be set by its owner here.
         <ComputerAppAccessBody
           access={request.payload.access}
           canRespond={props.canRespond}

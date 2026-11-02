@@ -42,6 +42,8 @@ function fixture(pending = request) {
       decline: vi.fn(),
     },
     setComputerConnection: vi.fn(),
+    cancelComputerAppSetup: vi.fn(async () => ({ requestEvents: [] })),
+    requests: { declineComputerAppAccessRequest: vi.fn(async () => ({ events: [], request: {} })) },
   };
   const computerUse = {
     resolveApp: vi.fn(async () => ({
@@ -83,6 +85,28 @@ const answer = {
 };
 
 describe("owner-session computer app approvals", () => {
+  it("passes the authenticated session through owner denial and task decline", async () => {
+    const { service, store } = fixture();
+    await service.respondComputerAppSetup({
+      ...answer,
+      decision: "deny",
+      settlementSessionId: "session",
+    });
+    expect(store.cancelComputerAppSetup).toHaveBeenCalledWith({
+      requestId: request.id,
+      ownerUserId,
+      settlementSessionId: "session",
+    });
+    await service.declineComputerAppAccess({
+      requestId: "req_task" as import("@opensteer/core").RequestId,
+      resolvedBy: ownerUserId,
+      settlementSessionId: "session",
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(store.requests.declineComputerAppAccessRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ settlementSessionId: "session", actorUserId: ownerUserId }),
+    );
+  });
   it("verifies the current owner's app through the target helper", async () => {
     const { service, computerUse } = fixture();
     const review = await service.reviewComputerAppSetup({

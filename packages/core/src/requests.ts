@@ -446,7 +446,11 @@ export const RequestSettlementProvenanceSchema = z.strictObject({
 export type RequestSettlementProvenance = z.infer<typeof RequestSettlementProvenanceSchema>;
 
 const requestBaseShape = {
-  settlementProvenance: RequestSettlementProvenanceSchema.nullable().optional(),
+  settlementProvenance: RequestSettlementProvenanceSchema.extend({
+    sessionId: RequestSettlementProvenanceSchema.shape.sessionId.optional(),
+  })
+    .nullable()
+    .optional(),
   callId: RequestIdentifierSchema,
   createdAt: IsoDateTimeSchema,
   id: RequestIdSchema,
@@ -471,7 +475,10 @@ const requestBaseShape = {
 } as const;
 const requestViewBaseShape = {
   ...requestBaseShape,
-  settlementProvenance: z.object(RequestSettlementProvenanceSchema.shape).nullable().optional(),
+  settlementProvenance: z
+    .object({ deviceLabel: RequestSettlementProvenanceSchema.shape.deviceLabel })
+    .nullable()
+    .optional(),
   payload: RequestPayloadViewSchema,
   presentation: RequestPresentationViewSchema,
 } as const;

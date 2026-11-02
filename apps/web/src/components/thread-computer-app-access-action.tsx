@@ -1,3 +1,4 @@
+import { requestSettlementLabel } from "@opensteer/client/host";
 import { ActionNote } from "./action-rows.js";
 import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
 import type { Request } from "@opensteer/core";
@@ -30,6 +31,13 @@ export function ThreadComputerAppAccessAction({
 
   if (request.payload.kind !== "computer.app.access") {
     return <ActionNote alert>This app access request is invalid.</ActionNote>;
+  }
+  if (request.status !== "pending") {
+    return (
+      <ActionNote>
+        {requestSettlementLabel(request) ?? "This request is no longer waiting"}
+      </ActionNote>
+    );
   }
   const { access, definitionId, runnerId } = request.payload;
   const machine = snapshot.machines.find((candidate) => candidate.id === runnerId);

@@ -4602,7 +4602,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     await expect(platform.approveComputerAppAutomatically(input)).rejects.toMatchObject({
       code: "forbidden",
-      message: "Notes is blocked on Mac blocked-automatic. The person can unblock it on that Mac.",
+      message: "Notes is blocked on Mac blocked-automatic. The owner can unblock it from any Opensteer app.",
     });
     await expect(platform.setComputerConnection(input)).rejects.toMatchObject({
       code: "forbidden",
@@ -4724,14 +4724,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
     expect(approved.fulfilledRequestIds).toEqual([pending.request.id]);
     expect(approved.grants).toHaveLength(1);
     expect(
-      (
-        await database
-          .selectFrom("requests")
-          .select("status")
-          .where("id", "=", pending.request.id)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("fulfilled");
+      await database
+        .selectFrom("requests")
+        .select(["status", "settlementProvenance"])
+        .where("id", "=", pending.request.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ status: "fulfilled", settlementProvenance: null });
     expect(await platform.listComputerAppSetupRequests(run.userId)).toEqual([]);
   });
 
@@ -5015,8 +5013,17 @@ integration.sequential("PostgreSQL computer app connections", () => {
   it("replays one ask, then fulfils it with the specialized Workspace grant when that Mac approves", async ({
     storeFixture,
   }) => {
-    const { store, guiFixture, notes, guiDigest, guiDefinition, askOnMac, platform, guiInput } =
-      storeFixture;
+    const {
+      store,
+      guiFixture,
+      notes,
+      guiDigest,
+      guiDefinition,
+      askOnMac,
+      platform,
+      guiInput,
+      database,
+    } = storeFixture;
     const run = await runningRunFixture(store, "computer-use-grant", { kind: "specialized" });
     const setup = await guiFixture("computer-use-grant", run.userId);
     const ask = {
@@ -5074,7 +5081,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     expect(relabelled.request.id).toBe(opened.request.id);
 
-    const consumed = await platform.setComputerConnection({
+    const sessionId = createId("authSession");
+    const approvalInput = {
       ...guiInput({
         access: "read",
         actorUserId: run.userId,
@@ -5084,7 +5092,37 @@ integration.sequential("PostgreSQL computer app connections", () => {
         tools: setup.gui.tools("read"),
       }),
       setupRequestId: opened.setupRequest.id,
-    });
+      settlementSessionId: sessionId,
+    };
+    await expect(platform.setComputerConnection(approvalInput)).rejects.toThrow(
+      "no longer signed in",
+    );
+    expect((await platform.requests.get(opened.request.id))?.status).toBe("pending");
+    expect(
+      await database
+        .selectFrom("integrationConnections")
+        .select("id")
+        .where("runnerId", "=", setup.runnerId)
+        .execute(),
+    ).toEqual([]);
+    const now = new Date();
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: sessionId,
+        userId: run.userId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt: new Date(Date.now() + 60_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "iPhone",
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    const consumed = await platform.setComputerConnection(approvalInput);
     expect(consumed.fulfilledRequestIds).toEqual([opened.request.id]);
     expect(consumed.grants).toEqual([
       expect.objectContaining({
@@ -5101,6 +5139,15 @@ integration.sequential("PostgreSQL computer app connections", () => {
     );
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
       status: "fulfilled",
+      settlementProvenance: { sessionId, deviceLabel: "iPhone" },
+    });
+    await database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+    await expect(platform.setComputerConnection(approvalInput)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect((await platform.requests.get(opened.request.id))?.settlementProvenance).toEqual({
+      sessionId,
+      deviceLabel: "iPhone",
     });
     // The Thread hears about it through the same continuation an
     // `integration.access` answer produces.

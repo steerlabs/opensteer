@@ -153,12 +153,14 @@ export async function handleIntegrationPlatformCommand(
       };
     case "integration.computer.setup.cancel":
       await options.platform.computerAppApprovals.cancelComputerAppSetup({
+        settlementSessionId: session.id,
         requestId: command.requestId,
         ownerUserId: session.user.id,
       });
       return { type: command.type };
     case "integration.computer.setup.respond":
       await options.platform.computerAppApprovals.respondComputerAppSetup({
+        settlementSessionId: session.id,
         setupRequestId: command.setupRequestId,
         decision: command.decision,
         actorUserId: session.user.id,
@@ -183,6 +185,7 @@ export async function handleIntegrationPlatformCommand(
     case "integration.computer.setup.set": {
       const connection = await options.platform.computerAppApprovals.setComputerConnection({
         ...command.input,
+        settlementSessionId: session.id,
         actorUserId: session.user.id,
         isAdministrator: session.user.instanceRole === "administrator",
         requestId: context.requestId,

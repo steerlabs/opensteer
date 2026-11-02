@@ -269,6 +269,7 @@ export class ComputerAppApprovalService {
   }
 
   async respondComputerAppSetup(input: {
+    readonly settlementSessionId?: string | undefined;
     readonly setupRequestId: string;
     readonly decision: "allow" | "deny";
     readonly actorUserId: UserId;
@@ -317,6 +318,7 @@ export class ComputerAppApprovalService {
         });
         await this.cancelComputerAppSetup({
           requestId: request.id,
+          settlementSessionId: input.settlementSessionId,
           ownerUserId: input.actorUserId,
         });
       });
@@ -334,6 +336,7 @@ export class ComputerAppApprovalService {
             }),
         runnerId: request.runnerId,
         setupRequestId: request.id,
+        settlementSessionId: input.settlementSessionId,
         actorUserId: input.actorUserId,
         isAdministrator: input.isAdministrator,
         requestId: input.requestId,
@@ -457,6 +460,7 @@ export class ComputerAppApprovalService {
   }
 
   async cancelComputerAppSetup(input: {
+    readonly settlementSessionId?: string | undefined;
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }) {
@@ -470,6 +474,7 @@ export class ComputerAppApprovalService {
    */
   async setComputerConnection(
     input: ComputerConnectionChange & {
+      readonly settlementSessionId?: string | undefined;
       readonly actorUserId: UserId;
       readonly isAdministrator: boolean;
       readonly requestId: string;
@@ -543,6 +548,7 @@ export class ComputerAppApprovalService {
       await options.authorize?.();
       try {
         const mutation = await this.#store.setComputerConnection({
+          settlementSessionId: input.settlementSessionId,
           ...(input.setupRequestId ? { setupRequestId: input.setupRequestId } : {}),
           definitionDigest: digest,
           access: input.access,
@@ -856,17 +862,15 @@ export class ComputerAppApprovalService {
 
   // ---- tasks asking ----------------------------------------------------
 
-  /**
-   * The only answer to a `computer.app.access` Request from anywhere but the
-   * Mac itself: approving means consuming the setup request there.
-   */
   async declineComputerAppAccess(input: {
+    readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly response: RequestResponse;
   }): Promise<{ readonly request: Request }> {
     const declined = await this.#store.requests.declineComputerAppAccessRequest({
       actorUserId: input.resolvedBy,
+      ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
       requestId: input.requestId,
       response: RequestResponseSchema.parse(input.response),
     });

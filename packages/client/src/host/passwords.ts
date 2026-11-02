@@ -1,3 +1,4 @@
+import { requestSettlementLabel } from "./request-settlement.js";
 import type { Request } from "@opensteer/core";
 import {
   PasswordSignInRequestResponseSchema,
@@ -260,9 +261,7 @@ export function passwordSignInOutcome(request: Request): PasswordSignInOutcome |
       signedIn: false,
       text:
         "Not allowed" +
-        (request.settlementProvenance
-          ? ` · Declined on ${request.settlementProvenance.deviceLabel}`
-          : ""),
+        (requestSettlementLabel(request) ? ` · ${requestSettlementLabel(request)}` : ""),
     };
   if (request.status !== "fulfilled" || request.payload.kind !== "browser.password-sign-in") {
     return { signedIn: false, text: "No longer waiting" };
@@ -275,9 +274,7 @@ export function passwordSignInOutcome(request: Request): PasswordSignInOutcome |
     signedIn: response.data.outcome === "signed-in" || response.data.outcome === "authorized",
     text:
       passwordSignInResponseMessage(response.data, request.payload) +
-      (request.settlementProvenance
-        ? ` · Allowed on ${request.settlementProvenance.deviceLabel}`
-        : ""),
+      (requestSettlementLabel(request) ? ` · ${requestSettlementLabel(request)}` : ""),
   };
 }
 

@@ -1,3 +1,4 @@
+import { requestSettlementActor } from "./request-settlement.js";
 import { requireIntegrationAccountBinding } from "./integration-account-binding.js";
 import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
@@ -198,6 +199,7 @@ export interface IntegrationDiscoveryRequester extends IntegrationRequester {
 export type MainAccess = "inherited" | "withheld";
 
 export interface SetComputerConnectionInput {
+  readonly settlementSessionId?: string | undefined;
   readonly setupRequestId?: string;
   readonly definitionDigest: string;
   readonly access: IntegrationAccess;
@@ -2280,6 +2282,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
 
   /** The owner taking the ask back, which declines whatever Threads were waiting on it. */
   async cancelComputerAppSetup(input: {
+    readonly settlementSessionId?: string | undefined;
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }): Promise<ComputerAppAccessSettlement & { readonly runnerId: RunnerId | null }> {
@@ -2304,6 +2307,11 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         if (!request) return { ...emptyComputerAppAccessSettlement, runnerId: null };
         // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
         await this.#lockComputerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
+        const settlementActor = await requestSettlementActor(
+          transaction,
+          input.ownerUserId,
+          input.settlementSessionId,
+        );
         const removed = await transaction
           .deleteFrom("computerAppSetupRequests")
           .where("id", "=", input.requestId)
@@ -2313,6 +2321,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         return {
           ...(await declineComputerAppAccessRequestsInTransaction(transaction, {
             setupRequestIds: removed.map(({ id }) => id),
+            settlementActor,
           })),
           runnerId: request.runnerId,
         };
@@ -4003,6 +4012,10 @@ async function reviseComputerConnectionInTransaction(
     ...input,
     connectionAccess: input.access,
     consumedSetupRequestId: null,
+    settlementSessionId:
+      current?.computerAccess === "read-write" && input.access === "read"
+        ? undefined
+        : input.settlementSessionId,
     created: current === undefined,
     now,
     reissueWaiting: current?.computerAccess === "read-write" && input.access === "read",
@@ -4161,6 +4174,7 @@ async function writeComputerConnectionInTransaction(
 async function finishComputerConnectionChangeInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
+    readonly settlementSessionId?: string | undefined;
     readonly access: IntegrationAccess;
     readonly actorUserId: UserId;
     readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
@@ -4179,6 +4193,11 @@ async function finishComputerConnectionChangeInTransaction(
     readonly widened: boolean;
   },
 ): Promise<Omit<SetComputerConnectionResult, "sessionReset">> {
+  const settlementActor = await requestSettlementActor(
+    transaction,
+    input.actorUserId,
+    input.settlementSessionId,
+  );
   const { installed, scope } = input.target;
   const connectionId = input.row.id;
   await transaction
@@ -4199,6 +4218,7 @@ async function finishComputerConnectionChangeInTransaction(
         }).execute()
       : [];
   const settlement = await settleComputerAppApprovalInTransaction(transaction, {
+    settlementActor,
     additionalRequestIds: mainRequests.map(({ id }) => id),
     ...(input.alsoGrant ? { alsoGrant: input.alsoGrant } : {}),
     connection: {
@@ -4217,6 +4237,7 @@ async function finishComputerConnectionChangeInTransaction(
   const mainRequestEvents =
     input.created || input.widened
       ? await fulfillPendingMainIntegrationAccessRequestsInTransaction(transaction, {
+          settlementActor,
           access: input.connectionAccess,
           connectionId,
           displayName: input.row.displayName,

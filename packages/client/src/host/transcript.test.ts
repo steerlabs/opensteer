@@ -483,6 +483,28 @@ describe("foldTranscriptEvent", () => {
       expect.objectContaining({ outcome: "Allowed", requestId: pending.id }),
     ]);
 
+    const computerApp: Request = {
+      ...fulfilled,
+      kind: "computer.app.access",
+      payload: {
+        kind: "computer.app.access",
+        access: "read",
+        app: null,
+        definitionId: "android-phone",
+        runnerId: RunnerIdSchema.parse(createId("runner")),
+        setupRequestId: "setup",
+        workspaceId: pending.targetWorkspaceId,
+        reason: "Read the screen",
+      },
+      settlementProvenance: { deviceLabel: "iPhone" },
+    };
+    expect(fold([event("request.resolved", { request: computerApp })])).toEqual([
+      expect.objectContaining({ outcome: "Allowed on iPhone", requestId: pending.id }),
+    ]);
+    expect(
+      fold([event("request.resolved", { request: { ...computerApp, status: "declined" } })]),
+    ).toEqual([expect.objectContaining({ outcome: "Declined on iPhone", requestId: pending.id })]);
+
     // A response carrying no decision says only that it was resolved.
     const bare: Request = { ...fulfilled, response: { kind: "external" } };
     expect(fold([event("request.resolved", { request: bare })])).toEqual([
