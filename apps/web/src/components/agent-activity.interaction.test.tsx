@@ -859,6 +859,36 @@ describe("page rail", () => {
       f.client.dispose();
     }
   });
+  it("renders app and phone place entries in the trace and keeps their chips at Run end without usage reads", () => {
+    const f = fixture();
+    try {
+      const app: PlaceEntry = {
+        ...f.stop,
+        id: "native-app",
+        title: "Notes",
+        site: null,
+        place: { kind: "app", machineId: createId("runner"), appKey: "com.apple.notes" },
+      };
+      const phone: PlaceEntry = {
+        ...f.stop,
+        id: "native-phone",
+        title: "Pixel 7",
+        site: null,
+        place: { kind: "phone", machineId: createId("runner"), display: "main" },
+      };
+      f.draw([{ ...run, status: "running" }, app, phone], []);
+      const stops = f.container.querySelectorAll(".trace-place");
+      expect(stops).toHaveLength(2);
+      expect(stops[0]!.textContent).toContain("Notes");
+      expect(stops[1]!.textContent).toContain("Pixel 7");
+      f.draw([run, app, phone], []);
+      expect(
+        [...f.container.querySelectorAll(".surface-chip__title")].map((node) => node.textContent),
+      ).toEqual(["Notes", "Pixel 7"]);
+    } finally {
+      f.client.dispose();
+    }
+  });
   it("lights only the latest stop while its turn is live, and folds historical stops", () => {
     const f = fixture();
     try {

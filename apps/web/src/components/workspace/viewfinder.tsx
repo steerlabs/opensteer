@@ -6,69 +6,29 @@ import {
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { BrowserCropCue } from "../browser/browser-crop-cue.js";
 import { browserFrameContentRect } from "@opensteer/shared/browserPresentation";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   pageSiteLabel,
   placeActivityPoint,
   type HostClient,
-  type ThreadPlace,
+  runPlaceDestination,
+  type SurfaceDestination,
 } from "@opensteer/client/host";
-import { usePlaceList, useRunPlace } from "@opensteer/client/react";
+import { useHostSelector, useRunPlace } from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import { placeIdentityKey } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
 import { ComputerWatchView } from "../computer-watch.js";
 import { AgentCursors } from "./agent-cursors.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { useWorkspace } from "./workspace-context.js";
 
-/** How long the picture stays on a place before it may cut to another. */
-const pictureHoldMs = 2_000;
-
-/**
- * The place a working Run's picture shows: the one it acted in last, held
- * for `pictureHoldMs` before cutting to another, so a Run working across
- * several pages never strobes between them. A held place still has to be
- * there: the picture leaves one that ended at once, as it does when the Run
- * stops working. It never falls back to an older place.
- */
-export function useRunPicture(
-  hostClient: HostClient,
-  threadId: string,
-  runId: string,
-): ThreadPlace | null {
-  const latest = useRunPlace(hostClient, threadId, runId);
-  const places = usePlaceList(hostClient);
-  const [shown, setShown] = useState<{ readonly place: ThreadPlace; readonly since: number }>();
-  const held =
-    shown !== undefined &&
-    latest !== null &&
-    shown.place.placeKey !== latest.placeKey &&
-    places.some((item) => item.key === shown.place.placeKey && item.taskDestination !== null)
-      ? shown
-      : undefined;
-  useEffect(() => {
-    if (latest === null) {
-      setShown(undefined);
-      return;
-    }
-    if (held === undefined) {
-      if (shown?.place !== latest)
-        setShown({
-          place: latest,
-          since: shown?.place.placeKey === latest.placeKey ? shown.since : Date.now(),
-        });
-      return;
-    }
-    const cut = () => setShown({ place: latest, since: Date.now() });
-    const wait = held.since + pictureHoldMs - Date.now();
-    if (wait <= 0) {
-      cut();
-      return;
-    }
-    const timer = window.setTimeout(cut, wait);
-    return () => window.clearTimeout(timer);
-  }, [held, latest, shown]);
-  return latest === null ? null : (held?.place ?? latest);
+interface RunPlaceView {
+  readonly placeKey: string;
+  readonly destination: SurfaceDestination | null;
+  readonly title: string;
+  readonly site: string | null;
+  readonly kind: "browser" | "app" | "phone";
 }
 
 /**
@@ -84,9 +44,19 @@ export function LivePlace({
   readonly runId: string;
   readonly threadId: string;
 }) {
-  const place = useRunPicture(hostClient, threadId, runId);
+  const entry = useRunPlace(hostClient, runId);
+  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
   const { selection } = useWorkspace();
-  if (place === null) return null;
+  if (entry === null) return null;
+  const destination = runPlaceDestination(entry, { machines });
+  const place: RunPlaceView = {
+    placeKey:
+      (destination ? destinationPlaceKey(destination) : null) ?? placeIdentityKey(entry.data.place),
+    destination,
+    kind: entry.data.place.kind,
+    title: entry.data.title,
+    site: entry.data.site,
+  };
   if (selection.kind === "place" && destinationPlaceKey(selection.destination) === place.placeKey)
     return null;
   return (
@@ -107,8 +77,7 @@ export const Viewfinder = memo(function Viewfinder({
   threadId,
 }: {
   readonly hostClient: HostClient;
-  /** A live place: `useRunPicture` names none that has ended. */
-  readonly place: ThreadPlace;
+  readonly place: RunPlaceView;
   readonly threadId: string;
 }) {
   const { conversationShown, highlight, hostConnected, nav } = useViewfinderContext(hostClient);
@@ -119,11 +88,12 @@ export const Viewfinder = memo(function Viewfinder({
   // picture lets go of its watch until it is shown again. A hidden page only
   // pauses it in the client, which keeps the last picture.
   const live = inView && conversationShown;
+  const [pictureLive, setPictureLive] = useState(false);
   const site = place.site ? pageSiteLabel(place.site) : null;
   return (
     <button
       aria-label={`Open ${place.title}`}
-      className={destination?.kind === "browser" ? "viewfinder" : "viewfinder viewfinder--native"}
+      className={place.kind === "browser" ? "viewfinder" : "viewfinder viewfinder--native"}
       data-place-key={place.placeKey}
       onBlur={() => highlight.set(null)}
       onClick={() => {
@@ -141,6 +111,8 @@ export const Viewfinder = memo(function Viewfinder({
       <span aria-hidden className="viewfinder__frame">
         {destination?.kind === "browser" && destination.tabId ? (
           <BrowserFinder
+            key={destination.tabId}
+            onLive={setPictureLive}
             enabled={live}
             hostClient={hostClient}
             placeKey={place.placeKey}
@@ -155,6 +127,7 @@ export const Viewfinder = memo(function Viewfinder({
             <ComputerWatchView
               appKey={destination.kind === "app" ? destination.appKey : null}
               compact
+              onPictureLive={setPictureLive}
               hostClient={hostClient}
               hostConnected={hostConnected}
               machineId={destination.machineId || null}
@@ -174,7 +147,7 @@ export const Viewfinder = memo(function Viewfinder({
       </span>
       <span className="viewfinder__words">
         <span className="viewfinder__title">
-          <span aria-hidden className="live-dot" />
+          {pictureLive ? <span aria-hidden className="live-dot" /> : null}
           <span className="viewfinder__name">{place.title}</span>
         </span>
         {site && site !== place.title ? <span className="viewfinder__site">{site}</span> : null}
@@ -185,7 +158,8 @@ export const Viewfinder = memo(function Viewfinder({
 
 function useViewfinderContext(hostClient: HostClient) {
   const { dock, highlight, nav, phone, work } = useWorkspace();
-  const hostConnected = hostClient.getSnapshot().connection === "connected";
+  const hostConnected =
+    useHostSelector(hostClient, (snapshot) => snapshot.connection) === "connected";
   return { conversationShown: !work || phone || dock.open, highlight, hostConnected, nav };
 }
 
@@ -195,6 +169,7 @@ function useViewfinderContext(hostClient: HostClient) {
  * picture's real overflow, and still under reduced motion.
  */
 function BrowserFinder({
+  onLive,
   enabled,
   hostClient,
   placeKey,
@@ -202,6 +177,7 @@ function BrowserFinder({
   tabId,
   threadId,
 }: {
+  readonly onLive: (live: boolean) => void;
   readonly enabled: boolean;
   readonly hostClient: HostClient;
   readonly placeKey: string;
@@ -210,6 +186,20 @@ function BrowserFinder({
   readonly threadId: string;
 }) {
   const surfaceId = BrowserSurfaceIdSchema.safeParse(tabId).data ?? null;
+  const status = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => hostClient.subscribeBrowserWatch(sessionId, tabId, listener),
+      [hostClient, sessionId, tabId],
+    ),
+    useCallback(
+      () => hostClient.browserWatchState(sessionId, tabId).status,
+      [hostClient, sessionId, tabId],
+    ),
+  );
+  useEffect(() => {
+    onLive(enabled && status === "live");
+    return () => onLive(false);
+  }, [enabled, onLive, status]);
   useEffect(
     () =>
       enabled && surfaceId
@@ -229,7 +219,7 @@ function BrowserFinder({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !enabled || !surfaceId) return;
+    if (!canvas || !surfaceId) return;
     return attachBrowserCanvas(
       hostClient.browserWatchFrames,
       sessionId,
@@ -238,8 +228,17 @@ function BrowserFinder({
       canvas,
       () => setShown(true),
       true,
+      { preservePixels: true, active: enabled },
     );
   }, [hostClient, sessionId, tabId, surfaceId, enabled]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const update = () => setShown(drawnBrowserFrame(canvas) !== null);
+    canvas.addEventListener(browserPicturePresentedEvent, update);
+    return () => canvas.removeEventListener(browserPicturePresentedEvent, update);
+  }, []);
 
   // Framing follows this task's pointer, imperatively: motion is not a render.
   useEffect(() => {

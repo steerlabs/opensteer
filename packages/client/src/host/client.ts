@@ -27,6 +27,7 @@ import type {
   ModelSelection,
   NotificationView,
   PhoneContentPart,
+  PlaceEnteredEventView,
   ProviderContinuationIdentity,
   Request,
   RequestResponse,
@@ -107,12 +108,10 @@ import type {
   BrowserTabCloseResult,
   BrowserTabOpenResult,
   PlaceIdentity,
-  ThreadPlaceReference,
 } from "@opensteer/protocol";
 import type { BrowserWatchState } from "./browser-watch.js";
 import type { ClientNetworkState } from "./lifecycle.js";
 import type { PlaceActivity } from "./place-activity.js";
-import type { ThreadPlace } from "./places.js";
 
 export type BrowserTabOpenInput =
   | { readonly sessionId: string }
@@ -668,6 +667,8 @@ export interface BrowserRasterDemand {
 }
 
 export interface BrowserFrameStore {
+  /** Changes only when previously displayed pixels lose authorization. */
+  readonly invalidationKey?: (sessionId: string, surfaceId: string) => string | number;
   readonly editing?: BrowserEditingStore;
   /** Application/auth scope shared by Control and Watch picture presenters. */
   readonly scope?: object;
@@ -702,6 +703,8 @@ export interface BrowserSessionUseSummary {
 }
 
 export interface BrowserSessionSummary {
+  /** Host freshness for bootstrap lifecycle reconciliation. */
+  updatedAt?: string;
   navigationVersion?: 1 | undefined;
   workspaceTabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
@@ -759,7 +762,6 @@ export type ThreadLookupState = "failed" | "loading" | "missing";
 export interface HostSnapshot {
   readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
-  readonly latestPlaces?: readonly ThreadPlaceReference[];
   /**
    * Per conversation this client shows, whether its browser usage has been
    * read: `loading` only until the first answer, never on a later reread.
@@ -1214,8 +1216,9 @@ export interface HostClient {
   ): () => void;
   placeActivity(placeKey: string): readonly PlaceActivity[];
   subscribePlaceActivity(placeKey: string, listener: () => void): () => void;
-  latestPlaceOfThread(threadId: string): ThreadPlace | null;
-  subscribeLatestPlace(threadId: string, listener: () => void): () => void;
+  /** Newest ordered place.entered for this nonterminal Run, independent of loaded history. */
+  runPlace(runId: string): PlaceEnteredEventView | null;
+  subscribeRunPlace(runId: string, listener: () => void): () => void;
   readBrowserContextCandidate(sessionId: string, tabId: string): Promise<BrowserContextCandidate>;
   browserPresentationDeadline?(sessionId: string, tabId: string): number | null;
   markBrowserPagePresented?(sessionId: string, tabId: string): void;

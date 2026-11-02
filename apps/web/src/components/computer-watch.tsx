@@ -34,6 +34,7 @@ export function ComputerWatchView({
   machineId,
   machines,
   onPictureRatio,
+  onPictureLive,
   sessionId,
   trailing = null,
   visible,
@@ -54,6 +55,7 @@ export function ComputerWatchView({
   machines: readonly MachineSummary[];
   /** Told the shape of each picture shown, so a tile can take that shape. */
   onPictureRatio?: ((ratio: string) => void) | undefined;
+  onPictureLive?: ((live: boolean) => void) | undefined;
   sessionId: string;
   /** Last in the row: the conversation's button while it is put away. */
   trailing?: ReactNode;
@@ -121,6 +123,10 @@ export function ComputerWatchView({
     stop,
   });
   const showing = reading && status?.clear !== true && display.picture !== null;
+  useEffect(() => {
+    onPictureLive?.(showing && hostConnected);
+    return () => onPictureLive?.(false);
+  }, [hostConnected, onPictureLive, showing]);
   const label = phone ? machineName : `${shownName ?? "App"} on ${machineName}`;
   const ratio =
     showing && display.picture ? `${display.picture.width} / ${display.picture.height}` : null;

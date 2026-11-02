@@ -53,6 +53,14 @@ export class BrowserWatchStore {
     if (this.diagnostics.length === 256) this.diagnostics.shift();
     this.diagnostics.push(record);
   }
+  #clearVersion = 0;
+  readonly #revoked = new Map<string, number>();
+  readonly invalidationKey = (sessionId: string, surfaceId: string): string =>
+    `${this.#clearVersion}:${this.#revoked.get(this.#key(sessionId, surfaceId)) ?? 0}`;
+  #revoke(target: Watch): void {
+    const key = this.#key(target.sessionId, target.surfaceId);
+    this.#revoked.set(key, (this.#revoked.get(key) ?? 0) + 1);
+  }
   #suspended = false;
   #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
@@ -346,7 +354,7 @@ export class BrowserWatchStore {
     for (const target of this.#targets.values()) {
       if (!allowed(target.sessionId, target.surfaceId)) {
         this.#close(target);
-        this.#set(target, empty);
+        this.#set(target, this.#kept(target));
       } else if (this.#paused(target)) {
         if (!target.socket && !target.timer) continue;
         this.#close(target);
@@ -378,10 +386,14 @@ export class BrowserWatchStore {
     }
   }
   clear(): void {
+    this.#clearVersion++;
+    this.#revoked.clear();
     for (const target of this.#targets.values()) {
       this.#close(target);
       this.#set(target, empty);
     }
+    for (const [key, listeners] of this.#listeners)
+      if (!this.#targets.has(key)) for (const listener of listeners) listener();
   }
   dispose(): void {
     this.clear();
@@ -454,9 +466,14 @@ export class BrowserWatchStore {
           } else if (message.type === "browser.stream.state") {
             if (message.surfaceId !== target.surfaceId)
               throw new Error("The capture outcome does not match the subscribed target.");
-            if (message.state === "capacity")
-              this.#set(target, { ...empty, error: "Too many browser capture targets." });
-            else if (target.pictureHolds && target.state.status !== "live")
+            if (message.state === "capacity") {
+              for (const token of target.awaiting.keys())
+                this.accept(target.sessionId, target.surfaceId, token);
+              this.#set(target, {
+                ...this.#kept(target),
+                error: "Too many browser capture targets.",
+              });
+            } else if (target.pictureHolds && target.state.status !== "live")
               this.#set(target, {
                 ...this.#kept(target),
                 admitted: true,
@@ -551,15 +568,12 @@ export class BrowserWatchStore {
       target.synchronized = false;
       target.awaiting.clear();
       target.terminal = event.code === 4002 || event.code === 4003;
-      // A login that ended takes its picture with it, though the next may see it again.
-      this.#set(
-        target,
-        target.terminal
-          ? { ...empty, error: "The browser target is no longer available." }
-          : event.code === 1008
-            ? empty
-            : this.#kept(target),
-      );
+      const revoked = event.code === 4003 || event.code === 1008;
+      if (revoked) this.#revoke(target);
+      this.#set(target, {
+        ...(revoked ? empty : this.#kept(target)),
+        error: target.terminal ? "The browser target is no longer available." : null,
+      });
       if (!this.#paused(target) && target.holds && target.state.error === null)
         target.timer = setTimeout(() => {
           target.timer = null;

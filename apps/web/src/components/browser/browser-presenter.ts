@@ -33,6 +33,19 @@ interface PresentationDiagnostic {
 }
 const scopes = new WeakMap<object, Map<string, BrowserPicturePresenter>>();
 const drawn = new WeakMap<HTMLCanvasElement, BrowserFrameView>();
+const bindings = new WeakMap<
+  HTMLCanvasElement,
+  {
+    readonly scope: object;
+    readonly surfaceId: string;
+    readonly invalidation: string | number | undefined;
+  }
+>();
+export interface BrowserCanvasOptions {
+  readonly preservePixels?: boolean;
+  /** Inactive presenters observe authorization only, without decoding or frame credit. */
+  readonly active?: boolean;
+}
 export const browserPicturePresentedEvent = "browser-picture-presented";
 export function drawnBrowserFrame(canvas: HTMLCanvasElement | null): BrowserFrameView | null {
   return canvas ? (drawn.get(canvas) ?? null) : null;
@@ -47,6 +60,7 @@ export function attachBrowserCanvas(
   canvas: HTMLCanvasElement,
   presented: (frame: BrowserFrameView) => void,
   allowUpscale = false,
+  options: BrowserCanvasOptions = {},
 ): () => void {
   const scope = source.scope ?? source;
   let targets = scopes.get(scope);
@@ -60,7 +74,15 @@ export function attachBrowserCanvas(
     presenter = new BrowserPicturePresenter(surfaceId);
     targets.set(key, presenter);
   }
-  const detach = presenter.attach(source, sessionId, targeted, canvas, presented, allowUpscale);
+  const detach = presenter.attach(
+    source,
+    sessionId,
+    targeted,
+    canvas,
+    presented,
+    allowUpscale,
+    options,
+  );
   const current = presenter;
   return () => {
     detach();
@@ -85,6 +107,7 @@ class BrowserPicturePresenter {
   #scheduled: number | null = null;
   #ready: { picture: Picture; bitmap: ImageBitmap } | null = null;
   #disposed = false;
+  #generation = 0;
   #revision = -1;
   #captureRevision = -1;
   #latestId = -1;
@@ -102,6 +125,7 @@ class BrowserPicturePresenter {
     canvas: HTMLCanvasElement,
     presented: (frame: BrowserFrameView) => void,
     allowUpscale: boolean,
+    options: BrowserCanvasOptions,
   ): () => void {
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) {
@@ -132,11 +156,37 @@ class BrowserPicturePresenter {
         reported = frame;
         presented(frame);
       },
-      demand: targeted ? (source.rasterDemand?.(sessionId, this.#surfaceId) ?? null) : null,
+      demand:
+        targeted && options.active !== false
+          ? (source.rasterDemand?.(sessionId, this.#surfaceId) ?? null)
+          : null,
       active: true,
     };
     this.#targets.add(target);
     const read = () => {
+      const binding = {
+        scope: source.scope ?? source,
+        surfaceId: this.#surfaceId,
+        invalidation: source.invalidationKey?.(sessionId, this.#surfaceId),
+      };
+      const previous = bindings.get(canvas);
+      const invalidated =
+        previous &&
+        (previous.scope !== binding.scope ||
+          previous.surfaceId !== binding.surfaceId ||
+          previous.invalidation !== binding.invalidation);
+      bindings.set(canvas, binding);
+      if (invalidated) {
+        drawn.delete(canvas);
+        layoutBrowserCanvas(canvas, null);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        canvas.dispatchEvent(new Event(browserPicturePresentedEvent, { bubbles: true }));
+        this.#invalidate();
+      }
+      if (options.active === false) {
+        target.active = false;
+        return;
+      }
       const frame = source.get(sessionId, targeted ? this.#surfaceId : undefined);
       const token = frame?.header.watchToken;
       if (token) source.claim?.(sessionId, targeted ? this.#surfaceId : undefined, token);
@@ -148,10 +198,12 @@ class BrowserPicturePresenter {
       };
       target.active = frame?.header.surfaceId === this.#surfaceId;
       if (!target.active || !frame) {
-        drawn.delete(canvas);
-        layoutBrowserCanvas(canvas, null);
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        canvas.dispatchEvent(new Event(browserPicturePresentedEvent, { bubbles: true }));
+        if (!options.preservePixels) {
+          drawn.delete(canvas);
+          layoutBrowserCanvas(canvas, null);
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          canvas.dispatchEvent(new Event(browserPicturePresentedEvent, { bubbles: true }));
+        }
         settle();
         if (![...this.#targets].some((entry) => entry.active)) this.#invalidate();
         return;
@@ -180,8 +232,11 @@ class BrowserPicturePresenter {
       stopDensity();
       target.demand?.release();
       this.#targets.delete(target);
-      drawn.delete(canvas);
-      layoutBrowserCanvas(canvas, null);
+      if (!options.preservePixels) {
+        drawn.delete(canvas);
+        bindings.delete(canvas);
+        layoutBrowserCanvas(canvas, null);
+      }
       // This subscription deliberately discards every receipt it still owns.
       const frame = source.get(sessionId, targeted ? this.#surfaceId : undefined);
       if (frame?.header.watchToken)
@@ -234,6 +289,7 @@ class BrowserPicturePresenter {
   #decode(): void {
     if (this.#disposed || this.#decoding || this.#scheduled !== null || !this.#pending) return;
     const picture = this.#pending;
+    const generation = this.#generation;
     this.#pending = null;
     this.#decoding = picture;
     const started = performance.now();
@@ -250,6 +306,7 @@ class BrowserPicturePresenter {
           this.#diagnose("decode", picture, performance.now() - started);
           if (
             this.#disposed ||
+            generation !== this.#generation ||
             (picture.frame.header.geometryRevision !== undefined &&
               picture.frame.header.geometryRevision !== this.#revision) ||
             (picture.frame.header.capture?.revision ?? -1) !== this.#captureRevision ||
@@ -258,7 +315,7 @@ class BrowserPicturePresenter {
           ) {
             bitmap.close();
             this.#settle(picture);
-            this.#decoding = null;
+            if (this.#decoding === picture) this.#decoding = null;
             this.#decode();
             return;
           }
@@ -269,6 +326,7 @@ class BrowserPicturePresenter {
             this.#ready = null;
             if (
               this.#disposed ||
+              generation !== this.#generation ||
               (picture.frame.header.geometryRevision ?? 0) !== this.#revision ||
               (picture.frame.header.capture?.revision ?? -1) !== this.#captureRevision
             ) {
@@ -283,14 +341,14 @@ class BrowserPicturePresenter {
               this.#settle(picture);
               previous?.bitmap.close();
             }
-            this.#decoding = null;
+            if (this.#decoding === picture) this.#decoding = null;
             this.#decode();
           });
         },
         () => {
           this.#diagnose("failure", picture, performance.now() - started);
           this.#settle(picture);
-          this.#decoding = null;
+          if (this.#decoding === picture) this.#decoding = null;
           this.#decode();
         },
       );
@@ -342,6 +400,7 @@ class BrowserPicturePresenter {
     performance.clearMeasures(`browser.picture.${stage}`);
   }
   #invalidate(): void {
+    this.#generation++;
     if (this.#ready) {
       if (this.#scheduled !== null) cancelAnimationFrame(this.#scheduled);
       this.#scheduled = null;
@@ -350,6 +409,8 @@ class BrowserPicturePresenter {
       this.#ready = null;
       this.#decoding = null;
     }
+    if (this.#decoding) this.#settle(this.#decoding);
+    this.#decoding = null;
     this.#current?.bitmap.close();
     this.#current = null;
     if (this.#pending) this.#settle(this.#pending);
@@ -361,7 +422,6 @@ class BrowserPicturePresenter {
   dispose(): void {
     this.#disposed = true;
     this.#invalidate();
-    if (this.#decoding) this.#settle(this.#decoding);
     // A scheduled callback owns its bitmap and closes it even after disposal.
   }
 }

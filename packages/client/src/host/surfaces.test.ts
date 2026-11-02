@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BrowserSessionIdSchema,
+  createId,
   BrowserSurfaceIdSchema,
   ThreadIdSchema,
   type ThreadStatus,
@@ -311,4 +312,77 @@ describe("runPages", () => {
     expect(closed.map((page) => page.favicon)).toEqual([null, null]);
     expect(closed.every((page) => !page.acting)).toBe(true);
   });
+});
+
+it("keeps reply chips from place entries alone, unioned with browser usage and native tool traces", async () => {
+  const { replyPlaces } = await import("./surfaces.js");
+  const runId = "run-example";
+  const places: PlaceEntry[] = [
+    {
+      kind: "place",
+      id: "page",
+      runId,
+      createdAt: "2026-11-02T13:00:00.000Z",
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(browser(1, "example.com", []).id),
+        surfaceId: BrowserSurfaceIdSchema.parse("tab-1"),
+      },
+      title: "Browser",
+      site: "https://example.com",
+    },
+    {
+      kind: "place",
+      id: "app",
+      runId,
+      createdAt: "2026-11-02T13:00:01.000Z",
+      place: {
+        kind: "app",
+        machineId: createId("runner"),
+        appKey: "com.apple.notes",
+      },
+      title: "Notes",
+      site: null,
+    },
+    {
+      kind: "place",
+      id: "phone",
+      runId,
+      createdAt: "2026-11-02T13:00:02.000Z",
+      place: {
+        kind: "phone",
+        machineId: createId("runner"),
+        display: "main",
+      },
+      title: "Phone",
+      site: null,
+    },
+  ];
+  const turn = { runId, work: places, subagentWork: {} };
+  const chips = replyPlaces(turn, [], []);
+  expect(chips.map((chip) => chip.kind)).toEqual(["page", "app", "phone"]);
+  expect(
+    chips.every((chip) =>
+      chip.kind === "page"
+        ? chip.page.ended
+        : chip.kind === "app"
+          ? chip.app.ended
+          : chip.phone.ended,
+    ),
+  ).toBe(true);
+  const session = {
+    ...browser(1, "example.com", []),
+    uses: [
+      {
+        threadId: "thread-example",
+        runId,
+        tabId: "tab-1",
+        firstUsedAt: places[0]!.createdAt,
+        lastUsedAt: places[0]!.createdAt,
+        pageTitle: "Browser",
+        pageSite: "https://example.com",
+      },
+    ],
+  };
+  expect(replyPlaces(turn, [session], [])).toHaveLength(3);
 });

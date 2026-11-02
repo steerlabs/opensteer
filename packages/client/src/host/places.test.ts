@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { placeIdentityKey } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList, placeDestinationEnded, samePlaceListSource } from "./places.js";
 import { taskMark, threadMark } from "./task-marks.js";
@@ -40,8 +41,11 @@ describe("place catalog", () => {
         if (place.site?.startsWith("http")) expect(new URL(place.site).origin).toBe(place.site);
       }
       const occupied = places.find((place) => place.title === "Weekend ideas")!;
-      const latest = client.latestPlaceOfThread(occupied.occupants[0]!.threadId);
-      expect(latest?.placeKey).toBe(occupied.key);
+      const runId = snapshot.runQueue.find(
+        (run) => run.threadId === occupied.occupants[0]!.threadId,
+      )!.id;
+      const latest = client.runPlace(runId);
+      expect(latest && placeIdentityKey(latest.data.place)).toBe(occupied.key);
       expect(latest?.runId).toBe(
         snapshot.runQueue.find((run) => run.threadId === occupied.occupants[0]!.threadId)?.id,
       );
