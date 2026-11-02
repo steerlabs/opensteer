@@ -128,11 +128,11 @@ CI-byte comparison is involved.
 ## Agent context budget
 
 [tests/agent-context-budget.test.ts](../tests/agent-context-budget.test.ts) measures
-Opensteer-controlled UTF-8 bytes, not provider tokens or complete prompts.
-Intentional surface changes require snapshot review, including savings.
-The [budget workflow](../.github/workflows/agent-context-budget.yml) rejects
-increases and removed/renamed keys against main; `agent-context-increase` permits
-reviewed increases but does not bypass the snapshot test.
+Opensteer-controlled UTF-8 bytes, not provider tokens or complete prompts, and
+its snapshot makes every change visible in review, including savings. The
+[budget workflow](../.github/workflows/agent-context-budget.yml) reports each
+change against main on the run's summary and never fails a PR: a tool earns its
+place by helping agents, which behavioral evals judge, not by its byte count.
 
 ## Agent tool-use evaluations
 
