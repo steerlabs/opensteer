@@ -5,6 +5,8 @@ import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
   HostClientRequestError,
+  RunPlaceStore,
+  type BrowserFrameView,
   type HostClient,
   type HostSnapshot,
   type MessageEntry,
@@ -20,6 +22,7 @@ import {
   AssignmentSummarySchema,
   BrowserPageContentPartSchema,
   createId,
+  PlaceEnteredEventViewSchema,
   RunIdSchema,
   ThreadIdSchema,
   ThreadReadStateSchema,
@@ -27,7 +30,11 @@ import {
   type Request,
   type ThreadInputQueue,
 } from "@opensteer/core";
-import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
+import {
+  ComputerUseSessionIdSchema,
+  type ComputerUseSessionSummary,
+  type MachineSummary,
+} from "@opensteer/protocol";
 import { act, useState, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,6 +77,9 @@ import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/control
 
 const harness = vi.hoisted(() => ({
   paneRenders: 0,
+  nativeRenders: 0,
+  currentRoute: { name: "Thread" } as { name: string; params?: object },
+  appListeners: new Set<(state: string) => void>(),
   headerWrites: 0,
   focused: true,
   /** Whether the pane is drawn, or kept mounted out of view in its screen. */
@@ -120,7 +130,13 @@ vi.mock("react-native", async () => {
     },
     ActivityIndicator: () => null,
     Alert: { alert: vi.fn() },
-    AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
+    AppState: {
+      addEventListener: (_event: string, listener: (state: string) => void) => {
+        harness.appListeners.add(listener);
+        return { remove: () => harness.appListeners.delete(listener) };
+      },
+      currentState: "active",
+    },
     FlatList: (props: {
       readonly data: readonly unknown[];
       readonly keyExtractor: (item: unknown) => string;
@@ -150,8 +166,12 @@ vi.mock("react-native", async () => {
       );
     },
     // A tab preview's picture, once a frame reaches it.
-    Image: (props: { readonly accessibilityLabel?: string }) => (
-      <img alt={props.accessibilityLabel ?? ""} />
+    Image: (props: {
+      readonly accessibilityLabel?: string;
+      readonly onLoad?: () => void;
+      readonly source?: { uri: string };
+    }) => (
+      <img alt={props.accessibilityLabel ?? ""} onLoad={props.onLoad} src={props.source?.uri} />
     ),
     Keyboard: { addListener: () => ({ remove: () => undefined }), isVisible: () => false },
     findNodeHandle: (node: HTMLElement | null) => {
@@ -271,8 +291,19 @@ function marginTopOf(style: unknown): number | undefined {
   return undefined;
 }
 vi.mock("react-native-reanimated", () => {
-  const View = (props: { readonly accessibilityLabel?: string; readonly children?: ReactNode }) => (
-    <div aria-label={props.accessibilityLabel}>{props.children}</div>
+  const View = (props: {
+    readonly accessibilityLabel?: string;
+    readonly children?: ReactNode;
+    readonly testID?: string;
+    readonly style?: unknown;
+  }) => (
+    <div
+      aria-label={props.accessibilityLabel}
+      data-testid={props.testID}
+      data-style={props.testID ? JSON.stringify(flatten(props.style)) : undefined}
+    >
+      {props.children}
+    </div>
   );
   const transition = { duration: () => undefined };
   return {
@@ -306,7 +337,7 @@ vi.mock("@react-navigation/native", async () => {
   const navigation = {
     dispatch: harness.dispatch,
     // The conversation is the screen in front: a chip opens over it.
-    getState: () => ({ index: 0, routes: [{ name: "Thread" }] }),
+    getState: () => ({ index: 0, routes: [harness.currentRoute] }),
     navigate: harness.navigate,
     setOptions: (options: Record<string, unknown>) => {
       harness.headerWrites += 1;
@@ -331,6 +362,8 @@ vi.mock("@react-navigation/native", async () => {
         };
       }, [effect]),
     useIsFocused: () => harness.focused,
+    useNavigationState: (select: (state: object) => unknown) =>
+      select({ index: 0, routes: [harness.currentRoute] }),
     // One object for the screen's life, as the real hook returns.
     useNavigation: () => navigation,
   };
@@ -364,6 +397,18 @@ vi.mock("@expo/ui/community/menu", () => ({
   ),
 }));
 vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
+vi.mock("../computers/phone-display.js", () => ({
+  ComputerDisplay: (props: { active: boolean; source: object }) => {
+    harness.nativeRenders++;
+    return (
+      <div
+        data-native-preview
+        data-active={props.active}
+        data-source={JSON.stringify(props.source)}
+      />
+    );
+  },
+}));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Heavy: "heavy", Light: "light", Medium: "medium" },
@@ -428,6 +473,7 @@ vi.mock("../sidebar/sidebar-context.js", () => ({
 }));
 vi.mock("../ui/motion.js", () => ({
   appear: undefined,
+  move: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
   exit: undefined,
@@ -626,6 +672,7 @@ afterEach(() => {
   harness.drafts = null;
   harness.activeHost = null;
   harness.focused = true;
+  harness.currentRoute = { name: "Thread" };
   harness.inView = true;
   harness.dismissModal = null;
   harness.handles.clear();
@@ -973,6 +1020,10 @@ function fakeHost(initial: HostSnapshot) {
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
+  const runPlaces = new RunPlaceStore();
+  let frame: BrowserFrameView | null = null;
+  const frameListeners = new Set<() => void>();
+  const watchRelease = vi.fn();
   const dispatch = vi.fn(async (command: { readonly type: string }) => ({ type: command.type }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
@@ -991,11 +1042,19 @@ function fakeHost(initial: HostSnapshot) {
     acceptBrowserWatchFrame: vi.fn(),
     activateThread: vi.fn(),
     // What a mounted tab preview reads: the Host's latest place and a passive picture.
-    browserWatchFrames: { get: () => null, subscribe: () => () => undefined },
+    browserWatchFrames: {
+      get: () => frame,
+      subscribe: (_sessionId: string, listener: () => void) => {
+        frameListeners.add(listener);
+        return () => frameListeners.delete(listener);
+      },
+    },
+    runPlace: runPlaces.get,
+    subscribeRunPlace: runPlaces.subscribe,
     browserWatchState: () => connectingWatch,
     cancelThreadInput: vi.fn(async () => undefined),
     latestPlaceOfThread: () => null,
-    retainBrowserWatch: vi.fn(() => () => undefined),
+    retainBrowserWatch: vi.fn(() => watchRelease),
     subscribeBrowserWatch: () => () => undefined,
     subscribeLatestPlace: () => () => undefined,
     dispatch,
@@ -1020,6 +1079,14 @@ function fakeHost(initial: HostSnapshot) {
   return {
     client: client as unknown as HostClient,
     dispatch,
+    runPlaces,
+    watchRelease,
+    picture(next: BrowserFrameView | null) {
+      act(() => {
+        frame = next;
+        frameListeners.forEach((listener) => listener());
+      });
+    },
     /** The transcript the Host has once the phone loads its earlier page. */
     holdEarlier(next: HostSnapshot) {
       earlierPage = next;
@@ -3578,6 +3645,7 @@ it("docks voice above a task composer, floats without one and ignores unfocused 
   expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).toBeNull();
   expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).not.toBeNull();
   harness.focused = true;
+  harness.currentRoute = { name: "Thread" };
   await draw(true);
   expect(container.querySelector('[aria-label="Task"]')?.querySelector(bar)).not.toBeNull();
   expect(container.querySelector('[aria-label="Overlay"]')?.querySelector(bar)).toBeNull();
@@ -3887,5 +3955,229 @@ describe("a new task Ask started", () => {
     const { container } = await open(files, { deploymentId, page, workspaceId });
     expect(text(container)).toContain("What should this task take care of?");
     expect(text(container)).not.toContain("Research page");
+  });
+});
+
+describe("the Run's live place over the composer", () => {
+  const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
+  const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
+  const nextSurface = "srf_00000000-0000-4000-8000-000000000002";
+  const entered = (
+    runId: string,
+    threadId: string,
+    sequence = "1",
+    tab = surfaceId,
+    session = sessionId,
+  ) =>
+    PlaceEnteredEventViewSchema.parse({
+      type: "place.entered",
+      eventId: createId("event"),
+      environmentId: createId("environment"),
+      workspaceId,
+      runId,
+      threadId,
+      sequence,
+      createdAt: at,
+      data: {
+        place: { kind: "browser", sessionId: session, surfaceId: tab },
+        title: `Live page ${sequence}`,
+        site: "https://example.com",
+      },
+    });
+  const card = (container: HTMLElement) => container.querySelector('[data-testid="live-place"]');
+
+  it.each([chatId, workId])(
+    "keeps %s's card through thinking, Requests and catalog gaps, switches, then hands off to reply chips",
+    async (threadId) => {
+      const runId = createId("run");
+      const entries = [said("Find the page", runId), ran(runId)];
+      const initial = snapshotFor({ entries, run: { id: runId, status: "running" }, threadId });
+      const host = fakeHost(initial);
+      const { container } = await mount(host, threadId);
+      expect(card(container)).toBeNull();
+      await act(() => host.runPlaces.accept(entered(runId, threadId)));
+      const original = card(container);
+      expect(original).not.toBeNull();
+      expect(original?.textContent).toContain("Live page 1");
+      expect(original?.textContent).toContain("example.com");
+      host.picture({
+        data: new Uint8Array([1, 2]),
+        header: {
+          surfaceId,
+          frameId: 1,
+          watchToken: "one",
+          rasterWidth: 800,
+          rasterHeight: 600,
+          viewportWidth: 800,
+          viewportHeight: 600,
+        },
+      } as BrowserFrameView);
+      const image = container.querySelector<HTMLImageElement>("img[src]")!;
+      expect(image).not.toBeNull();
+      await act(() => image.dispatchEvent(new Event("load")));
+      for (const patch of [
+        { browserSessions: [], workspaceTabs: [] },
+        { connection: "connecting" as const },
+        {
+          ...snapshotFor({
+            entries,
+            requests: [approval(runId, "Continue?")],
+            run: { id: runId, status: "waiting" },
+            threadId,
+          }),
+          browserSessions: [],
+        },
+      ]) {
+        host.move({ ...initial, ...patch });
+        expect(card(container)).toBe(original);
+        expect(container.querySelector("img[src]")).toBe(image);
+      }
+      host.picture(null);
+      expect(container.querySelector("img[src]")).toBe(image);
+      const replacementSession = "bsn_00000000-0000-4000-8000-000000000002";
+      await act(() =>
+        host.runPlaces.accept(entered(runId, threadId, "2", surfaceId, replacementSession)),
+      );
+      expect(card(container)).toBe(original);
+      expect(container.querySelector("img[src]")).toBe(image);
+      expect(host.client.retainBrowserWatch).toHaveBeenLastCalledWith(
+        replacementSession,
+        surfaceId,
+        expect.anything(),
+      );
+      await act(() => host.runPlaces.accept(entered(runId, threadId, "3", nextSurface)));
+      expect(card(container)).toBe(original);
+      expect(original?.textContent).toContain("Live page 3");
+      expect(container.querySelector("img[src]")).toBeNull();
+      const entry = entered(runId, threadId, "3", nextSurface);
+      const reply = wrote("Here is your page", runId, threadId);
+      await act(() => {
+        host.move(
+          snapshotFor({
+            entries: [
+              entries[0]!,
+              ran(runId, { status: "completed", replyMessageId: reply.id }),
+              {
+                kind: "place",
+                id: entry.eventId,
+                createdAt: at,
+                runId,
+                ...entry.data,
+              },
+              reply,
+            ],
+            run: null,
+            threadId,
+          }),
+        );
+        host.runPlaces.end(runId);
+      });
+      expect(card(container)).toBeNull();
+      expect(
+        container.querySelector('button[aria-label="Live page 3, example.com, closed"]'),
+      ).not.toBeNull();
+    },
+  );
+
+  it.each(["app", "phone"] as const)(
+    "keeps an unresolved %s card and binds only its Run's native session",
+    async (kind) => {
+      const runId = createId("run");
+      const initial = snapshotFor({
+        entries: [ran(runId)],
+        run: { id: runId, status: "running" },
+        machines: [],
+        threadId: chatId,
+      });
+      const host = fakeHost(initial);
+      const entry = entered(runId, chatId);
+      host.runPlaces.accept(
+        PlaceEnteredEventViewSchema.parse({
+          ...entry,
+          data: {
+            place:
+              kind === "app"
+                ? { kind, machineId: macMini!.id, appKey: "com.apple.notes" }
+                : { kind, machineId: macMini!.id, display: "main" },
+            title: "Native place",
+            site: null,
+          },
+        }),
+      );
+      const { container } = await mount(host, chatId);
+      const original = card(container);
+      expect(original).not.toBeNull();
+      expect(container.querySelector("[data-native-preview]")).toBeNull();
+      const session = {
+        ...notesSession(runId),
+        display: kind === "phone" ? { state: "live" } : undefined,
+      } as unknown as ComputerUseSessionSummary;
+      const otherRun = {
+        ...session,
+        runId: createId("run"),
+        sessionId: ComputerUseSessionIdSchema.parse("cus_00000000-0000-4000-8000-0000000000bb"),
+      };
+      host.move({ ...initial, machines: [...macs(sessions([otherRun, session]))] });
+      expect(card(container)).toBe(original);
+      const preview = container.querySelector("[data-native-preview]");
+      expect(JSON.parse(preview!.getAttribute("data-source")!)).toEqual({
+        kind: "task-session",
+        sessionId: session.sessionId,
+        ...(kind === "app" ? { appKey: "com.apple.notes" } : {}),
+      });
+      const renders = harness.nativeRenders;
+      const reply = wrote("Still streaming", runId, chatId);
+      host.move({ ...host.client.getSnapshot(), transcripts: { [chatId]: [ran(runId), reply] } });
+      expect(harness.nativeRenders).toBe(renders);
+      await press(container, "Open Native place");
+      expect(harness.dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          params: expect.objectContaining({
+            machineId: macMini!.id,
+            computerSessionId: session.sessionId,
+          }),
+        }),
+      );
+      await act(() => harness.appListeners.forEach((listener) => listener("background")));
+      expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
+        "false",
+      );
+      host.move({ ...initial, machines: [] });
+      expect(card(container)).toBe(original);
+    },
+  );
+
+  it("opens the exact place, hides when it is current, and releases media while backgrounded or hidden", async () => {
+    const runId = createId("run");
+    const initial = snapshotFor({
+      entries: [ran(runId)],
+      run: { id: runId, status: "running" },
+      threadId: chatId,
+    });
+    const host = fakeHost(initial);
+    host.runPlaces.accept(entered(runId, chatId));
+    const { container, root, pane } = await mount(host, chatId);
+    await press(container, "Open Live page 1");
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "PUSH",
+      name: "WorkspaceBrowser",
+      params: { deploymentId, threadId: chatId, sessionId, tabId: surfaceId },
+    });
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledOnce();
+    await act(() => harness.appListeners.forEach((listener) => listener("background")));
+    expect(host.watchRelease).toHaveBeenCalledOnce();
+    expect(card(container)).not.toBeNull();
+    await act(() => harness.appListeners.forEach((listener) => listener("active")));
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(2);
+    harness.inView = false;
+    await act(() => root.render(pane(() => undefined)));
+    expect(host.watchRelease).toHaveBeenCalledTimes(2);
+    harness.inView = true;
+    harness.currentRoute = {
+      name: "WorkspaceBrowser",
+      params: { deploymentId, sessionId, tabId: surfaceId },
+    };
+    await act(() => root.render(pane(() => undefined)));
+    expect(card(container)).toBeNull();
   });
 });

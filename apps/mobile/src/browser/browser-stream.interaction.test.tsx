@@ -166,6 +166,7 @@ function setup(interactive = true) {
   // How far the phone has pinched the picture in, read when a drag moves.
   const zoom = { value: 1 };
   let picture: BrowserFrameView | null = null;
+  let invalidation = 0;
   let streaming = false;
   let feed = {
     frame: null as BrowserFrameView | null,
@@ -177,6 +178,7 @@ function setup(interactive = true) {
   const demand = { update: vi.fn(), release: vi.fn() };
   const rasterDemand = vi.fn(() => demand);
   const frames: BrowserFrameStore = {
+    invalidationKey: () => invalidation,
     rasterDemand,
     claim: vi.fn(),
     get: vi.fn(() => picture),
@@ -222,7 +224,11 @@ function setup(interactive = true) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const render = (viewerState: BrowserSessionSummary["viewerState"], active = true) =>
+  const render = (
+    viewerState: BrowserSessionSummary["viewerState"],
+    active = true,
+    overrides: Partial<BrowserStreamProps> = {},
+  ) =>
     act(() => {
       feed = { ...feed, status: viewerState === "synchronized" ? "live" : "connecting" };
       root?.render(
@@ -235,6 +241,7 @@ function setup(interactive = true) {
           session={session(viewerState)}
           tabId={surfaceId}
           zoom={zoom}
+          {...overrides}
         />,
       );
     });
@@ -273,6 +280,13 @@ function setup(interactive = true) {
     send,
     viewerRelease,
     watchRelease,
+    gap(revoke = false) {
+      act(() => {
+        picture = null;
+        if (revoke) invalidation++;
+        for (const listener of listeners) listener();
+      });
+    },
     zoom,
   };
 }
@@ -766,5 +780,35 @@ describe("native browser picture presenter", () => {
         .mock.calls.map(([, token]) => token)
         .toSorted(),
     ).toEqual([tokenA, tokenB, "00000000-0000-4000-8000-00000000000c"]);
+  });
+});
+
+describe.each(["image", "picture"] as const)("passive Run preview on %s", (presenter) => {
+  it("holds the drawn frame across gaps and same-tab session rebinding, then clears on revocation and inactivity", async () => {
+    native.presenter = presenter;
+    const preview = setup(false);
+    const render = (active = true, targetSession = sessionId) =>
+      preview.render("synchronized", active, {
+        preserveLastFrame: true,
+        session: { ...session("synchronized"), id: targetSession },
+      });
+    render();
+    preview.emit();
+    await preview.decode();
+    const picture = preview.container.querySelector('img[alt="A page, example.com"]');
+    expect(picture).not.toBeNull();
+    preview.gap();
+    expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBe(picture);
+    render(true, "bsn_00000000-0000-4000-8000-000000000002");
+    expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBe(picture);
+    expect(preview.watchRelease).toHaveBeenCalledOnce();
+    preview.gap(true);
+    expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBeNull();
+    preview.emit(surfaceId, { frameId: 2, watchToken: "00000000-0000-4000-8000-000000000002" });
+    await preview.decode();
+    expect(preview.container.querySelector('img[alt="A page, example.com"]')).not.toBeNull();
+    render(false);
+    expect(preview.container.querySelector("img")).toBeNull();
+    expect(preview.watchRelease).toHaveBeenCalledTimes(2);
   });
 });
