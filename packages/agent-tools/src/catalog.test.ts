@@ -200,20 +200,20 @@ describe("agent tool catalog", () => {
     expect(schema.safeParse({ ...base, delivery: "notify" }).success).toBe(false);
   });
 
-  it("tells every agent how to notify the person while keeping reports passive", () => {
+  it("routes delegated updates through the parent while keeping reports passive", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const description = tool(profileId, "thread_message").description;
       expect(description).toContain(
         '"report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person.',
       );
-      expect(description).toContain("Use person_notify");
+      expect(description).toContain("Delegated updates go to the parent");
       expect(description).not.toMatch(/report"? to publish/u);
     }
     const conversation = platformGuideForRun({ capabilityProfileId: "main", role: "conversation" });
-    expect(conversation).toContain("That reply is also what notifies them");
-    expect(conversation).toContain("A report left here only informs your next turn.");
+    expect(conversation).toContain("produce no assistant text, not even an acknowledgement");
+    expect(conversation).toContain("Deliver results the person is awaiting");
     expect(platformGuideForRun({ capabilityProfileId: "delegated", role: "work" })).toContain(
-      "A report alerts no one",
+      "Reports never alert",
     );
   });
 

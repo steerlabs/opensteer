@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { createId } from "@opensteer/core";
+import { HarnessInputSchema } from "@opensteer/protocol";
 
 const regex = z.string().superRefine((value, ctx) => {
   try {
@@ -25,6 +27,27 @@ const call = z.strictObject({
   tool: z.string().min(1),
   args: z.record(z.string(), z.json()).default({}),
 });
+const structuredTurn = z
+  .strictObject({
+    text: z.string().min(1),
+    author: HarnessInputSchema.shape.author.refine(
+      (author) => author.kind !== "human",
+      "Use a string for human turns",
+    ),
+    kind: HarnessInputSchema.shape.kind,
+  })
+  .superRefine((turn, ctx) => {
+    const result = HarnessInputSchema.safeParse({
+      author: turn.author,
+      kind: turn.kind,
+      content: [{ type: "text", text: turn.text }],
+      createdAt: new Date().toISOString(),
+      messageId: createId("message"),
+    });
+    if (!result.success)
+      for (const issue of result.error.issues)
+        ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  });
 export const CaseSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
   area: z.string().min(1),
@@ -37,7 +60,7 @@ export const CaseSchema = z.strictObject({
     .min(1)
     .optional(),
   fixtures: z.record(fixturePath, z.string()).default({}),
-  turns: z.array(z.string().min(1)).min(1),
+  turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
     calls: z.array(call).default([]),
@@ -45,6 +68,7 @@ export const CaseSchema = z.strictObject({
     order: z.array(z.string()).default([]),
     minCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
     maxCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    noAssistantText: z.boolean().default(false),
     textMust: z.array(regex).default([]),
     textMustNot: z.array(regex).default([]),
     maxInvalidCalls: z.number().int().nonnegative().default(0),
@@ -63,5 +87,18 @@ export function parseCases(text: string): EvalCase[] {
     } catch (cause) {
       throw new Error(`Case line ${i + 1}: ${String(cause)}`, { cause });
     }
+  });
+}
+
+export function inputForCaseTurn(turn: EvalCase["turns"][number]) {
+  return HarnessInputSchema.parse({
+    author:
+      typeof turn === "string"
+        ? { kind: "human", displayName: "Eval user", principalId: "eval" }
+        : turn.author,
+    content: [{ type: "text", text: typeof turn === "string" ? turn : turn.text }],
+    kind: typeof turn === "string" ? "input" : turn.kind,
+    createdAt: new Date().toISOString(),
+    messageId: createId("message"),
   });
 }

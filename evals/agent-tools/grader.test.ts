@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { parseCases } from "./cases.js";
+import { createId } from "@opensteer/core";
+import { inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, majority, partialMatch } from "./grader.js";
 
 const base = {
@@ -75,5 +76,60 @@ it("parses all orchestration cases including person notification guards", async 
   const cases = parseCases(
     await readFile(new URL("./cases/orchestration.ndjson", import.meta.url), "utf8"),
   );
-  expect(cases.filter((value) => value.id.startsWith("person-notify-"))).toHaveLength(7);
+  expect(cases.filter((value) => value.id.startsWith("person-message-"))).toHaveLength(7);
+});
+
+it("validates structured seeds with production authorship rules and preserves human strings", () => {
+  expect(inputForCaseTurn("hello").author.kind).toBe("human");
+  const turn = {
+    text: "Task complete",
+    author: { kind: "platform", cause: "task-result" },
+    kind: "continuation",
+  };
+  const parsed = parseCases(line({ turns: [turn] }))[0]!;
+  expect(inputForCaseTurn(parsed.turns[0]!)).toMatchObject({
+    author: turn.author,
+    kind: "continuation",
+    content: [{ type: "text", text: turn.text }],
+  });
+  const trigger = {
+    text: "Nothing changed",
+    author: {
+      kind: "trigger",
+      displayName: "Monitor",
+      triggerId: createId("trigger"),
+      occurrenceId: createId("triggerOccurrence"),
+      source: "schedule",
+    },
+    kind: "input",
+  };
+  expect(inputForCaseTurn(parseCases(line({ turns: [trigger] }))[0]!.turns[0]!)).toMatchObject({
+    author: trigger.author,
+    kind: "input",
+  });
+  expect(() => parseCases(line({ turns: [{ ...trigger, kind: "continuation" }] }))).toThrow();
+  for (const patch of [
+    { kind: "input" },
+    { author: { kind: "platform" } },
+    { author: { kind: "human", displayName: "x", principalId: "x" } },
+  ])
+    expect(() => parseCases(line({ turns: [{ ...turn, ...patch }] }))).toThrow();
+});
+it("silence rejects earlier assistant text even with an empty final reply and unknown forbidden tools", () => {
+  const c = parseCases(
+    line({
+      expect: {
+        noAssistantText: true,
+        notCalls: ["person_message", "person_notify"],
+        textMustNot: ["[\\s\\S]"],
+      },
+    }),
+  )[0]!;
+  expect(grade(c.expect, [], "", "").every((c) => c.pass)).toBe(true);
+  expect(grade(c.expect, [], "", "Nothing new").every((c) => c.pass)).toBe(false);
+  expect(
+    grade(c.expect, [{ tool: "person_notify", args: {}, valid: false }], "", "").every(
+      (c) => c.pass,
+    ),
+  ).toBe(false);
 });
