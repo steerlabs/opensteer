@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile, toolsForEnvironmentContract } from "@opensteer/agent-tools";
+import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import {
   createId,
   HarnessIdSchema,
@@ -1529,7 +1529,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         "delegated Trigger",
         f.fullChild.id,
         childClient,
-        toolsForEnvironmentContract("trigger", true)
+        toolsForCapabilityProfile("trigger")
           .filter(({ id }) => toolsForCapabilityProfile("delegated").some((tool) => tool.id === id))
           .map(({ name }) => name),
       ],
@@ -1537,7 +1537,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         "Chat Trigger",
         f.chat.id,
         chatClient,
-        toolsForEnvironmentContract("trigger", true).map(({ name }) => name),
+        toolsForCapabilityProfile("trigger").map(({ name }) => name),
       ],
       ["delegated Watch", f.crossChild.id, watchClient, ["thread_message", "thread_delegate"]],
     ] as const) {

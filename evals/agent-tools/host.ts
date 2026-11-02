@@ -268,14 +268,8 @@ function defaultResult(name: string): unknown {
   switch (name) {
     case "integration_search":
       return { operations: [], integrations: [], catalog: [], total: 0 };
-    case "workspace_list":
-      return {
-        workspaces: [],
-        environments: [],
-        harnesses: [],
-        environmentsTruncated: false,
-        harnessesTruncated: false,
-      };
+    case "project_list":
+      return { projects: [], window: { hasMore: false } };
     case "thread_list":
       return { threads: [], nextCursor: null };
     case "request_list":

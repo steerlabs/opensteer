@@ -1,14 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { createId, type AgentCapabilityProfileId, type Request } from "@opensteer/core";
 import { AgentControlRequestSchema, createBrowserSessionId } from "@opensteer/protocol";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   TriggerControlService,
@@ -121,7 +117,7 @@ describe("AgentToolsMcpService", () => {
       try {
         const { tools } = await client.listTools();
         expect(tools.map(({ name }) => name)).toContain("environment_list");
-        const workspace = tools.find(({ name }) => name === "workspace_list");
+        const workspace = tools.find(({ name }) => name === "project_list");
         if (workspace) {
           expect(workspace.inputSchema.properties).not.toHaveProperty("modelPage");
           expect(workspace.inputSchema.properties).not.toHaveProperty("harnessCursor");
@@ -217,7 +213,7 @@ describe("AgentToolsMcpService", () => {
     // its Runner reconnects.
     advertisesCurrentCatalog = true;
     expect(await names()).not.toContain("browser_profile_save");
-    expect(await names()).toEqual(expect.arrayContaining(["browser_sign_in"]));
+    expect(await names()).toEqual(expect.arrayContaining(["sign_in"]));
     expect(runnerCapabilities).toHaveBeenCalledTimes(1);
 
     // A session the Host forgot asks its Run's Runner again.
@@ -320,6 +316,8 @@ describe("AgentToolsMcpService", () => {
         return {
           requestId: value.requestId,
           type: "workspace.create.result" as const,
+          path: "/main/Projects/travel",
+          slug: "travel",
           workspace: {
             capacity: { kind: "managed-quota" as const },
             createdAt: "2026-09-24T00:00:00.000Z",
@@ -366,9 +364,8 @@ describe("AgentToolsMcpService", () => {
       "request_list",
       "request_withdraw",
       "environment_list",
-      "workspace_list",
-      "workspace_create",
-      "workspace_mount",
+      "project_list",
+      "project_create",
       "thread_read",
       "thread_list",
       "thread_delegate",
@@ -390,7 +387,7 @@ describe("AgentToolsMcpService", () => {
       "trigger_write",
     ]);
     // What the agent discovers is the whole creation contract, icons included.
-    const createSchema = listed.tools.find(({ name }) => name === "workspace_create")?.inputSchema;
+    const createSchema = listed.tools.find(({ name }) => name === "project_create")?.inputSchema;
     expect(Object.keys(createSchema?.properties ?? {}).sort()).toEqual(["color", "icon", "name"]);
     expect(createSchema?.properties?.icon).toMatchObject({
       enum: expect.arrayContaining(["mail", "plane", "tag"]),
@@ -398,9 +395,14 @@ describe("AgentToolsMcpService", () => {
     expect(createSchema?.required).toEqual(["name"]);
     const created = await client.callTool({
       arguments: { icon: "plane", name: "Travel" },
-      name: "workspace_create",
+      name: "project_create",
     });
     expect(created.isError).not.toBe(true);
+    expect(created.structuredContent).toEqual({
+      id: workspaceId,
+      slug: "travel",
+      path: "/main/Projects/travel",
+    });
     expect(handle).toHaveBeenCalledWith(
       "main-token",
       expect.objectContaining({
@@ -411,16 +413,16 @@ describe("AgentToolsMcpService", () => {
     );
     const misplacedMachine = await client.callTool({
       arguments: { backing: "portablefs", environmentId: createId("environment"), name: "Travel" },
-      name: "workspace_create",
+      name: "project_create",
     });
     expect(misplacedMachine.isError).toBe(true);
     const result = await client.callTool({
       arguments: { limit: 10 },
-      name: "workspace_list",
+      name: "project_list",
     });
     expect(result.structuredContent).toEqual({
       window: { ...emptyWindow(), itemCount: 1, totalItems: 1 },
-      workspaces: [{ id: workspaceId, kind: "project", name: "Client", status: "ready" }],
+      projects: [{ id: workspaceId, kind: "project", name: "Client", status: "ready" }],
     });
     expect(handle).toHaveBeenCalledWith(
       "main-token",
@@ -569,9 +571,8 @@ describe("AgentToolsMcpService", () => {
       "request_list",
       "request_withdraw",
       "environment_list",
-      "workspace_list",
-      "workspace_create",
-      "workspace_mount",
+      "project_list",
+      "project_create",
       "thread_read",
       "thread_list",
       "thread_delegate",
@@ -593,10 +594,10 @@ describe("AgentToolsMcpService", () => {
       "trigger_write",
     ]);
 
-    const workspaces = await client.callTool({ arguments: { limit: 10 }, name: "workspace_list" });
+    const workspaces = await client.callTool({ arguments: { limit: 10 }, name: "project_list" });
     expect(workspaces.structuredContent).toEqual({
       window: { ...emptyWindow(), itemCount: 1, totalItems: 1 },
-      workspaces: [workspace],
+      projects: [workspace],
     });
 
     const threads = await client.callTool({
@@ -841,9 +842,8 @@ describe("AgentToolsMcpService", () => {
       "request_list",
       "request_withdraw",
       "environment_list",
-      "workspace_list",
-      "workspace_create",
-      "workspace_mount",
+      "project_list",
+      "project_create",
       "thread_read",
       "thread_list",
       "thread_delegate",
@@ -1150,326 +1150,6 @@ function pendingBrowserRequest(
     targetWorkspaceId: workspaceId,
   };
 }
-
-it("routes sessionless sign_in and the previous-release browser alias to the same handler", async () => {
-  const ready = {
-    status: "ready",
-    site: "https://example.com",
-    account: "masked",
-    loginRef: "lgn_" + "1".repeat(32),
-  };
-  const handle = vi.fn(async (_token: string, request: unknown) => ({
-    requestId: (request as { requestId: string }).requestId,
-    result: ready,
-    type: "sign-in.result" as const,
-  }));
-  const fixture = await startService({
-    agentControl: { handle } as unknown as AgentControlService,
-    profiles: { "main-token": "main" },
-    previousRelease: true,
-  });
-  const client = await connectClient(fixture.url, "main-token");
-  try {
-    const result = await client.callTool({
-      name: "sign_in",
-      arguments: { site: ready.site, reason: "Sign in" },
-    });
-    expect(result.structuredContent).toEqual(ready);
-    expect(handle.mock.lastCall?.[1]).toMatchObject({ type: "sign-in", site: ready.site });
-    expect(handle.mock.lastCall?.[1]).not.toHaveProperty("sessionId");
-    const call = { site: ready.site, reason: "Sign in", sessionId: createBrowserSessionId() };
-    const listed = await client.listTools();
-    expect(
-      listed.tools.find(({ name }) => name === "browser_sign_in")?.inputSchema.required,
-    ).toEqual(["reason", "sessionId", "site"]);
-    for (const name of ["sign_in", "browser_sign_in"]) {
-      const result = await client.callTool({ name, arguments: call });
-      expect(result.isError).not.toBe(true);
-      expect(result.structuredContent).toEqual(ready);
-      expect(AgentControlRequestSchema.parse(handle.mock.lastCall?.[1])).toEqual({
-        ...call,
-        requestId: expect.any(String),
-        type: "sign-in",
-      });
-    }
-    for (const arguments_ of [
-      { site: ready.site, reason: "Sign in" },
-      { ...call, code: "123456" },
-      { ...call, targetId: "old-page" },
-    ]) {
-      expect(
-        (await client.callTool({ name: "browser_sign_in", arguments: arguments_ })).isError,
-      ).toBe(true);
-    }
-    expect(handle).toHaveBeenCalledTimes(3);
-  } finally {
-    await client.close();
-    await fixture.service.close();
-  }
-});
-
-// Profile inventories pinned from 04fb7ce4, before browser_sign_in was renamed.
-const previousBrowserProfileTools = [
-  "thread_read",
-  "thread_list",
-  "thread_delegate",
-  "thread_message",
-  "assignment_cancel",
-  "request_list",
-  "request_withdraw",
-  "browser_profile_list",
-  "browser_sign_in",
-  "browser_session_list",
-  "browser_session_open",
-] as const;
-const previousWorkspaceProfileTools = [
-  ...previousBrowserProfileTools,
-  "browser_access_request",
-  "browser_session_close",
-  "machine_full_disk_access_request",
-] as const;
-
-it.each([
-  [
-    "main",
-    [
-      ...previousWorkspaceProfileTools,
-      "workspace_list",
-      "workspace_create",
-      "workspace_mount",
-      "trigger_read",
-      "trigger_write",
-    ],
-  ],
-  ["workspace", previousWorkspaceProfileTools],
-  ["delegated", previousBrowserProfileTools],
-  [
-    "trigger",
-    [
-      "workspace_list",
-      "workspace_create",
-      "thread_read",
-      "thread_delegate",
-      "thread_message",
-      "trigger_read",
-      "trigger_write",
-    ],
-  ],
-] as const)("still serves every previous-release %s tool", async (profile, previousTools) => {
-  const fixture = await startService({
-    agentControl: { handle: vi.fn() } as unknown as AgentControlService,
-    profiles: { token: profile },
-    previousRelease: true,
-  });
-  const client = await connectClient(fixture.url, "token");
-  try {
-    const served = (await client.listTools()).tools.map(({ name }) => name);
-    expect(served).toEqual(expect.arrayContaining([...previousTools]));
-    // Codex exposes only the enabled tools before checking its exact inventory.
-    expect(served.filter((name) => previousTools.some((tool) => tool === name)).sort()).toEqual(
-      [...previousTools].sort(),
-    );
-    const current = toolsForCapabilityProfile(profile)
-      .map(({ name }) => name)
-      .filter((name) => name !== "person_notify" && name !== "person_show");
-    expect(served.filter((name) => current.some((tool) => tool === name)).sort()).toEqual(
-      [...current].sort(),
-    );
-    expect(served.includes("browser_sign_in")).toBe(profile !== "trigger");
-  } finally {
-    await client.close();
-    await fixture.service.close();
-  }
-});
-
-it.each([false, true])(
-  "keeps the environment contract independent of browser aliases (legacy browser: %s)",
-  async (legacyBrowser) => {
-    const inventories: unknown[] = [];
-    for (const profile of ["main", "workspace", "delegated", "trigger"] as const) {
-      let legacyEnvironment = true;
-      const selection = vi.fn(async () =>
-        runnerRelease({ legacyEnvironment, previousRelease: legacyBrowser }),
-      );
-      const legacyResult = {
-        delegationDefault: {
-          environmentId: createId("environment"),
-          harnessInstanceId: createId("harnessInstance"),
-          model: { modelId: "sol", providerId: "openai", options: {} },
-        },
-        environments: [],
-        environmentsTruncated: false,
-        harnesses: [],
-        harnessesTruncated: false,
-        threads: [],
-        threadWindow: emptyWindow(),
-        workspaceWindow: emptyWindow(),
-        workspaces: [],
-      };
-      const handle = vi.fn(async (_token: string, value: unknown) => {
-        const request = AgentControlRequestSchema.parse(value);
-        if (request.type === "workspace.inspect")
-          return {
-            ...legacyResult,
-            requestId: request.requestId,
-            type: "workspace.inspect.result" as const,
-          };
-        if (request.type === "workspace.list")
-          return {
-            requestId: request.requestId,
-            type: "workspace.list.result" as const,
-            workspaces: [],
-            window: emptyWindow(),
-          };
-        throw new Error("Unexpected compatibility journey request");
-      });
-      const fixture = await startService({
-        agentControl: { handle } as unknown as AgentControlService,
-        profiles: { token: profile },
-        runnerCapabilities: selection,
-      });
-      const client = await connectClient(fixture.url, "token");
-      try {
-        const legacy = (await client.listTools()).tools;
-        expect(legacy.map(({ name }) => name)).not.toContain("environment_list");
-        for (const [name, hash] of Object.entries({
-          workspace_list: "73c4e227619784907796f4779d37f020dca2f8dca8a255ccab8057dac73bb633",
-          workspace_create: "c813760d472f9c9cb740ada1240190b9548201a688e600b68d2ae2c0fb7432db",
-          thread_delegate: "0ae90e18d6b458996d2828b9b583b59b3ffe148aa3e6d8247ec8926e1b83225e",
-        })) {
-          const definition = legacy.find((tool) => tool.name === name);
-          if (definition)
-            expect(
-              createHash("sha256")
-                .update(definition.description ?? "")
-                .digest("hex"),
-            ).toBe(hash);
-        }
-
-        expect(legacy.find(({ name }) => name === "thread_delegate")?.description).toContain(
-          "workspace_list shows",
-        );
-        const expectedLegacyNames: readonly string[] = legacyBrowser
-          ? profile === "main"
-            ? [
-                ...previousWorkspaceProfileTools,
-                "workspace_list",
-                "workspace_create",
-                "workspace_mount",
-                "trigger_read",
-                "trigger_write",
-              ]
-            : profile === "workspace"
-              ? previousWorkspaceProfileTools
-              : profile === "delegated"
-                ? previousBrowserProfileTools
-                : [
-                    "workspace_list",
-                    "workspace_create",
-                    "thread_read",
-                    "thread_delegate",
-                    "thread_message",
-                    "trigger_read",
-                    "trigger_write",
-                  ]
-          : toolsForCapabilityProfile(profile)
-              .map(({ name }) => name)
-              .filter(
-                (name) =>
-                  name !== "person_show" &&
-                  name !== "environment_list" &&
-                  (name !== "person_notify" || !legacyBrowser),
-              );
-        expect(
-          legacy
-            .filter(({ name }) => expectedLegacyNames.includes(name))
-            .map(({ name }) => name)
-            .sort(),
-        ).toEqual([...expectedLegacyNames].sort());
-        const workspace = legacy.find(({ name }) => name === "workspace_list");
-        if (profile === "main" || profile === "trigger") {
-          expect(Object.keys(workspace!.inputSchema.properties ?? {}).sort()).toEqual([
-            "before",
-            "harnessCursor",
-            "limit",
-            "modelPage",
-          ]);
-          const result = await client.callTool({ name: "workspace_list", arguments: {} });
-          expect(result.structuredContent).toEqual({
-            delegationDefault: legacyResult.delegationDefault,
-            environments: [],
-            environmentsTruncated: false,
-            harnesses: [],
-            harnessesTruncated: false,
-            workspaces: [],
-            window: emptyWindow(),
-          });
-        } else expect(workspace).toBeUndefined();
-        legacyEnvironment = false;
-        expect((await client.listTools()).tools).toEqual(legacy);
-        expect(selection).toHaveBeenCalledTimes(1);
-        legacyEnvironment = true;
-        await fixture.service.close();
-        expect((await client.listTools()).tools).toEqual(legacy);
-        legacyEnvironment = false;
-        await fixture.service.close();
-        const current = (await client.listTools()).tools;
-        expect(current.map(({ name }) => name)).toContain("environment_list");
-        expect(current.find(({ name }) => name === "thread_delegate")?.description).toContain(
-          "environment_list",
-        );
-        expect(current.some(({ name }) => name === "browser_sign_in")).toBe(
-          legacyBrowser && profile !== "trigger",
-        );
-        const currentNames = toolsForCapabilityProfile(profile)
-          .map(({ name }) => name)
-          .filter((name) => name !== "person_show" && (name !== "person_notify" || !legacyBrowser));
-        // These are the enabled names the release-local Codex inventory check compares.
-        expect(
-          current
-            .filter(({ name }) => currentNames.includes(name as (typeof currentNames)[number]))
-            .map(({ name }) => name)
-            .sort(),
-        ).toEqual([...currentNames].sort());
-        if (workspace) {
-          const schema = current.find(({ name }) => name === "workspace_list")!.inputSchema;
-          expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["before", "limit"]);
-          expect(
-            (await client.callTool({ name: "workspace_list", arguments: {} })).structuredContent,
-          ).toEqual({ workspaces: [], window: emptyWindow() });
-        }
-        inventories.push({
-          profile,
-          legacyBrowser,
-          legacy,
-          current,
-          legacyHash: createHash("sha256").update(JSON.stringify(legacy)).digest("hex"),
-          currentHash: createHash("sha256").update(JSON.stringify(current)).digest("hex"),
-        });
-      } finally {
-        await client.close();
-        await fixture.service.close();
-      }
-    }
-    const directory = join(
-      process.env.OPENSTEER_ENVIRONMENT_EVIDENCE_DIR ??
-        join(tmpdir(), "opensteer-environment-list"),
-      `browser-${legacyBrowser ? "legacy" : "current"}`,
-    );
-    await mkdir(directory, { recursive: true });
-    await writeFile(
-      join(directory, "inventories.json"),
-      JSON.stringify(
-        {
-          scenario: "environment catalog compatibility across reconnect and Host session loss",
-          inventories,
-        },
-        null,
-        2,
-      ),
-    );
-  },
-);
 
 it("pins person_notify to the calling Runner capability and returns the exact message receipt", async () => {
   let supported = true;

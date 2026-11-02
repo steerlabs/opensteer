@@ -4,12 +4,12 @@ import { z } from "zod";
 export const OpensteerAgentSkillNameSchema = z.enum([
   "opensteer-integrations",
   "opensteer-computer-use",
-  "opensteer-workspaces",
+  "opensteer-projects",
   "opensteer-threads",
   "opensteer-triggers",
   "opensteer-browser",
   "opensteer-computers",
-  "opensteer-specialization",
+  "opensteer-skills",
 ]);
 export type OpensteerAgentSkillName = z.infer<typeof OpensteerAgentSkillNameSchema>;
 
@@ -20,7 +20,7 @@ export interface OpensteerAgentSkillDefinition {
 
 export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Object.freeze([
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-specialization"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer-skills"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -60,7 +60,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-workspaces"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer-projects"),
     profiles: Object.freeze([AgentCapabilityProfileIdSchema.parse("main")]),
   }),
   Object.freeze({

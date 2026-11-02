@@ -26,7 +26,7 @@ follows this Thread's capability profile: a Main Thread sees its user's Workspac
 Thread sees its own Workspace, and a delegated Thread sees its delegation lineage. Narrow with
 `workspaceId` or `query` only when needed. Follow the returned page cursor when the first page is
 insufficient. Use `thread_read` for one Thread's durable history and the tasks assigned to it, and
-`workspace_list` when the target Workspace is unclear and that tool is available.
+`project_list` when the target Workspace is unclear and that tool is available.
 
 Every delivered message has Host-authored identity separate from its content. Human, agent,
 Trigger, and platform authors are different even if a harness transports them with the same
@@ -96,16 +96,16 @@ from the message's authored context when replying.
    Continue independent work or end your turn. The result arrives on its own.
 
 A delegated Thread reads the target Workspace's `AGENTS.md` and skills. Send the concrete task,
-not a copy of the Workspace's standing role. Establish a newly created Workspace's identity before
-delegating into it.
+not a copy of the Workspace's standing instructions. Write a new Project's mission, scope and
+standing rules in AGENTS.md before delegating into it.
 
 Give the task the outcome, constraints, relevant evidence, and what a complete answer contains. Let
 it choose its approach. Parallelize independent work when useful; give shared file edits distinct
 ownership. Pass confirmed access and observed blockers so the task can apply its own skills.
 Resolve missing authority in a Thread that can request it.
 
-A Thread is not a Workspace and creates no storage backing. Mount a Workspace only when the active
-Main Run needs direct access to its files.
+A Thread creates no new folder. Main agents use ordinary file tools at the absolute path returned
+by project_create. Project agents work in their own folder and only their own folder.
 
 ## How a task finishes
 

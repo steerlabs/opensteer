@@ -11,7 +11,6 @@ import {
   provisionalThreadTitle,
   ThreadIdSchema,
   threadInReach,
-  workspaceWakesOnDemand,
   type AgentEvent,
   type EnvironmentId,
   type HarnessId,
@@ -132,7 +131,7 @@ export class AgentControlService {
   readonly #tokens: AgentControlTokenService;
   readonly #triggers: AgentTriggerManager | undefined;
   readonly #workspaceMounts: AgentWorkspaceMountService;
-  readonly #workspaceWake: AgentWorkspaceWaker | undefined;
+
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
@@ -190,7 +189,6 @@ export class AgentControlService {
     this.#tokens = options.tokens;
     this.#triggers = options.triggers;
     this.#workspaceMounts = options.workspaceMounts;
-    this.#workspaceWake = options.workspaceWake;
     this.#workspaces = options.workspaces;
   }
 
@@ -219,6 +217,8 @@ export class AgentControlService {
   async handle(token: string, input: unknown): Promise<AgentControlResponse> {
     const claims = await this.#tokens.authenticate(token);
     const request = AgentControlRequestSchema.parse(input);
+    if (request.type === "workspace.mount" || request.type === "browser.sign-in")
+      throw badRequest("This agent operation has been removed");
     if (request.type === "thread.delegate" && request.places)
       request.places = request.places.map((part) => {
         if (part.type !== "browser-page") return part;
@@ -468,43 +468,14 @@ export class AgentControlService {
         requestId: request.requestId,
         type: "workspace.create.result",
         workspace: agentWorkspaceView(workspace),
-      });
-    }
-
-    if (request.type === "workspace.mount") {
-      const workspace = await this.#store.getWorkspaceForOwner(
-        request.workspaceId,
-        claims.requestedBy,
-      );
-      if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
-      if (workspace.kind === "main") {
-        throw badRequest("Main is not a valid mount target; its path is the Run Workspace");
-      }
-      if (workspace.status !== "ready") {
-        // A Workspace whose storage sleeps is not a failed mount, it is a mount
-        // that arrived first: the wake cancels a quiescing archive, and the
-        // agent's retry mounts the restored filesystem.
-        if (workspaceWakesOnDemand(workspace.status)) {
-          void this.#workspaceWake?.wake(workspace.id, "agent-workspace-mount");
-          throw conflict("Target Workspace filesystem is waking", true);
-        }
-        throw conflict(
-          "Target Workspace filesystem is not ready",
-          workspace.status === "provisioning" || workspace.status === "unavailable",
-        );
-      }
-      const admission = await this.#admit(claims, request);
-      const mounted = await this.#workspaceMounts.mount({
-        requestId: request.requestId,
-        scope: claims,
-        workspace,
-      });
-      void admission;
-      return AgentControlResponseSchema.parse({
-        path: mounted.path,
-        requestId: request.requestId,
-        type: "workspace.mount.result",
-        workspaceId: workspace.id,
+        slug: workspace.slug,
+        path: (
+          await this.#workspaceMounts.mount({
+            requestId: request.requestId,
+            scope: claims,
+            workspace,
+          })
+        ).path,
       });
     }
 
@@ -850,7 +821,7 @@ export class AgentControlService {
         type: "browser.profile.list.result",
       });
     }
-    if (request.type === "browser.sign-in" || request.type === "sign-in") {
+    if (request.type === "sign-in") {
       await this.#admit(claims, request);
       return AgentControlResponseSchema.parse({
         requestId: request.requestId,
@@ -869,7 +840,7 @@ export class AgentControlService {
           threadId: claims.threadId,
           workspaceId: claims.workspaceId,
         }),
-        type: request.type === "sign-in" ? "sign-in.result" : "browser.sign-in.result",
+        type: "sign-in.result",
       });
     }
 
@@ -1098,12 +1069,10 @@ export class AgentControlService {
 }
 
 const toolForAction: Readonly<
-  Record<Exclude<AgentControlRequest["type"], "trigger.control">, AgentToolId>
+  Partial<Record<Exclude<AgentControlRequest["type"], "trigger.control">, AgentToolId>>
 > = {
   "machine.full-disk-access.request": "machine.full-disk-access.request",
   "browser.access.request": "browser.access.request",
-  // Previous-release Runners still send this action; it shares the current permission.
-  "browser.sign-in": "sign-in",
   "sign-in": "sign-in",
   "browser.profile.create": "browser.profile.create",
   "browser.profile.list": "browser.profile.list",
@@ -1122,11 +1091,10 @@ const toolForAction: Readonly<
   "person.show": "person.show",
   "thread.read": "thread.read",
   "thread.write": "thread.write",
-  "workspace.create": "workspace.create",
-  "workspace.inspect": "workspace.list",
-  "workspace.list": "workspace.list",
+  "workspace.create": "project.create",
+  "workspace.inspect": "project.list",
+  "workspace.list": "project.list",
   "environment.list": "environment.list",
-  "workspace.mount": "workspace.mount",
 };
 
 function assertToolAllowed(

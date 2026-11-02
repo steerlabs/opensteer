@@ -1,0 +1,4 @@
+interface:
+  display_name: "Opensteer Skills"
+  short_description: "Maintain reusable Workspace instructions, skills, and code"
+  default_prompt: "Use $opensteer-skills to preserve useful knowledge and procedures for future Runs."

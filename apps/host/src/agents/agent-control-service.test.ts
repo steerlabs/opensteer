@@ -107,10 +107,10 @@ describe("AgentControlService", () => {
         requestId: crypto.randomUUID(),
         type: "workspace.inspect",
       }),
-    ).rejects.toThrow("does not allow workspace.list");
+    ).rejects.toThrow("does not allow project.list");
   });
 
-  it.each(["browser.sign-in", "sign-in"] as const)(
+  it.each(["sign-in"] as const)(
     "keeps %s Browser Session requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Main");
@@ -163,58 +163,9 @@ describe("AgentControlService", () => {
     ).rejects.toThrow("Main coordination requires active owner authority");
   });
 
-  // The Workspace an agent asks to mount may have been archived, or claimed by
-  // the archive sweep moments ago. Neither is a failed mount: the wake cancels
-  // a quiescing archive, so the answer is "retry", not "not ready".
-  it.each(["archiving", "archived"] as const)(
-    "wakes a %s Workspace instead of failing the agent's mount",
-    async (status) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Main");
-      const target = { ...workspace(targetWorkspaceId, "Client"), status };
-      const mountWorkspace = vi.fn();
-      const { service, wakeWorkspace } = makeService({
-        commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-        messages: [],
-        mountWorkspace,
-        threads: [current],
-        workspaces: [workspace(workspaceId, "Main"), target],
-      });
-
-      await expect(
-        service.handle("run-token", {
-          requestId: crypto.randomUUID(),
-          type: "workspace.mount",
-          workspaceId: target.id,
-        }),
-      ).rejects.toMatchObject({ code: "conflict", retryable: true });
-      expect(wakeWorkspace).toHaveBeenCalledWith(target.id, "agent-workspace-mount");
-      expect(mountWorkspace).not.toHaveBeenCalled();
-    },
-  );
-
-  it("refuses to mount a Workspace whose storage failed, without waking it", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Main");
-    const target = { ...workspace(targetWorkspaceId, "Client"), status: "failed" as const };
-    const { service, wakeWorkspace } = makeService({
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [current],
-      workspaces: [workspace(workspaceId, "Main"), target],
-    });
-
-    await expect(
-      service.handle("run-token", {
-        requestId: crypto.randomUUID(),
-        type: "workspace.mount",
-        workspaceId: target.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict", retryable: false });
-    expect(wakeWorkspace).not.toHaveBeenCalled();
-  });
-
   it("projects created Workspaces onto the public response shape", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
-    const created = workspace(targetWorkspaceId, "Analysis");
+    const created = { ...workspace(targetWorkspaceId, "Analysis"), slug: "analysis" };
     const createWorkspace = vi.fn(async () => created);
     const { service } = makeService({
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
@@ -231,6 +182,8 @@ describe("AgentControlService", () => {
 
     expect(response).toMatchObject({
       type: "workspace.create.result",
+      slug: "analysis",
+      path: `/main/Projects/${created.slug}`,
       workspace: {
         capacity: { kind: "managed-quota" },
         id: created.id,
@@ -1953,7 +1906,7 @@ function makeService(options: {
         mount:
           options.mountWorkspace ??
           vi.fn(async ({ workspace }: { workspace: Workspace }) => ({
-            path: `workspaces/${workspace.id}`,
+            path: `/main/Projects/${workspace.slug}`,
           })),
       },
       workspaceWake: { wake: wakeWorkspace },

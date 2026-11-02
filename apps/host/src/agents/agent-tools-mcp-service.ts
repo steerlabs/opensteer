@@ -8,12 +8,7 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import {
-  legacyBrowserSignInTool,
-  previousReleaseToolsForCapabilityProfile,
-  toolsForEnvironmentContract,
-  type AgentToolName,
-} from "@opensteer/agent-tools";
+import { toolsForCapabilityProfile, type AgentToolName } from "@opensteer/agent-tools";
 import {
   OpensteerError,
   ThreadWriteInputSchema,
@@ -352,14 +347,7 @@ export class AgentToolsMcpService {
         : null;
     const lacks = (capability: string) =>
       capabilities !== null && !capabilities.includes(capability);
-    const legacyEnvironment =
-      input.scope === "run" ? lacks("environment-list-v1") : input.toolContractVersion !== 3;
-    const definitions = [
-      ...toolsForEnvironmentContract(input.profileId, legacyEnvironment),
-      ...(lacks("browser-profile-create-v1")
-        ? previousReleaseToolsForCapabilityProfile(input.profileId)
-        : []),
-    ].filter(
+    const definitions = toolsForCapabilityProfile(input.profileId).filter(
       (definition) =>
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
         (definition.name !== "person_show" ||
@@ -427,7 +415,6 @@ export class AgentToolsMcpService {
             control: input.control,
             input: parsedInput,
             name: definition.name,
-            legacyEnvironment,
             requestId,
             token,
           });
@@ -452,9 +439,8 @@ export class AgentToolsMcpService {
 
   async #callTool(call: {
     readonly control: AgentToolControl;
-    readonly legacyEnvironment: boolean;
     readonly input: Record<string, unknown>;
-    readonly name: AgentToolName | typeof legacyBrowserSignInTool.name;
+    readonly name: AgentToolName;
     readonly requestId: string;
     readonly token: string;
   }): Promise<Record<string, unknown>> {
@@ -470,57 +456,26 @@ export class AgentToolsMcpService {
         const { type: _type, requestId: _requestId, ...result } = response;
         return result;
       }
-      case "workspace_list": {
-        if (!call.legacyEnvironment) {
-          const response = await control.handle(token, {
-            ...input,
-            requestId,
-            type: "workspace.list",
-          });
-          if (response.type !== "workspace.list.result") throw unexpectedToolResponse();
-          return { workspaces: response.workspaces, window: response.window };
-        }
+      case "project_list": {
         const response = await control.handle(token, {
-          maxWorkspaces: input.limit,
+          ...input,
           requestId,
-          type: "workspace.inspect",
-          ...(input.before ? { workspaceBefore: input.before } : {}),
-          ...(input.harnessCursor ? { harnessCursor: input.harnessCursor } : {}),
-          ...(input.modelPage ? { modelPage: input.modelPage } : {}),
+          type: "workspace.list",
         });
-        if (response.type !== "workspace.inspect.result") throw unexpectedToolResponse();
+        if (response.type !== "workspace.list.result") throw unexpectedToolResponse();
         return {
-          delegationDefault: response.delegationDefault,
-          environments: response.environments,
-          environmentsTruncated: response.environmentsTruncated,
-          harnesses: response.harnesses,
-          harnessesTruncated: response.harnessesTruncated,
-          ...(response.harnessesNextCursor
-            ? { harnessesNextCursor: response.harnessesNextCursor }
-            : {}),
-          window: response.workspaceWindow,
-          workspaces: response.workspaces,
+          projects: response.workspaces.filter(({ kind }) => kind === "project"),
+          window: response.window,
         };
       }
-      case "workspace_create": {
+      case "project_create": {
         const response = await control.handle(token, {
-          ...(input.icon ? { icon: input.icon } : {}),
-          ...(input.color ? { color: input.color } : {}),
-          name: input.name,
+          ...input,
           requestId,
           type: "workspace.create",
         });
         if (response.type !== "workspace.create.result") throw unexpectedToolResponse();
-        return { workspace: response.workspace };
-      }
-      case "workspace_mount": {
-        const response = await control.handle(token, {
-          requestId,
-          type: "workspace.mount",
-          workspaceId: input.workspaceId,
-        });
-        if (response.type !== "workspace.mount.result") throw unexpectedToolResponse();
-        return { path: response.path, workspaceId: response.workspaceId };
+        return { id: response.workspace.id, slug: response.slug, path: response.path };
       }
       case "thread_read": {
         const response = await control.handle(token, {
@@ -656,7 +611,6 @@ export class AgentToolsMcpService {
         if (response.type !== "browser.profile.list.result") throw unexpectedToolResponse();
         return { profiles: response.profiles };
       }
-      case "browser_sign_in":
       case "sign_in": {
         const response = await control.handle(token, {
           ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),

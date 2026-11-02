@@ -75,14 +75,14 @@ import { providerContinuationIdentityProjector } from "@opensteer/runner-client"
 
 const testAgentSkills = {
   paths: {
-    "opensteer-specialization": "/runner/agent-skills/skills/opensteer-specialization",
+    "opensteer-skills": "/runner/agent-skills/skills/opensteer-skills",
     "opensteer-integrations": "/runner/agent-skills/skills/opensteer-integrations",
     "opensteer-browser": "/runner/agent-skills/skills/opensteer-browser",
     "opensteer-computer-use": "/runner/agent-skills/skills/opensteer-computer-use",
     "opensteer-computers": "/runner/agent-skills/skills/opensteer-computers",
     "opensteer-threads": "/runner/agent-skills/skills/opensteer-threads",
     "opensteer-triggers": "/runner/agent-skills/skills/opensteer-triggers",
-    "opensteer-workspaces": "/runner/agent-skills/skills/opensteer-workspaces",
+    "opensteer-projects": "/runner/agent-skills/skills/opensteer-projects",
   },
   rootPath: "/runner/agent-skills",
 } as const;
@@ -3536,8 +3536,8 @@ describe("RunnerRuntime", () => {
       expect(driver.context?.providerState.privateStateRoot).toBe(dirname(stateRoot));
       expect(driver.context?.skills?.skills).toEqual([
         {
-          name: "opensteer-specialization",
-          path: "/runner/agent-skills/skills/opensteer-specialization",
+          name: "opensteer-skills",
+          path: "/runner/agent-skills/skills/opensteer-skills",
         },
         {
           name: "opensteer-integrations",

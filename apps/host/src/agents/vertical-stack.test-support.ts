@@ -88,11 +88,11 @@ const testAgentSkills = {
     "opensteer-browser": join(agentSkillsRoot, "skills", "opensteer-browser"),
     "opensteer-computer-use": join(agentSkillsRoot, "skills", "opensteer-computer-use"),
     "opensteer-computers": join(agentSkillsRoot, "skills", "opensteer-computers"),
-    "opensteer-specialization": join(agentSkillsRoot, "skills", "opensteer-specialization"),
+    "opensteer-skills": join(agentSkillsRoot, "skills", "opensteer-skills"),
     "opensteer-integrations": join(agentSkillsRoot, "skills", "opensteer-integrations"),
     "opensteer-threads": join(agentSkillsRoot, "skills", "opensteer-threads"),
     "opensteer-triggers": join(agentSkillsRoot, "skills", "opensteer-triggers"),
-    "opensteer-workspaces": join(agentSkillsRoot, "skills", "opensteer-workspaces"),
+    "opensteer-projects": join(agentSkillsRoot, "skills", "opensteer-projects"),
   },
   rootPath: agentSkillsRoot,
 } as const;

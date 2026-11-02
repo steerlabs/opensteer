@@ -28,17 +28,17 @@ describe("Runner Agent Skills", () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
 
     expect(skillNames(bundle, "main")).toEqual([
-      "opensteer-specialization",
+      "opensteer-skills",
       "opensteer-integrations",
       "opensteer-computer-use",
       "opensteer-browser",
       "opensteer-computers",
-      "opensteer-workspaces",
+      "opensteer-projects",
       "opensteer-threads",
       "opensteer-triggers",
     ]);
     expect(skillNames(bundle, "workspace")).toEqual([
-      "opensteer-specialization",
+      "opensteer-skills",
       "opensteer-integrations",
       "opensteer-computer-use",
       "opensteer-browser",
@@ -47,7 +47,7 @@ describe("Runner Agent Skills", () => {
       "opensteer-triggers",
     ]);
     expect(skillNames(bundle, "delegated")).toEqual([
-      "opensteer-specialization",
+      "opensteer-skills",
       "opensteer-integrations",
       "opensteer-computer-use",
       "opensteer-browser",

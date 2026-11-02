@@ -515,6 +515,8 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...responseBase,
     type: z.literal("workspace.create.result"),
+    path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u),
+    slug: z.string().min(1),
     workspace: AgentWorkspaceViewSchema,
   }),
   z.strictObject({
