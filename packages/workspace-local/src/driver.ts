@@ -76,11 +76,16 @@ export class LocalWorkspaceAuthority {
     return this.#registry.storageAuthority(signal);
   }
 
-  async relocationNeeded(binding: LocalWorkspaceBindingRequest, slug: string): Promise<boolean> {
+  async relocationNeeded(
+    binding: LocalWorkspaceBindingRequest,
+    slug: string | null,
+  ): Promise<boolean> {
     await this.#assertAuthority(binding);
     try {
       const ready = await this.#registry.getReadyBinding(binding);
-      return ready.relativeSegments.at(-2) !== "Projects" || ready.relativeSegments.at(-1) !== slug;
+      return slug === null
+        ? ready.provisionFingerprint.kind !== "main"
+        : ready.relativeSegments.at(-2) !== "Projects" || ready.relativeSegments.at(-1) !== slug;
     } catch {
       return true;
     }
@@ -88,7 +93,7 @@ export class LocalWorkspaceAuthority {
 
   async relocate(
     binding: LocalWorkspaceBindingRequest,
-    slug: string,
+    slug: string | null,
     adopt: boolean,
     createdBy: UserId,
     signal?: AbortSignal,

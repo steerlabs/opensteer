@@ -114,7 +114,11 @@ export const HostWorkspaceLocalRequestSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...workspaceLocalRequestBase,
     type: z.literal("host.workspace.local.relocate"),
-    slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,127}$/),
+    /** Null adopts Main at its managed path; a slug selects a nested Project. */
+    slug: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+      .nullable(),
     createdBy: UserIdSchema,
     adopt: z.boolean(),
   }),

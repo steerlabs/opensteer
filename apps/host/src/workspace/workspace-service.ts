@@ -269,20 +269,21 @@ export class WorkspaceService {
 
   async adoptRelocated(workspaceId: WorkspaceId, requestedBy: UserId): Promise<Workspace> {
     const workspace = await this.#store.getWorkspaceForOwner(workspaceId, requestedBy);
-    if (
-      !workspace ||
-      workspace.kind !== "project" ||
-      workspace.status === "deleting" ||
-      workspace.status === "deleted"
-    )
-      throw new OpensteerError({ code: "not_found", message: "Project not found" });
+    if (!workspace || workspace.status === "deleting" || workspace.status === "deleted")
+      throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
     if (workspace.storageIssue?.code !== "relocation-required")
       throw new OpensteerError({
         code: "conflict",
-        message: "This Project is not awaiting relocation confirmation",
+        message: "This Workspace is not awaiting relocation confirmation",
       });
-    const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
-    if (!main || main.backing.kind !== "local-directory" || main.status !== "ready")
+    const main =
+      workspace.kind === "project"
+        ? await this.#store.findMainWorkspaceForOwner(workspace.createdBy)
+        : null;
+    if (
+      workspace.kind === "project" &&
+      (!main || main.backing.kind !== "local-directory" || main.status !== "ready")
+    )
       throw new OpensteerError({
         code: "workspace_unavailable",
         message: "Connect the computer holding Main first",
@@ -293,10 +294,13 @@ export class WorkspaceService {
         capacityPolicy: { kind: "host-filesystem" },
         createdBy: workspace.createdBy,
         idempotencyKey: `workspace:${workspace.id}:adopt:v1`,
-        kind: "project",
+        kind: workspace.kind,
         name: workspace.name,
         workspaceId: workspace.id,
-        ownerEnvironmentId: main.backing.ownerEnvironmentId,
+        ownerEnvironmentId:
+          main?.backing.kind === "local-directory"
+            ? main.backing.ownerEnvironmentId
+            : await this.#ownerEnvironmentId(workspace.createdBy),
       }),
       ...(workspace.backing.kind === "local-directory"
         ? { bindingId: workspace.backing.bindingId, generation: workspace.backing.generation }

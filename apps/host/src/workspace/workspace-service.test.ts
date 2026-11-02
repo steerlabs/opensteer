@@ -784,3 +784,38 @@ it.each(["/Users/person/Main", "C:\\Users\\person\\Main"])(
     await expect(offline.projectPath(project)).rejects.toThrow("unavailable");
   },
 );
+
+it("adopts Main on the Host's local Runner only after its owner confirms relocation", async () => {
+  const main: Workspace = {
+    ...localWorkspace(),
+    kind: "main",
+    status: "failed",
+    storageIssue: {
+      code: "relocation-required",
+      message: "Restore Main on this computer, then confirm the move",
+      retryable: false,
+      occurredAt: new Date().toISOString(),
+    },
+  };
+  const harness = createStore([main]);
+  const relocate = vi.fn(async () => undefined);
+  const service = localService(harness.store, { relocate });
+  await expect(service.ensureExecutionReady(main)).rejects.toThrow(/Restore Main/);
+  await expect(service.adoptRelocated(main.id, createId("user"))).rejects.toThrow(/not found/);
+  expect(relocate).not.toHaveBeenCalled();
+  const adopted = await service.adoptRelocated(main.id, main.createdBy);
+  expect(relocate).toHaveBeenCalledWith(
+    expect.objectContaining({
+      id: main.id,
+      kind: "main",
+      backing: expect.objectContaining({
+        kind: "local-directory",
+        ownerEnvironmentId: localEnvironmentId,
+        storageAuthorityId: localStorageAuthorityId,
+      }),
+    }),
+    true,
+  );
+  expect(adopted.status).toBe("ready");
+  expect(adopted.storageIssue).toBeNull();
+});

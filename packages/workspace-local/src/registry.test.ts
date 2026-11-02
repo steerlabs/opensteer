@@ -162,3 +162,56 @@ it.each(["missing", "symlink", "bound", "success"])("explicit adoption: %s", asy
     expect((await f.reopen().getReadyBinding(f.input)).relocation?.state).toBe("bound");
   } else await expect(result).rejects.toThrow(outcome === "bound" ? /bound/ : undefined);
 });
+
+it.each(["single-owner", "owner-scoped"] as const)(
+  "adopts an explicitly relocated Main on %s storage and preserves its files",
+  async (namespace) => {
+    const f = await fixture(namespace);
+    const doc = await f.document();
+    doc.bindings = [];
+    await writeFile(f.options.registryFilePath, JSON.stringify(doc));
+    const mainPath = f.registry.resolvePath(f.main);
+    await writeFile(path.join(mainPath, "keep.txt"), "Main data");
+    const input = {
+      bindingId: f.main.bindingId,
+      generation: f.main.generation,
+      workspaceId: f.main.workspaceId,
+      ownerEnvironmentId: f.main.ownerEnvironmentId,
+      createdBy: f.main.createdBy,
+      slug: null,
+      adopt: true,
+    };
+    await f.reopen().relocate(input);
+    await f.reopen().relocate(input);
+    const adopted = await f.reopen().getReadyBinding(input);
+    expect(adopted.provisionFingerprint.kind).toBe("main");
+    expect(adopted.filesystemIdentity).toEqual(f.main.filesystemIdentity);
+    expect(await readFile(path.join(mainPath, "keep.txt"), "utf8")).toBe("Main data");
+    expect(f.move).not.toHaveBeenCalled();
+    await expect(
+      f.reopen().relocate({ ...input, bindingId: createId("workspaceBinding") }),
+    ).rejects.toThrow(/bound/);
+  },
+);
+
+it.each(["missing", "symlink", "unconfirmed"])("refuses Main adoption: %s", async (outcome) => {
+  const f = await fixture("single-owner");
+  const doc = await f.document();
+  doc.bindings = [];
+  await writeFile(f.options.registryFilePath, JSON.stringify(doc));
+  const mainPath = f.registry.resolvePath(f.main);
+  if (outcome !== "unconfirmed") await rm(mainPath, { recursive: true });
+  if (outcome === "symlink") await symlink(f.source, mainPath);
+  await expect(
+    f.reopen().relocate({
+      bindingId: f.main.bindingId,
+      generation: f.main.generation,
+      workspaceId: f.main.workspaceId,
+      ownerEnvironmentId: f.main.ownerEnvironmentId,
+      createdBy: f.main.createdBy,
+      slug: null,
+      adopt: outcome !== "unconfirmed",
+    }),
+  ).rejects.toThrow();
+  expect((await f.document()).bindings).toEqual([]);
+});

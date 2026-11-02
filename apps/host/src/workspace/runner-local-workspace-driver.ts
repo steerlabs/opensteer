@@ -148,7 +148,7 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
   }
 
   async relocate(workspace: LocalWorkspace, adopt = false): Promise<void> {
-    if (!workspace.slug) throw new Error("Project slug is missing");
+    if (workspace.kind === "project" && !workspace.slug) throw new Error("Project slug is missing");
     await this.#request(
       workspace.backing,
       {
@@ -156,7 +156,7 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
         operationId: `workspace:${workspace.id}:relocate:v1`,
         requestId: randomUUID(),
         type: "host.workspace.local.relocate",
-        slug: workspace.slug,
+        slug: workspace.kind === "main" ? null : workspace.slug!,
         createdBy: workspace.createdBy,
         adopt,
       },

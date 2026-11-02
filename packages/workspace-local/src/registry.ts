@@ -361,7 +361,7 @@ export class LocalWorkspaceRegistry {
     readonly bindingId: WorkspaceBindingId;
     readonly workspaceId: WorkspaceId;
     readonly generation: number;
-    readonly slug: string;
+    readonly slug: string | null;
     readonly adopt?: boolean;
     readonly createdBy?: ProvisionFingerprint["createdBy"];
     readonly ownerEnvironmentId?: EnvironmentId;
@@ -370,6 +370,76 @@ export class LocalWorkspaceRegistry {
     await withRegistryWriteLock(this.#options.registryFilePath, async () => {
       let document = await this.#readOrCreateRegistry(input.signal);
       let binding = document.bindings.find((candidate) => candidate.bindingId === input.bindingId);
+      if (input.slug === null) {
+        if (!input.adopt || !input.createdBy || !input.ownerEnvironmentId)
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "Main adoption requires explicit confirmation and its owner.",
+          });
+        assertOwnerAllowed(this.#options.namespace, input.ownerEnvironmentId);
+        if (binding) {
+          if (
+            binding.state !== "ready" ||
+            binding.workspaceId !== input.workspaceId ||
+            binding.generation !== input.generation ||
+            binding.createdBy !== input.createdBy ||
+            binding.ownerEnvironmentId !== input.ownerEnvironmentId ||
+            binding.provisionFingerprint.kind !== "main"
+          )
+            throw new LocalWorkspaceError({
+              code: LocalWorkspaceErrorCode.workspaceMismatch,
+              message: "Main binding does not match adoption.",
+            });
+          await this.#assertWorkspaceIdentity(binding);
+          return;
+        }
+        const fingerprint: ProvisionFingerprint = {
+          kind: "main",
+          createdBy: input.createdBy,
+          ownerEnvironmentId: input.ownerEnvironmentId,
+          workspaceId: input.workspaceId,
+        };
+        const target = [
+          ...workspacePathSegments(
+            { createdBy: input.createdBy, id: input.workspaceId, kind: "main" },
+            this.#options.namespace.kind,
+          ),
+        ];
+        if (
+          document.bindings.some(
+            (candidate) =>
+              candidate.workspaceId === input.workspaceId ||
+              (candidate.createdBy === input.createdBy &&
+                candidate.provisionFingerprint.kind === "main") ||
+              equalSegments(
+                candidate.relativeSegments.map((segment) => segment.toLowerCase()),
+                target.map((segment) => segment.toLowerCase()),
+              ),
+          )
+        )
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "Main is already bound.",
+          });
+        const filesystemIdentity = await this.#readDirectoryIdentity(target);
+        const adopted: ReadyRegistryBinding = {
+          bindingId: input.bindingId,
+          generation: input.generation,
+          createdBy: input.createdBy,
+          ownerEnvironmentId: input.ownerEnvironmentId,
+          workspaceId: input.workspaceId,
+          idempotencyKey: `workspace:${input.workspaceId}:adopt:v1`,
+          state: "ready",
+          filesystemIdentity,
+          relativeSegments: target,
+          provisionFingerprint: fingerprint,
+        };
+        await writeRegistryAtomic(
+          this.#options.registryFilePath,
+          nextDocument(document, [...document.bindings, adopted]),
+        );
+        return;
+      }
       if (!binding && input.adopt && input.createdBy && input.ownerEnvironmentId) {
         const main = document.bindings.find(
           (candidate) =>
