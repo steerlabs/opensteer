@@ -204,7 +204,8 @@ Sessions without the engine clipboard retain their released copy publication, wi
 and other sensitive input values excluded.
 
 A page's uncanceled context-menu event reports editable/selection facts and an
-optional link URL only to the controller who right-clicked. A page that cancels
+optional link URL only to the controller who invoked it through right-click, macOS
+control-click, Menu or Shift+F10. A page that cancels
 the event retains its own menu. Diagnostic counters record operation kinds,
 refusal reasons and clipboard outcomes without keys, text or clipboard bytes.
 

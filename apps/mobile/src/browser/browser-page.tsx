@@ -140,6 +140,7 @@ export function BrowserPage(props: {
   const proxy = useRef<NativeEditingProxyHandle>(null);
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [pageFocused, setPageFocused] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
   const openingTab = useRef(false);
   useEffect(() => () => onTyping(false), [onTyping]);
@@ -573,6 +574,9 @@ export function BrowserPage(props: {
               zoom={zoom.scale}
               onScroll={() => setMayType(false)}
               onTap={() => {
+                setAddressOpen(false);
+                setAddressDraft(null);
+                setPageFocused(true);
                 // A page that reports its fields keeps the keyboard up from one
                 // field to the next and puts it away when nothing has focus.
                 if (!editing.get().negotiated) setTyping(false);
@@ -690,7 +694,10 @@ export function BrowserPage(props: {
                 accessibilityHint="Types into the page"
                 accessibilityLabel="Keyboard"
                 accessibilityRole="button"
-                onPress={() => setTyping(true)}
+                onPress={() => {
+                  setPageFocused(true);
+                  setTyping(true);
+                }}
                 style={({ pressed }) => pressed && styles.pressed}
               >
                 <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
@@ -701,9 +708,16 @@ export function BrowserPage(props: {
           ) : null}
         </View>
       </GestureDetector>
-      {keyboardOpen ? (
+      {ready && tab !== undefined && !addressOpen && !dialog && !signingIn ? (
         <PageTyping
           ref={proxy}
+          focused={pageFocused}
+          softKeyboard={keyboardOpen}
+          onBlur={() => {
+            setPageFocused(false);
+            setTyping(false);
+            setMayType(false);
+          }}
           onDone={() => {
             setTyping(false);
             setMayType(false);
@@ -713,11 +727,8 @@ export function BrowserPage(props: {
           legacy={!editingState.negotiated}
           sendOperation={(operation) => editing.send(operation)}
         />
-      ) : regular ? null : addressOpen ? (
-        editor
-      ) : (
-        bar
-      )}
+      ) : null}
+      {keyboardOpen || regular ? null : addressOpen ? editor : bar}
     </View>
   );
 }
@@ -980,36 +991,51 @@ function noop(): void {}
  */
 export function PageTyping(props: {
   readonly onDone: () => void;
+  readonly focused?: boolean;
+  readonly softKeyboard?: boolean;
+  readonly onBlur?: () => void;
   readonly context: EditingContext | null;
   readonly sendOperation: (operation: EditingOperation) => boolean;
   readonly abilities?: EditingTargetAbilities;
   readonly legacy?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }): ReactNode {
+  const input =
+    props.legacy && props.softKeyboard !== false ? (
+      <LegacyInput sendOperation={props.sendOperation} onDone={props.onDone} />
+    ) : (
+      <NativeEditingProxy
+        ref={props.ref ?? null}
+        context={props.context}
+        focused={props.focused ?? true}
+        softKeyboard={props.softKeyboard ?? true}
+        sendOperation={props.sendOperation}
+        onDone={props.onBlur ?? props.onDone}
+        {...(props.abilities ? { abilities: props.abilities } : {})}
+      />
+    );
   return (
-    <Toolbar edge="bottom" testID="page-typing">
-      <ToolbarCapsule style={styles.typingField}>
-        <View style={styles.typingGlyph}>
-          <Symbol name="keyboard" size={16} tint={color.muted} />
-        </View>
-        {props.legacy ? (
-          <LegacyInput sendOperation={props.sendOperation} onDone={props.onDone} />
-        ) : (
-          <NativeEditingProxy
-            ref={props.ref ?? null}
-            context={props.context}
-            sendOperation={props.sendOperation}
-            onDone={props.onDone}
-            {...(props.abilities ? { abilities: props.abilities } : {})}
-          />
-        )}
-      </ToolbarCapsule>
-      <ToolbarButton label="Done" onPress={props.onDone} selected symbol="checkmark" />
-    </Toolbar>
+    <View
+      accessibilityElementsHidden={props.softKeyboard === false}
+      importantForAccessibility={props.softKeyboard === false ? "no-hide-descendants" : "auto"}
+      pointerEvents={props.softKeyboard === false ? "none" : "auto"}
+      style={props.softKeyboard === false ? styles.hardwareInput : undefined}
+    >
+      <Toolbar edge="bottom" {...(props.softKeyboard === false ? {} : { testID: "page-typing" })}>
+        <ToolbarCapsule style={styles.typingField}>
+          <View style={styles.typingGlyph}>
+            <Symbol name="keyboard" size={16} tint={color.muted} />
+          </View>
+          {input}
+        </ToolbarCapsule>
+        <ToolbarButton label="Done" onPress={props.onDone} selected symbol="checkmark" />
+      </Toolbar>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  hardwareInput: { position: "absolute", width: 1, height: 1, overflow: "hidden" },
   bottom: { bottom: space[12], left: space[12], position: "absolute", right: space[12] },
   card: {
     ...material.float,
