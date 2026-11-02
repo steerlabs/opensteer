@@ -29,8 +29,8 @@ const fixtureNames = new Set([
   "noisy.h264",
   "red-blue-64x48.jpg",
   "green-yellow-48x64.jpg",
-  "lime-key-64x64.h264",
-  "blue-delta-64x64.h264",
+  "lime-key-128x128.h264",
+  "blue-delta-128x128.h264",
 ]);
 const results: { step: string; passed: boolean; details: unknown }[] = [];
 let started = false;

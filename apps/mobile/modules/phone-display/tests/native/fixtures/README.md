@@ -11,3 +11,7 @@ Generate two concatenated lavfi colour sources (lime then blue) at 1512x982
 -b:v 2500k -bsf:v h264_metadata=aud=insert -f h264`.
 For noise use `nullsrc=size=1920x1248:rate=30,geq=lum=random(1)*255:cb=random(2)*255:cr=random(3)*255`
 and `-frames:v 1` with the same encoder options.
+
+The 128×128 lime key and blue delta use the same encoder recipe. They stay above
+the emulator hardware AVC decoder minimum (96×96); 64×64 selects the software
+decoder, which buffers still pictures despite zero reordered frames.

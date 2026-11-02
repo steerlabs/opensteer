@@ -435,18 +435,18 @@ function Journey() {
       if (native === null) throw new Error("display decoder ref missing");
       const binary = phoneDisplayBinary();
       const [key, delta] = await Promise.all([
-        fixture("lime-key-64x64.h264"),
-        fixture("blue-delta-64x64.h264"),
+        fixture("lime-key-128x128.h264"),
+        fixture("blue-delta-128x128.h264"),
       ]);
       const frame = (
         epoch: string,
         key: boolean,
         pts: number,
         replayed = false,
-      ): DisplayFrameMetadata => ({ epoch, width: 64, height: 64, pts, key, replayed });
+      ): DisplayFrameMetadata => ({ epoch, width: 128, height: 128, pts, key, replayed });
       const area = await measure(videoBox);
       const center = (color: Color, label: string): Probe[] => [
-        { ...at(fit(area, 64, 64), 0.5, 0.5), color, label },
+        { ...at(fit(area, 128, 128), 0.5, 0.5), color, label },
       ];
       const black: Color = [0, 0, 0];
 
@@ -462,7 +462,7 @@ function Journey() {
       const announced = await readyE1;
       await expect(
         "onReady names the source epoch and size",
-        announced.epoch === "e1" && announced.width === 64 && announced.height === 64,
+        announced.epoch === "e1" && announced.width === 128 && announced.height === 128,
         announced,
       );
       await check("video-key", center([0, 255, 0], "lime key frame"));
