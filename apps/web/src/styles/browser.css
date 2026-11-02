@@ -1340,3 +1340,60 @@ button.browser-download__file:hover {
   margin-top: 3px;
   color: var(--text-soft);
 }
+
+.browser-touch-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.browser-touch-view > .browser-canvas {
+  flex: 1;
+}
+.browser-touch-tools {
+  display: none;
+}
+.browser-touch-tools.is-phone {
+  display: flex;
+}
+@media (any-pointer: coarse) {
+  .browser-touch-tools {
+    display: flex;
+  }
+}
+.browser-touch-tools {
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-8);
+  font-size: var(--text-xs);
+  color: var(--text-soft);
+}
+.browser-touch-tools > button {
+  min-height: 44px;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4) var(--space-8);
+  color: var(--text);
+  background: var(--surface-elevated);
+}
+.browser-touch-tools > button[aria-pressed="true"] {
+  background: var(--fill-plate);
+}
+.browser-touch-contact {
+  position: absolute;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.18);
+  pointer-events: none;
+}
+
+.browser-touch-view .browser-frame > canvas,
+.browser-touch-view .browser-frame > .browser-crop-cue {
+  transform: translate(var(--browser-touch-x, 0px), var(--browser-touch-y, 0px))
+    scale(var(--browser-touch-scale, 1));
+  transform-origin: calc(0px - var(--browser-frame-left, 0px))
+    calc(0px - var(--browser-frame-top, 0px));
+}

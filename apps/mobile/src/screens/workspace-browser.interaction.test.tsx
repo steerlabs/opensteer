@@ -11,6 +11,7 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import { BrowserPageContentPartSchema } from "@opensteer/core";
 import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
@@ -293,9 +294,14 @@ vi.mock("../ui/motion.js", () => ({
   exit: undefined,
   move: undefined,
 }));
-vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
+vi.mock("expo-clipboard", () => ({
+  setStringAsync: vi.fn(async () => true),
+  getStringAsync: vi.fn(async () => "clipboard"),
+}));
 vi.mock("../ui/sheet.js", () => ({
-  Sheet: ({ children }: { children?: ReactNode }) => <section>{children}</section>,
+  Sheet: ({ children, title }: { children?: ReactNode; title: string }) => (
+    <section aria-label={title}>{children}</section>
+  ),
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({
@@ -371,24 +377,48 @@ vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () =
 vi.mock("../browser/browser-stream.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../browser/browser-stream.js")>()),
   BrowserStream: ({
+    onPresentedGeometry,
+    onPointerDown,
+    dragSelect,
+    onDragEnd,
     session,
     active,
     onTap,
     tabId,
   }: {
+    onPresentedGeometry?: (revision: number | null) => void;
+    onPointerDown?: () => void;
+    dragSelect?: boolean;
+    onDragEnd?: () => void;
     session: BrowserSessionSummary;
     active: boolean;
     onTap?: () => void;
     tabId: string;
-  }) => (
-    <PageProbe>
-      <div data-active={active} data-expected-surface={tabId ?? "current"}>
-        Viewing {session.id}
-        {/* Stands in for a tap the page took. */}
-        <button onClick={onTap}>Tap the page</button>
-      </div>
-    </PageProbe>
-  ),
+  }) => {
+    useEffect(() => onPresentedGeometry?.(7), [onPresentedGeometry]);
+    return (
+      <PageProbe>
+        <div
+          data-drag-select={dragSelect}
+          data-active={active}
+          data-expected-surface={tabId ?? "current"}
+        >
+          Viewing {session.id}
+          {/* Stands in for a tap the page took. */}
+          <button
+            onClick={() => {
+              onPointerDown?.();
+              onTap?.();
+            }}
+          >
+            Tap the page
+          </button>
+          <button onClick={onPointerDown}>Contact the page</button>
+          {dragSelect ? <button onClick={onDragEnd}>Finish selection</button> : null}
+        </div>
+      </PageProbe>
+    );
+  },
 }));
 vi.mock("../computers/mac-app-view.js", () => ({
   MacAppPreview: () => null,
@@ -2305,6 +2335,13 @@ describe("native page layout and controls", () => {
     expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
     press(container, "Release page keyboard");
     expect(input()?.dataset.focused).toBe("false");
+    press(container, "Drag/select");
+    press(container, "Contact the page");
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("false");
+    press(container, "Finish selection");
+    press(container, "Release page keyboard");
+    expect(input()?.dataset.focused).toBe("false");
     press(container, "Tap the page");
     expect(input()?.dataset.focused).toBe("true");
     act(() =>
@@ -2351,5 +2388,88 @@ describe("native page layout and controls", () => {
     );
     expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
     expect(element(container, "Keyboard")).toBeNull();
+  });
+});
+
+it("opens controller page actions only from matching streamed facts and offers one-shot Drag/select", () => {
+  const wire = vi.fn();
+  const editing = new BrowserEditingStore(wire);
+  editing.negotiate("chosen", 1);
+  state.hostClient = {
+    sendBrowserCommand: vi.fn(),
+    browserFrames: { editing, subscribe: () => () => undefined },
+  };
+  const chosen = mailSession("chosen");
+  const surfaceId = chosen.tabs[0]!.id;
+  const { container, render } = setup({ sessionId: chosen.id, tabId: surfaceId });
+  state.snapshot = snapshot([chosen]);
+  render();
+  expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
+  press(container, "Drag/select");
+  expect(container.querySelector('[data-drag-select="true"]')).not.toBeNull();
+  press(container, "Finish selection");
+  expect(container.querySelector('[data-drag-select="true"]')).toBeNull();
+  const menu = {
+    type: "browser.contextmenu" as const,
+    surfaceId,
+    editable: false,
+    selection: false,
+    x: 0.5,
+    y: 0.5,
+  };
+  act(() => editing.receive(chosen.id, { ...menu, geometryRevision: 6 }));
+  expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
+  act(() => editing.receive(chosen.id, { ...menu, geometryRevision: 7 }));
+  expect(container.querySelector('section[aria-label="Page actions"]')).not.toBeNull();
+  press(container, "Select all");
+  expect(wire).toHaveBeenCalledWith(chosen.id, surfaceId, {
+    type: "input.command",
+    surfaceId,
+    command: "selectAll",
+  });
+  expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
+  act(() => editing.receive(chosen.id, { ...menu, geometryRevision: 7 }));
+  press(container, "Reload");
+  expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
+});
+
+it("fences a menu clipboard read when another page contact changes its destination", async () => {
+  const wire = vi.fn();
+  const editing = new BrowserEditingStore(wire);
+  editing.negotiate("chosen", 2);
+  state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
+  const chosen = mailSession("chosen");
+  const surfaceId = chosen.tabs[0]!.id;
+  const { container, render } = setup({ sessionId: chosen.id, tabId: surfaceId });
+  state.snapshot = snapshot([chosen]);
+  render();
+  const menu = () =>
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.contextmenu",
+        surfaceId,
+        geometryRevision: 7,
+        editable: true,
+        selection: false,
+        x: 0.5,
+        y: 0.5,
+      }),
+    );
+  const read = Promise.withResolvers<string>();
+  vi.mocked(Clipboard.getStringAsync).mockReturnValueOnce(read.promise);
+  menu();
+  press(container, "Paste");
+  press(container, "Tap the page");
+  await act(async () => {
+    read.resolve("wrong destination");
+    await read.promise;
+  });
+  expect(wire).not.toHaveBeenCalled();
+  menu();
+  await pressAsync(container, "Paste");
+  expect(wire).toHaveBeenCalledExactlyOnceWith(chosen.id, surfaceId, {
+    type: "clipboard.paste",
+    surfaceId,
+    text: "clipboard",
   });
 });
