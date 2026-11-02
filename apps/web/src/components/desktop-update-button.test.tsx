@@ -49,21 +49,21 @@ it("offers the download, its progress and the restart, and confirms a download f
   const show = (change: Partial<DesktopUpdateState>) => act(() => push(state(change)));
 
   show({ status: "available" });
-  expect(button().textContent).toBe("Update available");
-  expect(button().title).toBe("Download version 0.1.397");
+  expect(button().getAttribute("aria-label")).toBe("Download update 0.1.397");
   act(() => button().click());
   expect(bridge.download).toHaveBeenCalledOnce();
 
   show({ status: "downloading", downloadPercent: 41 });
-  expect(button().textContent).toBe("Downloading update… 41%");
-  expect(button().disabled).toBe(true);
+  expect(button().getAttribute("aria-label")).toBe("Downloading update… 41%");
+  act(() => button().click());
+  expect(bridge.download).toHaveBeenCalledOnce();
   expect(container.textContent).not.toContain("Update downloaded");
 
   // Settings or a collapsed sidebar hides the button while the download finishes.
   await render(false);
   show({ status: "downloaded" });
   await render(true);
-  expect(button().textContent).toBe("Restart to update");
+  expect(button().getAttribute("aria-label")).toBe("Restart to update 0.1.397");
   expect(container.querySelector('[role="status"]')?.textContent).toBe(
     "Update downloaded. Restart to install it.",
   );
@@ -71,7 +71,7 @@ it("offers the download, its progress and the restart, and confirms a download f
   expect(bridge.restart).toHaveBeenCalledOnce();
 
   show({ status: "error", failed: "download" });
-  expect(button().textContent).toBe("Update failed. Try again");
+  expect(button().getAttribute("aria-label")).toBe("Update failed. Try again");
   act(() => button().click());
   expect(bridge.download).toHaveBeenCalledTimes(2);
 
