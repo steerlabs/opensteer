@@ -256,7 +256,10 @@ async function setup(
                   viewId: "owner-view",
                   generation: 1,
                   state: "ready",
-                  target: { kind: "app", app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null } },
+                  target: {
+                    kind: "app",
+                    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+                  },
                   expiresAt: "2099-01-01T00:00:00.000Z",
                 },
               ]
@@ -1056,7 +1059,8 @@ it("revokes picture input and requests a key when the decoder loses its picture"
   );
   expect(socket.sent.slice(before)).toContainEqual({ type: "display.keyframe" });
   expect(socket.sent.slice(before)).toContainEqual({ type: "display.input-reset" });
-  const keyboard = () => container.querySelector<HTMLButtonElement>('button[aria-label="Keyboard"]');
+  const keyboard = () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="Keyboard"]');
   expect(keyboard()?.disabled).toBe(true);
   // A key can already be queued when the asynchronous loss event reaches JS.
   await act(async () =>

@@ -131,7 +131,11 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
 
   const sections = useMemo(
     (): readonly Section[] =>
-      groups.map((group) => ({ key: `${group.kind}:${group.machineId}`, group, data: group.items })),
+      groups.map((group) => ({
+        key: `${group.kind}:${group.machineId}`,
+        group,
+        data: group.items,
+      })),
     [groups],
   );
 
@@ -146,7 +150,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     [deploymentId, navigation],
   );
 
-  const open = useCallback(
+  const openApp = useCallback(
     async (app: ApprovedComputerApp, target: ComputerViewTarget, key: string) => {
       const held = heldView(places, app, target);
       if (held !== null) {
@@ -183,6 +187,11 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
       }
     },
     [deploymentId, hostClient, navigation, places, show],
+  );
+  const open = useCallback(
+    (app: ApprovedComputerApp, target: ComputerViewTarget, key: string) =>
+      void openApp(app, target, key),
+    [openApp],
   );
 
   const renderItem = useCallback(
@@ -228,8 +237,8 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
               </View>
               <AppText role="bodyMedium">No apps to open yet</AppText>
               <AppText role="secondary" style={styles.centred} tone="muted">
-                On your Mac, choose the apps Opensteer may use. They appear here to open from
-                your phone.
+                On your Mac, choose the apps Opensteer may use. They appear here to open from your
+                phone.
               </AppText>
             </View>
           )
@@ -263,7 +272,8 @@ function heldView(
   return (
     places.find((place) => {
       const view = place.ownerView;
-      if (view === null || view.machineId !== app.machineId || view.state === "closed") return false;
+      if (view === null || view.machineId !== app.machineId || view.state === "closed")
+        return false;
       if (target.kind === "phone") return view.target.kind === "phone";
       if (view.target.kind !== "app") return false;
       if (view.target.app.bundleId.toLowerCase() !== target.app.bundleId.toLowerCase())
@@ -353,7 +363,11 @@ const AppRow = memo(function AppRow(props: {
         </View>
       )}
       <View style={styles.words}>
-        <AppText numberOfLines={1} role="bodyMedium" tone={props.disabled && !busy ? "muted" : "default"}>
+        <AppText
+          numberOfLines={1}
+          role="bodyMedium"
+          tone={props.disabled && !busy ? "muted" : "default"}
+        >
           {app.name}
         </AppText>
         {detail === null ? null : (

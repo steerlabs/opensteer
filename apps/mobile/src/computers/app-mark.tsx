@@ -58,7 +58,8 @@ export function MacAppIcon(props: {
 }): ReactNode {
   const size = props.size ?? 32;
   const png = useAppIcon(props.hostClient, props.machineId, props.app);
-  if (png === null) return <AppMark blocked={props.blocked} name={props.app.displayName} size={size} />;
+  if (png === null)
+    return <AppMark blocked={props.blocked} name={props.app.displayName} size={size} />;
   return (
     <Image
       accessibilityIgnoresInvertColors
