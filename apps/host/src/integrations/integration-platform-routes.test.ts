@@ -50,7 +50,7 @@ describe("integration platform OAuth routes", () => {
       actorUserId: userId,
       isAdministrator: false,
       requestId: "test-request",
-      settlementSessionId: context.session.id,
+      settlementSessionId: context.session?.id,
     });
   });
 
