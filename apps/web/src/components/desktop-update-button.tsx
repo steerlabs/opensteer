@@ -44,7 +44,7 @@ export function desktopUpdateButton(state: DesktopUpdateState): {
     case "error":
       return state.failed === "download"
         ? {
-            label: "Update didn't download. Try again",
+            label: "Update failed. Try again",
             action: "download",
             tone: "danger",
             icon: "alert-circle",

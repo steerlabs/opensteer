@@ -71,7 +71,7 @@ it("offers the download, its progress and the restart, and confirms a download f
   expect(bridge.restart).toHaveBeenCalledOnce();
 
   show({ status: "error", failed: "download" });
-  expect(button().getAttribute("aria-label")).toBe("Update didn't download. Try again");
+  expect(button().getAttribute("aria-label")).toBe("Update failed. Try again");
   act(() => button().click());
   expect(bridge.download).toHaveBeenCalledTimes(2);
 

@@ -1295,9 +1295,14 @@ button.side-needs:hover {
   background: var(--sheen) var(--surface-elevated);
   box-shadow: var(--edge-plate), var(--lift-float);
   color: var(--text-soft);
+  /* Right-aligned to the mark, so it grows left; this cap keeps it inside
+     the narrowest sidebar, which clips, and longer labels wrap instead. */
+  width: max-content;
+  max-width: 176px;
   font-size: var(--text-sm);
   line-height: 1.35;
-  white-space: nowrap;
+  text-align: left;
+  text-wrap: balance;
   pointer-events: none;
   opacity: 0;
   translate: 0 2px;
