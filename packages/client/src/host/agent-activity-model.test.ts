@@ -1928,6 +1928,18 @@ describe("quiet Chat", () => {
       ),
     ).toEqual([reply]);
   });
+  it("never counts an automatic input as incoming, claimed or joined into a person's turn", () => {
+    const unclaimed = input({ author: startedBy, sequence: "10", runId: null });
+    const question = input({ sequence: "11" });
+    const joined = input({ author: startedBy, sequence: "12" });
+    const entries = [unclaimed, question, joined, run()];
+    expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([question]);
+    expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([
+      unclaimed,
+      question,
+      joined,
+    ]);
+  });
   it("keeps the same drawn row when an older page prepends folded steps", () => {
     const reply = message();
     const completed = run({ replyMessageId: reply.id });

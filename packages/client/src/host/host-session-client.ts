@@ -2786,9 +2786,9 @@ export class HttpHostClient {
       history,
       page,
       window,
-      // Only a window that reached what the Thread draws may stand in for it in
-      // the saved Home; a capped scan that drew nothing must not replace it.
-      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) > 0,
+      // Only a window that reached its target may stand in for the Thread in
+      // the saved Home; a budget-capped scan must not replace a fuller one.
+      complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) >= fillRows,
     };
   }
 

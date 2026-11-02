@@ -3435,6 +3435,25 @@ describe("HttpHostClient durable realtime", () => {
       },
     );
 
+    it("does not certify saved Home from an older Host's opening that stopped short of a screen", async () => {
+      const f = await openThread("conversation", ["history-turns-v1"]);
+      try {
+        f.pages["4"]!.nextBefore = "x";
+        f.pages.x = { events: [], nextBefore: "y" };
+        f.pages.y = { events: [], nextBefore: "z" };
+        await finishOpening(f);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", "x", "y"]);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
+        expect(f.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
+          status: "window",
+          latest: false,
+        });
+        expect(projectSavedHome(f.client.getSnapshot())).toBeUndefined();
+      } finally {
+        f.client.dispose();
+      }
+    });
+
     it("caps a scan of small empty pages by page count", async () => {
       const f = await openThread("conversation", [], { scan: true });
       try {
