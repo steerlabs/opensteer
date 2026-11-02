@@ -93,24 +93,24 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
         await sql`
           create schema visibility_migration_fixture;
           set local search_path to visibility_migration_fixture;
-          create table messages (id text primary key, author jsonb, run_id text, kind text);
+          create table messages (id text primary key, author jsonb, run_id text, kind text, thread_id text, sequence bigint);
           create table runs (id text primary key, seed_input_id text, status text, created_at timestamptz default now());
           create table workspace_events (run_id text, type text, data jsonb);
           create table delegations (parent_run_id text);
           create table requests (originating_run_id text);
-          insert into messages select 'seed-' || n, '{"kind":"watch"}', null, 'input' from generate_series(1, 9) n;
+          insert into messages (id, author, run_id, kind) select 'seed-' || n, '{"kind":"watch"}', null, 'input' from generate_series(1, 9) n;
           insert into runs select 'run-' || n, 'seed-' || n,
             case when n = 9 then 'running' when n = 8 then 'failed' when n = 7 then 'interrupted' else 'completed' end
             from generate_series(1, 9) n;
           update messages set author = '{"kind":"human"}' where id = 'seed-2';
-          insert into messages values ('human', '{"kind":"human"}', 'run-3', 'input');
+          insert into messages (id, author, run_id, kind) values ('human', '{"kind":"human"}', 'run-3', 'input');
           insert into workspace_events values ('run-4', 'run.status', '{"personWaiting":true}');
-          insert into messages values ('reply', '{"kind":"agent"}', 'run-5', 'assistant');
+          insert into messages (id, author, run_id, kind) values ('reply', '{"kind":"agent"}', 'run-5', 'assistant');
           insert into delegations values ('run-6');
           insert into requests values ('run-7');
         `.execute(tx);
         await sql`
-          insert into messages select 'large-seed-' || n, '{"kind":"watch"}', null, 'input' from generate_series(1, 100000) n;
+          insert into messages (id, author, run_id, kind) select 'large-seed-' || n, '{"kind":"watch"}', null, 'input' from generate_series(1, 100000) n;
           insert into runs select 'large-run-' || n, 'large-seed-' || n, 'completed', now() from generate_series(1, 100000) n;
           insert into workspace_events select 'large-run-' || n, 'run.completed', '{"personWaiting":false}' from generate_series(1, 100000) n;
           create index on messages (run_id) where kind = 'input';
@@ -166,7 +166,7 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
           false,
         ]);
         const runId = createId("run");
-        await sql`insert into messages values ('waiting-seed', '{"kind":"platform","cause":"test"}', null, 'input')`.execute(
+        await sql`insert into messages (id, author, run_id, kind) values ('waiting-seed', '{"kind":"platform","cause":"test"}', null, 'input')`.execute(
           tx,
         );
         await sql`insert into runs (id, seed_input_id, status) values (${runId}, 'waiting-seed', 'running')`.execute(

@@ -1,3 +1,4 @@
+import { conversationUnreadPredicate } from "./message-visibility.js";
 import { quietRunPredicate } from "./run-visibility.js";
 import {
   ContentPartSchema,
@@ -6567,6 +6568,8 @@ export const runVisibilityMigration: Migration = {
     await sql`
       alter table runs add column person_waited boolean not null default false,
         add column quiet boolean not null default false;
+      create index messages_conversation_unread on messages (thread_id, sequence)
+        where ${conversationUnreadPredicate()};
       create index messages_run_replies on messages (run_id) where kind in ('assistant', 'run-result');
       create index delegations_parent_run on delegations (parent_run_id) where parent_run_id is not null;
       create index runs_seed_input on runs (seed_input_id);

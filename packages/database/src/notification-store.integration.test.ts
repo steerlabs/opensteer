@@ -36,7 +36,7 @@ import {
   type RunnerDescriptor,
   type TaskPage,
 } from "@opensteer/protocol";
-import { sql } from "kysely";
+import { CompiledQuery, PostgresQueryCompiler, sql, type KyselyPlugin } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 import { createDatabase, withDatabaseTransaction } from "./connection.js";
@@ -2012,6 +2012,44 @@ integration("notification decision boundary", () => {
             throughSequence: seed.sequence,
           }),
         ).toMatchObject({ readSequence: seed.sequence, unreadSequence: null });
+        if (home && kind === "watch") {
+          await sql`
+            insert into public.messages (id, thread_id, run_id, content, actor_principal_id,
+              sequence, kind, author)
+            select 'silent-' || source.id || '-' || n, source.thread_id, source.run_id,
+              source.content, source.actor_principal_id, source.sequence + n, 'input', source.author
+            from public.messages source cross join generate_series(1, 5000) n
+            where source.thread_id = ${fixture.threadId} and source.sequence = ${seed.sequence}
+          `.execute(database);
+          await sql`analyze public.messages; analyze public.thread_inputs`.execute(database);
+          const captured: CompiledQuery[] = [];
+          const capture: KyselyPlugin = {
+            transformQuery({ node, queryId }) {
+              captured.push(new PostgresQueryCompiler().compileQuery(node, queryId));
+              return node;
+            },
+            async transformResult({ result }) {
+              return result;
+            },
+          };
+          const measured = new NotificationStateStore(database.withPlugin(capture));
+          expect(
+            await measured.getReadState({ threadId: fixture.threadId, userId: fixture.ownerId }),
+          ).toMatchObject({ readSequence: seed.sequence, unreadSequence: null });
+          if (process.env.OPENSTEER_UNREAD_PLAN_BENCH === "1") {
+            for (const query of captured) {
+              const plan = await database.executeQuery(
+                CompiledQuery.raw("explain (analyze, buffers) " + query.sql, [...query.parameters]),
+              );
+              console.info("UNREAD_PLAN", JSON.stringify(plan.rows));
+            }
+          }
+          await database
+            .deleteFrom("messages")
+            .where("threadId", "=", fixture.threadId)
+            .where("sequence", ">", seed.sequence)
+            .execute();
+        }
         const other = await addMember(fixture, "Other reader");
         const reply = await appendCompletedReply(fixture, text("Visible reply"));
         expect(
