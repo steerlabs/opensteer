@@ -26,7 +26,7 @@ import WebSocket from "ws";
 import { normalizeHostError } from "../server/http-errors.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
-import { macLinkRate } from "./display-link-rate.js";
+import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { ComputerUseError } from "./computer-use-service.js";
@@ -3130,21 +3130,45 @@ describe("viewer-driven phone bitrate", () => {
     },
   );
   it("keeps the original Mac budget while a viewer that cannot report its link watches", async () => {
-    const f = await fixture(true, { mac: true, displayProfile: true });
-    const caps = () =>
-      f.sent.filter((m) => m.type === "host.integrations.display.demand").map((m) => m.maxBitrate);
-    const reporting = await f.viewer(false, false, true);
-    const legacy = await f.viewer();
-    await until(() => caps().at(-1) === 2_500_000);
-    legacy.socket.close();
-    // Lifting the cap is an increase, which waits out the update interval.
-    f.advance(2_000);
-    const mac = await f.phone();
-    await f.state();
-    mac.socket.send(f.frame(1, true));
-    await reporting.received(() => reporting.media().length === 1);
-    reporting.send({ type: "display.ack", sequence: 1 });
-    await until(() => caps().at(-1) === macLinkRate.initialBitrate);
+    // The reporting viewer's link has measured room for 8 Mbps.
+    const ack = vi.spyOn(DisplayLinkRate.prototype, "ack").mockImplementation(function (
+      this: DisplayLinkRate,
+    ) {
+      this.cap = 8_000_000;
+    });
+    try {
+      const f = await fixture(true, { mac: true, displayProfile: true });
+      const caps = () =>
+        f.sent
+          .filter((m) => m.type === "host.integrations.display.demand")
+          .map((m) => m.maxBitrate);
+      const reporting = await f.viewer(false, false, true);
+      const legacy = await f.viewer();
+      const mac = await f.phone();
+      await f.state();
+      let sequence = 0;
+      const deliver = async () => {
+        sequence++;
+        mac.socket.send(f.frame(sequence, sequence === 1));
+        await reporting.received(() => reporting.media().length === sequence);
+        reporting.send({ type: "display.ack", sequence });
+        await reporting.roundTrip();
+      };
+      f.advance(2_000);
+      await deliver();
+      expect(caps().at(-1) ?? macLinkRate.initialBitrate).toBe(2_500_000);
+      // The server confirms the close once it has dropped the viewer.
+      await new Promise((resolve) => {
+        legacy.socket.once("close", resolve);
+        legacy.socket.close();
+      });
+      // Lifting the cap is an increase, which waits out the update interval.
+      f.advance(2_000);
+      await deliver();
+      await until(() => caps().at(-1) === 8_000_000);
+    } finally {
+      ack.mockRestore();
+    }
   });
   it("replays a Mac join from an unmeasured link only when the chain is short", async () => {
     const f = await fixture(true, { mac: true, displayProfile: true });

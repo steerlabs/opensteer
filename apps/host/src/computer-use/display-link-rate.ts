@@ -8,8 +8,6 @@ const drainGain = 0.85;
 /** Long enough that a brief receiver pause cannot erase what the link delivered. */
 const bandwidthWindowMs = 2_000;
 const baseRttWindowMs = 10_000;
-/** A frame this small crosses any usable link in a few milliseconds. */
-const smallFrameBytes = 4 * 1_024;
 
 export interface DisplayLinkRateLimits {
   readonly maximumBitrate: number;
@@ -76,10 +74,10 @@ export class DisplayLinkRate {
   }
 
   /**
-   * The path's round trip, from small frames alone: a first key over a slow link
-   * takes seconds to arrive, and counting that as the path would hide every
-   * queue behind it. Screen content sends small frames whenever it is still or
-   * barely changing; through long motion the last measurement stands.
+   * The path's round trip: the least of recent acknowledgements and of pings
+   * sent while nothing was in flight. A first key over a slow link takes seconds
+   * to be acknowledged, so a ping on an empty path is what reveals the queue
+   * behind it. Through long motion with no fresh measurement the last one stands.
    */
   baseRtt(now: number): number {
     while (this.#rtts.length > 1 && now - this.#rtts[0]!.at > baseRttWindowMs) this.#rtts.shift();
@@ -110,6 +108,11 @@ export class DisplayLinkRate {
     });
   }
 
+  /** A ping answered `ms` after it was sent on an empty path. */
+  roundTrip(ms: number, now: number): void {
+    this.#rtts.push({ at: now, ms });
+  }
+
   /** A viewer reset discards frames it will never acknowledge. */
   forget(): void {
     this.#sent.clear();
@@ -138,7 +141,7 @@ export class DisplayLinkRate {
       this.#samples.push({ at: now, bytesPerMs: sample });
       this.#latest = sample;
     }
-    if (frame.bytes <= smallFrameBytes) this.#rtts.push({ at: now, ms: now - frame.at });
+    this.#rtts.push({ at: now, ms: now - frame.at });
     const gap = this.#lastAck === null ? 0 : now - this.#lastAck;
     const sentGap = this.#lastAckedSentAt === null ? 0 : frame.at - this.#lastAckedSentAt;
     this.#lastAck = now;

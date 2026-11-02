@@ -23,6 +23,7 @@ function simulate(
   let now = 0;
   let sequence = 0;
   let linkFreeAt = 0;
+  let pingedAt = -Infinity;
   const inFlight: { sequence: number; bytes: number; sentAt: number; ackAt: number }[] = [];
   const trace: { at: number; cap: number | null; queueMs: number; skipped: boolean }[] = [];
   for (const step of steps) {
@@ -30,6 +31,11 @@ function simulate(
       while (inFlight[0] && inFlight[0].ackAt <= now) {
         const frame = inFlight.shift()!;
         rate.ack(frame.sequence, frame.ackAt);
+      }
+      // The Host pings an empty path at most every 2 s.
+      if (inFlight.length === 0 && now - pingedAt >= 2_000) {
+        rate.roundTrip(step.rttMs, now);
+        pingedAt = now;
       }
       const bitrate = Math.min(rate.cap ?? limits.maximumBitrate, (step.contentMbps ?? 99) * 1e6);
       const frameMs = 1_000 / 60;

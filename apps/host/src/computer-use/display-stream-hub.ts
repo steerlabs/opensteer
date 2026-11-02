@@ -68,6 +68,8 @@ const displayReplayBudgetMs = 500;
  */
 const macUnmeasuredReplayBytes = 512 * 1_024;
 const displayKeyframeRetryMs = 1_500;
+/** How often a Mac viewer's path is re-measured while it sits empty. */
+const displayRoundTripPingMs = 2_000;
 /** The original Mac budget, kept while a viewer that cannot report its link watches. */
 const macUnmeasuredViewerBitrate = 2_500_000;
 const displayDeliveryEstimateLifetimeMs = 5_000;
@@ -97,6 +99,9 @@ interface Viewer {
   readonly bitrate: DisplayViewerBitrate;
   /** A Mac viewer's measured link; phones keep their own controller. */
   readonly link: DisplayLinkRate | null;
+  /** The payload and send time of this viewer's outstanding round-trip ping. */
+  ping: { readonly payload: string; readonly at: number } | null;
+  pingedAt: number;
   readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
   readonly phoneOwnerControl: boolean;
@@ -522,7 +527,18 @@ export class DisplayStreamHub {
       slowSince: null,
       recoverySample: null,
       deliveryEstimate: null,
+      ping: null,
+      pingedAt: -Infinity,
     };
+    if (viewer.link) {
+      const link = viewer.link;
+      socket.on("pong", (data: Buffer) => {
+        if (viewer.ping?.payload !== data.toString()) return;
+        link.roundTrip(this.#now() - viewer.ping.at, this.#now());
+        viewer.ping = null;
+      });
+      this.#ping(viewer);
+    }
     attached.viewers.add(viewer);
     attached.authorities.set(displaySourceKey(source), { source, actor });
     this.#log(attached, "open");
@@ -1038,6 +1054,7 @@ export class DisplayStreamHub {
       // Any valid acknowledgement is progress, even while a byte-only replay
       // still has more than four frames outstanding.
       viewer.slowSince = null;
+      if (viewer.outstanding.size === 0) this.#ping(viewer);
       if (viewer.waiting && viewer.outstanding.size === 0) {
         const sample = viewer.recoverySample;
         viewer.recoverySample = null;
@@ -1481,6 +1498,19 @@ export class DisplayStreamHub {
         else
           this.#end(stream, displayViewerCloseCodes.tryAgain, "Display command could not be sent");
       });
+  }
+  /**
+   * Measures a Mac viewer's round trip while nothing is in flight. The client's
+   * WebSocket answers below its decoder, and the payload tells this pong from
+   * the liveness check's.
+   */
+  #ping(viewer: Viewer): void {
+    const now = this.#now();
+    if (!viewer.link || viewer.ping || now - viewer.pingedAt < displayRoundTripPingMs) return;
+    if (viewer.socket.readyState !== viewer.socket.OPEN) return;
+    viewer.ping = { payload: `rtt:${now}`, at: now };
+    viewer.pingedAt = now;
+    viewer.socket.ping(viewer.ping.payload);
   }
   #canSend(socket: WebSocket, bytes: number): boolean {
     if (socket.readyState !== socket.OPEN) return false;
