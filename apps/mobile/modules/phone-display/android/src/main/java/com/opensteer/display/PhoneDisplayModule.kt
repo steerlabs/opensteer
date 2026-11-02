@@ -113,8 +113,7 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   @Volatile private var visible = true
   @Volatile private var revision = 0L
   private var codec: MediaCodec? = null
-  private val losses = AtomicInteger(1)
-  private var admittedLoss = 0
+  private val fence = KeyframeFence()
   private val output = HashMap<Long, java.util.ArrayDeque<Boolean>>()
   @Volatile private var pictureWidth = 0
   @Volatile private var pictureHeight = 0
@@ -144,16 +143,16 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   fun reset(next: String) {
     epoch = next
     revision++
-    losses.incrementAndGet()
+    fence.lost()
     onNeedsKeyframe(mapOf("epoch" to next, "pictureGone" to true))
     cover.visibility = View.VISIBLE
     worker.post { release() }
   }
-  fun lost(wanted: String) { if (wanted == epoch) losses.incrementAndGet() }
+  fun lost(wanted: String) { if (wanted == epoch) fence.lost() }
   private fun recover() {
     val wanted = epoch
     revision++
-    losses.incrementAndGet()
+    fence.lost()
     val stamp = revision
     release()
     post {
@@ -179,12 +178,12 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
     if (pending.incrementAndGet() > 4) { pending.decrementAndGet(); lost(wanted); promise.resolve(false); return }
     val stamp = revision
     // A key queued before a later ingress drop cannot repair that drop.
-    val loss = losses.get()
+    val loss = fence.captureLoss()
     worker.post {
       var admitted = false
       try {
         if (wanted != epoch || stamp != revision || !available || !visible || !attached) { promise.resolve(false); return@post }
-        if (admittedLoss != losses.get() && !key) { promise.resolve(false); return@post }
+        if (!fence.allows(key)) { promise.resolve(false); return@post }
         if (codec == null) {
           if (!key) { promise.resolve(false); return@post }
           pictureWidth = width; pictureHeight = height
@@ -222,12 +221,12 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
         buffer.clear(); buffer.put(bytes)
         output.getOrPut(pts) { java.util.ArrayDeque() }.addLast(!replayed)
         decoder.queueInputBuffer(index, 0, bytes.size, pts, 0)
-        if (key) admittedLoss = loss
+        fence.enqueued(key, loss)
         admitted = true
         drainOutput(decoder)
         promise.resolve(true)
       } catch (_: Exception) { recover(); promise.resolve(false) }
-      finally { if (!admitted && wanted == epoch && stamp == revision) losses.incrementAndGet(); pending.decrementAndGet() }
+      finally { if (!admitted && wanted == epoch && stamp == revision) fence.lost(); pending.decrementAndGet() }
     }
   }
   private fun drainOutput(decoder: MediaCodec, firstTimeoutUs: Long = 0) {

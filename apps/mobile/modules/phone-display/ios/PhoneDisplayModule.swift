@@ -149,8 +149,9 @@ final class PhoneDisplayView: ExpoView {
     defer { if !admitted { fence.lost() } }
     guard fence.allows(key: frame.key), window != nil, UIApplication.shared.applicationState == .active, bytes.count <= 4_194_306 else { return false }
     if display.status == .failed || display.requiresFlushToResumeDecoding { recover(); return false }
+    let loss = fence.captureLoss()
     admitted = bytes.withUnsafeBytes { enqueue($0, frame) }
-    if admitted { fence.enqueued(key: frame.key) }
+    if admitted { fence.enqueued(key: frame.key, lossAtAdmission: loss) }
     return admitted
   }
   private func enqueue(_ bytes: UnsafeRawBufferPointer, _ frame: FrameMetadata) -> Bool {
@@ -181,7 +182,9 @@ final class PhoneDisplayView: ExpoView {
       CFDictionarySetValue(item, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
       if frame.replayed { CFDictionarySetValue(item, Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()) }
     }
+    let loss = fence.captureLoss()
     display.enqueue(sample)
+    guard loss == fence.captureLoss() else { return false }
     guard display.status != .failed, !display.requiresFlushToResumeDecoding else { recover(); return false }
     if !frame.replayed && !announced && awaiting == nil {
       awaiting = (frame.width, frame.height)
