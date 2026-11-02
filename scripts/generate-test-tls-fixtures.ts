@@ -39,7 +39,7 @@ try {
       "",
     ].join("\n"),
   );
-  for (const identity of ["profile", "manager"]) {
+  for (const identity of ["profile"]) {
     const key = path.join(temporary, `${identity}-key.pem`);
     const csr = path.join(temporary, `${identity}.csr`);
     const cert = path.join(temporary, `${identity}.pem`);
@@ -73,18 +73,13 @@ try {
       "-out",
       cert,
     );
-    if (identity === "profile") {
+    {
       writeFileSync(
         path.join(root, "apps/desktop/scripts/fixtures/profile-restore-tls.ts"),
         "// Disposable test-only TLS identity. Regenerate: pnpm exec tsx scripts/generate-test-tls-fixtures.ts\n" +
           `export const key = ${JSON.stringify(readFileSync(key, "utf8"))};\n` +
           `export const cert = ${JSON.stringify(readFileSync(cert, "utf8"))};\n`,
       );
-    } else {
-      const target = path.join(root, "packages/workspace-portablefs/src/test-fixtures");
-      writeFileSync(path.join(target, "manager-ca.pem"), readFileSync(ca));
-      writeFileSync(path.join(target, "manager-client-key.pem"), readFileSync(key));
-      writeFileSync(path.join(target, "manager-client.pem"), readFileSync(cert));
     }
   }
 } finally {

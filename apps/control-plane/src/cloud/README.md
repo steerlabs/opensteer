@@ -1,19 +1,10 @@
 # Kubernetes managed Deployment provider
 
 This provider installs one fixed Opensteer server topology per Kubernetes namespace. It is intended
-for a Standard GKE cluster. It does not support GKE Autopilot: the main Runner requires `/dev/fuse`
-and `SYS_ADMIN` to mount PortableFS workspaces. Its setuid FUSE helper also receives
-`DAC_READ_SEARCH` so it can traverse the Runner user's private mountpoint ancestors while installing
-the mount; the directories remain mode `0700`.
+for a Standard GKE cluster. Workspace bytes stay on the owning Runner's persistent disk.
 
 ## Cluster prerequisites
 
-- A device plugin advertises the configured extended resource (for example `opensteer.com/fuse`)
-  and grants its allocated Runner container access to `/dev/fuse`. The Runner is not privileged and
-  uses no host path, host networking, or host PID/IPC namespace. It receives `SYS_ADMIN`,
-  `DAC_READ_SEARCH`, and an unconfined AppArmor profile only inside the allocated container, and it
-  sets `allowPrivilegeEscalation: true` because the setuid FUSE helper cannot run under a `no_new_privs`
-  process. Creating a deployment fails when no node advertises the resource.
 - Every node that can run these pods carries the seccomp profiles `opensteer/runner.json` and
   `opensteer/chromium.json` under the kubelet seccomp root. The Runner and browser containers
   reference them as `Localhost` profiles, so their pods do not start on a node that lacks the files.
@@ -29,20 +20,7 @@ the mount; the directories remain mode `0700`.
   `app.kubernetes.io/name=hosting-router`. `ingressSourceCidrs` may additionally identify genuine
   load-balancer or proxy sources and can be empty; it must never contain a shared tenant Pod CIDR.
 - The cluster network plugin enforces Kubernetes NetworkPolicy. The default tenant policy admits
-  only same-namespace traffic, DNS, the public Internet excluding private/link-local ranges, and
-  configured ingress sources. A second egress policy admits the configured PortableFS manager CIDRs
-  for the `host`, `runner`, and `managed-teardown` pods, because the mount daemon renews its own
-  enrollment with Manager directly.
-- Every image in the template is pinned by a full `@sha256:<64 hex digits>` digest.
-  `portableFsMountImage` is a small materializer image built by infrastructure from the verified
-  PortableFS release capsule. It provides a shell, `sha256sum`, and the capsule's
-  `hosted/bin/portablefs` at `/portablefs/portablefs`. The init container verifies it against
-  `portableFsMountSha256` before copying it into the Runner's private executable volume. The
-  `portablefs-files` release image cannot fill this role because its scratch root contains only the
-  files service binary.
-- The PortableFS product identity belongs to the trusted Opensteer platform Host tier. Its manager
-  client key and product signing key are projected only into the Host pod. Runner and browser
-  containers, including user-created processes, never receive those keys.
+  only same-namespace traffic, DNS and the public Internet excluding private/link-local ranges.
 
 Validate prerequisites on every create, not only startup: existing Deployments
 may reconcile while new creation is refused. Native RBAC cannot restrict namespace
@@ -60,12 +38,7 @@ operations stay readable and creation controls stay absent. The template is read
 once at process construction; edits require a control-plane restart.
 
 Encrypted operation snapshots pin placement: cluster endpoint/CA, namespace prefix,
-immutable storage class, FUSE resource, PostgreSQL image and PortableFS product
-issuer/service ID. Do not silently change PostgreSQL major versions under an
-existing data directory. Release images, manager endpoint/network/CA/credentials
-and ingress sources follow the currently loaded template. Pinning rotating
-credentials would eventually expire a Deployment against itself. Legacy whole
-template snapshots have extra release fields stripped, never honored.
+PVC storage class and PostgreSQL major version.
 
 Kubernetes readiness proves observed rollout generation and availability, not
 Host authority. Signed discovery at the canonical public origin must verify the
@@ -84,19 +57,15 @@ disk-backed, and only the browser pod's `home` and `shm` volumes use `medium: "M
 browser, PostgreSQL, and messaging workloads receive separate least-privilege Secrets.
 Workload and teardown pods disable automatic Kubernetes service-account token mounts.
 
-Deletion must stop Runner, Host/files, browser, browser egress and messaging
+Deletion must stop Runner, Host, browser, browser egress and messaging
 processes before destroying storage. Keep PostgreSQL and private material until
 the current Host-image teardown Job succeeds. Migrate an existing database before
 reading it with current schemas; pristine databases need no volume destruction.
 Only then delete the namespace in foreground. Failed/incomplete teardown retains
 database, Secrets and volumes for idempotent retry. A namespace with no database
-PVC may be deleted directly. Teardown must still accept older material lacking
-separate browser/messaging enrollment credentials.
+PVC may be deleted directly.
 
 ## Account lifecycle
-
-Managed Cloud uses the existing server/PortableFS shape, Host API, Runner registry
-and storage model. Desktop and portal share the Account lifecycle.
 
 Commit identity, OAuth client, owner, encrypted credentials and placement snapshot
 atomically. An operation UUID is idempotent only for its original Account/name.
@@ -105,7 +74,7 @@ provider effects idempotent. Placement stays fixed; release follows the Account.
 Ready operations also converge when the release changes; unchanged specs are a
 no-op. A stalled rollout becomes failed with its workload named. Retry converges
 to the release the Account now runs. Teardown likewise uses current provider code
-and manager with captured placement/credentials, not an obsolete image.
+with captured placement/credentials, not an obsolete image.
 
 Ready means workloads healthy, pinned authority published and public HTTPS
 discovery verified. Account directory membership is never evidence of network

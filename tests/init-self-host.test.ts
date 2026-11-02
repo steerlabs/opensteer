@@ -24,25 +24,13 @@ import {
 } from "../scripts/init-self-host.js";
 
 describe("self-host secret initialization", () => {
-  it("reports the selected storage backing without advertising PortableFS in local mode", () => {
+  it("reports the selected storage backing for local directories", () => {
     expect(selfHostWorkspaceBacking({})).toBe("local-directory");
     expect(
-      selfHostInitializationSummary(
-        { created: [], directory: "/tmp/opensteer-secrets" },
-        "local-directory",
+      JSON.stringify(
+        selfHostInitializationSummary({ created: [], directory: "/tmp/setup" }, "local-directory"),
       ),
-    ).toEqual({
-      created: [],
-      directory: "/tmp/opensteer-secrets",
-      note: "Configure model credentials on the Runner.",
-      backing: "local-directory",
-    });
-    expect(
-      selfHostInitializationSummary(
-        { created: [], directory: "/tmp/opensteer-secrets" },
-        "portablefs",
-      ).note,
-    ).toMatch(/PortableFS/);
+    ).toMatch(/Configure model credentials on the Runner/);
     expect(() =>
       selfHostWorkspaceBacking({ OPENSTEER_DEFAULT_WORKSPACE_BACKING: "invalid" }),
     ).toThrow(/requires OPENSTEER_DEFAULT_WORKSPACE_BACKING/);
@@ -181,11 +169,7 @@ describe("self-host secret initialization", () => {
     });
     expect(result.sourceRevision).toMatch(/^[a-f0-9]{40}$/u);
 
-    for (const file of [
-      "compose.yaml",
-      "compose.runner-linux.yaml",
-      "compose.runner-portablefs-linux.yaml",
-    ]) {
+    for (const file of ["compose.yaml", "compose.runner-linux.yaml"]) {
       const document: unknown = parse(await readFile(resolve("deploy/self-host", file), "utf8"), {
         logLevel: "silent",
       });

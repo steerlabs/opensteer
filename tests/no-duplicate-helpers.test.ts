@@ -132,7 +132,6 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   opensteerToolIdentity: "packages/harness/src/tool-identity.ts",
   normalizeEd25519PrivateKey: "packages/shared/src/proof.ts",
   normalizeEd25519PublicKey: "packages/shared/src/proof.ts",
-  parseInput: "packages/workspace-portablefs/src/parsing.ts",
   providerSecretFile: "packages/harness/src/provider-secret-file.ts",
   rawDataBuffer: "packages/shared/src/webSocketFrame.ts",
   readBounded: "packages/shared/src/privateFiles.ts",

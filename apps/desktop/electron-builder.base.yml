@@ -42,11 +42,6 @@ extraResources:
       - cloudflared
       - cloudflared.exe
       - release.json
-  - from: generated-resources/portablefs
-    to: portablefs
-    filter:
-      - install.sh
-      - release.json
   # `Opensteer Computer Use.app`, which the helper build already signed.
   - from: generated-resources/computer-use
     to: computer-use

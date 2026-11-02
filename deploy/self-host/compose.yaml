@@ -52,7 +52,6 @@ services:
       OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer/keys/host-public.pem
       # Where a Workspace goes when nobody names a machine. The local Runner
       # overlay requires this value; keep the common Host declaration
-      # non-interpolating so the PortableFS overlay can remove the local-only
       # contract without demanding a meaningless placeholder first. The
       # directories themselves belong to the Runner, not to this container.
       OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: ${OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID:-}

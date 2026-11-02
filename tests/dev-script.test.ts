@@ -1,15 +1,12 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  assertDevelopmentPortableFsConfiguration,
   developmentPreflightCommands,
   configureDevelopmentWorkspaceEnvironment,
   developmentMessagingEnrollmentToken,
-  parseDevelopmentPortableFsDeployment,
   parseServices,
   parseShutdownGraceMs,
   readySummary,
-  selectedServices,
 } from "../scripts/dev.js";
 
 describe("development service selection", () => {
@@ -42,12 +39,6 @@ describe("development service selection", () => {
     expect(() => parseShutdownGraceMs("0")).toThrow(/1000 through 60000/);
   });
 
-  it("uses the local PortableFS deployment only inside the explicit PortableFS backing", () => {
-    expect(parseDevelopmentPortableFsDeployment(undefined)).toBe("local");
-    expect(parseDevelopmentPortableFsDeployment("external")).toBe("external");
-    expect(() => parseDevelopmentPortableFsDeployment("fallback")).toThrow(/local or external/);
-  });
-
   it("constructs one strict local-directory contract for Host and Runner", () => {
     const environment: NodeJS.ProcessEnv = {};
     configureDevelopmentWorkspaceEnvironment("local-directory", environment);
@@ -68,69 +59,6 @@ describe("development service selection", () => {
     expect(environment.OPENSTEER_NATIVE_FS_HELPER).toMatch(
       process.platform === "win32" ? /opensteer-native-fs\.exe$/u : /opensteer-native-fs$/u,
     );
-    expect(selectedServices(parseServices(undefined), "local-directory")).toEqual([
-      "host",
-      "runner",
-      "browser-runtime",
-      "channel-runtime",
-      "web",
-    ]);
-  });
-
-  it("adds Files only for a local PortableFS integration backing", () => {
-    const environment: NodeJS.ProcessEnv = {};
-    configureDevelopmentWorkspaceEnvironment("portablefs", environment);
-    expect(environment).toMatchObject({
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "portablefs",
-      OPENSTEER_RUNNER_WORKSPACE_ROOT: resolve(
-        import.meta.dirname,
-        "..",
-        ".opensteer/runner/workspaces",
-      ),
-    });
-    expect(selectedServices(["host", "runner", "web"], "portablefs", "local")).toEqual([
-      "files",
-      "host",
-      "runner",
-      "web",
-    ]);
-    expect(selectedServices(["files"], "portablefs", "local")).toEqual(["files"]);
-    expect(selectedServices(["host", "runner", "web"], "portablefs", "external")).toEqual([
-      "host",
-      "runner",
-      "web",
-    ]);
-    expect(() => selectedServices(["files"], "local-directory")).toThrow(/only with/);
-    expect(() => selectedServices(["files"], "portablefs", "external")).toThrow(
-      /provide their own Files service/,
-    );
-  });
-
-  it("requires the explicit external PortableFS endpoints before starting Host or Runner", () => {
-    expect(() => assertDevelopmentPortableFsConfiguration("external", ["host"], {})).toThrow(
-      /requires OPENSTEER_FILES_SERVICE_URL/,
-    );
-    expect(() =>
-      assertDevelopmentPortableFsConfiguration("external", ["host"], {
-        OPENSTEER_FILES_SERVICE_URL: "https://files.example.test",
-        OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN: "test",
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "https://manager.example.test",
-        OPENSTEER_PORTABLEFS_PRODUCT_ISSUER: "test",
-        OPENSTEER_PORTABLEFS_SERVICE_ID: "test",
-        OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES: "536870912",
-        OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT: "50000",
-      }),
-    ).not.toThrow();
-    expect(() => assertDevelopmentPortableFsConfiguration("external", ["runner"], {})).toThrow(
-      /requires OPENSTEER_PORTABLEFS_MOUNT_BINARY/,
-    );
-    expect(() =>
-      assertDevelopmentPortableFsConfiguration("external", ["runner"], {
-        OPENSTEER_PORTABLEFS_MOUNT_BINARY: "/opt/portablefs",
-      }),
-    ).not.toThrow();
   });
 
   it("rejects mismatched local Host and Runner environment identities", () => {
@@ -149,7 +77,6 @@ describe("development service selection", () => {
     expect(developmentPreflightCommands(["host", "web"])).toEqual([
       ["--filter", "@opensteer/runner", "build:native-fs"],
     ]);
-    expect(developmentPreflightCommands(["host", "web"], "portablefs")).toEqual([]);
   });
 
   it("gives the native filesystem authority to the Runner alone", () => {

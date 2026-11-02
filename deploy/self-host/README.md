@@ -5,8 +5,8 @@ Agent Phone isn’t included in self-built images yet.
 Use Git and Docker Engine 29.2.1 or newer with Compose 5.1.3 and Buildx 0.36.1. Docker Desktop may supply these plugins.
 No host Node, pnpm, Java or Android SDK is needed. The daemon needs Internet
 access to public image registries and package repositories. This walkthrough
-uses a local-directory workspace on a cohosted Linux Runner; it needs neither
-PortableFS nor an external Runner.
+uses a local-directory workspace on a cohosted Linux Runner; it needs no
+external Runner.
 
 ```sh
 git clone https://github.com/steerlabs/opensteer.git opensteer

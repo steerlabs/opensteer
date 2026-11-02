@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { chmod, chown, mkdir, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chown, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,7 +9,6 @@ import {
   immutableReleaseRecordPath,
   prepareRunnerWorkspaceRoot,
   rejectRuntimeInjectionEnvironment,
-  verifyPortableFsArtifact,
   verifyReleaseIdentity,
 } from "../deploy/container/opensteer-entrypoint.mjs";
 
@@ -132,22 +131,6 @@ describe("container entrypoint", () => {
     await expandSecretFiles(environment);
     expect(environment.TEST_TOKEN).toBe("a-secret-value");
     expect(environment.TEST_TOKEN_FILE).toBeUndefined();
-  });
-
-  it("checks an externally supplied PortableFS artifact by exact digest", async () => {
-    const directory = join(tmpdir(), `opensteer-portablefs-${randomUUID()}`);
-    await mkdir(directory, { mode: 0o700 });
-    const binary = join(directory, "portablefs");
-    const content = Buffer.from("pinned portablefs fixture");
-    await writeFile(binary, content, { mode: 0o700 });
-    await chmod(binary, 0o700);
-
-    await expect(
-      verifyPortableFsArtifact({
-        OPENSTEER_PORTABLEFS_MOUNT_BINARY: binary,
-        OPENSTEER_PORTABLEFS_MOUNT_SHA256: createHash("sha256").update(content).digest("hex"),
-      }),
-    ).resolves.toBeUndefined();
   });
 
   it("accepts a pre-provisioned managed Runner Workspace root with owner-only mode", async () => {

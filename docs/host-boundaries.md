@@ -15,9 +15,7 @@ that same issuer fence. Beta keeps its Account authority.
 
 [Config validation](../packages/config/src/config.ts) owns the combinations of
 `DeploymentShape`, exposure, Account attachment and external Runner admission.
-`defaultWorkspaceBacking` is a provisioning default, not a capability fence:
-any Deployment can hold local directories on enrolled machines. PortableFS
-requires Host configuration.
+Workspaces use local directories on enrolled machines.
 
 A Personal Deployment is single-user and loopback-only; an Account-attached
 Deployment must be a server. Loopback exposure requires both the canonical

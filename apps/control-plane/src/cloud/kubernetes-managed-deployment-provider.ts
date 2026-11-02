@@ -295,31 +295,6 @@ export class GkeKubernetesManagedDeploymentClient implements KubernetesManagedDe
     if (!isRecord(decodedStorageClass) || decodedStorageClass.reclaimPolicy !== "Delete") {
       throw new Error("Managed Deployment storage class must use the Delete reclaim policy.");
     }
-    const nodes = await this.#request("GET", "/api/v1/nodes");
-    if (nodes.status !== 200)
-      throw new Error(`Kubernetes node capacity validation failed with HTTP ${nodes.status}.`);
-    const decodedNodes = JSON.parse(nodes.text) as unknown;
-    if (!isRecord(decodedNodes) || !Array.isArray(decodedNodes.items)) {
-      throw new Error("Kubernetes node capacity response is invalid.");
-    }
-    const fuseAvailable = decodedNodes.items.some((node) => {
-      if (!isRecord(node) || !isRecord(node.status) || !isRecord(node.status.allocatable))
-        return false;
-      const conditions = node.status.conditions;
-      const ready =
-        Array.isArray(conditions) &&
-        conditions.some(
-          (condition) =>
-            isRecord(condition) && condition.type === "Ready" && condition.status === "True",
-        );
-      const capacity = node.status.allocatable[template.fuseResourceName];
-      return ready && typeof capacity === "string" && /^[1-9][0-9]*$/u.test(capacity);
-    });
-    if (!fuseAvailable) {
-      throw new Error(
-        `No Kubernetes node advertises the configured FUSE resource ${template.fuseResourceName}.`,
-      );
-    }
   }
 
   async apply(resource: KubernetesObject): Promise<void> {
