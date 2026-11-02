@@ -3,6 +3,31 @@ import UIKit
 @testable import RemoteTextInputCore
 
 @MainActor final class RemoteTextInputTests: XCTestCase {
+  func testHardwareFocusAndStableKeyboardTraits() {
+    let view = RemoteInputTextView()
+    view.configure(nil, focused: false, softKeyboard: false)
+    XCTAssertTrue(view.canBecomeFirstResponder)
+    XCTAssertFalse(view.isEditable)
+    let hidden = view.inputView
+    XCTAssertNotNil(hidden)
+    view.configure(["contextId": "page", "field": NSNull(), "caret": NSNull()], focused: false, softKeyboard: false)
+    XCTAssertTrue(view.inputView === hidden)
+    let field: [String: Any] = ["kind": "text", "sensitive": true, "inputMode": "numeric", "enterKeyHint": "done"]
+    view.configure(["contextId": "secret", "field": field], focused: false)
+    XCTAssertTrue(view.isSecureTextEntry)
+    XCTAssertEqual(view.autocorrectionType, .no)
+    XCTAssertEqual(view.spellCheckingType, .no)
+    XCTAssertEqual(view.keyboardType, .numberPad)
+    XCTAssertEqual(view.returnKeyType, .done)
+    XCTAssertNil(view.inputView)
+    view.configure(["contextId": "secret", "field": field, "caret": ["x": 0.5]], focused: false)
+    XCTAssertTrue(view.isSecureTextEntry)
+    XCTAssertEqual(view.keyboardType, .numberPad)
+    view.configure(["contextId": "secret", "field": field], focused: false, softKeyboard: false)
+    XCTAssertTrue(view.inputView === hidden)
+    XCTAssertTrue(view.isSecureTextEntry)
+  }
+
   func testPreventionIsBeforeMutation() {
     let view = RemoteInputTextView()
     var events: [[String: Any]] = []

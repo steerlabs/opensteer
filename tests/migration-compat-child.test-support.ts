@@ -157,7 +157,7 @@ async function main(): Promise<void> {
         canonicalOrigin: "https://migration.invalid",
         deploymentId: core.DeploymentIdSchema.parse(`dep_${uuid}`),
         hostInstanceId: core.HostInstanceIdSchema.parse(`hst_${uuid}`),
-        deploymentShape: { kind: "server", defaultWorkspaceBacking: "portablefs" },
+        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
       });
       await store.createUser("Migration fixture owner", userId);
       await store.createRunnerEnrollment({
@@ -203,7 +203,7 @@ async function main(): Promise<void> {
               localStorage: null,
               maxConcurrentRuns: 1,
               providerStateModes: ["isolated"],
-              workspaceBackings: ["portablefs"],
+              workspaceBackings: ["local-directory"],
               workspaceMounts: [],
             },
           },
@@ -215,15 +215,14 @@ async function main(): Promise<void> {
       await store.createWorkspace({
         id: workspaceId,
         backing: {
+          kind: "local-directory",
           generation: 1,
-          kind: "portablefs",
-          serviceId: "migration-fixture",
-          volumeId: "migration-fixture",
+          bindingId: core.WorkspaceBindingIdSchema.parse(`wbd_${uuid}`),
+          ownerEnvironmentId: environmentId,
+          storageAuthorityId: null,
         },
         capacityPolicy: {
-          kind: "hard-quota",
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
+          kind: "host-filesystem",
         },
         createdBy: userId,
         idempotencyKey: "migration-workspace",

@@ -336,7 +336,10 @@ integration("durable cloud deployment lifecycle", () => {
       deploymentId: input.deploymentId,
       hostInstanceId: bundle.deployment.hostInstanceId,
       hostKey: { algorithm: "Ed25519" as const },
-      deploymentShape: { defaultWorkspaceBacking: "portablefs" as const, kind: "server" as const },
+      deploymentShape: {
+        defaultWorkspaceBacking: "local-directory" as const,
+        kind: "server" as const,
+      },
     };
     // A managed Host publishes its signed identity on start, then projects membership.
     const authority = await store.authenticateHostCredential(`Bearer ${bundle.hostCredential}`);

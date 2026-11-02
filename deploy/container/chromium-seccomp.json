@@ -539,7 +539,7 @@
       "names": ["pidfd_open", "pidfd_send_signal"],
       "action": "SCMP_ACT_ALLOW",
       "args": [],
-      "comment": "PortableFS mount-process shutdown, gated to the Runner profile",
+      "comment": "Runner process shutdown",
       "includes": {
         "caps": ["CAP_SYS_ADMIN"]
       },

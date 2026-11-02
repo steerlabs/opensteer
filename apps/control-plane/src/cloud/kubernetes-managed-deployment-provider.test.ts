@@ -1,9 +1,5 @@
 import { hostEnvironmentKeys } from "@opensteer/config";
 import { createId } from "@opensteer/core";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   GoogleMetadataAccessTokenProvider,
@@ -15,28 +11,15 @@ import {
 } from "./kubernetes-managed-deployment-provider.js";
 import type { KubernetesObject } from "./kubernetes-managed-deployment-resources.js";
 
-const portableFsFixture = Buffer.from("managed PortableFS mount binary");
 const template = {
   browserEgressImage: `registry.test/browser-egress@sha256:${"1".repeat(64)}`,
   browserRuntimeImage: `registry.test/browser-runtime@sha256:${"2".repeat(64)}`,
   channelRuntimeImage: `registry.test/channel-runtime@sha256:${"3".repeat(64)}`,
-  filesImage: `registry.test/files@sha256:${"4".repeat(64)}`,
-  fuseResourceName: "opensteer.com/fuse",
   hostImage: `registry.test/host@sha256:${"5".repeat(64)}`,
   ingressSourceCidrs: ["35.191.0.0/16"],
   kubernetesApiServer: "https://10.0.0.2",
   kubernetesCa: "-----BEGIN CERTIFICATE-----\ndGVzdA==\n-----END CERTIFICATE-----\n",
   namespacePrefix: "opensteer",
-  portableFsMountImage: `registry.test/portablefs@sha256:${"6".repeat(64)}`,
-  portableFsMountSha256: `sha256:${createHash("sha256").update(portableFsFixture).digest("hex")}`,
-  portableFsManagerUrl: "https://portablefs.test",
-  portableFsManagerCidrs: ["10.20.0.0/16"],
-  portableFsManagerCa: "ca",
-  portableFsManagerCertificate: "certificate",
-  portableFsManagerPrivateKey: "client-key",
-  portableFsProductPrivateKey: "product-key",
-  portableFsProductIssuer: "opensteer-managed",
-  portableFsServiceId: "opensteer",
   postgresImage: `postgres:18-alpine@sha256:${"7".repeat(64)}`,
   runnerImage: `registry.test/runner@sha256:${"8".repeat(64)}`,
   storageClassName: "standard-rwo",
@@ -120,29 +103,10 @@ describe("KubernetesManagedDeploymentProvider", () => {
         ],
         ["messaging-enrollment", ["OPENSTEER_RUNNER_ENROLLMENT_TOKEN"]],
         ["postgres-password", ["POSTGRES_PASSWORD"]],
-        ["browser-trust", ["host-public.pem"]],
       ]),
     );
-    expect(applied.filter(({ kind }) => kind === "NetworkPolicy")).toHaveLength(2);
-    expect(
-      applied.find(
-        ({ kind, metadata }) =>
-          kind === "NetworkPolicy" && metadata.name === "host-portablefs-egress",
-      ),
-    ).toMatchObject({
-      spec: {
-        egress: [{ to: [{ ipBlock: { cidr: "10.20.0.0/16" } }] }],
-        podSelector: {
-          matchExpressions: [
-            {
-              key: "app.kubernetes.io/name",
-              operator: "In",
-              values: ["host", "runner", "managed-teardown"],
-            },
-          ],
-        },
-      },
-    });
+    expect(applied.filter(({ kind }) => kind === "NetworkPolicy")).toHaveLength(1);
+
     const host = applied.find(
       ({ kind, metadata }) => kind === "Deployment" && metadata.name === "host",
     );
@@ -169,6 +133,45 @@ describe("KubernetesManagedDeploymentProvider", () => {
       spec: {
         template: {
           spec: {
+            containers: [
+              expect.objectContaining({
+                name: "host",
+                env: expect.arrayContaining([
+                  {
+                    name: "OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID",
+                    value: `env_${input.deploymentId.slice(4)}`,
+                  },
+                ]),
+              }),
+            ],
+          },
+        },
+      },
+    });
+    expect(applied).toContainEqual(
+      expect.objectContaining({
+        kind: "PersistentVolumeClaim",
+        metadata: expect.objectContaining({ name: "workspace-data" }),
+      }),
+    );
+    expect(
+      applied.find(({ kind, metadata }) => kind === "Deployment" && metadata.name === "runner"),
+    ).toMatchObject({
+      spec: {
+        template: {
+          spec: {
+            volumes: expect.arrayContaining([
+              { name: "workspaces", persistentVolumeClaim: { claimName: "workspace-data" } },
+            ]),
+          },
+        },
+      },
+    });
+
+    expect(host).toMatchObject({
+      spec: {
+        template: {
+          spec: {
             containers: expect.arrayContaining([
               expect.objectContaining({
                 name: "host",
@@ -176,21 +179,11 @@ describe("KubernetesManagedDeploymentProvider", () => {
                   { mountPath: "/run/opensteer", name: "runtime" },
                 ]),
               }),
-              expect.objectContaining({
-                name: "files",
-                volumeMounts: expect.arrayContaining([
-                  { mountPath: "/run/opensteer", name: "files-trust", readOnly: true },
-                ]),
-              }),
             ]),
             initContainers: expect.arrayContaining([
               expect.objectContaining({
                 name: "initialize-host-volumes",
-                args: [
-                  expect.stringContaining(
-                    "cp /staged-trust/host-public.pem /files-trust/host-public.pem",
-                  ),
-                ],
+                args: [expect.stringContaining("chmod 0700 /run/opensteer /var/lib/opensteer")],
               }),
             ]),
           },
@@ -203,7 +196,6 @@ describe("KubernetesManagedDeploymentProvider", () => {
           spec: {
             volumes: expect.arrayContaining([
               { name: "staged-runtime", secret: { defaultMode: 292, secretName: "runtime" } },
-              { name: "files-trust", emptyDir: {} },
             ]),
           },
         },
@@ -242,10 +234,8 @@ describe("KubernetesManagedDeploymentProvider", () => {
     const runner = JSON.stringify(runnerDeployment);
     expect(runner).not.toContain('"privileged":true');
     expect(runner).not.toContain("hostPath");
-    expect(runner).toContain('"opensteer.com/fuse":"1"');
-    expect(runner).toContain(
-      `"name":"OPENSTEER_PORTABLEFS_MOUNT_SHA256","value":"${template.portableFsMountSha256.slice("sha256:".length)}"`,
-    );
+    expect(runner).not.toContain("opensteer.com/fuse");
+
     const backingEnvironmentName = hostEnvironmentKeys.defaultWorkspaceBacking;
     expect(JSON.stringify(host)).toContain(`"name":"${backingEnvironmentName}"`);
     expect(runner).toContain(`"name":"${backingEnvironmentName}"`);
@@ -257,18 +247,12 @@ describe("KubernetesManagedDeploymentProvider", () => {
             containers: [
               expect.objectContaining({
                 env: expect.arrayContaining([
-                  {
-                    name: "OPENSTEER_PORTABLEFS_MOUNT_BINARY",
-                    value: "/opt/portablefs/portablefs",
-                  },
-                  {
-                    name: "OPENSTEER_PORTABLEFS_MOUNT_SHA256",
-                    value: template.portableFsMountSha256.slice("sha256:".length),
-                  },
+                  { name: "OPENSTEER_LOCAL_WORKSPACE_ROOT", value: "/workspaces" },
+                  { name: "OPENSTEER_RUNNER_WORKSPACE_BACKINGS", value: "local-directory" },
                 ]),
                 name: "runner",
                 securityContext: expect.objectContaining({
-                  capabilities: { add: ["DAC_READ_SEARCH", "SYS_ADMIN"], drop: ["ALL"] },
+                  capabilities: { add: ["SYS_ADMIN"], drop: ["ALL"] },
                   seccompProfile: {
                     localhostProfile: "opensteer/runner.json",
                     type: "Localhost",
@@ -280,37 +264,6 @@ describe("KubernetesManagedDeploymentProvider", () => {
         },
       },
     });
-    const runnerPodSpec = runnerDeployment?.spec as {
-      readonly template: {
-        readonly spec: {
-          readonly containers: readonly {
-            readonly env: readonly { readonly name: string; readonly value?: string }[];
-            readonly name: string;
-          }[];
-        };
-      };
-    };
-    const runnerEnvironment = Object.fromEntries(
-      runnerPodSpec.template.spec.containers
-        .find(({ name }) => name === "runner")
-        ?.env.flatMap(({ name, value }) => (value === undefined ? [] : [[name, value]])) ?? [],
-    );
-    const { verifyPortableFsArtifact } = await vi.importActual<{
-      verifyPortableFsArtifact(target: NodeJS.ProcessEnv): Promise<void>;
-    }>("../../../../deploy/container/opensteer-entrypoint.mjs");
-    const portableFsDirectory = await mkdtemp(join(tmpdir(), "opensteer-managed-portablefs-"));
-    const portableFsBinary = join(portableFsDirectory, "portablefs");
-    runnerEnvironment.OPENSTEER_PORTABLEFS_MOUNT_BINARY = portableFsBinary;
-    try {
-      await writeFile(portableFsBinary, portableFsFixture);
-      await expect(verifyPortableFsArtifact(runnerEnvironment)).resolves.toBeUndefined();
-      await writeFile(portableFsBinary, "different artifact");
-      await expect(verifyPortableFsArtifact(runnerEnvironment)).rejects.toThrow(
-        "does not match OPENSTEER_PORTABLEFS_MOUNT_SHA256",
-      );
-    } finally {
-      await rm(portableFsDirectory, { force: true, recursive: true });
-    }
     for (const name of ["runner", "browser-runtime", "channel-runtime"]) {
       const runtime = applied.find(
         ({ kind, metadata }) => kind === "Deployment" && metadata.name === name,
@@ -327,9 +280,6 @@ describe("KubernetesManagedDeploymentProvider", () => {
                     capabilities: { add: ["CHOWN", "FOWNER"], drop: ["ALL"] },
                   }),
                 }),
-                ...(name === "runner"
-                  ? [expect.objectContaining({ name: "install-portablefs" })]
-                  : []),
               ],
               securityContext: { seccompProfile: { type: "RuntimeDefault" } },
             },
@@ -421,7 +371,6 @@ describe("KubernetesManagedDeploymentProvider", () => {
     expect(JSON.stringify(applied)).not.toContain("ENROLLMENT_TOKEN");
     expect(applied.find(({ metadata }) => metadata.name === "runtime")?.stringData).toMatchObject({
       "account-bundle.json": secrets["account-bundle.json"],
-      "portablefs-client-key.pem": template.portableFsManagerPrivateKey,
     });
     await expect(provider.ensure(input)).rejects.toThrow();
     await expect(
@@ -440,7 +389,6 @@ describe("KubernetesManagedDeploymentProvider", () => {
         ...template,
         hostImage: currentHostImage,
         namespacePrefix: "replacement",
-        portableFsManagerUrl: "https://replacement-portablefs.test",
       },
     });
     const deploymentId = createId("deployment");
@@ -469,7 +417,7 @@ describe("KubernetesManagedDeploymentProvider", () => {
             automountServiceAccountToken: false,
             initContainers: [
               expect.objectContaining({
-                image: template.portableFsMountImage,
+                image: currentHostImage,
                 name: "initialize-runtime-volume",
               }),
               expect.objectContaining({ image: currentHostImage, name: "stage-host-secrets" }),
@@ -477,12 +425,7 @@ describe("KubernetesManagedDeploymentProvider", () => {
             containers: [
               expect.objectContaining({
                 env: expect.arrayContaining([
-                  {
-                    // The PortableFS manager endpoint and its credentials rotate with the
-                    // platform, so teardown reaches the one that is answering today.
-                    name: "OPENSTEER_PORTABLEFS_MANAGER_URL",
-                    value: "https://replacement-portablefs.test",
-                  },
+                  { name: "OPENSTEER_DEFAULT_WORKSPACE_BACKING", value: "local-directory" },
                 ]),
                 image: currentHostImage,
                 name: "teardown",
@@ -617,12 +560,9 @@ describe("GoogleMetadataAccessTokenProvider", () => {
 
 describe("managed release convergence", () => {
   const placementKeys = [
-    "fuseResourceName",
     "kubernetesApiServer",
     "kubernetesCa",
     "namespacePrefix",
-    "portableFsProductIssuer",
-    "portableFsServiceId",
     "postgresImage",
     "storageClassName",
     "version",
@@ -637,7 +577,6 @@ describe("managed release convergence", () => {
     expect(Object.keys(captured).sort()).toEqual([...placementKeys].sort());
     // Nothing that names a build is durable; nothing that rotates is durable either.
     expect(JSON.stringify(captured)).not.toContain(template.hostImage);
-    expect(JSON.stringify(captured)).not.toContain(template.portableFsManagerPrivateKey);
 
     const release = provider.currentRelease();
     expect(release).toMatch(/^sha256:[a-f0-9]{64}$/u);

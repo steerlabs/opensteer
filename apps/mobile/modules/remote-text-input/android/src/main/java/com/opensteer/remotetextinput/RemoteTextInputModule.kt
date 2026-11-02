@@ -12,6 +12,7 @@ class RemoteTextInputModule : Module() {
     View(RemoteTextInputView::class) {
       Events("onProxyEvent")
       Prop("context") { view: RemoteTextInputView, value: Map<String, Any?>? -> view.editingContext = value; view.configure() }
+      Prop("softKeyboard") { view: RemoteTextInputView, value: Boolean -> view.softKeyboard = value; view.configure() }
       Prop("focused") { view: RemoteTextInputView, value: Boolean -> view.focused = value; view.configure() }
       AsyncFunction("finishComposition") { view: RemoteTextInputView -> view.input.finishComposition() }
       AsyncFunction("respond") { view: RemoteTextInputView, instruction: Map<String, Any?> -> view.input.respond(instruction) }
@@ -23,6 +24,7 @@ class RemoteTextInputView(context: Context, appContext: AppContext) : ExpoView(c
   val input = RemoteInputEditText(context)
   var editingContext: Map<String, Any?>? = null
   var focused = false
+  var softKeyboard = false
   init { addView(input, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)); input.deliver = { onProxyEvent(it) } }
-  fun configure() = input.configure(editingContext, focused)
+  fun configure() = input.configure(editingContext, focused, softKeyboard)
 }

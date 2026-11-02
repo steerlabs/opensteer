@@ -54,6 +54,7 @@ export interface PageCapturePort {
 
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
 export interface BrowserPage {
+  readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.

@@ -7,6 +7,7 @@ import {
   type BrowserClientMessage,
 } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import {
@@ -16,6 +17,7 @@ import {
 import {
   FakeBrowserCdpBackend,
   FakeContext,
+  FakeCdpSession,
   FakePage,
   FakeSink,
   flushMicrotasks,
@@ -55,6 +57,84 @@ describe("BrowserController", () => {
       files.root,
     );
     await ledger.start();
+  });
+
+  it("queries cursor hints outside the mutation lane and fences canceled observations", async () => {
+    const controller = createController();
+    await controller.start();
+    await controller.handle({ type: "stream.subscribe", captureRegion: true });
+    page.cdpSession.emit("Page.screencastFrame", {
+      data: jpeg(1280, 720).toString("base64"),
+      metadata: { deviceHeight: 720, deviceWidth: 1280 },
+      sessionId: 1,
+    });
+    await flushMicrotasks();
+    const surface = ledger.active()!.surface;
+    const producerId = "00000000-0000-4000-8000-000000000001";
+    page.cdpSession.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "root" } } });
+    page.cdpSession.responses.set("Page.createIsolatedWorld", { executionContextId: 77 });
+    const query = Promise.withResolvers<unknown>();
+    page.cdpSession.responses.set(
+      "Runtime.evaluate",
+      (parameters: Record<string, unknown> | undefined) =>
+        parameters?.contextId === 77 ? query.promise : {},
+    );
+    vi.useFakeTimers();
+    try {
+      await controller.handle({
+        type: "input.pointer",
+        action: "move",
+        button: "none",
+        surfaceId: surface.id,
+        x: 0.5,
+        y: 0.5,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        modifiers: [],
+        geometryRevision: surface.geometryRevision,
+        producerId,
+        cursorSequence: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        page.cdpSession.sent.some(
+          (command) =>
+            command.method === "Runtime.evaluate" && command.parameters?.contextId === 77,
+        ),
+      ).toBe(true);
+      await controller.handle({
+        type: "input.key",
+        action: "down",
+        code: "KeyA",
+        key: "a",
+        modifiers: [],
+        surfaceId: surface.id,
+        producerId,
+      });
+      expect(
+        page.cdpSession.sent.some((command) => command.method === "Input.dispatchKeyEvent"),
+      ).toBe(true);
+      const afterKeyboard = sink.messages.length;
+      await controller.handle({ type: "cursor.reset", surfaceId: surface.id, producerId });
+      query.resolve({ result: { value: "text" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        sink.messages.slice(afterKeyboard).filter((message) => message.type === "browser.cursor"),
+      ).toEqual([
+        expect.objectContaining({
+          cursor: "default",
+          consumerToken: producerId,
+          cursorSequence: 1,
+          documentId: surface.documentId,
+          captureRevision: 0,
+        }),
+      ]);
+    } finally {
+      query.resolve({});
+      vi.useRealTimers();
+      await controller.close();
+      await ledger.close();
+    }
   });
 
   it.each([false, true])(
@@ -631,88 +711,112 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
-  it("does not revive an earlier context menu when the same controller clicks again", async () => {
-    const cdp = page.cdpSession;
-    cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
-    cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
-    cdp.responses.set("DOM.getFrameOwner", () => {
-      throw new Error("The root has no owner.");
-    });
-    const controller = new BrowserController({
-      cdpRouter,
-      claims: validClaims({ editingVersion: 1 }),
-      files,
-      ledger,
-      replaceSiteCookies,
-      signIns: noSignIns(),
-      sink,
-      clipboard: { machineClipboardShared: false, open: async () => ({ close: async () => null }) },
-    });
-    await controller.start();
-    try {
-      await flushMicrotasks();
-      const world = cdp.sent.find(
-        (entry) =>
-          entry.method === "Runtime.addBinding" &&
-          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
-      )!.parameters!;
-      cdp.emit("Runtime.executionContextCreated", {
-        context: {
-          id: 7,
-          uniqueId: globalThis.crypto.randomUUID(),
-          name: world.executionContextName,
-          origin: "https://example.test",
-          auxData: { frameId: "main", isDefault: false },
+  it.each(["right", "control-click", "ContextMenu", "Shift+F10"] as const)(
+    "attributes %s menus through release without reviving an earlier menu",
+    async (trigger) => {
+      const cdp = page.cdpSession;
+      cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+      cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+      cdp.responses.set("DOM.getFrameOwner", () => {
+        throw new Error("The root has no owner.");
+      });
+      const controller = new BrowserController({
+        cdpRouter,
+        claims: validClaims({ editingVersion: 1 }),
+        files,
+        ledger,
+        replaceSiteCookies,
+        platform: "darwin",
+        signIns: noSignIns(),
+        sink,
+        clipboard: {
+          machineClipboardShared: false,
+          open: async () => ({ close: async () => null }),
         },
       });
-      const consumerToken = globalThis.crypto.randomUUID();
-      const pointer = {
-        type: "input.pointer" as const,
-        button: "right" as const,
-        surfaceId: activeSurfaceId(),
-        x: 0.2,
-        y: 0.2,
-        viewportWidth: 1280,
-        viewportHeight: 720,
-        consumerToken,
-      };
-      await controller.handle({ ...pointer, action: "down" });
-      const geometry = Promise.withResolvers<unknown>();
-      cdp.responses.set("Page.getLayoutMetrics", () => geometry.promise);
-      const menu = () =>
-        cdp.emit("Runtime.bindingCalled", {
-          name: world.name,
-          executionContextId: 7,
-          payload: JSON.stringify({ kind: "menu", x: 20, y: 20, editable: true, selection: false }),
+      await controller.start();
+      try {
+        await flushMicrotasks();
+        const world = cdp.sent.find(
+          (entry) =>
+            entry.method === "Runtime.addBinding" &&
+            String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+        )!.parameters!;
+        cdp.emit("Runtime.executionContextCreated", {
+          context: {
+            id: 7,
+            uniqueId: globalThis.crypto.randomUUID(),
+            name: world.executionContextName,
+            origin: "https://example.test",
+            auxData: { frameId: "main", isDefault: false },
+          },
         });
-      menu();
-      await controller.handle({ ...pointer, action: "up" });
-      const key = {
-        type: "input.key" as const,
-        surfaceId: activeSurfaceId(),
-        key: "Escape",
-        code: "Escape",
-        modifiers: [],
-      };
-      await controller.handle({ ...key, action: "down" });
-      await controller.handle({ ...key, action: "up" });
-      await controller.handle({ ...pointer, action: "down" });
-      geometry.resolve({ visualViewport: { clientWidth: 1280, clientHeight: 720 } });
-      await flushMicrotasks();
-      expect(
-        sink.messages.filter((message) => message.type === "browser.contextmenu"),
-      ).toHaveLength(0);
-      menu();
-      await flushMicrotasks();
-      expect(
-        sink.messages.filter((message) => message.type === "browser.contextmenu"),
-      ).toMatchObject([{ consumerToken }]);
-      await controller.handle({ ...pointer, action: "up" });
-    } finally {
-      await controller.close();
-      await ledger.close();
-    }
-  });
+        const consumerToken = globalThis.crypto.randomUUID();
+        const pointer =
+          trigger === "right" || trigger === "control-click"
+            ? {
+                type: "input.pointer" as const,
+                button: trigger === "right" ? ("right" as const) : ("left" as const),
+                modifiers: trigger === "control-click" ? ["control" as const] : [],
+                surfaceId: activeSurfaceId(),
+                x: 0.2,
+                y: 0.2,
+                viewportWidth: 1280,
+                viewportHeight: 720,
+                consumerToken,
+              }
+            : {
+                type: "input.key" as const,
+                surfaceId: activeSurfaceId(),
+                key: trigger === "ContextMenu" ? "ContextMenu" : "F10",
+                code: trigger === "ContextMenu" ? "ContextMenu" : "F10",
+                modifiers: trigger === "Shift+F10" ? ["shift" as const] : [],
+                consumerToken,
+              };
+        await controller.handle({ ...pointer, action: "down" });
+        const geometry = Promise.withResolvers<unknown>();
+        cdp.responses.set("Page.getLayoutMetrics", () => geometry.promise);
+        const menu = () =>
+          cdp.emit("Runtime.bindingCalled", {
+            name: world.name,
+            executionContextId: 7,
+            payload: JSON.stringify({
+              kind: "menu",
+              x: 20,
+              y: 20,
+              editable: true,
+              selection: false,
+            }),
+          });
+        menu();
+        await controller.handle({ ...pointer, action: "up" });
+        const key = {
+          type: "input.key" as const,
+          surfaceId: activeSurfaceId(),
+          key: "Escape",
+          code: "Escape",
+          modifiers: [],
+        };
+        await controller.handle({ ...key, action: "down" });
+        await controller.handle({ ...key, action: "up" });
+        await controller.handle({ ...pointer, action: "down" });
+        geometry.resolve({ visualViewport: { clientWidth: 1280, clientHeight: 720 } });
+        await flushMicrotasks();
+        expect(
+          sink.messages.filter((message) => message.type === "browser.contextmenu"),
+        ).toHaveLength(0);
+        await controller.handle({ ...pointer, action: "up" });
+        menu();
+        await flushMicrotasks();
+        expect(
+          sink.messages.filter((message) => message.type === "browser.contextmenu"),
+        ).toMatchObject([{ consumerToken }]);
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
 
   it("normalizes the caret to the native crop and refreshes stationary fields on crop changes", async () => {
     const cdp = page.cdpSession;
@@ -1749,6 +1853,314 @@ describe("BrowserController", () => {
     await controller.close();
     await ledger.close();
   });
+
+  it.each(["cancel", "resize", "takeover", "close"] as const)(
+    "cancels HTML dragging before cleanup releases a held pointer (%s)",
+    async (cleanup) => {
+      const controller = createController();
+      await controller.start();
+      const surfaceId = activeSurfaceId();
+      const press = {
+        type: "input.pointer",
+        action: "down",
+        button: "left",
+        surfaceId,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        x: 0.25,
+        y: 0.25,
+        producerId: "00000000-0000-4000-8000-000000000001",
+      } as const;
+      try {
+        await controller.handle(press);
+        const start = page.cdpSession.sent.length;
+        if (cleanup === "cancel")
+          await controller.handle({
+            type: "input.cancel",
+            surfaceId,
+            producerId: press.producerId,
+          });
+        else if (cleanup === "resize")
+          await controller.handle({ type: "viewport.set", surfaceId, width: 900, height: 600 });
+        else if (cleanup === "takeover")
+          await controller.handle({ ...press, producerId: "00000000-0000-4000-8000-000000000002" });
+        else await controller.close();
+        expect(
+          page.cdpSession.sent.slice(start).filter((entry) => entry.method.startsWith("Input.")),
+        ).toMatchObject([
+          { method: "Input.cancelDragging" },
+          { method: "Input.dispatchMouseEvent", parameters: { type: "mouseReleased" } },
+          ...(cleanup === "takeover"
+            ? [{ method: "Input.dispatchMouseEvent", parameters: { type: "mousePressed" } }]
+            : []),
+        ]);
+        if (cleanup === "takeover") {
+          const count = page.cdpSession.sent.length;
+          await controller.handle({ type: "input.cancel", producerId: press.producerId });
+          expect(page.cdpSession.sent).toHaveLength(count);
+        }
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
+
+  it("reports blocked detach promptly and finishes it after dialog-held pointer cleanup", async () => {
+    const controller = createController();
+    await controller.start();
+    const attachId = crypto.randomUUID();
+    const press = gate({ label: "dialog-held press", deadlineMs: 2000 });
+    let pending: Promise<void> | undefined;
+    try {
+      await controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        command: {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        },
+      });
+      const attached = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (attached?.type !== "cdp.result") throw new Error("Agent attachment never completed.");
+      const { sessionId } = attached.result as { sessionId: string };
+      page.cdpSession.responses.set(
+        "Input.dispatchMouseEvent",
+        async (parameters: Record<string, unknown> | undefined) => {
+          if (parameters?.type === "mousePressed") await press.enter();
+          return {};
+        },
+      );
+      pending = controller.handle({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: {
+          method: "Input.dispatchMouseEvent",
+          sessionId,
+          parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+        },
+      });
+      await press.entered;
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Held", type: "alert" });
+      const detachId = crypto.randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: detachId,
+          command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+        }),
+        1000,
+        { timeoutError: () => new Error("Detach waited behind the dialog-held press.") },
+      );
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.error", requestId: detachId }),
+      );
+      expect(cdpRouter.attachedTargetId(validClaims().sessionId, sessionId)).toBe(
+        await page.targetId(),
+      );
+      page.cdpSession.emit("Page.javascriptDialogClosed", { result: false });
+      press.release();
+      await pending;
+      await vi.waitFor(() =>
+        expect(
+          cdpRouter.attachedTargetId(validClaims().sessionId, sessionId),
+          "Dialog-held input cleanup never completed the requested detach.",
+        ).toBeNull(),
+      );
+      expect(
+        sink.messages.filter((message) => "requestId" in message && message.requestId === detachId),
+      ).toEqual([expect.objectContaining({ type: "cdp.error" })]);
+    } finally {
+      press.release();
+      await pending;
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("clears only the producer's own hover and never interrupts a held drag", async () => {
+    const controller = createController();
+    await controller.start();
+    const point = {
+      type: "input.pointer",
+      button: "none",
+      surfaceId: activeSurfaceId(),
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      x: 0.5,
+      y: 0.5,
+    } as const;
+    const first = "00000000-0000-4000-8000-000000000001";
+    const second = "00000000-0000-4000-8000-000000000002";
+    try {
+      await controller.handle({ ...point, action: "move", producerId: first });
+      await controller.handle({ ...point, action: "leave", producerId: second });
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      await controller.handle({ ...point, action: "leave", producerId: first });
+      expect(commandsNamed("Input.dispatchMouseEvent", page).at(-1)?.parameters).toMatchObject({
+        type: "mouseMoved",
+        button: "none",
+        buttons: 0,
+        x: -1,
+        y: -1,
+      });
+      await controller.handle({ ...point, action: "down", button: "left", producerId: first });
+      const count = commandsNamed("Input.dispatchMouseEvent", page).length;
+      await controller.handle({ ...point, action: "leave", producerId: first });
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(count);
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("shares overlapping resize and takeover cleanup before admitting the replacement press", async () => {
+    const controller = createController();
+    await controller.start();
+    const surfaceId = activeSurfaceId();
+    const press = {
+      type: "input.pointer",
+      action: "down",
+      button: "left",
+      surfaceId,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      x: 0.25,
+      y: 0.25,
+      producerId: "00000000-0000-4000-8000-000000000001",
+    } as const;
+    const cancellation = gate({ label: "overlapping drag cleanup", deadlineMs: 2000 });
+    page.cdpSession.responses.set("Input.cancelDragging", () => cancellation.enter());
+    let resize: Promise<void> | undefined;
+    let takeover: Promise<void> | undefined;
+    try {
+      await controller.handle(press);
+      resize = controller.prepareResize(surfaceId);
+      await cancellation.entered;
+      takeover = controller.handle({
+        ...press,
+        producerId: "00000000-0000-4000-8000-000000000002",
+      });
+      await flushMicrotasks();
+      expect(commandsNamed("Input.cancelDragging", page)).toHaveLength(1);
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      cancellation.release();
+      await Promise.all([resize, takeover]);
+      expect(
+        commandsNamed("Input.dispatchMouseEvent", page).map((entry) => entry.parameters?.type),
+      ).toEqual(["mousePressed", "mouseReleased", "mousePressed"]);
+    } finally {
+      cancellation.release();
+      await Promise.all([resize, takeover]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("awaits drag cancellation and fences takeover when cancellation fails", async () => {
+    const controller = createController();
+    await controller.start();
+    const surfaceId = activeSurfaceId();
+    const press = {
+      type: "input.pointer",
+      action: "down",
+      button: "left",
+      surfaceId,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      x: 0.25,
+      y: 0.25,
+      producerId: "00000000-0000-4000-8000-000000000001",
+    } as const;
+    const cancellation = gate({ label: "drag cancellation", deadlineMs: 2000 });
+    page.cdpSession.responses.set("Input.cancelDragging", async () => {
+      await cancellation.enter();
+      throw new Error("cancel failed");
+    });
+    try {
+      await controller.handle(press);
+      const takeover = controller.handle({
+        ...press,
+        producerId: "00000000-0000-4000-8000-000000000002",
+      });
+      await cancellation.entered;
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      cancellation.release();
+      await takeover;
+      expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(1);
+      expect(sink.messages).toContainEqual(expect.objectContaining({ type: "browser.error" }));
+      page.cdpSession.responses.delete("Input.cancelDragging");
+      await controller.handle({ ...press, producerId: "00000000-0000-4000-8000-000000000002" });
+      expect(commandsNamed("Input.dispatchMouseEvent", page).at(-1)?.parameters?.type).toBe(
+        "mousePressed",
+      );
+    } finally {
+      cancellation.release();
+      page.cdpSession.responses.delete("Input.cancelDragging");
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it.each(["resize", "detach"] as const)(
+    "cleans up an agent drag on its originating CDP session (%s)",
+    async (cleanup) => {
+      const agent = new FakeCdpSession();
+      vi.spyOn(page, "agentCdp").mockResolvedValue(agent);
+      const controller = createController();
+      await controller.start();
+      const attachId = crypto.randomUUID();
+      try {
+        await controller.handle({
+          type: "cdp.command",
+          requestId: attachId,
+          command: {
+            method: "Target.attachToTarget",
+            parameters: { targetId: await page.targetId(), flatten: true },
+          },
+        });
+        const attached = sink.messages.find(
+          (message) => message.type === "cdp.result" && message.requestId === attachId,
+        );
+        if (attached?.type !== "cdp.result") throw new Error("Agent attachment never completed.");
+        const { sessionId } = attached.result as { sessionId: string };
+        await controller.handle({
+          type: "cdp.command",
+          requestId: crypto.randomUUID(),
+          command: {
+            method: "Input.dispatchMouseEvent",
+            sessionId,
+            parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+          },
+        });
+        if (cleanup === "resize")
+          await controller.handle({
+            type: "viewport.set",
+            surfaceId: activeSurfaceId(),
+            width: 900,
+            height: 600,
+          });
+        else
+          await controller.handle({
+            type: "cdp.command",
+            requestId: crypto.randomUUID(),
+            command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+          });
+        expect(agent.sent.filter((entry) => entry.method.startsWith("Input."))).toMatchObject([
+          { method: "Input.dispatchMouseEvent", parameters: { type: "mousePressed" } },
+          { method: "Input.cancelDragging" },
+          { method: "Input.dispatchMouseEvent", parameters: { type: "mouseReleased" } },
+        ]);
+        expect(commandsNamed("Input.dispatchMouseEvent", page)).toHaveLength(0);
+      } finally {
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
 
   it("ends a held pointer gesture before another viewer resizes", async () => {
     const controller = createController();

@@ -6,7 +6,6 @@ import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadOrCreateHostKeys } from "../apps/host/src/identity/host-keys.js";
-import { startLocalPortableFs } from "./portablefs-local.js";
 import {
   assertDevelopmentListenersAvailable,
   assertDevelopmentWorkspaceEnvironment,
@@ -14,7 +13,6 @@ import {
   DevelopmentStackLock,
   developmentListeners,
   developmentWorkspaceBacking,
-  localFilesServiceUrl,
   signalProcessTree,
   spawnInProcessGroup,
 } from "./dev-supervisor.js";
@@ -26,16 +24,8 @@ import {
   type LocalBootstrap,
 } from "./local-bootstrap.js";
 
-const supportedServices = [
-  "files",
-  "host",
-  "runner",
-  "browser-runtime",
-  "channel-runtime",
-  "web",
-] as const;
+const supportedServices = ["host", "runner", "browser-runtime", "channel-runtime", "web"] as const;
 type ServiceName = (typeof supportedServices)[number];
-export type DevelopmentPortableFsDeployment = "external" | "local";
 
 const developmentEnvironmentId = "env_00000000-0000-5000-8000-000000000001";
 
@@ -74,14 +64,6 @@ export function parseShutdownGraceMs(value: string | undefined): number {
   return parsed;
 }
 
-export function parseDevelopmentPortableFsDeployment(
-  value: string | undefined,
-): DevelopmentPortableFsDeployment {
-  const parsed = value?.trim() || "local";
-  if (parsed === "local" || parsed === "external") return parsed;
-  throw new Error("OPENSTEER_DEV_PORTABLEFS must be local or external");
-}
-
 export function developmentPreflightCommands(
   services: readonly ServiceName[],
   backing: ReturnType<typeof developmentWorkspaceBacking> = "local-directory",
@@ -98,18 +80,11 @@ export async function runDevelopmentStack(
   await loadLocalEnvironment();
   if (signal?.aborted) return;
   const deploymentShape = developmentWorkspaceBacking(environment);
-  assertDevelopmentWorkspaceEnvironment(deploymentShape, environment);
+  assertDevelopmentWorkspaceEnvironment(environment);
   configureDevelopmentWorkspaceEnvironment(deploymentShape, environment);
   const requestedServices = parseServices(environment.OPENSTEER_DEV_SERVICES);
-  const portableFsDeployment =
-    deploymentShape === "portablefs"
-      ? parseDevelopmentPortableFsDeployment(environment.OPENSTEER_DEV_PORTABLEFS)
-      : undefined;
-  const services = selectedServices(requestedServices, deploymentShape, portableFsDeployment);
+  const services = requestedServices;
   await configureDevelopmentBrowserRuntimeEnvironment(services, environment);
-  if (portableFsDeployment) {
-    assertDevelopmentPortableFsConfiguration(portableFsDeployment, services, environment);
-  }
   const shutdownGraceMs = parseShutdownGraceMs(environment.OPENSTEER_DEV_SHUTDOWN_GRACE_MS);
   const children = new Map<ServiceName, ChildProcess>();
   const shutdown = new AbortController();
@@ -122,31 +97,6 @@ export async function runDevelopmentStack(
 
   try {
     await assertDevelopmentListenersAvailable(developmentListeners(services, environment));
-    if (
-      deploymentShape === "portablefs" &&
-      portableFsDeployment === "local" &&
-      (services.includes("files") || services.includes("host") || services.includes("runner"))
-    ) {
-      process.stdout.write("Starting the local PortableFS Manager and XFS storage cell...\n");
-      Object.assign(environment, await startLocalPortableFs(environment));
-    }
-    if (services.includes("files")) {
-      const privateKeyPath = environment.OPENSTEER_HOST_PRIVATE_KEY_PATH?.trim();
-      const publicKeyPath = environment.OPENSTEER_HOST_PUBLIC_KEY_PATH?.trim();
-      const keys = await loadOrCreateHostKeys({
-        dataDirectory: environment.OPENSTEER_HOST_DATA_DIR?.trim() || ".opensteer/host",
-        ...(privateKeyPath ? { privateKeyPath } : {}),
-        ...(publicKeyPath ? { publicKeyPath } : {}),
-      });
-      environment.OPENSTEER_FILES_HOST_PUBLIC_KEY_PATH = keys.publicKeyPath;
-      environment.OPENSTEER_FILES_IDENTITY_DIR = resolve(
-        import.meta.dirname,
-        "..",
-        ".opensteer",
-        "portablefs",
-        "files-identity",
-      );
-    }
     for (const command of developmentPreflightCommands(services, deploymentShape)) {
       await runPnpm(command, environment, signal);
     }
@@ -201,21 +151,6 @@ export async function runDevelopmentStack(
         const serviceEnvironment = { ...environment, ...extraEnvironment };
         let command = pnpmExecutable();
         let arguments_: string[] = ["--filter", `@opensteer/${service}`, "dev"];
-        if (service === "files") {
-          const filesUrl = localFilesServiceUrl(serviceEnvironment);
-          command = serviceEnvironment.OPENSTEER_FILES_BINARY ?? "";
-          if (!command) throw new Error("The local PortableFS Files binary was not built");
-          arguments_ = [
-            "--request-public-key",
-            serviceEnvironment.OPENSTEER_FILES_HOST_PUBLIC_KEY_PATH ?? "",
-            "--request-issuer",
-            "opensteer-host",
-            "--identity-dir",
-            serviceEnvironment.OPENSTEER_FILES_IDENTITY_DIR ?? "",
-            "--listen",
-            filesUrl.host,
-          ];
-        }
         const child = spawnInProcessGroup(command, arguments_, {
           cwd: resolve(import.meta.dirname, ".."),
           env: serviceEnvironment,
@@ -444,67 +379,6 @@ export function configureDevelopmentWorkspaceEnvironment(
     environment.OPENSTEER_NATIVE_FS_HELPER = nativeFsHelper;
     return;
   }
-  environment.OPENSTEER_RUNNER_WORKSPACE_BACKINGS = "portablefs";
-  const repositoryRoot = resolve(import.meta.dirname, "..");
-  const configuredRoot = environment.OPENSTEER_RUNNER_WORKSPACE_ROOT?.trim();
-  environment.OPENSTEER_RUNNER_WORKSPACE_ROOT = configuredRoot
-    ? resolve(repositoryRoot, configuredRoot)
-    : resolve(
-        repositoryRoot,
-        environment.OPENSTEER_RUNNER_DATA_DIR?.trim() || ".opensteer/runner",
-        "workspaces",
-      );
-}
-
-export function selectedServices(
-  requestedServices: readonly ServiceName[],
-  backing: ReturnType<typeof developmentWorkspaceBacking>,
-  portableFsDeployment?: DevelopmentPortableFsDeployment,
-): readonly ServiceName[] {
-  if (requestedServices.includes("files") && backing !== "portablefs") {
-    throw new Error("The Files service is available only with portablefs backing");
-  }
-  if (requestedServices.includes("files") && portableFsDeployment !== "local") {
-    throw new Error(
-      "The development Files process belongs to OPENSTEER_DEV_PORTABLEFS=local; external deployments provide their own Files service",
-    );
-  }
-  if (
-    backing === "portablefs" &&
-    portableFsDeployment === "local" &&
-    (requestedServices.includes("files") || requestedServices.includes("host"))
-  ) {
-    return ["files", ...requestedServices.filter((service) => service !== "files")];
-  }
-  return requestedServices.filter((service) => service !== "files");
-}
-
-export function assertDevelopmentPortableFsConfiguration(
-  deployment: DevelopmentPortableFsDeployment,
-  services: readonly ServiceName[],
-  environment: NodeJS.ProcessEnv,
-): void {
-  if (deployment !== "external") return;
-  if (services.includes("host")) {
-    const requiredHostVariables = [
-      "OPENSTEER_FILES_SERVICE_URL",
-      "OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN",
-      "OPENSTEER_PORTABLEFS_MANAGER_URL",
-      "OPENSTEER_PORTABLEFS_PRODUCT_ISSUER",
-      "OPENSTEER_PORTABLEFS_SERVICE_ID",
-      "OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES",
-      "OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT",
-    ] as const;
-    const missing = requiredHostVariables.find((name) => !environment[name]?.trim());
-    if (missing) {
-      throw new Error(`OPENSTEER_DEV_PORTABLEFS=external requires ${missing} when starting Host`);
-    }
-  }
-  if (services.includes("runner") && !environment.OPENSTEER_PORTABLEFS_MOUNT_BINARY?.trim()) {
-    throw new Error(
-      "OPENSTEER_DEV_PORTABLEFS=external requires OPENSTEER_PORTABLEFS_MOUNT_BINARY when starting Runner",
-    );
-  }
 }
 
 /**
@@ -526,14 +400,6 @@ async function startDevelopmentServices(
   const remaining = new Set(services);
   const messagingToken = developmentMessagingEnrollmentToken(services, environment);
   let bootstrap: LocalBootstrap | null = null;
-
-  if (remaining.delete("files")) {
-    startService("files");
-    const filesUrl = localFilesServiceUrl(environment);
-    if (!(await waitForOrigin(new URL("/healthz", filesUrl), signal))) {
-      throw new Error(`The PortableFS Files service did not become ready at ${filesUrl.origin}`);
-    }
-  }
   if (signal.aborted) return;
 
   if (remaining.delete("browser-runtime")) {
@@ -593,7 +459,6 @@ async function startDevelopmentServices(
 const serviceSummaryLabels: Record<ServiceName, string> = {
   "browser-runtime": "Browser Runtime",
   "channel-runtime": "Messaging service",
-  files: "PortableFS Files",
   host: "Host",
   runner: "Main Runner",
   web: "Web",
@@ -617,8 +482,8 @@ export function readySummary(
 ): string {
   const readiness = (service: ServiceName): string => {
     if (service === "host") return status.bootstrap ? "ready" : "started";
+    if (service === "browser-runtime") return "ready";
     if (service === "web") return status.webReady ? "ready" : "starting";
-    if (service === "files" || service === "browser-runtime") return "ready";
     return "started";
   };
   const lines = services

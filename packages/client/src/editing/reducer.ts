@@ -590,7 +590,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         break;
       }
       const binding = resolveEditingBinding(event, state.platform);
-      if (binding) {
+      if (binding && (state.context?.field || binding.kind !== "command")) {
         if (binding.kind === "command") {
           reset();
           prevent();

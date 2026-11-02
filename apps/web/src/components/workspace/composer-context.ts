@@ -15,6 +15,7 @@ import {
 } from "@opensteer/core";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { destinationPlaceKey } from "./navigation.js";
+import { placeEnded, samePlaceEndSource } from "./place-succession.js";
 import { useOptionalWorkspace } from "./workspace-context.js";
 
 /** A place a message carries: a browser page, a Mac app or a phone. */
@@ -24,8 +25,16 @@ export interface ContextChip {
   readonly key: string;
   /** Null while an explicit pick is still being read: Send waits for it, × cancels it. */
   readonly part: PlacePart | null;
-  /** The draft picked this place up by itself; it does not make a message on its own. */
+  /**
+   * The draft picked this place up by itself: it does not make a message on
+   * its own, and it leaves the draft when its place ends.
+   */
   readonly auto: boolean;
+  /**
+   * Where the place is shown, so an automatic chip leaves when it ends; null
+   * for an app or phone handed back, whose wire part names no view.
+   */
+  readonly destination: PlaceItem["destination"] | null;
   readonly title: string;
   readonly site: string | null;
   /**
@@ -35,7 +44,7 @@ export interface ContextChip {
   readonly icon: PlaceItem["icon"];
   /** The place's newest picture when the chip was made, captured once. */
   readonly thumbnail: string | null;
-  /** Gone from the catalog since: greyed, still removable, never substituted. */
+  /** An explicit pick gone from the catalog since: greyed, still removable, never substituted. */
   readonly gone: boolean;
   /** An explicit pick still being read. */
   readonly pending: boolean;
@@ -51,9 +60,10 @@ interface FollowedCandidate {
  * follows the place in the middle — a page, a Mac app or a phone — so a
  * question about "this" names which one, on which computer. Its first change
  * of any kind freezes the choice — the place it had, or nothing if a page's
- * read had not answered yet. Removing the chip is a choice that sticks; `+`
- * and `@` add places explicitly at any time. Sending or discarding starts the
- * next draft.
+ * read had not answered yet. A place picked up that way still leaves when it
+ * ends — its tab closed or its view gone, from here or anywhere else. Removing
+ * the chip is a choice that sticks; `+` and `@` add places explicitly at any
+ * time. Sending or discarding starts the next draft.
  * Replies to a task never pick anything up by themselves.
  *
  * Every draft is its own generation: an answer that was asked for one draft —
@@ -219,11 +229,12 @@ export function useComposerContext({
     // A new draft asks again, even about the same page.
   }, [candidateKey, generation, hostClient, sessionId, tabId, titled]);
 
-  // A frozen place that leaves the catalog greys out; nothing takes its place.
+  // A frozen pick that leaves the catalog greys out; nothing takes its place.
   const listed = useMemo(() => new Map(places.map((place) => [place.key, place])), [places]);
+  const placeState = useHostSelector(hostClient, selectSnapshot, samePlaceEndSource);
   const chips = useMemo(() => {
     const base = frozen ?? (followed && candidateKey === followed.key ? [followed.chip] : []);
-    return base.map((chip) => {
+    return standing(base, placeState).map((chip) => {
       const place = listed.get(chip.key);
       const page = pageKey(chip);
       const gone = !place;
@@ -233,7 +244,7 @@ export function useComposerContext({
           : ((page ? pageIcons.get(page) : undefined) ?? chip.icon);
       return chip.gone === gone && chip.icon === icon ? chip : { ...chip, gone, icon };
     });
-  }, [candidateKey, followed, frozen, listed, pageIcons]);
+  }, [candidateKey, followed, frozen, listed, pageIcons, placeState]);
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
   useEffect(() => {
@@ -277,6 +288,14 @@ export function useComposerContext({
     frozenRef.current = next;
     setFrozen(next);
   }, []);
+  // A proven end is final for the draft: a later snapshot that cannot prove it,
+  // such as one offline, never brings the chip back.
+  useEffect(() => {
+    const held = frozenRef.current;
+    if (!held) return;
+    const kept = standing(held, placeState);
+    if (kept.length < held.length) hold(kept);
+  }, [frozen, hold, placeState]);
   /**
    * An explicit pick freezes the draft at once and stands as a chip while its
    * exact reference is read; the answer replaces that chip only if it is still
@@ -342,19 +361,27 @@ export function useComposerContext({
   );
   const prepend = useCallback(
     (parts: readonly PlacePart[]) => {
-      const returned = parts.map((part) => handedBack(part));
+      const held = frozenRef.current ?? chipsRef.current;
+      // A place the newer draft picked explicitly stays that pick, in the returned place.
+      const picked = new Map(
+        held.flatMap((chip) => (chip.auto ? [] : [[chip.key, chip] as const])),
+      );
+      const returned = parts.map((part) => {
+        const chip = handedBack(part);
+        return chip.auto ? (picked.get(chip.key) ?? chip) : chip;
+      });
       const keys = new Set(returned.map((chip) => chip.key));
-      hold([
-        ...returned,
-        ...(frozenRef.current ?? chipsRef.current).filter((chip) => !keys.has(chip.key)),
-      ]);
+      hold([...returned, ...held.filter((chip) => !keys.has(chip.key))]);
     },
     [handedBack, hold],
   );
   // Read at the press that sends: a choice made a moment earlier counts.
   const parts = useCallback(
-    () => (frozenRef.current ?? chipsRef.current).flatMap((chip) => (chip.part ? [chip.part] : [])),
-    [],
+    () =>
+      standing(frozenRef.current ?? chipsRef.current, hostClient.getSnapshot()).flatMap((chip) =>
+        chip.part ? [chip.part] : [],
+      ),
+    [hostClient],
   );
   const pending = chips.some((chip) => chip.pending);
 
@@ -445,6 +472,18 @@ function nativePart(place: PlaceItem): PlacePart {
 
 type SiteIcon = Extract<PlaceItem["icon"], { readonly kind: "site" }>;
 
+const selectSnapshot = (snapshot: HostSnapshot) => snapshot;
+
+/**
+ * The held chips a draft shows and sends — one list for both. A place the
+ * draft picked up by itself stands until it ends.
+ */
+function standing(held: readonly ContextChip[], snapshot: HostSnapshot): readonly ContextChip[] {
+  return held.filter(
+    (chip) => !(chip.auto && chip.destination && placeEnded(snapshot, chip.destination)),
+  );
+}
+
 /** The exact page a chip carries, by tab and document; null for an app, phone or unread pick. */
 function pageKey(chip: ContextChip): string | null {
   return chip.part?.type === "browser-page" && chip.part.documentId
@@ -469,6 +508,7 @@ function partMark(part: PlacePart): PlaceItem["icon"] {
 function chipFor(place: PlaceItem, part: PlacePart | null, thumbnail: string | null): ContextChip {
   return {
     auto: false,
+    destination: place.destination,
     gone: false,
     // A read part names its own page; the read may have found a newer one than was picked.
     icon: part ? partMark(part) : place.icon,
@@ -511,6 +551,7 @@ function restoredChip(part: PlacePart): ContextChip {
   const page = part.type === "browser-page" ? part : null;
   return {
     auto: page?.auto === true,
+    destination: page ? { kind: "browser", sessionId: page.sessionId, tabId: page.tabId } : null,
     gone: false,
     icon: partMark(part),
     key,

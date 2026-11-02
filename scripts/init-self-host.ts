@@ -42,14 +42,12 @@ export interface InitializedSelfHost extends InitializedSelfHostSecrets {
   readonly version: string;
 }
 
-export type SelfHostWorkspaceBacking = "local-directory" | "portablefs";
+export type SelfHostWorkspaceBacking = "local-directory";
 
 export function selfHostWorkspaceBacking(environment: NodeJS.ProcessEnv): SelfHostWorkspaceBacking {
   const value = environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING?.trim() || "local-directory";
-  if (value !== "local-directory" && value !== "portablefs") {
-    throw new Error(
-      "init:self-host requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory or portablefs",
-    );
+  if (value !== "local-directory") {
+    throw new Error("init:self-host requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
   }
   if ((environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server") !== "server") {
     throw new Error("init:self-host requires OPENSTEER_DEPLOYMENT_KIND=server");
@@ -65,10 +63,7 @@ export function selfHostInitializationSummary(
     created: result.created,
     directory: result.directory,
     backing,
-    note:
-      backing === "local-directory"
-        ? "Configure model credentials on the Runner."
-        : "Supply the PortableFS product identity files and configure model credentials on each Runner.",
+    note: "Configure model credentials on the Runner.",
   };
 }
 

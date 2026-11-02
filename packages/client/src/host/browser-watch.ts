@@ -127,7 +127,12 @@ export class BrowserWatchStore {
         if (target) target.generation++;
         return;
       }
-      if (command.type === "viewport.follow" || command.type === "stream.unsubscribe") return;
+      if (
+        command.type === "viewport.follow" ||
+        command.type === "stream.unsubscribe" ||
+        command.type.startsWith("cursor.")
+      )
+        return;
       throw new Error("The targeted browser control is not synchronized.");
     }
     if (
@@ -528,6 +533,7 @@ export class BrowserWatchStore {
             message.type === "browser.dialog.changed"
               ? (message.dialog?.surfaceId ?? message.surfaceId)
               : [
+                    "browser.cursor",
                     "browser.editing",
                     "browser.contextmenu",
                     "clipboard.result",

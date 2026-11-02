@@ -16,7 +16,9 @@ Context replacement ends old composition under the old context ID, waits for its
 acknowledgement, then resets text/traits before queued new-context input. Do not add
 a second React finish/reset. Pointer interruption commits old preedit before target
 pointer dispatch. Removed views cannot report failures to replacements. Refused or
-stale edits retain focus; authoritative blur, Done and release dismiss it.
+stale edits retain focus; authoritative blur and release dismiss it. The browser
+keeps hardware-key focus independently of field editability and software-keyboard
+visibility; Done hides its software keyboard while page hardware keys remain available.
 
 Android must request the soft keyboard when its window gains focus. Return retains
 focus for continued typing; queued keys sample composition state at dispatch.

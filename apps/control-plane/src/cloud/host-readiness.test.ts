@@ -17,7 +17,10 @@ describe("public cloud Host readiness", () => {
     deploymentId: createId("deployment"),
     hostInstanceId: createId("hostInstance"),
     hostKey: { algorithm: "Ed25519" as const },
-    deploymentShape: { kind: "server" as const, defaultWorkspaceBacking: "portablefs" as const },
+    deploymentShape: {
+      kind: "server" as const,
+      defaultWorkspaceBacking: "local-directory" as const,
+    },
   };
   const publicKey = {
     algorithm: "Ed25519",
@@ -50,7 +53,7 @@ describe("public cloud Host readiness", () => {
   it("keeps a previously published legacy authority ready", async () => {
     const legacyDocument = {
       ...document,
-      deploymentShape: { backing: "portablefs" as const, kind: "server" as const },
+      deploymentShape: { backing: "local-directory" as const, kind: "server" as const },
     };
     const legacyEnvelope = {
       document: legacyDocument,

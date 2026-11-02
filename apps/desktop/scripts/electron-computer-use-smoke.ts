@@ -249,7 +249,7 @@ async function run(): Promise<void> {
       subscribe,
     },
     portal: { openExternal: unused, pickFolder: unused },
-    runner: { portableFs: unused, remove: unused, start: unused, status: unused, subscribe },
+    runner: { remove: unused, start: unused, status: unused, subscribe },
   });
   const presentation: ComputerAppApprovalPresentation = {
     kind: "app",

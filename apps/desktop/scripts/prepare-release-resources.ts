@@ -156,9 +156,6 @@ async function main(): Promise<void> {
     );
   }
 
-  const includePortableFs = optionalBoolean("OPENSTEER_DESKTOP_PORTABLEFS_VARIANT", false);
-  const portableFs = includePortableFs ? await portableFsRelease(targetOs) : undefined;
-
   const temporary = `${targetDirectory}.tmp-${process.pid}`;
   await rm(temporary, { force: true, recursive: true });
   try {
@@ -176,7 +173,6 @@ async function main(): Promise<void> {
         "passwords",
         "dictation",
         "personal-runtime",
-        "portablefs",
         "process-supervisor",
         "runner",
       ].map((name) => mkdir(path.join(temporary, name), { mode: 0o700, recursive: true })),
@@ -202,7 +198,6 @@ async function main(): Promise<void> {
       capabilities: {
         ...releaseProfile.capabilities,
         localAgents: true,
-        portableFs: includePortableFs,
       },
     });
 
@@ -278,18 +273,6 @@ async function main(): Promise<void> {
         "data",
         targetOs,
       );
-    }
-
-    if (portableFs) {
-      const portableDirectory = path.join(temporary, "portablefs");
-      const installerTarget = path.join(portableDirectory, "install.sh");
-      await copyFile(portableFs.installerSource, installerTarget);
-      await setArtifactMode(installerTarget, "executable", targetOs);
-      await writeJson(path.join(portableDirectory, "release.json"), {
-        installerSha256: portableFs.installerSha256,
-        schemaVersion: 1,
-        version: portableFs.version,
-      });
     }
 
     await rm(targetDirectory, { force: true, recursive: true });
@@ -556,42 +539,6 @@ async function stagePersonalRuntime(
   }
 }
 
-async function portableFsRelease(operatingSystem: "darwin" | "linux" | "win32"): Promise<{
-  readonly installerSha256: string;
-  readonly installerSource: string;
-  readonly version: string;
-}> {
-  if (operatingSystem === "win32") {
-    throw new Error(
-      "The PortableFS Desktop variant is not available for Windows until a signed Windows installer contract exists.",
-    );
-  }
-  const version = stableVersion(
-    requiredEnvironmentValue(
-      process.env,
-      "OPENSTEER_PORTABLEFS_RELEASE_VERSION",
-      "OPENSTEER_PORTABLEFS_RELEASE_VERSION is required for a Desktop release build.",
-    ),
-    "OPENSTEER_PORTABLEFS_RELEASE_VERSION",
-  );
-  const expectedInstallerDigest = expectedDigest("OPENSTEER_PORTABLEFS_INSTALLER_SHA256");
-  const installerSource = path.resolve(
-    process.env.OPENSTEER_PORTABLEFS_INSTALLER_SOURCE?.trim() ||
-      path.join(repositoryRoot, "../portablefs/scripts/install.sh"),
-  );
-  await assertRegularFile(installerSource, "PortableFS installer source");
-  const installerSha256 = createHash("sha256")
-    .update(await readFile(installerSource))
-    .digest("hex");
-  if (installerSha256 !== expectedInstallerDigest) {
-    throw new Error(
-      `PortableFS installer digest mismatch: expected ${expectedInstallerDigest}, got ${installerSha256}`,
-    );
-  }
-  await run("/bin/sh", ["-n", installerSource], repositoryRoot);
-  return { installerSha256, installerSource, version };
-}
-
 function releaseChannel(value: string): "beta" | "stable" {
   if (value !== "beta" && value !== "stable") {
     throw new Error("OPENSTEER_DESKTOP_RELEASE_CHANNEL must be beta or stable.");
@@ -623,14 +570,6 @@ function expectedDigest(name: string): string {
     throw new Error(`${name} must be a lowercase SHA-256 digest.`);
   }
   return value;
-}
-
-function optionalBoolean(name: string, fallback: boolean): boolean {
-  const value = process.env[name]?.trim();
-  if (!value) return fallback;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new Error(`${name} must be true or false.`);
 }
 
 function stableVersion(value: string, name: string): string {

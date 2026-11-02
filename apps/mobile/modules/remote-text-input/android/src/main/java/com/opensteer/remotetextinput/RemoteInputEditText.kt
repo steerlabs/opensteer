@@ -25,6 +25,8 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private var mutating = false
   private var initialized = false
   private var editableField = false
+  private var desiredFocus = false
+  private var keyboardPending = false
   private var sensitive = false
   private var multiline = false
   private var composingStart = -1
@@ -56,8 +58,11 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     if (initialized && hasWindowFocus) showKeyboard()
   }
   private fun showKeyboard() {
+    if (keyboardPending) return
+    keyboardPending = true
     post {
-      if (hasWindowFocus() && editableField && isFocused && showSoftInputOnFocus)
+      keyboardPending = false
+      if (hasWindowFocus() && desiredFocus && editableField && isFocused && showSoftInputOnFocus)
         (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
     }
   }
@@ -193,11 +198,13 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     }
   }
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    if (!editableField) return false
+    // Android owns Back/system keys, and Meta shortcuts remain available to the app.
+    if (event.keyCode == KeyEvent.KEYCODE_BACK || (event.isMetaPressed && event.action != KeyEvent.ACTION_UP)) return super.dispatchKeyEvent(event)
     if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return super.dispatchKeyEvent(event)
-    val named = mapOf(KeyEvent.KEYCODE_DEL to "Backspace", KeyEvent.KEYCODE_FORWARD_DEL to "Delete", KeyEvent.KEYCODE_ENTER to "Enter", KeyEvent.KEYCODE_TAB to "Tab", KeyEvent.KEYCODE_ESCAPE to "Escape", KeyEvent.KEYCODE_DPAD_LEFT to "ArrowLeft", KeyEvent.KEYCODE_DPAD_RIGHT to "ArrowRight", KeyEvent.KEYCODE_DPAD_UP to "ArrowUp", KeyEvent.KEYCODE_DPAD_DOWN to "ArrowDown", KeyEvent.KEYCODE_MOVE_HOME to "Home", KeyEvent.KEYCODE_MOVE_END to "End", KeyEvent.KEYCODE_CTRL_LEFT to "Control", KeyEvent.KEYCODE_CTRL_RIGHT to "Control", KeyEvent.KEYCODE_ALT_LEFT to "Alt", KeyEvent.KEYCODE_ALT_RIGHT to "Alt", KeyEvent.KEYCODE_SHIFT_LEFT to "Shift", KeyEvent.KEYCODE_SHIFT_RIGHT to "Shift", KeyEvent.KEYCODE_META_LEFT to "Meta", KeyEvent.KEYCODE_META_RIGHT to "Meta")
+    val named = mapOf(KeyEvent.KEYCODE_DEL to "Backspace", KeyEvent.KEYCODE_FORWARD_DEL to "Delete", KeyEvent.KEYCODE_ENTER to "Enter", KeyEvent.KEYCODE_TAB to "Tab", KeyEvent.KEYCODE_ESCAPE to "Escape", KeyEvent.KEYCODE_PAGE_UP to "PageUp", KeyEvent.KEYCODE_PAGE_DOWN to "PageDown", KeyEvent.KEYCODE_SPACE to " ", KeyEvent.KEYCODE_MENU to "ContextMenu", KeyEvent.KEYCODE_DPAD_LEFT to "ArrowLeft", KeyEvent.KEYCODE_DPAD_RIGHT to "ArrowRight", KeyEvent.KEYCODE_DPAD_UP to "ArrowUp", KeyEvent.KEYCODE_DPAD_DOWN to "ArrowDown", KeyEvent.KEYCODE_MOVE_HOME to "Home", KeyEvent.KEYCODE_MOVE_END to "End", KeyEvent.KEYCODE_CTRL_LEFT to "Control", KeyEvent.KEYCODE_CTRL_RIGHT to "Control", KeyEvent.KEYCODE_ALT_LEFT to "Alt", KeyEvent.KEYCODE_ALT_RIGHT to "Alt", KeyEvent.KEYCODE_SHIFT_LEFT to "Shift", KeyEvent.KEYCODE_SHIFT_RIGHT to "Shift", KeyEvent.KEYCODE_META_LEFT to "Meta", KeyEvent.KEYCODE_META_RIGHT to "Meta")
     val unicode = event.getUnicodeChar(event.metaState and KeyEvent.META_CTRL_MASK.inv())
-    val key = named[event.keyCode] ?: if (unicode > 0 && unicode and KeyCharacterMap.COMBINING_ACCENT != 0) "Dead" else if (unicode > 0) String(Character.toChars(unicode)) else "Unidentified"
+    val name = if (event.keyCode in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12) "F${event.keyCode - KeyEvent.KEYCODE_F1 + 1}" else named[event.keyCode]
+    val key = name ?: if (unicode > 0 && unicode and KeyCharacterMap.COMBINING_ACCENT != 0) "Dead" else if (unicode > 0) String(Character.toChars(unicode)) else "Unidentified"
     val physical = KeyEvent.keyCodeToString(event.keyCode).removePrefix("KEYCODE_")
     val code = when {
       event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> "Key$physical"
@@ -205,7 +212,7 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       physical.startsWith("NUMPAD_") -> "Numpad" + (mapOf("ADD" to "Add", "SUBTRACT" to "Subtract", "MULTIPLY" to "Multiply", "DIVIDE" to "Divide", "DOT" to "Decimal", "ENTER" to "Enter", "EQUALS" to "Equal")[physical.removePrefix("NUMPAD_")] ?: physical.removePrefix("NUMPAD_"))
       physical.endsWith("_LEFT") && key in listOf("Control", "Alt", "Meta", "Shift") -> key + "Left"
       physical.endsWith("_RIGHT") && key in listOf("Control", "Alt", "Meta", "Shift") -> key + "Right"
-      else -> mapOf("SPACE" to "Space", "MINUS" to "Minus", "EQUALS" to "Equal", "LEFT_BRACKET" to "BracketLeft", "RIGHT_BRACKET" to "BracketRight", "BACKSLASH" to "Backslash", "SEMICOLON" to "Semicolon", "APOSTROPHE" to "Quote", "GRAVE" to "Backquote", "COMMA" to "Comma", "PERIOD" to "Period", "SLASH" to "Slash")[physical] ?: named[event.keyCode] ?: "Unidentified"
+      else -> mapOf("SPACE" to "Space", "MINUS" to "Minus", "EQUALS" to "Equal", "LEFT_BRACKET" to "BracketLeft", "RIGHT_BRACKET" to "BracketRight", "BACKSLASH" to "Backslash", "SEMICOLON" to "Semicolon", "APOSTROPHE" to "Quote", "GRAVE" to "Backquote", "COMMA" to "Comma", "PERIOD" to "Period", "SLASH" to "Slash")[physical] ?: name ?: "Unidentified"
     }
     val right = physical.endsWith("_RIGHT")
     val modifier = key in listOf("Control", "Alt", "Meta", "Shift")
@@ -260,18 +267,18 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     }
     gate.notify(mapOf("type" to "paste", "items" to if (total <= 16 * 1024 * 1024) items else emptyList<Map<String, Any>>()))
   }
-  fun configure(context: Map<String, Any?>?, focused: Boolean) {
+  fun configure(context: Map<String, Any?>?, focused: Boolean, softKeyboard: Boolean = true) {
     gate.enqueue {
       if (context?.get("contextId") as? String != contextId) {
         finishComposition()
         // The ending's acknowledgement precedes the reset and new-context input.
-        gate.enqueue { applyConfiguration(context, focused) }
+        gate.enqueue { applyConfiguration(context, focused, softKeyboard) }
       } else {
-        applyConfiguration(context, focused)
+        applyConfiguration(context, focused, softKeyboard)
       }
     }
   }
-  private fun applyConfiguration(context: Map<String, Any?>?, focused: Boolean) {
+  private fun applyConfiguration(context: Map<String, Any?>?, focused: Boolean, softKeyboard: Boolean) {
     val nextContext = context?.get("contextId") as? String
     if (nextContext != contextId) {
       contextId = nextContext
@@ -314,9 +321,19 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       "send" -> EditorInfo.IME_ACTION_SEND
       else -> EditorInfo.IME_ACTION_NONE
     }
-    showSoftInputOnFocus = editableField && mode != "none"
+    val show = focused && softKeyboard && editableField && mode != "none"
+    val wasShowing = showSoftInputOnFocus && desiredFocus
+    val focusChanged = desiredFocus != focused
+    desiredFocus = focused
+    showSoftInputOnFocus = show
     val keyboard = this.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-    if (editableField && focused) { requestFocus(); showKeyboard() }
-    else { keyboard.hideSoftInputFromWindow(windowToken, 0); clearFocus() }
+    if (wasShowing && !show) keyboard.hideSoftInputFromWindow(windowToken, 0)
+    if (focused) {
+      val needsFocus = !isFocused
+      if (needsFocus) requestFocus()
+      if (show && (needsFocus || !wasShowing)) showKeyboard()
+    } else if (isFocused || focusChanged) {
+      clearFocus()
+    }
   }
 }

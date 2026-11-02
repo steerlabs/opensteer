@@ -6,12 +6,10 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   assertDevelopmentListenersAvailable,
-  assertDevelopmentWorkspaceEnvironment,
   DevelopmentStackAlreadyRunningError,
   DevelopmentStackLock,
   developmentListeners,
   developmentWorkspaceBacking,
-  localFilesServiceUrl,
 } from "../scripts/dev-supervisor.js";
 
 describe("development supervisor", () => {
@@ -52,42 +50,12 @@ describe("development supervisor", () => {
     ]);
   });
 
-  it("accepts only a plain HTTP origin for the native Files service", () => {
-    expect(localFilesServiceUrl({ OPENSTEER_FILES_SERVICE_URL: "http://[::1]:4315" }).origin).toBe(
-      "http://[::1]:4315",
-    );
-    expect(() =>
-      localFilesServiceUrl({ OPENSTEER_FILES_SERVICE_URL: "https://files.example.test" }),
-    ).toThrow(/HTTP origin/);
-    expect(() =>
-      localFilesServiceUrl({ OPENSTEER_FILES_SERVICE_URL: "http://127.0.0.1:4315/path" }),
-    ).toThrow(/HTTP origin/);
-  });
-
   it("defaults to local directories and accepts only explicit development backing", () => {
     expect(developmentWorkspaceBacking({})).toBe("local-directory");
-    expect(
-      developmentWorkspaceBacking({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "portablefs",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-      }),
-    ).toBe("portablefs");
+
     expect(() =>
       developmentWorkspaceBacking({ OPENSTEER_DEFAULT_WORKSPACE_BACKING: "invalid" }),
     ).toThrow(/requires OPENSTEER_DEFAULT_WORKSPACE_BACKING/);
-  });
-
-  it("rejects variables from the other storage backing", () => {
-    expect(() =>
-      assertDevelopmentWorkspaceEnvironment("local-directory", {
-        OPENSTEER_PORTABLEFS_MANAGER_URL: "https://manager.example.test",
-      }),
-    ).toThrow(/local-directory.*OPENSTEER_PORTABLEFS_MANAGER_URL/);
-    expect(() =>
-      assertDevelopmentWorkspaceEnvironment("portablefs", {
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/tmp/workspaces",
-      }),
-    ).toThrow(/portablefs.*OPENSTEER_LOCAL_WORKSPACE_ROOT/);
   });
 
   it("fails before startup when a selected listener is occupied", async () => {

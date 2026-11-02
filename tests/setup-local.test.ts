@@ -24,20 +24,16 @@ describe("local development initialization", () => {
       if (command === "go") return "go version go1.26.2 test/arch\n";
       return "ok\n";
     });
-    const validatePortableFs = vi.fn(async () => undefined);
 
     const first = await initializeLocalDevelopment({
       nodeVersion: "24.18.0",
       repositoryRoot,
       runCommand,
-      validatePortableFs,
     });
     const firstContent = await readFile(join(repositoryRoot, ".env"), "utf8");
     expect(first.environmentCreated).toBe(true);
     expect(firstContent).not.toContain("replace-with");
     expect(first).toMatchObject({ backing: "local-directory" });
-    expect(firstContent).not.toContain("OPENSTEER_PORTABLEFS");
-    expect(validatePortableFs).not.toHaveBeenCalled();
     expect(commands).toContain("docker info --format {{.ServerVersion}}");
     expect(commands).toContain("pnpm exec playwright-core install chromium");
     expect(
@@ -53,7 +49,6 @@ describe("local development initialization", () => {
       nodeVersion: "24.18.0",
       repositoryRoot,
       runCommand,
-      validatePortableFs,
     });
     expect(second).toMatchObject({ environmentCreated: false, environmentUpdated: false });
     expect(await readFile(join(repositoryRoot, ".env"), "utf8")).toBe(firstContent);
@@ -79,7 +74,6 @@ describe("local development initialization", () => {
       nodeVersion: "24.13.0",
       repositoryRoot,
       runCommand,
-      validatePortableFs: async () => undefined,
     });
     const content = await readFile(join(repositoryRoot, ".env"), "utf8");
     expect(result.environmentUpdated).toBe(true);
@@ -103,81 +97,12 @@ describe("local development initialization", () => {
           nodeVersion: "24.18.0",
           repositoryRoot,
           runCommand,
-          validatePortableFs: async () => undefined,
         }),
       ),
     );
     const content = await readFile(join(repositoryRoot, ".env"), "utf8");
     expect(content.match(/^OPENSTEER_AUTH_SECRET=/gmu)).toHaveLength(1);
     expect(content).not.toContain("replace-with");
-  });
-
-  it("validates PortableFS only when its integration backing is explicit", async () => {
-    const repositoryRoot = join(tmpdir(), `opensteer-local-pfs-${randomUUID()}`);
-    await mkdir(repositoryRoot, { recursive: true });
-    await writeFile(
-      join(repositoryRoot, ".env.example"),
-      template.replace("local-directory", "portablefs") + "OPENSTEER_DEV_PORTABLEFS=local\n",
-    );
-    const commands: string[] = [];
-    const validatePortableFs = vi.fn(async () => undefined);
-    const result = await initializeLocalDevelopment({
-      nodeVersion: "24.18.0",
-      repositoryRoot,
-      runCommand: async (command, arguments_) => {
-        commands.push([command, ...arguments_].join(" "));
-        if (command === "pnpm") return "10.29.3";
-        if (command === "go") return "go version go1.26.0 test/arch";
-        return "ok";
-      },
-      validatePortableFs,
-    });
-    expect(result).toMatchObject({
-      portableFsSourceDirectory: join(tmpdir(), "portablefs"),
-      backing: "portablefs",
-    });
-    expect(validatePortableFs).toHaveBeenCalledOnce();
-    expect(commands).toContain("openssl version");
-  });
-
-  it("rejects PortableFS configuration under the default local-directory backing", async () => {
-    const repositoryRoot = join(tmpdir(), `opensteer-local-mixed-${randomUUID()}`);
-    await mkdir(repositoryRoot, { recursive: true });
-    await writeFile(
-      join(repositoryRoot, ".env.example"),
-      `${template}OPENSTEER_PORTABLEFS_MANAGER_URL=https://manager.example.test\n`,
-    );
-    await expect(
-      initializeLocalDevelopment({
-        nodeVersion: "24.18.0",
-        repositoryRoot,
-        runCommand: async (command) => {
-          if (command === "pnpm") return "10.29.3";
-          if (command === "go") return "go version go1.26.0 test/arch";
-          return "ok";
-        },
-      }),
-    ).rejects.toThrow(/local-directory.*OPENSTEER_PORTABLEFS_MANAGER_URL/);
-  });
-
-  it("rejects PortableFS configuration inherited from the shell in local mode", async () => {
-    const repositoryRoot = join(tmpdir(), `opensteer-local-shell-mixed-${randomUUID()}`);
-    await mkdir(repositoryRoot, { recursive: true });
-    await writeFile(join(repositoryRoot, ".env.example"), template);
-    await expect(
-      initializeLocalDevelopment({
-        environment: {
-          OPENSTEER_PORTABLEFS_MANAGER_URL: "https://manager.example.test",
-        },
-        nodeVersion: "24.18.0",
-        repositoryRoot,
-        runCommand: async (command) => {
-          if (command === "pnpm") return "10.29.3";
-          if (command === "go") return "go version go1.26.0 test/arch";
-          return "ok";
-        },
-      }),
-    ).rejects.toThrow(/local-directory.*OPENSTEER_PORTABLEFS_MANAGER_URL/);
   });
 
   it("rejects an unsafe existing environment path", async () => {
@@ -194,7 +119,6 @@ describe("local development initialization", () => {
             : command === "go"
               ? "go version go1.26.0 test/arch"
               : "ok",
-        validatePortableFs: async () => undefined,
       }),
     ).rejects.toThrow(/regular file/);
   });

@@ -1,16 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createHash, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const immutableReleaseRecordPath = "/usr/local/share/opensteer/release.json";
 export const immutablePackageManifestPath = "/app/package.json";
-export const portableFsArtifactEnvironmentVariables = [
-  "OPENSTEER_PORTABLEFS_MOUNT_BINARY",
-  "OPENSTEER_PORTABLEFS_MOUNT_SHA256",
-];
 
 export async function main() {
   const environment = { ...process.env };
@@ -20,7 +15,6 @@ export async function main() {
   await expandSecretFiles(environment);
   await configureBrowserRuntime(environment);
   await prepareRunnerWorkspaceRoot(environment);
-  await verifyPortableFsArtifact(environment);
 
   const [command, ...arguments_] = process.argv.slice(2);
   if (!command) fail("Opensteer container entrypoint requires a command.");
@@ -212,31 +206,6 @@ async function findChromiumExecutable(root) {
     }
   }
   return undefined;
-}
-
-export async function verifyPortableFsArtifact(target) {
-  const [binaryVariable, checksumVariable] = portableFsArtifactEnvironmentVariables;
-  const binary = target[binaryVariable];
-  const expectedText = target[checksumVariable];
-  if (!binary && !expectedText) return;
-  if (!binary || !expectedText) {
-    fail(`${binaryVariable} and ${checksumVariable} must be set together.`);
-  }
-  const expected = expectedText.toLowerCase();
-  if (!/^[a-f0-9]{64}$/u.test(expected)) {
-    fail(`${checksumVariable} must be a lowercase SHA-256 digest.`);
-  }
-  let artifact;
-  try {
-    artifact = await readFile(binary);
-  } catch (error) {
-    fail(`Could not read the pinned PortableFS artifact: ${safeMessage(error)}`);
-  }
-  const actual = createHash("sha256").update(artifact).digest();
-  const expectedBytes = Buffer.from(expected, "hex");
-  if (!timingSafeEqual(actual, expectedBytes)) {
-    fail(`The supplied PortableFS artifact does not match ${checksumVariable}.`);
-  }
 }
 
 export async function prepareRunnerWorkspaceRoot(target) {

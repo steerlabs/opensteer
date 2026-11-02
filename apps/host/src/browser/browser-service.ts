@@ -148,6 +148,8 @@ export class BrowserCdpConnectionEnded extends Error {
  * control only the Host itself issues, so it is never relayed from a consumer.
  */
 const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set([
+  "cursor.query",
+  "cursor.reset",
   "input.command",
   "input.compose",
   "input.text",
@@ -5154,6 +5156,14 @@ class HostedBrowserBroker {
     if (message.type === "browser.editing") this.#editingContexts.set(message.surfaceId, message);
     const [unaddressedAuthor, ...otherSenders] = this.#unaddressedKeySenders;
     for (const consumer of this.#consumers.values()) {
+      if (
+        message.type === "browser.cursor" &&
+        (consumer.mode !== "control" ||
+          consumer.clipboardToken !== message.consumerToken ||
+          message.surfaceId !==
+            (consumer.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id))
+      )
+        continue;
       if (
         message.type === "browser.error" &&
         message.producerId &&
