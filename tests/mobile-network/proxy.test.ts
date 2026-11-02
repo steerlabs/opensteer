@@ -156,3 +156,25 @@ it("preserves TCP order when propagation timers become ready out of order", () =
     vi.useRealTimers();
   }
 });
+
+it("applies a handover stall once and then recovers without periodic pauses", () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const direction = new Direction(8_000, 0, { everyChunks: 2, delayMs: 2_000, once: true });
+  const source = { destroyed: false, pause: vi.fn(), resume: vi.fn() } as unknown as net.Socket;
+  const received: number[] = [];
+  const target = {
+    destroyed: false,
+    write: () => {
+      received.push(performance.now());
+      return true;
+    },
+  } as unknown as net.Socket;
+  try {
+    for (let i = 0; i < 4; i++) direction.send(source, target, Buffer.alloc(1000), () => undefined);
+    vi.advanceTimersByTime(6000);
+    expect(received).toEqual([1000, 4000, 5000, 6000]);
+  } finally {
+    direction.close();
+    vi.useRealTimers();
+  }
+});

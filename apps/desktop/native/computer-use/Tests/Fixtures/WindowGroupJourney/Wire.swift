@@ -42,15 +42,18 @@ import Darwin
   /// A connection says hello once; every journey on it shares that.
   private var greeted = false
   private var negotiatedOwnerInput = false
-  func hello(ownerInput: Bool = false) async throws {
+  func hello(ownerInput: Bool = false, videoProfile: Bool = false) async throws {
     if greeted {
       try require(!ownerInput || negotiatedOwnerInput, "This connection did not negotiate owner input")
       return
     }
     var params: [String: Any] = ["protocolVersion": 10, "ownerViewVersion": 3]
     if ownerInput { params["ownerInputVersion"] = 2 }
+    if videoProfile { params["videoProfile"] = 1 }
     let reply = try await request("hello", params)
     try require(reply["ownerViewVersion"] as? Int == 3, "Owner-view v3 negotiation failed")
+    try require((reply["videoProfile"] as? Int == 1) == videoProfile,
+      "The video profile answer did not follow the offer")
     if ownerInput {
       try require(reply["ownerInputVersion"] as? Int == 2, "Owner input was not negotiated")
     } else {

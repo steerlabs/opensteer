@@ -3,6 +3,8 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { describe, expect, it } from "vitest";
 import {
   ComputerAppRemedySchema,
+  HostIntegrationsDisplayStartSchema,
+  HostIntegrationsDisplayDemandSchema,
   HostToIntegrationsModuleMessageSchema,
   IntegrationsModuleEventSchema,
   computerAppMaxStatusEntries,
@@ -331,3 +333,39 @@ describe("computer app approval and discovery contracts", () => {
     }
   });
 });
+
+it.each([null, 149_999, 150_000, 4_000_000, 20_000_000, 20_000_001])(
+  "bounds profile bitrate %s",
+  (maxBitrate) => {
+    const streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const valid = maxBitrate === null || (maxBitrate >= 150_000 && maxBitrate <= 20_000_000);
+    const start = {
+      ...fence,
+      type: "host.integrations.display.start",
+      streamId,
+      display: "main",
+      revision: 0,
+      sources: [],
+      maxLongSide: 1280,
+      maxFps: 60,
+      dataTicket: "fixture.ticket.value",
+      displayProfile: 1,
+      maxBitrate,
+    };
+    expect(HostIntegrationsDisplayStartSchema.safeParse(start).success).toBe(valid);
+    expect(
+      HostIntegrationsDisplayStartSchema.safeParse({ ...start, displayProfile: undefined }).success,
+    ).toBe(false);
+    expect(
+      HostIntegrationsDisplayDemandSchema.safeParse({
+        ...fence,
+        type: "host.integrations.display.demand",
+        streamId,
+        display: "main",
+        revision: 1,
+        sources: [],
+        maxBitrate,
+      }).success,
+    ).toBe(valid);
+  },
+);

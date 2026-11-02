@@ -1,3 +1,4 @@
+import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
@@ -60,6 +61,35 @@ const displayMaxViewers = 8;
 // Credit is decoder feedback, not proof that the network drained its writes.
 const displaySocketBufferedBytes = 8 * 1_024 * 1_024;
 const displayReplayBudgetMs = 500;
+/**
+ * A Mac window makes keys only on demand, so its cache can hold a long chain.
+ * Before a viewer's link is measured, replay only what a slow link takes quickly;
+ * a phone's own refresh threshold already bounds its chain.
+ */
+const macUnmeasuredReplayBytes = 512 * 1_024;
+const displayKeyframeRetryMs = 1_500;
+/** How often a Mac viewer's path is re-measured while it sits empty. */
+const displayRoundTripPingMs = 2_000;
+/** How long after a viewer's input it still counts as driving the window. */
+const macDrivingMs = 30_000;
+
+/**
+ * The long side a Mac budget keeps legible at ten frames a second, matching the
+ * helper's cadence floor (MacVideoRate.cadenceBitsPerPixel). Below it the
+ * encoder cannot meet its budget at full size, and the queue it builds costs
+ * far more than the pixels.
+ */
+function macLegibleLongSide(
+  bitrate: number | null,
+  { width, height }: { width: number; height: number },
+): number {
+  if (bitrate === null) return Infinity;
+  const aspect = width > 0 && height > 0 ? Math.max(width, height) / Math.min(width, height) : 1.5;
+  const pixels = bitrate / (0.05 * 10);
+  return Math.max(320, Math.floor(Math.sqrt(pixels * aspect) / 16) * 16);
+}
+/** The original Mac budget, kept while a viewer that cannot report its link watches. */
+const macUnmeasuredViewerBitrate = 2_500_000;
 const displayDeliveryEstimateLifetimeMs = 5_000;
 const displayCongestionRefreshMs = 2_000;
 
@@ -85,6 +115,13 @@ type PhoneEvent = Extract<
 interface Viewer {
   readonly displayWindow: boolean;
   readonly bitrate: DisplayViewerBitrate;
+  /** A Mac viewer's measured link; phones keep their own controller. */
+  readonly link: DisplayLinkRate | null;
+  /** The payload and send time of this viewer's outstanding round-trip ping. */
+  ping: { readonly payload: string; readonly at: number } | null;
+  pingedAt: number;
+  /** When this viewer last sent accepted input; the driver sets a Mac budget. */
+  inputAt: number;
   readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
   readonly phoneOwnerControl: boolean;
@@ -396,8 +433,8 @@ export class DisplayStreamHub {
         streamId,
       });
       stream = {
-        ...(live.displayProfile === 1 && !target ? { displayProfile: 1 as const } : {}),
-        maxBitrate: null,
+        ...(live.displayProfile === 1 ? { displayProfile: 1 as const } : {}),
+        maxBitrate: live.displayProfile === 1 && target ? macLinkRate.initialBitrate : null,
         bitrateAt: -Infinity,
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
@@ -443,8 +480,9 @@ export class DisplayStreamHub {
       start = {
         ...stream.fence,
         type: "host.integrations.display.start",
-        ...(live.displayProfile === 1 && !target
-          ? { displayProfile: 1 as const, maxBitrate: null }
+        // An unmeasured Mac viewer starts moderate so a cellular link is not flooded first.
+        ...(live.displayProfile === 1
+          ? { displayProfile: 1 as const, maxBitrate: target ? macLinkRate.initialBitrate : null }
           : {}),
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
@@ -464,7 +502,7 @@ export class DisplayStreamHub {
         streamId,
         dataTicket: issued.ticket,
         maxLongSide: displayDefaultMaxLongSide,
-        maxFps: displayDefaultMaxFps,
+        maxFps: target && live.displayProfile === 1 ? 60 : displayDefaultMaxFps,
       };
     }
     const attached = stream;
@@ -482,6 +520,10 @@ export class DisplayStreamHub {
       displayWindow: options.displayWindow === true,
       ackDelays: [],
       bitrate: new DisplayViewerBitrate(),
+      link:
+        attached.target && attached.displayProfile === 1 && options.displayWindow === true
+          ? new DisplayLinkRate(macLinkRate)
+          : null,
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -505,7 +547,19 @@ export class DisplayStreamHub {
       slowSince: null,
       recoverySample: null,
       deliveryEstimate: null,
+      ping: null,
+      pingedAt: -Infinity,
+      inputAt: -Infinity,
     };
+    if (viewer.link) {
+      const link = viewer.link;
+      socket.on("pong", (data: Buffer) => {
+        if (viewer.ping?.payload !== data.toString()) return;
+        link.roundTrip(this.#now() - viewer.ping.at, this.#now());
+        viewer.ping = null;
+      });
+      this.#ping(viewer);
+    }
     attached.viewers.add(viewer);
     attached.authorities.set(displaySourceKey(source), { source, actor });
     this.#log(attached, "open");
@@ -514,7 +568,7 @@ export class DisplayStreamHub {
       attached.demandKey = JSON.stringify({
         sources: [source],
         ...(attached.phoneOwnerControl === 1 ? { inputSources } : {}),
-        ...(attached.displayProfile === 1 ? { maxBitrate: null } : {}),
+        ...(attached.displayProfile === 1 ? { maxBitrate: attached.maxBitrate } : {}),
       });
       this.#send(attached, {
         ...start,
@@ -671,7 +725,7 @@ export class DisplayStreamHub {
               continue;
             }
             if (viewer.waiting && !header.key) continue;
-            if (!this.#hasCredit(viewer, envelope.byteLength)) {
+            if (!this.#hasCredit(viewer, envelope.byteLength, false, header.key)) {
               if (viewer.displayWindow) {
                 this.#stall(stream, viewer);
               }
@@ -949,7 +1003,9 @@ export class DisplayStreamHub {
       return;
     }
     if (message.type === "display.keyframe") {
-      if (viewer.keyframePending || this.#now() - viewer.keyframeAt < displayRefreshCoalescingMs)
+      // A request whose key never arrived may ask again; nothing periodic repairs it.
+      const since = this.#now() - viewer.keyframeAt;
+      if (since < (viewer.keyframePending ? displayKeyframeRetryMs : displayRefreshCoalescingMs))
         return;
       viewer.keyframeAt = this.#now();
       viewer.keyframePending = true;
@@ -968,6 +1024,7 @@ export class DisplayStreamHub {
       }
       viewer.discarded.push(...viewer.outstanding.keys());
       viewer.outstanding.clear();
+      viewer.link?.forget();
       viewer.bytes = 0;
       viewer.recoverySample = null;
       viewer.replayIndex = null;
@@ -1005,7 +1062,8 @@ export class DisplayStreamHub {
           viewer.ackDelays.pop();
         viewer.ackDelays.push({ at, delay });
         if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
-        viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
+        if (viewer.link) viewer.link.ack(message.sequence, at);
+        else viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
         this.#bitrate(stream);
       }
       // Decoder outputs in stream order: acknowledgement returns all earlier credits.
@@ -1017,6 +1075,7 @@ export class DisplayStreamHub {
       // Any valid acknowledgement is progress, even while a byte-only replay
       // still has more than four frames outstanding.
       viewer.slowSince = null;
+      if (viewer.outstanding.size === 0) this.#ping(viewer);
       if (viewer.waiting && viewer.outstanding.size === 0) {
         const sample = viewer.recoverySample;
         viewer.recoverySample = null;
@@ -1107,6 +1166,8 @@ export class DisplayStreamHub {
       });
       return;
     }
+    // Only accepted input makes a viewer the driver whose link sets the budget.
+    viewer.inputAt = this.#now();
     const sequence = stream.inputSequence++;
     if (editing)
       stream.pending.set(sequence, {
@@ -1311,22 +1372,30 @@ export class DisplayStreamHub {
   #cachedDeltaBytes(stream: Stream): number {
     return stream.cacheBytes - (stream.cache[0]?.bytes.byteLength ?? 0);
   }
-  #hasCredit(viewer: Viewer, bytes: number, replay = false): boolean {
+  #hasCredit(viewer: Viewer, bytes: number, replay = false, key = false): boolean {
+    // A measured link carries what fits a round trip and a short queue; a fixed
+    // megabyte is seconds of stale video on a slow one. A key replaces the
+    // chain, is rare, and would otherwise only trigger another key.
+    const credit = viewer.link
+      ? viewer.link.creditBytes(this.#now(), displayViewerCreditBytes)
+      : displayViewerCreditBytes;
     return (
       (replay ||
         (viewer.displayWindow
           ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
           : viewer.outstanding.size < displayViewerCreditFrames)) &&
-      (viewer.outstanding.size === 0 || viewer.bytes + bytes <= displayViewerCreditBytes)
+      (viewer.outstanding.size === 0 ||
+        (key && viewer.link !== null) ||
+        viewer.bytes + bytes <= credit)
     );
   }
   #withinCreditAge(viewer: Viewer): boolean {
     const now = this.#now();
     while (viewer.ackDelays[0] && now - viewer.ackDelays[0].at >= 10_000) viewer.ackDelays.shift();
     const oldest = viewer.outstanding.values().next().value;
-    return (
-      !oldest || now - oldest.sentAt <= Math.min(1_500, (viewer.ackDelays[0]?.delay ?? 400) + 250)
-    );
+    // A measured link knows its round trip net of a slow first key's transfer.
+    const base = viewer.link ? viewer.link.baseRtt(now) : (viewer.ackDelays[0]?.delay ?? 400);
+    return !oldest || now - oldest.sentAt <= Math.min(1_500, base + 250);
   }
   #stall(stream: Stream, viewer: Viewer): void {
     const now = this.#now();
@@ -1334,7 +1403,8 @@ export class DisplayStreamHub {
     const queued = oldest
       ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
       : 0;
-    viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
+    if (viewer.link) viewer.link.stalled(now, oldest?.sentAt ?? now);
+    else viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
     this.#bitrate(stream);
   }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {
@@ -1342,6 +1412,7 @@ export class DisplayStreamHub {
       bytes: frame.bytes.byteLength,
       sentAt: this.#now(),
     });
+    viewer.link?.sent(frame.sequence, frame.bytes.byteLength, this.#now());
     viewer.bytes += frame.bytes.byteLength;
     this.#binary(viewer.socket, frame.bytes);
   }
@@ -1363,12 +1434,13 @@ export class DisplayStreamHub {
     const last = stream.cache.at(-1);
     if (!last) return false;
     const estimate = viewer.deliveryEstimate;
-    if (
-      stream.cache.length > 1 &&
-      estimate &&
-      this.#now() - estimate.measuredAt < displayDeliveryEstimateLifetimeMs &&
-      stream.cacheBytes > estimate.bytesPerMs * displayReplayBudgetMs
-    ) {
+    const fresh = estimate && this.#now() - estimate.measuredAt < displayDeliveryEstimateLifetimeMs;
+    const budget = fresh
+      ? estimate.bytesPerMs * displayReplayBudgetMs
+      : stream.target
+        ? macUnmeasuredReplayBytes
+        : Infinity;
+    if (stream.cache.length > 1 && stream.cacheBytes > budget) {
       viewer.slowSince ??= this.#now();
       return false;
     }
@@ -1450,6 +1522,19 @@ export class DisplayStreamHub {
           this.#end(stream, displayViewerCloseCodes.tryAgain, "Display command could not be sent");
       });
   }
+  /**
+   * Measures a Mac viewer's round trip while nothing is in flight. The client's
+   * WebSocket answers below its decoder, and the payload tells this pong from
+   * the liveness check's.
+   */
+  #ping(viewer: Viewer): void {
+    const now = this.#now();
+    if (!viewer.link || viewer.ping || now - viewer.pingedAt < displayRoundTripPingMs) return;
+    if (viewer.socket.readyState !== viewer.socket.OPEN) return;
+    viewer.ping = { payload: `rtt:${now}`, at: now };
+    viewer.pingedAt = now;
+    viewer.socket.ping(viewer.ping.payload);
+  }
   #canSend(socket: WebSocket, bytes: number): boolean {
     if (socket.readyState !== socket.OPEN) return false;
     if (socket.bufferedAmount + bytes > displaySocketBufferedBytes) {
@@ -1513,7 +1598,10 @@ export class DisplayStreamHub {
           );
       if (stream.profileAt !== null && this.#now() >= stream.profileAt && stream.viewers.size) {
         stream.profileAt = null;
-        const requested = Math.max(...[...stream.viewers].map((viewer) => viewer.maxLongSide));
+        const requested = Math.min(
+          Math.max(...[...stream.viewers].map((viewer) => viewer.maxLongSide)),
+          stream.target ? macLegibleLongSide(stream.maxBitrate, stream.state) : Infinity,
+        );
         if (Math.abs(requested - stream.maxLongSide) >= 160) {
           stream.maxLongSide = requested;
           stream.demandKey = "";
@@ -1576,12 +1664,23 @@ export class DisplayStreamHub {
   }
   #updateBitrate(stream: Stream): boolean {
     if (stream.displayProfile !== 1) return false;
-    const caps = [...stream.viewers].flatMap((viewer) =>
-      viewer.displayWindow && viewer.bitrate.cap !== null ? [viewer.bitrate.cap] : [],
-    );
+    // The person driving a Mac window sets its budget; spectators on slower
+    // links skip frames rather than holding the driver to their rate.
+    const now = this.#now();
+    const driving = stream.target
+      ? [...stream.viewers].filter((viewer) => now - viewer.inputAt < macDrivingMs)
+      : [];
+    const caps = (driving.length ? driving : [...stream.viewers]).flatMap((viewer) => {
+      const cap = viewer.link ? viewer.link.cap : viewer.bitrate.cap;
+      if (viewer.displayWindow) return cap === null ? [] : [cap];
+      return stream.target ? [macUnmeasuredViewerBitrate] : [];
+    });
     const cap = caps.length ? Math.min(...caps) : null;
-    if (cap === stream.maxBitrate || this.#now() - stream.bitrateAt < 2_000) return false;
+    if (cap === stream.maxBitrate) return false;
+    const decreasing = cap !== null && (stream.maxBitrate === null || cap < stream.maxBitrate);
+    if (!decreasing && this.#now() - stream.bitrateAt < 2_000) return false;
     if (
+      !decreasing &&
       cap !== null &&
       stream.maxBitrate !== null &&
       Math.abs(cap - stream.maxBitrate) / stream.maxBitrate < 0.15
@@ -1589,6 +1688,9 @@ export class DisplayStreamHub {
       return false;
     stream.maxBitrate = cap;
     stream.bitrateAt = this.#now();
+    // The picture size follows the budget once it settles, through the same
+    // hysteresis as a viewer's own resize, whichever path changed the cap.
+    if (stream.target) stream.profileAt = this.#now() + macDisplayProfileHysteresisMs;
     return true;
   }
   #bitrate(stream: Stream): void {

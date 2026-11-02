@@ -351,10 +351,11 @@ public final class HelperRuntime {
       connection.close()
       return
     }
+    let videoProfile = params.videoProfile == 1 ? 1 : nil
     connection.markGreeted(
       protocolVersion: params.protocolVersion,
       ownerViewVersion: params.ownerViewVersion == 3 ? 3 : nil, loginText: params.loginText,
-      ownerInputVersion: params.ownerInputVersion == 2 ? 2 : nil)
+      ownerInputVersion: params.ownerInputVersion == 2 ? 2 : nil, videoProfile: videoProfile)
     connection.send(
       response: .success(
         id: envelope.id,
@@ -362,6 +363,7 @@ public final class HelperRuntime {
           loginText: connection.loginReceiver?.key,
           ownerViewVersion: params.ownerViewVersion == 3 ? 3 : nil,
           ownerInputVersion: params.ownerInputVersion == 2 ? 2 : nil,
+          videoProfile: videoProfile,
           helperVersion: helperVersion,
           minProtocolVersion: Self.minProtocolVersion,
           permissions: permissions(),

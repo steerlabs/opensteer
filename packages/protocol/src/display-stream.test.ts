@@ -367,7 +367,7 @@ describe("display integrations frames and capability", () => {
     expect(
       HostToIntegrationsModuleMessageSchema.safeParse({ ...frames[0], sharedInput: 2 }).success,
     ).toBe(false);
-    for (const maxBitrate of [null, 400_000, 4_000_000]) {
+    for (const maxBitrate of [null, 150_000, 4_000_000, 20_000_000]) {
       expect(
         HostToIntegrationsModuleMessageSchema.parse({
           ...frames[0],
@@ -382,7 +382,7 @@ describe("display integrations frames and capability", () => {
     expect(
       HostToIntegrationsModuleMessageSchema.safeParse({ ...frames[0], displayProfile: 1 }).success,
     ).toBe(false);
-    for (const maxBitrate of [399_999, 4_000_001, 400_000.5])
+    for (const maxBitrate of [149_999, 20_000_001, 400_000.5])
       expect(
         HostToIntegrationsModuleMessageSchema.safeParse({
           ...frames[0],

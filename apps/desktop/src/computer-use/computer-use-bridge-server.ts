@@ -28,6 +28,7 @@ import {
   computerUseBridgeApprovalParams,
   computerUseBridgeMaxFrameBytes,
   computerUseBridgeOwnerInputHeader,
+  computerUseBridgeVideoProfileHeader,
   computerUseRequestMayHaveEffect,
   type ComputerAppApprovalAnswerFrame,
   type ComputerAppApprovalKeyChallenge,
@@ -90,6 +91,7 @@ export interface ComputerUseBridgeHelperPort {
   ): Promise<ComputerUseMediaAttachment>;
   ownerViewVersion?(): number | undefined;
   ownerInputVersion?(): 2 | undefined;
+  videoProfile?(): 1 | undefined;
   computerUseVersion?(): 2 | undefined;
   loginReceiver?(): LoginReceiverKey | null;
   onCapabilitiesChanged?(listener: () => void): () => void;
@@ -238,6 +240,7 @@ interface BridgeConnection {
 interface BridgeOwner {
   alive: boolean;
   readonly ownerInputVersion: 2 | undefined;
+  readonly videoProfile: 1 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
   readonly passwords: Set<string>;
 }
@@ -536,6 +539,7 @@ export class ComputerUseBridgeServer {
           websocket,
           release,
           request.headers[computerUseBridgeOwnerInputHeader] === "2" ? 2 : undefined,
+          request.headers[computerUseBridgeVideoProfileHeader] === "1" ? 1 : undefined,
         );
       });
     });
@@ -611,7 +615,12 @@ export class ComputerUseBridgeServer {
     this.#url = null;
   }
 
-  #accept(socket: WebSocket, releaseClaim: () => void, ownerInputVersion: 2 | undefined): void {
+  #accept(
+    socket: WebSocket,
+    releaseClaim: () => void,
+    ownerInputVersion: 2 | undefined,
+    videoProfile: 1 | undefined,
+  ): void {
     // The owner is the connection's identity for ownership and its liveness
     // fence in one object: `alive` is what tells an answer that arrived after
     // the socket died that it has nobody to go to. `opening` holds the
@@ -620,6 +629,7 @@ export class ComputerUseBridgeServer {
     const owner: BridgeOwner = {
       alive: true,
       ownerInputVersion,
+      videoProfile,
       opening: new Set(),
       passwords: new Set(),
     };
@@ -892,7 +902,7 @@ export class ComputerUseBridgeServer {
         entry?.socket?.terminate();
       }
       try {
-        const forwarded =
+        let forwarded: unknown =
           method === "display.resolve"
             ? (() => {
                 const resolved = macWindowVideoParams["display.resolve"].parse(parsed.data);
@@ -906,6 +916,17 @@ export class ComputerUseBridgeServer {
                 };
               })()
             : parsed.data;
+        if (owner.videoProfile !== 1 || this.#helper.videoProfile?.() !== 1) {
+          if (method === "display.start") {
+            const { maxBitrate: _cap, ...start } =
+              macWindowVideoParams["display.start"].parse(forwarded);
+            forwarded = { ...start, maxFps: Math.min(30, start.maxFps) };
+          } else if (method === "display.demand") {
+            const { maxBitrate: _cap, ...demand } =
+              macWindowVideoParams["display.demand"].parse(forwarded);
+            forwarded = demand;
+          }
+        }
         const result = await this.#helper.request(method, forwarded, { deadline });
         if (streamId && method === "display.start" && "attachmentToken" in result) {
           const entry = this.#videos.get(streamId);
@@ -1042,6 +1063,9 @@ export class ComputerUseBridgeServer {
         const computerUseVersion = this.#helper.computerUseVersion?.();
         answer({
           permissions: outcome.value,
+          ...(owner.videoProfile === 1 && this.#helper.videoProfile?.() === 1
+            ? { videoProfile: 1 }
+            : {}),
           ...(computerUseVersion === undefined ? {} : { computerUseVersion }),
           ...(ownerViewVersion === undefined ? {} : { ownerViewVersion }),
           ...(ownerInputVersion === undefined ? {} : { ownerInputVersion }),

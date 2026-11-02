@@ -23,14 +23,14 @@ final class MacVideoCreditTests: XCTestCase {
     samples.replace(5)
     XCTAssertEqual(credit.admit(now: 0.1), .withheld("bytes"))
     samples.hold()
-    if credit.acknowledge(99) { XCTFail("Unknown receipt released the waiting sample") }
-    XCTAssertTrue(credit.acknowledge(1))
+    XCTAssertNil(credit.acknowledge(99), "Unknown receipt released the waiting sample")
+    XCTAssertNotNil(credit.acknowledge(1))
     XCTAssertTrue(samples.schedule())
     XCTAssertEqual(samples.take(), 5)
     samples.replace(5)
     XCTAssertEqual(credit.admit(now: 0.2), .submit(key: false))
     XCTAssertFalse(samples.schedule(), "No later capture is needed and no sample is duplicated")
-    XCTAssertFalse(credit.acknowledge(1))
+    XCTAssertNil(credit.acknowledge(1))
   }
 
   func testFinalStaticSampleResumesAfterOldestReceiptReturns() {
@@ -42,7 +42,7 @@ final class MacVideoCreditTests: XCTestCase {
     samples.replace((pts: 1234, generation: 2))
     XCTAssertEqual(credit.admit(now: 1), .withheld("ack-age"))
     samples.hold()
-    XCTAssertTrue(credit.acknowledge(1))
+    XCTAssertNotNil(credit.acknowledge(1))
     XCTAssertTrue(samples.schedule())
     let pending = samples.take()
     XCTAssertEqual(pending?.pts, 1234)
@@ -86,14 +86,70 @@ final class MacVideoCreditTests: XCTestCase {
 
     XCTAssertTrue(credit.reserve(sequence: 1, bytes: MacVideoCredit.maxOutstandingBytes, now: 0))
     XCTAssertEqual(credit.admit(now: 0.1), .withheld("bytes"))
-    XCTAssertTrue(credit.acknowledge(1))
+    XCTAssertNotNil(credit.acknowledge(1))
     XCTAssertEqual(credit.admit(now: 0.1), .submit(key: false))
     credit.returned()
 
     XCTAssertTrue(credit.reserve(sequence: 2, bytes: 100, now: 1))
     XCTAssertEqual(credit.admit(now: 1 + MacVideoCredit.maxAckAge), .withheld("ack-age"))
-    XCTAssertTrue(credit.acknowledge(2))
+    XCTAssertNotNil(credit.acknowledge(2))
     XCTAssertEqual(credit.admit(now: 2), .submit(key: false))
+  }
+
+  /// Refusing a legal keyframe larger than the byte budget would only request
+  /// another keyframe of the same size, so a detailed window would never show.
+  func testOversizedEnvelopePassesOnlyAnEmptyLane() {
+    var credit = MacVideoCredit()
+    let large = MacVideoCredit.maxOutstandingBytes + 512 * 1_024
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: true))
+    credit.returned()
+    XCTAssertTrue(credit.reserve(sequence: 1, bytes: large, now: 0))
+    XCTAssertEqual(credit.admit(now: 0.01), .withheld("bytes"), "Nothing is encoded behind it")
+    XCTAssertNotNil(credit.acknowledge(1))
+    XCTAssertEqual(credit.admit(now: 0.02), .submit(key: false), "The delivered key needs no repeat")
+    credit.returned()
+    XCTAssertTrue(credit.reserve(sequence: 2, bytes: 10, now: 0.02))
+    XCTAssertFalse(credit.reserve(sequence: 3, bytes: large, now: 0.02), "A busy lane keeps its bound")
+    XCTAssertEqual(credit.admit(now: 0.03), .submit(key: true))
+  }
+
+  /// Submissions keep their cadence; a sample arriving early waits for its
+  /// slot, and capture jitter of a few milliseconds never costs a whole slot.
+  func testCadenceSpacesSubmissions() {
+    var credit = MacVideoCredit()
+    let interval = 1.0 / 30
+    XCTAssertEqual(credit.admit(now: 0, interval: interval), .submit(key: true))
+    credit.returned()
+    XCTAssertEqual(credit.admit(now: 1.0 / 60, interval: interval), .withheld("cadence"))
+    XCTAssertEqual(credit.cadenceWait(now: 1.0 / 60, interval: interval), interval - 1.0 / 120 - 1.0 / 60, accuracy: 1e-9)
+    XCTAssertEqual(credit.admit(now: 0.031, interval: interval), .submit(key: false), "Jitter keeps the slot")
+    credit.returned()
+    XCTAssertEqual(credit.admit(now: 0.04, interval: 0), .submit(key: false), "Full cadence never waits")
+  }
+
+  /// The helper's media write queue follows the same rule as producer credit.
+  func testMediaQueueTakesOneLargeFrameOnlyWhenEmpty() {
+    let large = 1_048_576 + 4
+    XCTAssertTrue(IPCConnection.mediaAdmits(queued: 0, framed: large))
+    XCTAssertFalse(IPCConnection.mediaAdmits(queued: 10, framed: large))
+    XCTAssertTrue(IPCConnection.mediaAdmits(queued: 10, framed: 1_048_566))
+    XCTAssertFalse(IPCConnection.mediaAdmits(queued: 10, framed: 1_048_567))
+  }
+
+  /// An encoder drop emits nothing, so the peer's references stay intact. Only
+  /// a requested key must be asked for again; a dropped delta changes nothing.
+  func testEncoderDropsKeepReferencesButRetryARequestedKey() {
+    var credit = MacVideoCredit()
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: true))
+    credit.dropped(key: true)
+    credit.returned()
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: true))
+    credit.returned()
+    XCTAssertTrue(credit.reserve(sequence: 1, bytes: 10, now: 0))
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: false))
+    credit.dropped(key: false)
+    credit.returned()
+    XCTAssertEqual(credit.admit(now: 0), .submit(key: false))
   }
 
   /// Encoded output the peer never receives, and every reset, needs a key.
@@ -110,7 +166,7 @@ final class MacVideoCreditTests: XCTestCase {
     XCTAssertTrue(credit.reserve(sequence: 3, bytes: 10, now: 0.2))
     credit.lost(3)
     XCTAssertEqual(credit.outstanding.map(\.sequence), [1])
-    XCTAssertFalse(credit.acknowledge(3), "acknowledgements arrive only in send order")
+    XCTAssertNil(credit.acknowledge(3), "acknowledgements arrive only in send order")
     XCTAssertEqual(credit.admit(now: 0.3), .submit(key: true))
     credit.returned()
 

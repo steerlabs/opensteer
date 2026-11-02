@@ -1,6 +1,7 @@
 Synthetic VideoToolbox Baseline fixtures, no B frames, 2.5 Mbps target, GOP 60,
 Annex B with AUD and SPS/PPS on keyframes. No screen capture. `mac.h264` is
-1512×982 (two frames); `resized.h264` is 1280×800 (two frames).
+1512×982 (two frames); `resized.h264` is 1280×800 (two frames). `mac-high.h264`
+is `mac.h264` encoded `-profile:v constrained_high`, as a negotiated Mac sends.
 `noisy.h264` is one 1920×1248 random-noise frame. Its encoded access unit is
 larger than 1 MiB despite the average bitrate target; it remains below the
 protocol's 4 MiB payload bound.
