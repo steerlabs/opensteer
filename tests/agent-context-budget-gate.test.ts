@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
@@ -12,9 +12,10 @@ it("reports each metric change against main and never blocks on growth", () => {
     const baseline = join(directory, "main.json");
     const current = join(directory, "current.json");
     writeFileSync(baseline, JSON.stringify({ a: 10, b: 20 }));
-    const run = (value: unknown) => {
+    const run = (value: unknown, summary?: string) => {
       writeFileSync(current, JSON.stringify(value));
-      const { GITHUB_STEP_SUMMARY: _summary, ...env } = process.env;
+      const { GITHUB_STEP_SUMMARY: _summary, ...inherited } = process.env;
+      const env = summary ? { ...inherited, GITHUB_STEP_SUMMARY: summary } : inherited;
       return spawnSync(
         process.execPath,
         [
@@ -37,6 +38,10 @@ it("reports each metric change against main and never blocks on growth", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain(line);
     }
+    const summary = join(directory, "summary.md");
+    writeFileSync(summary, "");
+    expect(run({ a: 12, b: 20 }, summary).status).toBe(0);
+    expect(readFileSync(summary, "utf8")).toContain("a: 10 -> 12 (+2)");
     expect(run({ a: "10", b: 20 }).status).toBe(1);
     expect(run({ a: -1, b: 20 }).status).toBe(1);
   } finally {

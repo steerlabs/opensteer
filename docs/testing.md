@@ -131,8 +131,9 @@ CI-byte comparison is involved.
 Opensteer-controlled UTF-8 bytes, not provider tokens or complete prompts, and
 its snapshot makes every change visible in review, including savings. The
 [budget workflow](../.github/workflows/agent-context-budget.yml) reports each
-change against main on the run's summary and never fails a PR: a tool earns its
-place by helping agents, which behavioral evals judge, not by its byte count.
+change against main on the run's summary and never fails a PR for growth (only
+malformed accounting fails it): a tool earns its place by helping agents, which
+behavioral evals judge, not by its byte count.
 
 ## Agent tool-use evaluations
 
