@@ -1,5 +1,5 @@
-import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
-import { PendingAgentEventSchema } from "@opensteer/protocol";
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema, createId } from "@opensteer/core";
+import { PendingAgentEventSchema, WorkspaceSnapshotSchema } from "@opensteer/protocol";
 import { expect } from "vitest";
 import { OpensteerStore } from "./store.js";
 import {
@@ -9,7 +9,7 @@ import {
   testContinuationIdentity,
 } from "./store.integration.test-support.js";
 
-describeStore("durable browser place entries", (it) => {
+describeStore("durable Run place entries", (it) => {
   it("deduplicates only the last place across restarts, pages negotiated history and fences terminal Runs", async ({
     storeFixture,
   }) => {
@@ -121,6 +121,91 @@ describeStore("durable browser place entries", (it) => {
         bindingGeneration: binding.bindingGeneration,
       }),
     ).toMatchObject({ threadId: delegated.thread.id, runId: delegated.run.id });
+    const appPlace = {
+      place: { kind: "app" as const, machineId: f.runnerId, appKey: "com.apple.Notes" },
+      title: "Notes",
+      site: null,
+    };
+    const native = await store.recordRunPlace({ ...input, data: appPlace });
+    const phone = await store.recordRunPlace({
+      ...input,
+      runId: delegated.run.id,
+      bindingGeneration: binding.bindingGeneration,
+      data: {
+        place: { kind: "phone", machineId: f.runnerId, display: "main" },
+        title: "Phone",
+        site: null,
+      },
+    });
+    const seedOptions = {
+      viewerId: f.userId,
+      placeEvents: "include" as const,
+      listedOnly: true,
+      omitMessages: true,
+      maxThreads: 1,
+    };
+    let placeQueries = 0;
+    const observed = new OpensteerStore(
+      database.withPlugin({
+        transformQuery({ node }) {
+          if (JSON.stringify(node).includes('"name":"workspace_events"')) placeQueries += 1;
+          return node;
+        },
+        async transformResult({ result }) {
+          return result;
+        },
+      }),
+    );
+    const seeded = await observed.workspaceSnapshot(f.workspace.id, seedOptions);
+    expect(placeQueries).toBe(1);
+    expect(seeded.runPlaces).toEqual([phone, native]);
+    expect(seeded.threads).toHaveLength(1);
+    expect(WorkspaceSnapshotSchema.safeParse(seeded).success).toBe(true);
+    expect(seeded.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(seeded)));
+    expect(
+      await observed.workspaceSnapshot(f.workspace.id, { viewerId: f.userId }),
+    ).not.toHaveProperty("runPlaces");
+    expect(placeQueries).toBe(1);
+    const outsider = await store.createUser("Outsider");
+    expect(
+      (await store.workspaceSnapshot(f.workspace.id, { ...seedOptions, viewerId: outsider }))
+        .runPlaces,
+    ).toEqual([]);
+    const membership = await database
+      .selectFrom("workspaceMemberships")
+      .selectAll()
+      .where("workspaceId", "=", f.workspace.id)
+      .where("userId", "=", f.userId)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        ...membership,
+        id: createId("workspaceMembership"),
+        userId: outsider,
+        state: "revoked",
+        role: "collaborator",
+        revokedAt: new Date(),
+        revokedBy: f.userId,
+      })
+      .execute();
+    expect(
+      (await store.workspaceSnapshot(f.workspace.id, { ...seedOptions, viewerId: outsider }))
+        .runPlaces,
+    ).toEqual([]);
+    const baseline = await store.workspaceSnapshot(f.workspace.id, {
+      viewerId: f.userId,
+      listedOnly: true,
+      omitMessages: true,
+      maxThreads: 1,
+    });
+    const bounded = await store.workspaceSnapshot(f.workspace.id, {
+      ...seedOptions,
+      maxSerializedBytes: baseline.serializedBytes + 20,
+    });
+    expect(bounded.serializedBytes).toBeLessThanOrEqual(baseline.serializedBytes + 20);
+    expect(bounded.runPlaces).toEqual([]);
+    expect(bounded.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(bounded)));
     const terminalEvent = pendingEvent({
       bindingGeneration: f.bindingGeneration,
       data: { status: "completed" },
@@ -145,6 +230,7 @@ describeStore("durable browser place entries", (it) => {
       runnerId: f.runnerId,
     });
     expect(BigInt(third!.sequence)).toBeLessThan(BigInt(terminal.event.sequence));
+    expect((await store.workspaceSnapshot(f.workspace.id, seedOptions)).runPlaces).toEqual([phone]);
     expect(
       await store.recordRunPlace({ ...input, data: { ...input.data, place: b } }),
     ).toBeUndefined();

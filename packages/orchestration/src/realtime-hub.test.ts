@@ -17,10 +17,11 @@ describe("snapshot-before-live synchronization", () => {
     async (opted) => {
       const workspaceId = createId("workspace");
       const userId = createId("user");
+      const workspaceSnapshot = vi.fn(async () => snapshot(workspaceId, "0"));
       const store = {
         notificationState: viewerState(),
         workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
-        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+        workspaceSnapshot,
       } as unknown as OpensteerStore;
       const hub = new RealtimeHub({ store });
       const sink = new MemorySink();
@@ -32,6 +33,11 @@ describe("snapshot-before-live synchronization", () => {
         ...(opted ? { placeEvents: "include" as const } : {}),
       });
       try {
+        expect(workspaceSnapshot).toHaveBeenCalledWith(workspaceId, {
+          listedOnly: true,
+          viewerId: userId,
+          ...(opted ? { placeEvents: "include" } : {}),
+        });
         const place = {
           ...event(workspaceId, "1"),
           type: "place.entered",

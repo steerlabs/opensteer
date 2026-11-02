@@ -1,4 +1,6 @@
 import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   createId,
   OpensteerError,
   type RunId,
@@ -14,6 +16,8 @@ import {
   type ComputerUseObservation,
   type MachineAppStatus,
 } from "@opensteer/protocol";
+import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readFileSync } from "node:fs";
 import type { WebSocket } from "ws";
 import { DisplayStreamHub } from "./display-stream-hub.js";
@@ -167,6 +171,7 @@ function macosApp(): MachineAppStatus {
 
 function harness(
   options: {
+    readonly beginPlaceEntry?: ComputerUseServiceOptions["beginPlaceEntry"];
     readonly passwords?: ComputerUseServiceOptions["passwords"];
     readonly loginReceiver?: ComputerUseServiceOptions["loginReceiver"];
     readonly expireSetupRequests?: () => Promise<void>;
@@ -188,6 +193,7 @@ function harness(
   const onSessionEnded = vi.fn();
   const state: { now: number } = { now: 1_000_000 };
   const service = new ComputerUseService({
+    ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
     ...(options.loginReceiver ? { loginReceiver: options.loginReceiver } : {}),
     ...(options.expireSetupRequests ? { expireSetupRequests: options.expireSetupRequests } : {}),
@@ -379,6 +385,50 @@ async function act(
     service.release(lease);
   }
 }
+
+describe("native Run place admission", () => {
+  it("records app use but does not let a slow native completion reclaim a browser place", async () => {
+    const write = vi.fn(async (_input: { data: { place: { kind: string } } }) => undefined);
+    const recorder = new RunPlaceRecorder({ write, publish: vi.fn(), onError: vi.fn() });
+    const test = harness({
+      beginPlaceEntry: (runId, generation) => recorder.begin(runId, generation),
+    });
+    const gate = Promise.withResolvers<void>();
+    const drain = () =>
+      withTimeout(recorder.drain(context.runId), 1000, {
+        timeoutError: () => new Error("Native Run place writes did not drain"),
+      });
+    try {
+      await observe(test.service, callable, context);
+      await drain();
+      test.pending.push(gate.promise);
+      const slow = await sendAct(
+        test.service,
+        callable,
+        { actions: [{ type: "key", keys: "Escape" }], snapshot: "obs-1" },
+        context,
+      );
+      recorder.enter(context.runId, context.bindingGeneration, {
+        place: {
+          kind: "browser",
+          sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
+          surfaceId: BrowserSurfaceIdSchema.parse("A"),
+        },
+        title: "Page",
+        site: null,
+      });
+      gate.resolve();
+      await withTimeout(slow.settle(), 1000, {
+        timeoutError: () => new Error("The admitted native call did not settle"),
+      });
+      await drain();
+      expect(write.mock.calls.map(([input]) => input.data.place.kind)).toEqual(["app", "browser"]);
+    } finally {
+      gate.resolve();
+      await test.service.shutdown();
+    }
+  });
+});
 
 describe("ComputerUseService", () => {
   let test: Harness;
@@ -1456,6 +1506,23 @@ describe("display sessions on an Android phone", () => {
       threadTitle: async (id) => (id === context.threadId ? "Reply to the driver" : "Order lunch"),
     });
   }
+
+  it("records a successful phone observation as entering its main display", async () => {
+    const complete = vi.fn();
+    const beginPlaceEntry = vi.fn(() => complete);
+    const test = harness({ beginPlaceEntry });
+    try {
+      await observePhone(test.service, context);
+      expect(beginPlaceEntry).toHaveBeenCalledWith(context.runId, context.bindingGeneration);
+      expect(complete).toHaveBeenCalledWith({
+        place: { kind: "phone", machineId: phoneId, display: "main" },
+        title: "Pixel 8",
+        site: null,
+      });
+    } finally {
+      await test.service.shutdown();
+    }
+  });
 
   it("lets the phone go when the first Run's frame never reached it", async () => {
     const test = titled();

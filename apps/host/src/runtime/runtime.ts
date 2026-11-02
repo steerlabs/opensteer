@@ -736,6 +736,7 @@ export async function createHostRuntime(
         initial: await store.activeComputerUseStops(),
         record: (runId, runnerId) => store.recordComputerUseStop({ runId, runnerId }),
       },
+      beginPlaceEntry: (runId, generation) => browser.beginRunPlace(runId, generation),
       onPlaceActivity: (input) => browser.noteNativeActivity(input),
       resolveActor: (runId, ownerId) =>
         store.resolvePlaceActor({ agentBindingId: `run:${runId}`, ownerId }),

@@ -661,6 +661,7 @@ export class RealtimeHub {
       if (compareSequence(input.afterSequence, zeroSequence) === 0) {
         const snapshot = await this.#store.workspaceSnapshot(input.workspaceId, {
           listedOnly: true,
+          ...(input.placeEvents === "include" ? { placeEvents: "include" } : {}),
           ...(input.snapshotMessages === "omit" ? { omitMessages: true } : {}),
           viewerId: input.userId,
         });

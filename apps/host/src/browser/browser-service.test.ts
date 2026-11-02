@@ -2982,6 +2982,32 @@ describe("BrowserService", () => {
     };
   }
 
+  it("records native transitions in the browser's Run place lane and ignores activity-ended notices", async () => {
+    const f = await runPlaceFixture();
+    const actor = f.audience[0]!;
+    const native = {
+      ...actor,
+      place: { kind: "app" as const, machineId: createId("runner"), appKey: "com.apple.Notes" },
+      title: "Notes",
+      at: Date.now(),
+      ended: false,
+    };
+    await f.activity("page-1");
+    f.service.beginRunPlace(
+      native.runId,
+      native.generation,
+    )({ place: native.place, title: native.title, site: null });
+    f.service.noteNativeActivity(native);
+    await f.activity("page-1");
+    f.service.noteNativeActivity({ ...native, ended: true });
+    await f.drain();
+    expect(f.record.mock.calls.map(([input]) => input.data.place.kind)).toEqual([
+      "browser",
+      "app",
+      "browser",
+    ]);
+  });
+
   it("drains Run places without ending its browser binding or actor", async () => {
     const f = await runPlaceFixture();
     await f.activity("page-1");

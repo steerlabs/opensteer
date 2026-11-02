@@ -1,3 +1,4 @@
+import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
@@ -661,11 +662,7 @@ export class BrowserService {
   readonly #holdings = new Map<BrowserSessionId, ReadonlySet<string>>();
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
-  /**
-   * The tab each Run last entered, so only a move to another tab reaches the
-   * database; the durable check there still holds across a Host restart.
-   */
-  readonly #runPlaces = new Map<string, string>();
+  readonly #runPlaces: RunPlaceRecorder;
   readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   #validateLoginLease:
@@ -733,6 +730,11 @@ export class BrowserService {
     this.#actingWindowMs = options.actingWindowMs ?? browserActingWindowMs;
     this.#actorMetadataTimeoutMs = options.actorMetadataTimeoutMs ?? browserActorMetadataTimeoutMs;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#runPlaces = new RunPlaceRecorder({
+      write: (input) => this.#repository.recordRunPlace(input),
+      publish: (event) => this.#onWorkspaceEvent(event),
+      onError: (error) => this.#onError(error),
+    });
     this.#repository = options.repository;
     this.#signer = options.signer;
     this.#targetResolver = options.targetResolver;
@@ -1943,6 +1945,10 @@ export class BrowserService {
     });
   }
 
+  beginRunPlace(runId: RunId, bindingGeneration: number) {
+    return this.#runPlaces.begin(runId, bindingGeneration);
+  }
+
   noteNativeActivity(input: {
     ownerId: UserId;
     threadId: ThreadId;
@@ -2394,10 +2400,7 @@ export class BrowserService {
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
     const page = broker.pageOf(activity.surfaceId);
-    const placeKey = `${sessionId}:${activity.surfaceId}`;
-    const runId = actor.runId;
-    if (page && this.#runPlaces.get(runId) !== placeKey) {
-      this.#runPlaces.set(runId, placeKey);
+    if (page) {
       const data: EventData<"place.entered"> = {
         place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
         title: page.title.slice(0, 256),
@@ -2410,18 +2413,7 @@ export class BrowserService {
           }
         })(),
       };
-      void this.#serializeKey(`place:${runId}`, async () => {
-        const event = await this.#repository.recordRunPlace({
-          runId,
-          bindingGeneration: actor.generation,
-          data,
-        });
-        if (event) this.#onWorkspaceEvent(event);
-      }).catch((error: unknown) => {
-        // The next action in this tab tries again, unless the Run has moved on since.
-        if (this.#runPlaces.get(runId) === placeKey) this.#runPlaces.delete(runId);
-        this.#onError(error);
-      });
+      this.#runPlaces.enter(actor.runId, actor.generation, data);
     }
 
     if (actor.lastSurfaceId !== activity.surfaceId) {
@@ -2774,7 +2766,7 @@ export class BrowserService {
    */
   async drainRunPlaces(runId: RunId): Promise<void> {
     // A refused write was reported where it failed; it must not hold up the Run's end.
-    await this.#sessionOperations.get(`place:${runId}`)?.catch(() => undefined);
+    await this.#runPlaces.drain(runId);
   }
 
   /**
@@ -2788,8 +2780,8 @@ export class BrowserService {
     this.#forgetAgentBinding(agentBindingId);
     if (agentBindingId.startsWith("run:")) {
       const runId = agentBindingId.slice(4);
-      await this.#sessionOperations.get(`place:${runId}`)?.catch(() => undefined);
-      this.#runPlaces.delete(runId);
+      await this.#runPlaces.drain(runId);
+      this.#runPlaces.forget(runId);
     }
     const records = await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
     const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
@@ -3395,6 +3387,7 @@ export class BrowserService {
     }
     this.#authConsumers.clear();
     this.#closePromise = (async () => {
+      await this.#runPlaces.close();
       await Promise.allSettled(this.#sessionOperations.values());
       await this.#operationTail;
       await Promise.all(
