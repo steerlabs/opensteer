@@ -17,9 +17,12 @@ import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } 
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
-import { useSurfaceHeader } from "../browser/surface-header.js";
-import { color } from "../theme.js";
-import { AppText } from "../ui/primitives.js";
+import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
+import { color, controlFontScaleLimit, radius, space } from "../theme.js";
+import type { NativeMenuSection } from "../thread/composer-menu.js";
+import { GlassSurface } from "../ui/glass.js";
+import { AppText, SecondaryButton } from "../ui/primitives.js";
+import { Symbol } from "../ui/symbol.js";
 import {
   DisplayControls,
   type DisplayPicture,
@@ -49,9 +52,23 @@ export function decodeDisplayFrame(
   return native.decode({ ...metadata, data: raw + "=".repeat((4 - (raw.length % 4)) % 4) });
 }
 
+/**
+ * What a full viewer shows under the picture: the place's own bar, as a
+ * page's is. A tile's preview has none.
+ */
+export interface ComputerBar {
+  /** The Mac an app is on; null for a phone, whose own name is the title. */
+  readonly detail: string | null;
+  readonly menu: NativeMenuSection;
+  /** The keyboard is up for the display, and its pane should make room. */
+  readonly onTyping: (typing: boolean) => void;
+  readonly title: string;
+}
+
 /** A native surface consumes the shared transport's exact task authority; it never asks for a screenshot. */
 export function ComputerDisplay({
   active,
+  bar,
   hostClient,
   source: reference,
   phone,
@@ -61,6 +78,7 @@ export function ComputerDisplay({
   interactive = false,
   onReopen,
 }: {
+  readonly bar?: ComputerBar | undefined;
   readonly onReopen?: (() => void) | undefined;
   readonly active: boolean;
   readonly interactive?: boolean;
@@ -85,6 +103,7 @@ export function ComputerDisplay({
     [kind, sessionId, appKey, viewId, generation],
   );
   const controls = useRef<DisplayControlsHandle>(null);
+  const [canType, setCanType] = useState(false);
   const [displayState, setDisplayState] = useState<DisplaySnapshot | null>(null);
   const [inputLease, setInputLease] = useState<DisplayLease | null>(null);
   const [picture, setPicture] = useState<DisplayPicture | null>(null);
@@ -314,7 +333,13 @@ export function ComputerDisplay({
     interactive,
     binary,
   ]);
-  return (
+  const navigable =
+    interactive && phone && inputLease !== null && shown && displayState?.input === "available";
+  const go = (to: "back" | "home" | "recents") => {
+    if (picture !== null) inputLease?.input(picture.generation, [{ kind: "nav", to }]);
+  };
+  const power = displayState?.power === "available" ? displayState.display?.state : null;
+  const stage = (
     <View
       accessibilityLabel={label}
       style={styles.stage}
@@ -349,51 +374,27 @@ export function ComputerDisplay({
           key={scope}
           ref={controls}
           lease={inputLease}
+          onCanType={setCanType}
+          {...(bar === undefined ? {} : { onTyping: bar.onTyping })}
           picture={picture}
           phone={phone}
           visible={active && foreground && shown && !words}
         />
       ) : null}
       {interactive && phone && active && foreground && displayState?.input !== "available" ? (
-        <View style={styles.badge}>
-          <AppText>View only</AppText>
-        </View>
-      ) : null}
-      {interactive && phone && inputLease && active && foreground ? (
-        <View style={styles.navigation}>
-          {shown && displayState?.input === "available" && picture
-            ? (["back", "home", "recents"] as const).map((to) => (
-                <Pressable
-                  key={to}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    to === "back" ? "Back" : to === "home" ? "Home" : "Recent apps"
-                  }
-                  onPress={() => inputLease.input(picture.generation, [{ kind: "nav", to }])}
-                >
-                  <AppText>
-                    {to === "back" ? "Back" : to === "home" ? "Home" : "Recent apps"}
-                  </AppText>
-                </Pressable>
-              ))
-            : null}
-          {displayState?.power === "available" && displayState.display?.state === "live" ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Lock phone"
-              onPress={() => inputLease.power("lock")}
-            >
-              <AppText>Lock phone</AppText>
-            </Pressable>
-          ) : null}
-        </View>
+        <GlassSurface shape="capsule" style={styles.badge}>
+          <Symbol name="eye" size={13} tint={color.textSoft} />
+          <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="soft">
+            View only
+          </AppText>
+        </GlassSurface>
       ) : null}
       {unavailable || !shown || words || updateName !== null ? (
         <View style={styles.status}>
           {!unavailable && !words && updateName === null ? (
             <ActivityIndicator color={color.muted} />
           ) : null}
-          <AppText tone="soft">
+          <AppText role="secondary" style={styles.statusText} tone="soft">
             {unavailable
               ? "Mac window video is unavailable on iOS in this release."
               : updateName !== null
@@ -405,34 +406,101 @@ export function ComputerDisplay({
                       ? "macOS is taking longer to start sharing this window."
                       : "Starting window sharing…"))}
           </AppText>
-          {interactive &&
-          phone &&
-          displayState?.power === "available" &&
-          displayState.display?.state === "screen-off" ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Wake phone"
-              onPress={() => inputLease?.power("wake")}
-            >
-              <AppText>Wake phone</AppText>
-            </Pressable>
+          {interactive && phone && power === "screen-off" ? (
+            <SecondaryButton label="Wake phone" onPress={() => inputLease?.power("wake")} />
           ) : null}
           {terminal && (!phone || onReopen) && !unavailable ? (
-            <Pressable
-              accessibilityRole="button"
+            <SecondaryButton
+              label={phone ? "Reopen" : "Open again"}
               onPress={() => (onReopen ? onReopen() : reopen.current?.())}
-            >
-              <AppText>{phone ? "Reopen" : "Open again"}</AppText>
-            </Pressable>
+            />
           ) : null}
         </View>
       ) : null}
+    </View>
+  );
+  if (bar === undefined) return stage;
+  const menu: NativeMenuSection[] = [
+    interactive && phone && power === "live"
+      ? [
+          {
+            icon: "lock",
+            id: "lock",
+            label: "Lock phone",
+            onPress: () => inputLease?.power("lock"),
+          },
+        ]
+      : [],
+    bar.menu,
+  ];
+  return (
+    <View style={styles.viewer}>
+      {stage}
+      <Toolbar edge="bottom" testID="display-toolbar">
+        {interactive && phone ? (
+          <GlassSurface interactive shape="capsule" style={styles.keys}>
+            {(["back", "home", "recents"] as const).map((to) => (
+              <Pressable
+                accessibilityLabel={to === "back" ? "Back" : to === "home" ? "Home" : "Recent apps"}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: !navigable }}
+                disabled={!navigable}
+                key={to}
+                onPress={() => go(to)}
+                style={({ pressed }) => [styles.key, pressed && styles.pressed]}
+              >
+                <Symbol
+                  name={to === "back" ? "chevron.left" : to === "home" ? "circle" : "square"}
+                  size={to === "back" ? 18 : 15}
+                  tint={navigable ? color.text : color.mutedDim}
+                  weight="semibold"
+                />
+              </Pressable>
+            ))}
+          </GlassSurface>
+        ) : null}
+        <ToolbarCapsule style={styles.name}>
+          <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
+          <View style={styles.nameWords}>
+            <AppText
+              maxFontSizeMultiplier={controlFontScaleLimit}
+              numberOfLines={1}
+              role="secondaryMedium"
+            >
+              {bar.title}
+            </AppText>
+            {bar.detail === null ? null : (
+              <AppText
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                numberOfLines={1}
+                role="caption"
+                tone="muted"
+              >
+                {bar.detail}
+              </AppText>
+            )}
+          </View>
+        </ToolbarCapsule>
+        {interactive ? (
+          <ToolbarButton
+            accessibilityHint={`Types into the ${phone ? "phone" : "app"}`}
+            disabled={!canType}
+            label="Keyboard"
+            onPress={() => controls.current?.startTyping()}
+            symbol="keyboard"
+          />
+        ) : null}
+        {menu.some((section) => section.length > 0) ? (
+          <ToolbarMenu label="More" sections={menu} symbol="ellipsis" title={bar.title} />
+        ) : null}
+      </Toolbar>
     </View>
   );
 }
 export function ComputerTaskView(props: {
   readonly appKey: string | null;
   readonly active: boolean;
+  readonly onTyping: (typing: boolean) => void;
   readonly hostClient: HostClient;
   readonly computerSessionId: string;
   readonly machineId: string;
@@ -450,30 +518,6 @@ export function ComputerTaskView(props: {
   const label = phone
     ? machineName
     : [app?.displayName ?? "This app", windowTitle].filter(Boolean).join(" — ");
-  useSurfaceHeader({
-    title: label,
-    secondary: phone ? null : machineName,
-    acting: phone
-      ? session?.actingDisplay === true
-      : session?.actingAppKeys?.includes(props.appKey ?? "") === true,
-    glyph: phone ? "smartphone" : "laptopcomputer",
-    menu: session
-      ? [
-          {
-            destructive: true,
-            icon: "stop.circle",
-            id: "stop",
-            label: `Stop using ${phone ? "phone" : label}`,
-            onPress: () =>
-              computerUseStops(props.hostClient).stop({
-                machineName: label,
-                sessionId: session.sessionId,
-                runId: session.runId,
-              }),
-          },
-        ]
-      : [],
-  });
   return machine &&
     (machine.status === "needs-update" ||
       machine.status === "updating" ||
@@ -483,6 +527,27 @@ export function ComputerTaskView(props: {
     </View>
   ) : (
     <ComputerDisplay
+      bar={{
+        detail: phone ? null : machineName,
+        menu: session
+          ? [
+              {
+                destructive: true,
+                icon: "stop.circle",
+                id: "stop",
+                label: `Stop using ${phone ? "phone" : label}`,
+                onPress: () =>
+                  computerUseStops(props.hostClient).stop({
+                    machineName: label,
+                    sessionId: session.sessionId,
+                    runId: session.runId,
+                  }),
+              },
+            ]
+          : [],
+        onTyping: props.onTyping,
+        title: phone ? machineName : (app?.displayName ?? "This app"),
+      }}
       interactive={phone}
       active={props.active}
       hostClient={props.hostClient}
@@ -540,6 +605,7 @@ function useVisibleOwnerRetention(
  */
 export function ComputerOwnerView(props: {
   readonly active: boolean;
+  readonly onTyping: (typing: boolean) => void;
   readonly appKey: string | null;
   readonly generation: number;
   readonly hostClient: HostClient;
@@ -604,32 +670,35 @@ export function ComputerOwnerView(props: {
     : view?.target.kind === "app"
       ? view.target.app.displayName
       : "This app";
-  useSurfaceHeader({
-    acting: false,
-    glyph: phone ? "smartphone" : "laptopcomputer",
-    menu: [],
-    secondary: phone ? null : machineName,
-    title: label,
-  });
   if (current === null)
     return (
       <View style={styles.stage}>
         <View style={styles.status}>
-          <AppText tone="soft">This view has ended</AppText>
-          <Pressable
-            accessibilityRole="button"
+          <AppText role="bodyMedium" style={styles.statusText}>
+            This view has ended
+          </AppText>
+          <SecondaryButton
             accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
             disabled={reopening}
+            label={reopening ? "Opening…" : "Reopen"}
             onPress={() => void reopen()}
-          >
-            <AppText>{reopening ? "Opening…" : "Reopen"}</AppText>
-          </Pressable>
-          {failure ? <AppText>{failure}</AppText> : null}
+          />
+          {failure ? (
+            <AppText role="secondary" style={styles.statusText} tone="muted">
+              {failure}
+            </AppText>
+          ) : null}
         </View>
       </View>
     );
   return (
     <ComputerDisplay
+      bar={{
+        detail: phone ? null : machineName,
+        menu: [],
+        onTyping: props.onTyping,
+        title: label,
+      }}
       interactive
       active={active}
       hostClient={hostClient}
@@ -643,27 +712,39 @@ export function ComputerOwnerView(props: {
 }
 
 const styles = StyleSheet.create({
-  badge: { position: "absolute", top: 12, right: 12 },
-  navigation: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    padding: 12,
-    backgroundColor: "black",
-  },
-  stage: { flex: 1, backgroundColor: "black" },
-  status: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0,
+  badge: {
     alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-    backgroundColor: "black",
+    flexDirection: "row",
+    gap: space[6],
+    paddingHorizontal: space[12],
+    paddingVertical: space[6],
+    position: "absolute",
+    right: space[12],
+    top: space[12],
   },
+  key: { alignItems: "center", height: 44, justifyContent: "center", width: 42 },
+  keys: { alignItems: "center", flexDirection: "row", paddingHorizontal: space[2] },
+  name: { flex: 1, gap: space[10], minWidth: 0, paddingHorizontal: space[14] },
+  nameWords: { flex: 1, minWidth: 0 },
+  pressed: { opacity: 0.6 },
+  stage: {
+    backgroundColor: color.background,
+    borderRadius: radius.xs,
+    flex: 1,
+    overflow: "hidden",
+  },
+  status: {
+    alignItems: "center",
+    backgroundColor: color.background,
+    bottom: 0,
+    gap: space[12],
+    justifyContent: "center",
+    left: 0,
+    padding: space[24],
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  statusText: { textAlign: "center" },
+  viewer: { flex: 1 },
 });

@@ -15,6 +15,8 @@ export function MacAppView(props: {
   readonly active: boolean;
   readonly destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>;
   readonly hostClient: HostClient;
+  /** The keyboard is up for the app or phone, and its pane should make room. */
+  readonly onTyping: (typing: boolean) => void;
 }): ReactNode {
   const { destination } = props;
   const appKey = destination.kind === "app" ? destination.appKey : null;
@@ -26,6 +28,7 @@ export function MacAppView(props: {
         generation={destination.source.generation}
         hostClient={props.hostClient}
         machineId={destination.machineId}
+        onTyping={props.onTyping}
         viewId={destination.source.viewId}
         windowId={destination.kind === "app" ? destination.windowId : undefined}
       />
@@ -37,6 +40,7 @@ export function MacAppView(props: {
       computerSessionId={destination.computerSessionId}
       hostClient={props.hostClient}
       machineId={destination.machineId}
+      onTyping={props.onTyping}
     />
   );
 }

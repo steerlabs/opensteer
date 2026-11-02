@@ -1,3 +1,4 @@
+import type { TaskMark as TaskMarkValue } from "@opensteer/client/host";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { memo, type ReactElement, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -58,13 +59,7 @@ export const AroundButton = memo(function AroundButton(props: {
           {earlierOnly ? (
             <Symbol name="checklist" size={15} tint={color.muted} />
           ) : (
-            <View style={styles.marks}>
-              {family.marks.map((mark, index) => (
-                <View key={index} style={[styles.stacked, index === 0 ? null : styles.overlap]}>
-                  <TaskMark mark={mark} size={16} />
-                </View>
-              ))}
-            </View>
+            <TaskMarks ground={color.background} marks={family.marks} />
           )}
           <Count muted={earlierOnly}>{earlierOnly ? family.earlier : family.running}</Count>
           {family.needsYou ? <View style={styles.attention} /> : null}
@@ -79,6 +74,29 @@ export const AroundButton = memo(function AroundButton(props: {
     </Pressable>
   );
 });
+
+/** Running tasks' marks, overlapped; `ground` is what each cut-out shows. */
+export function TaskMarks(props: {
+  readonly ground: string;
+  readonly marks: readonly TaskMarkValue[];
+}): ReactNode {
+  return (
+    <View style={styles.marks}>
+      {props.marks.map((mark, index) => (
+        <View
+          key={index}
+          style={[
+            styles.stacked,
+            { borderColor: props.ground },
+            index === 0 ? null : styles.overlap,
+          ]}
+        >
+          <TaskMark mark={mark} size={16} />
+        </View>
+      ))}
+    </View>
+  );
+}
 
 function Count(props: { readonly children: number; readonly muted?: boolean }): ReactNode {
   return (
@@ -104,7 +122,7 @@ const styles = StyleSheet.create({
   part: { alignItems: "center", flexDirection: "row", gap: space[4] },
   marks: { alignItems: "center", flexDirection: "row" },
   // The web's cut-out: each tile keeps its edge where the next one overlaps it.
-  stacked: { borderColor: color.background, borderRadius: 7, borderWidth: 2 },
+  stacked: { borderRadius: 7, borderWidth: 2 },
   overlap: { marginLeft: -8 },
   attention: { backgroundColor: color.amber, borderRadius: radius.full, height: 6, width: 6 },
 });

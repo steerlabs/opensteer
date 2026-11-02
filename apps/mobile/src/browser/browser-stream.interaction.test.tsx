@@ -163,6 +163,8 @@ function frame(): BrowserFrameView {
   };
 }
 function setup(interactive = true) {
+  // How far the phone has pinched the picture in, read when a drag moves.
+  const zoom = { value: 1 };
   let picture: BrowserFrameView | null = null;
   let streaming = false;
   let feed = {
@@ -232,6 +234,7 @@ function setup(interactive = true) {
           onTap={onTap}
           session={session(viewerState)}
           tabId={surfaceId}
+          zoom={zoom}
         />,
       );
     });
@@ -270,6 +273,7 @@ function setup(interactive = true) {
     send,
     viewerRelease,
     watchRelease,
+    zoom,
   };
 }
 
@@ -486,8 +490,8 @@ describe.each(["image", "picture"] as const)(
       }
     });
 
-    it("scrolls the page under a drag without clicking it", async () => {
-      const { decode, emit, render, send } = setup();
+    it("scrolls the page under a drag without clicking it, as far as the finger went on the page", async () => {
+      const { decode, emit, render, send, zoom } = setup();
       render("synchronized");
       emit();
       await decode();
@@ -500,6 +504,18 @@ describe.each(["image", "picture"] as const)(
       // The picture is drawn at half size, so a finger's 10 by 20 points move the page 20 by 40.
       expect(send.mock.calls).toEqual([
         [sessionId, { ...tapPoint, deltaX: 20, deltaY: 40, type: "input.wheel" }],
+      ]);
+      // Pinched in twice as far, the same drag covers half as much of the page.
+      zoom.value = 2;
+      send.mockClear();
+      act(() => {
+        native.gestures?.onPanResponderGrant?.(touch(200, 300).event, touch(200, 300).gesture);
+        const { event, gesture } = touch(190, 280, -10, -20);
+        native.gestures?.onPanResponderMove?.(event, gesture);
+        native.gestures?.onPanResponderRelease?.(event, gesture);
+      });
+      expect(send.mock.calls).toEqual([
+        [sessionId, { ...tapPoint, deltaX: 10, deltaY: 20, type: "input.wheel" }],
       ]);
     });
 

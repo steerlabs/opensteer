@@ -7,8 +7,14 @@ import { ComputerScreen } from "./computer.js";
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
   cancelAutoWake: vi.fn(),
+  close: vi.fn(async () => ({})),
   focused: true,
-  open: vi.fn(async () => ({ viewId: "phone-view", generation: 2 })),
+  open: vi.fn(async () => ({
+    viewId: "phone-view",
+    generation: 2,
+    machineId: "phone",
+    target: { kind: "phone", display: "main" },
+  })),
   snapshot: {
     machines: [
       {
@@ -28,6 +34,7 @@ const host = {
     { machineId: "phone", target: { kind: "phone", display: "main" } },
   ],
   openComputerView: state.open,
+  closeComputerView: state.close,
 };
 vi.mock("@opensteer/client/host", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@opensteer/client/host")>()),
@@ -135,7 +142,12 @@ it("cancels the Open wake when the person leaves before the phone opens", async 
   state.dispatch.mockClear();
   state.open.mockImplementationOnce(async () => {
     state.focused = false;
-    return { viewId: "phone-view", generation: 3 };
+    return {
+      viewId: "phone-view",
+      generation: 3,
+      machineId: "phone",
+      target: { kind: "phone", display: "main" },
+    };
   });
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -152,6 +164,7 @@ it("cancels the Open wake when the person leaves before the phone opens", async 
       viewId: "phone-view",
       generation: 3,
     });
+    expect(state.close).toHaveBeenCalledWith("phone-view", 3);
   } finally {
     state.focused = true;
     await act(async () => root.unmount());

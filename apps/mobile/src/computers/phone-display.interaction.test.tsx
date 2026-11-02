@@ -138,9 +138,40 @@ vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch }),
   StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
 }));
-vi.mock("../browser/surface-header.js", () => ({ useSurfaceHeader: () => undefined }));
+vi.mock(
+  "../browser/toolbar.js",
+  async () => (await import("../../test-support/native-chrome.js")).toolbar,
+);
+vi.mock("../ui/glass.js", async () => (await import("../../test-support/native-chrome.js")).glass);
+vi.mock(
+  "react-native-gesture-handler",
+  async () => (await import("../../test-support/native-chrome.js")).gestureHandler,
+);
+vi.mock(
+  "react-native-worklets",
+  async () => (await import("../../test-support/native-chrome.js")).worklets,
+);
+
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock(
+  "react-native-reanimated",
+  async () => (await import("../../test-support/native-chrome.js")).reanimated,
+);
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  SecondaryButton: ({
+    label,
+    accessibilityLabel,
+    onPress,
+  }: {
+    label: string;
+    accessibilityLabel?: string;
+    onPress: () => void;
+  }) => (
+    <button aria-label={accessibilityLabel} onClick={onPress}>
+      {label}
+    </button>
+  ),
 }));
 import {
   ComputerDisplay,
@@ -316,6 +347,7 @@ async function setup(
             computerSessionId={sessionId}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
+            onTyping={noop}
           />
         ) : screen === "owner" ? (
           <ComputerOwnerView
@@ -326,9 +358,11 @@ async function setup(
             generation={1}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
+            onTyping={noop}
           />
         ) : (
           <ComputerDisplay
+            bar={{ title: phone ? "Phone" : "Notes", detail: null, menu: [], onTyping: noop }}
             active={active}
             interactive={interactive}
             phone={phone}
@@ -401,8 +435,10 @@ async function setup(
   };
 }
 async function press(label: string) {
-  const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
-  expect(button).not.toBeNull();
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (item) => item.getAttribute("aria-label") === label || item.textContent === label,
+  );
+  expect(button, `Missing ${label}`).toBeDefined();
   await act(async () => button!.click());
 }
 function input() {
@@ -557,7 +593,9 @@ it("retires pending copy and editing context when the display generation changes
     state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
   );
   expect(state.copy).not.toHaveBeenCalled();
-  expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  expect(
+    container.querySelector<HTMLButtonElement>('button[aria-label="Keyboard"]')?.disabled,
+  ).toBe(true);
   expect(state.proxy?.context ?? null).toBeNull();
   await act(async () =>
     socket.json({
@@ -593,7 +631,9 @@ it("keeps an unavailable display view-only with no input buttons", async () => {
     }),
   );
   expect(container.textContent).not.toMatch(/Take over|Give back|controlling/);
-  expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  expect(
+    container.querySelector<HTMLButtonElement>('button[aria-label="Keyboard"]')?.disabled,
+  ).toBe(true);
   expect(input()).toEqual([]);
 });
 
@@ -867,12 +907,24 @@ it.each(["android", "ios"])(
   async (os) => {
     const { setDisplay, power } = await setup(true, os, true, true, "owner");
     expect(container.textContent).toContain("View only");
-    expect(container.querySelector('button[aria-label="Back"]')).toBeNull();
+    for (const label of ["Back", "Home", "Recent apps"]) {
+      expect(
+        container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.disabled,
+      ).toBe(true);
+      await press(label);
+    }
+    expect(input()).toEqual([]);
     await act(async () => setDisplay({ input: "available", power: "available" }));
     expect(container.textContent).not.toContain("View only");
     expect(container.querySelector('button[aria-label="Back"]')).not.toBeNull();
-    await press("Back");
-    expect(input().at(-1)?.events).toEqual([{ kind: "nav", to: "back" }]);
+    for (const [label, to] of [
+      ["Back", "back"],
+      ["Home", "home"],
+      ["Recent apps", "recents"],
+    ]) {
+      await press(label!);
+      expect(input().at(-1)?.events).toEqual([{ kind: "nav", to }]);
+    }
     await press("Lock phone");
     expect(power).toHaveBeenLastCalledWith("lock");
     await act(async () =>
@@ -1004,11 +1056,14 @@ it("revokes picture input and requests a key when the decoder loses its picture"
   );
   expect(socket.sent.slice(before)).toContainEqual({ type: "display.keyframe" });
   expect(socket.sent.slice(before)).toContainEqual({ type: "display.input-reset" });
-  expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  const keyboard = () => container.querySelector<HTMLButtonElement>('button[aria-label="Keyboard"]');
+  expect(keyboard()?.disabled).toBe(true);
   // A key can already be queued when the asynchronous loss event reaches JS.
   await act(async () =>
     state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
   );
   await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
-  expect(container.querySelector('button[aria-label="Keyboard"]')).not.toBeNull();
+  expect(keyboard()?.disabled).toBe(false);
 });
+
+function noop(): void {}

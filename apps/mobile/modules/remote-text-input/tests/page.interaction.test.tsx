@@ -65,7 +65,32 @@ vi.mock("../../../src/browser/browser-stream.js", () => ({
 vi.mock("../../../src/browser/chrome-sign-in-action.js", () => ({
   ChromeSignInAction: () => null,
 }));
-vi.mock("../../../src/browser/surface-header.js", () => ({ useSurfaceHeader: () => undefined }));
+vi.mock(
+  "../../../src/browser/toolbar.js",
+  async () => (await import("../../../test-support/native-chrome.js")).toolbar,
+);
+vi.mock(
+  "../../../src/ui/glass.js",
+  async () => (await import("../../../test-support/native-chrome.js")).glass,
+);
+vi.mock(
+  "react-native-gesture-handler",
+  async () => (await import("../../../test-support/native-chrome.js")).gestureHandler,
+);
+vi.mock(
+  "react-native-worklets",
+  async () => (await import("../../../test-support/native-chrome.js")).worklets,
+);
+vi.mock(
+  "react-native-reanimated",
+  async () => (await import("../../../test-support/native-chrome.js")).reanimated,
+);
+vi.mock("../../../src/ui/motion.js", () => ({
+  appear: undefined,
+  duration: { enter: 0, exit: 0 },
+  exit: undefined,
+}));
+vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("../../../src/client/mobile-client.js", () => ({ operationDetail: () => "error" }));
 vi.mock("../../../src/ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
 import { PageTyping } from "../../../src/browser/browser-page.js";
