@@ -13,15 +13,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { displayViewerWindowFrames } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  AppState,
-  PixelRatio,
-  Platform,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
+import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { openPhoneOwnerView } from "./open-phone-owner-view.js";
@@ -36,6 +28,7 @@ import {
 
 import {
   NativeDisplay,
+  macWindowVideoSupported,
   phoneDisplayBinary,
   type DisplayFrameMetadata,
   type NativeDecoder,
@@ -78,7 +71,7 @@ export function ComputerDisplay({
   readonly machineId?: string;
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
 }) {
-  const unavailable = !phone && Platform.OS === "ios";
+  const unavailable = !phone && !macWindowVideoSupported();
   const kind = reference.kind;
   const sessionId = reference.kind === "task-session" ? reference.sessionId : "";
   const appKey = reference.kind === "task-session" ? reference.appKey : undefined;
@@ -336,6 +329,12 @@ export function ComputerDisplay({
         style={StyleSheet.absoluteFill}
         onNeedsKeyframe={({ nativeEvent }) => {
           if (nativeEvent.epoch !== String(epoch.current)) return;
+          if (nativeEvent.pictureGone) {
+            controls.current?.resetInput();
+            setPicture(null);
+            decodingPicture.current = null;
+            setShown(false);
+          }
           requestKeyframe.current?.();
         }}
         onReady={({ nativeEvent }) => {

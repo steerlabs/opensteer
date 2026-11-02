@@ -372,7 +372,8 @@ real engines or signed responsible-process attribution. Real Contacts/EventKit s
 Apple account identity/history maintenance, localized Services, first-run TCC and signed
 shipping capture require manual qualification. Minimum-macOS association behavior and
 native Expo decoding/suppression also need qualification; build/export success is not
-that evidence. Mac window video stays disabled on iOS pending that qualification.
+that evidence. OTA JavaScript enables iOS Mac video only when the binary advertises
+decoder recovery; older binaries retain the placeholder.
 
 ## Owner-view wire
 

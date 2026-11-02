@@ -7,6 +7,7 @@ import type { IntegrationAccess } from "@opensteer/integration-core";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import {
   DisplayAckSchema,
+  displayMaxEnvelopeBytes,
   computerUseBridgePasswordsParams,
   type LoginReceiverKey,
   type PasswordSignInAuthorityCommand,
@@ -382,7 +383,7 @@ export class ComputerUseBridgeServer {
           if (
             !entry.owner.alive ||
             socket.readyState !== socket.OPEN ||
-            socket.bufferedAmount + bytes.byteLength > 1_048_576
+            socket.bufferedAmount + bytes.byteLength > displayMaxEnvelopeBytes
           ) {
             this.#videoEnded(
               streamId,

@@ -24,6 +24,9 @@ const directory = path.join(
 mkdirSync(directory, { recursive: true });
 const fixtures = path.join(import.meta.dirname, "fixtures");
 const fixtureNames = new Set([
+  "mac.h264",
+  "resized.h264",
+  "noisy.h264",
   "red-blue-64x48.jpg",
   "green-yellow-48x64.jpg",
   "lime-key-64x64.h264",
