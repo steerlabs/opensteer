@@ -37,6 +37,7 @@ afterEach(() => {
   paints.length = 0;
   document.body.replaceChildren();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function frame(surfaceId = firstSurface): BrowserFrameView {
@@ -59,6 +60,8 @@ type ViewOptions = {
   occluded: boolean;
   sessionId: string;
   visible: boolean;
+  live: boolean;
+  inputEpoch: string;
 };
 async function setup(editing?: BrowserEditingStore) {
   let picture: BrowserFrameView | null = frame();
@@ -69,6 +72,8 @@ async function setup(editing?: BrowserEditingStore) {
     occluded: false,
     sessionId: pictureSession,
     visible: true,
+    live: true,
+    inputEpoch: "document-a",
   };
   const changed = new Set<() => void>();
   const frames: BrowserFrameStore = {
@@ -80,6 +85,11 @@ async function setup(editing?: BrowserEditingStore) {
     },
   };
   const commands: BrowserCommand[] = [];
+  let reject = false;
+  const send = (command: BrowserCommand) => {
+    commands.push(command);
+    return !reject;
+  };
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -90,8 +100,8 @@ async function setup(editing?: BrowserEditingStore) {
         <BrowserViewport
           {...options}
           frames={frames}
-          live
-          onCommand={(command) => commands.push(command)}
+          phoneLayout
+          onCommand={send}
           onOpenLink={() => undefined}
         />,
       );
@@ -110,7 +120,16 @@ async function setup(editing?: BrowserEditingStore) {
     });
   render();
   await present();
-  return { commands, container, present, receive, render };
+  return {
+    commands,
+    container,
+    present,
+    receive,
+    render,
+    reject: () => {
+      reject = true;
+    },
+  };
 }
 function keyboard(container: HTMLElement): HTMLTextAreaElement {
   const input = container.querySelector<HTMLTextAreaElement>(
@@ -403,5 +422,224 @@ describe("browser text entry through the presented page", async () => {
       { type: "clipboard.paste", surfaceId: firstSurface, text: "old tab draft" },
       { type: "clipboard.paste", surfaceId: secondSurface, text: "next page" },
     ]);
+  });
+});
+
+describe("browser viewport finger input", () => {
+  beforeEach(() =>
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] }),
+  );
+  async function ready() {
+    const view = await setup();
+    const viewport = view.container.querySelector<HTMLElement>(".browser-canvas")!;
+    Object.assign(viewport, { setPointerCapture: vi.fn() });
+    vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 300,
+    } as DOMRect);
+    const finger = (type: string, y = 150, id = 1) =>
+      void act(() =>
+        viewport.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            pointerType: "touch",
+            pointerId: id,
+            button: 0,
+            clientX: 200,
+            clientY: y,
+          }),
+        ),
+      );
+    const inputs = () => view.commands.filter((command) => command.type.startsWith("input."));
+    view.commands.length = 0;
+    return { ...view, viewport, finger, inputs };
+  }
+  it("defers tap, consumes long press, and measures scroll slop from the original contact", async () => {
+    const { finger, commands, inputs, present, container } = await ready();
+    finger("pointerdown");
+    expect(container.querySelector(".browser-touch-contact")).not.toBeNull();
+    expect(inputs()).toEqual([]);
+    finger("pointerup");
+    expect(container.querySelector(".browser-touch-contact")).toBeNull();
+    expect(inputs()).toMatchObject([
+      { type: "input.pointer", action: "down", button: "left" },
+      { action: "up" },
+    ]);
+    commands.length = 0;
+    finger("pointerdown");
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    finger("pointerup");
+    expect(inputs()).toMatchObject([
+      { type: "input.pointer", action: "down", button: "right" },
+      { action: "up", button: "right" },
+    ]);
+    commands.length = 0;
+    finger("pointerdown");
+    for (const y of [148, 146, 144, 140]) {
+      act(() => {
+        vi.advanceTimersByTime(16);
+      });
+      finger("pointermove", y);
+    }
+    finger("pointerup", 140);
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    await present();
+    expect(inputs().every((command) => command.type === "input.wheel")).toBe(true);
+    expect(inputs().length).toBeGreaterThan(1);
+  });
+  it.each([
+    "new touch",
+    "pinch",
+    "navigation",
+    "geometry",
+    "background",
+    "disconnect",
+    "rejection",
+    "cancel",
+    "visibility",
+    "stage resize",
+    "unmount",
+  ])("cancels fling on %s", async (reason) => {
+    const { finger, inputs, commands, render, receive, reject, present } = await ready();
+    finger("pointerdown");
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    finger("pointermove", 130);
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    finger("pointermove", 110);
+    finger("pointerup", 110);
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    await present();
+    expect(inputs().filter((command) => command.type === "input.wheel")).toHaveLength(3);
+    if (reason === "new touch") finger("pointerdown");
+    if (reason === "pinch") {
+      finger("pointerdown");
+      finger("pointerdown", 150, 2);
+    }
+    if (reason === "navigation") render({ inputEpoch: "next-document" });
+    if (reason === "geometry")
+      receive({ ...frame(), header: { ...frame().header, geometryRevision: 2 } });
+    if (reason === "background")
+      void act(() => document.dispatchEvent(new Event("visibilitychange")));
+    if (reason === "background") void act(() => window.dispatchEvent(new Event("blur")));
+    if (reason === "disconnect") render({ live: false });
+    if (reason === "rejection") reject();
+    if (reason === "cancel") finger("pointercancel");
+    if (reason === "visibility") {
+      vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      void act(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    if (reason === "stage resize") {
+      const viewport = document.querySelector<HTMLElement>(".browser-canvas")!;
+      vi.mocked(viewport.getBoundingClientRect).mockReturnValue({
+        left: 10,
+        top: 0,
+        width: 350,
+        height: 300,
+      } as DOMRect);
+      void act(() => window.dispatchEvent(new Event("focus")));
+    }
+    if (reason === "unmount")
+      act(() => {
+        root?.unmount();
+        root = null;
+      });
+    commands.length = 0;
+    for (let i = 0; i < 4; i++) {
+      act(() => {
+        vi.advanceTimersByTime(16);
+      });
+      await present();
+    }
+    expect(inputs().filter((command) => command.type === "input.wheel")).toHaveLength(
+      reason === "rejection" ? 1 : 0,
+    );
+  });
+  it("offers one-shot Drag/select and cancels a held drag before pinch, then waits for every finger to lift", async () => {
+    const { container, finger, commands, inputs } = await ready();
+    const drag = () =>
+      void act(() =>
+        [...container.querySelectorAll<HTMLButtonElement>("button")]
+          .find((button) => button.textContent === "Drag/select")!
+          .click(),
+      );
+    drag();
+    finger("pointerdown");
+    finger("pointermove", 100);
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    finger("pointerup", 100);
+    expect(inputs()).toMatchObject([
+      { type: "input.pointer", action: "down" },
+      { action: "move", button: "none", buttons: 1, y: 1 / 3 },
+      { action: "up" },
+    ]);
+    commands.length = 0;
+    finger("pointerdown");
+    finger("pointerup");
+    expect(inputs()).toHaveLength(2);
+    commands.length = 0;
+    drag();
+    finger("pointerdown");
+    finger("pointerdown", 100, 2);
+    expect(inputs().at(-1)).toMatchObject({ type: "input.cancel" });
+    commands.length = 0;
+    finger("pointerup", 100, 2);
+    finger("pointermove", 90);
+    finger("pointerup", 90);
+    expect(inputs()).toEqual([]);
+    finger("pointerdown");
+    finger("pointerup");
+    expect(inputs()).toHaveLength(2);
+  });
+  it("zooms and pans locally with two fingers, maps the next tap through that transform, and never resizes the page", async () => {
+    const { viewport, finger, inputs, commands } = await ready();
+    finger("pointerdown", 100);
+    finger("pointerdown", 200, 2);
+    finger("pointermove", 50);
+    finger("pointermove", 250, 2);
+    expect(viewport.style.getPropertyValue("--browser-touch-scale")).toBe("2");
+    expect(inputs()).toEqual([]);
+    finger("pointerup", 50);
+    finger("pointerup", 250, 2);
+    commands.length = 0;
+    finger("pointerdown", 100);
+    finger("pointerup", 100);
+    expect(inputs()).toMatchObject([
+      { type: "input.pointer", action: "down", x: 0.5, y: 5 / 12 },
+      { action: "up" },
+    ]);
+    expect(commands.some((command) => command.type.startsWith("viewport."))).toBe(false);
+  });
+  it("leaves desktop wheel momentum alone", async () => {
+    const { viewport, inputs, present } = await ready();
+    void act(() =>
+      viewport.dispatchEvent(
+        new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          deltaY: 40,
+          clientX: 200,
+          clientY: 150,
+        }),
+      ),
+    );
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    await present();
+    expect(inputs()).toHaveLength(1);
   });
 });

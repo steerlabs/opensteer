@@ -1,3 +1,4 @@
+import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
 import { useBrowserPresentationWait } from "@opensteer/client/react";
 import type {
   BrowserCommand,
@@ -20,6 +21,7 @@ import {
 import {
   Image,
   PanResponder,
+  Platform,
   PixelRatio,
   Pressable,
   StyleSheet,
@@ -65,11 +67,15 @@ export interface BrowserStreamProps {
   >;
   readonly interactive?: boolean;
   readonly inputEnabled?: boolean;
+  readonly inputEpoch?: string;
+  readonly dragSelect?: boolean;
+  readonly onDragEnd?: () => void;
   readonly tabId: string;
   /** What the picture shows, in the page's own words: its title and site. */
   readonly label: string;
   /** The page's own size, as each new picture reports it, so a preview takes its shape. */
   readonly onPageSize?: (size: { readonly height: number; readonly width: number }) => void;
+  readonly onPresentedGeometry?: (revision: number | null) => void;
   readonly onPointerDown?: () => void;
   /** The person tapped the page: a field may now have focus. */
   readonly onTap?: () => void;
@@ -124,6 +130,7 @@ export function BrowserStream({
   hostClient,
   label,
   onPageSize,
+  onPresentedGeometry,
   onScroll,
   onTap,
   onPointerDown,
@@ -131,6 +138,9 @@ export function BrowserStream({
   style,
   interactive = false,
   inputEnabled = true,
+  inputEpoch,
+  dragSelect = false,
+  onDragEnd,
   preserveLastFrame = false,
   tabId,
   zoom,
@@ -353,6 +363,8 @@ export function BrowserStream({
   const [stageSize, setStageSize] = useState(size.current);
   const rasterDemand = useRef<BrowserRasterDemand | null>(null);
   const drawnHeader = displayed?.source.header;
+  const geometryRevision = drawnHeader?.geometryRevision ?? null;
+  useEffect(() => onPresentedGeometry?.(geometryRevision), [geometryRevision, onPresentedGeometry]);
   const contentRect = drawnHeader
     ? browserFrameContentRect(
         { ...stageSize, left: 0, top: 0 },
@@ -381,6 +393,7 @@ export function BrowserStream({
 
   const input = useRef({
     active,
+    ready,
     interactive,
     inputEnabled,
     displayed,
@@ -390,9 +403,12 @@ export function BrowserStream({
     onTap,
     onPointerDown,
     zoom,
+    dragSelect,
+    onDragEnd,
   });
   input.current = {
     active,
+    ready,
     interactive,
     inputEnabled,
     displayed,
@@ -402,23 +418,44 @@ export function BrowserStream({
     onTap,
     onPointerDown,
     zoom,
+    dragSelect,
+    onDragEnd,
   };
-  // The touch under the finger, aimed at the picture as it was drawn when it
-  // began. A resize — a fold, a window narrowing, a pane appearing beside this
-  // one — redraws the picture somewhere else, so the touch is dropped there.
-  const held = useRef<{
-    point: NonNullable<ReturnType<typeof mobileBrowserPoint>>;
-    dx: number;
-    dy: number;
-    moved: boolean;
-    scale: number;
-  } | null>(null);
-  // The surface rearranging around the stage moves it on screen even where
-  // its own frame is unchanged.
+  const [contact, setContact] = useState<{ x: number; y: number } | null>(null);
+  const touchOrigin = useRef({ x: 0, y: 0 });
+  const touchGesture = useMemo(() => {
+    const send = (command: BrowserCommand) => submitBrowserCommand(hostClient, session.id, command);
+    return createBrowserTouchGesture<NonNullable<ReturnType<typeof mobileBrowserPoint>>>({
+      platform: Platform.OS === "android" ? "android" : "ios",
+      usable: () => {
+        const current = input.current;
+        return (
+          current.active &&
+          current.ready &&
+          current.interactive &&
+          current.inputEnabled &&
+          current.feedState === "synchronized" &&
+          current.displayed !== null &&
+          current.frame?.header.surfaceId === current.displayed.source.header.surfaceId
+        );
+      },
+      pointer: (point, action, button) =>
+        send({ type: "input.pointer", ...point, action, button, clickCount: 1 }),
+      wheel: (point, deltaX, deltaY) => send({ type: "input.wheel", ...point, deltaX, deltaY }),
+      cancelPointer: (point) => {
+        send({ type: "input.cancel", surfaceId: point.surfaceId });
+      },
+      contact: setContact,
+      onTap: () => input.current.onTap?.(),
+      onScroll: () => input.current.onScroll?.(),
+      onDragEnd: () => input.current.onDragEnd?.(),
+    });
+  }, [hostClient, session.id]);
   const geometry = usePaneGeometry();
   const drawnGeometry = displayed ? browserPictureFence(displayed.source) : null;
   useLayoutEffect(() => {
-    held.current = null;
+    touchGesture.cancel();
+    if (!active || !inputEnabled || feedState !== "synchronized") touchGesture.contacts(0);
   }, [
     geometry,
     drawnGeometry,
@@ -427,120 +464,86 @@ export function BrowserStream({
     interactive,
     feed.admissionId,
     feedState,
+    inputEpoch,
+    dragSelect,
     session.id,
     tabId,
+    touchGesture,
   ]);
+  useEffect(() => () => touchGesture.cancel(), [touchGesture]);
   const gestures = useMemo(() => {
-    const send = (command: BrowserCommand) => submitBrowserCommand(hostClient, session.id, command);
     const usable = () => {
       const current = input.current;
       return (
         current.active &&
+        current.ready &&
         current.interactive &&
         current.inputEnabled &&
         current.feedState === "synchronized" &&
-        current.displayed !== null &&
-        current.frame?.header.surfaceId === current.displayed.source.header.surfaceId
+        current.displayed !== null
       );
     };
     return PanResponder.create({
       onStartShouldSetPanResponder: usable,
       onMoveShouldSetPanResponder: usable,
-      onPanResponderStart: (event) => {
-        if (event.nativeEvent.touches.length > 1) held.current = null;
-      },
+      onPanResponderStart: (event) => touchGesture.contacts(event.nativeEvent.touches?.length ?? 1),
+      onPanResponderEnd: (event) => touchGesture.contacts(event.nativeEvent.touches?.length ?? 0),
       onPanResponderGrant: (event) => {
-        if (event.nativeEvent.touches?.length > 1) {
-          held.current = null;
-          return;
-        }
+        const count = event.nativeEvent.touches?.length ?? 1;
+        touchGesture.contacts(count);
+        if (count > 1) return;
+        touchGesture.cancel();
         const current = input.current;
         const source = usable() ? (current.displayed?.source ?? null) : null;
+        const { locationX: x, locationY: y } = event.nativeEvent;
+        const point = mobileBrowserPoint({ frame: source, ...size.current, x, y });
+        if (!point || !source) return;
+        current.onPointerDown?.();
+        touchOrigin.current = { x, y };
+        const rect = browserFrameContentRect(
+          { ...size.current, left: 0, top: 0 },
+          source.header.rasterWidth,
+          source.header.rasterHeight,
+          source.header.capture,
+          "center",
+        );
+        touchGesture.start({
+          point,
+          x,
+          y,
+          drag: current.dragSelect,
+          scale:
+            (source.header.capture?.height ?? source.header.viewportHeight) /
+            (rect?.height ?? 1) /
+            Math.max(1, current.zoom?.value ?? 1),
+        });
+      },
+      onPanResponderMove: (event, state) => {
+        touchGesture.contacts(event.nativeEvent.touches?.length ?? 1);
+        if ((event.nativeEvent.touches?.length ?? 1) > 1) return;
+        const source = input.current.displayed?.source ?? null;
+        const x = touchOrigin.current.x + state.dx;
+        const y = touchOrigin.current.y + state.dy;
+        const pinched = Math.max(1, input.current.zoom?.value ?? 1);
         const point = mobileBrowserPoint({
           frame: source,
           ...size.current,
-          x: event.nativeEvent.locationX,
-          y: event.nativeEvent.locationY,
+          x: touchOrigin.current.x + state.dx / pinched,
+          y: touchOrigin.current.y + state.dy / pinched,
+          clampOutside: true,
         });
-        if (point && source) current.onPointerDown?.();
-        held.current =
-          point && source
-            ? {
-                point,
-                dx: 0,
-                dy: 0,
-                moved: false,
-                scale:
-                  (source.header.capture?.height ?? source.header.viewportHeight) /
-                  (browserFrameContentRect(
-                    { ...size.current, left: 0, top: 0 },
-                    source.header.rasterWidth,
-                    source.header.rasterHeight,
-                    source.header.capture,
-                    "center",
-                  )?.height ?? 1),
-              }
-            : null;
-      },
-      onPanResponderMove: (event, state) => {
-        if (event.nativeEvent.touches?.length > 1) {
-          held.current = null;
-          return;
-        }
-        const gesture = held.current;
-        if (
-          !gesture ||
-          !usable() ||
-          input.current.frame?.header.surfaceId !== gesture.point.surfaceId
-        )
-          return;
-        if (!gesture.moved && Math.abs(state.dx) + Math.abs(state.dy) > 6) {
-          gesture.moved = true;
-          input.current.onScroll?.();
-        }
-        if (!gesture.moved) return;
-        const pinched = Math.max(1, input.current.zoom?.value ?? 1);
-        const factor = gesture.scale / pinched;
-        const scrolled = send({
-          type: "input.wheel",
-          ...gesture.point,
-          deltaX: Math.max(-100000, Math.min(100000, -(state.dx - gesture.dx) * factor)),
-          deltaY: Math.max(-100000, Math.min(100000, -(state.dy - gesture.dy) * factor)),
-        });
-        // A refused scroll ends the drag rather than replaying it on reconnection.
-        if (!scrolled) {
-          held.current = null;
-          return;
-        }
-        gesture.dx = state.dx;
-        gesture.dy = state.dy;
+        if (point) touchGesture.move({ point, x, y });
       },
       onPanResponderRelease: () => {
-        const tap = held.current;
-        held.current = null;
-        if (
-          !tap ||
-          tap.moved ||
-          !usable() ||
-          input.current.frame?.header.surfaceId !== tap.point.surfaceId
-        )
-          return;
-        const click = {
-          type: "input.pointer",
-          ...tap.point,
-          button: "left",
-          clickCount: 1,
-        } as const;
-        if (!send({ ...click, action: "down" })) return;
-        // A press the page took but whose release it refused must not stay held.
-        if (send({ ...click, action: "up" })) input.current.onTap?.();
-        else send({ type: "input.cancel", surfaceId: tap.point.surfaceId });
+        touchGesture.release();
+        touchGesture.contacts(0);
       },
-      onPanResponderTerminate: () => {
-        held.current = null;
+      onPanResponderTerminate: (event) => {
+        touchGesture.cancel();
+        touchGesture.contacts(event.nativeEvent.touches?.length ?? 0);
       },
     });
-  }, [hostClient, session.id]);
+  }, [touchGesture]);
   const shownWidth =
     displayed?.source.header.capture?.width ?? displayed?.source.header.viewportWidth ?? null;
   const shownHeight =
@@ -557,7 +560,19 @@ export function BrowserStream({
   return (
     <View
       accessibilityLabel={label}
-      accessibilityHint={interactive ? "Tap to click. Drag to scroll the page." : undefined}
+      onTouchStart={(event) => touchGesture.contacts(event.nativeEvent.touches.length)}
+      onTouchEnd={(event) => touchGesture.contacts(event.nativeEvent.touches.length)}
+      onTouchCancel={(event) => {
+        touchGesture.cancel();
+        touchGesture.contacts(event.nativeEvent.touches.length);
+      }}
+      accessibilityHint={
+        interactive
+          ? dragSelect
+            ? "Drag to select or move content. Two fingers zoom."
+            : "Tap to click. Drag to scroll. Hold for page actions. Two fingers zoom."
+          : undefined
+      }
       onLayout={(event) => {
         const { height, width, x, y } = event.nativeEvent.layout;
         if (
@@ -566,7 +581,7 @@ export function BrowserStream({
           origin.current.x !== x ||
           origin.current.y !== y
         )
-          held.current = null;
+          touchGesture.cancel();
         size.current = { width, height };
         origin.current = { x, y };
         setStageSize((previous) =>
@@ -631,6 +646,13 @@ export function BrowserStream({
         );
       })}
       {interactive ? <View style={styles.image} {...gestures.panHandlers} /> : null}
+      {contact ? (
+        <View
+          pointerEvents="none"
+          testID="browser-touch-contact"
+          style={[styles.contact, { left: contact.x - 12, top: contact.y - 12 }]}
+        />
+      ) : null}
       {words === null ? null : (
         <View pointerEvents="box-none" style={styles.status}>
           <Text numberOfLines={3} style={styles.label}>
@@ -792,6 +814,15 @@ export function useBrowserFeedState(
 export type BrowserFeedState = Omit<BrowserWatchState, "frame">;
 
 const styles = StyleSheet.create({
+  contact: {
+    position: "absolute",
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "rgba(127,127,127,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(127,127,127,0.35)",
+  },
   stage: {
     alignItems: "center",
     backgroundColor: color.surfaceCode,

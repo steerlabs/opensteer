@@ -1,3 +1,4 @@
+import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
 import type { EditingOperation } from "@opensteer/client/editing";
 import {
   RemoteEditingProxy,
@@ -23,6 +24,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type PointerEvent,
   type Ref,
 } from "react";
@@ -43,6 +45,7 @@ export interface BrowserKeyboardHandle {
 export function BrowserViewport({
   activeSurfaceId,
   canInput,
+  inputEpoch,
   keyboardRef,
   frames,
   onFramePresented,
@@ -61,6 +64,7 @@ export function BrowserViewport({
 }: {
   activeSurfaceId: BrowserTabSummary["id"] | null;
   canInput: boolean;
+  inputEpoch?: string | undefined;
   keyboardRef?: Ref<BrowserKeyboardHandle> | undefined;
   frames: BrowserFrameStore;
   /** Each picture once it is on screen, so a target that waits for a reply gets one. */
@@ -73,7 +77,7 @@ export function BrowserViewport({
   phoneLayout?: boolean | undefined;
   live: boolean;
   occluded: boolean;
-  onCommand: (command: BrowserCommand) => void;
+  onCommand: (command: BrowserCommand) => boolean | void;
   onOpenLink: (url: string) => void;
   onFitAvailable?: ((available: boolean) => void) | undefined;
   /** F6 inside the page: the person wants their keyboard back, at the composer. */
@@ -133,14 +137,23 @@ export function BrowserViewport({
   const pressedButton = useRef<"left" | "middle" | "right" | null>(null);
   const lastPointerPoint = useRef<BrowserFramePoint | null>(null);
   const clickTracker = useRef<{ count: number; time: number; x: number; y: number } | null>(null);
-  // A finger is a tap until it moves; once it moves it scrolls the page.
-  const touch = useRef<{
-    readonly id: number;
-    readonly start: BrowserFramePoint;
-    lastX: number;
-    lastY: number;
-    scrolling: boolean;
+  const fingers = useRef(new Map<number, { x: number; y: number }>());
+  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+  const pinch = useRef<{
+    distance: number;
+    x: number;
+    y: number;
+    transform: { scale: number; x: number; y: number };
   } | null>(null);
+  const fingerId = useRef<number | null>(null);
+  const [dragSelect, setDragSelect] = useState(false);
+  const dragSelectRef = useRef(dragSelect);
+  dragSelectRef.current = dragSelect;
+  const [contact, setContact] = useState<{ x: number; y: number } | null>(null);
+  const touchTapRef = useRef(onTouchTap);
+  touchTapRef.current = onTouchTap;
   const onCommandRef = useRef(onCommand);
   onCommandRef.current = onCommand;
   const editing = useMemo(
@@ -171,7 +184,7 @@ export function BrowserViewport({
   const editingContext = editingState?.negotiated ? editingState.context : legacyContext;
   const stage = viewportRef.current?.getBoundingClientRect();
   const localStage = stage ? { left: 0, top: 0, width: stage.width, height: stage.height } : null;
-  const caret =
+  const unscaledCaret =
     localStage &&
     editingContext?.caret &&
     (editingState?.geometryRevision === undefined ||
@@ -179,13 +192,21 @@ export function BrowserViewport({
       ? mappedBrowserCaret(localStage, presentedGeometry, editingContext.caret)
       : null;
   const menu = viewportCanInput ? editingState?.menu : null;
-  const menuPoint =
+  const unscaledMenuPoint =
     menu &&
     localStage &&
     (menu.geometryRevision === undefined ||
       menu.geometryRevision === presentedGeometry?.header.geometryRevision)
       ? mappedBrowserCaret(localStage, presentedGeometry, { x: menu.x, y: menu.y, height: 0 })
       : null;
+  const scaledCaret = (point: { left: number; top: number; height: number } | null) =>
+    point && {
+      left: point.left * transform.scale + transform.x,
+      top: point.top * transform.scale + transform.y,
+      height: point.height * transform.scale,
+    };
+  const caret = scaledCaret(unscaledCaret);
+  const menuPoint = scaledCaret(unscaledMenuPoint);
   const dismissMenu = useCallback(() => {
     editingTarget?.dismissMenu();
     textInputRef.current?.focus();
@@ -199,6 +220,72 @@ export function BrowserViewport({
     else if (action === "open-link" && menu?.linkUrl) onOpenLink(menu.linkUrl);
     dismissMenu();
   }
+
+  const touchGesture = useMemo(() => {
+    const send = (command: BrowserCommand) => {
+      try {
+        return onCommandRef.current(command) !== false;
+      } catch {
+        return false;
+      }
+    };
+    return createBrowserTouchGesture<BrowserFramePoint>({
+      platform: /Android/i.test(navigator.userAgent) ? "android" : "ios",
+      usable: () => canInputRef.current && eligibilityRef.current.live && !document.hidden,
+      pointer: (point, action, button) =>
+        send({
+          ...point,
+          type: "input.pointer",
+          action,
+          button,
+          buttons: action === "up" ? 0 : button === "right" ? 2 : 1,
+          clickCount: 1,
+          modifiers: [],
+        }),
+      wheel: (point, deltaX, deltaY) =>
+        send({ ...point, type: "input.wheel", deltaX, deltaY, modifiers: [] }),
+      cancelPointer: (point) => {
+        send({ type: "input.cancel", surfaceId: point.surfaceId });
+      },
+      contact: setContact,
+      onTap: () => {
+        textInputRef.current?.activate();
+        textInputRef.current?.focus(true);
+        touchTapRef.current?.();
+      },
+      onDragEnd: () => setDragSelect(false),
+    });
+  }, []);
+  useLayoutEffect(() => {
+    touchGesture.cancel();
+    if (!live || !visible || occluded || !canInput) {
+      fingers.current.clear();
+      fingerId.current = null;
+      touchGesture.contacts(0);
+    }
+    setDragSelect(false);
+    setTransform((previous) =>
+      previous.scale === 1 && previous.x === 0 && previous.y === 0
+        ? previous
+        : { scale: 1, x: 0, y: 0 },
+    );
+    pinch.current = null;
+    editingTarget?.dismissMenu();
+  }, [
+    activeSurfaceId,
+    sessionId,
+    live,
+    visible,
+    occluded,
+    canInput,
+    inputEpoch,
+    frame,
+    presentedGeometry,
+    stageSize,
+    touchGesture,
+    editingTarget,
+  ]);
+  useEffect(() => () => touchGesture.cancel(), [touchGesture]);
 
   useEffect(() => {
     presentedFrameRef.current = null;
@@ -224,7 +311,14 @@ export function BrowserViewport({
       },
       () => pressedButton.current !== null,
     );
+    let measuredRect = "";
     const measure = () => {
+      const rect = viewport.getBoundingClientRect();
+      const key = `${rect.x}:${rect.y}:${rect.width}:${rect.height}:${phase()}`;
+      if (key !== measuredRect) {
+        touchGesture.cancel();
+        measuredRect = key;
+      }
       const { live, visible, phoneLayout } = eligibilityRef.current;
       const size = browserTargetViewport(viewport.getBoundingClientRect(), phoneLayout);
       const now = phase();
@@ -330,15 +424,18 @@ export function BrowserViewport({
     if (!viewport) return;
     const handleWheel = (event: globalThis.WheelEvent) => {
       if (!canInputRef.current) return;
+      const rect = viewport.getBoundingClientRect();
+      const view = transformRef.current;
       const point = normalizedBrowserFramePoint(
-        viewport.getBoundingClientRect(),
+        rect,
         presentedFrameRef.current,
-        event.clientX,
-        event.clientY,
+        rect.left + (event.clientX - rect.left - view.x) / view.scale,
+        rect.top + (event.clientY - rect.top - view.y) / view.scale,
         false,
       );
       if (!point) return;
       event.preventDefault();
+      touchGesture.cancel();
       flushMove();
       sendWheel(onCommandRef.current, {
         deltaX:
@@ -382,10 +479,14 @@ export function BrowserViewport({
       flushMove();
       pressedButton.current = null;
       lastPointerPoint.current = null;
-      touch.current = null;
+      touchGesture.cancel();
+      fingers.current.clear();
+      fingerId.current = null;
+      touchGesture.contacts(0);
+      pinch.current = null;
       if (activeSurfaceId) {
         try {
-          onCommand({ type: "input.cancel", surfaceId: activeSurfaceId });
+          onCommandRef.current({ type: "input.cancel", surfaceId: activeSurfaceId });
         } catch {
           /* Socket departure owns cleanup when this view is already detached. */
         }
@@ -401,17 +502,19 @@ export function BrowserViewport({
       document.removeEventListener("visibilitychange", visibility);
       cancel();
     };
-  }, [activeSurfaceId, sessionId, flushMove, onCommand]);
+  }, [activeSurfaceId, sessionId, flushMove, touchGesture]);
 
   function normalizedPointer(
     event: PointerEvent<HTMLDivElement>,
     clampOutside: boolean,
   ): BrowserFramePoint | null {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const view = transformRef.current;
     return normalizedBrowserFramePoint(
-      event.currentTarget.getBoundingClientRect(),
+      rect,
       presentedFrameRef.current,
-      event.clientX,
-      event.clientY,
+      rect.left + (event.clientX - rect.left - view.x) / view.scale,
+      rect.top + (event.clientY - rect.top - view.y) / view.scale,
       clampOutside,
     );
   }
@@ -439,6 +542,55 @@ export function BrowserViewport({
 
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     flushMove();
+    if (event.pointerType === "touch") {
+      fingers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      touchGesture.contacts(fingers.current.size);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      if (fingers.current.size > 1) {
+        fingerId.current = null;
+        pinch.current = null;
+        const [first, second] = fingers.current.values();
+        if (fingers.current.size === 2 && first && second) {
+          const rect = event.currentTarget.getBoundingClientRect();
+          pinch.current = {
+            distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)),
+            x: (first.x + second.x) / 2 - rect.left,
+            y: (first.y + second.y) / 2 - rect.top,
+            transform: transformRef.current,
+          };
+        }
+        event.preventDefault();
+        return;
+      }
+      touchGesture.cancel();
+      if (!canInputRef.current) return;
+      const point = normalizedPointer(event, false);
+      const frame = presentedFrameRef.current;
+      if (!point || !frame) return;
+      event.preventDefault();
+      editingTarget?.dismissMenu();
+      textInputRef.current?.pointerDown();
+      fingerId.current = event.pointerId;
+      const rect = browserFrameContentRect(
+        event.currentTarget.getBoundingClientRect(),
+        frame.header.rasterWidth,
+        frame.header.rasterHeight,
+        frame.header.capture,
+      );
+      if (!rect) return;
+      touchGesture.start({
+        point,
+        x: event.clientX,
+        y: event.clientY,
+        drag: dragSelectRef.current,
+        scale:
+          (frame.header.capture?.width ?? point.viewportWidth) /
+          rect.width /
+          transformRef.current.scale,
+      });
+      return;
+    }
+    touchGesture.cancel();
     if (!canInputRef.current) return;
     const button = pointerButton(event.button);
     if (!button) return;
@@ -447,18 +599,6 @@ export function BrowserViewport({
     event.preventDefault();
     editingTarget?.dismissMenu();
     textInputRef.current?.pointerDown();
-    if (event.pointerType === "touch") {
-      if (button !== "left") return;
-      event.currentTarget.setPointerCapture(event.pointerId);
-      touch.current = {
-        id: event.pointerId,
-        lastX: event.clientX,
-        lastY: event.clientY,
-        scrolling: false,
-        start: point,
-      };
-      return;
-    }
     textInputRef.current?.focus(event.pointerType === "pen");
     event.currentTarget.setPointerCapture(event.pointerId);
     pressedButton.current = button;
@@ -477,34 +617,43 @@ export function BrowserViewport({
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
     if (!canInputRef.current) return;
-    const finger = touch.current;
-    if (finger && event.pointerId === finger.id) {
-      const dx = event.clientX - finger.lastX;
-      const dy = event.clientY - finger.lastY;
-      if (!finger.scrolling && Math.hypot(dx, dy) < touchSlop) return;
-      finger.scrolling = true;
-      finger.lastX = event.clientX;
-      finger.lastY = event.clientY;
-      const content = presentedFrameRef.current
-        ? browserFrameContentRect(
-            event.currentTarget.getBoundingClientRect(),
-            presentedFrameRef.current.header.rasterWidth,
-            presentedFrameRef.current.header.rasterHeight,
-            presentedFrameRef.current.header.capture,
-          )
-        : null;
-      if (!content) return;
-      // The finger moves the page under it: page pixels per screen pixel.
-      const scale =
-        (presentedFrameRef.current?.header.capture?.width ?? finger.start.viewportWidth) /
-        content.width;
-      sendWheel(onCommand, {
-        ...finger.start,
-        modifiers: keyboardModifiers(event),
-        deltaX: -dx * scale,
-        deltaY: -dy * scale,
-        type: "input.wheel",
-      });
+    if (event.pointerType === "touch") {
+      if (!fingers.current.has(event.pointerId)) return;
+      fingers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const start = pinch.current;
+      const [first, second] = fingers.current.values();
+      if (start && fingers.current.size === 2 && first && second) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const scale = Math.max(
+          1,
+          Math.min(
+            4,
+            (start.transform.scale * Math.hypot(first.x - second.x, first.y - second.y)) /
+              start.distance,
+          ),
+        );
+        const x =
+          (first.x + second.x) / 2 -
+          rect.left -
+          ((start.x - start.transform.x) * scale) / start.transform.scale;
+        const y =
+          (first.y + second.y) / 2 -
+          rect.top -
+          ((start.y - start.transform.y) * scale) / start.transform.scale;
+        const next = {
+          scale,
+          x: Math.max(rect.width * (1 - scale), Math.min(0, x)),
+          y: Math.max(rect.height * (1 - scale), Math.min(0, y)),
+        };
+        transformRef.current = next;
+        setTransform(next);
+        event.preventDefault();
+        return;
+      }
+      if (fingerId.current === event.pointerId && fingers.current.size === 1) {
+        const point = normalizedPointer(event, true);
+        if (point) touchGesture.move({ point, x: event.clientX, y: event.clientY });
+      }
       return;
     }
     const point = normalizedPointer(event, pressedButton.current !== null);
@@ -518,28 +667,16 @@ export function BrowserViewport({
 
   function pointerUp(event: PointerEvent<HTMLDivElement>) {
     flushMove();
-    if (!canInputRef.current) return;
-    const finger = touch.current;
-    if (finger && event.pointerId === finger.id) {
-      touch.current = null;
-      if (finger.scrolling) return;
+    if (event.pointerType === "touch") {
+      if (fingerId.current === event.pointerId) touchGesture.release();
+      fingers.current.delete(event.pointerId);
+      pinch.current = null;
+      touchGesture.contacts(fingers.current.size);
+      if (fingers.current.size === 0) fingerId.current = null;
       event.preventDefault();
-      // The editing context decides whether this tap may raise a touch keyboard.
-      const tap = {
-        button: "left",
-        modifiers: keyboardModifiers(event),
-        buttons: 0,
-        clickCount: 1,
-        ...finger.start,
-        type: "input.pointer",
-      } as const;
-      onCommand({ ...tap, action: "down" });
-      textInputRef.current?.activate();
-      onCommand({ ...tap, action: "up" });
-      textInputRef.current?.focus(true);
-      onTouchTap?.();
       return;
     }
+    if (!canInputRef.current) return;
     const button = pressedButton.current ?? pointerButton(event.button);
     if (!button) return;
     const point = normalizedPointer(event, true);
@@ -563,8 +700,12 @@ export function BrowserViewport({
 
   function pointerCancel(event: PointerEvent<HTMLDivElement>) {
     flushMove();
-    if (touch.current?.id === event.pointerId) {
-      touch.current = null;
+    if (event.pointerType === "touch") {
+      touchGesture.cancel();
+      fingers.current.delete(event.pointerId);
+      pinch.current = null;
+      touchGesture.contacts(fingers.current.size);
+      fingerId.current = null;
       return;
     }
     if (!canInputRef.current || !pressedButton.current) return;
@@ -585,69 +726,106 @@ export function BrowserViewport({
   }
 
   return (
-    <div
-      aria-label="Live browser page"
-      className="browser-canvas browser-frame"
-      data-live-page=""
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) {
-          flushMove();
-          if (activeSurfaceId) onCommand({ type: "input.cancel", surfaceId: activeSurfaceId });
+    <div className="browser-touch-view">
+      <div className={`browser-touch-tools${phoneLayout ? " is-phone" : ""}`}>
+        <button
+          type="button"
+          disabled={!viewportCanInput}
+          aria-pressed={dragSelect}
+          onClick={() => {
+            touchGesture.cancel();
+            setDragSelect(!dragSelect);
+          }}
+        >
+          {dragSelect ? "Done selecting" : "Drag/select"}
+        </button>
+        {dragSelect ? <span>Drag once to select or move content</span> : null}
+      </div>
+      <div
+        aria-label="Live browser page"
+        className="browser-canvas browser-frame"
+        style={
+          {
+            "--browser-touch-scale": transform.scale,
+            "--browser-touch-x": `${transform.x}px`,
+            "--browser-touch-y": `${transform.y}px`,
+          } as CSSProperties
         }
-      }}
-      onContextMenu={(event) => event.preventDefault()}
-      onPointerDown={pointerDown}
-      onPointerCancel={pointerCancel}
-      onPointerMove={pointerMove}
-      onPointerUp={pointerUp}
-      ref={viewportRef}
-      /* Only a surface that actually forwards keystrokes to the remote page
+        data-live-page=""
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) {
+            flushMove();
+            touchGesture.cancel();
+            if (activeSurfaceId) onCommand({ type: "input.cancel", surfaceId: activeSurfaceId });
+          }
+        }}
+        onContextMenu={(event) => event.preventDefault()}
+        onPointerDown={pointerDown}
+        onPointerCancel={pointerCancel}
+        onLostPointerCapture={(event) => {
+          if (fingers.current.has(event.pointerId)) pointerCancel(event);
+        }}
+        onPointerMove={pointerMove}
+        onPointerUp={pointerUp}
+        ref={viewportRef}
+        /* Only a surface that actually forwards keystrokes to the remote page
          claims the application role — that is the case the role exists for.
          When the page cannot take input the surface is inert pixels, so it
          stays an ordinary labelled region and browse mode keeps working. */
-      role={viewportCanInput ? "application" : undefined}
-      tabIndex={-1}
-    >
-      {wire && editingState ? (
-        <RemoteEditingProxy
-          abilities={editingState.abilities}
-          caret={caret}
-          context={editingContext}
-          enabled={viewportCanInput}
-          key={`${sessionId}:${activeSurfaceId}`}
-          label="Browser keyboard input"
-          onLeave={onLeave}
-          ref={textInputRef}
-          wire={wire}
-        />
-      ) : null}
-      {menu && menuPoint ? (
-        <StreamedContextMenu
-          editable={menu.editable}
-          selection={menu.selection && !editingContext?.field?.sensitive}
-          left={Math.max(
-            0,
-            Math.min(menuPoint.left, (localStage?.width ?? menuPoint.left + 200) - 200),
-          )}
-          top={Math.max(
-            0,
-            Math.min(menuPoint.top, (localStage?.height ?? menuPoint.top + 220) - 220),
-          )}
-          linkUrl={menu.linkUrl}
-          onAction={menuAction}
-          onDismiss={dismissMenu}
-        />
-      ) : null}
-      <BrowserCropCue />
-      {frame ? (
-        <BrowserFrameImage
-          frames={frames}
-          sessionId={sessionId}
-          surfaceId={activeSurfaceId!}
-          targeted={targeted}
-          onPresented={markFramePresented}
-        />
-      ) : null}
+        role={viewportCanInput ? "application" : undefined}
+        tabIndex={-1}
+      >
+        {wire && editingState ? (
+          <RemoteEditingProxy
+            abilities={editingState.abilities}
+            caret={caret}
+            context={editingContext}
+            enabled={viewportCanInput}
+            key={`${sessionId}:${activeSurfaceId}`}
+            label="Browser keyboard input"
+            onLeave={onLeave}
+            ref={textInputRef}
+            wire={wire}
+          />
+        ) : null}
+        {menu && menuPoint ? (
+          <StreamedContextMenu
+            editable={menu.editable}
+            selection={menu.selection && !editingContext?.field?.sensitive}
+            left={Math.max(
+              0,
+              Math.min(menuPoint.left, (localStage?.width ?? menuPoint.left + 200) - 200),
+            )}
+            top={Math.max(
+              0,
+              Math.min(menuPoint.top, (localStage?.height ?? menuPoint.top + 220) - 220),
+            )}
+            linkUrl={menu.linkUrl}
+            onAction={menuAction}
+            onDismiss={dismissMenu}
+          />
+        ) : null}
+        {contact ? (
+          <div
+            aria-hidden="true"
+            className="browser-touch-contact"
+            style={{
+              left: contact.x - (stage?.left ?? 0) - 12,
+              top: contact.y - (stage?.top ?? 0) - 12,
+            }}
+          />
+        ) : null}
+        <BrowserCropCue />
+        {frame ? (
+          <BrowserFrameImage
+            frames={frames}
+            sessionId={sessionId}
+            surfaceId={activeSurfaceId!}
+            targeted={targeted}
+            onPresented={markFramePresented}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -867,8 +1045,6 @@ export function normalizedBrowserFramePoint(
     y: clamp(rawY),
   };
 }
-
-const touchSlop = 8;
 
 /** Long past a follow's round trip and a drag's 50 ms beat, so Fit never flickers mid-drag. */
 const followSettleMs = 500;
