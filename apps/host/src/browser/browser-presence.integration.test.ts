@@ -66,6 +66,7 @@ async function listen(
   host: MachineAccessHost,
   headers: Record<string, string>,
   workspaceId?: WorkspaceId,
+  placeEvents = false,
 ): Promise<Listener> {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, { headers });
   await new Promise<void>((resolve, reject) => {
@@ -90,6 +91,7 @@ async function listen(
         afterSequence: zeroSequence,
         apiVersion: hostApiVersion,
         threadId: null,
+        ...(placeEvents ? { placeEvents: "include" } : {}),
         type: "client.subscribe",
         workspaceId,
       }),
@@ -503,7 +505,9 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
-    const owner = await listen(host, host.ownerHeaders);
+    const owner = await listen(host, host.ownerHeaders, run.workspaceId);
+    const opted = await listen(host, host.ownerHeaders, run.workspaceId, true);
+    cleanups.push(() => opted.close());
     cleanups.push(() => owner.close());
     const stranger = await signUpUser(host, {
       email: "catalog-stranger@example.com",
@@ -837,6 +841,54 @@ integration("Browser presence and conversation usage", () => {
         place: { sessionId, surfaceId: "page-y" },
       },
     });
+    const places = () =>
+      host.store.database
+        .selectFrom("workspaceEvents")
+        .selectAll()
+        .where("runId", "=", run.runId)
+        .where("type", "=", "place.entered")
+        .orderBy("sequence", "asc")
+        .execute();
+    await vi.waitFor(
+      async () => expect(await places(), "first browser activity must be durable").toHaveLength(1),
+      { timeout: 5000 },
+    );
+    // These observations arrive in one burst, before the UI's tab timers flush.
+    for (const [index, surfaceId] of ["page-y", "page-x", "page-y"].entries())
+      runtime.sendServer({
+        type: "browser.activity",
+        actorToken: command.actorToken,
+        surfaceId,
+        seq: index + 2,
+        geometryRevision: 1,
+        pointer: null,
+      });
+    await vi.waitFor(
+      async () =>
+        expect(await places(), "A-B-A transitions must survive coalescing").toHaveLength(3),
+      { timeout: 5000 },
+    );
+    const durablePlaces = await places();
+    expect(durablePlaces.map((event) => event.data)).toMatchObject([
+      { place: { surfaceId: "page-y" }, title: "Y", site: "https://y.example" },
+      { place: { surfaceId: "page-x" }, title: "X", site: "https://x.example" },
+      { place: { surfaceId: "page-y" }, title: "Y", site: "https://y.example" },
+    ]);
+    await vi.waitFor(
+      () =>
+        expect(
+          ofType(opted, "host.events")
+            .flatMap((message) => message.events as { type: string }[])
+            .filter((event) => event.type === "place.entered"),
+          "opted-in viewer must receive durable places",
+        ).toHaveLength(3),
+      { timeout: 5000 },
+    );
+    expect(
+      ofType(owner, "host.events")
+        .flatMap((message) => message.events as { type: string }[])
+        .some((event) => event.type === "place.entered"),
+    ).toBe(false);
     expect(activity.activity).not.toHaveProperty("lineageThreadIds");
     expect(activity.activity).not.toHaveProperty("lineageWorkspaceIds");
     // The Thread's newest place names the Run that acted there, which is what
@@ -899,7 +951,7 @@ integration("Browser presence and conversation usage", () => {
       type: "browser.activity",
       actorToken: command.actorToken,
       surfaceId: "page-y",
-      seq: 2,
+      seq: 5,
       geometryRevision: 1,
       pointer: null,
     });
@@ -1134,7 +1186,66 @@ integration("Browser presence and conversation usage", () => {
     });
     const lateCommand = await runtime.nextCommand();
     expect(lateCommand.type).toBe("cdp.command");
-    await run.complete();
+    const placeWriteEntered = Promise.withResolvers<void>();
+    const releasePlaceWrite = Promise.withResolvers<void>();
+    const drainEntered = Promise.withResolvers<void>();
+    const recordPlace = host.store.recordRunPlace.bind(host.store);
+    const heldWrite = vi
+      .spyOn(host.store, "recordRunPlace")
+      .mockImplementationOnce(async (input) => {
+        placeWriteEntered.resolve();
+        await withTimeout(releasePlaceWrite.promise, 5000, {
+          timeoutError: () => new Error("Place write was never released"),
+        });
+        return recordPlace(input);
+      });
+    const drainPlaces = host.runtime.browser.drainRunPlaces.bind(host.runtime.browser);
+    const draining = vi
+      .spyOn(host.runtime.browser, "drainRunPlaces")
+      .mockImplementation(async (runId) => {
+        drainEntered.resolve();
+        await drainPlaces(runId);
+      });
+    runtime.sendServer({
+      type: "browser.activity",
+      actorToken: lateCommand.actorToken,
+      surfaceId: "page-x",
+      seq: 90,
+      geometryRevision: 1,
+      pointer: null,
+    });
+    await withTimeout(placeWriteEntered.promise, 5000, {
+      timeoutError: () => new Error("Terminal test place write did not arrive"),
+    });
+    const completing = run.complete();
+    try {
+      await withTimeout(drainEntered.promise, 5000, {
+        timeoutError: () => new Error("Run completion did not drain place writes"),
+      });
+      expect(
+        await host.store.database
+          .selectFrom("workspaceEvents")
+          .select("eventId")
+          .where("runId", "=", run.runId)
+          .where("type", "=", "run.completed")
+          .executeTakeFirst(),
+      ).toBeUndefined();
+    } finally {
+      releasePlaceWrite.resolve();
+      await completing;
+      heldWrite.mockRestore();
+      draining.mockRestore();
+    }
+    expect(await places()).toHaveLength(4);
+    const terminal = await host.store.database
+      .selectFrom("workspaceEvents")
+      .select("sequence")
+      .where("runId", "=", run.runId)
+      .where("type", "=", "run.completed")
+      .executeTakeFirstOrThrow();
+    expect(
+      (await places()).every((event) => BigInt(event.sequence) < BigInt(terminal.sequence)),
+    ).toBe(true);
     await until(() => ofType(owner, "host.place-activity-cleared")[0]);
     const beforeLate = ofType(owner, "host.place-activity").length;
     runtime.sendServer({

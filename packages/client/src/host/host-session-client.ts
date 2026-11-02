@@ -2442,7 +2442,13 @@ export class HttpHostClient {
     await this.#latestTranscriptLoads.get(threadId);
     await scan?.promise;
     const page = unwrapRpcResult(
-      await this.rpc["thread.events.list"]({ threadId, aroundMessageId: messageId }),
+      await this.rpc["thread.events.list"]({
+        ...(this.#capabilities?.includes("place-events-v1")
+          ? { placeEvents: "include" as const }
+          : {}),
+        threadId,
+        aroundMessageId: messageId,
+      }),
     );
     if (!this.#viewerStillCurrent(generation, userId)) return;
     if (page.threadId !== threadId) throw new Error("Thread event page mismatch.");
@@ -2704,6 +2710,9 @@ export class HttpHostClient {
   async #readThreadHistory(threadId: string) {
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
+        ...(this.#capabilities?.includes("place-events-v1")
+          ? { placeEvents: "include" as const }
+          : {}),
         threadId,
         ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
       }),
@@ -4460,6 +4469,9 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
+            ...(this.#capabilities?.includes("place-events-v1")
+              ? { placeEvents: "include" as const }
+              : {}),
             ...(this.#capabilities?.includes("snapshot-messages-omit-v1")
               ? { snapshotMessages: "omit" }
               : {}),
@@ -5500,6 +5512,9 @@ export class HttpHostClient {
       const before = currentWindow?.nextBefore;
       const page = unwrapRpcResult(
         await this.rpc["thread.events.list"]({
+          ...(this.#capabilities?.includes("place-events-v1")
+            ? { placeEvents: "include" as const }
+            : {}),
           ...(before ? { before } : {}),
           ...(this.#capabilities?.includes("history-turns-v1") ? { turns: historyPageTurns } : {}),
           threadId,

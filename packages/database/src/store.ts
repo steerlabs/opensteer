@@ -807,6 +807,10 @@ export class OpensteerStore {
     return browserSessionStore.resolvePlaceActor(this.#database, input);
   }
 
+  recordRunPlace(input: Parameters<typeof browserSessionStore.recordRunPlace>[1]) {
+    return browserSessionStore.recordRunPlace(this.#database, input);
+  }
+
   async recordAgentBrowserUse(input: {
     readonly agentBindingId: string;
     readonly ownerId: UserId;
@@ -2077,6 +2081,7 @@ export class OpensteerStore {
   }
 
   async threadEventPageForOwner(input: {
+    readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;
     readonly before?: string;
     readonly maxBytes?: number;

@@ -12,6 +12,67 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
+  it.each([false, true])(
+    "projects place events for opt-in %s without losing the cursor",
+    async (opted) => {
+      const workspaceId = createId("workspace");
+      const userId = createId("user");
+      const store = {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore;
+      const hub = new RealtimeHub({ store });
+      const sink = new MemorySink();
+      const unsubscribe = await hub.subscribe({
+        afterSequence: sequence("0"),
+        sink,
+        userId,
+        workspaceId,
+        ...(opted ? { placeEvents: "include" as const } : {}),
+      });
+      try {
+        const place = {
+          ...event(workspaceId, "1"),
+          type: "place.entered",
+          runId: createId("run"),
+          data: {
+            place: {
+              kind: "browser",
+              sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+              surfaceId: "A",
+            },
+            title: "Page",
+            site: null,
+          },
+        } as AgentEvent;
+        hub.publish(place);
+        await vi.waitFor(
+          () =>
+            expect(sink.messages).toContainEqual(
+              opted
+                ? { type: "host.events", events: [place] }
+                : { type: "host.synchronized", workspaceId, sequence: sequence("1") },
+            ),
+          { timeout: 1000 },
+        );
+        expect(
+          sink.messages
+            .flatMap((message) => (message.type === "host.events" ? message.events : []))
+            .some((entry) => entry.type === "place.entered"),
+        ).toBe(opted);
+        const next = event(workspaceId, "2");
+        hub.publish(next);
+        await vi.waitFor(
+          () => expect(sink.messages).toContainEqual({ type: "host.events", events: [next] }),
+          { timeout: 1000 },
+        );
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
   it("counts broad notices once at publication, before socket fanout", () => {
     const hub = new RealtimeHub({ store: {} as OpensteerStore });
     const summary = JSON.stringify({

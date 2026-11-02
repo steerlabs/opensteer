@@ -4899,6 +4899,10 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#credit(input.sessionId, input.threadId, "person", input.tabId ?? null, input.page);
   }
 
+  async recordRunPlace(): Promise<AgentEvent | undefined> {
+    return undefined;
+  }
+
   async recordAgentBrowserUse(input: {
     readonly agentBindingId: string;
     readonly sessionId: BrowserSessionId;

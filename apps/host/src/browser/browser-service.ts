@@ -1,3 +1,4 @@
+import { type EventData } from "@opensteer/core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
@@ -207,6 +208,11 @@ export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionR
 }
 
 export interface BrowserSessionRepository {
+  recordRunPlace(input: {
+    readonly runId: RunId;
+    readonly bindingGeneration: number;
+    readonly data: EventData<"place.entered">;
+  }): Promise<AgentEvent | undefined>;
   findMainWorkspaceForOwner(
     ownerId: UserId,
   ): Promise<{ readonly id: WorkspaceId } | null | undefined>;
@@ -2382,6 +2388,30 @@ export class BrowserService {
     if (broker.geometryOf(activity.surfaceId) !== activity.geometryRevision)
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
+    const page = broker.pageOf(activity.surfaceId);
+    if (page) {
+      const data: EventData<"place.entered"> = {
+        place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
+        title: page.title.slice(0, 256),
+        site: (() => {
+          try {
+            const origin = new URL(page.site).origin;
+            return origin === "null" ? null : origin;
+          } catch {
+            return null;
+          }
+        })(),
+      };
+      void this.#serializeKey(`place:${actor.runId}`, async () => {
+        const event = await this.#repository.recordRunPlace({
+          runId: actor.runId,
+          bindingGeneration: actor.generation,
+          data,
+        });
+        if (event) this.#onWorkspaceEvent(event);
+      }).catch(this.#onError);
+    }
+
     if (actor.lastSurfaceId !== activity.surfaceId) {
       actor.lastSurfaceId = activity.surfaceId;
       void this.#repository
@@ -2726,6 +2756,11 @@ export class BrowserService {
     return record.id;
   }
 
+  async drainRunPlaces(runId: RunId): Promise<void> {
+    this.#forgetAgentBinding(`run:${runId}`);
+    await this.#sessionOperations.get(`place:${runId}`);
+  }
+
   /**
    * A Run's end releases every session it held; the sessions themselves stay
    * open. Its agent stops acting in them at once, and any command of its that
@@ -2735,6 +2770,8 @@ export class BrowserService {
     agentBindingId: string,
   ): Promise<readonly BrowserSessionId[]> {
     this.#forgetAgentBinding(agentBindingId);
+    if (agentBindingId.startsWith("run:"))
+      await this.#sessionOperations.get(`place:${agentBindingId.slice(4)}`);
     const records = await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
     const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
     for (const workspaceId of new Set(records.map((record) => record.workspaceId))) {

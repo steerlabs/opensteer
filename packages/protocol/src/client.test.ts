@@ -1,6 +1,6 @@
 import { createId, type Workspace } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { workspaceViewFromWorkspace } from "./client.js";
+import { ThreadEventPageSchema, workspaceViewFromWorkspace } from "./client.js";
 
 const timestamps = {
   createdAt: "2026-08-12T12:00:00.000Z",
@@ -73,4 +73,12 @@ describe("workspaceViewFromWorkspace", () => {
     expect(JSON.stringify(view)).not.toContain("volume_private_123");
     expect(JSON.stringify(view)).not.toContain("1073741824");
   });
+});
+
+it("skips future history event types but still rejects malformed known events", () => {
+  const reader = ThreadEventPageSchema.shape.events;
+  expect(reader.parse([{ type: "future.event", sequence: "42", data: { future: true } }])).toEqual(
+    [],
+  );
+  expect(reader.safeParse([{ type: "place.entered", data: {} }]).success).toBe(false);
 });
