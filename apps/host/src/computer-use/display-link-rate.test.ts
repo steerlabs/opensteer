@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DisplayLinkRate } from "./display-link-rate.js";
+import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
 
-const limits = { maximumBitrate: 20_000_000, initialBitrate: 4_000_000 };
+const limits = macLinkRate;
 
 /**
  * A bottleneck link at `mbps` with a fixed base round trip, fed by an encoder
@@ -11,7 +11,14 @@ const limits = { maximumBitrate: 20_000_000, initialBitrate: 4_000_000 };
  */
 function simulate(
   rate: DisplayLinkRate,
-  steps: { untilMs: number; mbps: number; rttMs: number; contentMbps?: number; pauseMs?: number }[],
+  steps: {
+    untilMs: number;
+    mbps: number;
+    rttMs: number;
+    contentMbps?: number;
+    pauseMs?: number;
+    keyEveryMs?: number;
+  }[],
 ) {
   let now = 0;
   let sequence = 0;
@@ -22,14 +29,18 @@ function simulate(
     for (; now < step.untilMs; now += 1_000 / 60) {
       while (inFlight[0] && inFlight[0].ackAt <= now) {
         const frame = inFlight.shift()!;
-        rate.ack(frame.sequence, frame.ackAt, step.rttMs);
+        rate.ack(frame.sequence, frame.ackAt);
       }
       const bitrate = Math.min(rate.cap ?? limits.maximumBitrate, (step.contentMbps ?? 99) * 1e6);
-      const bytes = Math.round(bitrate / 8 / 60);
+      const frameMs = 1_000 / 60;
+      const key =
+        step.keyEveryMs !== undefined &&
+        Math.floor(now / step.keyEveryMs) !== Math.floor((now - frameMs) / step.keyEveryMs);
+      const bytes = key ? 250_000 : Math.round(bitrate / 8 / 60);
       const outstanding = inFlight.reduce((sum, f) => sum + f.bytes, 0);
-      const credit = rate.creditBytes(now, step.rttMs, 1_048_576);
+      const credit = rate.creditBytes(now, 1_048_576);
       if (inFlight.length > 0 && outstanding + bytes > credit) {
-        rate.stalled(now, now - inFlight[0]!.sentAt - step.rttMs, step.rttMs);
+        rate.stalled(now, inFlight[0]!.sentAt);
         trace.push({ at: now, cap: rate.cap, queueMs: 0, skipped: true });
         continue;
       }
@@ -91,6 +102,15 @@ describe("display link rate", () => {
       { untilMs: 5_500, mbps: 200, rttMs: 10 },
     ]);
     expect(rate.cap).toBeNull();
+  });
+
+  it("does not cut a fast link for a key's own transfer while the window is mostly still", () => {
+    const rate = new DisplayLinkRate(limits);
+    // 4G with a still window: tiny deltas and a 250 KB key every 2 s.
+    const trace = simulate(rate, [
+      { untilMs: 12_000, mbps: 9, rttMs: 100, contentMbps: 0.3, keyEveryMs: 2_000 },
+    ]);
+    expect(trace.every((t) => t.cap === limits.initialBitrate)).toBe(true);
   });
 
   it("never probes on a still window, whose small frames prove nothing", () => {

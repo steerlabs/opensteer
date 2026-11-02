@@ -1025,7 +1025,7 @@ export class DisplayStreamHub {
           viewer.ackDelays.pop();
         viewer.ackDelays.push({ at, delay });
         if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
-        if (viewer.link) viewer.link.ack(message.sequence, at, viewer.ackDelays[0]!.delay);
+        if (viewer.link) viewer.link.ack(message.sequence, at);
         else viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
         this.#bitrate(stream);
       }
@@ -1337,11 +1337,7 @@ export class DisplayStreamHub {
     // megabyte is seconds of stale video on a slow one. A key replaces the
     // chain, is rare, and would otherwise only trigger another key.
     const credit = viewer.link
-      ? viewer.link.creditBytes(
-          this.#now(),
-          viewer.ackDelays[0]?.delay ?? 400,
-          displayViewerCreditBytes,
-        )
+      ? viewer.link.creditBytes(this.#now(), displayViewerCreditBytes)
       : displayViewerCreditBytes;
     return (
       (replay ||
@@ -1357,9 +1353,9 @@ export class DisplayStreamHub {
     const now = this.#now();
     while (viewer.ackDelays[0] && now - viewer.ackDelays[0].at >= 10_000) viewer.ackDelays.shift();
     const oldest = viewer.outstanding.values().next().value;
-    return (
-      !oldest || now - oldest.sentAt <= Math.min(1_500, (viewer.ackDelays[0]?.delay ?? 400) + 250)
-    );
+    // A measured link knows its round trip net of a slow first key's transfer.
+    const base = viewer.link ? viewer.link.baseRtt(now) : (viewer.ackDelays[0]?.delay ?? 400);
+    return !oldest || now - oldest.sentAt <= Math.min(1_500, base + 250);
   }
   #stall(stream: Stream, viewer: Viewer): void {
     const now = this.#now();
@@ -1367,7 +1363,7 @@ export class DisplayStreamHub {
     const queued = oldest
       ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
       : 0;
-    if (viewer.link) viewer.link.stalled(now, queued, viewer.ackDelays[0]?.delay ?? 400);
+    if (viewer.link) viewer.link.stalled(now, oldest?.sentAt ?? now);
     else viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
     this.#bitrate(stream);
   }
