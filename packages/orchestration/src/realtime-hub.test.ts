@@ -13,7 +13,7 @@ import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
   it.each([false, true])(
-    "projects place events for opt-in %s without losing the cursor",
+    "projects place events for opt-in %s without holding live progress or resetting the stream",
     async (opted) => {
       const workspaceId = createId("workspace");
       const userId = createId("user");
@@ -46,16 +46,33 @@ describe("snapshot-before-live synchronization", () => {
             site: null,
           },
         } as AgentEvent;
+        const synchronizations = () =>
+          sink.messages.filter((message) => message.type === "host.synchronized").length;
+        await vi.waitFor(
+          () => expect(synchronizations(), "the subscription never synchronized").toBe(1),
+          {
+            timeout: 1000,
+          },
+        );
         hub.publish(place);
+        const progress = {
+          items: [{ at: 0, op: "append" as const, stream: "assistant" as const, text: "Hi" }],
+          runId: place.runId!,
+          threadId: place.threadId,
+          workspaceId,
+        };
+        hub.publishLive({ afterSequence: sequence("1"), progress });
+        // A client that left the place event out never waits on it: its frame
+        // follows the last event it was sent, and nothing resets its streams.
         await vi.waitFor(
           () =>
-            expect(sink.messages).toContainEqual(
-              opted
-                ? { type: "host.events", events: [place] }
-                : { type: "host.synchronized", workspaceId, sequence: sequence("1") },
-            ),
+            expect(
+              sink.messages.find((message) => message.type === "host.live"),
+              "the live frame never arrived",
+            ).toMatchObject({ afterSequence: sequence(opted ? "1" : "0") }),
           { timeout: 1000 },
         );
+        expect(synchronizations()).toBe(1);
         expect(
           sink.messages
             .flatMap((message) => (message.type === "host.events" ? message.events : []))

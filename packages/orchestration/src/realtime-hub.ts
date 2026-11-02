@@ -168,28 +168,49 @@ class Subscriber {
   #gapTimer: ReturnType<typeof setTimeout> | undefined;
   #filling = false;
 
+  /**
+   * For a client that did not ask for place events: the last event it was
+   * sent, and the last one handed on whether sent or left out. A live frame
+   * that waits only on events it left out waits on the last one it has.
+   */
+  #visibleThrough: Sequence;
+  #handedThrough: Sequence;
+
   #send(message: HostToClientMessage): Promise<void> {
-    if (
-      this.#options.placeEvents ||
-      message.type !== "host.events" ||
-      message.events.every((event) => event.type !== "place.entered")
-    )
-      return this.sink.send(message);
-    const events = message.events.filter((event) => event.type !== "place.entered");
-    const last = message.events.at(-1)!;
-    if (last.type !== "place.entered") return this.sink.send({ ...message, events });
-    const advance = () =>
-      this.sink.send({
-        type: "host.synchronized",
-        workspaceId: this.workspaceId,
-        sequence: last.sequence,
-      });
-    return events.length ? this.sink.send({ ...message, events }).then(advance) : advance();
+    if (this.#options.placeEvents) return this.sink.send(message);
+    switch (message.type) {
+      case "host.events": {
+        const events = message.events.filter((event) => event.type !== "place.entered");
+        const last = message.events.at(-1);
+        const visible = events.at(-1);
+        if (last) this.#handedThrough = last.sequence;
+        if (visible) this.#visibleThrough = visible.sequence;
+        if (events.length === 0) return Promise.resolve();
+        return this.sink.send(
+          events.length === message.events.length ? message : { ...message, events },
+        );
+      }
+      case "host.live":
+        if (
+          compareSequence(message.afterSequence, this.#visibleThrough) > 0 &&
+          compareSequence(message.afterSequence, this.#handedThrough) <= 0
+        )
+          return this.sink.send({ ...message, afterSequence: this.#visibleThrough });
+        return this.sink.send(message);
+      case "host.synchronized":
+        this.#visibleThrough = message.sequence;
+        this.#handedThrough = message.sequence;
+        return this.sink.send(message);
+      default:
+        return this.sink.send(message);
+    }
   }
 
   constructor(options: SubscriberOptions) {
     this.#options = options;
     this.#queuedThrough = options.cursor;
+    this.#visibleThrough = options.cursor;
+    this.#handedThrough = options.cursor;
     this.sink = options.sink;
     this.userId = options.userId;
     this.workspaceId = options.workspaceId;

@@ -2395,8 +2395,9 @@ export class BrowserService {
     actor.seq = activity.seq;
     const page = broker.pageOf(activity.surfaceId);
     const placeKey = `${sessionId}:${activity.surfaceId}`;
-    if (page && this.#runPlaces.get(actor.runId) !== placeKey) {
-      this.#runPlaces.set(actor.runId, placeKey);
+    const runId = actor.runId;
+    if (page && this.#runPlaces.get(runId) !== placeKey) {
+      this.#runPlaces.set(runId, placeKey);
       const data: EventData<"place.entered"> = {
         place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
         title: page.title.slice(0, 256),
@@ -2409,14 +2410,18 @@ export class BrowserService {
           }
         })(),
       };
-      void this.#serializeKey(`place:${actor.runId}`, async () => {
+      void this.#serializeKey(`place:${runId}`, async () => {
         const event = await this.#repository.recordRunPlace({
-          runId: actor.runId,
+          runId,
           bindingGeneration: actor.generation,
           data,
         });
         if (event) this.#onWorkspaceEvent(event);
-      }).catch(this.#onError);
+      }).catch((error: unknown) => {
+        // The next action in this tab tries again, unless the Run has moved on since.
+        if (this.#runPlaces.get(runId) === placeKey) this.#runPlaces.delete(runId);
+        this.#onError(error);
+      });
     }
 
     if (actor.lastSurfaceId !== activity.surfaceId) {
@@ -2763,10 +2768,13 @@ export class BrowserService {
     return record.id;
   }
 
+  /**
+   * Lets the places a Run has entered so far land before its terminal event is
+   * committed. It ends nothing: the event may yet be refused, or the Run go on.
+   */
   async drainRunPlaces(runId: RunId): Promise<void> {
-    this.#forgetAgentBinding(`run:${runId}`);
-    await this.#sessionOperations.get(`place:${runId}`);
-    this.#runPlaces.delete(runId);
+    // A refused write was reported where it failed; it must not hold up the Run's end.
+    await this.#sessionOperations.get(`place:${runId}`)?.catch(() => undefined);
   }
 
   /**
@@ -2780,7 +2788,7 @@ export class BrowserService {
     this.#forgetAgentBinding(agentBindingId);
     if (agentBindingId.startsWith("run:")) {
       const runId = agentBindingId.slice(4);
-      await this.#sessionOperations.get(`place:${runId}`);
+      await this.#sessionOperations.get(`place:${runId}`)?.catch(() => undefined);
       this.#runPlaces.delete(runId);
     }
     const records = await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);

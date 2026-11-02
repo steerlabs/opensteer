@@ -1,4 +1,5 @@
 import { eventDataSchemas, placeIdentityKey, type EventData } from "@opensteer/core";
+import { storableText } from "./runner-event-store.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import {
   type BrowserProfileAccess,
@@ -2173,7 +2174,8 @@ export async function recordRunPlace(
         threadId: run.threadId,
         workspaceId: run.workspaceId,
         environmentId: run.environmentId,
-        data: input.data,
+        // A title cut to its bound can end on half a surrogate pair, which jsonb refuses.
+        data: { ...input.data, title: storableText(input.data.title) },
       });
     },
     async (transaction) => {
