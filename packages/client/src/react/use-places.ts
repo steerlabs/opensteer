@@ -1,13 +1,7 @@
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import {
-  placeList,
-  runPlace,
-  samePlaceListSource,
-  type PlaceItem,
-  type ThreadPlace,
-} from "../host/places.js";
+import { placeList, samePlaceListSource, type PlaceItem } from "../host/places.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 const selectSource = (snapshot: HostSnapshot) => snapshot;
 /**
@@ -72,33 +66,22 @@ export function useBrowserWatch(
   return { ...state, frameDisplayed };
 }
 
-/** A Thread's newest place as the Host named it; null without a client or a Thread. */
-export function useThreadPlace(
-  hostClient: HostClient | null,
-  threadId: string | null,
-): ThreadPlace | null {
+/** The newest place.entered for a nonterminal Run, regardless of loaded history or viewing eligibility.
+ * Null clients/Run ids subscribe to nothing. The event carries data.place, title/site, and sequence.
+ */
+export function useRunPlace(hostClient: HostClient | null, runId: string | null) {
   const subscribe = useCallback(
     (listener: () => void) =>
-      hostClient === null || threadId === null
+      hostClient === null || runId === null
         ? () => undefined
-        : hostClient.subscribeLatestPlace(threadId, listener),
-    [hostClient, threadId],
+        : hostClient.subscribeRunPlace(runId, listener),
+    [hostClient, runId],
   );
   const get = useCallback(
-    () =>
-      hostClient === null || threadId === null ? null : hostClient.latestPlaceOfThread(threadId),
-    [hostClient, threadId],
+    () => (hostClient === null || runId === null ? null : hostClient.runPlace(runId)),
+    [hostClient, runId],
   );
   return useSyncExternalStore(subscribe, get, get);
-}
-
-/** The place a Run acted in last, while its picture is live ([`runPlace`](../host/places.ts)). */
-export function useRunPlace(
-  hostClient: HostClient | null,
-  threadId: string | null,
-  runId: string | null,
-): ThreadPlace | null {
-  return runPlace(useThreadPlace(hostClient, threadId), runId);
 }
 
 const selectTabGroups = (snapshot: HostSnapshot) => snapshot.browserTabGroups;

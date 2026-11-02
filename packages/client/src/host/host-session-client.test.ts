@@ -7033,7 +7033,7 @@ describe("HttpHostClient hosted browser", () => {
                 profileId,
                 runtimeId: "runtime-1",
                 state: bootstrapReads === 1 ? "ready" : "failed",
-                updatedAt: now,
+                updatedAt: bootstrapReads === 1 ? now : "2026-08-09T20:00:01.000Z",
                 workspaceId: workspace.id,
               },
             ],
@@ -14452,6 +14452,50 @@ describe("HttpHostClient overnight transcript residency", () => {
     }
   });
 
+  it("keeps current Run places outside a message-centered historical window", async () => {
+    const f = await residentFixture(true, true);
+    const runId = createId("run");
+    const entered = (sequence: string) =>
+      agentEvent(f.workspace.id, f.thread.id, runId, sequence, "place.entered", {
+        place: {
+          kind: "browser",
+          sessionId: createBrowserSessionId(),
+          surfaceId: BrowserSurfaceIdSchema.parse(`historical-tab-${sequence}`),
+        },
+        title: `Current page ${sequence}`,
+        site: "https://example.com",
+      });
+    try {
+      const first = entered("7");
+      f.socket.receive({
+        type: "host.events",
+        events: [
+          agentEvent(f.workspace.id, f.thread.id, runId, "6", "run.started", { status: "running" }),
+          first,
+        ],
+      });
+      expect(f.client.runPlace(runId)).toEqual(first);
+      await f.client.loadTranscriptAround(f.thread.id, f.replyId);
+      const history = f.client.getSnapshot().transcripts[f.thread.id];
+      const current = entered("8");
+      f.socket.receive({ type: "host.events", events: [current] });
+      expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(history);
+      expect(f.client.runPlace(runId)).toEqual(current);
+      f.socket.receive({
+        type: "host.events",
+        events: [
+          agentEvent(f.workspace.id, f.thread.id, runId, "9", "run.completed", {
+            status: "completed",
+            replyMessageId: null,
+          }),
+        ],
+      });
+      expect(f.client.runPlace(runId)).toBeNull();
+    } finally {
+      f.client.dispose();
+    }
+  });
+
   it("rereads an outstanding transcript after a snapshot even when Thread state did not change", async () => {
     const f = await residentFixture();
     const pending = f.holdHistory();
@@ -14785,4 +14829,199 @@ describe("attachment reads", () => {
       }
     },
   );
+});
+
+describe("a Run's current place", () => {
+  it("seeds omitted transcripts, follows unopened live events, survives older snapshots, and drops terminal or changed-viewer entries", async () => {
+    const workspace = makeWorkspace(),
+      thread = makeThread(workspace.id),
+      runId = createId("run");
+    const place = (sequence: string) =>
+      agentEvent(workspace.id, thread.id, runId, sequence, "place.entered", {
+        place: {
+          kind: "browser",
+          sessionId: createBrowserSessionId(),
+          surfaceId: BrowserSurfaceIdSchema.parse(`tab-${sequence}`),
+        },
+        title: `Page ${sequence}`,
+        site: "https://example.com",
+      });
+    const first = place("2"),
+      second = place("4");
+    let boot = bootstrap([workspace]);
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      prefetchHome: false,
+      capabilities: ["place-events-v1", "snapshot-messages-omit-v1"],
+      webSocketFactory: () => socket,
+      fetch: async () => json(boot),
+    });
+    try {
+      await client.load();
+      socket.open();
+      const seed = {
+        ...workspaceSnapshot(workspace, "3"),
+        threads: [thread],
+        messagesOmitted: true as const,
+        runQueue: [
+          {
+            createdAt: now,
+            id: runId,
+            runOrdinal: 1,
+            status: "running" as const,
+            threadId: thread.id,
+          },
+        ],
+        runPlaces: [first],
+      };
+      socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
+      expect(client.runPlace(runId)).toEqual(first);
+      expect(client.getSnapshot().transcripts[thread.id]).toBeUndefined();
+      socket.receive({ type: "host.events", events: [second] });
+      expect(client.runPlace(runId)).toEqual(second);
+      expect(client.getSnapshot().transcripts[thread.id]).toBeUndefined();
+      socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
+      expect(client.runPlace(runId)).toEqual(second);
+      socket.receive({
+        type: "host.events",
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "5", "run.completed", {
+            status: "completed",
+            replyMessageId: null,
+          }),
+        ],
+      });
+      expect(client.runPlace(runId)).toBeNull();
+      socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
+      expect(client.runPlace(runId)).toBeNull();
+      const another = { ...second, runId: createId("run"), sequence: SequenceSchema.parse("6") };
+      socket.receive({ type: "host.events", events: [another] });
+      expect(client.runPlace(another.runId!)).toEqual(another);
+      boot = { ...boot, user: { ...boot.user, id: createId("user") } };
+      await client.refresh();
+      expect(client.runPlace(another.runId!)).toBeNull();
+    } finally {
+      client.dispose();
+    }
+  });
+});
+
+it("orders bootstrap session state by read freshness and Host update time, including shutdown and restart", async () => {
+  const workspace = makeWorkspace(),
+    id = createBrowserSessionId();
+  const tab = BrowserSurfaceIdSchema.parse("state-freshness-tab");
+  const session = HostedBrowserBootstrapSchema.parse({
+    available: true,
+    placements: [],
+    profiles: [],
+    profileGrants: [],
+    sessions: [
+      {
+        id,
+        workspaceId: workspace.id,
+        runtimeId: "runtime",
+        profileId: null,
+        placement: { kind: "runner", runnerId },
+        origin: "workspace",
+        access: "full-control",
+        state: "starting",
+        createdAt: now,
+        updatedAt: now,
+        attachedRunIds: [],
+        tabCatalog: {
+          generation: 1,
+          revision: 1,
+          tabs: [
+            {
+              id: tab,
+              title: "Page",
+              site: "https://example.com",
+              iconRef: null,
+              order: 0,
+              openerId: null,
+              availability: "ready",
+              occupants: [],
+            },
+          ],
+        },
+      },
+    ],
+  }).sessions[0]!;
+  let body = bootstrap([workspace], {
+    available: true,
+    placements: [],
+    profiles: [],
+    profileGrants: [],
+    sessions: [session],
+  });
+  let held: ReturnType<typeof Promise.withResolvers<Response>> | null = null;
+  const asked = Promise.withResolvers<void>();
+  const sockets: FakeSocket[] = [];
+  const client = createHttpHostClient({
+    refreshIntervalMs: 0,
+    prefetchHome: false,
+    capabilities: [],
+    webSocketFactory: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    fetch: async () => {
+      if (held) {
+        asked.resolve();
+        return held.promise;
+      }
+      return json(body);
+    },
+  });
+  let release: (() => void) | undefined;
+  try {
+    await client.load();
+    release = client.retainBrowserViewer(id);
+    const viewer = sockets.at(-1)!;
+    body = {
+      ...body,
+      browser: {
+        ...body.browser,
+        sessions: [{ ...session, updatedAt: "2026-08-09T20:00:01.000Z" }],
+      },
+    };
+    held = Promise.withResolvers<Response>();
+    const refresh = client.refresh();
+    await withTimeout(asked.promise, 1000, {
+      timeoutError: () => new Error("Bootstrap read never began"),
+    });
+    viewer.receiveRaw({
+      type: "browser.snapshot",
+      sessionId: id,
+      state: "ready",
+      access: "full-control",
+      targetedStreamingVersion: 1,
+      dialog: null,
+      surfaces: [{ id: tab, active: true, title: "Page", url: "https://example.com" }],
+    });
+    expect(client.getSnapshot().browserSessions[0]?.state).toBe("ready");
+    held.resolve(json(body));
+    await refresh;
+    held = null;
+    expect(client.getSnapshot().browserSessions[0]?.state).toBe("ready");
+    await client.refresh();
+    expect(client.getSnapshot().browserSessions[0]?.state).toBe("ready");
+    for (const [index, state] of (["closing", "closed", "starting", "ready"] as const).entries()) {
+      body = {
+        ...body,
+        browser: {
+          ...body.browser,
+          sessions: [{ ...session, state, updatedAt: `2026-08-09T20:00:0${index + 2}.000Z` }],
+        },
+      };
+      await client.refresh();
+      expect(client.getSnapshot().browserSessions[0]?.state).toBe(state);
+    }
+  } finally {
+    held?.resolve(json(body));
+    release?.();
+    client.dispose();
+  }
 });

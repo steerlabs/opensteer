@@ -43,7 +43,6 @@ import type {
   HostSnapshot,
 } from "../host/client.js";
 import { HostClientRequestError } from "../host/client.js";
-import { LatestPlaceStore } from "../host/latest-place.js";
 import { PlaceActivityStore } from "../host/place-activity.js";
 import { placeList } from "../host/places.js";
 import { mockBrowserPageImage } from "./mock-browser-frames.js";
@@ -526,7 +525,6 @@ export class MockPlaceWorld {
   readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
   readonly #historyOwner: string | undefined;
   readonly activity: PlaceActivityStore;
-  readonly latest = new LatestPlaceStore();
   readonly #watches = new Map<
     string,
     { holds: number; state: BrowserWatchState; awaiting: string | null }
@@ -597,7 +595,6 @@ export class MockPlaceWorld {
     this.#now = now;
     this.activity = new PlaceActivityStore();
     this.#started = now().getTime();
-    this.latest.reconcile(snapshot());
     this.#rememberProfileHolders(this.#snapshot());
     this.#tick();
   }
@@ -676,17 +673,18 @@ export class MockPlaceWorld {
       this.#ready = false;
       this.activity.clear();
       if (snapshot.session !== "authenticated") {
-        this.latest.clear();
         this.#nativeReferences.clear();
-      } else this.latest.reconcile(snapshot);
+      }
       for (const [key, watch] of this.#watches) {
-        watch.state = emptyWatch;
+        watch.state = {
+          ...emptyWatch,
+          frame: snapshot.session === "authenticated" ? watch.state.frame : null,
+        };
         watch.awaiting = null;
         this.#notify(key);
       }
       return;
     }
-    this.latest.reconcile(snapshot);
     if (!this.#ready) {
       this.#ready = true;
       this.#tick();
@@ -698,6 +696,7 @@ export class MockPlaceWorld {
           .map(({ key }) => key),
       ),
     );
+    this.#frames();
   }
   start(): void {
     if (this.#timer === null && !this.#scripted) this.#timer = setInterval(() => this.#tick(), 250);
@@ -951,7 +950,6 @@ export class MockPlaceWorld {
       if (surfaceId) this.#recordVisit(committed, surfaceId, command.typed === true);
     }
     this.#retainHistoryIcons(updated);
-    this.latest.reconcile(updated);
     this.#frames();
   }
   #loading(sessionId: string, surfaceId: string, loading: boolean): void {
@@ -1220,7 +1218,6 @@ export class MockPlaceWorld {
         command.typed === true,
       );
     if (tab.loading) this.#loading(sessionId, id, true);
-    this.latest.reconcile(updated);
     this.#frames();
     return result;
   }
@@ -1425,7 +1422,6 @@ export class MockPlaceWorld {
       ),
     };
     this.#update(updated);
-    this.latest.reconcile(updated);
     this.activity.reconcile(
       new Set(
         placeList(updated)
@@ -1551,17 +1547,25 @@ export class MockPlaceWorld {
   }
   /** Frames for every watched tab, or for one: a resized page restarts only its own picture. */
   #frames(only?: string): void {
+    const snapshot = this.#snapshot();
     for (const [key, watch] of this.#watches) {
-      if (watch.awaiting || (only !== undefined && key !== only)) continue;
+      if (only !== undefined && key !== only) continue;
       const [sessionId, surfaceId] = JSON.parse(key) as [string, string];
-      const tab = this.#snapshot()
-        .browserSessions.find((session) => session.id === sessionId)
-        ?.tabs.find((tab) => tab.id === surfaceId);
-      if (!tab) {
-        watch.state = emptyWatch;
-        this.#notify(key);
+      const session = snapshot.browserSessions.find((session) => session.id === sessionId);
+      const tab =
+        session?.state === "ready" && session.tabCatalog?.tabs.some((tab) => tab.id === surfaceId)
+          ? session.tabs.find((tab) => tab.id === surfaceId)
+          : undefined;
+      if (!tab || snapshot.connection !== "connected" || snapshot.session !== "authenticated") {
+        const frame = snapshot.session === "authenticated" ? watch.state.frame : null;
+        if (watch.state.status !== "unavailable" || watch.state.frame !== frame) {
+          watch.state = { ...emptyWatch, frame };
+          watch.awaiting = null;
+          this.#notify(key);
+        }
         continue;
       }
+      if (watch.awaiting) continue;
       const png = decodedPageImage(tab.title);
       const size = this.#viewports.get(key);
       const capture = this.#crops.get(key);
@@ -1636,7 +1640,6 @@ export class MockPlaceWorld {
       });
       const updated = { ...snapshot, browserSessions };
       this.#update(updated);
-      this.latest.reconcile(updated);
     }
     const current = this.#snapshot();
     const liveRuns = new Map(
@@ -1701,15 +1704,10 @@ export class MockPlaceWorld {
           const referenceKey = `${occupant.threadId}:${runId}:${place.key}`;
           if (this.#nativeReferences.has(referenceKey)) continue;
           this.#nativeReferences.add(referenceKey);
-          this.latest.accept({
-            threadId: occupant.threadId,
-            runId: RunIdSchema.parse(runId),
+          this.#entered(runId, occupant.threadId, {
             place: identity,
             title: place.title,
             site: place.site,
-            iconRef: null,
-            order: ++this.#order,
-            at: this.#now().toISOString(),
           });
           continue;
         }
@@ -1730,16 +1728,14 @@ export class MockPlaceWorld {
           geometryRevision: (geometry?.revision ?? 0) + 1,
         });
         this.activity.apply({ type: "host.place-activity", activity });
-        this.latest.accept({
-          threadId: activity.threadId,
-          runId: activity.runId,
-          place: activity.place,
-          title: place.title,
-          site: place.site,
-          iconRef: place.icon.kind === "site" ? place.icon.ref : null,
-          order: activity.order,
-          at: new Date(activity.at).toISOString(),
-        });
+        if (!this.#nativeReferences.has(runId)) {
+          this.#nativeReferences.add(runId);
+          this.#entered(runId, occupant.threadId, {
+            place: identity,
+            title: place.title,
+            site: place.site,
+          });
+        }
       }
     }
     this.#frames();
@@ -1749,7 +1745,6 @@ export class MockPlaceWorld {
     for (const load of this.#loads.values()) clearTimeout(load);
     this.#loads.clear();
     this.activity.dispose();
-    this.latest.dispose();
     this.#nativeReferences.clear();
     this.#watches.clear();
     this.#watchListeners.clear();

@@ -123,7 +123,7 @@ import { HostClientRequestError, isHostRefusal } from "./client.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
-import { LatestPlaceStore } from "./latest-place.js";
+import { RunPlaceStore } from "./run-place.js";
 import {
   realtimeIdleProbeDeadlineMs,
   realtimeIdleProbeMs,
@@ -626,9 +626,11 @@ export class HttpHostClient {
   /** The latest presence patch of each browser, kept for one the catalog does not list yet. */
   readonly #browserPresence = new Map<string, BrowserPresence>();
   #presenceCounter = 0;
+  #browserStateCounter = 0;
+  readonly #browserStateMarks = new Map<string, number>();
   readonly #tabCatalogs = new Map<string, BrowserTabCatalog>();
   readonly #placeActivity = new PlaceActivityStore();
-  readonly #latestPlace = new LatestPlaceStore();
+  readonly #runPlaces = new RunPlaceStore();
   readonly #targetedControl = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
@@ -643,7 +645,12 @@ export class HttpHostClient {
         );
       else this.#browserEditing.receive(sessionId, message);
       if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-        this.#patchBrowserSession(sessionId, { tabs: browserTabs(message.surfaces) });
+        this.#patchBrowserSession(sessionId, {
+          tabs: browserTabs(message.surfaces),
+          ...(message.type === "browser.snapshot" ? { state: message.state } : {}),
+        });
+      if (message.type === "browser.status")
+        this.#patchBrowserSession(sessionId, { state: message.state });
       if (message.type === "browser.snapshot" || message.type === "browser.dialog.changed")
         this.#patchBrowserSession(sessionId, { dialog: message.dialog });
     },
@@ -659,7 +666,10 @@ export class HttpHostClient {
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
     "watch",
-    undefined,
+    (sessionId, message) => {
+      if (message.type === "browser.snapshot" || message.type === "browser.status")
+        this.#patchBrowserSession(sessionId, { state: message.state });
+    },
     (attempt) => this.#reconnectDelay(attempt),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     undefined,
@@ -721,8 +731,8 @@ export class HttpHostClient {
   };
   readonly placeActivity = this.#placeActivity.get;
   readonly subscribePlaceActivity = this.#placeActivity.subscribe;
-  readonly latestPlaceOfThread = this.#latestPlace.get;
-  readonly subscribeLatestPlace = this.#latestPlace.subscribe;
+  readonly runPlace = this.#runPlaces.get;
+  readonly subscribeRunPlace = this.#runPlaces.subscribe;
   readonly browserWatchState = this.#targetedWatch.get;
   readonly browserViewerState = this.#targetedControl.status;
   readonly subscribeBrowserViewer = this.#targetedControl.subscribeStatus;
@@ -1312,6 +1322,7 @@ export class HttpHostClient {
   );
   readonly #browserPresentationScope = {};
   readonly browserFrames: BrowserFrameStore = {
+    invalidationKey: this.#targetedControl.invalidationKey,
     editing: this.#browserEditing,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
@@ -1343,6 +1354,7 @@ export class HttpHostClient {
     },
   };
   readonly browserWatchFrames: BrowserFrameStore = {
+    invalidationKey: this.#targetedWatch.invalidationKey,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
       if (surfaceId) this.#targetedWatch.claim(sessionId, surfaceId, token);
@@ -3502,7 +3514,7 @@ export class HttpHostClient {
     this.#browserPresence.clear();
     this.#tabCatalogs.clear();
     this.#placeActivity.clear();
-    this.#latestPlace.clear();
+    this.#runPlaces.clear();
     this.#targetedWatch.clear();
     this.#targetedControl.clear();
     this.#threadState.clear();
@@ -3536,7 +3548,7 @@ export class HttpHostClient {
     this.#personShowListeners.clear();
     this.#lifecycleListeners.clear();
     this.#placeActivity.dispose();
-    this.#latestPlace.dispose();
+    this.#runPlaces.dispose();
     this.#targetedWatch.dispose();
     this.#targetedControl.dispose();
     this.#browserEditing.dispose();
@@ -3891,6 +3903,7 @@ export class HttpHostClient {
   async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
     const generation = this.#viewerGeneration;
     const presenceMark = this.#presenceCounter;
+    const browserStateMark = this.#browserStateCounter;
     const ownerViewRevision = this.#ownerViews.revision;
     if (this.#snapshot.session === "checking" || this.#snapshot.connection === "offline") {
       this.#update({ ...this.#snapshot, connection: "connecting" });
@@ -4030,7 +4043,30 @@ export class HttpHostClient {
     const patchedSince = (sessionId: string) =>
       (this.#presenceMarks.get(sessionId) ?? 0) > presenceMark;
     const usesBySession = this.#browserUsesBySession();
-    const browserSessions = payload.browser.sessions.map((session) => {
+    const browserSessions = payload.browser.sessions.map((readSession) => {
+      const existing = this.#snapshot.browserSessions.find(
+        (session) => session.id === readSession.id,
+      );
+      const evidence = this.#browserStateMarks.get(readSession.id);
+      // Socket state is ordered. A read begun before that fact, or an unchanged
+      // Host record, cannot supersede it; a later Host lifecycle change can.
+      // Even a superseded read advances the lower bound on the Host record's age.
+      const keepState =
+        existing &&
+        ((evidence &&
+          (evidence > browserStateMark ||
+            (existing.updatedAt !== undefined && readSession.updatedAt <= existing.updatedAt))) ||
+          (existing.updatedAt !== undefined && readSession.updatedAt < existing.updatedAt));
+      const session = keepState
+        ? {
+            ...readSession,
+            state: existing.state,
+            updatedAt:
+              existing.updatedAt && existing.updatedAt > readSession.updatedAt
+                ? existing.updatedAt
+                : readSession.updatedAt,
+          }
+        : readSession;
       const terminal = session.state === "closed" || session.state === "failed";
       if (terminal) this.#tabCatalogs.delete(session.id);
       const catalog = terminal
@@ -4098,7 +4134,6 @@ export class HttpHostClient {
         ...deletion,
       })),
       browserSessions,
-      latestPlaces: payload.latestPlaces ?? [],
       connection: workspaces.length ? this.#snapshot.connection : "connected",
       deploymentShape: payload.deploymentShape,
       deploymentId: payload.deploymentId,
@@ -4833,7 +4868,6 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.thread-place-changed") {
-      this.#latestPlace.accept(message.reference);
       return;
     }
     if (message.type === "host.browser-tabs-changed") {
@@ -4927,6 +4961,8 @@ export class HttpHostClient {
 
   #applyWorkspaceSnapshot(snapshot: WorkspaceSnapshot): void {
     const workspace = this.#toWorkspaceSummary(snapshot.workspace);
+    if (snapshot.runPlaces)
+      this.#runPlaces.reconcile(workspace.id, snapshot.sequence, snapshot.runPlaces);
     const inFlight = [...this.#hydrationBuffers.keys()];
     const coversSnapshot = (threadId: string) => {
       const sequence = this.#hydratedThreads.get(threadId);
@@ -5205,6 +5241,16 @@ export class HttpHostClient {
         channel.cursor = event.sequence;
         continue;
       }
+      if (event.type === "place.entered") this.#runPlaces.accept(event, false);
+      if (
+        event.runId !== null &&
+        (event.type === "run.completed" ||
+          event.type === "run.failed" ||
+          event.type === "run.interrupted" ||
+          (event.type === "run.status" &&
+            !["queued", "running", "waiting"].includes(event.data.status)))
+      )
+        this.#runPlaces.end(event.runId, false);
       const current = next.threads.find(({ id }) => id === event.threadId);
       const ownsState = this.#threadState.record(event);
       const retained =
@@ -5233,6 +5279,7 @@ export class HttpHostClient {
       this.#update(next);
       if (this.#activeThreadId) this.activateThread(this.#activeThreadId);
     }
+    this.#runPlaces.flush();
     this.#releaseHeldLive(channel);
     this.#refreshInputQueues(touchedInputQueues);
   }
@@ -5560,6 +5607,8 @@ export class HttpHostClient {
   }
 
   #patchBrowserSession(sessionId: string, patch: Partial<BrowserSessionSummary>): void {
+    if (patch.state !== undefined)
+      this.#browserStateMarks.set(sessionId, ++this.#browserStateCounter);
     const browserSessions = this.#snapshot.browserSessions.map((session) =>
       session.id === sessionId ? { ...session, ...patch } : session,
     );
@@ -5734,7 +5783,7 @@ export class HttpHostClient {
     this.#browserPresence.clear();
     this.#tabCatalogs.clear();
     this.#placeActivity.clear();
-    this.#latestPlace.clear();
+    this.#runPlaces.clear();
     this.#targetedWatch.clear();
     this.#targetedControl.clear();
     this.#reportedTimeZone = null;
@@ -5943,6 +5992,10 @@ export class HttpHostClient {
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      this.#runPlaces.clear();
+      this.#targetedWatch.clear();
+      this.#targetedControl.clear();
+      this.#browserStateMarks.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
@@ -5968,7 +6021,7 @@ export class HttpHostClient {
     let reconcileBrowserTargets: (() => void) | undefined;
     if (snapshot.session !== "authenticated") {
       this.#placeActivity.clear();
-      this.#latestPlace.clear();
+      this.#runPlaces.clear();
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
     } else {
@@ -5978,9 +6031,8 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        snapshot.latestPlaces !== this.#snapshot.latestPlaces
+        snapshot.workspaceTabs !== this.#snapshot.workspaceTabs
       ) {
-        this.#latestPlace.reconcile(snapshot, snapshot.latestPlaces);
         const places = placeList(snapshot);
         if (snapshot.connection === "connected")
           this.#placeActivity.reconcile(
@@ -6125,6 +6177,7 @@ export class HttpHostClient {
     };
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
+    this.#runPlaces.flush();
     reconcileBrowserTargets?.();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
@@ -6632,6 +6685,7 @@ function toBrowserSessionSummary(
       : {}),
     attachedRunIds: [...(session.attachedRunIds ?? [])],
     createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
     threadIds: [...(session.threadIds ?? existing?.threadIds ?? [])],
     uses: sameElements(existing?.uses ?? [], uses) ? (existing?.uses ?? []) : uses,
     dialog: terminal ? null : (existing?.dialog ?? null),

@@ -54,11 +54,12 @@ const smoke = {
     const snapshot = owner.getSnapshot();
     const finderPlace = placeList(snapshot).find((place) => place.destination.kind === "browser");
     const finderThread = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId);
-    if (!finderPlace || !finderThread) throw Error("No fixture browser viewfinder exists.");
+    if (!finderPlace || finderPlace.destination.kind !== "browser" || !finderThread)
+      throw Error("No fixture browser viewfinder exists.");
     const finder = {
       place: {
         placeKey: finderPlace.key,
-        runId: null,
+        kind: "browser" as const,
         destination: finderPlace.destination,
         title: finderPlace.title,
         site: finderPlace.site,
