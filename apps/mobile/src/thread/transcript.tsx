@@ -525,7 +525,9 @@ function TurnContent(props: {
     [closed, props.entries, turn],
   );
   const trace = traceWindow(rows, { showAll: closed || showAll, keep: props.reveal ?? null });
-  const latestPlaceId = turn.work.findLast((entry) => entry.kind === "place")?.id ?? null;
+  const latestPlaceId = active
+    ? (turn.work.findLast((entry) => entry.kind === "place")?.id ?? null)
+    : null;
   return (
     <>
       {summary === null ? null : (

@@ -193,29 +193,25 @@ it("dismisses a close review when another client closes its target", async () =>
 });
 
 describe("a reply's live picture belongs to its working Run", () => {
-  /** The live picture in the transcript, wherever it is drawn. */
+  /** The thread's one live picture above the composer. */
   const pictures = () => [
-    ...document.querySelectorAll<HTMLButtonElement>(".transcript .viewfinder"),
+    ...document.querySelectorAll<HTMLButtonElement>(".live-place .viewfinder"),
   ];
   const picture = () => pictures()[0] ?? null;
-  /** The chips of the reply that draws the picture: the row right above it. */
-  const chipsAbove = (shown: HTMLElement) =>
-    shown.closest(".viewfinder-slot")!.previousElementSibling as HTMLElement;
   const chipTitles = (row: Element) =>
     [...row.querySelectorAll(".surface-chip__title")].map((title) => title.textContent);
-  const highlighted = () => [
-    ...document.querySelectorAll<HTMLElement>(".transcript .surface-chip--active"),
-  ];
   const browserPlaces = () =>
     placeList(client.getSnapshot()).filter(
       (item) => item.kind === "browser" && item.availability === "ready",
     );
   /** Settles until the picture shows `key`, past any hold on the page before it. */
   async function pictureShows(key: string) {
-    for (let waited = 0; picture()?.dataset.placeKey !== key; waited += 100) {
-      if (waited > 3_000) throw new Error(`The picture never showed ${key}`);
-      await settle(100);
-    }
+    await vi.waitFor(
+      () => {
+        expect(picture()?.dataset.placeKey, `The live picture never showed ${key}`).toBe(key);
+      },
+      { timeout: 3000 },
+    );
   }
   /** Chat's working Run acts in one of its pages, and its reply's picture shows it. */
   async function chatWorkingIn(title: string) {
@@ -234,6 +230,24 @@ describe("a reply's live picture belongs to its working Run", () => {
     return { session, tabId: destination.tabId };
   }
 
+  it("keeps another working Run's page out of this conversation's live spot", async () => {
+    await mount("/");
+    const { home, place } = await chatWorkingIn("Weekend ideas");
+    const waiting = "thr_00000000-0000-4000-8000-000000000902";
+    await act(async () => goTo!(`/threads/${waiting}`));
+    await vi.waitFor(
+      () => expect(picture(), "The previous thread kept its live picture").toBeNull(),
+      { timeout: 1500 },
+    );
+    await act(async () =>
+      client.actInPlace(waiting, browserPlaces().find((item) => item.key !== place.key)!.key),
+    );
+    expect(picture()?.dataset.placeKey).not.toBe(place.key);
+    await act(async () => goTo!("/"));
+    await pictureShows(place.key);
+    expect(client.getSnapshot().homeThreadId).toBe(home);
+  });
+
   it("a page whose browser ended leaves no card behind", async () => {
     await mount("/");
     const { place } = await chatWorkingIn("Weekend ideas");
@@ -247,7 +261,6 @@ describe("a reply's live picture belongs to its working Run", () => {
         })
         .catch(() => undefined);
     });
-    await settle(200);
     expect(picture()).toBeNull();
     expect(document.querySelector(".viewfinder--ended")).toBeNull();
   });
@@ -256,71 +269,93 @@ describe("a reply's live picture belongs to its working Run", () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Weekend ideas");
     await act(async () => client.stopRun(home));
-    await settle(400);
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".transcript .run-note"),
+          "Stopped reply never settled",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
     expect(picture()).toBeNull();
-    expect(highlighted()).toEqual([]);
     // The page stays a chip under the reply that used it, where it was.
     expect(
       [...document.querySelectorAll(".transcript .surface-chip__title")].map((t) => t.textContent),
     ).toContain(place.title);
   });
 
-  it("the working reply draws one picture under its chips, its page's chip highlighted", async () => {
+  it("shows one live picture above the composer, hides it for the same stage and restores it", async () => {
     await mount("/");
-    await chatWorkingIn("Weekend ideas");
+    const { place } = await chatWorkingIn("Weekend ideas");
     expect(pictures()).toHaveLength(1);
-    const shown = picture()!;
-    const row = chipsAbove(shown);
-    expect(row.classList.contains("surface-chips")).toBe(true);
-    expect(shown.closest(".turn")).toBe(row.closest(".turn"));
-    expect(highlighted()).toHaveLength(1);
-    expect(highlighted()[0]!.getAttribute("aria-current")).toBe("true");
-    expect(highlighted()[0]!.textContent).toContain(shown.title);
-    // Pressing it shows exactly its page in the middle.
-    await click(shown);
-    expect(element(".place").getAttribute("data-place-key")).toBe(shown.dataset.placeKey);
-    // Shown in the middle as well, it stays put rather than vanishing under the pointer.
-    expect(picture()?.dataset.placeKey).toBe(shown.dataset.placeKey);
+    expect(picture()!.closest(".turn")).toBeNull();
+    expect(document.querySelector(".transcript .surface-chips")).toBeNull();
+    await click(picture()!);
+    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
+    expect(picture()).toBeNull();
+    await act(async () => goTo!("/"));
+    await pictureShows(place.key);
   });
 
-  it("working across two pages, the picture holds before it cuts, and no chip moves", async () => {
+  it("holds a page for two seconds before cutting across rapid page changes", async () => {
     await mount("/");
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
     const { home, place: first } = await chatWorkingIn("Weekend ideas");
     const second = browserPlaces().find((item) => item.title === "Your reading list")!;
-    await act(async () => client.actInPlace(home, second.key));
-    await settle(100);
-    // Both are this reply's pages; the picture holds on the first for now.
-    expect(picture()!.dataset.placeKey).toBe(first.key);
-    const before = chipTitles(chipsAbove(picture()!));
-    expect(before).toEqual(expect.arrayContaining([first.title, second.title]));
-    await act(async () => client.actInPlace(home, first.key));
-    await act(async () => client.actInPlace(home, second.key));
-    await pictureShows(second.key);
-    expect(highlighted()[0]!.textContent).toContain(second.title);
-    expect(chipTitles(chipsAbove(picture()!))).toEqual(before);
+    vi.useFakeTimers({ now, toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await act(async () => client.actInPlace(home, second.key));
+      expect(picture()!.dataset.placeKey).toBe(first.key);
+      await act(async () => vi.advanceTimersByTimeAsync(1800));
+      expect(picture()!.dataset.placeKey).toBe(first.key);
+      await act(async () => client.actInPlace(home, first.key));
+      await act(async () => client.actInPlace(home, second.key));
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+      expect(picture()!.dataset.placeKey).toBe(second.key);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("a page in the row's overflow lends its highlight to +N", async () => {
+  it("keeps overflow pages reachable once the reply settles", async () => {
     await mount("/");
     const { home, place: first } = await chatWorkingIn("Weekend ideas");
-    const others = browserPlaces().filter((item) => item.key !== first.key);
-    expect(others.length).toBeGreaterThanOrEqual(4);
-    for (const place of others.slice(0, 4))
-      await act(async () => client.actInPlace(home, place.key));
-    await pictureShows(others[3]!.key);
-    const more = element<HTMLButtonElement>(".transcript .surface-chip--more");
-    expect(more.getAttribute("aria-current")).toBe("true");
-    expect(more.classList.contains("surface-chip--active")).toBe(true);
-    expect(more.querySelector(".live-dot")).not.toBeNull();
+    const others = browserPlaces()
+      .filter((item) => item.key !== first.key)
+      .slice(0, 4);
+    expect(others).toHaveLength(4);
+    for (const place of others) await act(async () => client.actInPlace(home, place.key));
+    expect(document.querySelector(".transcript .surface-chips")).toBeNull();
+    await act(async () => client.stopRun(home));
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".transcript .surface-chip--more"),
+          "Settled reply never offered its overflow pages",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
+    await click(element(".transcript .surface-chip--more"));
+    for (const place of [first, ...others])
+      expect(document.body.textContent).toContain(place.title);
   });
 
   it("closing the page it is working in takes the picture away and leaves its chip, muted", async () => {
     await mount("/");
-    const { place } = await chatWorkingIn("Weekend ideas");
+    const { home, place } = await chatWorkingIn("Weekend ideas");
     const { session, tabId } = tabOf(place);
     await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
-    await settle(200);
     expect(picture()).toBeNull();
+    await act(async () => client.stopRun(home));
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".transcript .surface-chip--ended"),
+          "Closed page chip never settled",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
     const chip = [...document.querySelectorAll(".transcript .surface-chip")].find((candidate) =>
       candidate.textContent?.includes(place.title),
     );
@@ -331,7 +366,14 @@ describe("a reply's live picture belongs to its working Run", () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Weekend ideas");
     await act(async () => client.stopRun(home));
-    await settle(400);
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".transcript .run-note"),
+          "Stopped reply never settled",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
     const stopped = [...document.querySelectorAll(".transcript .run-note")].find((note) =>
       note.textContent?.includes("Stopped."),
     )!;
@@ -342,15 +384,23 @@ describe("a reply's live picture belongs to its working Run", () => {
 
   it("a tab closed in a browser that stays open mutes its chip and takes the picture", async () => {
     await mount("/");
-    const { place } = await chatWorkingIn("Your reading list");
+    const { home, place } = await chatWorkingIn("Your reading list");
     const { session, tabId } = tabOf(place);
     expect(session.tabCatalog!.tabs.length).toBeGreaterThan(1);
     await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
-    await settle(200);
     expect(
       client.getSnapshot().browserSessions.find((candidate) => candidate.id === session.id)?.state,
     ).toBe("ready");
     expect(picture()).toBeNull();
+    await act(async () => client.stopRun(home));
+    await vi.waitFor(
+      () =>
+        expect(
+          document.querySelector(".transcript .surface-chip--ended"),
+          "Closed page chip never settled",
+        ).not.toBeNull(),
+      { timeout: 1500 },
+    );
     const chip = [...document.querySelectorAll(".transcript .surface-chip")].find((candidate) =>
       candidate.textContent?.includes(place.title),
     );
@@ -362,11 +412,9 @@ describe("a reply's live picture belongs to its working Run", () => {
     const { home, place: held } = await chatWorkingIn("Your reading list");
     const next = browserPlaces().find((item) => item.title === "Weekend ideas")!;
     await act(async () => client.actInPlace(home, next.key));
-    await settle(100);
     expect(picture()!.dataset.placeKey).toBe(held.key);
     const { session, tabId } = tabOf(held);
     await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
-    await settle(150);
     // Well inside the hold: the closed page is not kept, and nothing older takes its place.
     expect(picture()!.dataset.placeKey).toBe(next.key);
   });
@@ -374,12 +422,11 @@ describe("a reply's live picture belongs to its working Run", () => {
   it("a reply waiting on the person keeps its picture", async () => {
     const waiting = "thr_00000000-0000-4000-8000-000000000902";
     await mount(`/threads/${waiting}`);
-    await settle(200);
     expect(picture()).toBeNull();
     const place = browserPlaces()[0]!;
     await act(async () => client.actInPlace(waiting, place.key));
     await pictureShows(place.key);
-    expect(picture()!.closest(".turn")).not.toBeNull();
+    expect(picture()!.closest(".live-place")).not.toBeNull();
   });
 });
 
