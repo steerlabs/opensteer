@@ -78,12 +78,12 @@ function unusableMachineNextAction(machine: { name: string; state: string }): st
 function approvalOutcome(machine: { appApproval: "ask" | "automatic" }): string {
   return machine.appApproval === "automatic"
     ? "it is approved automatically and becomes available in the computer tool."
-    : "the person approves it on that Mac.";
+    : "the owner can approve it from any Opensteer app.";
 }
 
-/** An app approval waits on the Mac's panel. */
+/** The computer owner may answer on any signed-in device. */
 export function pendingOnComputerNextAction(machine: string): string {
-  return `Approval is pending on ${machine}. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`;
+  return `Approval for ${machine} is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.`;
 }
 
 export const pendingPhoneAccessNextAction =
@@ -102,7 +102,7 @@ export interface ComputerAppDiscoveryFacts {
   } | null;
   /** This Workspace holds the app's observe tool. */
   readonly callable: boolean;
-  /** A setup request for this app on this Mac awaits the person there. */
+  /** A setup request for this app on this Mac awaits its owner. */
   readonly pendingOnMac: boolean;
   /** An ordinary grant request for this app's connection awaits approval for this Workspace. */
   readonly pendingWorkspaceGrant: boolean;
@@ -125,7 +125,7 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
   if (status === "blocked")
     return {
       status,
-      nextAction: `${facts.app} is blocked on ${facts.machine.name}. The person can unblock it on that Mac.`,
+      nextAction: `${facts.app} is blocked on ${facts.machine.name}. The owner can unblock it from any Opensteer app.`,
     };
   if (facts.pendingOnMac)
     return { status, pending: "mac", nextAction: pendingOnComputerNextAction(facts.machine.name) };

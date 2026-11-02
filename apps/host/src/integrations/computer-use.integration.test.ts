@@ -16,7 +16,7 @@ import {
 } from "@opensteer/database";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
+
 import type { PendingAgentEvent, RunnerDescriptor } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,11 +36,6 @@ const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null 
 const definition = computerAppIntegrations.find(({ id }) => id === "macos-app")!;
 
 /** The setup request ids in the last approval list the Mac was sent. */
-function listedTo(pushed: { readonly mock: { readonly calls: readonly (readonly unknown[])[] } }) {
-  const list = pushed.mock.calls.at(-1)?.[1] as
-    { readonly approvals: readonly { readonly request: { readonly id: string } }[] } | undefined;
-  return list?.approvals.map(({ request }) => request.id) ?? [];
-}
 
 integration.sequential("Host computer-use approval transactions", () => {
   let dataDirectory: string;
@@ -94,15 +89,8 @@ integration.sequential("Host computer-use approval transactions", () => {
       .execute();
     // The desktop's approval key, which the owner registered on this Mac; the
     // Runner's own key above signs nothing the Host accepts as consent.
-    const approvalKeys = generateKeyPairSync("ed25519");
-    await persistence.registerComputerUseApprovalKey({
-      ownerUserId: task.userId,
-      publicKey: approvalKeys.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      requestId: "register-approval-key",
-      runnerId,
-    });
+
     /** Every approval list the Mac was sent, on its own stream. */
-    const pushed = vi.fn(async (_runnerId: string, _list: unknown) => true);
     /** Runs once, first thing in the Mac's next admission turn. */
     const admission: { next?: (() => Promise<void>) | undefined } = {};
     const computerUse: ComputerUseGateway = {
@@ -151,11 +139,6 @@ integration.sequential("Host computer-use approval transactions", () => {
         attached: () => true,
         machinesFor: () => [],
         openMcpSession: vi.fn(),
-        proveComputerAppApprovalKey: async () => null,
-        approvalRelayRefusal: () => null,
-        relaysComputerAppApprovals: () => true,
-        sendComputerAppApprovalOutcome: vi.fn(async () => true),
-        sendComputerAppApprovals: pushed,
         withRunnerAdmission: async (_runner, action) => {
           const next = admission.next;
           admission.next = undefined;
@@ -205,7 +188,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       await service.computerAppApprovals.setComputerConnection({
         kind: "policy",
         appApproval: "automatic",
-        approval: createComputerAppApproval(approvalKeys.privateKey, request),
+        setupRequestId: request.id,
         actorUserId: task.userId,
         runnerId,
         isAdministrator: true,
@@ -221,7 +204,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         kind: "app",
         app: notes,
         access,
-        approval: createComputerAppApproval(approvalKeys.privateKey, request),
+        setupRequestId: request.id,
         actorUserId: task.userId,
         runnerId,
         definitionId: "macos-app",
@@ -239,7 +222,6 @@ integration.sequential("Host computer-use approval transactions", () => {
       input,
       automatic,
       approve,
-      pushed,
     };
   }
 
@@ -260,14 +242,14 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(requested).toMatchObject({
       status: "pending",
       nextAction:
-        "Approval is pending on Alex's Mac. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.",
+        "Approval for Alex's Mac is pending; the owner can allow or decline from any Opensteer app. Continue other work or end this turn; Opensteer continues this thread when it is resolved. Do not repeat the request.",
     });
     const [setup] = await test.persistence.listComputerAppSetupRequests(test.task.userId);
-    await vi.waitFor(() => expect(listedTo(test.pushed)).toEqual([setup!.id]));
+    expect(setup).toMatchObject({ runnerId: test.input.runnerId, ownerUserId: test.task.userId });
     expect(await test.connections.listConnections(test.task.userId)).toEqual([]);
   });
 
-  it("stores task context, sends the Mac the approval, and atomically fulfils the app Request with tools and a Workspace grant", async () => {
+  it("stores task context, exposes owner review context, and atomically fulfils the app Request with tools and a Workspace grant", async () => {
     const test = await fixture();
     const requested = await test.service.computerAppApprovals.requestComputerAppAccess(test.input);
     expect(requested.status).toBe("pending");
@@ -279,15 +261,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       threadId: test.task.threadId,
       workspaceId: test.task.workspaceId,
     });
-    // The Mac's list carries what its panel shows, the Workspace's name too.
-    await vi.waitFor(() =>
-      expect(test.pushed).toHaveBeenLastCalledWith(test.input.runnerId, {
-        approvalKeyId: expect.stringMatching(/^sha256:/u),
-        approvals: [
-          { request: expect.objectContaining({ ...setup, workspaceName: expect.any(String) }) },
-        ],
-      }),
-    );
+    expect(setup?.workspaceName).toEqual(expect.any(String));
     const connection = await test.approve("read-write");
     expect(connection?.displayName).toBe("Notes on Alex's Mac");
     expect(
@@ -313,7 +287,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(stored.status).toBe("fulfilled");
   });
 
-  it("creates automatically, keeps connections when policy turns off, blocks, and unblocks only through signed approval", async () => {
+  it("creates automatically, keeps connections when policy turns off, blocks, and unblocks only through owner approval", async () => {
     const test = await fixture();
     await test.automatic();
     expect(

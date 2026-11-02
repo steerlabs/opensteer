@@ -54,6 +54,7 @@ export function createHostApiHandlers(
     | "integration.platform.get"
     | "integration.computer.apps.installed"
     | "integration.computer.session.stop"
+    | "integration.computer.setup.review"
     | "integration.computer.setup.list"
     | "integration.computer.policy.get"
   >,
@@ -238,7 +239,7 @@ function isIntegrationPlatformCommand(
     case "integration.computer.setup.request":
     case "integration.computer.setup.cancel":
     case "integration.computer.setup.set":
-    case "integration.computer.approval-key.set":
+    case "integration.computer.setup.respond":
     case "integration.computer.policy.set":
     case "integration.computer.app.block":
     case "integration.grant.create":

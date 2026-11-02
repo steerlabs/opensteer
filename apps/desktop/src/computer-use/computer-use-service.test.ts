@@ -1,19 +1,12 @@
-import { generateKeyPairSync } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { BrowserWindow, BrowserWindowConstructorOptions, IpcMainInvokeEvent } from "electron";
-import { RunnerIdSchema, createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
+import { RunnerIdSchema, createId, type HostInstanceId } from "@opensteer/core";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
-import {
-  DeploymentCatalogSchema,
-  DeploymentConnectionSchema,
-  type DeploymentCatalog,
-} from "@opensteer/client/connections";
+import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
-import type { ComputerAppSetupRequest } from "@opensteer/integration-core";
 import { parseComputerAppConfig } from "@opensteer/integration-core/computer-app";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import {
@@ -33,13 +26,7 @@ import {
   type ComputerUseResolvedApp,
   type IntegrationsModuleEvent,
 } from "@opensteer/protocol";
-import type { DesktopComputerUseApprovalPresentation } from "@opensteer/protocol/desktop";
-import {
-  canonicalComputerAppApprovalPublicKey,
-  computerAppApprovalKeyId,
-  createComputerAppApproval,
-  verifyComputerAppApproval,
-} from "@opensteer/runner-auth";
+
 import type { RunnerModuleStream } from "@opensteer/runner-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
@@ -49,14 +36,7 @@ import { ComputerUseHandler } from "../../../runner/src/computer-apps/computer-u
 import { createMacosAppProvider } from "../../../runner/src/computer-apps/macos-app-provider.js";
 import { createHelperAppProvider } from "../../../runner/src/computer-apps/helper-app-provider.js";
 import { ComputerAppModuleHandler } from "../../../runner/src/computer-apps/module-handler.js";
-import type { DesktopBridgeContext } from "../bridge/context.js";
-import {
-  handleGetComputerUseApproval,
-  handleRespondComputerUseApproval,
-} from "../bridge/methods/computer-use.js";
-import { handleReviewComputerAppSetup } from "../bridge/methods/computer-apps.js";
-import { ComputerAppApprovalService } from "../computer-app-approval-service.js";
-import { ComputerUseApprovalPanel } from "./computer-use-approval-panel.js";
+
 import { ComputerUseService } from "./computer-use-service.js";
 import { computerUseFrameReader, encodeComputerUseFrame } from "./helper-frames.js";
 import type { ComputerUseHelperProcess } from "./helper-install.js";
@@ -87,165 +67,6 @@ const onMac = process.platform === "darwin";
 
 describe.skipIf(!onMac)("approvals on the Mac's own Runner stream", () => {
   const waitLong = { interval: 10, timeout: 10_000 };
-
-  it("carries the Host's list through the Runner to the native panel, and the signed answer back", async () => {
-    const harness = await stackHarness();
-    const asked = setupRequest(harness.homeId, {
-      workspaceId: createId("workspace"),
-      workspaceName: "Main",
-    });
-
-    await harness.hostSends({ approvals: [{ request: asked }] });
-
-    await vi.waitFor(() => expect(harness.openWindows()).toHaveLength(1), waitLong);
-    const [panel] = harness.openWindows();
-    expect(panel?.options).toMatchObject({ height: 400, show: false, type: "panel", width: 480 });
-    // Floating, but never given the keyboard of somebody typing elsewhere.
-    await vi.waitFor(() => expect(panel?.window.showInactive).toHaveBeenCalledOnce());
-    expect(panel?.window.focus).not.toHaveBeenCalled();
-    expect(await harness.person.read()).toEqual({
-      access: "read",
-      accessLabel: expect.any(String),
-      accessSummary: expect.any(String),
-      app: {
-        bundleId: "com.apple.Notes",
-        displayName: "Notes",
-        iconPng: notesIcon,
-        path: "/System/Applications/Notes.app",
-        reason: null,
-        risk: "standard",
-      },
-      deploymentName: "Home",
-      kind: "app",
-      machineName: "Alex's MacBook Pro",
-      reason: "To read the meeting notes.",
-      threadTitle: "Plan the offsite",
-      token: expect.any(String),
-      workspaceName: "Main",
-    });
-
-    await harness.person.answer(true);
-
-    // The answer goes back on the Runner's own stream, signed by this
-    // desktop's approval key — never over anybody's Host session.
-    await vi.waitFor(() => expect(harness.answers()).toHaveLength(1), waitLong);
-    const [answer] = harness.answers();
-    expect(answer).toMatchObject({ setupRequestId: asked.id, answer: { kind: "allow" } });
-    if (answer?.answer.kind !== "allow") throw new Error("Expected an allow");
-    expect(
-      verifyComputerAppApproval({
-        approval: answer.answer.approval,
-        publicKey: harness.approvalPublicKey,
-        request: asked,
-      }),
-    ).toBe(true);
-    expect(harness.openWindows()).toEqual([]);
-  });
-
-  it("asks for the whole list when the Runner's bridge connects, and shows what arrives after a reconnect", async () => {
-    const harness = await stackHarness();
-    // The Runner's first status probe is what connects its bridge, and a
-    // desktop that connects asks for the list it may have missed.
-    await vi.waitFor(() => expect(harness.syncRequests()).toBeGreaterThanOrEqual(1), waitLong);
-    const asked = setupRequest(harness.homeId);
-
-    // The Runner's Host connection is down — for Personal, cloud and
-    // self-hosted alike nothing is shown until it is back — and the Host sends
-    // the whole list the moment the stream attaches again.
-    harness.detach();
-    await harness.idle();
-    expect(harness.openWindows()).toEqual([]);
-    harness.reattach();
-    await harness.hostSends({ approvals: [{ request: asked }] });
-
-    await vi.waitFor(() => expect(harness.openWindows()).toHaveLength(1), waitLong);
-    await harness.person.answer(false);
-    await vi.waitFor(() =>
-      expect(harness.answers()).toEqual([
-        {
-          answer: {
-            approval: expect.objectContaining({
-              requestId: asked.id,
-              signature: expect.any(String),
-            }),
-            kind: "deny",
-          },
-          setupRequestId: asked.id,
-        },
-      ]),
-    );
-  });
-
-  it("closes a panel whose request was declined elsewhere, and shows the next", async () => {
-    const harness = await stackHarness();
-    const first = setupRequest(harness.homeId);
-    const second = setupRequest(harness.homeId, { access: "read-write" });
-    await harness.hostSends({
-      approvals: [{ request: first }, { request: second }],
-    });
-    await vi.waitFor(() => expect(harness.openWindows()).toHaveLength(1), waitLong);
-    const waiting = harness.pageReview(first.id);
-
-    // Declined from the phone: the Host's next list no longer holds it.
-    await harness.hostSends({ approvals: [{ request: second }] });
-
-    await expect(waiting).resolves.toEqual({ allowed: false });
-    await vi.waitFor(() => expect(harness.windows).toHaveLength(2), waitLong);
-    expect(harness.openWindows()).toHaveLength(1);
-    expect(await harness.person.read()).toMatchObject({ access: "read-write" });
-    expect(harness.answers()).toEqual([]);
-  });
-
-  it("waits a page's review for the pushed request and settles it with the Host's outcome", async () => {
-    const harness = await stackHarness();
-    const policy = setupRequest(harness.homeId, {
-      access: "read-write",
-      app: null,
-      kind: "policy",
-      policyAppApproval: "automatic",
-      reason: null,
-      threadId: null,
-      threadTitle: null,
-    });
-    // The page asks before the Host's push has arrived.
-    const waiting = harness.pageReview(policy.id);
-    await harness.hostSends({ approvals: [{ request: policy }] });
-    await vi.waitFor(() => expect(harness.openWindows()).toHaveLength(1), waitLong);
-    expect(await harness.person.read()).toMatchObject({ kind: "policy" });
-    await harness.person.answer(true);
-    await vi.waitFor(() => expect(harness.answers()).toHaveLength(1), waitLong);
-
-    await harness.hostSendsOutcome({ outcome: { kind: "allowed" }, setupRequestId: policy.id });
-
-    await expect(waiting).resolves.toEqual({ allowed: true });
-  });
-
-  it("holds every request while the Host accepts no key from this desktop", async () => {
-    const harness = await stackHarness();
-    await harness.hostSends({
-      approvalKeyId: null,
-      approvals: [{ request: setupRequest(harness.homeId) }],
-    });
-    await harness.idle();
-    expect(harness.windows).toEqual([]);
-    expect(harness.log).toHaveBeenCalledWith(
-      "desktop.computer-app.approval-key-unregistered",
-      expect.anything(),
-    );
-  });
-
-  it("closes the open panel unanswered on quit", async () => {
-    const harness = await stackHarness();
-    await harness.hostSends({
-      approvals: [{ request: setupRequest(harness.homeId) }],
-    });
-    await vi.waitFor(() => expect(harness.openWindows()).toHaveLength(1), waitLong);
-    harness.approvals.close();
-    harness.panel.close();
-    await harness.idle();
-    expect(harness.openWindows()).toEqual([]);
-    expect(harness.answers()).toEqual([]);
-  });
 
   it("reports the person's Stop to the Host even when the helper was unreachable as the Runner connected", async () => {
     // The Runner connects while this Mac has no helper it can read, so its
@@ -962,32 +783,6 @@ async function lifetimeHarness(options: {
   };
 }
 
-function setupRequest(
-  deploymentId: DeploymentId,
-  overrides: Partial<ComputerAppSetupRequest> = {},
-): ComputerAppSetupRequest {
-  return {
-    access: "read",
-    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
-    createdAt: "2026-09-21T00:00:00.000Z",
-    definitionDigest: "sha256:abc",
-    definitionId: "macos-app",
-    deploymentId,
-    expiresAt: "2099-09-21T01:00:00.000Z",
-    id: globalThis.crypto.randomUUID(),
-    kind: "app",
-    ownerUserId: "usr_1a2b3c4d-5e6f-4071-8a9b-0c1d2e3f4051",
-    policyAppApproval: null,
-    reason: "To read the meeting notes.",
-    runnerId,
-    threadId: "thr_6e7f8091-a2b3-4c4d-9e5f-6a7b8c9d0e1f",
-    threadTitle: "Plan the offsite",
-    workspaceId: null,
-    workspaceName: null,
-    ...overrides,
-  } as ComputerAppSetupRequest;
-}
-
 function deployment(name: string, canonicalOrigin: string) {
   const now = "2026-08-11T10:00:00.000Z";
   return DeploymentConnectionSchema.parse({
@@ -1008,37 +803,6 @@ function deployment(name: string, canonicalOrigin: string) {
     source: { kind: "manual" },
     updatedAt: now,
   });
-}
-
-function catalogStore(
-  deployments: DeploymentCatalog["deployments"],
-  selectedDeploymentId: DeploymentId,
-) {
-  let catalog = DeploymentCatalogSchema.parse({
-    deployments,
-    revision: 1,
-    schemaVersion: 4,
-    selectedDeploymentId,
-    updatedAt: "2026-08-11T10:00:00.000Z",
-  });
-  const listeners = new Set<() => void>();
-  return {
-    load: async () => catalog,
-    select: async (deploymentId: DeploymentId | string) => {
-      catalog = DeploymentCatalogSchema.parse({
-        ...catalog,
-        revision: catalog.revision + 1,
-        selectedDeploymentId: deploymentId,
-      });
-      for (const listener of listeners) listener();
-      return catalog;
-    },
-    setPreferredEndpoint: async () => catalog,
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
 }
 
 const notesIdentity = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null } as const;
@@ -1303,88 +1067,11 @@ function clientHungUp(error: Error): boolean {
   return code === "EPIPE" || code === "ECONNRESET";
 }
 
-interface FakePanelWindow {
-  closed: boolean;
-  readonly listeners: Map<string, () => void>;
-  readonly options: BrowserWindowConstructorOptions;
-  readonly window: {
-    readonly destroy: () => void;
-    readonly focus: ReturnType<typeof vi.fn>;
-    readonly isDestroyed: () => boolean;
-    readonly loadURL: ReturnType<typeof vi.fn<(url: string) => Promise<void>>>;
-    readonly once: (event: string, listener: () => void) => unknown;
-    readonly setAlwaysOnTop: ReturnType<typeof vi.fn>;
-    readonly show: ReturnType<typeof vi.fn>;
-    readonly showInactive: ReturnType<typeof vi.fn>;
-    readonly webContents: {
-      readonly id: number;
-      readonly isDestroyed: () => boolean;
-      readonly mainFrame: { url: string };
-      readonly on: () => void;
-      readonly once: () => void;
-      readonly send: () => void;
-      readonly setWindowOpenHandler: () => void;
-    };
-  };
-}
-
 /** Electron's window, as the panel drives it: destroying one emits `closed`. */
-function fakePanelWindow(options: BrowserWindowConstructorOptions): FakePanelWindow {
-  const listeners = new Map<string, () => void>();
-  const entry: FakePanelWindow = {
-    closed: false,
-    listeners,
-    options,
-    window: {
-      destroy: () => {
-        if (entry.closed) return;
-        entry.closed = true;
-        listeners.get("closed")?.();
-      },
-      focus: vi.fn(),
-      isDestroyed: () => entry.closed,
-      loadURL: vi.fn(async (url: string) => {
-        entry.window.webContents.mainFrame.url = url;
-      }),
-      once: (event, listener) => {
-        listeners.set(event, listener);
-        return entry.window;
-      },
-      setAlwaysOnTop: vi.fn(),
-      show: vi.fn(),
-      showInactive: vi.fn(),
-      webContents: {
-        id: 11,
-        isDestroyed: () => false,
-        mainFrame: { url: "" },
-        on: () => undefined,
-        once: () => undefined,
-        send: () => undefined,
-        setWindowOpenHandler: () => undefined,
-      },
-    },
-  };
-  return entry;
-}
-
-const bridgeToken = "b".repeat(43);
 
 /** An IPC call from the panel's own page, which the bridge's sender check admits. */
-function panelEvent(entry: FakePanelWindow): IpcMainInvokeEvent {
-  return {
-    sender: entry.window.webContents,
-    senderFrame: entry.window.webContents.mainFrame,
-  } as unknown as IpcMainInvokeEvent;
-}
 
 /** An IPC call from a page of the app's own origin that is not the panel. */
-function pageEvent(url: string): IpcMainInvokeEvent {
-  const mainFrame = { url };
-  return {
-    sender: { id: 12, isDestroyed: () => false, mainFrame, once: vi.fn(), send: vi.fn() },
-    senderFrame: mainFrame,
-  } as unknown as IpcMainInvokeEvent;
-}
 
 const runnerFence = {
   auxiliaryStreamId: RunnerAuxiliaryStreamIdSchema.parse(
@@ -1560,64 +1247,9 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
   });
   cleanups.push(async () => computerUse.stop());
   const homeConnection = deployment("Home", "https://home.opensteer.test");
-  const cloudConnection = deployment("Cloud", "https://cloud.opensteer.test");
+
   const homeId = homeConnection.authority.document.deploymentId;
-  const catalog = catalogStore([homeConnection, cloudConnection], homeId);
-  const windows: FakePanelWindow[] = [];
-  const panel = new ComputerUseApprovalPanel({
-    platform: "darwin",
-    screen: {
-      getPrimaryDisplay: () =>
-        ({ workArea: { height: 900, width: 1_200, x: 0, y: 25 } }) as Electron.Display,
-    },
-    webPreferences: { contextIsolation: true, sandbox: true },
-    windowFactory: (options) => {
-      const created = fakePanelWindow(options);
-      windows.push(created);
-      return created.window as unknown as BrowserWindow;
-    },
-  });
-  const approver = {
-    assertComputerAppSetupTarget: async () => undefined,
-    checkComputerUseRunnerTarget: async () => ({ local: true as const }),
-  };
-  // The desktop's own key, as `ComputerUseApprovalKey` keeps it in the keychain.
-  const keys = generateKeyPairSync("ed25519");
-  const approvalPublicKey = canonicalComputerAppApprovalPublicKey(keys.publicKey);
-  const approvalKeyId = computerAppApprovalKeyId(approvalPublicKey);
-  const approvals = new ComputerAppApprovalService({
-    appIcon: (bundleId) => computerUse.appIcon(bundleId),
-    approvalKey: {
-      publicKey: async () => ({ keyId: approvalKeyId, publicKey: approvalPublicKey }),
-      sign: async (request, decision) =>
-        createComputerAppApproval(keys.privateKey, request, Date.now(), decision),
-      prove: async (challenge) => ({
-        challengeId: challenge.challengeId,
-        signature: "s".repeat(86),
-      }),
-    },
-    catalog,
-    confirm: (presentation, signal) => panel.ask(presentation, signal),
-    definitions: integrationDefinitions,
-    local: approver,
-    log,
-    machineName: async () => "Alex's MacBook Pro",
-    personal: { ...approver, status: { deploymentId: null } },
-    resolveApp: (app) => computerUse.resolveApp(app),
-    sendAnswer: (deploymentId, frame, server) =>
-      computerUse.sendApprovalAnswer(deploymentId, frame, server),
-  });
-  const detachApprovals = computerUse.attachApprovals({
-    disconnected: (deploymentId) => approvals.disconnected(deploymentId),
-    list: (deploymentId, list) => approvals.list(deploymentId, list),
-    outcome: (deploymentId, frame) => approvals.outcome(deploymentId, frame),
-    proveKeyChallenge: (deploymentId, challenge) =>
-      approvals.proveKeyChallenge(deploymentId, challenge),
-  });
-  cleanups.push(async () => {
-    detachApprovals();
-    approvals.close();
-  });
+
   const bridge = await computerUse.startForSlot(homeId);
   if (!bridge) throw new Error("The bridge did not start");
 
@@ -1666,48 +1298,7 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
       ...fields,
     });
 
-  // The bridge surface main registers for the panel and the page. The page's
-  // own Host transport is only asked which Deployment it is attached to.
-  const context = {
-    downloadsSenders: new Set(),
-    accessSenders: new Set(),
-    localExecutionSenders: new Map(),
-    options: {
-      bridgeToken,
-      computerApps: {
-        review: (deploymentId: DeploymentId, setupRequestId: string) =>
-          approvals.review(deploymentId, setupRequestId),
-      },
-      computerUse: {
-        approvalGet: (token: string, sender: Electron.WebContents) =>
-          panel.presentation(token, sender),
-        approvalRespond: (token: string, allow: boolean, sender: Electron.WebContents) =>
-          panel.respond(token, allow, sender),
-      },
-      hostTransport: { current: async () => ({ resolved: { deploymentId: homeId } }) },
-    },
-    personalRemoteSenders: new Set(),
-    trackedHostSenders: new Set(),
-  } as unknown as DesktopBridgeContext;
-  const tokenOf = (entry: FakePanelWindow): string =>
-    new URL(entry.window.loadURL.mock.calls[0]?.[0] ?? "").searchParams.get("token") ?? "";
-  const openWindows = () => windows.filter((entry) => !entry.closed);
-  const onlyOpenWindow = (): FakePanelWindow => {
-    const [open, ...rest] = openWindows();
-    if (!open || rest.length > 0)
-      throw new Error(`${openWindows().length} approval panels are open`);
-    return open;
-  };
   return {
-    /** Every answer the Runner carried to its Host, in order. */
-    answers: () =>
-      hostStream.flatMap((event) =>
-        event.type === "runner.integrations.computer-app-approval-answer"
-          ? [{ answer: event.answer, setupRequestId: event.setupRequestId }]
-          : [],
-      ),
-    approvalPublicKey,
-    approvals,
     computerUse,
     /** The Runner's Host connection drops. */
     detach: () => module.detach(),
@@ -1716,49 +1307,12 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
       return hostStream;
     },
     homeId,
-    /** The Host's whole list for this Mac, with this desktop's key unless told otherwise. */
-    hostSends: async (list: {
-      readonly approvalKeyId?: string | null;
-      readonly approvals: readonly unknown[];
-    }) =>
-      hostFrame({
-        approvalKeyId: list.approvalKeyId === undefined ? approvalKeyId : list.approvalKeyId,
-        approvals: list.approvals,
-        type: "host.integrations.computer-app-approvals",
-      }),
-    hostSendsOutcome: async (frame: Readonly<Record<string, unknown>>) =>
-      hostFrame({ ...frame, type: "host.integrations.computer-app-approval-outcome" }),
     idle: async () => {
       for (let tick = 0; tick < 50; tick += 1) {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 1));
       }
     },
     log,
-    openWindows,
-    panel,
-    /** The person, through the approval page's own bridge calls. */
-    person: {
-      answer: async (allow: boolean) => {
-        const entry = onlyOpenWindow();
-        await handleRespondComputerUseApproval(context)(panelEvent(entry), {
-          bridgeToken,
-          input: { allow, token: tokenOf(entry) },
-        });
-      },
-      read: async (): Promise<DesktopComputerUseApprovalPresentation> => {
-        const entry = onlyOpenWindow();
-        return (await handleGetComputerUseApproval(context)(panelEvent(entry), {
-          bridgeToken,
-          input: { token: tokenOf(entry) },
-        })) as DesktopComputerUseApprovalPresentation;
-      },
-    },
-    /** The picker's or the policy switch's call from a page on this Mac. */
-    pageReview: async (setupRequestId: string) =>
-      handleReviewComputerAppSetup(context)(pageEvent("app://opensteer/computers"), {
-        bridgeToken,
-        input: { setupRequestId },
-      }),
     /** An agent's observe of Notes, as the Host sends it. */
     observe: async (requestId: string, sessionId: string) =>
       send(requestId, {
@@ -1774,11 +1328,6 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
       module.detach();
       hostStream = attach();
     },
-    /** How many times desktop main asked, through the Runner, for the whole list. */
-    syncRequests: () =>
-      hostStream.filter(({ type }) => type === "runner.integrations.computer-app-approvals-sync")
-        .length,
-    windows,
   };
 }
 

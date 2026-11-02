@@ -2,8 +2,7 @@ import { createPrivateKey, createPublicKey } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tokenDigest } from "../packages/core/src/crypto.js";
-import { canonicalJson } from "../packages/shared/src/canonicalJson.js";
-import { ComputerAppSetupRequestSchema } from "../packages/integration-core/src/models.js";
+
 import {
   RunnerChallengeSchema,
   RunnerAuxiliaryChallengeSchema,
@@ -15,12 +14,6 @@ import {
 } from "../packages/protocol/src/index.js";
 import { RunnerIdSchema } from "../packages/core/src/ids.js";
 import {
-  canonicalComputerAppApprovalPublicKey,
-  computerAppApprovalKeyId,
-  createComputerAppApproval,
-  signComputerAppApprovalKeyChallenge,
-  verifyComputerAppApproval,
-  verifyComputerAppApprovalKeyChallenge,
   canonicalRunnerPublicKeyPem,
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
@@ -44,11 +37,8 @@ function key(seed: Uint8Array) {
 }
 
 const runnerSeed = Uint8Array.from({ length: 32 }, (_, index) => index);
-const approvalSeed = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
 const runner = key(runnerSeed);
-const approval = key(approvalSeed);
 const runnerPublic = createPublicKey(runner);
-const approvalPublic = createPublicKey(approval);
 const now = Date.parse("2030-01-01T12:00:00.000Z");
 const challenge = RunnerChallengeSchema.parse({
   type: "host.challenge" as const,
@@ -70,7 +60,7 @@ const descriptor = {
   bootId: "rbt_33333333-3333-4333-8333-333333333333",
   capabilities: [],
   device: { form: "phone", platform: "ios" },
-  modules: { integrations: { computerAppApprovals: true, platform: "ios", protocolVersion: 1 } },
+  modules: { integrations: { platform: "ios", protocolVersion: 2 } },
   name: "iPhone — Calendar ✓",
   runnerId: "rnr_44444444-4444-4444-8444-444444444444",
   runnerKind: "local",
@@ -78,32 +68,6 @@ const descriptor = {
 };
 const token = "iphone-enrollment-token-0123456789abcdefghijklmnopqrstuvwxyz";
 const ticket = "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln";
-const approvalRequest = ComputerAppSetupRequestSchema.parse({
-  access: "read-write",
-  app: null,
-  createdAt: "2030-01-01T11:59:00.000Z",
-  definitionDigest: "sha256:test",
-  definitionId: "apple-calendar",
-  deploymentId: "dep_55555555-5555-4555-8555-555555555555",
-  expiresAt: "2030-01-01T12:01:00.000Z",
-  id: "66666666-6666-4666-8666-666666666666",
-  kind: "app",
-  ownerUserId: "usr_77777777-7777-4777-8777-777777777777",
-  policyAppApproval: null,
-  reason: "Create a meeting",
-  runnerId: descriptor.runnerId,
-  threadId: null,
-  threadTitle: "Plan lunch",
-  workspaceId: null,
-  workspaceName: "Main",
-});
-const keyChallenge = {
-  challengeId: "88888888-8888-4888-8888-888888888888",
-  expiresAt: "2030-01-01T12:00:15.000Z",
-  keyId: computerAppApprovalKeyId(approvalPublic),
-  nonce: "E".repeat(43),
-  runnerId: descriptor.runnerId,
-};
 const fence = {
   bootId: descriptor.bootId,
   connectionGeneration: 3,
@@ -128,31 +92,20 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
         runnerId: RunnerIdSchema.parse(descriptor.runnerId),
         ticket,
       };
-      const allow = createComputerAppApproval(approval, approvalRequest, now, "allow");
-      const deny = createComputerAppApproval(approval, approvalRequest, now, "deny");
       const expected = {
         publicKeyPem,
         keyId: runnerPublicKeyFingerprint(publicKeyPem),
-        approvalPublicKeyPem: canonicalComputerAppApprovalPublicKey(approvalPublic),
-        approvalKeyId: computerAppApprovalKeyId(approvalPublic),
         authentication: createRunnerAuthenticationSignature(runner, proof),
         enrollment: createRunnerEnrollmentSignature(runner, { ...proof, credential, publicKeyPem }),
         auxiliary: createRunnerAuxiliarySignature(runner, aux),
-        allow: allow.signature,
-        deny: deny.signature,
-        keyProof: signComputerAppApprovalKeyChallenge(approval, keyChallenge),
       };
       const input = {
         runnerSeed: Buffer.from(runnerSeed).toString("hex"),
-        approvalSeed: Buffer.from(approvalSeed).toString("hex"),
         descriptor,
         challenge,
         auxiliaryChallenge,
         token,
         ticket,
-        approvalRequest,
-        answerExpiresAt: allow.expiresAt,
-        keyChallenge,
         fence,
         sentAt: "2030-01-01T12:00:00.000Z",
         expected,
@@ -170,21 +123,13 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
           { wrongKey: boolean; changedData: boolean; changedSignature: boolean }
         >;
         frames: Record<string, Record<string, unknown>>;
-        keyTranscript: string;
       };
-      expect(output.keyTranscript).toBe(
-        canonicalJson([
-          "opensteer-computer-app-approval-key-registration-v1",
-          "challenge",
-          keyChallenge,
-        ]),
-      );
       expect(output.matches).toEqual(
         Object.fromEntries(Object.keys(expected).map((key) => [key, true])),
       );
       expect(output.rejectsTampering).toEqual(
         Object.fromEntries(
-          ["authentication", "enrollment", "auxiliary", "allow", "deny", "keyProof"].map((key) => [
+          ["authentication", "enrollment", "auxiliary"].map((key) => [
             key,
             { wrongKey: true, changedData: true, changedSignature: true },
           ]),
@@ -210,32 +155,6 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
           { ...aux, signature: output.actual.auxiliary },
           now,
         ),
-      ).toBe(true);
-      expect(
-        verifyComputerAppApproval({
-          publicKey: approvalPublic,
-          request: approvalRequest,
-          approval: { ...allow, signature: output.actual.allow },
-          now,
-          decision: "allow",
-        }),
-      ).toBe(true);
-      expect(
-        verifyComputerAppApproval({
-          publicKey: approvalPublic,
-          request: approvalRequest,
-          approval: { ...deny, signature: output.actual.deny },
-          now,
-          decision: "deny",
-        }),
-      ).toBe(true);
-      expect(
-        verifyComputerAppApprovalKeyChallenge({
-          publicKey: approvalPublic,
-          challenge: keyChallenge,
-          signature: output.actual.keyProof,
-          now,
-        }),
       ).toBe(true);
       expect(tokenDigest(ticket)).toMatch(/^sha256:/);
       expect(RunnerWireProofSchema.parse(output.frames.enroll).type).toBe("runner.enroll");

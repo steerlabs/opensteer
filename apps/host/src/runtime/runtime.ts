@@ -672,17 +672,7 @@ export async function createHostRuntime(
         computerUse?.forgetRunner(runnerId);
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
-      // Approvals travel on the Mac's own stream in both directions, so a Mac
-      // that (re)attaches or asks is sent every approval waiting on it, and
-      // the person's answer comes back the same way.
-      onRunnerAttached: (runnerId) => {
-        integrationPlatform.computerAppApprovals.pushComputerAppApprovals(runnerId);
-        integrationPlatform.computerRunnerAttached(runnerId);
-      },
-      onComputerAppApprovalsSync: (runnerId) =>
-        integrationPlatform.computerAppApprovals.pushComputerAppApprovals(runnerId),
-      onComputerAppApprovalAnswer: (runnerId, answer) =>
-        void integrationPlatform.computerAppApprovals.answerComputerAppApproval(runnerId, answer),
+      onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),

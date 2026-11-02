@@ -19,7 +19,6 @@ import {
   ComputerAppIdentitySchema,
   ComputerAppIdentityViewSchema,
   IntegrationAccessSchema,
-  IntegrationServerIdSchema,
   ComputerUseAppApprovalSchema,
   computerAppIdentityKey,
   type ComputerAppIdentity,
@@ -35,14 +34,6 @@ import {
   SealedLoginTextSchema,
   validateSealedLoginActionBindings,
 } from "./password-sign-in.js";
-import {
-  ComputerAppApprovalAnswerFrameSchema,
-  ComputerAppApprovalListSchema,
-  ComputerAppApprovalOutcomeFrameSchema,
-  ComputerAppApprovalKeyChallengeSchema,
-  ComputerAppApprovalKeyProofSchema,
-  approvalAnswerNamesItsRequest,
-} from "./computer-app-approvals.js";
 
 import { ComputerUseSessionIdSchema, type ComputerUseSessionId } from "./computer-use-id.js";
 export { ComputerUseSessionIdSchema, type ComputerUseSessionId } from "./computer-use-id.js";
@@ -564,7 +555,7 @@ export const MachineComputerUseSchema = z.object({
    * this Mac's page in Opensteer on that Mac, which registers the desktop's
    * key. This projection is required by Host API epoch 15.
    */
-  approvalKeyId: z.string().max(128).nullable(),
+
   sessions: z.array(ComputerUseSessionSummarySchema),
   state: ComputerUseMachineStateSchema,
 });
@@ -1204,16 +1195,9 @@ export const ComputerUseBridgeTokenSchema = z.string().min(32).max(4_096);
  * the Host's approval list and the outcome of an answer, and main acknowledges
  * each with `{}` at once — the person's answer comes back later as an event.
  */
-export const ComputerUseBridgeApprovalMethodSchema = z.enum([
-  "approvals.list",
-  "approvals.outcome",
-  "approvals.key-challenge",
-]);
-export type ComputerUseBridgeApprovalMethod = z.infer<typeof ComputerUseBridgeApprovalMethodSchema>;
 
 export const ComputerUseBridgeMethodSchema = z.enum([
   ...ComputerUseHelperMethodSchema.exclude(["hello"]).options,
-  ...ComputerUseBridgeApprovalMethodSchema.options,
   "passwords.control",
   "passwords.capabilities",
 ]);
@@ -1242,13 +1226,6 @@ export function computerUseRequestMayHaveEffect(method: string, params: unknown)
 }
 
 /** Each approval method's params and its acknowledgement. */
-export const computerUseBridgeApprovalParams = {
-  "approvals.list": ComputerAppApprovalListSchema,
-  "approvals.outcome": ComputerAppApprovalOutcomeFrameSchema,
-  "approvals.key-challenge": ComputerAppApprovalKeyChallengeSchema,
-} satisfies Readonly<Record<ComputerUseBridgeApprovalMethod, z.ZodType>>;
-export const ComputerUseBridgeApprovalAckSchema = z.strictObject({});
-export const ComputerUseBridgeApprovalKeyProofSchema = ComputerAppApprovalKeyProofSchema;
 
 export const computerUseBridgePasswordsParams = {
   "passwords.control": PasswordSignInAuthorityCommandSchema,
@@ -1305,29 +1282,6 @@ export const ComputerUseBridgeEventSchema = z.discriminatedUnion("event", [
   z.strictObject({ ...computerUseEventVariants[3].shape, kind: z.literal("event") }),
   z.strictObject({ ...computerUseEventVariants[4].shape, kind: z.literal("event") }),
   z.strictObject({ event: z.literal("grants.changed"), kind: z.literal("event") }),
-  z
-    .strictObject({
-      event: z.literal("approval.answer"),
-      kind: z.literal("event"),
-      params: ComputerAppApprovalAnswerFrameSchema,
-      /**
-       * The MCP server and exact launch the person allowed, from the request
-       * desktop main showed and signed; null for any other answer. It is what
-       * lets that launch run on this computer, whatever the Host then does
-       * (`docs/computers.md`, "MCP servers on a computer").
-       */
-      server: z
-        .strictObject({
-          launchDigest: z.string().min(1).max(128),
-          serverId: IntegrationServerIdSchema,
-        })
-        .nullable()
-        .default(null),
-    })
-    .refine(
-      ({ params }) => approvalAnswerNamesItsRequest(params),
-      "An approval answers the setup request it names",
-    ),
 ]);
 export type ComputerUseBridgeEvent = z.infer<typeof ComputerUseBridgeEventSchema>;
 

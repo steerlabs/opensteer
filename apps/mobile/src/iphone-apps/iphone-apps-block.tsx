@@ -1,19 +1,6 @@
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
-import {
-  computerConnectionsOn,
-  type IntegrationAccess,
-  type IntegrationConnectionSummary,
-  type IntegrationDefinitionSummaryView,
-} from "@opensteer/client/integrations";
-import type { MachineSummary } from "@opensteer/protocol";
-import * as Haptics from "expo-haptics";
-import { useState, type ReactNode } from "react";
-import { ActivityIndicator, Alert, Linking, StyleSheet, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import Animated from "react-native-reanimated";
-import type { IphoneAppId } from "../platform/iphone-apps.js";
-import { FailureText, useBlockActions } from "../computers/block-actions.js";
-import { color, space } from "../theme.js";
-import { appear, exit } from "../ui/motion.js";
+import { FailureText } from "../computers/block-actions.js";
 import {
   AppText,
   Notice,
@@ -25,6 +12,23 @@ import {
 } from "../ui/primitives.js";
 import { IphoneAppRow } from "./app-row.js";
 import { IphoneApprovalCard } from "./approval-card.js";
+import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import {
+  computerConnectionsOn,
+  type IntegrationAccess,
+  type IntegrationConnectionSummary,
+  type IntegrationDefinitionSummaryView,
+} from "@opensteer/client/integrations";
+import type { MachineSummary } from "@opensteer/protocol";
+import * as Haptics from "expo-haptics";
+import { useState, type ReactNode } from "react";
+import { Alert, Linking, StyleSheet } from "react-native";
+
+import type { IphoneAppId } from "../platform/iphone-apps.js";
+import { useBlockActions } from "../computers/block-actions.js";
+import { color, space } from "../theme.js";
+import { appear, exit } from "../ui/motion.js";
+
 import { useIphoneAppsState } from "./context.js";
 import { iphonePermissionOf, iphoneTurningOn, type IphoneAppsController } from "./controller.js";
 import {
@@ -33,7 +37,6 @@ import {
   iphoneAppIds,
   iphoneAppName,
   iphoneAppRow,
-  iphoneApprovalKeyFailure,
   iphoneAppsFooter,
   iphoneDefaultAccess,
   iphoneDisclosure,
@@ -217,14 +220,6 @@ export function IphoneAppsBlock(props: {
           {status.text}
         </AppText>
       </View>
-
-      {state.approvalKey === "failed" ? (
-        <Notice
-          action={{ label: "Try again", onPress: () => controller.retryApprovalKey() }}
-          detail="New or wider access is approved on this iPhone, which isn't ready to approve yet."
-          title={iphoneApprovalKeyFailure}
-        />
-      ) : null}
 
       <View style={styles.section}>
         <SectionLabel>Apps agents can use</SectionLabel>

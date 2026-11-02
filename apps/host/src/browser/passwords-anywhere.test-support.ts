@@ -83,9 +83,8 @@ export function passwordsAnywhereJourneys() {
                 : {}),
               integrations: {
                 platform: "darwin",
-                protocolVersion: 5,
+                protocolVersion: 6,
                 passwordSignIn: 1,
-                computerAppApprovals: true,
               },
             });
             cleanups.push(() => caller.close());

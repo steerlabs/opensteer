@@ -1,3 +1,15 @@
+import { ActivityIndicator, View } from "react-native";
+import { FailureText } from "../computers/block-actions.js";
+import {
+  AppText,
+  Notice,
+  RowGroup,
+  SecondaryButton,
+  SectionLabel,
+  Toggle,
+} from "../ui/primitives.js";
+import { IphoneAppRow } from "./app-row.js";
+import { useComputerAppApproval } from "../computers/computer-app-approval.js";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   computerAppPermissionNotice,
@@ -8,18 +20,10 @@ import {
 } from "@opensteer/client/integrations";
 import type { MachineSummary } from "@opensteer/protocol";
 import { useState, type ReactNode } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { FailureText, useBlockActions } from "../computers/block-actions.js";
+import { StyleSheet } from "react-native";
+import { useBlockActions } from "../computers/block-actions.js";
 import { color, space } from "../theme.js";
-import {
-  AppText,
-  Notice,
-  RowGroup,
-  SecondaryButton,
-  SectionLabel,
-  Toggle,
-} from "../ui/primitives.js";
-import { IphoneAppRow } from "./app-row.js";
+
 import { iphoneLevels, isIphoneAppId, type IphoneTone } from "./model.js";
 
 /**
@@ -39,6 +43,7 @@ export function RemoteIphoneAppsBlock(props: {
   readonly onChanged: () => Promise<void>;
 }): ReactNode {
   const { hostClient, machine } = props;
+  const approval = useComputerAppApproval(hostClient);
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
   // The app being turned off, whose switch shows off until the Host's answer lands.
   const [turningOff, setTurningOff] = useState<string | null>(null);
@@ -95,6 +100,25 @@ export function RemoteIphoneAppsBlock(props: {
     });
   };
 
+  const allow = (row: ComputerAppRow, access: "read" | "read-write"): void => {
+    run(row.definition.id, async () => {
+      const result = await hostClient.dispatch({
+        type: "integration.computer.setup.request",
+        idempotencyKey: mutationIdempotencyKey(`iphone-app:${row.definition.id}`),
+        input: {
+          kind: "app",
+          app: null,
+          runnerId: machine.id,
+          definitionId: row.definition.id,
+          access,
+        },
+      });
+      if (result.type !== "integration.computer.setup.request")
+        throw new Error("The approval was not requested.");
+      await approval.ask(result.request.id);
+    });
+  };
+
   const turnOff = (row: ComputerAppRow): void => {
     const connectionId = row.connectionId;
     if (connectionId === null) return;
@@ -126,6 +150,7 @@ export function RemoteIphoneAppsBlock(props: {
 
   return (
     <View style={styles.section}>
+      {approval.dialog}
       <SectionLabel>Apps agents can use</SectionLabel>
       {rows.length === 0 ? (
         <AppText role="secondary" tone="muted">
@@ -150,27 +175,40 @@ export function RemoteIphoneAppsBlock(props: {
                 key={app}
                 levels={
                   row.access === null
-                    ? []
+                    ? iphoneLevels({ app, current: "read", definition: row.definition, here: true })
                     : iphoneLevels({
                         app,
                         current: row.access,
                         definition: row.definition,
-                        here: false,
+                        here: true,
                       })
                 }
                 line={status.text}
                 name={row.definition.name}
-                onLevel={() => lower(row)}
+                onLevel={({ access }) =>
+                  access === "read" && row.access === "read-write" ? lower(row) : allow(row, access)
+                }
                 tone={toneOf(status.tone)}
                 trailing={
                   <Toggle
                     accessibilityHint={
-                      on ? status.text : `Only ${machine.name} can turn ${row.definition.name} on.`
+                      on
+                        ? status.text
+                        : `Allow agents to use ${row.definition.name} on ${machine.name}.`
                     }
                     accessibilityLabel={row.definition.name}
-                    disabled={disabled || row.access === null}
+                    disabled={disabled}
                     onChange={(value) => {
                       if (!value) turnOff(row);
+                      else
+                        allow(
+                          row,
+                          row.definition.computerApp?.accessLevels.some(
+                            (level) => level === "read-write",
+                          )
+                            ? "read-write"
+                            : "read",
+                        );
                     }}
                     value={row.access !== null && !(busy === app && turningOff === app)}
                   />
@@ -179,8 +217,17 @@ export function RemoteIphoneAppsBlock(props: {
                 {request === null ? null : (
                   <View style={styles.request}>
                     <AppText role="caption" style={styles.requestText} tone="muted">
-                      {`A task asked for ${row.definition.name}. Only ${machine.name} can allow it.`}
+                      {`A task asked for ${row.definition.name}. You can allow it here.`}
                     </AppText>
+                    <SecondaryButton
+                      label="Review"
+                      disabled={disabled}
+                      onPress={() =>
+                        run(`allow:${app}`, async () => {
+                          await approval.ask(request.id);
+                        })
+                      }
+                    />
                     <SecondaryButton
                       accessibilityLabel={`Decline ${row.definition.name}`}
                       busy={busy === `decline:${app}`}
@@ -203,7 +250,7 @@ export function RemoteIphoneAppsBlock(props: {
         </RowGroup>
       )}
       <AppText role="caption" tone="muted">
-        {`Only ${machine.name} can turn apps on or give them more access. You can lower or turn them off here, even while it's offline.`}
+        {`Approve agent access here. Any iOS permission prompts must be answered on ${machine.name}. Lowering or turning off works while it's offline.`}
       </AppText>
     </View>
   );

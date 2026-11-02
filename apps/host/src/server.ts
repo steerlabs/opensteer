@@ -949,10 +949,7 @@ export async function createHostServer(
     >();
     const computerUseSessions = new Map<string, readonly ComputerUseSessionSummary[]>();
     const computerUseDisplayStreamSupported = new Map<string, boolean>();
-    const computerUsePolicies = new Map<
-      string,
-      { readonly appApproval: "ask" | "automatic"; readonly approvalKeyId: string | null }
-    >();
+    const computerUsePolicies = new Map<string, { readonly appApproval: "ask" | "automatic" }>();
     for (const runner of manageable) {
       if (ownership.get(runner.id)?.effectiveOwner !== ownerId) continue;
       const reported = dependencies.computerApps.status(runner.id);
@@ -972,7 +969,7 @@ export async function createHostServer(
         });
       const sessions = dependencies.computerUse?.sessionsForRunner(runner.id);
       if (sessions) computerUseSessions.set(runner.id, sessions);
-      // Only Macs use app approval policies and signing keys.
+      // Only Macs use automatic app approval policies.
       const integrationsPlatform = runner.moduleDescriptors.integrations?.platform;
       if (
         integrationsPlatform !== "darwin" &&
@@ -2192,9 +2189,8 @@ export async function createHostServer(
               case "machine.full-disk-access":
                 await dependencies.machineFullDiskAccess.decline(input);
                 return;
-              // Approving happens on the Mac itself, by consuming the setup
-              // request; from anywhere else the only answer is a decline, and
-              // it takes the pending approval back with it.
+              // Allow uses integration.computer.setup.respond to consume exact
+              // owner-reviewed setup. This generic path only declines.
               case "computer.app.access":
                 await dependencies.integrations.platform.computerAppApprovals.declineComputerAppAccess(
                   input,

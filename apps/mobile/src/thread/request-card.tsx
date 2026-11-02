@@ -100,7 +100,7 @@ import {
   type RequestSubmission,
 } from "./request-form-model.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
-
+import { useComputerAppApproval } from "../computers/computer-app-approval.js";
 /**
  * Whatever went wrong, the answer may still have landed: a timeout or a lost
  * reply looks the same from here as a refusal that never reached the Host.
@@ -213,7 +213,7 @@ export function RequestCard(props: {
   const signIn = request.payload.kind === "browser.sign-in" ? request.payload : null;
   const passwordSignIn =
     request.payload.kind === "browser.password-sign-in" ? request.payload : null;
-  // Mac grants and saved-password sign-ins happen on that Mac. Phone access
+  // OS grants and saved-password sign-ins happen on that Mac. Phone access
   // and the other external decisions can be answered here.
   const externalDeclinable =
     request.status === "pending" &&
@@ -288,10 +288,10 @@ export function RequestCard(props: {
     }
   };
 
+  const computerApproval = useComputerAppApproval(props.hostClient);
   const allowComputerApp = async (): Promise<void> => {
     if (
       request.payload.kind !== "computer.app.access" ||
-      request.payload.definitionId !== "android-phone" ||
       responding.current ||
       !answerable ||
       !props.canRespond ||
@@ -306,6 +306,11 @@ export function RequestCard(props: {
     setFailure(null);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
+      if (request.payload.kind !== "computer.app.access") return;
+      if (definitionId !== "android-phone") {
+        await computerApproval.ask(request.payload.setupRequestId);
+        return;
+      }
       const result = await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
         input: { access, app: null, definitionId, kind: "app", runnerId },
@@ -456,6 +461,7 @@ export function RequestCard(props: {
   const askedBy = props.subagentTitle ? `Asked by subagent ${props.subagentTitle}` : null;
   return (
     <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
+      {computerApproval.dialog}
       <View style={styles.body}>
         <Pressable
           accessibilityLabel={`${review} request: ${requestTitleLine(request)}`}
@@ -1371,14 +1377,12 @@ function ComputerAppAccessBody(props: {
         tone="neutral"
       />
       <ResponseStatus failure={props.failure} reason={props.reason} />
-      {props.definitionId === "android-phone" ? (
-        <SecondaryButton
-          busy={props.pendingId === computerAppAllowId}
-          disabled={!props.canRespond || props.pendingId !== null}
-          label="Allow"
-          onPress={props.onAllow}
-        />
-      ) : null}
+      <SecondaryButton
+        busy={props.pendingId === computerAppAllowId}
+        disabled={!props.canRespond || props.pendingId !== null}
+        label="Allow"
+        onPress={props.onAllow}
+      />
       <SecondaryButton
         busy={props.pendingId === computerAppDeclineId}
         disabled={!props.canRespond || props.pendingId !== null}

@@ -11,11 +11,8 @@ import type {
   DesktopComputerAppSetupTarget,
   DesktopOpenComputerAppSetupInput,
   DesktopOpenComputerAppSetupResult,
-  DesktopComputerUseApprovalKeyResult,
-  DesktopComputerUseApprovalPresentation,
   DesktopComputerUseSettingsPane,
   DesktopPasswordsStatus,
-  DesktopReviewComputerAppSetupResult,
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
   DesktopAgentPhoneArtifact,
@@ -92,15 +89,12 @@ export interface DesktopBridgeOptions {
   readonly bridgeToken: string;
   readonly computerApps: {
     /** This desktop's approval key's public half, for the page on this Mac to register. */
-    readonly approvalKey: () => Promise<DesktopComputerUseApprovalKeyResult>;
+
     /**
      * Waits for this Mac's answer to one of the Deployment's setup requests by
      * id, which reaches this Mac through its Runner like every other.
      */
-    readonly review: (
-      deploymentId: DeploymentId,
-      setupRequestId: string,
-    ) => Promise<DesktopReviewComputerAppSetupResult>;
+
     /**
      * The setup guide for apps the helper serves: one panel on this Mac that
      * takes every macOS step an app's access needs.
@@ -134,12 +128,9 @@ export interface DesktopBridgeOptions {
       input: DesktopUseComputerViewInput,
     ) => Promise<DesktopUseComputerViewResult>;
     /** Reads the presentation for the panel whose own contents are `sender`. */
-    readonly approvalGet: (
-      token: string,
-      sender: WebContents,
-    ) => DesktopComputerUseApprovalPresentation;
+
     /** Answers for the panel whose own contents are `sender`, and no other. */
-    readonly approvalRespond: (token: string, allow: boolean, sender: WebContents) => void;
+
     readonly closePermissionsPanel: () => Promise<void>;
     readonly openPermissionsPanel: () => Promise<void>;
     /** Throws `AdHocSignedHelperError` when this build would refuse its own helper. */

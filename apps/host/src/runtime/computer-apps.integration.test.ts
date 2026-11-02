@@ -1,4 +1,3 @@
-import { generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +9,7 @@ import {
   type ComputerUseDataGrants,
   type ComputerUseDataInvokeParams,
 } from "@opensteer/protocol";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
+
 import {
   ComputerUseBridgeError,
   createHelperAppProvider,
@@ -85,8 +84,7 @@ integration("computer apps", () => {
     let observed: unknown = null;
     try {
       const computer = await connectComputerAppMachine(host, fakeMessagesProvider(), {
-        integrations: { computerAppApprovals: true, platform: "darwin" },
-        registerApprovalKey: false,
+        integrations: { platform: "darwin" },
       });
       closers.unshift(() => computer.close());
       await computer.heartbeat();
@@ -188,28 +186,13 @@ integration("computer apps", () => {
     const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "messages-read");
     // Only the desktop's registered approval key signs consent: not another
     // key, and not the Runner's own, which any process of the person can read.
-    await expect(
-      setComputerApp(
-        host,
-        computer,
-        setup,
-        createComputerAppApproval(generateKeyPairSync("ed25519").privateKey, setup),
-      ),
-    ).rejects.toThrow(/refused.*Approve this access/u);
-    await expect(
-      setComputerApp(
-        host,
-        computer,
-        setup,
-        createComputerAppApproval(computer.primary.privateKey, setup),
-      ),
-    ).rejects.toThrow(/refused.*Approve this access/u);
-    const enabled = await setComputerApp(
-      host,
-      computer,
-      setup,
-      createComputerAppApproval(computer.approvalKey.privateKey, setup),
+    await expect(setComputerApp(host, computer, setup, setup.id)).rejects.toThrow(
+      /refused.*Approve this access/u,
     );
+    await expect(setComputerApp(host, computer, setup, setup.id)).rejects.toThrow(
+      /refused.*Approve this access/u,
+    );
+    const enabled = await setComputerApp(host, computer, setup, setup.id);
 
     const second = await signUpUser(host, {
       email: "second@example.test",
@@ -308,12 +291,7 @@ integration("computer apps", () => {
       "read-write",
       "messages-read-write",
     );
-    await setComputerApp(
-      host,
-      computer,
-      writeSetup,
-      createComputerAppApproval(computer.approvalKey.privateKey, writeSetup),
-    );
+    await setComputerApp(host, computer, writeSetup, writeSetup.id);
     await gateway.call("integration_request", {
       access: "read-write",
       integration: "apple-messages",
@@ -383,12 +361,7 @@ integration("computer apps", () => {
       "read-write",
       "messages-widen-again",
     );
-    await setComputerApp(
-      host,
-      computer,
-      widenSetup,
-      createComputerAppApproval(computer.approvalKey.privateKey, widenSetup),
-    );
+    await setComputerApp(host, computer, widenSetup, widenSetup.id);
     const currentSend = operation(
       await gateway.call("integration_search", { query: "Messages" }),
       "send_message",
@@ -528,12 +501,7 @@ integration("computer apps", () => {
     const computer = await connectComputerAppMachine(host, fakeMessagesProvider());
     closers.unshift(() => computer.close());
     const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "admin-boundary");
-    const enabled = await setComputerApp(
-      host,
-      computer,
-      setup,
-      createComputerAppApproval(computer.approvalKey.privateKey, setup),
-    );
+    const enabled = await setComputerApp(host, computer, setup, setup.id);
     const administrator = await signUpUser(host, {
       email: "administrator@example.test",
       password: "administrator-password",
@@ -643,12 +611,7 @@ integration("computer apps", () => {
       "read",
       "personal-messages-read",
     );
-    const enabled = await setComputerApp(
-      host,
-      computer,
-      personalSetup,
-      createComputerAppApproval(computer.approvalKey.privateKey, personalSetup),
-    );
+    const enabled = await setComputerApp(host, computer, personalSetup, personalSetup.id);
     const run = await dispatchCallerRun(host, caller, {
       key: "personal-computer-app-run",
       title: "Read Messages",
@@ -755,12 +718,7 @@ integration("computer apps", () => {
         "calendar-read",
         "apple-calendar",
       );
-      const calendar = await setComputerApp(
-        host,
-        computer,
-        calendarSetup,
-        createComputerAppApproval(computer.approvalKey.privateKey, calendarSetup),
-      );
+      const calendar = await setComputerApp(host, computer, calendarSetup, calendarSetup.id);
       const remindersSetup = await requestComputerAppSetup(
         host,
         computer.runnerId,
@@ -768,12 +726,7 @@ integration("computer apps", () => {
         "reminders-write",
         "apple-reminders",
       );
-      const reminders = await setComputerApp(
-        host,
-        computer,
-        remindersSetup,
-        createComputerAppApproval(computer.approvalKey.privateKey, remindersSetup),
-      );
+      const reminders = await setComputerApp(host, computer, remindersSetup, remindersSetup.id);
 
       const run = await dispatchCallerRun(host, caller, {
         key: "helper-apps-run",

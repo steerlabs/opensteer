@@ -45,8 +45,7 @@ export const desktopBridgeChannels = {
   passkeyPresent: "opensteer.desktop.passkey.present",
   addDirect: "opensteer.desktop.access.add-direct",
   cancel: "opensteer.desktop.access.cancel",
-  computerUseApprovalKey: "opensteer.desktop.computer-use.approval-key",
-  reviewComputerAppSetup: "opensteer.desktop.computer-app.setup.review",
+
   openComputerAppSetup: "opensteer.desktop.computer-app.setup.open",
   computerAppSetupStatus: "opensteer.desktop.computer-app.setup.status",
   computerAppSetupBegin: "opensteer.desktop.computer-app.setup.begin",
@@ -57,8 +56,7 @@ export const desktopBridgeChannels = {
   getNotificationSupport: "opensteer.desktop.notification.support",
   showNotification: "opensteer.desktop.notification.show",
   setBadgeCount: "opensteer.desktop.badge.set",
-  getComputerUseApproval: "opensteer.desktop.computer-use.approval.get",
-  respondComputerUseApproval: "opensteer.desktop.computer-use.approval.respond",
+
   getComputerUsePermissions: "opensteer.desktop.computer-use.permissions.get",
   requestComputerUsePermissions: "opensteer.desktop.computer-use.permissions.request",
   openComputerUsePermissionsPanel: "opensteer.desktop.computer-use.permissions.panel.open",

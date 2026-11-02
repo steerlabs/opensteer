@@ -1338,9 +1338,8 @@ function bridgeOptions(
     localVisibility: { getSnapshot: () => true, subscribe },
     agentPhone: { readArtifact: async () => null, chooseUsbDevice: unavailable },
     computerApps: {
-      approvalKey: unavailable,
       dragIcon: unavailable,
-      review: unavailable,
+
       setup: {
         begin: unavailable,
         close: unavailable,
@@ -1352,8 +1351,7 @@ function bridgeOptions(
     },
     computerUse: {
       onActivationError: unavailable,
-      approvalGet: unavailable,
-      approvalRespond: unavailable,
+
       closePermissionsPanel: unavailable,
       openPermissionsPanel: unavailable,
       verifyBundledHelper: unavailable,

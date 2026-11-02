@@ -1,3 +1,4 @@
+import { unwrapRpcResult } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 
 import {
@@ -260,163 +261,100 @@ describe("ComputersPage", () => {
 });
 
 describe("ComputerDetailPage", () => {
-  it("finishes a same-access request through the live Host and this Mac's answer", async () => {
+  it("finishes a pending app approval through the Host from a remote browser", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const input = {
-      access: "read-write" as const,
-      app: null,
-      definitionId: "apple-messages",
       kind: "app" as const,
+      app: null,
+      access: "read-write" as const,
+      definitionId: "apple-messages",
       runnerId: laptopId,
     };
-    const first = await client.dispatch({
-      idempotencyKey: "existing-write-setup",
-      input,
-      type: "integration.computer.setup.request",
-    });
-    if (first.type !== "integration.computer.setup.request") throw new Error("Setup mismatch.");
-    await client.answerComputerAppApprovalOnMac({
-      ...input,
-      approval: {
-        expiresAt: "2026-09-20T00:00:00.000Z",
-        requestId: first.request.id,
-        signature: "a".repeat(86),
-      },
-    });
     const pending = await client.dispatch({
-      idempotencyKey: "pending-write-setup",
+      type: "integration.computer.setup.request",
+      idempotencyKey: "remote-review",
       input,
-      type: "integration.computer.setup.request",
     });
-    if (pending.type !== "integration.computer.setup.request") throw new Error("Setup mismatch.");
-    // The Host pushes the request to this Mac, and the Mac answers on its own
-    // stream; the page only waits for that answer.
-    const reviewComputerAppSetup = vi.fn(async ({ setupRequestId }: { setupRequestId: string }) => {
-      await client.answerComputerAppApprovalOnMac({
-        ...input,
-        approval: {
-          expiresAt: "2026-09-20T00:00:00.000Z",
-          requestId: setupRequestId,
-          signature: "b".repeat(86),
-        },
-      });
-      return { allowed: true };
-    });
+    if (pending.type !== "integration.computer.setup.request") throw new Error("Setup mismatch");
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await interactivePage({
       client,
-      desktopBridge: Object.assign({} as OpensteerDesktopBridge, { reviewComputerAppSetup }),
-      localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
       path: `/settings/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
-
-    await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Finish setup"));
-    await click(button(page.container, "Finish setup"));
-    await click(button(page.container, "Allow and continue"));
-
-    expect(reviewComputerAppSetup).toHaveBeenCalledWith({ setupRequestId: pending.request.id });
-    // No client command carries a signature.
-    expect(dispatch).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: "integration.computer.setup.set" }),
-    );
-    const remaining = await client.rpc["integration.computer.setup.list"]({});
-    expect(
-      remaining.ok &&
-        remaining.data.requests.filter(({ definitionId }) => definitionId === "apple-messages"),
-    ).toEqual([]);
-    const connections = await client.rpc["integrations.get"]({});
-    expect(
-      connections.ok &&
-        connections.data.connections.some(
-          (connection) =>
-            connection.definitionId === input.definitionId &&
-            connection.computer?.runnerId === laptopId &&
-            connection.computer.access === "read-write",
-        ),
-    ).toBe(true);
-    expect(page.container.textContent).not.toContain("Sending setup requested");
-    expect(page.container.textContent).not.toContain("Setup requested");
-    expect(page.container.textContent).toContain("Setup unfinished");
-  });
-
-  it("refreshes a stale setup intent before its target computer is asked", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const stale = await client.dispatch({
-      idempotencyKey: "stale-setup-fixture",
-      input: {
-        access: "read",
-        app: null,
-        definitionId: "apple-messages",
-        kind: "app",
-        runnerId: laptopId,
-      },
-      type: "integration.computer.setup.request",
-    });
-    if (stale.type !== "integration.computer.setup.request") throw new Error("Setup mismatch.");
-    const fresh = { ...stale.request, id: crypto.randomUUID(), definitionDigest: "new-digest" };
-    const dispatch = vi.spyOn(client, "dispatch");
-    dispatch.mockImplementation(async (command) => {
-      if (command.type === "integration.computer.setup.request") {
-        return { type: command.type, request: fresh } as Awaited<
-          ReturnType<typeof client.dispatch>
-        >;
-      }
-      return MockHostClient.prototype.dispatch.call(client, command);
-    });
-    const reviewComputerAppSetup = vi.fn(async () => ({ allowed: false }));
-    const page = await interactivePage({
-      client,
-      desktopBridge: Object.assign({} as OpensteerDesktopBridge, { reviewComputerAppSetup }),
-      localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
-      path: `/settings/computers/${laptopId}`,
-      snapshot: client.getSnapshot(),
-    });
-
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Review request"));
     await click(button(page.container, "Review request"));
     await click(button(page.container, "Allow and continue"));
-
+    await click(button(page.container, "Allow"));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: {
-          access: "read",
-          app: null,
-          definitionId: "apple-messages",
-          kind: "app",
-          runnerId: laptopId,
-        },
-        type: "integration.computer.setup.request",
+        type: "integration.computer.setup.respond",
+        setupRequestId: pending.request.id,
+        decision: "allow",
       }),
     );
-    expect(reviewComputerAppSetup).toHaveBeenCalledWith({ setupRequestId: fresh.id });
-    expect(dispatch).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "integration.computer.setup.set",
-      }),
-    );
+    expect(
+      unwrapRpcResult(await client.rpc["integration.computer.setup.list"]({})).requests.some(
+        ({ id }) => id === pending.request.id,
+      ),
+    ).toBe(false);
   });
 
-  it("keeps setup unfinished when the Host refuses this Mac's answer", async () => {
+  it("reviews the fresh request returned by the Host before allowing", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
-    const reviewComputerAppSetup = vi.fn(async () => {
-      throw new Error("The setup request was replaced.");
+    const pending = await client.dispatch({
+      type: "integration.computer.setup.request",
+      idempotencyKey: "old",
+      input: {
+        kind: "app",
+        app: null,
+        access: "read",
+        definitionId: "apple-messages",
+        runnerId: laptopId,
+      },
+    });
+    if (pending.type !== "integration.computer.setup.request") throw new Error("Setup mismatch");
+    const review = vi.fn(client.rpc["integration.computer.setup.review"]);
+    const rpc = client.rpc;
+    Object.defineProperty(client, "rpc", {
+      value: new Proxy(rpc, {
+        get: (target, key, receiver) =>
+          key === "integration.computer.setup.review" ? review : Reflect.get(target, key, receiver),
+      }),
     });
     const page = await interactivePage({
       client,
-      desktopBridge: Object.assign({} as OpensteerDesktopBridge, { reviewComputerAppSetup }),
-      localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
       path: `/settings/computers/${laptopId}`,
       snapshot: client.getSnapshot(),
     });
+    await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Review request"));
+    await click(button(page.container, "Review request"));
+    await click(button(page.container, "Allow and continue"));
+    expect(review).toHaveBeenCalledWith(
+      { setupRequestId: pending.request.id },
+      { signal: expect.any(AbortSignal) },
+    );
+    await click(button(page.container, "Don't allow"));
+  });
 
+  it("keeps setup unfinished when the Host refuses an owner decision", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const original = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "integration.computer.setup.respond")
+        throw new Error("The setup request was replaced.");
+      return original(command);
+    });
+    const page = await interactivePage({
+      client,
+      path: `/settings/computers/${laptopId}`,
+      snapshot: client.getSnapshot(),
+    });
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Set up"));
     await click(button(page.container, "Set up"));
     await click(button(page.container, "Allow and continue"));
-
-    expect(reviewComputerAppSetup).toHaveBeenCalledWith({ setupRequestId: expect.any(String) });
+    await click(button(page.container, "Allow"));
     expect(page.container.textContent).toContain("The setup request was replaced.");
-    expect(page.container.textContent).not.toContain("is ready");
   });
 
   it("keeps the Reachable block and Remove off the Mac a Personal Opensteer runs on", () => {
@@ -615,7 +553,7 @@ describe("ComputerDetailPage", () => {
     await vi.waitFor(() => expect(buttonTexts(here.container)).toContain("Finish setup"));
     expect(buttonTexts(here.container)).not.toContain("Send setup request");
     expect(here.container.textContent).not.toContain("Complete setup on Mac mini.");
-    expect(computerUseApprovalKey).toHaveBeenCalled();
+    expect(computerUseApprovalKey).not.toHaveBeenCalled();
 
     await click(button(here.container, "Finish setup"));
     expect(here.container.textContent).toContain("Allow Apple Messages on this Mac");
@@ -628,59 +566,35 @@ describe("ComputerDetailPage", () => {
 
   // Failure: turning an app on at the hosting Mac goes out as a request for
   // some other device to approve, rather than this Mac's own approval.
-  it("turns an app on at the Mac that hosts a Personal Deployment through that Mac's approval", async () => {
+  it("uses the same owner command at the Mac hosting a Personal Deployment", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
-    const dashboard = await client.rpc["integrations.get"]({});
-    const messages = dashboard.ok
-      ? dashboard.data.connections.find(
-          ({ computer, definitionId }) =>
-            definitionId === "apple-messages" && computer?.runnerId === macMiniId,
-        )
-      : undefined;
-    if (!messages) throw new Error("The preview has Messages on the Mac mini.");
+    const dashboard = unwrapRpcResult(await client.rpc["integrations.get"]({}));
+    const messages = dashboard.connections.find(
+      ({ computer, definitionId }) =>
+        definitionId === "apple-messages" && computer?.runnerId === macMiniId,
+    );
+    if (!messages) throw new Error("Messages fixture missing");
     await client.dispatch({
-      connectionId: messages.id,
-      idempotencyKey: "messages-off-on-mac-mini",
       type: "integration.disconnect",
+      connectionId: messages.id,
+      idempotencyKey: "remove",
     });
-    const reviewComputerAppSetup = vi.fn(async ({ setupRequestId }: { setupRequestId: string }) => {
-      await client.answerComputerAppApprovalOnMac({
-        access: "read",
-        app: null,
-        approval: {
-          expiresAt: "2026-09-20T00:00:00.000Z",
-          requestId: setupRequestId,
-          signature: "c".repeat(86),
-        },
-        definitionId: "apple-messages",
-        kind: "app",
-        runnerId: macMiniId,
-      });
-      return { allowed: true };
-    });
-    const bridge = {
-      computerUseApprovalKey: async () => ({
-        keyId: macMiniApprovalKeyId,
-        publicKey: "public-key",
-      }),
-      reviewComputerAppSetup,
-    } as unknown as OpensteerDesktopBridge;
+    const dispatch = vi.spyOn(client, "dispatch");
     const page = await interactivePage({
       client,
-      desktopBridge: bridge,
+      desktopBridge: {} as OpensteerDesktopBridge,
       desktopDeploymentKind: "personal",
       onThisComputer: true,
       path: `/settings/computers/${macMiniId}`,
       snapshot: client.getSnapshot(),
     });
-
     await vi.waitFor(() => expect(buttonTexts(page.container)).toContain("Set up"));
-    expect(buttonTexts(page.container)).not.toContain("Send setup request");
     await click(button(page.container, "Set up"));
     await click(button(page.container, "Allow and continue"));
-
-    expect(reviewComputerAppSetup).toHaveBeenCalledOnce();
-    expect(page.container.textContent).not.toContain("Open Opensteer on Mac mini to continue.");
+    await click(button(page.container, "Allow"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "integration.computer.setup.respond", decision: "allow" }),
+    );
   });
 
   it("removes another computer with the Host command, after saying what it costs", async () => {

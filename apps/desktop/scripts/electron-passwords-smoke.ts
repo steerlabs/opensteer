@@ -352,14 +352,6 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       },
     },
     ownership: new ComputerUseSessionOwnership(),
-    approvals: {
-      disconnected() {},
-      list() {},
-      outcome() {},
-      proveKeyChallenge: async () => {
-        throw new Error("No app approval in this journey");
-      },
-    },
   });
   await controlServer.start();
   controlClient = new ComputerUseBridgeClient({

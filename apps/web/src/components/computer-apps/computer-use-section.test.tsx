@@ -9,11 +9,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  ComputerUseBlock,
-  type ComputerUseApprovalKeySetup,
-  type ComputerUseLocalActions,
-} from "./computer-use-section.js";
+import { ComputerUseBlock, type ComputerUseLocalActions } from "./computer-use-section.js";
 
 const mac = "rnr_11111111-1111-4111-8111-111111111111";
 const setupRequestId = "00000000-0000-4000-8000-000000000007";
@@ -33,19 +29,16 @@ describe("ComputerUseBlock", () => {
   it("prioritizes an offline Mac over approval-key setup", async () => {
     const { container } = await mount({
       local: null,
-      view: view({ approvalKeyId: null, state: { kind: "offline" } }),
+      view: view({ state: { kind: "offline" } }),
     });
     expect(container.textContent).toContain("Studio is offline.");
     expect(container.textContent).not.toContain("App approvals need setup.");
   });
 
-  it("waits for the desktop key to match the Host before offering local approvals", async () => {
-    const { container } = await mount({
-      approvalKeySetup: { error: null, ready: false, retry: vi.fn() },
-      view: view({ approvalKeyId: `sha256:${"a".repeat(43)}` }),
-    });
-    expect(button(container, "Add app")).toBeNull();
-    expect(radio(container, "automatic").disabled).toBe(true);
+  it("offers Add app and automatic approval from a remote owner session", async () => {
+    const { container } = await mount({ local: null, view: view({}) });
+    expect(button(container, "Add app")).not.toBeNull();
+    expect(radio(container, "automatic").disabled).toBe(false);
   });
 
   it("points a remote viewer at the Mac instead of offering the panel", async () => {
@@ -135,40 +128,38 @@ describe("ComputerUseBlock", () => {
     expect(container.querySelector("[role=alert]")).toBeNull();
   });
 
-  it("confirms automatic approval in this Mac's own window", async () => {
-    const reviewSetup = vi.fn(async () => true);
-    const refresh = vi.fn(async () => undefined);
+  it("confirms automatic approval with the Host from any device", async () => {
     const dispatch = vi.fn(async (command: { type: string }) => ({
-      request: { id: setupRequestId },
       type: command.type,
+      request: { id: setupRequestId },
     }));
-    const { container } = await mount({
-      dispatch,
-      local: localActions({ reviewSetup }),
-      refresh,
-      view: view({ apps: [row(notes)] }),
-    });
-    expect(container.querySelector("legend")?.textContent).toBe("App approvals");
-
+    const { container } = await mount({ dispatch, local: null, view: view({}) });
     await click(radio(container, "automatic"));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: { appApproval: "automatic", kind: "policy", runnerId: mac },
         type: "integration.computer.setup.request",
+        input: { kind: "policy", appApproval: "automatic", runnerId: mac },
       }),
     );
-    expect(reviewSetup).toHaveBeenCalledWith(setupRequestId);
-    expect(refresh).toHaveBeenCalledOnce();
+    await click(button(dialog(), "Allow"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "integration.computer.setup.respond",
+        setupRequestId,
+        decision: "allow",
+      }),
+    );
   });
 
-  it("offers automatic approval elsewhere only as where to turn it on", async () => {
-    const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
-    const { container } = await mount({ dispatch, local: null, view: view({}) });
-    expect(radio(container, "automatic").disabled).toBe(true);
-    expect(container.textContent).toContain("Turn this on from Studio.");
-    expect(button(container, "Add app")).toBeNull();
-    await click(radio(container, "automatic"));
-    expect(dispatch).not.toHaveBeenCalled();
+  it("does not fetch review details before a remote owner opens one", async () => {
+    const review = vi.fn(async () => reviewResult());
+    const { container } = await mount({
+      local: null,
+      rpc: { "integration.computer.setup.review": review },
+      view: view({}),
+    });
+    expect(review).not.toHaveBeenCalled();
+    expect(button(container, "Add app")).not.toBeNull();
   });
 
   it("turns automatic off from anywhere, at once", async () => {
@@ -231,10 +222,9 @@ describe("ComputerUseBlock", () => {
       request: { id: setupRequestId },
       type: command.type,
     }));
-    const reviewSetup = vi.fn(async () => true);
     const { container } = await mount({
       dispatch,
-      local: localActions({ reviewSetup }),
+      local: null,
       view: view({
         appApproval: "automatic",
         apps: [row(notes), { ...row(safari, "read"), blocked: true }],
@@ -254,7 +244,7 @@ describe("ComputerUseBlock", () => {
       }),
     );
 
-    await click(button(container, "Unblock on this Mac"));
+    await click(button(container, "Unblock"));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         input: {
@@ -267,20 +257,30 @@ describe("ComputerUseBlock", () => {
         type: "integration.computer.setup.request",
       }),
     );
-    expect(reviewSetup).toHaveBeenCalledWith(setupRequestId);
+    await click(button(dialog(), "Allow"));
   });
 
-  it("says where a blocked app is unblocked when viewed from elsewhere", async () => {
+  it("lets a remote owner review a blocked app before unblocking", async () => {
+    const dispatch = vi.fn(async (command: { type: string }) => ({
+      type: command.type,
+      request: { id: setupRequestId },
+    }));
     const { container } = await mount({
+      dispatch,
       local: null,
       view: view({ apps: [{ ...row(safari), blocked: true }] }),
     });
-    expect(button(container, "Unblock on this Mac")).toBeNull();
-    expect(container.textContent).toContain("Unblock on Studio");
+    await click(button(container, "Unblock"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "integration.computer.setup.request" }),
+    );
+    await click(button(dialog(), "Don't allow"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "integration.computer.setup.respond", decision: "deny" }),
+    );
   });
 
   it("adds an app in one choice: the access on its row opens the native approval directly", async () => {
-    const reviewSetup = vi.fn(async () => true);
     const onChanged = vi.fn(async () => undefined);
     const dispatch = vi.fn(async (command: { type: string }) => ({
       request: { id: setupRequestId },
@@ -295,7 +295,7 @@ describe("ComputerUseBlock", () => {
     }));
     const { container } = await mount({
       dispatch,
-      local: localActions({ reviewSetup }),
+      local: null,
       onChanged,
       rpc: { "integration.computer.apps.installed": installed },
       view: view({ apps: [row(notes, "read")] }),
@@ -339,51 +339,33 @@ describe("ComputerUseBlock", () => {
         type: "integration.computer.setup.request",
       }),
     );
-    expect(reviewSetup).toHaveBeenCalledOnce();
-    expect(reviewSetup).toHaveBeenCalledWith(setupRequestId);
+    await click(button(dialog(), "Allow"));
     expect(onChanged).toHaveBeenCalledOnce();
     expect(document.querySelector(".dialog")).toBeNull();
   });
 
-  it("keeps the picker open, busy while this Mac asks, and says in the row when it fails", async () => {
-    const review = deferred<boolean>();
-    const reviewSetup = vi.fn(async () => review.promise);
-    const dispatch = vi.fn(async (command: { type: string }) => ({
-      request: { id: setupRequestId },
-      type: command.type,
-    }));
-    const installed = vi.fn(async () => ({
-      data: {
-        apps: [notes, preview].map((identity) => ({ identity, running: false })),
-        total: 2,
-      },
-      ok: true,
-    }));
+  it("leaves the picker retryable when the helper cannot verify the app", async () => {
+    const review = deferred<unknown>();
     const { container } = await mount({
-      dispatch,
-      local: localActions({ reviewSetup }),
-      rpc: { "integration.computer.apps.installed": installed },
       view: view({}),
+      dispatch: async (command) => ({ type: command.type, request: { id: setupRequestId } }),
+      rpc: {
+        "integration.computer.apps.installed": async () => ({
+          ok: true,
+          data: { apps: [{ identity: preview, running: false }], total: 1 },
+        }),
+        "integration.computer.setup.review": () => review.promise,
+      },
     });
     await click(button(container, "Add app"));
     await settle();
-    const [notesRow, previewRow] = [
-      ...dialog().querySelectorAll<HTMLElement>(".computer-use__list > li"),
-    ];
-    if (!notesRow || !previewRow) throw new Error("rows missing");
-
-    await click(button(previewRow, "Can see and control"));
-    expect(previewRow.getAttribute("aria-busy")).toBe("true");
-    expect(button(previewRow, "Confirming…")?.disabled).toBe(true);
-    expect(button(notesRow, "Can see")?.disabled).toBe(true);
-
-    await act(async () => review.reject(new Error("Opensteer on Studio did not answer.")));
-    expect(previewRow.querySelector('[role="alert"]')?.textContent).toBe(
-      "Opensteer on Studio did not answer.",
-    );
-    expect(notesRow.querySelector('[role="alert"]')).toBeNull();
-    expect(button(previewRow, "Can see and control")?.disabled).toBe(false);
-    expect(document.querySelector(".dialog")).not.toBeNull();
+    const candidate = dialog().querySelector<HTMLElement>(".computer-use__list > li");
+    if (!candidate) throw new Error("missing app");
+    await click(button(candidate, "Can see"));
+    expect(candidate.getAttribute("aria-busy")).toBe("true");
+    await act(async () => review.reject(new Error("Can't verify this app right now.")));
+    expect(candidate.textContent).toContain("Can't verify this app right now.");
+    expect(button(candidate, "Can see")?.disabled).toBe(false);
   });
 
   it("searches and pages on the Mac rather than in the page", async () => {
@@ -459,27 +441,20 @@ describe("ComputerUseBlock", () => {
     expect(container.querySelector(".notice--error")).toBeNull();
   });
 
-  it("says where to confirm automatic approval while this Mac asks, and why it did not change", async () => {
-    const review = deferred<boolean>();
-    const dispatch = vi.fn(async (command: { type: string }) => ({
-      request: { id: setupRequestId },
-      type: command.type,
-    }));
+  it("keeps an automatic approval pending if the owner session is revoked", async () => {
     const { container } = await mount({
-      dispatch,
-      local: localActions({ reviewSetup: () => review.promise }),
-      view: view({ apps: [row(notes)] }),
+      local: null,
+      view: view({}),
+      dispatch: async (command) => {
+        if (command.type === "integration.computer.setup.respond")
+          throw new Error("Your session changed. Review this approval again.");
+        return { type: command.type, request: { id: setupRequestId } };
+      },
     });
-
     await click(radio(container, "automatic"));
-    expect(container.textContent).toContain("Confirm in the Opensteer window on this Mac.");
+    await click(button(dialog(), "Allow"));
+    expect(dialog().textContent).toContain("Your session changed.");
     expect(radio(container, "automatic").checked).toBe(false);
-
-    await act(async () => review.reject(new Error("That approval is no longer open.")));
-    expect(container.textContent).not.toContain("Confirm in the Opensteer window");
-    expect(container.querySelector(".notice--error")?.textContent).toBe(
-      "That approval is no longer open.",
-    );
   });
 
   it("shows Stop busy and says in the session's row why it did not stop", async () => {
@@ -511,7 +486,6 @@ describe("ComputerUseBlock", () => {
 });
 
 interface MountInput {
-  readonly approvalKeySetup?: ComputerUseApprovalKeySetup;
   readonly dispatch?: (command: { type: string }) => Promise<unknown>;
   readonly local?: ComputerUseLocalActions | null;
   readonly onChanged?: () => Promise<void>;
@@ -534,14 +508,13 @@ async function mount(input: MountInput) {
       user: { id: "usr_00000000-0000-4000-8000-000000000001" },
     }),
     refresh: input.refresh ?? (async () => undefined),
-    rpc: input.rpc ?? {},
+    rpc: { "integration.computer.setup.review": async () => reviewResult(), ...input.rpc },
     subscribe: () => () => undefined,
   } as unknown as HostClient;
   await act(async () => {
     root.render(
       <MemoryRouter>
         <ComputerUseBlock
-          approvalKeySetup={input.approvalKeySetup ?? null}
           hostClient={hostClient}
           local={input.local === undefined ? localActions({}) : input.local}
           machine={{ id: mac, name: "Studio", status: "online" } as MachineSummary}
@@ -558,7 +531,6 @@ async function mount(input: MountInput) {
 function localActions(overrides: Partial<ComputerUseLocalActions>): ComputerUseLocalActions {
   return {
     openPermissions: async () => ({ opened: true }),
-    reviewSetup: async () => true,
     ...overrides,
   };
 }
@@ -566,7 +538,6 @@ function localActions(overrides: Partial<ComputerUseLocalActions>): ComputerUseL
 function view(overrides: Partial<ComputerUseView>): ComputerUseView {
   return {
     appApproval: "ask",
-    approvalKeyId: `sha256:${"A".repeat(43)}`,
     apps: [],
     definition: { id: "macos-app", name: "Computer use" } as IntegrationDefinitionSummary,
     pending: [],
@@ -649,4 +620,29 @@ async function settle(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+}
+
+function reviewResult() {
+  return {
+    ok: true,
+    data: {
+      request: {
+        id: setupRequestId,
+        kind: "app",
+        definitionId: "macos-app",
+        access: "read",
+        app: preview,
+        server: null,
+        threadTitle: null,
+        workspaceName: null,
+        reason: null,
+      },
+      app: {
+        identity: preview,
+        allowed: true,
+        path: "/System/Applications/Preview.app",
+        risk: "normal",
+      },
+    },
+  };
 }

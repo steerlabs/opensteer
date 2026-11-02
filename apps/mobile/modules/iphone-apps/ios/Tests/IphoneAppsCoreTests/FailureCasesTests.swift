@@ -17,10 +17,10 @@ final class FailureCasesTests: XCTestCase {
     let vault = MemoryIdentityVault()
     let store = IdentityStore(vault: vault, record: MemoryRecordStore())
     vault.put(Data(repeating: 1, count: 32), account: .runnerKey)
-    vault.put(Data(repeating: 2, count: 32), account: .approvalKey)
+    vault.put(Data(repeating: 2, count: 32), account: .obsoleteApprovalKey)
     _ = try store.load()
     XCTAssertNil(vault.get(.runnerKey))
-    XCTAssertNil(vault.get(.approvalKey))
+    XCTAssertNil(vault.get(.obsoleteApprovalKey))
   }
 
   func testF2RestoredRecordWithMissingSecretIsRejected() throws {
@@ -50,10 +50,18 @@ final class FailureCasesTests: XCTestCase {
     XCTAssertFalse(text.contains("signature"))
   }
 
-  func testF5KeysAreIndependent() throws {
-    let store = IdentityStore(vault: MemoryIdentityVault(), record: MemoryRecordStore())
-    _ = try store.prepare(deploymentId: "one")
-    XCTAssertNotEqual(try store.runnerPublicKey(), try store.approvalPublicKey())
+  func testObsoleteApprovalKeyIsRemovedWithoutChangingRunnerIdentity() throws {
+    let vault = MemoryIdentityVault()
+    let record = MemoryRecordStore()
+    let store = IdentityStore(vault: vault, record: record)
+    let original = try store.prepare(deploymentId: "one")
+    let key = try store.runnerPublicKey()
+    vault.put(Data(repeating: 2, count: 32), account: .obsoleteApprovalKey)
+    let loaded = try store.load()
+    XCTAssertEqual(loaded?.runnerId, original.runnerId)
+    XCTAssertEqual(try store.runnerPublicKey(), key)
+    XCTAssertNil(vault.get(.obsoleteApprovalKey))
+    XCTAssertEqual(try store.load()?.runnerId, original.runnerId)
   }
 
   func testF6MintKeyPersistsAndRotatesOnlyOnDiscard() throws {
@@ -278,32 +286,7 @@ final class FailureCasesTests: XCTestCase {
     XCTAssertThrowsError(try FrameDecoder.decode(Data(repeating: 32, count: 1_048_577)))
   }
 
-  // F35-F38: only listed, matching and live approvals are signed; possession
-  // challenges bind both the key and this runner.
-  func testF35UnlistedMismatchedOrExpiredApprovalRefused() {
-    let signer = ApprovalRules(runnerId: runner, keyId: "key")
-    XCTAssertFalse(signer.mayAnswer(requestId: "missing", expectedDefinition: "apple-calendar", expectedAccess: "read"))
-  }
 
-  func testF36ForeignKeyOrRunnerChallengeRefused() {
-    let signer = ApprovalRules(runnerId: runner, keyId: "key")
-    XCTAssertFalse(signer.mayProve(keyId: "other", runnerId: runner))
-    XCTAssertFalse(signer.mayProve(keyId: "key", runnerId: "other"))
-  }
-
-  func testF37RegistrationDerivedFromHostKeyId() {
-    let signer = ApprovalRules(runnerId: runner, keyId: "key")
-    XCTAssertFalse(signer.registered(hostKeyId: nil))
-    XCTAssertTrue(signer.registered(hostKeyId: "key"))
-  }
-
-  func testF38AllowAndDenyTranscriptsDiffer() throws {
-    let request: [String: Any] = ["id": "req", "app": NSNull(), "definitionId": "apple-calendar", "runnerId": runner]
-    let allow = try IphoneProofs.approvalTranscript(request: request, decision: "allow", expiresAt: "2026-10-26T20:00:00.000Z")
-    let deny = try IphoneProofs.approvalTranscript(request: request, decision: "deny", expiresAt: "2026-10-26T20:00:00.000Z")
-    XCTAssertNotEqual(allow, deny)
-    XCTAssertTrue(String(decoding: allow, as: UTF8.self).contains("opensteer-computer-app-approval-v4"))
-  }
 }
 
 private final class MemoryIdentityVault: IdentityVault {

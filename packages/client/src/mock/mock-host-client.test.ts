@@ -989,7 +989,7 @@ it("filters the mock task catalog to active listed work before paging", async ()
   expect(ids).toEqual(expected.map(({ thread }) => thread.id));
 });
 
-it("models iPhone capability, pairing, pending enrollment, signed approval hooks and removal", async () => {
+it("models iPhone capability, pairing, pending enrollment, owner-session approvals and removal", async () => {
   const client = createClient();
   try {
     expect(client.getSnapshot().iphoneAppsAvailable).toBe(true);
@@ -1037,15 +1037,6 @@ it("models iPhone capability, pairing, pending enrollment, signed approval hooks
       "iphone-location",
       "iphone-photos",
     ]);
-    await client.dispatch({
-      type: "integration.computer.approval-key.set",
-      idempotencyKey: "iphone-key",
-      input: {
-        runnerId,
-        publicKey:
-          "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE=\n-----END PUBLIC KEY-----\n",
-      },
-    });
     expect(client.getSnapshot().machines.find(({ id }) => id === runnerId)?.computerUse).toBeNull();
     const request = await client.dispatch({
       type: "integration.computer.setup.request",
@@ -1060,7 +1051,9 @@ it("models iPhone capability, pairing, pending enrollment, signed approval hooks
         input: { kind: "app", app: null, runnerId, definitionId: "apple-calendar", access: "read" },
       }),
     ).rejects.toThrow();
-    await client.mockAnswerIphoneApproval({
+    await client.dispatch({
+      type: "integration.computer.setup.respond",
+      idempotencyKey: "iphone-allow",
       setupRequestId: request.request.id,
       decision: "allow",
     });

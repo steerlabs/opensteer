@@ -1,9 +1,15 @@
+import { ComputerSetupApprovals } from "./computer-app-approval.js";
+import { Icon } from "../icon.js";
+import { IntegrationIcon } from "../integrations/integration-icon.js";
+import { ComputerAppWorkspaceAccess } from "./computer-app-workspace-access.js";
+import { ComputerUseBlock } from "./computer-use-section.js";
+
 import type {
   IntegrationAccess,
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
   IntegrationPlatformDashboardView,
-  ComputerAppSetupRequest,
+  ComputerAppSetupSummary as ComputerAppSetupRequest,
 } from "@opensteer/integration-core";
 import type { ComputerAppRemedy, MachineSummary } from "@opensteer/protocol";
 import {
@@ -27,14 +33,8 @@ import {
 } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { Icon } from "../icon.js";
-import { IntegrationIcon } from "../integrations/integration-icon.js";
-import { ComputerAppWorkspaceAccess } from "./computer-app-workspace-access.js";
-import {
-  ComputerUseBlock,
-  type ComputerUseApprovalKeySetup,
-  type ComputerUseLocalActions,
-} from "./computer-use-section.js";
+
+import { type ComputerUseLocalActions } from "./computer-use-section.js";
 
 export function useComputerAppData(hostClient: HostClient, revision: number) {
   const [result, setResult] = useState<{
@@ -120,7 +120,7 @@ export interface ComputerAppLocalApproval {
   /** False means the native confirmation was declined without changing access. */
   readonly approveAccess: (input: ComputerAppApprovalInput) => Promise<boolean>;
   /** Sets the app up on this Mac at the access it was allowed. */
-  readonly reviewPermission: (input: {
+  readonly reviewPermission?: (input: {
     readonly access: IntegrationAccess;
     readonly definitionId: string;
     readonly remedy: ComputerAppRemedy | null;
@@ -134,7 +134,6 @@ interface PendingChange {
 type AppPanel = "confirm-off" | "manage" | "overview" | "setup";
 
 export function ComputerAppsSection({
-  computerUseApprovalKeySetup = null,
   computerUseLocal = null,
   connections,
   definitions,
@@ -151,7 +150,6 @@ export function ComputerAppsSection({
   setupRequests = [],
   workspaces,
 }: {
-  readonly computerUseApprovalKeySetup?: ComputerUseApprovalKeySetup | null;
   /** What the desktop on this very Mac can do for computer use; null elsewhere. */
   readonly computerUseLocal?: ComputerUseLocalActions | null;
   readonly connections: readonly IntegrationConnectionSummary[];
@@ -338,74 +336,82 @@ export function ComputerAppsSection({
   if (rows.length === 0 && computerUse === null) return null;
 
   return (
-    <section aria-labelledby="computer-apps-title" className="computers-section">
-      <div className="section-heading">
-        <div>
-          <h2 id="computer-apps-title">Apps agents can use</h2>
+    <>
+      {owned ? (
+        <ComputerSetupApprovals
+          hostClient={hostClient}
+          requests={setupRequests.filter((request) => request.kind !== "app")}
+          onChanged={onChanged}
+        />
+      ) : null}
+      <section aria-labelledby="computer-apps-title" className="computers-section">
+        <div className="section-heading">
+          <div>
+            <h2 id="computer-apps-title">Apps agents can use</h2>
+          </div>
         </div>
-      </div>
-      <div className="card computer-apps">
-        {computerUse ? (
-          <ComputerUseBlock
-            approvalKeySetup={computerUseApprovalKeySetup}
-            hostClient={hostClient}
-            local={computerUseLocal}
-            machine={machine}
-            onChanged={onChanged}
-            owned={owned}
-            view={computerUse}
-          />
-        ) : null}
-        {rows.map((sourceRow) => {
-          const pendingChange = pending.get(sourceRow.definition.id) ?? null;
-          const row =
-            pendingChange === null ? sourceRow : { ...sourceRow, access: pendingChange.access };
-          const request = requestFor(row.definition.id);
-          const setupTarget = setupTargets.get(row.definition.id) ?? row.access ?? "read";
-          const approvedChoice = approvedChoices.get(row.definition.id);
-          return (
-            <AppRow
-              approvedChoice={
-                approvedChoice?.access === setupTarget &&
-                sourceRow.access === setupTarget &&
-                (request === null || approvedChoice.requestId === request.id)
-              }
-              error={errors.get(row.definition.id) ?? null}
-              focused={focusDefinitionId === row.definition.id}
+        <div className="card computer-apps">
+          {computerUse ? (
+            <ComputerUseBlock
               hostClient={hostClient}
-              installationId={installationIdFor(platform, row.definition.id)}
-              key={row.definition.id}
-              localApproval={localApproval}
+              local={computerUseLocal}
               machine={machine}
-              onApprove={(access) => void approve(sourceRow, access)}
-              onCancelRequest={() => void cancelRequest(sourceRow)}
-              onClose={() => setPanel(row.definition.id, "overview")}
-              onConfirmOff={() => void reduceOrTurnOff(sourceRow, null)}
-              onManage={() => setPanel(row.definition.id, "manage")}
-              onReduce={() => void reduceOrTurnOff(sourceRow, "read")}
-              onRequest={(access) => void requestSetup(sourceRow, access)}
-              onSetup={(access) => startSetup(sourceRow, access)}
-              onSetupTarget={(access) => {
-                setSetupTargets((current) => new Map(current).set(row.definition.id, access));
-                setApprovedChoices((current) => {
-                  const next = new Map(current);
-                  next.delete(row.definition.id);
-                  return next;
-                });
-              }}
-              onTurnOff={() => setPanel(row.definition.id, "confirm-off")}
+              onChanged={onChanged}
               owned={owned}
-              panel={panelFor(row.definition.id)}
-              pending={pendingChange !== null}
-              request={request}
-              row={row}
-              setupTarget={setupTarget}
-              workspaces={workspaces}
+              view={computerUse}
             />
-          );
-        })}
-      </div>
-    </section>
+          ) : null}
+          {rows.map((sourceRow) => {
+            const pendingChange = pending.get(sourceRow.definition.id) ?? null;
+            const row =
+              pendingChange === null ? sourceRow : { ...sourceRow, access: pendingChange.access };
+            const request = requestFor(row.definition.id);
+            const setupTarget = setupTargets.get(row.definition.id) ?? row.access ?? "read";
+            const approvedChoice = approvedChoices.get(row.definition.id);
+            return (
+              <AppRow
+                approvedChoice={
+                  approvedChoice?.access === setupTarget &&
+                  sourceRow.access === setupTarget &&
+                  (request === null || approvedChoice.requestId === request.id)
+                }
+                error={errors.get(row.definition.id) ?? null}
+                focused={focusDefinitionId === row.definition.id}
+                hostClient={hostClient}
+                installationId={installationIdFor(platform, row.definition.id)}
+                key={row.definition.id}
+                localApproval={localApproval}
+                machine={machine}
+                onApprove={(access) => void approve(sourceRow, access)}
+                onCancelRequest={() => void cancelRequest(sourceRow)}
+                onClose={() => setPanel(row.definition.id, "overview")}
+                onConfirmOff={() => void reduceOrTurnOff(sourceRow, null)}
+                onManage={() => setPanel(row.definition.id, "manage")}
+                onReduce={() => void reduceOrTurnOff(sourceRow, "read")}
+                onRequest={(access) => void requestSetup(sourceRow, access)}
+                onSetup={(access) => startSetup(sourceRow, access)}
+                onSetupTarget={(access) => {
+                  setSetupTargets((current) => new Map(current).set(row.definition.id, access));
+                  setApprovedChoices((current) => {
+                    const next = new Map(current);
+                    next.delete(row.definition.id);
+                    return next;
+                  });
+                }}
+                onTurnOff={() => setPanel(row.definition.id, "confirm-off")}
+                owned={owned}
+                panel={panelFor(row.definition.id)}
+                pending={pendingChange !== null}
+                request={request}
+                row={row}
+                setupTarget={setupTarget}
+                workspaces={workspaces}
+              />
+            );
+          })}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -527,7 +533,13 @@ function AppRow({
             ) : (
               <OverviewAction
                 iphone={iphone}
-                local={localApproval !== null}
+                local={
+                  localApproval !== null &&
+                  (request !== null ||
+                    row.access === null ||
+                    row.state.kind !== "permission-required" ||
+                    localApproval.reviewPermission !== undefined)
+                }
                 machineOnline={machine.status === "online"}
                 onCancelRequest={onCancelRequest}
                 onManage={onManage}
@@ -542,7 +554,7 @@ function AppRow({
         ) : null}
       </div>
 
-      {!expanded && localApproval === null ? (
+      {!expanded && (localApproval === null || !localApproval.reviewPermission) ? (
         request ? (
           <div className="computer-apps__row-note">
             <span>
@@ -924,6 +936,14 @@ function SetupPanel({
 
   const setup = setupState(row, target);
   if (setup.kind === "permission-required") {
+    if (!localApproval.reviewPermission)
+      return (
+        <p className="computer-apps__workspace-lead">
+          {row.state.kind === "permission-required" ? row.state.detail : setup.detail}{" "}
+          {computerAppSetupElsewhere(machine.name)}
+        </p>
+      );
+
     // Every grant the helper holds is set up by this Mac's setup panel, which
     // shows each step; the page names the app and offers to begin.
     const helperGrant =
@@ -948,7 +968,7 @@ function SetupPanel({
           <button
             className="btn btn--primary btn--small"
             onClick={() =>
-              void localApproval.reviewPermission({
+              void localApproval.reviewPermission?.({
                 access: target,
                 definitionId: row.definition.id,
                 remedy: setup.remedy,

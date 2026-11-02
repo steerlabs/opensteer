@@ -3,7 +3,7 @@ import Foundation
 
 public enum IdentityAccount: String, CaseIterable {
   case runnerKey = "runner-key"
-  case approvalKey = "approval-key"
+  case obsoleteApprovalKey = "approval-key"
   case enrollmentToken = "enrollment-token"
 }
 
@@ -74,11 +74,12 @@ public final class IdentityStore {
       return nil
     }
     let tokenPresent = try vault.read(.enrollmentToken) != nil
-    guard try vault.read(.runnerKey) != nil, try vault.read(.approvalKey) != nil,
+    guard try vault.read(.runnerKey) != nil,
       (identity.state != .pending || tokenPresent) else {
       try wipe()
       return nil
     }
+    try vault.remove(.obsoleteApprovalKey)
     if identity.state == .enrolled && tokenPresent { try vault.remove(.enrollmentToken) }
     return identity
   }
@@ -90,12 +91,7 @@ public final class IdentityStore {
       return PreparedIdentity(deploymentId: old.deploymentId, runnerId: old.runnerId, mintKey: old.mintKey)
     }
     let runner = Curve25519.Signing.PrivateKey()
-    var approval = Curve25519.Signing.PrivateKey()
-    while approval.publicKey.rawRepresentation == runner.publicKey.rawRepresentation {
-      approval = Curve25519.Signing.PrivateKey()
-    }
     try vault.write(runner.rawRepresentation, account: .runnerKey)
-    try vault.write(approval.rawRepresentation, account: .approvalKey)
     let identity = PersistedIphoneIdentity(
       version: 1, deploymentId: deploymentId, deploymentName: nil, hostInstanceId: nil,
       hostUrl: nil, runnerId: "rnr_\(UUID().uuidString.lowercased())", name: nil,
@@ -162,19 +158,7 @@ public final class IdentityStore {
     return try Curve25519.Signing.PrivateKey(rawRepresentation: bytes)
   }
 
-  public func approvalKey() throws -> Curve25519.Signing.PrivateKey {
-    guard let bytes = try vault.read(.approvalKey) else { throw IdentityStoreError.missingIdentity }
-    return try Curve25519.Signing.PrivateKey(rawRepresentation: bytes)
-  }
-
-  public func enrollmentToken() throws -> String? {
-    guard let bytes = try vault.read(.enrollmentToken) else { return nil }
-    return String(data: bytes, encoding: .utf8)
-  }
-
   public func runnerPublicKey() throws -> String { IphoneProofs.publicKeyPem(try runnerKey()) }
-  public func approvalPublicKey() throws -> String { IphoneProofs.publicKeyPem(try approvalKey()) }
-  public func approvalKeyId() throws -> String { IphoneProofs.keyId(try approvalKey()) }
 
   public func wipe() throws {
     lock.lock(); defer { lock.unlock() }

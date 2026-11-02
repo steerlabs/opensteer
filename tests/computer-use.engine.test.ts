@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,15 +12,10 @@ import {
 } from "../packages/core/src/index.js";
 import {
   ComputerUseHelperRequestSchema,
-  computerUseBridgeApprovalParams,
   type ComputerUseBridgeRequest,
   type ComputerUseObservation,
   type WindowInfo,
 } from "../packages/protocol/src/index.js";
-import {
-  createComputerAppApproval,
-  signComputerAppApprovalKeyChallenge,
-} from "../packages/runner-auth/src/index.js";
 import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
 import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
 import { createHarnessRegistry } from "../apps/runner/src/harness/harness-registry.js";
@@ -115,12 +110,6 @@ describe("real-engine computer use", () => {
       if (!machines.ok) throw new Error(machines.error.message);
       const mac = machines.data.machines.find((machine) => machine.ownership === "deployment");
       if (!mac) throw new Error("Personal Main Mac was not listed");
-      const registered = await stack.api["commands.dispatch"]({
-        type: "integration.computer.approval-key.set",
-        idempotencyKey: randomUUID(),
-        input: { runnerId: mac.id, publicKey: fixture.publicKey },
-      });
-      if (!registered.ok) throw new Error(registered.error.message);
       const requested = await stack.api["commands.dispatch"]({
         type: "integration.computer.setup.request",
         idempotencyKey: randomUUID(),
@@ -136,11 +125,14 @@ describe("real-engine computer use", () => {
       if (requested.data.type !== "integration.computer.setup.request")
         throw new Error("Expected Notes approval request");
       const request = requested.data.request;
-      const approval = await desktop.answer(request.id, {
-        kind: "allow",
-        approval: fixture.approve(request),
+      const approval = await stack.api["commands.dispatch"]({
+        type: "integration.computer.setup.respond",
+        idempotencyKey: randomUUID(),
+        setupRequestId: request.id,
+        decision: "allow",
       });
-      expect(approval.kind).toBe("allowed");
+      if (!approval.ok) throw new Error(approval.error.message);
+      expect(approval.data.type).toBe("integration.computer.setup.respond");
       const model = stack.catalog.models.find((candidate) => candidate.isDefault);
       if (!model) throw new Error("The signed-in engine has no default model");
       evidence.model = model;
@@ -292,7 +284,6 @@ async function readTranscript(stack: VerticalStack, runId: RunId) {
 }
 
 function scriptedNotes() {
-  const key = generateKeyPairSync("ed25519");
   const documents = [
     { id: 71, title: "Shopping list", field: 1, save: 2, value: "Weekly groceries", saved: false },
     { id: recipesId, title: "Recipes", field: 3, save: 4, value: "", saved: false },
@@ -317,22 +308,8 @@ function scriptedNotes() {
       frame: { x: 0, y: 0, width: 800, height: 600 },
     }));
   return {
-    publicKey: key.publicKey.export({ format: "pem", type: "spki" }).toString(),
-    approve: (request: Parameters<typeof createComputerAppApproval>[1]) =>
-      createComputerAppApproval(key.privateKey, request),
     state: () => ({ documents, violations }),
     answer(frame: ComputerUseBridgeRequest) {
-      if (frame.method === "approvals.key-challenge") {
-        const challenge = computerUseBridgeApprovalParams["approvals.key-challenge"].parse(
-          frame.params,
-        );
-        return {
-          result: {
-            challengeId: challenge.challengeId,
-            signature: signComputerAppApprovalKeyChallenge(key.privateKey, challenge),
-          },
-        };
-      }
       const request = helperRequest(frame);
       if (!request) return undefined;
       const fail = (message: string) => {

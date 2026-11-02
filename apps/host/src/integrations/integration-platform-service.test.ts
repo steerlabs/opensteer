@@ -7,7 +7,7 @@ import {
   type IntegrationToolsTokenService,
   type TriggerIntegrationToolsTokenService,
 } from "./integration-tools-mcp-service.js";
-import { generateKeyPairSync } from "node:crypto";
+
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -51,10 +51,7 @@ import {
   mintComputerUseSessionId,
   type MachineAppStatus,
 } from "@opensteer/protocol";
-import {
-  computerAppApprovalKeyId,
-  signComputerAppApprovalKeyChallenge,
-} from "@opensteer/runner-auth";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   IntegrationAuthorizationRequiredError,
@@ -3427,8 +3424,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       adapters: [],
       computerApps: {
         attached: () => true,
-        approvalRelayRefusal: () => null,
-        relaysComputerAppApprovals: () => true,
         withRunnerAdmission: async (_id, task) => task(),
         appStatus: () => null,
         send: vi.fn(),
@@ -4441,108 +4436,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
   });
 });
 
-describe("computer use approval key registration", () => {
-  it("requires the owner's candidate key to answer on the live Mac", async () => {
-    const ownerUserId = createId("user");
-    const runnerId = createId("runner");
-    const pair = generateKeyPairSync("ed25519");
-    const foreign = generateKeyPairSync("ed25519");
-    const publicKey = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const registered = vi.fn(async () => ({
-      approvalKeyId: computerAppApprovalKeyId(publicKey),
-      replaced: false,
-    }));
-    const prove = vi.fn(
-      async (
-        _runnerId: ReturnType<typeof createId<"runner">>,
-        challenge: Parameters<ComputerAppHub["proveComputerAppApprovalKey"]>[1],
-      ) => {
-        try {
-          return signComputerAppApprovalKeyChallenge(pair.privateKey, challenge);
-        } catch {
-          return null;
-        }
-      },
-    );
-    const service = platform({
-      adapters: [],
-      computerApps: {
-        appStatus: () => null,
-        attached: () => true,
-        approvalRelayRefusal: () => null,
-        relaysComputerAppApprovals: () => true,
-        proveComputerAppApprovalKey: prove,
-        send: vi.fn(),
-        withRunnerAdmission: async (_runnerId, task) => task(),
-      },
-      store: {
-        getComputerUsePolicy: async () => ({
-          appApproval: "ask",
-          approvalKeyId: null,
-          revision: 0,
-        }),
-        registerComputerUseApprovalKey: registered,
-      },
-    });
-    const input = { ownerUserId, publicKey, requestId: "register-key", runnerId };
-    await expect(
-      service.computerAppApprovals.registerComputerUseApprovalKey(input),
-    ).resolves.toEqual({
-      approvalKeyId: computerAppApprovalKeyId(publicKey),
-    });
-    expect(registered).toHaveBeenCalledOnce();
-    const foreignKey = foreign.publicKey.export({ format: "pem", type: "spki" }).toString();
-    await expect(
-      service.computerAppApprovals.registerComputerUseApprovalKey({
-        ...input,
-        publicKey: foreignKey,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(registered).toHaveBeenCalledOnce();
-  });
-});
-
-describe("computer app approval list delivery", () => {
-  it("preserves an update made while an earlier list read fails", async () => {
-    const runnerId = createId("runner");
-    let rejectFirst: ((error: Error) => void) | undefined;
-    const first = new Promise<never>((_resolve, reject) => {
-      rejectFirst = reject;
-    });
-    const read = vi
-      .fn()
-      .mockImplementationOnce(async () => first)
-      .mockResolvedValue({ approvalKeyId: null, approvals: [] });
-    const send = vi.fn(async () => true);
-    const service = platform({
-      adapters: [],
-      computerApps: {
-        appStatus: () => null,
-        attached: () => true,
-        approvalRelayRefusal: () => null,
-        relaysComputerAppApprovals: () => true,
-        send: vi.fn(async () => ({ outcome: Promise.resolve({ kind: "ok" as const, value: {} }) })),
-        sendComputerAppApprovals: send,
-        withRunnerAdmission: async (_runnerId, task) => task(),
-      },
-      store: { listComputerAppApprovalsForRunner: read },
-    });
-    service.computerAppApprovals.pushComputerAppApprovals(runnerId);
-    service.computerAppApprovals.pushComputerAppApprovals(runnerId);
-    rejectFirst?.(new Error("Temporary database error"));
-    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
-    expect(read).toHaveBeenCalledTimes(2);
-  });
-});
-
-type ApprovalHubMember =
-  | "reportsApp"
-  | "approvalRelayRefusal"
-  | "machinesFor"
-  | "proveComputerAppApprovalKey"
-  | "relaysComputerAppApprovals"
-  | "sendComputerAppApprovalOutcome"
-  | "sendComputerAppApprovals";
+type ApprovalHubMember = "reportsApp" | "machinesFor";
 
 function platform(input: {
   readonly listConnections?: (
@@ -4572,11 +4466,6 @@ function platform(input: {
       // A Mac that relays no approvals, unless a test says otherwise.
       machinesFor: () => [],
       openMcpSession: vi.fn(),
-      proveComputerAppApprovalKey: vi.fn(async () => null),
-      approvalRelayRefusal: () => null,
-      relaysComputerAppApprovals: () => false,
-      sendComputerAppApprovalOutcome: vi.fn(async () => false),
-      sendComputerAppApprovals: vi.fn(async () => false),
       ...(input.computerApps ??
         ({
           appStatus: vi.fn(() => null),
@@ -4993,9 +4882,6 @@ describe("computer app request matrix", () => {
       computerApps: {
         attached: () => !options.offline,
         appStatus: () => null,
-        approvalRelayRefusal: () => null,
-        relaysComputerAppApprovals: () => true,
-        sendComputerAppApprovals: pushed,
         send: vi.fn(),
         withRunnerAdmission: async (_id, task) => {
           admitted = true;
@@ -5048,7 +4934,6 @@ describe("computer app request matrix", () => {
       },
       store: {
         listCallableTools: async () => refs(available),
-        listComputerAppApprovalsForRunner: async () => ({ approvalKeyId: null, approvals: [] }),
         requestComputerAppAccess,
       },
     });

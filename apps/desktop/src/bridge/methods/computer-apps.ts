@@ -1,11 +1,8 @@
 import {
   DesktopComputerAppSetupStatusSchema,
   DesktopComputerAppSetupTargetSchema,
-  DesktopComputerUseApprovalKeyResultSchema,
   DesktopOpenComputerAppSetupInputSchema,
   DesktopOpenComputerAppSetupResultSchema,
-  DesktopReviewComputerAppSetupInputSchema,
-  DesktopReviewComputerAppSetupResultSchema,
 } from "@opensteer/protocol/desktop";
 import {
   assertAuthorizedRenderer,
@@ -18,29 +15,6 @@ import {
  * own Host call, made with the person's session on this Mac; the private half
  * never leaves main.
  */
-export const handleComputerUseApprovalKey =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    return DesktopComputerUseApprovalKeyResultSchema.parse(
-      await context.options.computerApps.approvalKey(),
-    );
-  };
-
-export const handleReviewComputerAppSetup =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  async (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    const input = DesktopReviewComputerAppSetupInputSchema.parse(envelope.input);
-    // The page created this request through its own Host calls, which reach
-    // the Deployment it is attached to now; the request arrives from that
-    // Deployment's Runner slot, and the wait is bound to it even if the window
-    // moves to another Deployment while the panel is open.
-    const { resolved } = await context.options.hostTransport.current();
-    return DesktopReviewComputerAppSetupResultSchema.parse(
-      await context.options.computerApps.review(resolved.deploymentId, input.setupRequestId),
-    );
-  };
 
 /**
  * Opens this Mac's setup panel for one app the helper serves, from the app's

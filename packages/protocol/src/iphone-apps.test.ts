@@ -8,7 +8,7 @@ const raw = {
   bootId: "rbt_00000000-0000-4000-8000-000000000001",
   capabilities: [],
   device: { form: "phone", platform: "ios" },
-  modules: { integrations: { computerAppApprovals: true, platform: "ios", protocolVersion: 1 } },
+  modules: { integrations: { platform: "ios", protocolVersion: 2 } },
   name: "iPhone",
   runnerId: "rnr_00000000-0000-4000-8000-000000000002",
   runnerKind: "local",
@@ -36,7 +36,6 @@ describe("immutable iPhone profile admission", () => {
     ...["loginText", "passwordSignIn", "ownerViewVersion", "macWindowVideoVersion"].map(
       (field) => ({ modules: { integrations: { ...raw.modules.integrations, [field]: 1 } } }),
     ),
-    { modules: { integrations: { platform: "ios", protocolVersion: 1 } } },
     {
       modules: {
         integrations: raw.modules.integrations,
@@ -58,7 +57,7 @@ describe("immutable iPhone profile admission", () => {
     ).toBe("runner-device-profile-mismatch");
   });
   it("gives the dedicated upgrade reason for protocol mismatches", () => {
-    for (const protocolVersion of [undefined, 2, 4]) {
+    for (const protocolVersion of [undefined, 1, 3, 4]) {
       expect(
         runnerDescriptorProfileRefusal(
           "iphone",

@@ -1,3 +1,4 @@
+import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
   ChannelAccessGrantViewSchema,
   ChannelAccessPolicySchema,
@@ -86,6 +87,7 @@ import {
   BeginIntegrationAuthorizationSchema,
   BeginMcpAuthorizationSchema,
   ComputerAppSetupRequestViewSchema,
+  ComputerAppSetupReviewRequestViewSchema,
   ComputerUseAppApprovalSchema,
   ConnectIntegrationApiKeySchema,
   CreateIntegrationGrantSchema,
@@ -105,7 +107,6 @@ import {
   IntegrationPlatformDashboardViewSchema,
   IntegrationProviderApplicationViewSchema,
   IntegrationRepositoryAccessViewSchema,
-  RegisterComputerUseApprovalKeySchema,
   RequestComputerAppSetupSchema,
   SaveIntegrationProviderApplicationSchema,
   SetComputerAppConnectionSchema,
@@ -761,8 +762,9 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    input: RegisterComputerUseApprovalKeySchema,
-    type: z.literal("integration.computer.approval-key.set"),
+    setupRequestId: z.uuid(),
+    decision: z.enum(["allow", "deny"]),
+    type: z.literal("integration.computer.setup.respond"),
   }),
   z.strictObject({
     attemptId: IntegrationAuthorizationAttemptIdSchema,
@@ -1214,8 +1216,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
   z.object({
-    approvalKeyId: z.string().min(1).max(128),
-    type: z.literal("integration.computer.approval-key.set"),
+    type: z.literal("integration.computer.setup.respond"),
   }),
   z.object({ type: z.literal("integration.computer.policy.set"), appApproval: z.literal("ask") }),
   z.object({ type: z.literal("integration.computer.app.block") }),
@@ -1547,6 +1548,16 @@ export const hostApi = defineRpc({
     "GET",
     z.strictObject({ runnerId: RunnerIdSchema }),
     z.object({ appApproval: ComputerUseAppApprovalSchema }),
+  ),
+  "integration.computer.setup.review": declaration(
+    "POST",
+    z.strictObject({ setupRequestId: z.uuid() }),
+    z.object({
+      request: ComputerAppSetupReviewRequestViewSchema,
+      app: z
+        .object({ ...ComputerUseResolvedAppSchema.shape, identity: ComputerAppIdentityViewSchema })
+        .nullable(),
+    }),
   ),
   "integration.computer.setup.list": declaration(
     "GET",
