@@ -12,7 +12,6 @@ import {
   type RequestId,
   type RequestResponse,
   type EventData,
-  RunIdSchema,
   type RunId,
   type RunnerId,
   type ThreadId,
@@ -666,7 +665,7 @@ export class BrowserService {
    * The tab each Run last entered, so only a move to another tab reaches the
    * database; the durable check there still holds across a Host restart.
    */
-  readonly #runPlaces = new Map<RunId, string>();
+  readonly #runPlaces = new Map<string, string>();
   readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   #validateLoginLease:
@@ -2780,7 +2779,7 @@ export class BrowserService {
   ): Promise<readonly BrowserSessionId[]> {
     this.#forgetAgentBinding(agentBindingId);
     if (agentBindingId.startsWith("run:")) {
-      const runId = RunIdSchema.parse(agentBindingId.slice(4));
+      const runId = agentBindingId.slice(4);
       await this.#sessionOperations.get(`place:${runId}`);
       this.#runPlaces.delete(runId);
     }
