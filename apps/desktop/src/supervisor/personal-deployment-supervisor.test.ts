@@ -250,12 +250,22 @@ describe("PersonalDeploymentSupervisor", () => {
 
     expect(fixture.supervisor.ownsHostSession({ access: "owner" })).toBe(true);
     await expect(fixture.supervisor.recoverOwnerSession({ access: "owner" })).resolves.toBe(true);
+    const runtime = (await fixture.supervisor.current())!;
+    const authorization = fixture.supervisor.executorAuthorization(runtime);
+    expect(authorization).toMatch(/^Bearer [A-Za-z0-9_-]{43}$/u);
     expect(fixture.host.claimOwner).toHaveBeenCalledWith(
       connection.authority.document.canonicalOrigin,
       expect.objectContaining({ deploymentId: connection.authority.document.deploymentId }),
-      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+      authorization.slice(7),
       expect.any(AbortSignal),
     );
+
+    expect(() =>
+      fixture.supervisor.executorAuthorization({
+        ...runtime,
+        discovery: { ...runtime.discovery, hostInstanceId: createId("hostInstance") },
+      }),
+    ).toThrow("supervisor-owned Personal Host");
 
     // A remote attachment to the very same Deployment is not an owner session.
     expect(fixture.supervisor.ownsHostSession({ access: "connect" })).toBe(false);
@@ -267,6 +277,9 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.supervisor.ownsHostSession({ access: "owner" })).toBe(false);
     await expect(fixture.supervisor.recoverOwnerSession({ access: "owner" })).resolves.toBe(false);
     expect(fixture.host.claimOwner).toHaveBeenCalledOnce();
+    expect(() => fixture.supervisor.executorAuthorization(runtime)).toThrow(
+      "supervisor-owned Personal Host",
+    );
   });
 
   it("classifies Browser placement timeout as a Browser repair", async () => {

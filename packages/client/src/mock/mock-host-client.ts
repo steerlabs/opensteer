@@ -1880,22 +1880,7 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
-    "personal.remoteAccess.get": async (input, context) => {
-      if (input.after === client.remoteAdministration.revision)
-        await new Promise<void>((resolve) => {
-          const done = () => {
-            clearTimeout(timer);
-            client.remoteAdministrationListeners.delete(done);
-            context.signal.removeEventListener("abort", done);
-            resolve();
-          };
-          const timer = setTimeout(done, 20000);
-          client.remoteAdministrationListeners.add(done);
-          context.signal.addEventListener("abort", done, { once: true });
-          if (context.signal.aborted) done();
-        });
-      return rpcSuccess(client.remoteAdministration);
-    },
+    "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
@@ -4345,6 +4330,11 @@ export class MockHostClient implements HostClient {
           home: { status: "window", threadId, workspaceId: snapshot.homeWorkspaceId, latest: true },
         },
       });
+  }
+
+  subscribePersonalRemoteAccess(listener: () => void): () => void {
+    this.#state.remoteAdministrationListeners.add(listener);
+    return () => this.#state.remoteAdministrationListeners.delete(listener);
   }
 
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {

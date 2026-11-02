@@ -13,6 +13,7 @@ import type {
 export class DesktopRemoteAdministrationExecutor {
   readonly #network: Pick<HostNetwork, "openWebSocket">;
   readonly #runtime: PersonalHostRuntimeSource;
+  readonly #authorization: (runtime: PersonalHostRuntimeRecord) => string;
   readonly #execute: (
     operation: PersonalRemoteAdministrationOperation,
     progress: (detail: string) => void,
@@ -30,12 +31,14 @@ export class DesktopRemoteAdministrationExecutor {
   constructor(options: {
     network: Pick<HostNetwork, "openWebSocket">;
     runtime: PersonalHostRuntimeSource;
+    authorization: (runtime: PersonalHostRuntimeRecord) => string;
     execute: (
       operation: PersonalRemoteAdministrationOperation,
       progress: (detail: string) => void,
     ) => Promise<void>;
   }) {
     this.#network = options.network;
+    this.#authorization = options.authorization;
     this.#runtime = options.runtime;
     this.#execute = options.execute;
   }
@@ -67,13 +70,14 @@ export class DesktopRemoteAdministrationExecutor {
     const url = new URL("/v1/personal-remote-access/executor", runtime.localOrigin);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("apiVersion", String(hostApiVersion));
+    const authorization = this.#authorization(runtime);
     const socket = this.#network.openWebSocket(
       {
         deploymentId: runtime.discovery.deploymentId,
         url: url.toString(),
         canonicalOrigin: runtime.discovery.canonicalOrigin,
         requestOrigin: runtime.localOrigin,
-        authorization: null,
+        authorization,
       },
       {
         open: () => {

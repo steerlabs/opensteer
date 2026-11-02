@@ -352,6 +352,19 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     );
   }
 
+  executorAuthorization(runtime: PersonalHostRuntimeRecord): string {
+    const capability = this.#ownerClaim;
+    if (
+      !capability ||
+      !this.ownsHostSession({ access: "owner" }) ||
+      runtime.discovery.hostInstanceId !== capability.hostInstanceId ||
+      runtime.discovery.deploymentId !== capability.manifest.deploymentId ||
+      runtime.localOrigin !== capability.origin
+    )
+      throw new Error("A running supervisor-owned Personal Host is required.");
+    return `Bearer ${capability.token}`;
+  }
+
   async recoverOwnerSession(resolved: Pick<ResolvedConnection, "access">): Promise<boolean> {
     const capability = this.#ownerClaim;
     if (!capability || !this.ownsHostSession(resolved)) return false;

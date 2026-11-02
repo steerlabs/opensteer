@@ -600,11 +600,13 @@ export async function createHostServer(
   // repeats an availability check the router already made.
   if (dependencies.personalRemoteAccess) {
     const personalRemoteAccess = dependencies.personalRemoteAccess.service;
-    registerPersonalRemoteExecutor(
-      app,
-      dependencies.authenticator,
-      personalRemoteAccess.administration,
+    const supervisor = dependencies.localBootstrap?.service;
+    if (supervisor)
+      registerPersonalRemoteExecutor(app, supervisor, personalRemoteAccess.administration);
+    const detachAdministration = personalRemoteAccess.administration.subscribe(() =>
+      dependencies.realtime.broadcast({ type: "host.personal-remote-access-changed" }),
     );
+    app.addHook("onClose", async () => detachAdministration());
     app.get("/.well-known/opensteer/personal-access-route", async (_request, reply) => {
       const route = await personalRemoteAccess.accessRoute();
       if (!route) {
@@ -721,23 +723,21 @@ export async function createHostServer(
       );
       return reply.status(204).send();
     });
-    for (const rotate of [false, true]) {
-      app.post(
-        `/v1/personal-remote-access/connect-${rotate ? "rotate" : "provision"}`,
-        async (request, reply) => {
-          const caller = await dependencies.authenticator.authenticateSessionContext(
-            request.headers,
-            { mutation: true },
-          );
-          const input = rotate
-            ? RotateConnectCredentialRequestSchema.parse(request.body)
-            : ProvisionConnectRequestSchema.parse(request.body);
-          return reply
-            .header("cache-control", "no-store")
-            .send(await personalRemoteAccess.connectCredential(caller, input, rotate));
-        },
-      );
-    }
+    if (supervisor)
+      for (const rotate of [false, true]) {
+        app.post(
+          `/v1/personal-remote-access/executor/connect-${rotate ? "rotate" : "provision"}`,
+          async (request, reply) => {
+            supervisor.requireSupervisor(request.headers.authorization);
+            const input = rotate
+              ? RotateConnectCredentialRequestSchema.parse(request.body)
+              : ProvisionConnectRequestSchema.parse(request.body);
+            return reply
+              .header("cache-control", "no-store")
+              .send(await personalRemoteAccess.connectCredentialForExecutor(input, rotate));
+          },
+        );
+      }
     app.delete("/v1/personal-remote-access/connect-resource", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
         mutation: true,
@@ -2968,16 +2968,14 @@ export async function createHostServer(
       handleCoreCommand,
       dependencies.computerViews,
     ),
-    "personal.remoteAccess.get": async (input, context) => {
+    "personal.remoteAccess.get": async (_input, context) => {
       const service = dependencies.personalRemoteAccess?.service;
       if (!service)
         throw new OpensteerError({
           code: "not_found",
           message: "Personal remote access is unavailable",
         });
-      return rpcSuccess(
-        await service.administration.status(context.session!, input.after, context.signal),
-      );
+      return rpcSuccess(await service.administration.status(context.session!));
     },
   });
 

@@ -1,5 +1,7 @@
 import { createId, type EnvironmentId, type RunnerId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
+import { hostKeyFingerprint } from "@opensteer/deployment-authority";
+import { ConnectOperationIdSchema } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { PersonalDeploymentManifest } from "../secrets/personal-deployment-store.js";
 import {
@@ -452,6 +454,48 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
     new NativePersonalRemoteHostControl({ fetch: async () => json(body, status) });
   const refusal = (reason: string, status: number) =>
     control({ error: { code: "conflict", message: "reworded prose", reason } }, status);
+
+  it("obtains tunnel credentials only through the supervisor capability without session cookies", async () => {
+    const capability = "Bearer local-process-capability";
+    const credential = {
+      canonicalOrigin: runtime.discovery.canonicalOrigin,
+      deploymentId: runtime.discovery.deploymentId,
+      connectorCredentialGeneration: 1,
+      hostInstanceId: runtime.discovery.hostInstanceId,
+      hostKeyFingerprint: hostKeyFingerprint(runtime.discoveryEnvelope.publicKey.spki),
+      routeOrigin: "https://personal.connect.opensteer.test",
+      tunnelToken: "tunnel-token".padEnd(43, "x"),
+    };
+    const requests: Request[] = [];
+    const host = new NativePersonalRemoteHostControl({
+      executorAuthorization: () => capability,
+      fetch: async (_deploymentId, input, init) => {
+        requests.push(new Request(input, init));
+        return json(credential);
+      },
+    });
+    for (const rotate of [false, true]) {
+      await expect(
+        host.connectCredential(
+          runtime,
+          {
+            hostInstanceId: runtime.discovery.hostInstanceId,
+            operationId: ConnectOperationIdSchema.parse(`cop_${crypto.randomUUID()}`),
+            ...(rotate ? {} : { localOrigin: runtime.localOrigin }),
+          },
+          rotate,
+        ),
+      ).resolves.toEqual(credential);
+    }
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v1/personal-remote-access/executor/connect-provision",
+      "/v1/personal-remote-access/executor/connect-rotate",
+    ]);
+    for (const request of requests) {
+      expect(request.headers.get("authorization")).toBe(capability);
+      expect(request.credentials).toBe("omit");
+    }
+  });
 
   it("maps a rejected grant to the refreshable recovery and nothing else to it", async () => {
     await expect(

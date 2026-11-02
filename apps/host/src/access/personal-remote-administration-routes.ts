@@ -1,15 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { PersonalRemoteExecutorProgressSchema } from "@opensteer/protocol";
-import type { HostAuthenticator } from "../identity/auth.js";
-import {
-  requirePersonalAdministrator,
-  type PersonalRemoteAdministration,
-} from "./personal-remote-administration.js";
+import type { LocalBootstrapService } from "../runtime/local-bootstrap.js";
+import type { PersonalRemoteAdministration } from "./personal-remote-administration.js";
 
 export function registerPersonalRemoteExecutor(
   app: FastifyInstance,
-  authenticator: HostAuthenticator,
+  supervisor: Pick<LocalBootstrapService, "requireSupervisor">,
   administration: PersonalRemoteAdministration,
 ): void {
   app.addHook("preClose", async () => administration.close());
@@ -23,10 +20,7 @@ export function registerPersonalRemoteExecutor(
       alive = true;
     });
     const authorize = async () => {
-      const authenticated = await authenticator.authenticateSession(request.headers, {
-        mutation: true,
-      });
-      requirePersonalAdministrator(authenticated);
+      supervisor.requireSupervisor(request.headers.authorization);
     };
     const fail = () =>
       socket.close(1008, "Remote access executor authentication or protocol failed");

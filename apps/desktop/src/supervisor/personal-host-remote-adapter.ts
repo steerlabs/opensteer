@@ -27,6 +27,7 @@ export class DesktopPersonalHostRemoteAdapter
     | "removeAccountLinkForUnlink"
     | "repairHostedOAuthConnectionsForUnlink"
     | "revokeAccountSessionsForUnlink"
+    | "resumeAccountLink"
     | "status"
   >;
   readonly #runtime: PersonalHostRuntimeSource;
@@ -41,6 +42,7 @@ export class DesktopPersonalHostRemoteAdapter
       | "removeAccountLinkForUnlink"
       | "repairHostedOAuthConnectionsForUnlink"
       | "revokeAccountSessionsForUnlink"
+      | "resumeAccountLink"
       | "status"
     >;
     readonly runtime: PersonalHostRuntimeSource;
@@ -111,6 +113,10 @@ export class DesktopPersonalHostRemoteAdapter
       hostInstanceId: runtime.discovery.hostInstanceId,
       operationId,
     });
+  }
+
+  async resumeAccountLink() {
+    return this.#host.resumeAccountLink(await this.#requireRuntime());
   }
 
   async status() {

@@ -241,7 +241,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     // durable before their connections are taken away. Nothing is revoked —
     // each of them reconnects when a route exists again, and until then its
     // shell sessions have ended as the disconnection they are.
-    if (reconfigured) await this.#disconnectRunners();
+    if (reconfigured) {
+      this.administration.changed();
+      await this.#disconnectRunners();
+    }
     return this.status();
   }
 
@@ -539,6 +542,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .where("singletonKey", "=", "opensteer-account")
         .executeTakeFirstOrThrow();
     });
+    this.administration.changed();
     await this.#activateAccountLink(linked);
     return this.status();
   }
@@ -647,6 +651,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         });
       }
     });
+    this.administration.changed();
     const announce = () => this.#identity.announceSessionsEnded(ended);
     if (afterResponse) afterResponse(announce);
     else announce();
@@ -950,14 +955,12 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     return this.#accountClient(linked).revokePersonalConnect(request);
   }
 
-  async connectCredential(
-    caller: { readonly session: AuthenticatedSession },
+  async connectCredentialForExecutor(
     input:
       | import("@opensteer/control-plane-protocol").ProvisionConnectRequest
       | import("@opensteer/control-plane-protocol").RotateConnectCredentialRequest,
     rotate: boolean,
   ) {
-    requirePersonalAdministrator(caller.session);
     const link = await this.#database
       .selectFrom("personalRemoteAccountLink")
       .selectAll()
@@ -1017,6 +1020,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .where("hostCredential", "=", link.hostCredential)
         .where("linkGeneration", "=", link.linkGeneration)
         .executeTakeFirstOrThrow();
+      this.administration.changed();
     } catch (error) {
       // Three central answers, three different things the owner must do, so
       // they stay three errors rather than one prose message the Desktop would

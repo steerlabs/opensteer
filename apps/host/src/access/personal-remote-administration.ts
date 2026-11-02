@@ -54,26 +54,8 @@ export class PersonalRemoteAdministration {
     for (const listener of this.#listeners) listener();
   }
 
-  async status(
-    session: AuthenticatedSession,
-    after?: number,
-    signal?: AbortSignal,
-  ): Promise<PersonalRemoteAdministrationStatus> {
+  async status(session: AuthenticatedSession): Promise<PersonalRemoteAdministrationStatus> {
     requirePersonalAdministrator(session);
-    if (!this.#closed && after === this.#revision && !signal?.aborted) {
-      await new Promise<void>((resolve) => {
-        const finish = () => {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", finish);
-          detach();
-          resolve();
-        };
-        const detach = this.subscribe(finish);
-        const timer = setTimeout(finish, 20_000);
-        timer.unref?.();
-        signal?.addEventListener("abort", finish, { once: true });
-      });
-    }
     const revision = this.#revision;
     const [access, row] = await Promise.all([this.#readAccess(), this.#latest()]);
     const operation = row ? PersonalRemoteAdministrationOperationSchema.parse(row) : null;

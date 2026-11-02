@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import { HostAuthenticator } from "../identity/auth.js";
+import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 import { registerHostApi } from "../server/host-api-registration.js";
 import { testRpcRequest } from "../server/test-host-api-request.js";
 import { registerPersonalRemoteExecutor } from "./personal-remote-administration-routes.js";
@@ -219,7 +220,18 @@ describe("Personal remote administration intents", () => {
         userSessionProfile: async () => session.user,
       } as never,
     });
-    registerPersonalRemoteExecutor(app, authenticator, access.administration);
+    const capability = "desktop-process-capability".padEnd(43, "x");
+    registerPersonalRemoteExecutor(
+      app,
+      new LocalBootstrapService({
+        publicUrl: new URL(authority.canonicalOrigin),
+        requireSetupCredential: true,
+        setupToken: capability,
+        store: {} as never,
+        runners: {} as never,
+      }),
+      access.administration,
+    );
     let finishSend!: () => void;
     let sending!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -260,7 +272,7 @@ describe("Personal remote administration intents", () => {
       const address = await app.listen({ host: "127.0.0.1", port: 0 });
       socket = new WebSocket(
         `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
-        { headers: { authorization: "Bearer executor-session" } },
+        { headers: { authorization: `Bearer ${capability}` } },
       );
       await withTimeout(once(socket, "open"), 1000, {
         timeoutError: () => new Error("Executor socket never opened"),

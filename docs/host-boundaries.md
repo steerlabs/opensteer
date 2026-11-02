@@ -50,8 +50,9 @@ substitute and route headers never prove who is calling.
 
 `claimLocalMachineOwner` spends the supervisor's process-launch capability to
 bootstrap a normal owner session. That session has no additional administrative
-powers. The capability remains local because it establishes initial ownership. Later
-owner actions use ordinary authenticated sessions.
+powers. Owner actions use ordinary authenticated sessions. The process capability
+also authenticates the private desktop executor and tunnel-credential delivery;
+these credentials never go to an owner session or an administration status payload.
 
 [IdentityService](../packages/identity/src/identity-service.ts) checks the native
 token's `authSessions` row on every call. Revocation commits before success; the

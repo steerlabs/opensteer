@@ -1536,7 +1536,7 @@ export const hostApi = defineRpc({
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
   "personal.remoteAccess.get": declaration(
     "GET",
-    z.strictObject({ after: z.number().int().nonnegative().optional() }),
+    emptyInputSchema,
     PersonalRemoteAdministrationStatusSchema,
   ),
   "commands.dispatch": declaration("POST", commandInputSchema, commandOutputSchema),

@@ -85,7 +85,7 @@ export interface PersonalRemoteAccessClientSnapshot {
 }
 
 export class PersonalRemoteAccessClient {
-  readonly #client: Pick<HostClient, "rpc" | "dispatch">;
+  readonly #client: Pick<HostClient, "rpc" | "dispatch" | "subscribePersonalRemoteAccess">;
   readonly #listeners = new Set<() => void>();
   #snapshot: PersonalRemoteAccessClientSnapshot = {
     status: null,
@@ -95,7 +95,7 @@ export class PersonalRemoteAccessClient {
   };
   #watch: AbortController | null = null;
 
-  constructor(client: Pick<HostClient, "rpc" | "dispatch">) {
+  constructor(client: Pick<HostClient, "rpc" | "dispatch" | "subscribePersonalRemoteAccess">) {
     this.#client = client;
   }
   getSnapshot = (): PersonalRemoteAccessClientSnapshot => this.#snapshot;
@@ -108,22 +108,26 @@ export class PersonalRemoteAccessClient {
     const controller = new AbortController();
     this.#watch?.abort();
     this.#watch = controller;
-    void this.#observe(controller.signal);
+    this.#observe(controller.signal);
     return () => controller.abort();
   }
 
-  async #observe(signal: AbortSignal): Promise<void> {
-    let after: number | undefined;
-    try {
-      while (!signal.aborted) {
+  #observe(signal: AbortSignal): void {
+    let reading = false;
+    let invalidated = false;
+    const refresh = async (): Promise<void> => {
+      if (signal.aborted) return;
+      if (reading) {
+        invalidated = true;
+        return;
+      }
+      reading = true;
+      invalidated = false;
+      try {
         const status = unwrapRpcResult(
-          await this.#client.rpc["personal.remoteAccess.get"](
-            after === undefined ? {} : { after },
-            { signal },
-          ),
+          await this.#client.rpc["personal.remoteAccess.get"]({}, { signal }),
         );
         if (signal.aborted) return;
-        after = status.revision;
         this.#set({
           status,
           error: null,
@@ -132,14 +136,20 @@ export class PersonalRemoteAccessClient {
               ? this.#snapshot.pairing
               : null,
         });
+      } catch (error) {
+        if (!signal.aborted)
+          this.#set({
+            error:
+              error instanceof Error ? error.message : "Remote access status could not be loaded.",
+          });
+      } finally {
+        reading = false;
+        if (invalidated && !signal.aborted) void refresh();
       }
-    } catch (error) {
-      if (!signal.aborted)
-        this.#set({
-          error:
-            error instanceof Error ? error.message : "Remote access status could not be loaded.",
-        });
-    }
+    };
+    const detach = this.#client.subscribePersonalRemoteAccess(() => void refresh());
+    signal.addEventListener("abort", detach, { once: true });
+    void refresh();
   }
 
   request = async (intent: PersonalRemoteAdministrationIntent): Promise<void> => {

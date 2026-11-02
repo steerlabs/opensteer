@@ -39,9 +39,11 @@ it("executes Host intent once, reports progress, and resumes across its own sock
     },
   );
   const executor = new DesktopRemoteAdministrationExecutor({
+    authorization: () => "Bearer desktop-process-capability",
     runtime: { current: async () => runtime },
     network: {
-      openWebSocket: (_input, events) => {
+      openWebSocket: (input, events) => {
+        expect(input.authorization).toBe("Bearer desktop-process-capability");
         const socket = { events, send: vi.fn(), close: vi.fn() };
         sockets.push(socket);
         return socket;
@@ -90,6 +92,7 @@ describe("executor shutdown", () => {
   it("does not attach when its desktop runtime is absent", async () => {
     const openWebSocket = vi.fn();
     const executor = new DesktopRemoteAdministrationExecutor({
+      authorization: () => "Bearer desktop-process-capability",
       runtime: { current: async () => null },
       network: { openWebSocket },
       execute: vi.fn(),

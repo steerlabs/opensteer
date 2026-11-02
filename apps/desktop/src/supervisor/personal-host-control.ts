@@ -506,8 +506,14 @@ export type PersonalHostFetch = (
 export class NativePersonalRemoteHostControl {
   readonly #fetch: PersonalHostFetch;
   readonly #requestTimeoutMs: number;
+  readonly #executorAuthorization: ((runtime: PersonalHostRuntimeRecord) => string) | undefined;
 
-  constructor(options: { readonly fetch?: PersonalHostFetch; readonly requestTimeoutMs?: number }) {
+  constructor(options: {
+    readonly fetch?: PersonalHostFetch;
+    readonly requestTimeoutMs?: number;
+    readonly executorAuthorization?: (runtime: PersonalHostRuntimeRecord) => string;
+  }) {
+    this.#executorAuthorization = options.executorAuthorization;
     this.#fetch = options.fetch ?? ((_deploymentId, input, init) => globalThis.fetch(input, init));
     this.#requestTimeoutMs = boundedDuration(
       options.requestTimeoutMs ?? 10_000,
@@ -558,8 +564,14 @@ export class NativePersonalRemoteHostControl {
     const response = await this.#request(
       runtime.discovery.deploymentId,
       runtime.localOrigin,
-      `/v1/personal-remote-access/connect-${rotate ? "rotate" : "provision"}`,
-      { body: input, method: "POST", origin: runtime.localOrigin, timeoutMs: 35_000 },
+      `/v1/personal-remote-access/executor/connect-${rotate ? "rotate" : "provision"}`,
+      {
+        authorization: this.#requireExecutorAuthorization(runtime),
+        body: input,
+        method: "POST",
+        origin: runtime.localOrigin,
+        timeoutMs: 35_000,
+      },
     );
     return ConnectCredentialResponseSchema.parse(await this.#json(response));
   }
@@ -713,11 +725,17 @@ export class NativePersonalRemoteHostControl {
     }
   }
 
+  #requireExecutorAuthorization(runtime: PersonalHostRuntimeRecord): string {
+    if (!this.#executorAuthorization) throw new Error("The Personal supervisor is required.");
+    return this.#executorAuthorization(runtime);
+  }
+
   async #request(
     deploymentId: string,
     baseOrigin: string,
     path: string,
     input: {
+      readonly authorization?: string;
       readonly body?: unknown;
       readonly method: "DELETE" | "GET" | "POST" | "PUT";
       readonly origin: string;
@@ -740,9 +758,10 @@ export class NativePersonalRemoteHostControl {
       const response = await this.#fetch(deploymentId, endpoint, {
         ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
         cache: "no-store",
-        credentials: "include",
+        credentials: input.authorization ? "omit" : "include",
         headers: {
           accept: "application/json",
+          ...(input.authorization ? { authorization: input.authorization } : {}),
           origin: input.origin,
           ...(input.body === undefined ? {} : { "content-type": "application/json" }),
         },

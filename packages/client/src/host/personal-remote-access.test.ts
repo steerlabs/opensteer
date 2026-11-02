@@ -32,8 +32,8 @@ it("shows persisted pending administration in the shared client and stops observ
 it("keeps newer observed progress when an older command acknowledgement arrives later", async () => {
   const mock = new MockHostClient({ latencyMs: 0 });
   const base = unwrapRpcResult(await mock.rpc["personal.remoteAccess.get"]({}));
-  type Status = typeof base;
-  let deliver: ((status: Status) => void) | undefined;
+  let status = base;
+  let invalidate!: () => void;
   let acknowledge!: (result: import("@opensteer/protocol").HostApiCommandOutput) => void;
   const id = crypto.randomUUID();
   const operation = {
@@ -44,35 +44,27 @@ it("keeps newer observed progress when an older command acknowledgement arrives 
     detail: null,
   };
   const client = {
-    rpc: {
-      "personal.remoteAccess.get": async (
-        input: { after?: number },
-        options: { signal: AbortSignal },
-      ) => {
-        if (input.after === undefined) return { ok: true, data: base };
-        return new Promise((resolve, reject) => {
-          deliver = (status) => resolve({ ok: true, data: status });
-          options.signal.addEventListener("abort", () => reject(options.signal.reason), {
-            once: true,
-          });
-        });
-      },
+    rpc: { "personal.remoteAccess.get": async () => ({ ok: true, data: status }) },
+    subscribePersonalRemoteAccess: (listener: () => void) => {
+      invalidate = listener;
+      return () => {};
     },
     dispatch: () =>
       new Promise<import("@opensteer/protocol").HostApiCommandOutput>((resolve) => {
         acknowledge = resolve;
       }),
-  } as unknown as Pick<import("./client.js").HostClient, "rpc" | "dispatch">;
+  } as unknown as import("./client.js").HostClient;
   const resource = new PersonalRemoteAccessClient(client);
   const stop = resource.start();
   try {
-    await vi.waitFor(() => expect(deliver).toBeTypeOf("function"), { timeout: 1000 });
+    await vi.waitFor(() => expect(resource.getSnapshot().status).toEqual(base), { timeout: 1000 });
     const request = resource.request(operation.intent);
-    deliver!({
+    status = {
       ...base,
       revision: base.revision + 2,
       operation: { ...operation, state: "succeeded" },
-    });
+    };
+    invalidate();
     await vi.waitFor(
       () => expect(resource.getSnapshot().status?.operation?.state).toBe("succeeded"),
       { timeout: 1000 },
@@ -80,6 +72,48 @@ it("keeps newer observed progress when an older command acknowledgement arrives 
     acknowledge({ type: "personal.remoteAccess.request", operation });
     await request;
     expect(resource.getSnapshot().status?.operation?.state).toBe("succeeded");
+  } finally {
+    stop();
+    mock.dispose();
+  }
+});
+
+it("recovers a failed status read on Host reconnect without polling", async () => {
+  const mock = new MockHostClient({ latencyMs: 0 });
+  const status = unwrapRpcResult(await mock.rpc["personal.remoteAccess.get"]({}));
+  let invalidate: (() => void) | undefined;
+  const detach = vi.fn();
+  const read = vi.fn().mockRejectedValueOnce(new Error("Connection lost")).mockResolvedValue({
+    ok: true,
+    data: status,
+  });
+  const client = {
+    rpc: { "personal.remoteAccess.get": read },
+    dispatch: vi.fn(),
+    subscribePersonalRemoteAccess: (listener: () => void) => {
+      invalidate = listener;
+      return detach;
+    },
+  } as unknown as import("./client.js").HostClient;
+  const resource = new PersonalRemoteAccessClient(client);
+  const stop = resource.start();
+  try {
+    await vi.waitFor(() => expect(resource.getSnapshot().error).toBe("Connection lost"), {
+      timeout: 1000,
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(invalidate).toBeTypeOf("function");
+    invalidate!();
+    await vi.waitFor(() => expect(resource.getSnapshot().status).toEqual(status), {
+      timeout: 1000,
+    });
+    expect(resource.getSnapshot().error).toBeNull();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls.every(([input]) => JSON.stringify(input) === "{}")).toBe(true);
+    stop();
+    expect(detach).toHaveBeenCalledOnce();
+    invalidate!();
+    expect(read).toHaveBeenCalledTimes(2);
   } finally {
     stop();
     mock.dispose();

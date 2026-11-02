@@ -45,9 +45,9 @@ identity; turning access Off can supersede pending work.
 
 A request persists before acknowledgement. Execution that can remove the current
 route starts only after that response completes, and continues under the
-executor's own session. Unlink never requires another request from the session it
-revokes. Clients warn that these actions can disconnect the initiating device and
-others. Revoked credentials stop authenticating before success; their live
+supervisor's process capability. Unlink never requires another request from the
+session it revokes. Clients warn that these actions can disconnect the initiating
+device and others. Revoked credentials stop authenticating before success; their live
 connections close after the revocation response is sent.
 
 Account linking signs in on the initiating device and uses its challenge/proof
@@ -55,11 +55,14 @@ exchange. Browser linking uses an Account-portal confirmation with exact
 origin/source-bound messaging; native devices use their own Account credentials.
 The linked Host credential authorizes fenced Connect provision/rotation and
 teardown, so execution does not require a second Account sign-in on the desktop.
-Connector credentials stay on the Host computer and never enter status payloads.
+Connector credentials stay on the Host computer. Only the supervisor's private
+executor channel can obtain them; owner sessions request durable intents and
+read status.
 
-Administration status is observed only while Settings is open. It adds no attach
-round trips or initial-screen dependencies. Stable retains private access and
-pairing without acquiring an Account/Connect path.
+Administration status is observed only while Settings is open, invalidated by the
+Host event stream and reread after reconnect. It adds no attach round trips or
+initial-screen dependencies. Stable retains private access and pairing without
+acquiring an Account/Connect path.
 
 ## Durable stream and live progress
 

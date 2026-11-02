@@ -69,6 +69,15 @@ export class LocalBootstrapService {
     });
   }
 
+  /** Only the supervisor that launched this Personal Host may execute work
+   * that yields machine credentials. An owner session cannot substitute for it. */
+  requireSupervisor(authorization: string | undefined): void {
+    if (!this.#requireSetupCredential) {
+      throw new OpensteerError({ code: "not_found", message: "Personal executor is unavailable" });
+    }
+    this.#requireCredential(authorization);
+  }
+
   #requireCredential(authorization: string | undefined): void {
     if (!authorization) {
       throw new OpensteerError({ code: "not_found", message: "Local setup is unavailable" });

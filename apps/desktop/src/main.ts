@@ -449,6 +449,7 @@ async function runDesktop(
     privateFiles,
   });
   const personalRemoteHost = new NativePersonalRemoteHostControl({
+    executorAuthorization: (runtime) => personal.executorAuthorization(runtime),
     fetch: (deploymentId, input, init) => {
       shutdown.signal.throwIfAborted();
       return hostNetwork.partitionFetch(deploymentId, input, {
@@ -706,6 +707,7 @@ async function runDesktop(
     runtime: personal,
   });
   const remoteAdministrationExecutor = new DesktopRemoteAdministrationExecutor({
+    authorization: (runtime) => personal.executorAuthorization(runtime),
     network: hostNetwork,
     runtime: personal,
     execute: async (operation, progress) => {
@@ -731,8 +733,10 @@ async function runDesktop(
         } else {
           const status = await personalAccount.status();
           if (status.status === "unlinking") await personalAccount.unlink();
-          else await personalRemote.initialize();
-          await personalAccount.resumeActivatingLink();
+          else {
+            await personalAccount.resumeActivatingLink();
+            await personalRemote.initialize();
+          }
         }
       } finally {
         detachRemote();

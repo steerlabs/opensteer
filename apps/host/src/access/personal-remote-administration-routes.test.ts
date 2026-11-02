@@ -2,45 +2,27 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
 import { once } from "node:events";
-import { createId, type AuthenticatedSession } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
-import { HostAuthenticator } from "../identity/auth.js";
+import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 import type { PersonalRemoteAdministration } from "./personal-remote-administration.js";
 import { registerPersonalRemoteExecutor } from "./personal-remote-administration-routes.js";
+
+const capability = "local-process-capability".padEnd(43, "x");
+function supervisor() {
+  return new LocalBootstrapService({
+    publicUrl: new URL("http://127.0.0.1:4310"),
+    requireSetupCredential: true,
+    setupToken: capability,
+    store: {} as never,
+    runners: {} as never,
+  });
+}
 
 it("orders executor delivery so a delayed older intent cannot overtake Off", async () => {
   const app = Fastify();
   await app.register(websocket);
-  const session: AuthenticatedSession = {
-    id: createId("authSession"),
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 60000).toISOString(),
-    absoluteExpiresAt: new Date(Date.now() + 60000).toISOString(),
-    user: {
-      id: createId("user"),
-      displayName: "Owner",
-      email: "owner@example.test",
-      disabledAt: null,
-      emailVerified: true,
-      image: null,
-      instanceRole: "administrator",
-    },
-  };
-  const authenticator = new HostAuthenticator({
-    identity: {
-      authenticateNativeAccessToken: async () => ({
-        sessionId: session.id,
-        subject: session.user.id,
-        createdAt: new Date(session.createdAt),
-        expiresAt: new Date(session.expiresAt),
-        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
-      }),
-      userSessionProfile: async () => session.user,
-    } as never,
-    publicUrl: new URL("http://127.0.0.1:4310"),
-  });
   const oldId = crypto.randomUUID();
   const newId = crypto.randomUUID();
   const older = {
@@ -83,13 +65,13 @@ it("orders executor delivery so a delayed older intent cannot overtake Off", asy
       probe();
     },
   } as unknown as PersonalRemoteAdministration;
-  registerPersonalRemoteExecutor(app, authenticator, administration);
+  registerPersonalRemoteExecutor(app, supervisor(), administration);
   let socket: WebSocket | undefined;
   try {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     socket = new WebSocket(
       `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
-      { headers: { authorization: "Bearer executor" } },
+      { headers: { authorization: `Bearer ${capability}` } },
     );
     await withTimeout(once(socket, "open"), 1000, {
       timeoutError: () => new Error("Executor never opened"),
@@ -115,3 +97,36 @@ it("orders executor delivery so a delayed older intent cannot overtake Off", asy
     await app.close();
   }
 });
+
+it.each(["PersonalRemote stolen-owner-session", `Bearer ${"owner-session".padEnd(43, "x")}`])(
+  "refuses an ordinary owner session as the private desktop executor (%s)",
+  async (authorization) => {
+    const app = Fastify();
+    await app.register(websocket);
+    const next = vi.fn(async () => null);
+    const administration = {
+      close: () => {},
+      attachExecutor: () => () => {},
+      subscribe: () => () => {},
+      next,
+    } as unknown as PersonalRemoteAdministration;
+    registerPersonalRemoteExecutor(app, supervisor(), administration);
+    let socket: WebSocket | undefined;
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      socket = new WebSocket(
+        `${address.replace("http:", "ws:")}/v1/personal-remote-access/executor?apiVersion=${hostApiVersion}`,
+        { headers: { authorization } },
+      );
+      const closed = withTimeout(once(socket, "close"), 1000, {
+        timeoutError: () =>
+          new Error("An ordinary owner session was admitted as the desktop executor"),
+      });
+      expect((await closed)[0]).toBe(1008);
+      expect(next).not.toHaveBeenCalled();
+    } finally {
+      socket?.terminate();
+      await app.close();
+    }
+  },
+);

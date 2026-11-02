@@ -180,15 +180,17 @@ describe("DesktopPersonalAccountService", () => {
     await expect(fixture.links.load()).resolves.toBeNull();
   });
 
-  it("resumes an activating link once for the signed-in Account and never for another", async () => {
+  it("resumes stored Host activation without a desktop Account session and waits for success", async () => {
     const fixture = unlinkFixture(0);
     await fixture.links.clear();
     fixture.startActivating();
+    fixture.account.accountIdentity.mockResolvedValue(null);
 
     await expect(fixture.service.resumeActivatingLink()).resolves.toMatchObject({
-      status: "activating",
+      status: "linked",
     });
-    expect(fixture.link.ensureLinkedForMutation).toHaveBeenCalledOnce();
+    expect(fixture.host.resumeAccountLink).toHaveBeenCalledOnce();
+    expect(fixture.link.ensureLinkedForMutation).not.toHaveBeenCalled();
 
     const other = unlinkFixture(0);
     await other.links.clear();
@@ -197,14 +199,27 @@ describe("DesktopPersonalAccountService", () => {
       issuer: "https://another-account.opensteer.test",
       subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
     });
-    await expect(other.service.resumeActivatingLink()).resolves.toBeNull();
-    expect(other.link.ensureLinkedForMutation).not.toHaveBeenCalled();
+    await expect(other.service.resumeActivatingLink()).resolves.toMatchObject({
+      status: "linked-elsewhere",
+    });
+    expect(other.host.resumeAccountLink).toHaveBeenCalledOnce();
 
-    // An active link has nothing to resume, so startup stays silent.
     const linked = unlinkFixture(0);
     await linked.links.clear();
     await expect(linked.service.resumeActivatingLink()).resolves.toBeNull();
-    expect(linked.link.ensureLinkedForMutation).not.toHaveBeenCalled();
+    expect(linked.host.resumeAccountLink).not.toHaveBeenCalled();
+  });
+
+  it("reports failed or incomplete Host activation as a recovery failure", async () => {
+    const fixture = unlinkFixture(0);
+    await fixture.links.clear();
+    fixture.startActivating();
+    fixture.host.resumeAccountLink.mockRejectedValueOnce(new Error("Account unavailable"));
+    await expect(fixture.service.resumeActivatingLink()).rejects.toThrow("Account unavailable");
+    fixture.host.resumeAccountLink.mockImplementationOnce(() => fixture.host.status());
+    await expect(fixture.service.resumeActivatingLink()).rejects.toThrow(
+      "activation did not complete",
+    );
   });
 
   it("discards an unusable journal only while repair is the reported state", async () => {
@@ -340,7 +355,7 @@ function unlinkFixture(boundary: number) {
     updatedAt: "2026-08-20T12:00:00.000Z",
   });
   const account = {
-    accountIdentity: vi.fn(async () => accountIdentity),
+    accountIdentity: vi.fn(async (): Promise<typeof accountIdentity | null> => accountIdentity),
     cancelPersonalHostAccountLinkOperation: vi.fn(async () => undefined),
     renamePersonalDeployment: vi.fn(async (_deploymentId: string, name: string) => ({
       ...directoryDeployment,
@@ -361,6 +376,10 @@ function unlinkFixture(boundary: number) {
           state: "active" as const,
         };
   const host = {
+    resumeAccountLink: vi.fn(async (): Promise<PersonalRemoteAccessStatus> => {
+      if (hostLink) hostLink = { ...hostLink, state: "active" };
+      return host.status();
+    }),
     removeAccountLinkForUnlink: vi.fn(async () => {
       events.push("host-link");
       hostLink = null;

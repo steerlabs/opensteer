@@ -45,6 +45,7 @@ import {
 } from "@opensteer/workspace-portablefs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
+import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 
 type StringDriverKind<T> = T extends { readonly driverKind: unknown }
   ? Omit<T, "driverKind"> & { readonly driverKind: string }
@@ -419,6 +420,78 @@ describe("Host signing keys", () => {
     }
   });
 
+  it("delivers tunnel credentials only to the process-capability executor, never an owner session", async () => {
+    const session = testAuthenticatedSession(createId("user"));
+    const connectCredential = vi.fn(async () => ({ tunnelToken: "private-connect-token" }));
+    const capability = "process-capability".padEnd(43, "x");
+    const app = await createHostServer({
+      authenticator: {
+        authenticateSession: async () => session,
+        publicOrigin: personalDiscovery.document.canonicalOrigin,
+        identity: { nativeOpenIdConfiguration: () => undefined },
+      } as never,
+      discovery: personalDiscovery,
+      localBootstrap: {
+        service: new LocalBootstrapService({
+          publicUrl: new URL(personalDiscovery.document.canonicalOrigin),
+          requireSetupCredential: true,
+          setupToken: capability,
+          store: {} as never,
+          runners: {} as never,
+        }),
+      },
+      personalRemoteAccess: {
+        service: {
+          administration: { close: () => {}, subscribe: () => () => {} },
+          accountSessionExchangeEnabled: () => false,
+          connectCredentialForExecutor: connectCredential,
+        } as never,
+      },
+    } satisfies HostServerTestOverrides);
+    try {
+      for (const rotate of [false, true]) {
+        const path = `connect-${rotate ? "rotate" : "provision"}`;
+        const payload = {
+          operationId: `cop_${crypto.randomUUID()}`,
+          hostInstanceId: personalDiscovery.document.hostInstanceId,
+          ...(rotate ? {} : { localOrigin: personalDiscovery.document.canonicalOrigin }),
+        };
+        for (const authorization of [
+          "PersonalRemote stolen-owner-session",
+          `Bearer ${"owner-session".padEnd(43, "x")}`,
+        ]) {
+          const publicResponse = await app.inject({
+            method: "POST",
+            url: `/v1/personal-remote-access/${path}`,
+            headers: { authorization },
+            payload,
+          });
+          expect(publicResponse.statusCode, publicResponse.body).toBe(404);
+          expect(publicResponse.body).not.toContain("private-connect-token");
+          const privateResponse = await app.inject({
+            method: "POST",
+            url: `/v1/personal-remote-access/executor/${path}`,
+            headers: { authorization },
+            payload,
+          });
+          expect(privateResponse.statusCode).toBe(403);
+          expect(privateResponse.body).not.toContain("private-connect-token");
+        }
+        expect(connectCredential).toHaveBeenCalledTimes(Number(rotate));
+        const local = await app.inject({
+          method: "POST",
+          url: `/v1/personal-remote-access/executor/${path}`,
+          headers: { authorization: `Bearer ${capability}` },
+          payload,
+        });
+        expect(local.statusCode, local.body).toBe(200);
+        expect(local.json()).toEqual({ tunnelToken: "private-connect-token" });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("advertises exactly the optional features whose routes it registered", async () => {
     const app = await createHostServer({
       authenticator: {
@@ -433,7 +506,7 @@ describe("Host signing keys", () => {
       discovery: testDiscovery,
       personalRemoteAccess: {
         service: {
-          administration: { close: () => {} },
+          administration: { close: () => {}, subscribe: () => () => {} },
           accountSessionExchangeEnabled: () => true,
         } as never,
       },
@@ -1666,7 +1739,7 @@ describe("Agent Phone pairing target", () => {
         : {
             personalRemoteAccess: {
               service: {
-                administration: { close: () => {} },
+                administration: { close: () => {}, subscribe: () => () => {} },
                 accessRoute,
                 accountSessionExchangeEnabled: () => false,
               } as never,
