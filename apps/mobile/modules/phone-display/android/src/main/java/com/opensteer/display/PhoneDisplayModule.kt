@@ -153,6 +153,7 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   private fun recover() {
     val wanted = epoch
     revision++
+    losses.incrementAndGet()
     val stamp = revision
     release()
     post {
@@ -163,7 +164,6 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
     }
   }
   private fun release() {
-    losses.incrementAndGet()
     codec?.let { runCatching { it.stop() }; runCatching { it.release() } }
     codec = null
     output.clear()
@@ -178,9 +178,10 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
     }
     if (pending.incrementAndGet() > 4) { pending.decrementAndGet(); lost(wanted); promise.resolve(false); return }
     val stamp = revision
+    // A key queued before a later ingress drop cannot repair that drop.
+    val loss = losses.get()
     worker.post {
       var admitted = false
-      val loss = losses.get()
       try {
         if (wanted != epoch || stamp != revision || !available || !visible || !attached) { promise.resolve(false); return@post }
         if (admittedLoss != losses.get() && !key) { promise.resolve(false); return@post }
