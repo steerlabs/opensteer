@@ -42,6 +42,24 @@ async function fixture(name: string): Promise<Uint8Array> {
   if (!response.ok) throw new Error(`fixture ${name} ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }
+/** Split synthetic Annex B fixtures at their access-unit delimiters. */
+function accessUnits(bytes: Uint8Array): Uint8Array[] {
+  const starts: number[] = [];
+  for (let i = 0; i + 4 < bytes.length; i++) {
+    const size =
+      bytes[i] === 0 && bytes[i + 1] === 0
+        ? bytes[i + 2] === 1
+          ? 3
+          : bytes[i + 2] === 0 && bytes[i + 3] === 1
+            ? 4
+            : 0
+        : 0;
+    if (!size) continue;
+    if ((bytes[i + size]! & 31) === 9) starts.push(i);
+    i += size - 1;
+  }
+  return starts.map((start, i) => bytes.subarray(start, starts[i + 1] ?? bytes.length));
+}
 /** The bytes behind a header in one buffer, as the browser watch hands them over. */
 function offsetBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   const prefix = 7;
@@ -509,6 +527,77 @@ function Journey() {
       );
       await readyE3;
       await check("video-base64-key", center([0, 255, 0], "lime key via base64"));
+      // Mac encoder geometry, reference loss, static refresh and generation changes.
+      for (const [name, width, height] of [
+        ["mac", 1512, 982],
+        ["resized", 1280, 800],
+      ] as const) {
+        const units = accessUnits(await fixture(`${name}.h264`));
+        const epoch = `mac-${name}`;
+        const metadata = (key: boolean, replayed = false): DisplayFrameMetadata => ({
+          epoch,
+          width,
+          height,
+          key,
+          replayed,
+          pts: key ? 0 : 500_000,
+        });
+        const pixels = (color: Color): Probe[] => [
+          { ...at(fit(area, width, height), 0.5, 0.5), color, label: name },
+        ];
+        await native.reset(epoch);
+        await expect(
+          `${name} initial delta fenced`,
+          !(await decodeDisplayFrame(native, binary, units[1]!, metadata(false))),
+        );
+        await expect(
+          `${name} replay key admitted`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true, true)),
+        );
+        await check(`${name}-replay-hidden`, pixels([0, 255, 0]), { never: true, ms: 800 });
+        const first = ready.next((value) => value.epoch === epoch, `${name} onReady`);
+        await expect(
+          `${name} delta admitted`,
+          await decodeDisplayFrame(native, binary, units[1]!, metadata(false)),
+        );
+        await first;
+        await check(`${name}-delta`, pixels([0, 0, 255]));
+        await expect(
+          `${name} invalid sample dropped`,
+          !(await decodeDisplayFrame(native, binary, new Uint8Array(), metadata(false))),
+        );
+        await expect(
+          `${name} delta after drop fenced`,
+          !(await decodeDisplayFrame(native, binary, units[1]!, metadata(false))),
+        );
+        await expect(
+          `${name} key restores references`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true)),
+        );
+        await check(`${name}-key`, pixels([0, 255, 0]));
+        await expect(
+          `${name} equal PTS refresh admitted`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true)),
+        );
+        await check(`${name}-static-refresh`, pixels([0, 255, 0]));
+        await background(`${name}-background`, pixels([0, 255, 0]));
+        await check(`${name}-background-cleared`, pixels(black));
+        await expect(
+          `${name} return delta fenced`,
+          !(await decodeDisplayFrame(native, binary, units[1]!, metadata(false))),
+        );
+        const returned = ready.next(
+          (value) => value.epoch === epoch,
+          `${name} ready after background`,
+          6000,
+        );
+        await expect(
+          `${name} return key admitted`,
+          await decodeDisplayFrame(native, binary, units[0]!, metadata(true)),
+        );
+        await returned;
+        await check(`${name}-returned`, pixels([0, 255, 0]));
+      }
       setVideoMounted(false);
     };
 

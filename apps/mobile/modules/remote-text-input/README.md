@@ -37,7 +37,7 @@ Clipboard writes preserve arrival order. Empty/refused results leave it unchange
 cut and nontext paste are visibly refused. Expo cannot atomically preserve arbitrary
 mixed image/HTML or multiple items; report unsupported formats. Android Mac owner
 views use their own [authority](../../../../docs/computer-use.md#negotiated-mac-owner-input).
-iOS Mac video is unavailable.
+iOS Mac video requires a native binary advertising decoder recovery.
 
 ## Qualification
 

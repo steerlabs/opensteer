@@ -212,8 +212,8 @@ Native decoder epochs clear old pixels and queued output before a replacement
 target appears. Same-source recovery may keep its picture; static age alone is not
 failure. Suspended capture clears it until lifecycle permits restoration. Task
 Watch follows the agent's window; an owner view binds its own window. Follow the
-shared [window-group rules](computer-use.md#2-the-helper). iOS Mac window video is
-disabled pending native qualification; Android retains native decoding. Bundle
+shared [window-group rules](computer-use.md#2-the-helper). iOS Mac window video requires a binary advertising decoder recovery; older
+binaries keep the placeholder after OTA updates. Android retains native decoding. Bundle
 exports do not qualify playback. Native H.264 viewing requires a matching binary.
 JavaScript sends media bytes, and draws browser pictures in the native view,
 only when the binary declares `binaryPresentationVersion`; an update running on

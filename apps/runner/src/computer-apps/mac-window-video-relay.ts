@@ -1,5 +1,6 @@
 import {
   DisplayAckSchema,
+  displayMaxEnvelopeBytes,
   displaySourceKey,
   macDisplayMaxWindows,
   decodeDisplayMediaFrame,
@@ -394,7 +395,7 @@ export class MacWindowVideoRelay {
         if (frame.header.streamId !== entry.id || entry.closed || entry.terminal) return;
         if (
           data.readyState !== WebSocket.OPEN ||
-          data.bufferedAmount + bytes.byteLength > 1_048_576
+          data.bufferedAmount + bytes.byteLength > displayMaxEnvelopeBytes
         ) {
           this.#ended(
             entry,

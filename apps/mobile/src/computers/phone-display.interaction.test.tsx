@@ -11,6 +11,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   dispatch: vi.fn(),
   os: "android",
+  recovery: undefined as number | undefined,
+  needsKeyframe: null as
+    null | ((event: { nativeEvent: { epoch: string; pictureGone?: boolean } }) => void),
   binaryVersion: 1,
   geometry: "side:display@0",
   epoch: "",
@@ -84,27 +87,35 @@ vi.mock("expo", async () => {
   const React = await import("react");
   return {
     requireOptionalNativeModule: (name: string) =>
-      name === "PhoneDisplay" ? { binaryPresentationVersion: state.binaryVersion } : null,
+      name === "PhoneDisplay"
+        ? { binaryPresentationVersion: state.binaryVersion, decoderRecoveryVersion: state.recovery }
+        : null,
     requireNativeView: () =>
-      React.forwardRef((props: { onReady: typeof state.ready }, ref) => {
-        state.ready = props.onReady;
-        React.useImperativeHandle(ref, () => ({
-          reset: async (epoch: string) => {
-            state.epoch = epoch;
-          },
-          decode: async (frame: { epoch: string; data: string }) => {
-            state.epoch = frame.epoch;
-            state.decoded.push({ epoch: frame.epoch, data: frame.data });
-            return state.decodeResult ? state.decodeResult() : true;
-          },
-          decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
-            state.epoch = metadata.epoch;
-            state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
-            return state.decodeResult ? state.decodeResult() : true;
-          },
-        }));
-        return <div />;
-      }),
+      React.forwardRef(
+        (
+          props: { onReady: typeof state.ready; onNeedsKeyframe: typeof state.needsKeyframe },
+          ref,
+        ) => {
+          state.ready = props.onReady;
+          state.needsKeyframe = props.onNeedsKeyframe;
+          React.useImperativeHandle(ref, () => ({
+            reset: async (epoch: string) => {
+              state.epoch = epoch;
+            },
+            decode: async (frame: { epoch: string; data: string }) => {
+              state.epoch = frame.epoch;
+              state.decoded.push({ epoch: frame.epoch, data: frame.data });
+              return state.decodeResult ? state.decodeResult() : true;
+            },
+            decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
+              state.epoch = metadata.epoch;
+              state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
+              return state.decodeResult ? state.decodeResult() : true;
+            },
+          }));
+          return <div />;
+        },
+      ),
   };
 });
 vi.mock("expo-clipboard", () => ({
@@ -183,6 +194,7 @@ afterEach(async () => {
   state.decoded = [];
   state.decodeResult = null;
   state.binaryVersion = 1;
+  state.recovery = undefined;
 });
 async function setup(
   phone = true,
@@ -972,4 +984,31 @@ it("explains when the ended Mac app is no longer approved", async () => {
   await press("Reopen Notes");
   expect(container.textContent).toContain("This app is no longer approved for viewing.");
   expect(client.openComputerView).not.toHaveBeenCalled();
+});
+
+it.each(["owner", "task"] as const)(
+  "plays a Mac %s on a recovery-capable iOS binary",
+  async (screen) => {
+    state.recovery = 1;
+    const { connect } = await setup(false, "ios", screen === "owner", true, screen);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain("Mac window video is unavailable");
+  },
+);
+it("revokes picture input and requests a key when the decoder loses its picture", async () => {
+  await setup();
+  await holdAndType();
+  const before = socket.sent.length;
+  await act(async () =>
+    state.needsKeyframe?.({ nativeEvent: { epoch: state.epoch, pictureGone: true } }),
+  );
+  expect(socket.sent.slice(before)).toContainEqual({ type: "display.keyframe" });
+  expect(socket.sent.slice(before)).toContainEqual({ type: "display.input-reset" });
+  expect(container.querySelector('button[aria-label="Keyboard"]')).toBeNull();
+  // A key can already be queued when the asynchronous loss event reaches JS.
+  await act(async () =>
+    state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+  );
+  await act(async () => socket.json({ type: "display.editing", generation: 1, context }));
+  expect(container.querySelector('button[aria-label="Keyboard"]')).not.toBeNull();
 });

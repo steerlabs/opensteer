@@ -4,6 +4,7 @@ import ExpoModulesCore
 public final class PhoneDisplayModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PhoneDisplay")
+    Constant("decoderRecoveryVersion") { 1 }
     // JavaScript reads this before using decodeBytes or the picture view: an
     // older binary has neither, and keeps the base64 and Image paths.
     Constant("binaryPresentationVersion") { 1 }
@@ -12,7 +13,7 @@ public final class PhoneDisplayModule: Module {
       Events("onReady", "onNeedsKeyframe")
       AsyncFunction("reset") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch) }
       AsyncFunction("decode") { (view: PhoneDisplayView, frame: FramePacket) -> Bool in
-        guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { return false }
+        guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { view.lost(frame.epoch); return false }
         return view.decode(bytes, FrameMetadata(frame))
       }
       // Expo copies the Uint8Array into Data once, on the JavaScript thread.
@@ -82,6 +83,9 @@ final class PhoneDisplayView: ExpoView {
   private var epoch = ""
   private var format: CMVideoFormatDescription?
   private var announced = false
+  private var fence = KeyframeFence()
+  private var recovering = false
+  private var statusObservation: NSKeyValueObservation?
   /// The size of the first picture this epoch enqueued for display, awaiting the layer's readiness.
   private var awaiting: (width: Int, height: Int)?
   private var observers: [NSObjectProtocol] = []
@@ -90,7 +94,20 @@ final class PhoneDisplayView: ExpoView {
     backgroundColor = .black
     display.videoGravity = .resizeAspect
     layer.addSublayer(display)
-    observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.reset("") })
+    observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.recover() })
+    for name in [NSNotification.Name.AVSampleBufferDisplayLayerFailedToDecode, NSNotification.Name.AVSampleBufferDisplayLayerRequiresFlushToResumeDecodingDidChange] {
+      observers.append(NotificationCenter.default.addObserver(forName: name, object: display, queue: .main) { [weak self] _ in
+        guard let self else { return }
+        if name == NSNotification.Name.AVSampleBufferDisplayLayerFailedToDecode || self.display.requiresFlushToResumeDecoding { self.recover() }
+      })
+    }
+    statusObservation = display.observe(\.status, options: [.new]) { [weak self] layer, _ in
+      guard layer.status == .failed else { return }
+      DispatchQueue.main.async {
+        guard let self, self.display.status == .failed else { return }
+        self.recover()
+      }
+    }
     if #available(iOS 17.4, *) {
       observers.append(NotificationCenter.default.addObserver(forName: .AVSampleBufferDisplayLayerReadyForDisplayDidChange, object: display, queue: .main) { [weak self] _ in self?.announceIfReady() })
     }
@@ -99,14 +116,23 @@ final class PhoneDisplayView: ExpoView {
   override func layoutSubviews() { super.layoutSubviews(); display.frame = bounds }
   override func didMoveToWindow() {
     super.didMoveToWindow()
-    if window == nil { reset(epoch) } else { onNeedsKeyframe(["epoch": epoch]) }
+    if window == nil { recover() } else { onNeedsKeyframe(["epoch": epoch]) }
   }
   func reset(_ next: String) {
     epoch = next
+    fence.lost()
     display.flushAndRemoveImage()
     format = nil
     announced = false
     awaiting = nil
+  }
+  func lost(_ wanted: String) { if wanted == epoch { fence.lost() } }
+  private func recover() {
+    guard !recovering else { return }
+    recovering = true
+    reset(epoch)
+    onNeedsKeyframe(["epoch": epoch, "pictureGone": true])
+    recovering = false
   }
   /// Enqueueing admits a sample; it does not show it. Where the layer reports
   /// readiness, the picture is announced only once it can be seen.
@@ -118,9 +144,15 @@ final class PhoneDisplayView: ExpoView {
     onReady(["epoch": epoch, "width": size.width, "height": size.height])
   }
   func decode(_ bytes: Data, _ frame: FrameMetadata) -> Bool {
-    guard frame.epoch == epoch, window != nil, UIApplication.shared.applicationState == .active, bytes.count <= 4_194_306 else { return false }
-    if display.status == .failed { reset(frame.epoch); return false }
-    return bytes.withUnsafeBytes { enqueue($0, frame) }
+    guard frame.epoch == epoch else { return false }
+    var admitted = false
+    defer { if !admitted { fence.lost() } }
+    guard fence.allows(key: frame.key), window != nil, UIApplication.shared.applicationState == .active, bytes.count <= 4_194_306 else { return false }
+    if display.status == .failed || display.requiresFlushToResumeDecoding { recover(); return false }
+    let loss = fence.captureLoss()
+    admitted = bytes.withUnsafeBytes { enqueue($0, frame) }
+    if admitted { fence.enqueued(key: frame.key, lossAtAdmission: loss) }
+    return admitted
   }
   private func enqueue(_ bytes: UnsafeRawBufferPointer, _ frame: FrameMetadata) -> Bool {
     let unit = H264AccessUnit(bytes)
@@ -150,7 +182,10 @@ final class PhoneDisplayView: ExpoView {
       CFDictionarySetValue(item, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
       if frame.replayed { CFDictionarySetValue(item, Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()) }
     }
+    let loss = fence.captureLoss()
     display.enqueue(sample)
+    guard loss == fence.captureLoss() else { return false }
+    guard display.status != .failed, !display.requiresFlushToResumeDecoding else { recover(); return false }
     if !frame.replayed && !announced && awaiting == nil {
       awaiting = (frame.width, frame.height)
       announceIfReady()
