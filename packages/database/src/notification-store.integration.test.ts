@@ -949,7 +949,7 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const fixture = await createFixture("report", true);
       await markRunning(fixture);
-      const report = await store.enqueueThreadInput({
+      await store.enqueueThreadInput({
         content: text("Specialist update: the build is green."),
         idempotencyKey: "report-to-chat",
         policy: "report",
@@ -960,14 +960,12 @@ integration("notification decision boundary", () => {
 
       await decideCommitted(fixture);
 
-      // The report is unread in Chat — it is context for the next turn — but
-      // it is not a message to the person, so nothing alerts.
       expect(
         await notificationState.getReadState({
           threadId: fixture.threadId,
           userId: fixture.ownerId,
         }),
-      ).toMatchObject({ unreadSequence: report.message.sequence });
+      ).toMatchObject({ unreadSequence: null });
       expect(await observedViews()).toEqual([]);
     });
 
@@ -1963,6 +1961,134 @@ integration("notification decision boundary", () => {
       await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
         "America/Los_Angeles",
       );
+    });
+
+    it.for(
+      (["watch", "trigger", "agent"] as const).flatMap((kind) =>
+        [true, false].map((home) => ({ kind, home })),
+      ),
+    )(
+      "preserves unread and legacy read positions for $kind inputs (Chat: $home)",
+      async ({ kind, home }, { storeFixture }) => {
+        const {
+          createFixture,
+          markRunning,
+          setRunSeedAuthor,
+          notificationState,
+          database,
+          addMember,
+          appendCompletedReply,
+          text,
+          decideCommitted,
+          observedViews,
+        } = storeFixture;
+        const fixture = await createFixture(`automatic-${kind}-${home}`, home);
+        await setRunSeedAuthor(fixture, kind);
+        await markRunning(fixture);
+        await database
+          .updateTable("threadInputs")
+          .set({ state: "delivered", deliveredAt: new Date(), runId: fixture.runId })
+          .where("threadId", "=", fixture.threadId)
+          .execute();
+        const seed = await database
+          .selectFrom("runs")
+          .innerJoin("messages", "messages.id", "runs.seedInputId")
+          .select("messages.sequence")
+          .where("runs.id", "=", fixture.runId)
+          .executeTakeFirstOrThrow();
+        const state = await notificationState.getReadState({
+          threadId: fixture.threadId,
+          userId: fixture.ownerId,
+        });
+        expect(state.unreadSequence).toBe(home ? null : seed.sequence);
+        if (home) {
+          await decideCommitted(fixture);
+          expect(await observedViews()).toEqual([]);
+        }
+        expect(
+          await notificationState.markRead({
+            threadId: fixture.threadId,
+            userId: fixture.ownerId,
+            throughSequence: seed.sequence,
+          }),
+        ).toMatchObject({ readSequence: seed.sequence, unreadSequence: null });
+        const other = await addMember(fixture, "Other reader");
+        const reply = await appendCompletedReply(fixture, text("Visible reply"));
+        expect(
+          await notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
+        ).toMatchObject({ unreadSequence: reply.sequence });
+        await database
+          .updateTable("messages")
+          .set({ kind: "run-result" })
+          .where("id", "=", reply.id)
+          .executeTakeFirstOrThrow();
+        expect(
+          await notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
+        ).toMatchObject({ unreadSequence: reply.sequence });
+      },
+    );
+
+    it("retains the channel sender fallback to the requesting viewer in Chat", async ({
+      storeFixture,
+    }) => {
+      const { createFixture, markRunning, addMember, notificationState, database } = storeFixture;
+      const fixture = await createFixture("channel-viewer-fallback", true);
+      await markRunning(fixture);
+      await database
+        .updateTable("threadInputs")
+        .set({ state: "delivered", deliveredAt: new Date(), runId: fixture.runId })
+        .where("threadId", "=", fixture.threadId)
+        .execute();
+      const other = await addMember(fixture, "Other viewer");
+      const seed = await database
+        .selectFrom("runs")
+        .innerJoin("messages", "messages.id", "runs.seedInputId")
+        .select(["messages.id", "messages.sequence"])
+        .where("runs.id", "=", fixture.runId)
+        .executeTakeFirstOrThrow();
+      // Channel principals without a linked user produce this human author shape.
+      await database
+        .updateTable("messages")
+        .set({
+          author: jsonValue(
+            MessageAuthorSchema.parse({
+              kind: "human",
+              displayName: "External sender",
+              principalId: "channel:external",
+            }),
+          ),
+        })
+        .where("id", "=", seed.id)
+        .executeTakeFirstOrThrow();
+      expect(
+        await notificationState.getReadState({
+          threadId: fixture.threadId,
+          userId: fixture.ownerId,
+        }),
+      ).toMatchObject({ unreadSequence: null });
+      expect(
+        await notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
+      ).toMatchObject({ unreadSequence: seed.sequence });
+      await database
+        .updateTable("messages")
+        .set({
+          author: jsonValue(
+            MessageAuthorSchema.parse({
+              kind: "human",
+              displayName: "Other viewer",
+              principalId: "other",
+              userId: other,
+            }),
+          ),
+        })
+        .where("id", "=", seed.id)
+        .executeTakeFirstOrThrow();
+      expect(
+        await notificationState.getReadState({
+          threadId: fixture.threadId,
+          userId: fixture.ownerId,
+        }),
+      ).toMatchObject({ unreadSequence: seed.sequence });
     });
 
     it("keeps unread candidates private, ordered, and scoped to published incoming content", async ({

@@ -1913,6 +1913,21 @@ describe("quiet Chat", () => {
   const startedBy = { kind: "platform" as const, cause: "assignment-result" };
   const rows = (entries: TranscriptEntry[], atComputer = false) =>
     conversationRows(groupTranscriptEntries(entries), { live: true, atComputer: () => atComputer });
+  it("does not count hidden automatic inputs as incoming Chat messages", () => {
+    const hidden = input({ author: startedBy, sequence: "10" });
+    const entries = [hidden, run({ startedBy })];
+    expect(rows(entries)).toEqual([]);
+    expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([]);
+    expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([hidden]);
+    const reply = message({ id: "reply", sequence: "11" });
+    expect(
+      incomingTranscriptMessages(
+        [hidden, run({ startedBy, replyMessageId: reply.id }), reply],
+        "viewer",
+        true,
+      ),
+    ).toEqual([reply]);
+  });
   it("keeps the same drawn row when an older page prepends folded steps", () => {
     const reply = message();
     const completed = run({ replyMessageId: reply.id });
