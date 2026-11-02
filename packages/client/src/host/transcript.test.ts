@@ -1,3 +1,4 @@
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   RunnerIdSchema,
   SequenceSchema,
@@ -1722,4 +1723,29 @@ it("keeps addressed publication separate from a live final reply across page mer
     stream.id,
     addressed.data.message.id,
   ]);
+});
+
+describe("durable place markers", () => {
+  it("keeps point markers in order and deduplicates replay and overlapping history pages", () => {
+    const data = {
+      place: {
+        kind: "browser" as const,
+        sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
+        surfaceId: BrowserSurfaceIdSchema.parse("tab-1"),
+      },
+      title: "Page",
+      site: "https://example.com",
+    };
+    const a = event("place.entered", data);
+    const b = event("place.entered", {
+      ...data,
+      place: { ...data.place, surfaceId: BrowserSurfaceIdSchema.parse("tab-2") },
+    });
+    const c = event("place.entered", data);
+    const entries = fold([a, b, c]);
+    expect(entries.map(({ id }) => id)).toEqual([a, b, c].map(({ eventId }) => `place:${eventId}`));
+    expect(fold([a, b, c], entries)).toEqual(entries);
+    expect(mergeTranscriptSegments(fold([a, b]), fold([b, c]))).toEqual(entries);
+    expect(entries[0]).toMatchObject({ ...data, kind: "place", runId, createdAt: now });
+  });
 });

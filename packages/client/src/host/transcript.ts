@@ -46,6 +46,14 @@ export function foldTranscriptEvent(
   event: AgentEvent,
 ): TranscriptEntry[] {
   switch (event.type) {
+    case "place.entered":
+      return upsertEntry(entries, {
+        ...event.data,
+        createdAt: event.createdAt,
+        id: `place:${event.eventId}`,
+        kind: "place",
+        runId: event.runId,
+      });
     case "run.queued":
     case "thread.input-queue-updated":
     case "thread.state-changed":

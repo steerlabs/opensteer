@@ -28,3 +28,5 @@ export * from "./computer-view.js";
 
 export * from "./browser-tab-order.js";
 export * from "./browser-tabs.js";
+
+export * from "./places.js";

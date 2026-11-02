@@ -275,6 +275,7 @@ export const HostCapabilitySchema = z.enum([
   "snapshot-messages-omit-v1",
   /** `thread.events.list` takes `turns`: a page of whole turns rather than a count of events. */
   "history-turns-v1",
+  "place-events-v1",
   "shared-task-done-v1",
   /** A native-user Runner can inspect and update a person's installed engine CLI. */
   "harness-update-v1",

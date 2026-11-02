@@ -1,3 +1,4 @@
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   AgentEventSchema,
@@ -27,6 +28,29 @@ function event<T>(type: string, data: T) {
 }
 
 describe("Agent event contracts", () => {
+  it("bounds Host-authored place markers and accepts only an origin", () => {
+    const data = {
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111"),
+        surfaceId: BrowserSurfaceIdSchema.parse("tab-1"),
+      },
+      title: "Page",
+      site: "https://example.com:8443",
+    };
+    expect(AgentEventSchema.safeParse(event("place.entered", data)).success).toBe(true);
+    expect(
+      AgentEventSchema.safeParse(
+        event("place.entered", { ...data, site: "https://example.com/path?secret=1" }),
+      ).success,
+    ).toBe(false);
+    expect(
+      AgentEventSchema.safeParse(event("place.entered", { ...data, title: "x".repeat(257) }))
+        .success,
+    ).toBe(false);
+    expect(runnerEventDataSchemas).not.toHaveProperty("place.entered");
+  });
+
   it("validates Host Thread status strictly and tolerates additive view fields", () => {
     const changed = {
       ...event("thread.state-changed", {

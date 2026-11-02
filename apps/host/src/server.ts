@@ -1296,6 +1296,7 @@ export async function createHostServer(
       const page = await dependencies.store.threadEventPageForOwner({
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         ...(input.before ? { before: input.before } : {}),
+        ...(input.placeEvents ? { placeEvents: input.placeEvents } : {}),
         ...(input.turns === undefined
           ? { maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems) }
           : { maxTurns: input.turns }),
@@ -3186,6 +3187,7 @@ export function advertisedCapabilities(
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",
+    "place-events-v1",
     "shared-task-done-v1",
     "harness-update-v1",
     "iphone-apps-v1",
@@ -4184,6 +4186,7 @@ function attachRealtimeSocket(
       try {
         unsubscribe = await realtime.subscribe({
           afterSequence: message.afterSequence,
+          ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
           ...(message.snapshotMessages ? { snapshotMessages: message.snapshotMessages } : {}),
           sink,
           userId: session.user.id,
