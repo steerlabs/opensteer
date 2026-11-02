@@ -435,10 +435,11 @@ const AppRow = memo(function AppRow(props: {
           onPress: () =>
             props.onOpen(app, { ...target, window: window.id }, `${app.connectionId}:${window.id}`),
         }))}
-        style={style({ pressed: false })}
+        style={styles.menu}
         title={app.name}
       >
-        {body}
+        {/* The menu wraps its trigger in a plain view, so the row draws its own line. */}
+        <View style={style({ pressed: false })}>{body}</View>
       </NativeMenu>
     );
   return (
@@ -496,6 +497,7 @@ const styles = StyleSheet.create({
   groupTitle: { flexShrink: 1, fontWeight: "600" },
   head: { paddingBottom: space[4], paddingHorizontal: space[20], paddingTop: space[20] },
   list: { paddingHorizontal: space[16] },
+  menu: { alignSelf: "stretch" },
   notice: { paddingTop: space[8] },
   pressed: { backgroundColor: color.surfacePressed },
   row: {

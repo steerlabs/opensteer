@@ -80,10 +80,26 @@ vi.mock("react-native", () => ({
   View: ({
     children,
     accessibilityLabel,
+    style,
   }: {
     children: ReactNode;
     accessibilityLabel?: string;
-  }) => <div aria-label={accessibilityLabel}>{children}</div>,
+    style?: unknown;
+  }) => (
+    <div
+      aria-label={accessibilityLabel}
+      data-row={[style]
+        .flat(Infinity)
+        .some(
+          (part) =>
+            typeof part === "object" &&
+            part !== null &&
+            (part as { flexDirection?: string }).flexDirection === "row",
+        )}
+    >
+      {children}
+    </div>
+  ),
   ActivityIndicator: () => <i />,
   Pressable: ({
     children,
@@ -254,7 +270,8 @@ it("offers multiple windows through NativeMenu and opens the chosen one", async 
   w.list.mockResolvedValue([w.app]);
   w.windows.mockResolvedValue([windowInfo(1, "First"), windowInfo(42, "Chosen")]);
   await w.render();
-  expect(container.querySelector("[data-native-menu]")).not.toBeNull();
+  // The native menu adds no layout of its own, so the row inside it lays out its line.
+  expect(container.querySelector('[data-native-menu] > [data-row="true"]')).not.toBeNull();
   await press("Chosen");
   expect(w.open).toHaveBeenCalledWith(w.app.machineId, { ...w.app.target, window: 42 });
 });
