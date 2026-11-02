@@ -128,19 +128,7 @@ export class RunWorkspaceManager implements WorkspaceAccessManager {
     readonly workspaceKind: WorkspaceKind;
     readonly workspacePath: string;
   }): readonly string[] {
-    if (input.workspaceKind !== "main") return [resolve(input.workspacePath)];
-    if (input.plan.kind === "portablefs") {
-      const portableFs = this.#portableFs;
-      if (!portableFs) throw new Error("Runner does not support PortableFS Workspace access");
-      return [portableFs.namespaceRoot(input.requestedBy)];
-    }
-    const local = this.#local;
-    if (!local) throw new Error("Runner does not support local-directory Workspace access");
-    return [
-      local.namespace === "single-owner"
-        ? resolve(local.root)
-        : resolve(local.root, input.requestedBy),
-    ];
+    return [resolve(input.workspacePath)];
   }
 
   async #prepareLocal(

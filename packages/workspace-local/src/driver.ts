@@ -88,13 +88,18 @@ export class LocalWorkspaceAuthority {
   async provision(
     input: {
       readonly binding: LocalWorkspaceBindingRequest;
-      readonly fingerprint: { readonly createdBy: UserId; readonly workspaceKind: WorkspaceKind };
+      readonly fingerprint: {
+        readonly createdBy: UserId;
+        readonly workspaceKind: WorkspaceKind;
+        readonly slug?: string | undefined;
+      };
       readonly idempotencyKey: string;
     },
     signal?: AbortSignal,
   ): Promise<void> {
     await this.#assertAuthority(input.binding, signal);
     const fingerprint: ProvisionFingerprint = {
+      ...(input.fingerprint.slug ? { slug: input.fingerprint.slug } : {}),
       createdBy: input.fingerprint.createdBy,
       kind: input.fingerprint.workspaceKind,
       ownerEnvironmentId: input.binding.ownerEnvironmentId,

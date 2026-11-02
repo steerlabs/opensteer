@@ -221,6 +221,11 @@ export type AgentCapabilityProfileId = z.infer<typeof AgentCapabilityProfileIdSc
 
 export const WorkspaceSchema = z
   .object({
+    slug: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+      .nullable()
+      .optional(),
     backing: WorkspaceBackingSchema,
     capacityPolicy: WorkspaceCapacityPolicySchema,
     createdAt: IsoDateTimeSchema,

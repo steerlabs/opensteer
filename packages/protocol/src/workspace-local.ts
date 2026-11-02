@@ -74,6 +74,10 @@ const ProvisionLocalWorkspaceSchema = z.strictObject({
   fingerprint: z.strictObject({
     createdBy: UserIdSchema,
     workspaceKind: WorkspaceKindSchema,
+    slug: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+      .optional(),
   }),
   type: z.literal("host.workspace.local.provision"),
 });

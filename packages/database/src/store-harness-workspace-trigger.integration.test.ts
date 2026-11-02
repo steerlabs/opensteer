@@ -34,6 +34,51 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
+  it("allocates immutable case-insensitive Project slugs under the owner lock", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const owner = await store.createUser("Project slug owner");
+    const create = (name: string, key: string) =>
+      store.createWorkspace({
+        backing: { kind: "portablefs", generation: 1, serviceId: "test-portablefs", volumeId: key },
+        capacityPolicy: {
+          kind: "hard-quota",
+          blockHardLimitBytes: 536870912,
+          inodeHardLimit: 50000,
+        },
+        createdBy: owner,
+        idempotencyKey: key,
+        kind: "project",
+        name,
+      });
+    const first = await create("Research", "slug-first");
+    const concurrent = await Promise.all([
+      create("RESEARCH", "slug-second"),
+      create("research", "slug-third"),
+    ]);
+    expect(first.slug).toBe("research");
+    expect(concurrent.map((workspace) => workspace.slug).sort()).toEqual([
+      "research-2",
+      "research-3",
+    ]);
+    expect((await create("***", "slug-invalid")).slug).toBe("project");
+    expect((await create("---", "slug-empty")).slug).toBe("project-2");
+    await database
+      .updateTable("workspaces")
+      .set({ name: "Renamed" })
+      .where("id", "=", first.id)
+      .execute();
+    expect((await store.getWorkspaceForOwner(first.id, owner))?.slug).toBe("research");
+    await expect(
+      database
+        .updateTable("workspaces")
+        .set({ slug: "moved" })
+        .where("id", "=", first.id)
+        .execute(),
+    ).rejects.toThrow("immutable");
+  });
+
   it("refuses Main deletion without changing its status", async ({ storeFixture }) => {
     const { store } = storeFixture;
     const owner = await store.createUser("Main owner");

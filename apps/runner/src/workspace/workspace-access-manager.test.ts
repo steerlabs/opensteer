@@ -64,7 +64,7 @@ describe("RunWorkspaceManager", () => {
         workspaceKind: "main",
         workspacePath: fixture.workspacePath,
       }),
-    ).toEqual([fixture.root]);
+    ).toEqual([fixture.workspacePath]);
     await expect(
       fixture.driver.resolveExecutionPath({
         environmentId: fixture.environmentId,

@@ -669,6 +669,7 @@ interface UserExecutionPreferenceTable {
 }
 
 export interface WorkspaceTable {
+  slug: Generated<string | null>;
   color: MarkColor;
   homeThreadId: Generated<ThreadId | null>;
   backing: JsonColumn<WorkspaceBacking>;

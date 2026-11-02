@@ -4678,6 +4678,7 @@ export function migrationProvider() {
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
         "0128_projects": projectsMigration,
+        "0129_project_slugs": projectSlugsMigration,
       };
     },
   };
@@ -6626,6 +6627,71 @@ export const projectsMigration: Migration = {
       alter table public.workspaces add constraint workspaces_kind_check
         check (kind = any (array['main'::text, 'project'::text]));
       alter table public.workspaces enable trigger workspaces_immutable_kind;
+    `.execute(database);
+  },
+};
+
+/** Allocate folder names under the owner lock, including imports and direct inserts. */
+export const projectSlugsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.workspaces add column slug text;
+      create function public.allocate_project_slug() returns trigger language plpgsql as $$
+      declare
+        base text;
+        candidate text;
+        suffix integer := 1;
+      begin
+        if TG_OP = 'UPDATE' then
+          if NEW.slug is distinct from OLD.slug then
+            raise exception 'Project folder slugs are immutable';
+          end if;
+          return NEW;
+        end if;
+        if NEW.kind = 'main' then
+          NEW.slug := null;
+          return NEW;
+        end if;
+        perform id from public.users where id = NEW.created_by for no key update;
+        base := trim(both '-' from left(regexp_replace(lower(NEW.name collate "C"), '[^a-z0-9]+', '-', 'g'), 100));
+        if base = '' then base := 'project'; end if;
+        candidate := base;
+        while exists (select 1 from public.workspaces where created_by = NEW.created_by and lower(slug) = candidate) loop
+          suffix := suffix + 1;
+          candidate := base || '-' || suffix;
+        end loop;
+        NEW.slug := candidate;
+        return NEW;
+      end $$;
+      create trigger workspaces_project_slug before insert or update on public.workspaces
+        for each row execute function public.allocate_project_slug();
+    `.execute(database);
+    // Use the same allocator as new inserts, in durable creation order.
+    await sql`
+      do $$
+      declare
+        item record;
+        base text;
+        candidate text;
+        suffix integer;
+      begin
+        alter table public.workspaces disable trigger workspaces_project_slug;
+        for item in select id, name, created_by from public.workspaces where kind = 'project' order by created_at, id loop
+          base := trim(both '-' from left(regexp_replace(lower(item.name collate "C"), '[^a-z0-9]+', '-', 'g'), 100));
+          if base = '' then base := 'project'; end if;
+          candidate := base;
+          suffix := 1;
+          while exists (select 1 from public.workspaces where created_by = item.created_by and lower(slug) = candidate) loop
+            suffix := suffix + 1;
+            candidate := base || '-' || suffix;
+          end loop;
+          update public.workspaces set slug = candidate where id = item.id;
+        end loop;
+        alter table public.workspaces enable trigger workspaces_project_slug;
+      end $$;
+      alter table public.workspaces add constraint workspaces_slug_check check
+        ((kind = 'main' and slug is null) or (kind = 'project' and slug is not null and slug ~ '^[a-z0-9][a-z0-9-]{0,127}$'));
+      create unique index workspaces_owner_slug on public.workspaces (created_by, lower(slug)) where kind = 'project';
     `.execute(database);
   },
 };

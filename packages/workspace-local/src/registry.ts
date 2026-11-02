@@ -45,6 +45,10 @@ const FilesystemIdentitySchema = NativeDirectoryIdentitySchema;
 export type FilesystemIdentity = NativeDirectoryIdentity;
 
 const ProvisionFingerprintSchema = z.strictObject({
+  slug: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
+    .optional(),
   createdBy: UserIdSchema,
   kind: z.preprocess((value) => (value === "specialized" ? "project" : value), WorkspaceKindSchema),
   ownerEnvironmentId: EnvironmentIdSchema,
@@ -59,7 +63,7 @@ const RegistryBindingBaseSchema = z.strictObject({
   idempotencyKey: z.string().min(1).max(512),
   ownerEnvironmentId: EnvironmentIdSchema,
   provisionFingerprint: ProvisionFingerprintSchema,
-  relativeSegments: z.array(RelativeSegmentSchema).min(1).max(3),
+  relativeSegments: z.array(RelativeSegmentSchema).min(1).max(4),
   workspaceId: WorkspaceIdSchema,
 });
 
@@ -277,12 +281,32 @@ export class LocalWorkspaceRegistry {
             createdBy: input.fingerprint.createdBy,
             id: input.fingerprint.workspaceId,
             kind: input.fingerprint.kind,
+            ...(input.fingerprint.slug ? { slug: input.fingerprint.slug } : {}),
           },
           this.#options.namespace.kind,
         ),
       ];
+      if (input.fingerprint.kind === "project" && input.fingerprint.slug) {
+        const main = document.bindings.find(
+          (binding) =>
+            binding.provisionFingerprint.kind === "main" &&
+            binding.createdBy === input.fingerprint.createdBy &&
+            binding.ownerEnvironmentId === input.fingerprint.ownerEnvironmentId &&
+            binding.state === "ready",
+        );
+        if (!main || main.state !== "ready") {
+          throw new LocalWorkspaceError({
+            code: LocalWorkspaceErrorCode.workspaceConflict,
+            message: "A Project requires its owner's ready Main on this storage authority.",
+          });
+        }
+        await this.#assertWorkspaceIdentity(main);
+      }
       const pathCollision = document.bindings.find((binding) =>
-        equalSegments(binding.relativeSegments, relativeSegments),
+        equalSegments(
+          binding.relativeSegments.map((segment) => segment.toLowerCase()),
+          relativeSegments.map((segment) => segment.toLowerCase()),
+        ),
       );
       if (pathCollision !== undefined) {
         throw new LocalWorkspaceError({
@@ -377,6 +401,12 @@ export class LocalWorkspaceRegistry {
         throw new LocalWorkspaceError({
           code: LocalWorkspaceErrorCode.registryInvalid,
           message: "This machine has no record of destroying that local Workspace directory.",
+        });
+      }
+      if (binding.provisionFingerprint.kind === "main") {
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.workspaceConflict,
+          message: "Main cannot be destroyed",
         });
       }
       if (binding.workspaceId !== input.workspaceId) {
@@ -838,7 +868,13 @@ function assertOwnerAllowed(
 }
 
 function stableStringify(value: ProvisionFingerprint): string {
-  return JSON.stringify([value.createdBy, value.kind, value.ownerEnvironmentId, value.workspaceId]);
+  return JSON.stringify([
+    value.createdBy,
+    value.kind,
+    value.ownerEnvironmentId,
+    value.workspaceId,
+    value.slug ?? null,
+  ]);
 }
 
 function resolveContainedPath(rootPath: string, segments: readonly string[]): string {
@@ -910,9 +946,32 @@ function assertRegistryUniqueness(document: Pick<RegistryDocument, "bindings">):
     "Workspace ID",
   );
   assertUnique(
-    document.bindings.map((binding) => binding.relativeSegments.join("/")),
+    document.bindings.map((binding) => binding.relativeSegments.join("/").toLowerCase()),
     "relative path",
   );
+  const paths = new Map(
+    document.bindings.map((binding) => [binding.relativeSegments.join("/").toLowerCase(), binding]),
+  );
+  for (const binding of document.bindings) {
+    for (let depth = 1; depth < binding.relativeSegments.length; depth += 1) {
+      const ancestor = paths.get(binding.relativeSegments.slice(0, depth).join("/").toLowerCase());
+      if (!ancestor) continue;
+      const isOwnedProject =
+        ancestor.provisionFingerprint.kind === "main" &&
+        binding.provisionFingerprint.kind === "project" &&
+        ancestor.createdBy === binding.createdBy &&
+        ancestor.ownerEnvironmentId === binding.ownerEnvironmentId &&
+        binding.relativeSegments.length === depth + 2 &&
+        binding.relativeSegments[depth] === "Projects";
+      if (!isOwnedProject) {
+        throw new LocalWorkspaceError({
+          code: LocalWorkspaceErrorCode.registryInvalid,
+          message:
+            "The protected local Workspace registry contains overlapping directory bindings.",
+        });
+      }
+    }
+  }
 }
 
 function assertUnique(values: readonly string[], description: string): void {
