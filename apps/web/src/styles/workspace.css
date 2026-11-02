@@ -1197,10 +1197,135 @@ button.side-needs:hover {
   text-align: left;
 }
 
-/* A release ready to download or install; absent otherwise. */
+/* The place button and, while a release is pending, the update mark laid
+   over it just inside the chevron: one row, so hovering either lights both. */
+.sidebar__place-row {
+  --update-size: 24px;
+  position: relative;
+}
+
+.sidebar__place-row:hover > .sidebar__place {
+  background-color: var(--fill-quiet);
+}
+
+/* Room for the mark, so a long place name ends before it. */
+.sidebar__place-row:has(.sidebar__update) .sidebar__place-settings {
+  margin-left: calc(var(--update-size) + var(--space-2));
+}
+
+/* Housekeeping, so it waits in the row's own ink; only a ready restart
+   takes the ember. Absent while there is nothing to do. */
 .sidebar__update {
-  width: 100%;
-  margin-bottom: var(--space-6);
+  position: absolute;
+  top: 50%;
+  right: calc(var(--space-8) + 16px + var(--space-2));
+  display: grid;
+  place-items: center;
+  width: var(--update-size);
+  height: var(--update-size);
+  min-height: 0;
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  translate: 0 -50%;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    scale var(--duration-fast) var(--ease-spring);
+}
+
+.sidebar__update > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar__update:hover,
+.sidebar__update:focus-visible {
+  background-color: var(--fill-plate-hover);
+  color: var(--text);
+}
+
+.sidebar__update:active:not([aria-disabled="true"]) {
+  scale: 0.9;
+}
+
+.sidebar__update[aria-disabled="true"] {
+  cursor: default;
+}
+
+.sidebar__update--ready {
+  color: var(--ember-dim);
+}
+
+.sidebar__update--ready:hover,
+.sidebar__update--ready:focus-visible {
+  color: var(--ember);
+}
+
+.sidebar__update--danger,
+.sidebar__update--danger:hover,
+.sidebar__update--danger:focus-visible {
+  color: var(--red);
+}
+
+.sidebar__update-ring {
+  rotate: -90deg;
+  fill: none;
+  stroke-width: 2;
+}
+
+.sidebar__update-ring circle:first-child {
+  stroke: var(--line-strong);
+}
+
+.sidebar__update-ring circle:last-child {
+  stroke: var(--ember-dim);
+  stroke-dasharray: var(--progress) 100;
+  stroke-linecap: round;
+  transition: stroke-dasharray var(--duration-med) var(--ease-out);
+}
+
+.sidebar__update-tip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-6));
+  z-index: var(--layer-popover);
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--surface-elevated);
+  box-shadow: var(--edge-plate), var(--lift-float);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  translate: 0 2px;
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    translate var(--duration-fast) var(--ease-out);
+}
+
+/* A short wait, so a pointer passing over the row doesn't flash it. */
+.sidebar__update:hover > .sidebar__update-tip,
+.sidebar__update:focus-visible > .sidebar__update-tip {
+  opacity: 1;
+  translate: 0;
+  transition-delay: 250ms;
+}
+
+.sidebar__update:focus-visible > .sidebar__update-tip {
+  transition-delay: 0ms;
+}
+
+@media (any-pointer: coarse) {
+  .sidebar__place-row {
+    --update-size: var(--touch-target);
+  }
+
+  .sidebar__update-tip {
+    display: none;
+  }
 }
 
 /* ---- Agents' cursors ---- */
