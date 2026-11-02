@@ -508,7 +508,8 @@ export const CompletePersonalHostAccountLinkResponseSchema = z.object({
   challengeId: PersonalHostAccountLinkChallengeIdSchema,
   linkGeneration: AccountLinkGenerationSchema,
   resultExpiresAt: IsoDateTimeSchema,
-  sealedCompletion: OAuthBrokerSealedEnvelopeSchema,
+  // Couriers relay this envelope; tolerate additive fields like other Host responses.
+  sealedCompletion: z.object(OAuthBrokerSealedEnvelopeSchema.shape),
   schemaVersion: z.literal(2),
 });
 export type CompletePersonalHostAccountLinkResponse = z.infer<
