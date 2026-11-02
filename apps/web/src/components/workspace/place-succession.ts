@@ -157,6 +157,16 @@ export function usePlaceSuccession(hostClient: HostClient): void {
   }, [known, nav, places, selection, source, viewer, strip]);
 }
 
+/** Whether a place has ended, by a snapshot known enough to prove it. */
+export function placeEnded(snapshot: HostSnapshot, destination: PlaceItem["destination"]): boolean {
+  return selectPlacesKnown(snapshot) && placeDestinationEnded(snapshot, destination);
+}
+
+/** Snapshots that answer `placeEnded` alike. */
+export function samePlaceEndSource(a: HostSnapshot, b: HostSnapshot): boolean {
+  return samePlaceListSource(a, b) && selectPlacesKnown(a) === selectPlacesKnown(b);
+}
+
 const selectPlaceSource = (snapshot: HostSnapshot): PlaceListSource => snapshot;
 const selectPlacesKnown = (snapshot: HostSnapshot) =>
   snapshot.connection === "connected" &&
