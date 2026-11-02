@@ -1046,24 +1046,13 @@ export class ComputerAppHub {
     return this.#byRunner.has(runnerId);
   }
 
-  /**
-   * Whether this computer's Runner relays approvals to a desktop that shows
-   * them. An older Runner, or one no desktop supervises, is never sent an
-   * approval frame: it could not parse it, and nobody there could answer it.
-   */
-
-  /**
-   * Why an attached computer cannot show its owner approvals, in that owner's
-   * words, or null when it can. An offline computer is not refused: its
-   * approvals wait for it to come back.
-   */
-
-  /**
-   * Sends one Mac every approval waiting on it. Best effort, like a cancel:
-   * the list is complete every time, so the next one repairs a lost one.
-   */
-
-  /** Tells one Mac what became of its answer. */
+  /** Offline computers retain pending approvals until they reconnect. */
+  compatibilityReason(runnerId: RunnerId): string | null {
+    const entry = this.#byRunner.get(runnerId);
+    return entry
+      ? runnerIntegrationsCompatibilityReason(entry.stream.identity.modules.integrations)
+      : null;
+  }
 
   /**
    * Tells a phone that its owner's Stop is durably recorded, so it may stop
@@ -1084,8 +1073,6 @@ export class ComputerAppHub {
       type: "host.integrations.computer-use-stop-recorded",
     });
   }
-
-  /** Proves that the desktop on the currently attached Mac holds a nominated key. */
 
   /**
    * Every attached computer and what it says about one definition, by the name

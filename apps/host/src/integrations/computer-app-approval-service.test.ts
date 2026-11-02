@@ -33,8 +33,10 @@ const request: ComputerAppSetupRequest = {
   createdAt: new Date().toISOString(),
   expiresAt: new Date(Date.now() + 60_000).toISOString(),
 };
-function fixture(pending = request) {
+function fixture(pending = request, compatibilityReason: string | null = null) {
   const store = {
+    computerAppRunner: vi.fn(async () => null),
+    requestComputerAppSetup: vi.fn(),
     getComputerUsePolicy: vi.fn(async () => ({ appApproval: "ask" })),
     getComputerAppSetupRequest: vi.fn(async () => pending),
     listInstallations: vi.fn(async () => []),
@@ -64,7 +66,11 @@ function fixture(pending = request) {
   const install = vi.fn(async () => undefined);
   const changed = vi.fn();
   const service = new ComputerAppApprovalService({
-    computerApps: { withRunnerAdmission: admission, attached: () => true } as never,
+    computerApps: {
+      withRunnerAdmission: admission,
+      compatibilityReason: () => compatibilityReason,
+      attached: () => true,
+    } as never,
     computerUse: computerUse as unknown as ComputerUseApprovalGateway,
     definitions: integrationDefinitions,
     deploymentName: null,
@@ -88,6 +94,21 @@ const answer = {
 };
 
 describe("owner-session computer app approvals", () => {
+  it("refuses setup on an incompatible computer before creating an approval", async () => {
+    const { service, store, admission } = fixture(request, "Update Opensteer on this computer.");
+    await expect(
+      service.requestComputerAppSetup({
+        kind: "app",
+        definitionId: "apple-calendar",
+        app: null,
+        access: "read",
+        runnerId,
+        actorUserId: ownerUserId,
+      }),
+    ).rejects.toMatchObject({ code: "conflict", message: "Update Opensteer on this computer." });
+    expect(admission).toHaveBeenCalledOnce();
+    expect(store.requestComputerAppSetup).not.toHaveBeenCalled();
+  });
   it("passes the authenticated session through owner denial and task decline", async () => {
     const { service, store } = fixture();
     await service.respondComputerAppSetup({

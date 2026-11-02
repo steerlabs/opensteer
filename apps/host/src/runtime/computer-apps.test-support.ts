@@ -44,8 +44,7 @@ import {
  * A Mac as a Host meets it: its primary connection, its `integrations`
  * stream carrying the given app providers, and — when `messaging` is given —
  * a `messaging` module it advertises, attached separately with
- * `attachMessaging`. The owner registers the desktop's approval key, as
- * opening the Mac's page on the Mac does.
+ * `attachMessaging`. App decisions use the owner's authenticated Host session.
  */
 export async function connectComputerAppMachine(
   host: MachineAccessHost,
@@ -89,7 +88,6 @@ export async function connectComputerAppMachine(
             },
           }
         : {}),
-      // A desktop supervises it, so it relays approvals.
       integrations: options.integrations ?? {
         platform: "darwin",
         protocolVersion: runnerIntegrationsProtocolVersion,
@@ -202,10 +200,6 @@ async function rejectPreAuthenticationHeartbeat(hostPort: number, primary: Prima
     socket,
     (message) => message.type === "host.auxiliary.challenge",
   );
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
-  });
   await challenged;
   const closing = waitForClose(socket);
   socket.send(
@@ -253,10 +247,6 @@ export async function openAuxiliaryStream(
     socket,
     (message) => message.type === "host.auxiliary.challenge",
   );
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
-  });
   const challenge = RunnerAuxiliaryChallengeSchema.parse(await challenged);
   const welcomed = waitForMessage(socket, (message) => message.type === "host.auxiliary.welcome");
   socket.send(
@@ -435,8 +425,7 @@ export async function requestComputerAppSetup(
 }
 
 /**
- * The person allows the request on the Mac: the signed answer goes back on the
- * Mac's own `integrations` stream, and the Host's outcome comes back on it.
+ * The owner allows the stored request through the shared Host command.
  */
 export async function setComputerApp(
   host: MachineAccessHost,
@@ -505,9 +494,28 @@ export function waitForMessage(
 
 export function waitForClose(
   socket: WebSocket,
+  description = "the WebSocket to close",
 ): Promise<{ readonly code: number; readonly reason: string }> {
-  return new Promise((resolve) => {
-    socket.once("close", (code, reason) => resolve({ code, reason: reason.toString("utf8") }));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("close", close);
+      socket.off("error", error);
+    };
+    const close = (code: number, reason: Buffer) => {
+      cleanup();
+      resolve({ code, reason: reason.toString("utf8") });
+    };
+    const error = (cause: Error) => {
+      cleanup();
+      reject(cause);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for ${description}`));
+    }, 15_000);
+    socket.once("close", close);
+    socket.once("error", error);
   });
 }
 

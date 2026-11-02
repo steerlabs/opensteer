@@ -308,11 +308,14 @@ integration.sequential("iPhone integrations Host contract", () => {
         },
       },
       { modules: { integrations: { platform: "android", protocolVersion: 4 } } },
-      ...["ownerViewVersion", "macWindowVideoVersion", "loginText", "passwordSignIn"].map(
-        (field) => ({
-          modules: { integrations: { ...descriptor.modules.integrations, [field]: 1 } },
-        }),
-      ),
+      ...Object.entries({
+        ownerViewVersion: 1,
+        macWindowVideoVersion: 1,
+        loginText: 1,
+        passwordSignIn: 2,
+      }).map(([field, version]) => ({
+        modules: { integrations: { ...descriptor.modules.integrations, [field]: version } },
+      })),
       {
         modules: {
           integrations: descriptor.modules.integrations,
@@ -1207,53 +1210,59 @@ async function refusal(
 ) {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
   const frames: { type: string; [key: string]: unknown }[] = [];
-  const ended = waitForClose(socket);
-  const receive = waitForMessage(socket, (frame) => frame.type === "host.challenge");
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
-  });
-  const challenge = RunnerChallengeSchema.parse(await receive);
-  socket.on("message", (raw) => {
-    frames.push(JSON.parse(raw.toString()) as { type: string });
-  });
-  if ("token" in credentials) {
-    const keys = generateKeyPairSync("ed25519");
-    const publicKeyPem = keys.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const credential = {
-      enrollmentToken: credentials.token,
-      kind: "host-enrollment-token" as const,
-    };
-    socket.send(
-      JSON.stringify({
-        type: "runner.enroll",
-        proofFormatVersion: 2,
-        descriptor,
-        challengeId: challenge.challengeId,
-        publicKeyPem,
-        credential,
-        signature: createRunnerEnrollmentSignature(keys.privateKey, {
-          challenge,
+  const ended = waitForClose(socket, "the Host to refuse the Runner's profile");
+  void ended.catch(() => undefined);
+  try {
+    const challenge = RunnerChallengeSchema.parse(
+      await waitForMessage(socket, (frame) => frame.type === "host.challenge"),
+    );
+    socket.on("message", (raw) => {
+      frames.push(JSON.parse(raw.toString()) as { type: string });
+    });
+    if ("token" in credentials) {
+      const keys = generateKeyPairSync("ed25519");
+      const publicKeyPem = keys.publicKey.export({ format: "pem", type: "spki" }).toString();
+      const credential = {
+        enrollmentToken: credentials.token,
+        kind: "host-enrollment-token" as const,
+      };
+      socket.send(
+        JSON.stringify({
+          type: "runner.enroll",
+          proofFormatVersion: 2,
           descriptor,
-          credential,
+          challengeId: challenge.challengeId,
           publicKeyPem,
+          credential,
+          signature: createRunnerEnrollmentSignature(keys.privateKey, {
+            challenge,
+            descriptor,
+            credential,
+            publicKeyPem,
+          }),
         }),
-      }),
-    );
-  } else
-    socket.send(
-      JSON.stringify({
-        type: "runner.authenticate",
-        proofFormatVersion: 2,
-        descriptor,
-        challengeId: challenge.challengeId,
-        signature: createRunnerAuthenticationSignature(credentials.privateKey, {
-          challenge,
+      );
+    } else
+      socket.send(
+        JSON.stringify({
+          type: "runner.authenticate",
+          proofFormatVersion: 2,
           descriptor,
+          challengeId: challenge.challengeId,
+          signature: createRunnerAuthenticationSignature(credentials.privateKey, {
+            challenge,
+            descriptor,
+          }),
         }),
-      }),
-    );
-  return { frames, close: await ended };
+      );
+    return { frames, close: await ended };
+  } finally {
+    if (socket.readyState !== WebSocket.CLOSED) {
+      const closing = waitForClose(socket, "the refused Runner socket to terminate");
+      socket.terminate();
+      await closing;
+    }
+  }
 }
 async function grant(
   host: MachineAccessHost,

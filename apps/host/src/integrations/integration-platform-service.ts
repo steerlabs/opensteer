@@ -340,6 +340,7 @@ export class IntegrationPlatformService {
       ComputerAppHub,
       | "appStatus"
       | "reportsApp"
+      | "compatibilityReason"
       | "attached"
       | "machinesFor"
       | "openMcpSession"

@@ -4436,7 +4436,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
   });
 });
 
-type ApprovalHubMember = "reportsApp" | "machinesFor";
+type ApprovalHubMember = "reportsApp" | "machinesFor" | "compatibilityReason";
 
 function platform(input: {
   readonly listConnections?: (
@@ -4463,7 +4463,7 @@ function platform(input: {
     authorizationSource: { providerAuthorizations: vi.fn(async () => ({})) },
     computerApps: {
       reportsApp: () => "offline",
-      // A Mac that relays no approvals, unless a test says otherwise.
+      compatibilityReason: () => null,
       machinesFor: () => [],
       openMcpSession: vi.fn(),
       ...(input.computerApps ??

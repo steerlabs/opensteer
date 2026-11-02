@@ -145,7 +145,12 @@ interface ComputerApprovalAuthorization {
 export interface ComputerAppApprovalServiceOptions {
   readonly computerApps: Pick<
     ComputerAppHub,
-    "appStatus" | "reportsApp" | "attached" | "machinesFor" | "withRunnerAdmission"
+    | "appStatus"
+    | "reportsApp"
+    | "attached"
+    | "compatibilityReason"
+    | "machinesFor"
+    | "withRunnerAdmission"
   >;
   readonly computerUse: ComputerUseApprovalGateway | null;
   readonly definitions: readonly IntegrationDefinition[];
@@ -412,6 +417,8 @@ export class ComputerAppApprovalService {
       });
     }
     const createRequest = () => {
+      const incompatibility = this.#computerApps.compatibilityReason(input.runnerId);
+      if (incompatibility) throw new OpensteerError({ code: "conflict", message: incompatibility });
       if (iphone) {
         const report = this.#computerApps.reportsApp(input.runnerId, definition.id);
         const name =
@@ -438,9 +445,10 @@ export class ComputerAppApprovalService {
         runnerId: input.runnerId,
       });
     };
-    const { request, settlement } = iphone
-      ? await this.#computerApps.withRunnerAdmission(input.runnerId, createRequest)
-      : await createRequest();
+    const { request, settlement } = await this.#computerApps.withRunnerAdmission(
+      input.runnerId,
+      createRequest,
+    );
     this.#publishRequestEvents(settlement.requestEvents);
     this.#onConnectionsChanged();
     return request;

@@ -128,6 +128,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       authorizationSource: { providerAuthorizations: async () => ({}) },
       listConnections: (owner) => connections.listConnections(owner),
       computerApps: {
+        compatibilityReason: () => null,
         reportsApp: () => "reported",
         appStatus: () => ({
           definitionId: "macos-app",

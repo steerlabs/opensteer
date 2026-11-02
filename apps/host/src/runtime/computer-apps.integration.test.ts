@@ -21,7 +21,7 @@ import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import { isComputerAppDefinition } from "@opensteer/integration-core";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import type { IntegrationAccess } from "@opensteer/integration-core";
-import { testRpcData } from "../server/test-host-api-request.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
@@ -84,7 +84,7 @@ integration("computer apps", () => {
     let observed: unknown = null;
     try {
       const computer = await connectComputerAppMachine(host, fakeMessagesProvider(), {
-        integrations: { platform: "darwin" },
+        integrations: { platform: "darwin", protocolVersion: 5 },
       });
       closers.unshift(() => computer.close());
       await computer.heartbeat();
@@ -184,20 +184,51 @@ integration("computer apps", () => {
       ),
     ).rejects.toThrow(/HTTP 403.*forbidden/u);
     const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "messages-read");
-    // Only the desktop's registered approval key signs consent: not another
-    // key, and not the Runner's own, which any process of the person can read.
-    await expect(setComputerApp(host, computer, setup, setup.id)).rejects.toThrow(
-      /refused.*Approve this access/u,
-    );
-    await expect(setComputerApp(host, computer, setup, setup.id)).rejects.toThrow(
-      /refused.*Approve this access/u,
-    );
-    const enabled = await setComputerApp(host, computer, setup, setup.id);
-
     const second = await signUpUser(host, {
       email: "second@example.test",
       password: "second-user-password",
     });
+    const respond = (setupRequestId: string, headers: Record<string, string>) =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.computer.setup.respond",
+          idempotencyKey: createId("request"),
+          setupRequestId,
+          decision: "allow",
+        },
+        { headers },
+      );
+    await expect(respond(setup.id, second.headers)).rejects.toThrow("no longer waiting for you");
+    const signedIn = await testRpcRequest(
+      host.origin,
+      "auth.password.signIn",
+      { email: "alex@example.com", password: "machine-access-owner-password" },
+      { headers: { origin: host.origin, "user-agent": "Owner's iPhone" } },
+    );
+    expect(signedIn.status).toBe(200);
+    const otherOwnerSession = {
+      origin: host.origin,
+      cookie: signedIn.headers
+        .getSetCookie()
+        .map((cookie) => cookie.split(";", 1)[0])
+        .join("; "),
+    };
+    expect(otherOwnerSession.cookie.length).toBeGreaterThan(0);
+    expect(otherOwnerSession.cookie === host.ownerHeaders.cookie).toBe(false);
+    await respond(setup.id, otherOwnerSession);
+    const enabled = {
+      connection: await host.store.database
+        .selectFrom("integrationConnections")
+        .select("id")
+        .where("runnerId", "=", computer.runnerId)
+        .where("integrationDefinitionId", "=", "apple-messages")
+        .where("status", "=", "connected")
+        .executeTakeFirstOrThrow(),
+    };
+    await expect(respond(setup.id, host.ownerHeaders)).rejects.toThrow("no longer waiting");
+
     const secondDashboard = await testRpcData(
       host.origin,
       "integrations.get",
@@ -531,6 +562,39 @@ integration("computer apps", () => {
     expect(
       administratorMachines.machines.find(({ id }) => id === computer.runnerId)?.apps ?? null,
     ).toBeNull();
+    const pending = await requestComputerAppSetup(
+      host,
+      computer.runnerId,
+      "read-write",
+      "owner-only-approval",
+    );
+    await expect(
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.computer.setup.respond",
+          idempotencyKey: "administrator-cannot-approve",
+          setupRequestId: pending.id,
+          decision: "allow",
+        },
+        { headers: administrator.headers },
+      ),
+    ).rejects.toThrow("no longer waiting for you");
+    expect(
+      await host.store.database
+        .selectFrom("computerAppSetupRequests")
+        .select("id")
+        .where("id", "=", pending.id)
+        .executeTakeFirst(),
+    ).toEqual({ id: pending.id });
+    expect(
+      await host.store.database
+        .selectFrom("integrationConnections")
+        .select("computerAccess")
+        .where("id", "=", enabled.connection.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ computerAccess: "read" });
     const requests = await testRpcData(
       host.origin,
       "integration.computer.setup.list",
