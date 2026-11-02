@@ -7538,19 +7538,15 @@ describeStore("Project kind conversion", (it) => {
       alter table public.workspaces disable trigger workspaces_immutable_kind;
       alter table public.workspaces drop constraint workspaces_kind_check;
       alter table public.workspaces alter column kind set default 'specialized';
+    `.execute(database);
+    await sql`update public.workspaces set kind = 'specialized' where id = ${workspace.id}`.execute(
+      database,
+    );
+    await sql`
       alter table public.workspaces add constraint workspaces_kind_check
         check (kind = any (array['main'::text, 'specialized'::text]));
       alter table public.workspaces enable trigger workspaces_immutable_kind;
     `.execute(database);
-    await sql`alter table public.workspaces disable trigger workspaces_immutable_kind`.execute(
-      database,
-    );
-    await sql`update public.workspaces set kind = 'specialized' where id = ${workspace.id}`.execute(
-      database,
-    );
-    await sql`alter table public.workspaces enable trigger workspaces_immutable_kind`.execute(
-      database,
-    );
     await projectsMigration.up(database);
     const after = await database
       .selectFrom("workspaces")
