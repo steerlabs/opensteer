@@ -3119,7 +3119,10 @@ describe("viewer-driven phone bitrate", () => {
       expect(f.start()).toMatchObject({ maxFps: profile ? 60 : 30 });
       // An unmeasured Mac viewer starts moderate rather than flooding a cellular link.
       if (profile)
-        expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: macLinkRate.initialBitrate });
+        expect(f.start()).toMatchObject({
+          displayProfile: 1,
+          maxBitrate: macLinkRate.initialBitrate,
+        });
       else expect(f.start()).not.toHaveProperty("maxBitrate");
       expect(f.start()).not.toHaveProperty("sharedInput");
       expect(f.start()).not.toHaveProperty("displayCut");

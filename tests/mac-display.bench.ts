@@ -149,78 +149,81 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
             ),
           );
         };
-        const host = await macHub((message) => {
-          if (process.env.OPENSTEER_MAC_BENCH_TRACE) console.log(message.type);
-          if (message.type === "host.integrations.display.start") {
-            start = message;
-            stopped = false;
-            outstanding.clear();
-            track = 0;
-            demands.push({
-              atMs: 0,
-              maxBitrate: message.maxBitrate ?? null,
-              maxLongSide: message.maxLongSide,
-            });
-            const url = new URL("/internal/v1/computer-use/display", host.origin);
-            url.protocol = "ws:";
-            producer = new WebSocket(url, {
-              headers: { authorization: `Bearer ${message.dataTicket}` },
-            });
-            host.sockets.push(producer);
-            producer.on("error", (e) => errors.push(String(e)));
-            producer.on("message", (raw) => {
-              const ack = DisplayAckSchema.parse(JSON.parse(raw.toString()));
-              outstanding.delete(ack.sequence);
-              producerAcks++;
-            });
-            producer.once("open", () => {
-              void host.state(message.streamId).catch((e) => errors.push(String(e)));
-              origin = performance.now();
-              let tick = 0;
-              const emit = () => {
-                if (stopped) return;
-                index = tick % (fps * duration);
-                if (index === 0) track = 0;
-                captureAt = origin + (tick * 1000) / fps;
-                send(false);
-                tick++;
-                timer = setTimeout(
-                  emit,
-                  Math.max(0, origin + (tick * 1000) / fps - performance.now()),
-                );
-              };
-              emit();
-            });
-          } else if (message.type === "host.integrations.display.refresh") {
-            refreshes++;
-            send(true);
-          } else if (message.type === "host.integrations.display.demand") {
-            demands.push({
-              atMs: performance.now() - origin,
-              maxBitrate: message.maxBitrate ?? null,
-              maxLongSide: message.maxLongSide ?? 1512,
-            });
-            const eligible = ladder.rungs.filter(
-              (r) => Math.max(r.width, r.height) <= (message.maxLongSide ?? 1512),
-            );
-            const next = (eligible.length ? eligible : ladder.rungs).toSorted(
-              (a, b) =>
-                Math.abs(a.bitrate - (message.maxBitrate ?? rung.bitrate)) -
-                Math.abs(b.bitrate - (message.maxBitrate ?? rung.bitrate)),
-            )[0]!;
-            if (next !== rung) {
-              rung = next;
+        const host = await macHub(
+          (message) => {
+            if (process.env.OPENSTEER_MAC_BENCH_TRACE) console.log(message.type);
+            if (message.type === "host.integrations.display.start") {
+              start = message;
+              stopped = false;
+              outstanding.clear();
+              track = 0;
+              demands.push({
+                atMs: 0,
+                maxBitrate: message.maxBitrate ?? null,
+                maxLongSide: message.maxLongSide,
+              });
+              const url = new URL("/internal/v1/computer-use/display", host.origin);
+              url.protocol = "ws:";
+              producer = new WebSocket(url, {
+                headers: { authorization: `Bearer ${message.dataTicket}` },
+              });
+              host.sockets.push(producer);
+              producer.on("error", (e) => errors.push(String(e)));
+              producer.on("message", (raw) => {
+                const ack = DisplayAckSchema.parse(JSON.parse(raw.toString()));
+                outstanding.delete(ack.sequence);
+                producerAcks++;
+              });
+              producer.once("open", () => {
+                void host.state(message.streamId).catch((e) => errors.push(String(e)));
+                origin = performance.now();
+                let tick = 0;
+                const emit = () => {
+                  if (stopped) return;
+                  index = tick % (fps * duration);
+                  if (index === 0) track = 0;
+                  captureAt = origin + (tick * 1000) / fps;
+                  send(false);
+                  tick++;
+                  timer = setTimeout(
+                    emit,
+                    Math.max(0, origin + (tick * 1000) / fps - performance.now()),
+                  );
+                };
+                emit();
+              });
+            } else if (message.type === "host.integrations.display.refresh") {
+              refreshes++;
               send(true);
+            } else if (message.type === "host.integrations.display.demand") {
+              demands.push({
+                atMs: performance.now() - origin,
+                maxBitrate: message.maxBitrate ?? null,
+                maxLongSide: message.maxLongSide ?? 1512,
+              });
+              const eligible = ladder.rungs.filter(
+                (r) => Math.max(r.width, r.height) <= (message.maxLongSide ?? 1512),
+              );
+              const next = (eligible.length ? eligible : ladder.rungs).toSorted(
+                (a, b) =>
+                  Math.abs(a.bitrate - (message.maxBitrate ?? rung.bitrate)) -
+                  Math.abs(b.bitrate - (message.maxBitrate ?? rung.bitrate)),
+              )[0]!;
+              if (next !== rung) {
+                rung = next;
+                send(true);
+              }
+            } else if (
+              message.type === "host.integrations.display.stop" &&
+              message.streamId === start?.streamId
+            ) {
+              stopped = true;
+              if (timer) clearTimeout(timer);
+              producer?.terminate();
             }
-          } else if (
-            message.type === "host.integrations.display.stop" &&
-            message.streamId === start?.streamId
-          ) {
-            stopped = true;
-            if (timer) clearTimeout(timer);
-            producer?.terminate();
-          }
-        }, { legacy: process.env.OPENSTEER_MAC_BENCH_LEGACY === "1" });
+          },
+          { legacy: process.env.OPENSTEER_MAC_BENCH_LEGACY === "1" },
+        );
         cleanup.push(host.close);
         const ackSamples = new Map<string, { at: number; delay: number }[]>();
         const attach = host.hub.attachViewer.bind(host.hub);
