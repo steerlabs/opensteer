@@ -579,7 +579,7 @@ describeStore("PostgreSQL store", (it) => {
       originatingWorkspaceId: fixture.workspace.id,
       payload: {
         kind: "browser.access" as const,
-        reason: "Use a project browser from Main",
+        reason: "Use a project browser from another Project",
         suggestion: { kind: "user_choice" as const },
       },
       presentation: {
@@ -625,7 +625,7 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
-    const fixture = await startRunFixture("request-source-deletion-race");
+    const fixture = await startRunFixture("request-source-deletion-race", "project");
     const targetWorkspace = await createProjectWorkspace(
       fixture.userId,
       "request_source_deletion_race_target",
@@ -639,7 +639,7 @@ describeStore("PostgreSQL store", (it) => {
       originatingWorkspaceId: fixture.workspace.id,
       payload: {
         kind: "browser.access" as const,
-        reason: "Use a project browser from Main",
+        reason: "Use a project browser from another Project",
         suggestion: { kind: "user_choice" as const },
       },
       presentation: {

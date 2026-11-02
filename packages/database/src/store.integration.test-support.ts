@@ -487,6 +487,7 @@ export async function createStoreFixture() {
       };
       readonly workspaceBacking: "local-directory" | "portablefs";
     } | null = null,
+    workspaceKind: "main" | "project" = "main",
   ) {
     if (options) {
       await store.ensureDeployment({
@@ -588,10 +589,11 @@ export async function createStoreFixture() {
           },
       createdBy: userId,
       idempotencyKey: `workspace-${suffix}`,
+      ...(workspaceKind === "project" ? { kind: workspaceKind } : {}),
       name: `Workspace ${suffix}`,
       status: "ready",
     });
-    expect(workspace.kind).toBe("main");
+    expect(workspace.kind).toBe(workspaceKind);
     const harnessInstance = await store.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -609,7 +611,7 @@ export async function createStoreFixture() {
       title: `Thread ${suffix}`,
       workspaceId: workspace.id,
     });
-    expect(thread.capabilityProfileId).toBe("main");
+    expect(thread.capabilityProfileId).toBe(workspaceKind === "main" ? "main" : "workspace");
     return { environmentId, harnessInstance, runnerId, thread, userId, workspace };
   }
 
@@ -745,8 +747,8 @@ export async function createStoreFixture() {
   }
 
   /** A Thread whose head Run has reached `running` on a bound Runner. */
-  async function startRunFixture(suffix: string) {
-    const fixture = await createRunFixture(suffix);
+  async function startRunFixture(suffix: string, workspaceKind: "main" | "project" = "main") {
+    const fixture = await createRunFixture(suffix, null, workspaceKind);
     const runnerBootId = `boot-${suffix}`;
     const turn = await enqueueHumanTrigger({
       content: [{ text: "Start the work", type: "text" }],
