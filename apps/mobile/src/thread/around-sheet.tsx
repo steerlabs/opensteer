@@ -723,23 +723,42 @@ const ScheduleRow = memo(function ScheduleRow(props: {
   readonly onOpen: (triggerId: string) => void;
 }): ReactNode {
   const { automation, hostClient } = props;
-  const [asked, setAsked] = useState<{ readonly paused: boolean | null } | null>(null);
+  // A change in flight (paused null), or the Host's confirmation of it until
+  // the thread's list says the same. The list is reread on every trigger
+  // change, and the Host announces this one as it commits, ahead of the read
+  // that confirms it, so a later announcement is someone else's change: from
+  // then on the list, reread for it, is the truth.
+  const [asked, setAsked] = useState<{
+    readonly paused: boolean | null;
+    readonly revision: number;
+  } | null>(null);
+  const revision = useHostSelector(hostClient, selectTriggerRevision);
   const [reported, setReported] = useState(automation.paused);
   if (reported !== automation.paused) {
     setReported(automation.paused);
     setAsked(null);
-  }
+  } else if (
+    asked !== null &&
+    asked.paused !== null &&
+    (asked.paused === automation.paused || revision > asked.revision)
+  )
+    setAsked(null);
   const paused = asked?.paused ?? automation.paused;
   const detail = automationDetail({ ...automation, paused });
   const turn = (on: boolean) => {
-    const mine = { paused: null };
+    const mine = { paused: null, revision };
     setAsked(mine);
     schedulesClient(hostClient)
       .act(automation.id, on ? "resume" : "pause")
       .then(
         (confirmed) =>
           setAsked((held) =>
-            held === mine ? { paused: confirmed.item.status === "paused" } : held,
+            held === mine
+              ? {
+                  paused: confirmed.item.status === "paused",
+                  revision: hostClient.getSnapshot().triggerRevision,
+                }
+              : held,
           ),
         (error: unknown) => {
           setAsked((held) => (held === mine ? null : held));
@@ -787,6 +806,8 @@ const ScheduleRow = memo(function ScheduleRow(props: {
     </View>
   );
 });
+
+const selectTriggerRevision = (snapshot: HostSnapshot) => snapshot.triggerRevision;
 
 const automationGlyph = { schedule: "clock", watch: "eye", webhook: "bolt" } as const;
 

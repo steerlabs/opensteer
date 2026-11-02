@@ -79,7 +79,11 @@ export function DisplayControls({
   const context = snapshot.display?.generation === picture?.generation ? editing.context : null;
   const [typing, setTyping] = useState(false);
   const canType = held && negotiated && context?.field != null;
-  useEffect(() => onCanType?.(canType), [canType, onCanType]);
+  useEffect(() => {
+    onCanType?.(canType);
+    // Controls that are gone cannot type, so the bar's Keyboard must not offer it.
+    return () => onCanType?.(false);
+  }, [canType, onCanType]);
   const keyboardUp = held && typing;
   useEffect(() => onTyping?.(keyboardUp), [keyboardUp, onTyping]);
   useEffect(() => () => onTyping?.(false), [onTyping]);

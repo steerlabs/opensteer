@@ -650,6 +650,12 @@ describe("Around this thread", () => {
     expect(toggle().disabled).toBe(false);
     expect(named(container, /^Morning email summary, Paused$/u)).toBeDefined();
 
+    // Resumed on another device before this thread's list ever said paused: the
+    // list, reread for that change, stays as it was, and the notice of it hands
+    // the switch back to the list.
+    w.move({ ...w.snapshot(), triggerRevision: w.snapshot().triggerRevision + 1 });
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+
     // What the Host reports afterwards wins over what this sheet asked.
     const reported = (paused: boolean) =>
       w.move({
