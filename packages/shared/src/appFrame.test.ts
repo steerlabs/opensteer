@@ -22,3 +22,10 @@ it("bounds hostile or very tall height reports while ignoring unrelated messages
     expect(appContentHeight({ type: "opensteer-app:size", height })).toBeNull();
   expect(appContentHeight({ type: "navigate", height: 500 })).toBeNull();
 });
+
+it.each(["<title>Chart</title><body>Hi", "<body>Hi"])(
+  "normalizes HTML fragments into standards-mode documents: %s",
+  (html) => {
+    expect(prepareAppHtml(html, "dark")).toMatch(/^<!doctype html>/u);
+  },
+);

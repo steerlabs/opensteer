@@ -85,7 +85,10 @@ import {
 import { useComputerUseStop, useComputerUseStopForRun } from "@opensteer/client/react";
 import type { AssignmentSummary, BrowserPageContentPart, WaitingRequest } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
-import { AttachmentReader, MessageAttachments } from "./attachments/message-attachments.js";
+import {
+  TranscriptHostClientContext,
+  MessageAttachments,
+} from "./attachments/message-attachments.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
 import { Popover } from "./popover.js";
@@ -327,7 +330,7 @@ export function AgentTranscript({
                   <ActivityAnchor value={onActivityAnchor}>
                     <TaskViews value={renderTask}>
                       <HomeThread value={homeThreadId}>
-                        <AttachmentReader value={attachmentReader}>
+                        <TranscriptHostClientContext value={attachmentReader}>
                           <ReaderComputers value={computers}>
                             <TranscriptBrowsers value={browserSessions}>
                               <Speakers value={speakers}>
@@ -376,7 +379,7 @@ export function AgentTranscript({
                               </Speakers>
                             </TranscriptBrowsers>
                           </ReaderComputers>
-                        </AttachmentReader>
+                        </TranscriptHostClientContext>
                       </HomeThread>
                     </TaskViews>
                   </ActivityAnchor>
@@ -447,7 +450,7 @@ function TurnView({
  */
 function AgentByline({ author }: { author: MessageEntry["author"] | null }) {
   const homeThreadId = useContext(HomeThread);
-  const reader = useContext(AttachmentReader);
+  const reader = useContext(TranscriptHostClientContext);
   const { threadId: transcriptThreadId, workspaces } = useContext(Speakers);
   const agent = author?.kind === "agent" ? author : null;
   const threadId = agent?.threadId ?? transcriptThreadId;
@@ -2208,7 +2211,7 @@ function SenderTaskMark({
   readonly threadId: string;
   readonly workspace: WorkspaceSummary | null;
 }) {
-  const reader = useContext(AttachmentReader);
+  const reader = useContext(TranscriptHostClientContext);
   if (reader) return <BylineTaskMark reader={reader} threadId={threadId} />;
   return workspace ? (
     <WorkspaceOrb icon={workspace.icon} name={workspace.name} size="tiny" color={workspace.color} />
@@ -2223,7 +2226,7 @@ function SenderTaskMark({
 
 /** Work handed out before Assignments, as every task reads: one line that opens it. */
 function DelegationNotice({ delegation }: { delegation: DelegationEntry }) {
-  const reader = useContext(AttachmentReader);
+  const reader = useContext(TranscriptHostClientContext);
   return reader ? (
     <HeldDelegationNotice delegation={delegation} reader={reader} />
   ) : (

@@ -2,7 +2,7 @@ import { createId, AgentEventViewSchema, SequenceSchema } from "@opensteer/core"
 import { expect, it } from "vitest";
 import { foldTranscriptEvent } from "./transcript.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
-it("restores an app at each publication point, idempotently, including conversation mode", () => {
+it("restores one app at its latest publication point, idempotently, including conversation mode", () => {
   const event = AgentEventViewSchema.parse({
     type: "app.published",
     eventId: createId("event"),
@@ -34,6 +34,6 @@ it("restores an app at each publication point, idempotently, including conversat
     live: true,
     atComputer: () => false,
   });
-  expect(rows.map((row) => row.group.kind)).toEqual(["app", "app"]);
+  expect(rows.map((row) => row.group.kind)).toEqual(["app"]);
   expect(rows.map((row) => row.key)).toEqual(next.map((entry) => entry.id));
 });

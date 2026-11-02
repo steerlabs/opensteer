@@ -45,10 +45,17 @@ export class AppService {
       scope.requestedBy,
     );
     if (!admission) throw unavailable();
+    const replay = await this.#options.apps.publication(scope.runId, publishKey);
+    if (replay) return publicationResult(replay);
     if (input.appId) {
       const app = await this.get(input.appId, scope.requestedBy);
       if (app.workspaceId !== scope.workspaceId) throw unavailable();
     }
+    if (!/\.html?$/iu.test(input.path))
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Publish an HTML file (.html or .htm)",
+      });
     // Files drivers resolve these opaque path segments against the identity-bound Workspace root.
     const segments = input.path.replace(/^\.\//u, "").split("/");
     if (
@@ -97,22 +104,11 @@ export class AppService {
     });
     if (!bytes.byteLength)
       throw new OpensteerError({ code: "bad_request", message: "App HTML is empty" });
-    let html: string;
     try {
-      html = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
       throw new OpensteerError({ code: "bad_request", message: "App HTML must be UTF-8" });
     }
-    if (
-      !/\.html?$/iu.test(input.path) ||
-      !/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype\s+html(?:\s[^>]*)?>|<html(?:\s[^>]*)?>)/iu.test(
-        html,
-      )
-    )
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Publish a complete HTML document (.html or .htm)",
-      });
     await this.#options.tokens.reauthorize(scope);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     // A digest names complete immutable bytes; interrupted writes cannot replace another version.
@@ -131,12 +127,7 @@ export class AppService {
       userId: scope.requestedBy,
     });
     if (result.event) this.#options.publishEvent(result.event);
-    return {
-      appId: result.appId,
-      version: result.version,
-      message:
-        "The app is already shown inline to the person. Do not restate its contents in your reply.",
-    };
+    return publicationResult(result);
   }
 
   async collectGarbage(): Promise<void> {
@@ -163,7 +154,6 @@ export class AppService {
     return {
       app,
       path: `/v1/apps/${appId}/content?token=${token}&theme=${theme}`,
-      expiresAt: new Date(expiresAt).toISOString(),
     };
   }
 
@@ -177,4 +167,13 @@ export class AppService {
     if (createHash("sha256").update(bytes).digest("hex") !== version.sha256) throw unavailable();
     return prepareAppHtml(new TextDecoder("utf-8", { fatal: true }).decode(bytes), theme);
   }
+}
+
+function publicationResult(result: { readonly appId: string; readonly version: number }) {
+  return {
+    appId: result.appId,
+    version: result.version,
+    message:
+      "The app is already shown inline to the person. Do not restate its contents in your reply.",
+  };
 }

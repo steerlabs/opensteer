@@ -16,8 +16,7 @@ function appPath(url: URL): string | null {
     url.hostname !== "view" ||
     url.port ||
     url.username ||
-    url.password ||
-    url.hash
+    url.password
   )
     return null;
   const path = `${url.pathname}${url.search}`;

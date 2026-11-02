@@ -1396,7 +1396,6 @@ export const hostApi = defineRpc({
         .regex(
           /^\/v1\/apps\/app_[0-9a-f-]{36}\/content\?token=[A-Za-z0-9_-]{43}&theme=(light|dark)$/u,
         ),
-      expiresAt: z.iso.datetime({ offset: true }),
     }),
   ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),

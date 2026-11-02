@@ -1,5 +1,4 @@
 import { conversationUnreadPredicate } from "./message-visibility.js";
-import { quietRunPredicate } from "./run-visibility.js";
 import {
   ContentPartSchema,
   harnessDriverLabel,
@@ -6585,7 +6584,16 @@ export const runVisibilityMigration: Migration = {
             'run.completed', 'run.failed', 'run.interrupted')
           and event.data @> '{"personWaiting":true}'::jsonb and event.run_id is not null
       ) update runs set person_waited = true from waited where waited.id = runs.id;
-      update runs set quiet = ${quietRunPredicate}
+      -- This historical backfill precedes app_versions; finalization uses the current predicate.
+      update runs set quiet = (
+        exists (select 1 from messages seed where seed.id = runs.seed_input_id
+          and seed.author->>'kind' <> 'human')
+        and not runs.person_waited
+        and not exists (select 1 from messages reply where reply.run_id = runs.id
+          and reply.kind in ('assistant', 'run-result'))
+        and not exists (select 1 from delegations child where child.parent_run_id = runs.id)
+        and not exists (select 1 from requests request where request.originating_run_id = runs.id)
+      )
         where status in ('completed', 'failed', 'interrupted');
     `.execute(database);
   },

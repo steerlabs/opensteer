@@ -28,19 +28,18 @@
 .app-frame__status {
   padding: 12px 14px;
 }
-.dialog.dialog--full-screen {
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  max-height: none;
-  border-radius: 0;
-}
-.dialog--full-screen .dialog__body {
+.app-card--full {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-dialog);
   display: flex;
-  flex: 1;
-  min-height: 0;
-  padding: 0;
-  overflow: hidden;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+  background: var(--ground);
+}
+.app-card--full .app-card__header {
+  flex-shrink: 0;
 }
 .app-frame--full {
   display: flex;
@@ -50,8 +49,4 @@
 .app-frame--full iframe {
   flex: 1;
   height: 100%;
-}
-
-.dialog-layer--full-screen {
-  padding: 0;
 }

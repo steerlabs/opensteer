@@ -60,6 +60,15 @@ export class AppStore {
     return { app, version };
   }
 
+  publication(runId: RunId, publishKey: string) {
+    return this.#database
+      .selectFrom("appVersions")
+      .select(["appId", "version"])
+      .where("createdByRun", "=", runId)
+      .where("publishKey", "=", publishKey)
+      .executeTakeFirst();
+  }
+
   async publish(input: {
     readonly appId?: string;
     readonly workspaceId: WorkspaceId;

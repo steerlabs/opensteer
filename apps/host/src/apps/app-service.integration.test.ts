@@ -8,7 +8,7 @@ import { describeStore } from "@opensteer/database/test-support/store";
 import type { AgentControlRunScope } from "../agents/agent-control-service.js";
 import { AppService } from "./app-service.js";
 
-const html = "<!doctype html><html><head></head><body><h1>First</h1></body></html>";
+const html = "<title>First</title><body><h1>First</h1>";
 describeStore("published app HTML", (it) => {
   it("publishes, versions atomically, replays tool calls, serves latest through reusable expiring capabilities, and cleans origin-owned bytes", async ({
     storeFixture,
@@ -85,7 +85,9 @@ describeStore("published app HTML", (it) => {
       ).toContainEqual(events[0]);
       const view = await service.view(first.appId, f.userId, "dark");
       const token = new URL(view.path, "https://host.test").searchParams.get("token")!;
-      expect(await service.content(first.appId, token, "dark")).toContain("First");
+      const content = await service.content(first.appId, token, "dark");
+      expect(content).toContain("First");
+      expect(content.startsWith("<!doctype html>")).toBe(true);
       bytes = Buffer.from(html.replace("First", "Latest"));
       const updates = await Promise.all([
         service.publish("run-token", "publish-2", {
@@ -100,6 +102,10 @@ describeStore("published app HTML", (it) => {
         }),
       ]);
       expect(updates.map((update) => update.version).sort()).toEqual([2, 3]);
+      files.list.mockRejectedValue(new Error("Source file is gone"));
+      files.download.mockRejectedValue(new Error("Source file is gone"));
+      const listedBeforeReplay = files.list.mock.calls.length;
+      const readBeforeReplay = files.download.mock.calls.length;
       expect(
         await service.publish("run-token", "publish-3", {
           path: "index.html",
@@ -107,6 +113,8 @@ describeStore("published app HTML", (it) => {
           appId: first.appId,
         }),
       ).toMatchObject(updates[1]);
+      expect(files.list).toHaveBeenCalledTimes(listedBeforeReplay);
+      expect(files.download).toHaveBeenCalledTimes(readBeforeReplay);
       expect(events).toHaveLength(3);
       expect((await service.get(first.appId, f.userId)).latestVersion).toBe(3);
       expect(await service.content(first.appId, token, "light")).toContain("Latest");
@@ -270,10 +278,14 @@ describeStore("published app HTML", (it) => {
         entries: [],
       });
       await expect(publish()).rejects.toMatchObject({ code: "not_found" });
-      bytes = Buffer.from('{"not":"HTML"}');
-      await expect(publish()).rejects.toMatchObject({
+      await expect(publish({ path: "index.txt" })).rejects.toMatchObject({
         code: "bad_request",
         message: expect.stringContaining("HTML"),
+      });
+      bytes = Buffer.from([0xff]);
+      await expect(publish()).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringContaining("UTF-8"),
       });
       bytes = Buffer.alloc(appMaxBytes + 1, 65);
       await expect(publish()).rejects.toMatchObject({

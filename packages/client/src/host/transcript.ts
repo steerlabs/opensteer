@@ -59,13 +59,25 @@ export function foldTranscriptEvent(
 ): TranscriptEntry[] {
   switch (event.type) {
     case "app.published":
-      return upsertEntry(entries, {
-        ...event.data,
-        id: `app:${event.eventId}`,
-        kind: "app",
-        createdAt: event.createdAt,
-        runId: event.runId,
-      });
+      if (
+        entries.some(
+          (entry) =>
+            entry.kind === "app" &&
+            entry.appId === event.data.appId &&
+            entry.version >= event.data.version,
+        )
+      )
+        return [...entries];
+      return [
+        ...entries.filter((entry) => entry.kind !== "app" || entry.appId !== event.data.appId),
+        {
+          ...event.data,
+          id: `app:${event.data.appId}`,
+          kind: "app",
+          createdAt: event.createdAt,
+          runId: event.runId,
+        },
+      ];
     case "place.entered":
       return upsertEntry(entries, {
         ...event.data,
@@ -520,6 +532,8 @@ export function mergeTranscriptSegments(
   const merged = earlier.flatMap((entry) => {
     const next = counterpart(entry, later, laterById, earlierIds, consumed);
     if (next === undefined) return [entry];
+    // App cards live at their latest publication, including across history pages.
+    if (entry.kind === "app") return [];
     // A settled message on both pages was placed after it was sent, and the
     // later page holds the place a Run took it at. An outcome the earlier
     // page kept for a message the later page holds is older than that page's

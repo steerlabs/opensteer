@@ -1,22 +1,41 @@
 import { useAppView } from "@opensteer/client/react";
-import type { AppEntry, HostClient } from "@opensteer/client/host";
+import type { AppEntry } from "@opensteer/client/host";
 import {
   appContentHeight,
+  appFrameReady,
   appFrameSandbox,
   appFrameScheme,
   type AppTheme,
 } from "@opensteer/shared/appFrame";
-import { useContext, useEffect, useId, useRef, useState } from "react";
-import { AttachmentReader } from "../attachments/message-attachments.js";
-import { Dialog } from "../dialog.js";
+import { useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import { TranscriptHostClientContext } from "../attachments/message-attachments.js";
+import { handleModalKeyDown } from "../dialog.js";
+import { useNativeBrowserOverlay } from "../native-browser-overlays.js";
 
 export function AppCard({ entry }: { readonly entry: AppEntry }) {
-  const client = useContext(AttachmentReader);
+  const client = useContext(TranscriptHostClientContext);
   const card = useRef<HTMLElement | null>(null);
   const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
   const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState<AppTheme>(currentTheme);
   const titleId = useId();
+  const toggle = useRef<HTMLButtonElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useNativeBrowserOverlay(open);
+  useEffect(() => {
+    if (!open) return;
+    const opener = toggle.current;
+    toggle.current?.focus();
+    const containFocus = (event: FocusEvent) => {
+      if (event.target instanceof Node && !card.current?.contains(event.target))
+        toggle.current?.focus();
+    };
+    document.addEventListener("focusin", containFocus);
+    return () => {
+      document.removeEventListener("focusin", containFocus);
+      opener?.focus();
+    };
+  }, [open]);
   useEffect(() => {
     if (near || !card.current) return;
     const observer = new IntersectionObserver(
@@ -45,16 +64,24 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
   const { view, failed, retry } = useAppView(client, entry.appId, theme, near);
   const title = view?.app.title ?? entry.title;
   return (
-    <section className="app-card" ref={card} aria-label={title}>
+    <section
+      className={open ? "app-card app-card--full" : "app-card"}
+      ref={card}
+      role={open ? "dialog" : undefined}
+      aria-modal={open ? true : undefined}
+      aria-labelledby={titleId}
+      onKeyDown={open ? (event) => handleModalKeyDown(event, card.current, close) : undefined}
+    >
       <header className="app-card__header">
-        <span>{title}</span>
+        <span id={titleId}>{title}</span>
         <button
           type="button"
           className="btn btn--ghost btn--small"
-          onClick={() => setOpen(true)}
-          disabled={!view}
+          ref={toggle}
+          onClick={() => setOpen((value) => !value)}
+          disabled={!view && !open}
         >
-          Open
+          {open ? "Close" : "Open"}
         </button>
       </header>
       {failed ? (
@@ -65,47 +92,19 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
           </button>
         </p>
       ) : view ? (
-        <AppFrame key={view.url} url={view.url} title={title} theme={theme} retry={retry} />
+        <AppFrame
+          key={view.url}
+          url={view.url}
+          title={title}
+          theme={theme}
+          retry={retry}
+          fullScreen={open}
+          onEscape={close}
+        />
       ) : (
         <p role="status">{client ? "Loading app…" : "App unavailable"}</p>
       )}
-      {open && view ? (
-        <Dialog title={title} labelledBy={titleId} fullScreen onClose={() => setOpen(false)}>
-          <FullscreenApp client={client} appId={entry.appId} theme={theme} />
-        </Dialog>
-      ) : null}
     </section>
-  );
-}
-
-function FullscreenApp({
-  client,
-  appId,
-  theme,
-}: {
-  readonly client: HostClient | null;
-  readonly appId: string;
-  readonly theme: AppTheme;
-}) {
-  const { view, failed, retry } = useAppView(client, appId, theme);
-  return view ? (
-    <AppFrame
-      key={view.url}
-      url={view.url}
-      title={view.app.title}
-      theme={theme}
-      retry={retry}
-      fullScreen
-    />
-  ) : failed ? (
-    <p role="alert">
-      Could not load this app.{" "}
-      <button type="button" onClick={retry}>
-        Retry
-      </button>
-    </p>
-  ) : (
-    <p role="status">Loading app…</p>
   );
 }
 
@@ -122,15 +121,18 @@ function AppFrame({
   theme,
   retry,
   fullScreen = false,
+  onEscape,
 }: {
   readonly url: string;
   readonly title: string;
   readonly theme: AppTheme;
   readonly retry: () => void;
   readonly fullScreen?: boolean;
+  readonly onEscape: () => void;
 }) {
   const frame = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(280);
+  const ready = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const sendTheme = () =>
@@ -138,15 +140,19 @@ function AppFrame({
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow || event.origin !== "null") return;
+      if (appFrameReady(event.data)) {
+        ready.current = true;
+        setLoaded(true);
+      }
+      if (event.data?.type === "opensteer-app:escape") onEscape();
       const height = appContentHeight(event.data);
       if (height !== null) {
         setHeight(height);
-        setLoaded(true);
       }
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [url]);
+  }, [url, onEscape]);
   useEffect(sendTheme, [theme]);
   if (failed)
     return (
@@ -175,13 +181,12 @@ function AppFrame({
         title={title}
         src={src}
         sandbox={appFrameSandbox}
-        loading="lazy"
         referrerPolicy="no-referrer"
         style={fullScreen ? undefined : { height: Math.max(160, Math.min(640, height)) }}
         onError={() => setFailed(true)}
         onLoad={() => {
-          setLoaded(true);
-          sendTheme();
+          if (!ready.current) setFailed(true);
+          else sendTheme();
         }}
       />
     </div>

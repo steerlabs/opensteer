@@ -33,16 +33,22 @@ export function appThemeScript(theme: AppTheme): string {
 }
 
 export function prepareAppHtml(html: string, theme: AppTheme): string {
+  const doctype = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/iu.exec(html);
+  if (!doctype) html = "<!doctype html>" + html;
   const bootstrap = `<meta name="viewport" content="width=device-width, initial-scale=1"><script>
 (()=>{
   ${appThemeScript(theme)}
+  const send=message=>{
+    if(parent!==window)parent.postMessage(message,'*');
+    if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(message));
+  };
+  send({type:'opensteer-app:ready'});
+  addEventListener('keydown',e=>{if(e.key==='Escape')send({type:'opensteer-app:escape'})});
   let last=0, queued=false;
   const report=()=>{queued=false;const b=document.body;if(!b)return;
     const height=Math.ceil(Math.max(b.scrollHeight,b.getBoundingClientRect().height)+Math.max(0,b.getBoundingClientRect().top));
     if(height===last)return;last=height;
-    const message={type:'opensteer-app:size',height};
-    if(parent!==window)parent.postMessage(message,'*');
-    if(window.ReactNativeWebView)window.ReactNativeWebView.postMessage(JSON.stringify(message));
+    send({type:'opensteer-app:size',height});
   };
   const schedule=()=>{if(!queued){queued=true;requestAnimationFrame(report)}};
   addEventListener('message',e=>{if(e.source!==parent||!e.data||e.data.type!=='opensteer-app:theme')return;
@@ -58,8 +64,7 @@ export function prepareAppHtml(html: string, theme: AppTheme): string {
     const end = head.index + head[0].length;
     return html.slice(0, end) + bootstrap + html.slice(end);
   }
-  const doctype = /^\s*<!doctype[^>]*>/iu.exec(html);
-  const end = doctype?.[0].length ?? 0;
+  const end = doctype?.[0].length ?? "<!doctype html>".length;
   return html.slice(0, end) + bootstrap + html.slice(end);
 }
 
@@ -75,4 +80,10 @@ export function appContentHeight(value: unknown): number | null {
   return typeof value.height === "number" && Number.isFinite(value.height) && value.height > 0
     ? Math.min(100_000, Math.ceil(value.height))
     : null;
+}
+
+export function appFrameReady(value: unknown): boolean {
+  return (
+    !!value && typeof value === "object" && "type" in value && value.type === "opensteer-app:ready"
+  );
 }
