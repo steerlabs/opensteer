@@ -40,7 +40,7 @@ import { ActingDot } from "../browser/acting-dot.js";
 import { AgentMarks } from "../browser/agent-marks.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { workspaceRoute } from "../browser/surface-route.js";
-import { AppMark } from "../computers/app-mark.js";
+import { MacAppIcon } from "../computers/app-mark.js";
 import { useSidebarMenu } from "../navigation-header.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
@@ -193,7 +193,17 @@ function TabsForReader(props: {
   const signInKeys = useHostSelector(hostClient, selectSignIns);
   const [agents, setAgents] = useState(false);
   const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
-  useAgentsFilter(agents, agents || withAgents.length > 0, setAgents);
+  const canOpen = useHostSelector(hostClient, selectCanOpen);
+  const openApp = useCallback(
+    () => navigation.dispatch(StackActions.push("OpenApp", { deploymentId })),
+    [deploymentId, navigation],
+  );
+  useTabsBar({
+    agents,
+    filterOffered: agents || withAgents.length > 0,
+    onChange: setAgents,
+    onOpen: canOpen ? openApp : null,
+  });
   const shown = agents ? withAgents : places;
   const sections = useMemo(() => placeGroups(shown), [shown]);
   const signIns = useMemo(() => new Set(signInKeys.split("\n")), [signInKeys]);
@@ -241,11 +251,15 @@ function TabsForReader(props: {
                   : "Tabs you and your agents open appear here."}
               </AppText>
             )}
-            {loading || !agents ? null : (
+            {loading ? null : agents ? (
               <View style={styles.emptyAction}>
                 <SecondaryButton compact label="Show all tabs" onPress={() => setAgents(false)} />
               </View>
-            )}
+            ) : canOpen ? (
+              <View style={styles.emptyAction}>
+                <SecondaryButton compact label="Open an app" onPress={openApp} />
+              </View>
+            ) : null}
           </View>
         }
         ListHeaderComponent={
@@ -373,7 +387,12 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
     >
       <View style={[styles.mark, unavailable && styles.dimmed]}>
         {place.icon.kind === "app" ? (
-          <AppMark name={place.icon.app.displayName} size={32} />
+          <MacAppIcon
+            app={place.icon.app}
+            hostClient={props.hostClient}
+            machineId={place.icon.machineId}
+            size={32}
+          />
         ) : (
           <View style={styles.glyph}>
             <Symbol
@@ -405,19 +424,25 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
 });
 
 /**
- * The bar's filter: every tab, or only those agents are in, which the title
- * then names. iOS draws a native bar menu; Android the same choices in its own
- * menu. Offered while an agent is in a tab, and while it filters, so the way
- * back is always there.
+ * The bar: Open, for the person's own Mac apps and phones, and the filter —
+ * every tab, or only those agents are in, which the title then names. iOS
+ * draws native bar items; Android the same in its own bar. The filter is
+ * offered while an agent is in a tab, and while it filters, so the way back
+ * is always there.
  */
-function useAgentsFilter(
-  agents: boolean,
-  offered: boolean,
-  onChange: (agents: boolean) => void,
-): void {
+function useTabsBar(props: {
+  readonly agents: boolean;
+  readonly filterOffered: boolean;
+  readonly onChange: (agents: boolean) => void;
+  readonly onOpen: (() => void) | null;
+}): void {
+  const { agents, filterOffered } = props;
   const navigation = useNavigation();
-  const change = useRef(onChange);
-  change.current = onChange;
+  const change = useRef(props.onChange);
+  change.current = props.onChange;
+  const open = useRef(props.onOpen);
+  open.current = props.onOpen;
+  const openOffered = props.onOpen !== null;
   useLayoutEffect(() => {
     const label = agents ? "Filter, showing tabs with agents" : "Filter";
     const choices: NativeMenuOption[] = [
@@ -431,20 +456,46 @@ function useAgentsFilter(
     ];
     navigation.setOptions({
       title: agents ? "Tabs with agents" : "Tabs",
-      headerRight: () =>
-        offered ? (
-          <NativeMenu
-            accessibilityLabel={label}
-            onPresent={noop}
-            onSettle={noop}
-            options={choices}
-            style={styles.filter}
-          >
-            <Symbol name="line.3.horizontal.decrease" tint={color.ember} />
-          </NativeMenu>
-        ) : null,
-      unstable_headerRightItems: () =>
-        offered
+      headerRight: () => (
+        <View style={styles.barItems}>
+          {filterOffered ? (
+            <NativeMenu
+              accessibilityLabel={label}
+              onPresent={noop}
+              onSettle={noop}
+              options={choices}
+              style={styles.barItem}
+            >
+              <Symbol name="line.3.horizontal.decrease" tint={color.ember} />
+            </NativeMenu>
+          ) : null}
+          {openOffered ? (
+            <Pressable
+              accessibilityHint="Opens an app on your Mac or an Agent Phone"
+              accessibilityLabel="Open"
+              accessibilityRole="button"
+              onPress={() => open.current?.()}
+              style={styles.barItem}
+            >
+              <Symbol name="plus" tint={color.ember} />
+            </Pressable>
+          ) : null}
+        </View>
+      ),
+      unstable_headerRightItems: () => [
+        ...(openOffered
+          ? [
+              {
+                accessibilityHint: "Opens an app on your Mac or an Agent Phone",
+                accessibilityLabel: "Open",
+                icon: { name: "plus", type: "sfSymbol" as const },
+                label: "Open",
+                onPress: () => open.current?.(),
+                type: "button" as const,
+              },
+            ]
+          : []),
+        ...(filterOffered
           ? [
               {
                 accessibilityLabel: label,
@@ -452,23 +503,38 @@ function useAgentsFilter(
                   name: agents
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle",
-                  type: "sfSymbol",
+                  type: "sfSymbol" as const,
                 },
                 label: "Filter",
                 menu: {
                   items: choices.map((choice) => ({
                     label: choice.label,
                     onPress: choice.onPress,
-                    state: choice.selected === true ? "on" : "off",
-                    type: "action",
+                    state: choice.selected === true ? ("on" as const) : ("off" as const),
+                    type: "action" as const,
                   })),
                 },
-                type: "menu",
+                type: "menu" as const,
               },
             ]
-          : [],
+          : []),
+      ],
     });
-  }, [agents, navigation, offered]);
+  }, [agents, filterOffered, navigation, openOffered]);
+}
+
+/**
+ * Whether this person has a Mac or Agent Phone of their own to open things
+ * on: one they own, or the Main computer of their Personal deployment.
+ */
+function selectCanOpen(snapshot: HostSnapshot): boolean {
+  return snapshot.machines.some(
+    (machine) =>
+      machine.computerUse !== undefined &&
+      machine.computerUse !== null &&
+      (machine.ownership === "mine" ||
+        (snapshot.deploymentShape?.kind === "personal" && machine.ownership === "deployment")),
+  );
 }
 
 function noop(): void {}
@@ -484,12 +550,13 @@ const styles = StyleSheet.create({
     paddingVertical: space[48],
   },
   emptyAction: { paddingTop: space[8] },
-  filter: {
+  barItem: {
     alignItems: "center",
     justifyContent: "center",
     minHeight: touchTarget,
     minWidth: touchTarget,
   },
+  barItems: { alignItems: "center", flexDirection: "row" },
   glyph: {
     alignItems: "center",
     backgroundColor: color.surfaceRaised,

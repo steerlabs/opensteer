@@ -240,7 +240,12 @@ async function setup(
     listApprovedComputerApps: async () => [
       { machineId: "machine", target: { kind: "phone", display: "main" } },
     ],
-    openComputerView: vi.fn(async () => ({ viewId: "new-owner", generation: 2 })),
+    openComputerView: vi.fn(async () => ({
+      viewId: "new-owner",
+      generation: 2,
+      machineId: "machine",
+      target: { kind: "phone", display: "main" },
+    })),
   } as unknown as HostClient;
   const pool = sharedDisplayStreams(client);
   const retain = pool.retain.bind(pool);

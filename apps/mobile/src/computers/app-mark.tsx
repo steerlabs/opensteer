@@ -1,15 +1,18 @@
+import type { HostClient } from "@opensteer/client/host";
+import { useAppIcon } from "@opensteer/client/react";
+import type { ComputerAppIdentity } from "@opensteer/protocol";
 import type { ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Image, StyleSheet, View } from "react-native";
 import { color, radius } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 
 /**
- * A Mac app's mark: its initial on an icon-shaped tile. The Mac draws the real
- * icon and the phone has no copy of it, so this stands where it would. It is
- * decoration; whatever it sits beside names the app.
+ * A Mac app's mark: its initial on an icon-shaped tile, where the app's own
+ * icon is not on the phone. It is decoration; whatever it sits beside names
+ * the app.
  */
 export function AppMark(props: {
-  readonly blocked?: boolean;
+  readonly blocked?: boolean | undefined;
   readonly name: string;
   readonly pending?: boolean;
   /** Its side, in points; the initial and the corners keep to it. */
@@ -38,6 +41,32 @@ export function AppMark(props: {
         {props.name.trim().charAt(0).toUpperCase()}
       </AppText>
     </View>
+  );
+}
+
+/**
+ * The app's own icon, read once per app from the Mac it is on and kept for the
+ * session; its initial stands in until then and wherever the Mac cannot say.
+ * A macOS icon draws its own shape, so it is shown as it comes.
+ */
+export function MacAppIcon(props: {
+  readonly app: ComputerAppIdentity;
+  readonly blocked?: boolean;
+  readonly hostClient: HostClient;
+  readonly machineId: string;
+  readonly size?: number;
+}): ReactNode {
+  const size = props.size ?? 32;
+  const png = useAppIcon(props.hostClient, props.machineId, props.app);
+  if (png === null) return <AppMark blocked={props.blocked} name={props.app.displayName} size={size} />;
+  return (
+    <Image
+      accessibilityIgnoresInvertColors
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      source={{ uri: `data:image/png;base64,${png}` }}
+      style={[{ height: size, width: size }, props.blocked === true && styles.blocked]}
+    />
   );
 }
 

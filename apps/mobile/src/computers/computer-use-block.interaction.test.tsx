@@ -248,6 +248,7 @@ async function mount(input: MountInput): Promise<void> {
     dispatch: input.dispatch ?? (async (command: { type: string }) => ({ type: command.type })),
     getSnapshot: () => ({
       deploymentId: "dep_1",
+      machines: [],
       session: "authenticated",
       user: { id: "usr_1" },
     }),

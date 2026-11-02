@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   HostClientRequestError,
+  ownerViewDestination,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -19,7 +20,7 @@ import {
 import { Icon } from "../icon.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
 import { useToast, useToastToolbar } from "../toast.js";
-import { ownerViewDestination, ownerViewReadiness } from "./owner-views.js";
+import { ownerViewReadiness } from "./owner-views.js";
 import { useTabCloser } from "./tab-closer.js";
 import { useWorkspace } from "./workspace-context.js";
 

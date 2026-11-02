@@ -63,3 +63,4 @@ export * from "./browser-address.js";
 export * from "./browser-presentation-wait.js";
 export * from "./automation-presentation.js";
 export * from "./schedules.js";
+export * from "./app-icons.js";

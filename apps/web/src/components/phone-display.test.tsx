@@ -91,7 +91,7 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
-const { ownerViewDestination } = await import("./workspace/owner-views.js");
+const { ownerViewDestination } = await import("@opensteer/client/host");
 
 let root: Root | null = null;
 let client: MockHostClient;

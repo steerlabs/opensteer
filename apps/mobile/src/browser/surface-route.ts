@@ -35,6 +35,7 @@ type SurfacesTarget =
       readonly phone?: never;
       readonly viewId?: never;
       readonly generation?: never;
+      readonly windowId?: never;
     }
   | {
       readonly sessionId?: never;
@@ -48,6 +49,8 @@ type SurfacesTarget =
       /** The person's own view, by its exact generation; never a task's session. */
       readonly viewId?: string;
       readonly generation?: number;
+      /** The Mac window an owner view binds, so the route names what is shown. */
+      readonly windowId?: number;
     };
 
 /**
@@ -90,6 +93,9 @@ function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget 
         generation: source.generation,
         machineId: destination.machineId,
         viewId: source.viewId,
+        ...(destination.kind === "app" && destination.windowId !== undefined
+          ? { windowId: destination.windowId }
+          : {}),
       }
     : { ...kind, computerSessionId: source.sessionId, machineId: destination.machineId };
 }
@@ -104,6 +110,7 @@ interface TargetFields {
   readonly sessionId?: string | undefined;
   readonly tabId?: string | undefined;
   readonly viewId?: string | undefined;
+  readonly windowId?: number | undefined;
 }
 
 /** What a route names, or null for one that names nothing (a previous release's grid). */
@@ -121,6 +128,7 @@ export function routeDestination(route: TargetFields): WorkspaceSurfaceDestinati
     return {
       ...kind,
       machineId: route.machineId,
+      ...(kind.kind === "app" && route.windowId !== undefined ? { windowId: route.windowId } : {}),
       source: { generation: route.generation, kind: "owner-view", viewId: route.viewId },
     };
   if (route.computerSessionId !== undefined)
@@ -136,6 +144,7 @@ export function paramsDestination(params: unknown): WorkspaceSurfaceDestination 
     return typeof value === "string" ? value : undefined;
   };
   const generation = params["generation"];
+  const windowId = params["windowId"];
   return routeDestination({
     appKey: text("appKey"),
     computerSessionId: text("computerSessionId"),
@@ -145,6 +154,7 @@ export function paramsDestination(params: unknown): WorkspaceSurfaceDestination 
     sessionId: text("sessionId"),
     tabId: text("tabId"),
     viewId: text("viewId"),
+    windowId: typeof windowId === "number" ? windowId : undefined,
   });
 }
 

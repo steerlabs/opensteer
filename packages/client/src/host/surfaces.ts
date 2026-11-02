@@ -1,6 +1,7 @@
 import {
   computerAppIdentityKey,
   type ComputerAppIdentity,
+  type ComputerView,
   type MachineSummary,
 } from "@opensteer/protocol";
 import { canWatchComputer } from "../integrations/computer-use.js";
@@ -86,6 +87,20 @@ export function nativeViewerSource(
 ): NativeViewerSource {
   if (destination.source) return destination.source;
   return { kind: "task-session", sessionId: destination.computerSessionId! };
+}
+
+/** Where a person's own view of an app or phone is shown: its exact generation, never a task's session. */
+export function ownerViewDestination(view: ComputerView): WorkspaceSurfaceDestination {
+  const source = { kind: "owner-view" as const, viewId: view.viewId, generation: view.generation };
+  return view.target.kind === "app"
+    ? {
+        kind: "app",
+        machineId: view.machineId,
+        appKey: computerAppIdentityKey(view.target.app),
+        ...(view.window ? { windowId: view.window.id } : {}),
+        source,
+      }
+    : { kind: "phone", machineId: view.machineId, display: view.target.display, source };
 }
 
 const conversationSurfaceKeys = [

@@ -25,6 +25,7 @@ import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import { NewSpecialistScreen } from "./screens/new-specialist.js";
 import { NewTaskScreen } from "./screens/new-task.js";
+import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
 import { SettingsScreen } from "./screens/settings.js";
@@ -155,6 +156,18 @@ const RootStack = createNativeStackNavigator({
     // alone, from Tabs or the sidebar. The native
     // Back (and swipe, and Android's back) returns, and leaving stops nothing.
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
+    // The person's own Mac apps and Agent Phones to open, from Tabs. It lists
+    // by computer and opens over the screen it came from.
+    OpenApp: {
+      screen: OpenAppScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Open",
+      },
+    },
     // The model picker starts compact and can expand for a long catalog. It
     // draws its own bar as the list's header: Android's form sheet has no
     // native header, and the list must be the sheet's direct child for iOS to
@@ -417,6 +430,7 @@ type OpensteerRootParamList = {
     /** The first-message Send that opened this picker, if any. */
     readonly pickerAttemptId?: string;
   };
+  readonly OpenApp: { readonly deploymentId: string };
   readonly Schedule: ScheduleDestination;
   readonly Schedules: { readonly deploymentId: string };
   readonly Settings: undefined;

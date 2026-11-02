@@ -7,7 +7,7 @@ import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 import { pageVisible } from "../page-visibility.js";
 import { Viewfinder } from "../components/workspace/viewfinder.js";
 import { OwnerView } from "../components/workspace/owner-view.js";
-import { ownerViewDestination } from "../components/workspace/owner-views.js";
+import { ownerViewDestination } from "@opensteer/client/host";
 import { WorkspaceProvider } from "../components/workspace/workspace-context.js";
 import { useWorkspaceNavigation } from "../components/workspace/navigation.js";
 import { TabCloserProvider } from "../components/workspace/tab-closer.js";

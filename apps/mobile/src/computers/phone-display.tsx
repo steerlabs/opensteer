@@ -24,7 +24,7 @@ import {
 } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
-import { openPhoneOwnerView } from "./open-phone-owner-view.js";
+import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { useSurfaceHeader } from "../browser/surface-header.js";
 import { color } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
@@ -547,6 +547,8 @@ export function ComputerOwnerView(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly viewId: string;
+  /** The Mac window the view bound, reopened as the same window. */
+  readonly windowId?: number | undefined;
 }) {
   const { active, generation, hostClient, viewId } = props;
   const navigation = useNavigation();
@@ -564,24 +566,29 @@ export function ComputerOwnerView(props: {
     setFailure(null);
     try {
       const deploymentId = hostClient.getSnapshot().deploymentId;
-      const source = await openPhoneOwnerView(
-        hostClient,
-        props.machineId,
-        () =>
-          mounted.current &&
-          navigation.isFocused() &&
-          hostClient.getSnapshot().deploymentId === deploymentId,
-      );
-      if (source && deploymentId)
+      const stillHere = () =>
+        mounted.current &&
+        navigation.isFocused() &&
+        hostClient.getSnapshot().deploymentId === deploymentId;
+      const destination =
+        props.appKey === null
+          ? await openPhoneOwnerView(hostClient, props.machineId, stillHere).then((source) =>
+              source ? { kind: "phone" as const, machineId: props.machineId, source } : null,
+            )
+          : await openAppOwnerView(
+              hostClient,
+              props.machineId,
+              props.appKey,
+              props.windowId,
+              stillHere,
+            );
+      if (destination && deploymentId)
         navigation.dispatch(
-          StackActions.replace(
-            "WorkspaceBrowser",
-            workspaceRoute(deploymentId, { kind: "phone", machineId: props.machineId, source }),
-          ),
+          StackActions.replace("WorkspaceBrowser", workspaceRoute(deploymentId, destination)),
         );
     } catch (error) {
       if (mounted.current)
-        setFailure(error instanceof Error ? error.message : "The phone could not be opened.");
+        setFailure(error instanceof Error ? error.message : `${label} could not be opened.`);
     } finally {
       if (mounted.current) setReopening(false);
     }
@@ -611,18 +618,14 @@ export function ComputerOwnerView(props: {
       <View style={styles.stage}>
         <View style={styles.status}>
           <AppText tone="soft">This view has ended</AppText>
-          {phone ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Reopen phone"
-              disabled={reopening}
-              onPress={() => void reopen()}
-            >
-              <AppText>{reopening ? "Opening…" : "Reopen"}</AppText>
-            </Pressable>
-          ) : (
-            <AppText tone="muted">Open it again on the computer to see it here.</AppText>
-          )}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
+            disabled={reopening}
+            onPress={() => void reopen()}
+          >
+            <AppText>{reopening ? "Opening…" : "Reopen"}</AppText>
+          </Pressable>
           {failure ? <AppText>{failure}</AppText> : null}
         </View>
       </View>

@@ -27,6 +27,7 @@ export function MacAppView(props: {
         hostClient={props.hostClient}
         machineId={destination.machineId}
         viewId={destination.source.viewId}
+        windowId={destination.kind === "app" ? destination.windowId : undefined}
       />
     );
   return destination.computerSessionId === undefined ? null : (
