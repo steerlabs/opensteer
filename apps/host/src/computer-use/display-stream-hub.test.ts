@@ -26,6 +26,7 @@ import WebSocket from "ws";
 import { normalizeHostError } from "../server/http-errors.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import { macLinkRate } from "./display-link-rate.js";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { DisplayStreamHub } from "./display-stream-hub.js";
 import { ComputerUseError } from "./computer-use-service.js";
@@ -3116,7 +3117,9 @@ describe("viewer-driven phone bitrate", () => {
       });
       await f.viewer(false, false, true);
       expect(f.start()).toMatchObject({ maxFps: profile ? 60 : 30 });
-      if (profile) expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: null });
+      // An unmeasured Mac viewer starts moderate rather than flooding a cellular link.
+      if (profile)
+        expect(f.start()).toMatchObject({ displayProfile: 1, maxBitrate: macLinkRate.initialBitrate });
       else expect(f.start()).not.toHaveProperty("maxBitrate");
       expect(f.start()).not.toHaveProperty("sharedInput");
       expect(f.start()).not.toHaveProperty("displayCut");
@@ -3138,7 +3141,7 @@ describe("viewer-driven phone bitrate", () => {
     mac.socket.send(f.frame(1, true));
     await reporting.received(() => reporting.media().length === 1);
     reporting.send({ type: "display.ack", sequence: 1 });
-    await until(() => caps().at(-1) === null);
+    await until(() => caps().at(-1) === macLinkRate.initialBitrate);
   });
   it("replays a Mac join from an unmeasured link only when the chain is short", async () => {
     const f = await fixture(true, { mac: true, displayProfile: true });
@@ -3146,7 +3149,7 @@ describe("viewer-driven phone bitrate", () => {
     const mac = await f.phone();
     await f.state();
     const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
-    const chunk = new Uint8Array(200_000);
+    const chunk = new Uint8Array(100_000);
     mac.socket.send(f.frame(1, true, 1, chunk));
     mac.socket.send(f.frame(2, false, 1, chunk));
     await mac.received(() => mac.json().length === 2);
@@ -3154,8 +3157,9 @@ describe("viewer-driven phone bitrate", () => {
     await until(() => short.media().length === 2);
     expect(refreshes()).toHaveLength(0);
     // Keys come only on demand, so a long chain would take seconds on a slow link.
-    mac.socket.send(f.frame(3, false, 1, chunk));
-    await mac.received(() => mac.json().length === 3);
+    for (let sequence = 3; sequence <= 6; sequence++)
+      mac.socket.send(f.frame(sequence, false, 1, chunk));
+    await mac.received(() => mac.json().length === 6);
     const long = await f.viewer(false, false, true);
     await until(() => refreshes().length === 1);
     await long.roundTrip();

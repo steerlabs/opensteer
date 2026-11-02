@@ -1,8 +1,5 @@
-import {
-  DisplayViewerBitrate,
-  macViewerBitrate,
-  phoneViewerBitrate,
-} from "./display-viewer-bitrate.js";
+import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -98,6 +95,8 @@ type PhoneEvent = Extract<
 interface Viewer {
   readonly displayWindow: boolean;
   readonly bitrate: DisplayViewerBitrate;
+  /** A Mac viewer's measured link; phones keep their own controller. */
+  readonly link: DisplayLinkRate | null;
   readonly ackDelays: { readonly at: number; readonly delay: number }[];
   readonly sharedInput: boolean;
   readonly phoneOwnerControl: boolean;
@@ -410,7 +409,7 @@ export class DisplayStreamHub {
       });
       stream = {
         ...(live.displayProfile === 1 ? { displayProfile: 1 as const } : {}),
-        maxBitrate: null,
+        maxBitrate: live.displayProfile === 1 && target ? macLinkRate.initialBitrate : null,
         bitrateAt: -Infinity,
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
@@ -456,7 +455,10 @@ export class DisplayStreamHub {
       start = {
         ...stream.fence,
         type: "host.integrations.display.start",
-        ...(live.displayProfile === 1 ? { displayProfile: 1 as const, maxBitrate: null } : {}),
+        // An unmeasured Mac viewer starts moderate so a cellular link is not flooded first.
+        ...(live.displayProfile === 1
+          ? { displayProfile: 1 as const, maxBitrate: target ? macLinkRate.initialBitrate : null }
+          : {}),
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
@@ -492,7 +494,11 @@ export class DisplayStreamHub {
       phoneOwnerControl: options.phoneOwnerControl === true,
       displayWindow: options.displayWindow === true,
       ackDelays: [],
-      bitrate: new DisplayViewerBitrate(attached.target ? macViewerBitrate : phoneViewerBitrate),
+      bitrate: new DisplayViewerBitrate(),
+      link:
+        attached.target && attached.displayProfile === 1 && options.displayWindow === true
+          ? new DisplayLinkRate(macLinkRate)
+          : null,
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -525,7 +531,7 @@ export class DisplayStreamHub {
       attached.demandKey = JSON.stringify({
         sources: [source],
         ...(attached.phoneOwnerControl === 1 ? { inputSources } : {}),
-        ...(attached.displayProfile === 1 ? { maxBitrate: null } : {}),
+        ...(attached.displayProfile === 1 ? { maxBitrate: attached.maxBitrate } : {}),
       });
       this.#send(attached, {
         ...start,
@@ -682,7 +688,7 @@ export class DisplayStreamHub {
               continue;
             }
             if (viewer.waiting && !header.key) continue;
-            if (!this.#hasCredit(viewer, envelope.byteLength)) {
+            if (!this.#hasCredit(viewer, envelope.byteLength, false, header.key)) {
               if (viewer.displayWindow) {
                 this.#stall(stream, viewer);
               }
@@ -981,6 +987,7 @@ export class DisplayStreamHub {
       }
       viewer.discarded.push(...viewer.outstanding.keys());
       viewer.outstanding.clear();
+      viewer.link?.forget();
       viewer.bytes = 0;
       viewer.recoverySample = null;
       viewer.replayIndex = null;
@@ -1018,7 +1025,8 @@ export class DisplayStreamHub {
           viewer.ackDelays.pop();
         viewer.ackDelays.push({ at, delay });
         if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
-        viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
+        if (viewer.link) viewer.link.ack(message.sequence, at, viewer.ackDelays[0]!.delay);
+        else viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
         this.#bitrate(stream);
       }
       // Decoder outputs in stream order: acknowledgement returns all earlier credits.
@@ -1324,13 +1332,25 @@ export class DisplayStreamHub {
   #cachedDeltaBytes(stream: Stream): number {
     return stream.cacheBytes - (stream.cache[0]?.bytes.byteLength ?? 0);
   }
-  #hasCredit(viewer: Viewer, bytes: number, replay = false): boolean {
+  #hasCredit(viewer: Viewer, bytes: number, replay = false, key = false): boolean {
+    // A measured link carries what fits a round trip and a short queue; a fixed
+    // megabyte is seconds of stale video on a slow one. A key replaces the
+    // chain, is rare, and would otherwise only trigger another key.
+    const credit = viewer.link
+      ? viewer.link.creditBytes(
+          this.#now(),
+          viewer.ackDelays[0]?.delay ?? 400,
+          displayViewerCreditBytes,
+        )
+      : displayViewerCreditBytes;
     return (
       (replay ||
         (viewer.displayWindow
           ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
           : viewer.outstanding.size < displayViewerCreditFrames)) &&
-      (viewer.outstanding.size === 0 || viewer.bytes + bytes <= displayViewerCreditBytes)
+      (viewer.outstanding.size === 0 ||
+        (key && viewer.link !== null) ||
+        viewer.bytes + bytes <= credit)
     );
   }
   #withinCreditAge(viewer: Viewer): boolean {
@@ -1347,7 +1367,8 @@ export class DisplayStreamHub {
     const queued = oldest
       ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
       : 0;
-    viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
+    if (viewer.link) viewer.link.stalled(now, queued, viewer.ackDelays[0]?.delay ?? 400);
+    else viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
     this.#bitrate(stream);
   }
   #sendFrame(viewer: Viewer, frame: CachedFrame): void {
@@ -1355,6 +1376,7 @@ export class DisplayStreamHub {
       bytes: frame.bytes.byteLength,
       sentAt: this.#now(),
     });
+    viewer.link?.sent(frame.sequence, frame.bytes.byteLength, this.#now());
     viewer.bytes += frame.bytes.byteLength;
     this.#binary(viewer.socket, frame.bytes);
   }
@@ -1590,15 +1612,11 @@ export class DisplayStreamHub {
   }
   #updateBitrate(stream: Stream): boolean {
     if (stream.displayProfile !== 1) return false;
-    const caps = [...stream.viewers].flatMap((viewer) =>
-      viewer.displayWindow
-        ? viewer.bitrate.cap === null
-          ? []
-          : [viewer.bitrate.cap]
-        : stream.target
-          ? [macUnmeasuredViewerBitrate]
-          : [],
-    );
+    const caps = [...stream.viewers].flatMap((viewer) => {
+      const cap = viewer.link ? viewer.link.cap : viewer.bitrate.cap;
+      if (viewer.displayWindow) return cap === null ? [] : [cap];
+      return stream.target ? [macUnmeasuredViewerBitrate] : [];
+    });
     const cap = caps.length ? Math.min(...caps) : null;
     if (cap === stream.maxBitrate) return false;
     const decreasing = cap !== null && (stream.maxBitrate === null || cap < stream.maxBitrate);

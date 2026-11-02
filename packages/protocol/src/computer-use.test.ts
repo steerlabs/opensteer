@@ -911,8 +911,8 @@ it("bounds helper video fps and bitrate while preserving the legacy shape", () =
     expect(macWindowVideoParams["display.start"].safeParse({ ...start, maxFps }).success).toBe(
       maxFps >= 1 && maxFps <= 60,
     );
-  for (const maxBitrate of [null, 399_999, 400_000, 20_000_000, 20_000_001]) {
-    const valid = maxBitrate === null || (maxBitrate >= 400_000 && maxBitrate <= 20_000_000);
+  for (const maxBitrate of [null, 149_999, 150_000, 20_000_000, 20_000_001]) {
+    const valid = maxBitrate === null || (maxBitrate >= 150_000 && maxBitrate <= 20_000_000);
     expect(macWindowVideoParams["display.start"].safeParse({ ...start, maxBitrate }).success).toBe(
       valid,
     );

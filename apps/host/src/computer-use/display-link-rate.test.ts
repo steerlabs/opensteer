@@ -55,9 +55,11 @@ describe("display link rate", () => {
   it("settles a weak cellular link within two seconds without standing queues", () => {
     const rate = new DisplayLinkRate(limits);
     const trace = simulate(rate, [{ untilMs: 12_000, mbps: 1, rttMs: 400 }]);
+    // The cap settles around the link, probing a little above it and back.
+    expect(trace.find((t) => t.cap !== null && t.cap <= 1_000_000)!.at).toBeLessThan(2_000);
     const settled = window(trace, 3_000, 12_000);
-    expect(rate.cap).toBeGreaterThan(600_000);
-    expect(rate.cap).toBeLessThan(1_000_000);
+    expect(rate.cap).toBeGreaterThan(700_000);
+    expect(rate.cap).toBeLessThan(1_300_000);
     expect(p95(settled.map((t) => t.queueMs))).toBeLessThan(250);
   });
 
@@ -81,14 +83,14 @@ describe("display link rate", () => {
     expect(rate.cap === null || rate.cap >= 12_000_000).toBe(true);
   });
 
-  it("does not cut for a receiver pause on a fast link", () => {
+  it("recovers full quality within 1.5 s after a receiver pause on a fast link", () => {
     const rate = new DisplayLinkRate(limits);
     simulate(rate, [
       { untilMs: 3_000, mbps: 200, rttMs: 10 },
       { untilMs: 4_000, mbps: 200, rttMs: 10, pauseMs: 700 },
-      { untilMs: 5_000, mbps: 200, rttMs: 10 },
+      { untilMs: 5_500, mbps: 200, rttMs: 10 },
     ]);
-    expect(rate.cap === null || rate.cap >= 15_000_000).toBe(true);
+    expect(rate.cap).toBeNull();
   });
 
   it("never probes on a still window, whose small frames prove nothing", () => {

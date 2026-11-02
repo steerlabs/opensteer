@@ -20,7 +20,7 @@ struct MacVideoRate: Equatable {
     let fps: Int
   }
 
-  static let minBitrate = 400_000
+  static let minBitrate = 150_000
   static let maxBitrate = 20_000_000
   static let legacyBitrate = 2_500_000
   static let ceilingBitsPerPixel = 0.15

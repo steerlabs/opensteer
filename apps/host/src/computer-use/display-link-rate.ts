@@ -1,4 +1,5 @@
-const minimumBitrate = 400_000;
+/** A Mac window can still show sharp, sparse frames on an EDGE-class link. */
+const minimumBitrate = 150_000;
 /** Queueing below this is the path itself; above it, our own frames are waiting. */
 const queuedMs = 120;
 /** Below this the link has room, so a busy stream may probe upward. */
@@ -13,36 +14,48 @@ export interface DisplayLinkRateLimits {
   readonly initialBitrate: number;
 }
 
+export const macLinkRate: DisplayLinkRateLimits = {
+  maximumBitrate: 20_000_000,
+  initialBitrate: 4_000_000,
+};
+
 /**
- * One viewer's link, measured from its acknowledgements: the bottleneck rate as
- * BBR measures it (bytes delivered between a frame's send and its ack), the base
- * round trip, and the queue our own frames add on top of it. The cap follows the
- * bottleneck as soon as a queue forms and halves each round trip a queue
- * persists, as after a handover; it probes upward only while the link is clear
- * and the stream actually uses its budget, since a still window proves nothing.
+ * One viewer's link, measured from its acknowledgements: the bottleneck as BBR
+ * measures it (bytes delivered between a frame's send and its ack), the base
+ * round trip, and the queue our own frames add on top of it.
+ *
+ * When a queue forms the cap drops below what the link delivers now, so it
+ * follows a handover within a round trip or two. A paused receiver looks the
+ * same at first, but its backlog then arrives as a burst that no network
+ * produces, which restores the cap. It probes upward only while the link is
+ * clear and the stream is busy; a still window proves nothing.
  */
 export class DisplayLinkRate {
   cap: number | null;
   readonly limits: DisplayLinkRateLimits;
   #delivered = 0;
   #deliveredAt: number | null = null;
-  #sent = new Map<number, { delivered: number; deliveredAt: number; at: number; bytes: number }>();
+  #sent = new Map<
+    number,
+    { delivered: number; deliveredAt: number | null; at: number; bytes: number }
+  >();
   #samples: { at: number; bytesPerMs: number }[] = [];
   #sends: { at: number; bytes: number }[] = [];
   #clearMs = 0;
   #lastAck: number | null = null;
-  #changedAt = -Infinity;
-  #congestedAt = -Infinity;
-  /** Only delivered frames prove a queue; a stall may be a paused receiver. */
-  #queuedAckAt = -Infinity;
-  #clearAt = -Infinity;
+  #lastAckedSentAt: number | null = null;
+  #decidedAt = -Infinity;
+  /** The cap before the latest cut, until acks show whether the link caused it. */
+  #beforeCut: number | null | undefined;
+  /** Frames sent before this were a paused receiver's backlog. */
+  #backlogBefore = -Infinity;
 
   constructor(limits: DisplayLinkRateLimits) {
     this.limits = limits;
     this.cap = limits.initialBitrate;
   }
 
-  /** The link's measured bottleneck in bytes per millisecond, if any. */
+  /** The link's recent bottleneck in bytes per millisecond, if measured. */
   bandwidth(now: number): number | null {
     while (this.#samples[0] && now - this.#samples[0].at > bandwidthWindowMs) this.#samples.shift();
     return this.#samples.length ? Math.max(...this.#samples.map((s) => s.bytesPerMs)) : null;
@@ -54,14 +67,14 @@ export class DisplayLinkRate {
       this.bandwidth(now) ?? Infinity,
       this.cap === null ? Infinity : this.cap / 8_000,
     );
-    if (!Number.isFinite(rate)) return Math.min(ceiling, 256 * 1_024);
+    if (!Number.isFinite(rate)) return Math.min(ceiling, 128 * 1_024);
     return Math.min(ceiling, Math.max(64 * 1_024, rate * (baseRttMs + 150)));
   }
 
   sent(sequence: number, bytes: number, now: number): void {
     this.#sent.set(sequence, {
       delivered: this.#delivered,
-      deliveredAt: this.#deliveredAt ?? now,
+      deliveredAt: this.#deliveredAt,
       at: now,
       bytes,
     });
@@ -78,28 +91,54 @@ export class DisplayLinkRate {
   ack(sequence: number, now: number, baseRttMs: number): void {
     const frame = this.#sent.get(sequence);
     if (!frame) return;
+    const delivered = this.#delivered;
     for (const [sent, entry] of this.#sent) {
       if (sent > sequence) break;
       this.#delivered += entry.bytes;
       this.#sent.delete(sent);
     }
+    const previous = this.#deliveredAt;
     this.#deliveredAt = now;
-    const elapsed = now - frame.deliveredAt;
-    if (elapsed > 0)
-      this.#samples.push({ at: now, bytesPerMs: (this.#delivered - frame.delivered) / elapsed });
-    const queue = now - frame.at - baseRttMs;
-    const gap = this.#lastAck === null ? Infinity : now - this.#lastAck;
+    // Delivered between this frame's send and its ack. A frame sent before any
+    // ack would measure the first round trip, so it measures from the previous
+    // ack instead: while the link is busy, ack spacing is its rate.
+    const since = frame.deliveredAt ?? previous;
+    const base = frame.deliveredAt === null ? delivered : frame.delivered;
+    let sample: number | null = null;
+    if (since !== null && now > since) {
+      sample = (this.#delivered - base) / (now - since);
+      this.#samples.push({ at: now, bytesPerMs: sample });
+    }
+    const gap = this.#lastAck === null ? 0 : now - this.#lastAck;
+    const sentGap = this.#lastAckedSentAt === null ? 0 : frame.at - this.#lastAckedSentAt;
     this.#lastAck = now;
-    if (queue > queuedMs) this.#congested(now, baseRttMs, true);
-    else if (queue < clearMs) {
-      this.#clearAt = now;
+    this.#lastAckedSentAt = frame.at;
+    // Near-instant acks for frames sent well apart: a receiver catching up after
+    // a pause, which no network produces. Its cut was not the link's.
+    if (this.#beforeCut !== undefined && gap < Math.min(5, sentGap / 4)) {
+      this.cap = this.#beforeCut;
+      this.#beforeCut = undefined;
+      this.#backlogBefore = now;
+      return;
+    }
+    const queue = now - frame.at - baseRttMs;
+    if (queue > queuedMs && frame.at >= this.#backlogBefore) {
+      this.#clearMs = 0;
+      // A silence after a handover and a paused receiver look alike here. Taking
+      // both at their word costs a paused receiver a dip the probe soon repairs;
+      // ignoring a handover would cost seconds of stale video.
+      this.#cut(now, baseRttMs, sample);
+    } else if (queue < clearMs) {
+      this.#beforeCut = undefined;
       this.#clear(now, gap, baseRttMs);
     }
   }
 
   /** Frames have waited `queueMs` beyond the base round trip with no ack yet. */
   stalled(now: number, queueMs: number, baseRttMs: number): void {
-    if (queueMs > queuedMs) this.#congested(now, baseRttMs, false);
+    if (queueMs <= queuedMs) return;
+    this.#clearMs = 0;
+    this.#cut(now, baseRttMs, null);
   }
 
   /** Bits per second sent over the last few round trips. */
@@ -109,28 +148,17 @@ export class DisplayLinkRate {
     return (bytes * 8_000) / span;
   }
 
-  #congested(now: number, baseRttMs: number, delivered: boolean): void {
-    this.#clearMs = 0;
-    // A delivered decision gets one per round trip, since the previous needs
-    // that long to show. A stall only ever applies the bandwidth target.
-    if (delivered) {
-      if (now - this.#congestedAt < Math.max(200, baseRttMs)) return;
-      this.#congestedAt = now;
-    }
-    // Queued deliveries again, with no clear one since: the queue persists. A
-    // paused receiver yields stalls and one late burst, then clear frames.
-    const persistent = delivered && this.#queuedAckAt > this.#clearAt;
-    if (delivered) this.#queuedAckAt = now;
-    const bandwidth = this.bandwidth(now);
-    let target = bandwidth === null ? Infinity : Math.floor(bandwidth * 8_000 * drainGain);
-    if (persistent && this.cap !== null) target = Math.min(target, Math.floor(this.cap / 2));
-    if (!Number.isFinite(target)) return;
-    target = Math.max(minimumBitrate, target);
-    // A burst after a pause reports a high bandwidth, so this never cuts below
-    // what the link actually delivered.
+  /** Drops the cap below `delivering` bytes/ms, or the recent maximum without one. */
+  #cut(now: number, baseRttMs: number, delivering: number | null): void {
+    // One cut per round trip: the previous one needs that long to show.
+    if (now - this.#decidedAt < Math.max(200, baseRttMs)) return;
+    const rate = delivering ?? this.bandwidth(now);
+    if (rate === null) return;
+    const target = Math.max(minimumBitrate, Math.floor(rate * 8_000 * drainGain));
     if (this.cap !== null && target >= this.cap) return;
+    this.#beforeCut ??= this.cap;
     this.cap = target;
-    this.#changedAt = now;
+    this.#decidedAt = now;
   }
 
   #clear(now: number, gap: number, baseRttMs: number): void {
@@ -143,6 +171,7 @@ export class DisplayLinkRate {
     const next = this.cap * (fast ? 1.5 : 1.25);
     this.cap = next >= this.limits.maximumBitrate ? null : Math.round(next);
     this.#clearMs = 0;
-    this.#changedAt = now;
+    this.#decidedAt = now;
+    this.#beforeCut = undefined;
   }
 }

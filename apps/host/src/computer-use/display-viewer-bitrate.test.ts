@@ -1,34 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  DisplayViewerBitrate,
-  macViewerBitrate,
-  phoneViewerBitrate,
-} from "./display-viewer-bitrate.js";
+import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 
 describe("viewer-driven phone bitrate", () => {
-  it.each([phoneViewerBitrate, macViewerBitrate])(
-    "uses the platform ceiling for reduction and recovery",
-    (limits) => {
-      const rate = new DisplayViewerBitrate(limits);
-      rate.stall(0, 500, -900);
-      rate.stall(600, 500, 100);
-      expect(rate.cap).toBe(limits.maximumBitrate * 0.75);
-      rate.cap = limits.maximumBitrate / 1.1;
-      for (let now = 1_000; now <= 11_000; now += 100) rate.ack(now, 100_000, 100, 100);
-      expect(rate.cap).toBeNull();
-    },
-  );
-  it("recovers across intermittent bursts without counting the silence between them", () => {
-    const rate = new DisplayViewerBitrate(macViewerBitrate);
-    rate.cap = 1_000_000;
-    // One-second scroll bursts four seconds apart: the old continuous rule never stepped up.
-    for (let burst = 0; burst < 3; burst += 1)
-      for (let now = burst * 5_000; now <= burst * 5_000 + 1_000; now += 50)
-        rate.ack(now, 6_000, 100, 100);
-    expect(rate.cap).toBe(1_500_000);
-    rate.ack(60_000, 6_000, 100, 100);
-    expect(rate.cap, "Silence alone proves nothing").toBe(1_500_000);
-  });
   it.each([650, 1_200])("does not cap a %i ms receiver pause or its late ACK burst", (pause) => {
     const rate = new DisplayViewerBitrate();
     for (let now = 0; now <= 2_000; now += 100) rate.ack(now, 1_000, 100, 100);

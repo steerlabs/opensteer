@@ -334,11 +334,11 @@ describe("computer app approval and discovery contracts", () => {
   });
 });
 
-it.each([null, 399_999, 400_000, 4_000_000, 20_000_000, 20_000_001])(
+it.each([null, 149_999, 150_000, 4_000_000, 20_000_000, 20_000_001])(
   "bounds profile bitrate %s",
   (maxBitrate) => {
     const streamId = "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    const valid = maxBitrate === null || (maxBitrate >= 400_000 && maxBitrate <= 20_000_000);
+    const valid = maxBitrate === null || (maxBitrate >= 150_000 && maxBitrate <= 20_000_000);
     const start = {
       ...fence,
       type: "host.integrations.display.start",
