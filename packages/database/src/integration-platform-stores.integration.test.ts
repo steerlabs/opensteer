@@ -4602,7 +4602,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     await expect(platform.approveComputerAppAutomatically(input)).rejects.toMatchObject({
       code: "forbidden",
-      message: "Notes is blocked on Mac blocked-automatic. The owner can unblock it from any Opensteer app.",
+      message:
+        "Notes is blocked on Mac blocked-automatic. The owner can unblock it from any Opensteer app.",
     });
     await expect(platform.setComputerConnection(input)).rejects.toMatchObject({
       code: "forbidden",
