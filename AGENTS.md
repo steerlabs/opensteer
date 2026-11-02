@@ -22,9 +22,7 @@ It's an early alpha.
 3. **Every surface.** Web, desktop and mobile (iOS and Android), plus enrolled
    computers and Agent Phones. A feature that works on one surface and is
    missing on the others is unfinished.
-4. **Old releases keep working.** Phones update late. A new Host serves the
-   previous release's clients, and a new client handles the previous Host.
-5. **Secrets stay secret.** Credentials, saved passwords, pairing codes, push
+4. **Secrets stay secret.** Credentials, saved passwords, pairing codes, push
    tokens and signing material never reach logs, wire payloads they don't need
    to be in, or the repo.
 
@@ -97,9 +95,6 @@ which entries applied:
 - **Host API.** A browser-facing capability goes in
   [hostApi](packages/protocol/src/host-api.ts), with matching handlers, scope
   and mock behavior. Domain mutations use `commands.dispatch`.
-- **Previous release.** Old clients against the new Host, and the new client
-  against the old Host. Bump the Host API epoch only as
-  [Host compatibility](docs/host-boundaries.md#compatibility) allows.
 - **Agents.** If a person can do it, decide whether agents should reach it
   through the [tool catalog](packages/agent-tools/src/catalog.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
