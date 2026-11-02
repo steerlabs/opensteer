@@ -35,7 +35,7 @@ actor AppleRecognizer: Recognizer {
     return nil
   }
   private func installed(_ locale: Locale) async -> Bool {
-    // macOS 26 can lose the per-app speech service's reservation view while models still work.
+    // Not AssetInventory status: see the macOS 26 trap in docs/dictation.md.
     await SpeechTranscriber.installedLocales.contains {
       localeIdentity($0) == localeIdentity(locale)
     }
@@ -57,7 +57,9 @@ actor AppleRecognizer: Recognizer {
   private func inventoryAvailability(microphone: DictationMicrophone) async -> DictationAvailability
   {
     guard SpeechTranscriber.isAvailable else { return .unavailable(.hardware) }
-    guard let locale = await resolve() else { return .unavailable(.language) }
+    let resolved = await resolve()
+    await reconcile(resolved)
+    guard let locale = resolved else { return .unavailable(.language) }
     let identifier = locale.identifier(.bcp47)
     let name =
       Locale.current.localizedString(

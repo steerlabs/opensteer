@@ -98,13 +98,24 @@ final class LiveTests: XCTestCase {
           fields[2] == "com.apple.speech.localspeechrecognition",
           let pid = Int32(fields[0]), pid > 0
         else { continue }
+        let exited = expectation(description: "Owned speech service exited")
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit)
+        source.setEventHandler {
+          exited.fulfill()
+          source.cancel()
+        }
+        source.resume()
         // This is this test process's own service instance, never a PID matched by name.
-        let result = kill(pid, SIGKILL)
-        XCTAssertTrue(
-          result == 0 || errno == ESRCH, "Could not exit owned speech service: \(errno)")
+        if kill(pid, SIGKILL) != 0 {
+          source.cancel()
+          guard errno == ESRCH else { throw NSError(domain: "LiveTests.kill", code: Int(errno)) }
+          return
+        }
+        await fulfillment(of: [exited], timeout: 5)
         return
       }
-      // The owned instance may already have idle-exited.
+      XCTFail("This process's speech service instance was not running after an inventory call")
+      throw NSError(domain: "LiveTests.ownedSpeechService", code: 1)
     }
 
     @available(macOS 26, *)
