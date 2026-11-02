@@ -9,6 +9,32 @@ export const browserStreamOptions = z.object({
   duration: z.coerce.number().min(2).max(30),
   out: z.string(),
 });
+export type BrowserStreamOptions = z.infer<typeof browserStreamOptions>;
+
+/** The deadline for one scenario's input and settling, as the benchmark enforces it. */
+export function scenarioDeadlineMs(scenario: Scenario, durationSeconds: number): number {
+  if (scenario === "typing") return 205_000;
+  if (scenario === "click") return 45_000;
+  return durationSeconds * 1000 + 22_000;
+}
+
+/**
+ * The whole run's limit, sized from the selected workload so that every bounded
+ * step inside it fails first: the bundle build, then per profile run five
+ * minutes of launch, attach and cleanup, and per scenario two 25 s setup
+ * deadlines, clock calibration and its own workload deadline.
+ */
+export function benchmarkTimeoutMs(options: BrowserStreamOptions): number {
+  const profiles = options.profile === "all" ? 3 : 1;
+  const selected = scenarios.filter(
+    (scenario) => options.scenario === "all" || options.scenario === scenario,
+  );
+  const perRun = selected.reduce(
+    (sum, scenario) => sum + 60_000 + scenarioDeadlineMs(scenario, options.duration),
+    300_000,
+  );
+  return 300_000 + profiles * options.runs * perRun;
+}
 
 export interface InputSample {
   readonly at: number;

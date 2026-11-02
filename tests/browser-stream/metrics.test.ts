@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  benchmarkTimeoutMs,
   causalLatencies,
   distribution,
   motionMetrics,
   resolveInputs,
+  scenarioDeadlineMs,
+  scenarios,
   type PresentedSample,
 } from "./metrics.test-support.js";
 
@@ -74,5 +77,14 @@ describe("browser stream measurements", () => {
       pacingJitterMs: null,
       maxGapIncludingEdgesMs: 100,
     });
+  });
+
+  it("sizes the run's limit beyond every bounded step of the selected workload", () => {
+    const largest = { profile: "all", scenario: "all", runs: 20, duration: 30, out: "x" } as const;
+    const workloads = scenarios.reduce((sum, s) => sum + scenarioDeadlineMs(s, 30), 0);
+    expect(benchmarkTimeoutMs(largest)).toBeGreaterThan(3 * 20 * workloads);
+    const single = { profile: "lan", scenario: "click", runs: 1, duration: 4, out: "x" } as const;
+    expect(benchmarkTimeoutMs(single)).toBeGreaterThan(scenarioDeadlineMs("click", 4) + 50_000);
+    expect(benchmarkTimeoutMs(single)).toBeLessThan(benchmarkTimeoutMs(largest));
   });
 });

@@ -7,7 +7,6 @@ export default defineConfig({
     ...integration.test,
     include: ["tests/browser-stream.bench.ts"],
     maxWorkers: 1,
-    testTimeout: 900_000,
     hookTimeout: 60_000,
   },
 });
