@@ -6618,6 +6618,116 @@ describe("HttpHostClient catalog startup", () => {
 });
 
 describe("HttpHostClient hosted browser", () => {
+  it.each(["profile", "grant", "workspace"] as const)(
+    "revokes %s pixels from the catalog before authorization close, even after transport release",
+    async (reason) => {
+      const workspace = makeWorkspace(),
+        sessionId = createBrowserSessionId(),
+        profileId = createId("browserProfile");
+      const browser: HostedBrowserBootstrap = {
+        available: true,
+        placements: [],
+        profiles: [{ id: profileId, name: "Profile" }],
+        profileGrants: [
+          {
+            id: createId("browserProfileGrant"),
+            profileId,
+            workspaceId: workspace.id,
+            access: "full-control",
+            createdAt: now,
+          },
+        ],
+        sessions: [
+          {
+            id: sessionId,
+            workspaceId: workspace.id,
+            profileId,
+            placement: { kind: "runner", runnerId },
+            runtimeId: "runtime",
+            origin: "workspace",
+            state: "ready",
+            access: "full-control",
+            createdAt: now,
+            updatedAt: now,
+            tabCatalog: {
+              generation: 1,
+              revision: 1,
+              tabs: [
+                {
+                  id: BrowserSurfaceIdSchema.parse("page-1"),
+                  title: "Page",
+                  site: "https://example.com",
+                  iconRef: null,
+                  order: 0,
+                  openerId: null,
+                  availability: "ready",
+                  occupants: [],
+                  documentId: null,
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const boot = bootstrap([workspace], browser);
+      const sockets: { url: string; socket: FakeSocket }[] = [];
+      const client = createHttpHostClient({
+        refreshIntervalMs: 0,
+        prefetchHome: false,
+        fetch: async () => json(boot),
+        webSocketFactory: (url) => {
+          const socket = new FakeSocket();
+          sockets.push({ url, socket });
+          return socket;
+        },
+      });
+      try {
+        await client.load();
+        const notify = vi.fn();
+        const unsubscribe = client.browserWatchFrames.subscribe(sessionId, notify, "page-1");
+        const release = client.retainBrowserWatch(sessionId, "page-1");
+        const socket = sockets.find(({ url }) => url.includes("/browser-sessions/"))!.socket;
+        socket.open();
+        socket.receiveRaw({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "full-control",
+          targetedStreamingVersion: 1,
+          dialog: null,
+          surfaces: [{ id: "page-1", active: true, title: "Page", url: "https://example.com" }],
+        });
+        socket.receiveBinary(browserFrame(1, true));
+        expect(client.browserWatchFrames.get(sessionId, "page-1")).not.toBeNull();
+        const before = client.browserWatchFrames.invalidationKey!(sessionId, "page-1");
+        // The presenter remains subscribed while its offscreen card releases transport.
+        release();
+        notify.mockClear();
+        if (reason === "profile") browser.profiles = [];
+        if (reason === "grant") browser.profileGrants = [];
+        if (reason === "workspace") {
+          const workspaceSocket = sockets.find(
+            ({ url }) => !url.includes("/browser-sessions/"),
+          )!.socket;
+          workspaceSocket.open();
+          workspaceSocket.receiveRaw({
+            type: "host.error",
+            error: {
+              code: "forbidden",
+              message: "Access ended",
+              reason: "workspace-forbidden",
+              retryable: false,
+            },
+          });
+        } else await client.refresh();
+        expect(client.browserWatchFrames.invalidationKey!(sessionId, "page-1")).not.toBe(before);
+        expect(notify).toHaveBeenCalled();
+        unsubscribe();
+      } finally {
+        client.dispose();
+      }
+    },
+  );
   it("reconciles browser Watch targets learned over HTTP while realtime is disconnected", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
@@ -13352,11 +13462,14 @@ function authenticatedSession() {
   };
 }
 
-function browserFrame(frameId: number): ArrayBuffer {
+function browserFrame(frameId: number, targeted = false): ArrayBuffer {
   const header = new TextEncoder().encode(
     JSON.stringify({
       encoding: "jpeg",
       frameId,
+      ...(targeted
+        ? { geometryRevision: 1, watchToken: "00000000-0000-4000-8000-000000000001" }
+        : {}),
       rasterHeight: 1,
       rasterWidth: 1,
       surfaceId: "page-1",
@@ -14833,6 +14946,93 @@ describe("attachment reads", () => {
 });
 
 describe("a Run's current place", () => {
+  it("keeps places through queued, starting, running and a restarted binding, fencing only terminal status", async () => {
+    const workspace = makeWorkspace(),
+      thread = makeThread(workspace.id),
+      runId = createId("run");
+    const socket = new FakeSocket();
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      prefetchHome: false,
+      capabilities: ["place-events-v1"],
+      webSocketFactory: () => socket,
+      fetch: async () => json(bootstrap([workspace])),
+    });
+    try {
+      await client.load();
+      socket.open();
+      socket.receiveRaw({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread], runPlaces: [] },
+      });
+      let sequence = 0;
+      const status = (value: "queued" | "starting" | "running" | "waiting" | "completed") =>
+        socket.receive({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.status", {
+              status: value,
+            }),
+          ],
+        });
+      const enter = () => {
+        const event = agentEvent(
+          workspace.id,
+          thread.id,
+          runId,
+          String(++sequence),
+          "place.entered",
+          {
+            place: {
+              kind: "browser",
+              sessionId: createBrowserSessionId(),
+              surfaceId: BrowserSurfaceIdSchema.parse("startup-tab"),
+            },
+            title: "Page",
+            site: null,
+          },
+        );
+        socket.receive({ type: "host.events", events: [event] });
+        return event;
+      };
+      socket.receive({
+        type: "host.events",
+        events: [
+          agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.queued", {
+            run: {
+              id: runId,
+              threadId: thread.id,
+              createdAt: now,
+              runOrdinal: 1,
+              status: "queued",
+            },
+          }),
+        ],
+      });
+      status("starting");
+      socket.receive({
+        type: "host.events",
+        events: [
+          agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.started", {
+            status: "running",
+          }),
+        ],
+      });
+      const first = enter();
+      expect(client.runPlace(runId)).toEqual(first);
+      for (const value of ["waiting", "starting", "running"] as const) {
+        status(value);
+        const event = enter();
+        expect(client.runPlace(runId)).toEqual(event);
+      }
+      status("completed");
+      expect(client.runPlace(runId)).toBeNull();
+      enter();
+      expect(client.runPlace(runId)).toBeNull();
+    } finally {
+      client.dispose();
+    }
+  });
   it("seeds omitted transcripts, follows unopened live events, survives older snapshots, and drops terminal or changed-viewer entries", async () => {
     const workspace = makeWorkspace(),
       thread = makeThread(workspace.id),

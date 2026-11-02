@@ -11,10 +11,9 @@ import {
   pageSiteLabel,
   placeActivityPoint,
   type HostClient,
-  runPlaceDestination,
   type SurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector, useRunPlace } from "@opensteer/client/react";
+import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
@@ -26,6 +25,7 @@ import { useWorkspace } from "./workspace-context.js";
 interface RunPlaceView {
   readonly placeKey: string;
   readonly destination: SurfaceDestination | null;
+  readonly binding?: SurfaceDestination | null;
   readonly title: string;
   readonly site: string | null;
   readonly kind: "browser" | "app" | "phone";
@@ -45,14 +45,14 @@ export function LivePlace({
   readonly threadId: string;
 }) {
   const entry = useRunPlace(hostClient, runId);
-  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
+  const { destination, binding } = useRunPlaceBinding(hostClient, entry);
   const { selection } = useWorkspace();
   if (entry === null) return null;
-  const destination = runPlaceDestination(entry, { machines });
   const place: RunPlaceView = {
     placeKey:
       (destination ? destinationPlaceKey(destination) : null) ?? placeIdentityKey(entry.data.place),
     destination,
+    binding,
     kind: entry.data.place.kind,
     title: entry.data.title,
     site: entry.data.site,
@@ -84,6 +84,7 @@ export const Viewfinder = memo(function Viewfinder({
   const rootRef = useRef<HTMLButtonElement | null>(null);
   const inView = useInView(rootRef);
   const { destination } = place;
+  const binding = place.binding ?? destination;
   // A conversation put away is not on screen, whatever its geometry says: its
   // picture lets go of its watch until it is shown again. A hidden page only
   // pauses it in the client, which keeps the last picture.
@@ -120,20 +121,20 @@ export const Viewfinder = memo(function Viewfinder({
             tabId={destination.tabId}
             threadId={threadId}
           />
-        ) : destination &&
-          destination.kind !== "browser" &&
-          destination.computerSessionId !== undefined ? (
+        ) : binding && binding.kind !== "browser" && binding.computerSessionId !== undefined ? (
           <span className="viewfinder__native">
             <ComputerWatchView
-              appKey={destination.kind === "app" ? destination.appKey : null}
+              key={`${binding.machineId}:${binding.kind === "app" ? binding.appKey : (binding.display ?? "main")}`}
+              appKey={binding.kind === "app" ? binding.appKey : null}
               compact
+              preserveLastFrame
               onPictureLive={setPictureLive}
               hostClient={hostClient}
               hostConnected={hostConnected}
-              machineId={destination.machineId || null}
+              machineId={binding.machineId || null}
               machines={hostClient.getSnapshot().machines}
-              sessionId={destination.computerSessionId}
-              visible={live}
+              sessionId={binding.computerSessionId}
+              visible={live && destination !== null}
               hiddenReason={
                 !inView
                   ? "not-in-view"

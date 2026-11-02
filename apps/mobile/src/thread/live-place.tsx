@@ -1,5 +1,5 @@
-import { pageSiteLabel, runPlaceDestination, type HostClient } from "@opensteer/client/host";
-import { useHostSelector, useRunPlace } from "@opensteer/client/react";
+import { pageSiteLabel, type HostClient } from "@opensteer/client/host";
+import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
 import { useNavigationState } from "@react-navigation/native";
 import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -24,7 +24,7 @@ export const LivePlace = memo(function LivePlace(props: {
 }) {
   const { hostClient } = props;
   const entry = useRunPlace(hostClient, props.runId);
-  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
+  const { destination, binding } = useRunPlaceBinding(hostClient, entry);
   const authorized = useHostSelector(
     hostClient,
     (snapshot) => snapshot.session === "authenticated" && snapshot.user !== null,
@@ -32,7 +32,6 @@ export const LivePlace = memo(function LivePlace(props: {
   const foreground = useAppForeground();
   const current = useNavigationState((state) => state.routes[state.index]);
   if (entry === null || !authorized) return null;
-  const destination = runPlaceDestination(entry, { machines });
   if (
     current?.name === "WorkspaceBrowser" &&
     destination !== null &&
@@ -62,20 +61,24 @@ export const LivePlace = memo(function LivePlace(props: {
               hostClient={hostClient}
               label={title}
               preserveLastFrame
-              session={{ id: place.sessionId, state: "ready" }}
+              session={{
+                id: destination?.kind === "browser" ? destination.sessionId : place.sessionId,
+                state: "ready",
+              }}
               tabId={place.surfaceId}
             />
-          ) : destination?.kind !== "browser" && destination?.computerSessionId ? (
+          ) : binding?.kind !== "browser" && binding?.computerSessionId ? (
             <ComputerDisplay
               key={placeIdentityKey(place)}
               active={active}
+              preserveLastFrame
               hostClient={hostClient}
               label={title}
-              machineId={destination.machineId}
+              machineId={binding.machineId}
               phone={place.kind === "phone"}
               source={{
                 kind: "task-session",
-                sessionId: destination.computerSessionId,
+                sessionId: binding.computerSessionId,
                 ...(place.kind === "app" ? { appKey: place.appKey } : {}),
               }}
             />

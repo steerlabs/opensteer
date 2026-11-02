@@ -5,6 +5,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
+import { RunnerIdSchema } from "@opensteer/core";
+import type { HostSnapshot } from "@opensteer/client/host";
+import { LivePlace } from "./workspace/viewfinder.js";
 import type { WebSocketClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 
@@ -86,7 +89,15 @@ Object.assign(globalThis, {
   },
 });
 vi.mock("./workspace/workspace-context.js", () => ({
-  useWorkspace: () => ({ localMachine: null, nav: {} }),
+  useWorkspace: () => ({
+    localMachine: null,
+    nav: {},
+    selection: { kind: "talk" },
+    work: false,
+    phone: false,
+    dock: { open: true },
+    highlight: { set() {} },
+  }),
 }));
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
@@ -1241,4 +1252,54 @@ describe("phone owner controls", () => {
     expect(container.textContent).toContain("Unlock it on the phone.");
     expect(container.textContent).not.toContain("Wake phone");
   });
+});
+
+it("keeps the live card's decoded native pixels through missing sessions and an offline machine, clearing revoked authority while inactive", async () => {
+  const { machine, sessionId } = phone();
+  const session = machine.computerUse!.sessions[0]!;
+  const runId = session.runId,
+    threadId = session.threadId;
+  client.enterPlace(runId, threadId, {
+    place: { kind: "phone", machineId: RunnerIdSchema.parse(machine.id), display: "main" },
+    title: "Phone",
+    site: null,
+  });
+  let snapshot = client.getSnapshot();
+  const listeners = new Set<() => void>();
+  vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  });
+  const node = document.createElement("div");
+  document.body.append(node);
+  root = createRoot(node);
+  await act(async () =>
+    root!.render(<LivePlace hostClient={client} runId={runId} threadId={threadId} />),
+  );
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(node.querySelector("canvas")?.width).toBe(360);
+  });
+  const canvas = node.querySelector("canvas");
+  const move = async (machines: HostSnapshot["machines"]) =>
+    act(async () => {
+      snapshot = { ...snapshot, machines };
+      listeners.forEach((listener) => listener());
+    });
+  for (const changed of [
+    { ...machine, computerUse: { ...machine.computerUse!, sessions: [] } },
+    { ...machine, status: "offline" as const },
+  ]) {
+    await move([changed]);
+    expect(node.querySelector("canvas")).toBe(canvas);
+    expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
+    expect(sockets.at(-1)?.closed).toBe(true);
+    expect(node.querySelector(".live-dot")).toBeNull();
+  }
+  await move([{ ...machine, ownership: "other", computerUse: null }]);
+  expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
+  expect(node.querySelector("canvas")).toBe(canvas);
+  expect(sessionId).toBeDefined();
 });

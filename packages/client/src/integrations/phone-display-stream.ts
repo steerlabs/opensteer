@@ -934,6 +934,29 @@ export function computerDisplayScope(
     : null;
 }
 
+/** A temporary task binding gap does not withdraw the viewer's authority over its picture. */
+export function computerDisplayAuthorityKey(
+  snapshot: HostSnapshot,
+  source: NativeViewerSource | null,
+  machineId?: string | null,
+): string | null {
+  if (!source || snapshot.session !== "authenticated" || !snapshot.user) return null;
+  if (source.kind === "owner-view") return computerDisplayScope(snapshot, source);
+  const machine = snapshot.machines.find((machine) =>
+    machineId
+      ? machine.id === machineId
+      : machine.computerUse?.sessions.some((session) => session.sessionId === source.sessionId),
+  );
+  if (
+    machine &&
+    (machine.ownership === "other" ||
+      (machine.allowedModules && !machine.allowedModules.includes("integrations")) ||
+      (machine.status === "online" && machine.computerUse === null))
+  )
+    return null;
+  return JSON.stringify([snapshot.deploymentId, snapshot.user.id]);
+}
+
 /** The stream's state in the terms of the shared Watch words (`computerWatchStatus`). */
 export function computerDisplayStatus(
   snapshot: DisplaySnapshot,

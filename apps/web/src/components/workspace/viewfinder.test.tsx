@@ -107,7 +107,17 @@ it("keeps the card and its watch lease across independent inventories, Request w
     expect(node.querySelector("canvas")).toBe(canvas);
     expect(release).not.toHaveBeenCalled();
   }
-  await act(async () => store.accept(entry("2", "bsn_00000000-0000-4000-8000-000000000002")));
+  const replacement = "bsn_00000000-0000-4000-8000-000000000002";
+  await act(async () => {
+    snapshot = {
+      ...snapshot,
+      browserSessions: [
+        { id: replacement, state: "ready", tabCatalog: { tabs: [{ id: surfaceId }] } },
+      ],
+    } as unknown as HostSnapshot;
+    listeners.forEach((listener) => listener());
+  });
+  expect(store.get(runId)!.data.place).toMatchObject({ sessionId });
   expect(node.querySelector(".viewfinder")).toBe(card);
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(retain).toHaveBeenLastCalledWith(

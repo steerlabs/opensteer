@@ -4035,9 +4035,13 @@ describe("the Run's live place over the composer", () => {
       host.picture(null);
       expect(container.querySelector("img[src]")).toBe(image);
       const replacementSession = "bsn_00000000-0000-4000-8000-000000000002";
-      await act(() =>
-        host.runPlaces.accept(entered(runId, threadId, "2", surfaceId, replacementSession)),
-      );
+      host.move({
+        ...host.client.getSnapshot(),
+        browserSessions: [
+          { id: replacementSession, state: "ready", tabCatalog: { tabs: [{ id: surfaceId }] } },
+        ] as unknown as HostSnapshot["browserSessions"],
+      });
+      expect(host.runPlaces.get(runId)!.data.place).toMatchObject({ sessionId });
       expect(card(container)).toBe(original);
       expect(container.querySelector("img[src]")).toBe(image);
       expect(host.client.retainBrowserWatch).toHaveBeenLastCalledWith(
@@ -4144,6 +4148,10 @@ describe("the Run's live place over the composer", () => {
       );
       host.move({ ...initial, machines: [] });
       expect(card(container)).toBe(original);
+      expect(container.querySelector("[data-native-preview]")).toBe(preview);
+      expect(container.querySelector("[data-native-preview]")?.getAttribute("data-active")).toBe(
+        "false",
+      );
     },
   );
 

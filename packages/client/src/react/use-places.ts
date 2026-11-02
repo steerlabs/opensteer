@@ -1,3 +1,5 @@
+import { placeIdentityKey, type PlaceEnteredEventView } from "@opensteer/core";
+import { runPlaceDestination } from "../host/run-place.js";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
@@ -89,4 +91,24 @@ export function useBrowserTabStrip(hostClient: HostClient) {
   const places = usePlaceList(hostClient);
   const layout = useHostSelector(hostClient, selectTabGroups);
   return browserTabStrip(places, layout);
+}
+
+/** Catalog changes retarget a picture without subscribing the card to streaming text. */
+export function useRunPlaceBinding(hostClient: HostClient, entry: PlaceEnteredEventView | null) {
+  const source = useHostSelector(
+    hostClient,
+    selectSource,
+    (a, b) =>
+      a.machines === b.machines &&
+      a.browserSessions === b.browserSessions &&
+      a.workspaceTabs === b.workspaceTabs,
+  );
+  const destination = useMemo(
+    () => (entry ? runPlaceDestination(entry, source) : null),
+    [entry, source],
+  );
+  const key = entry ? `${entry.runId}:${placeIdentityKey(entry.data.place)}` : null;
+  const retained = useRef({ key, destination });
+  if (retained.current.key !== key || destination !== null) retained.current = { key, destination };
+  return { destination, binding: destination ?? retained.current.destination };
 }

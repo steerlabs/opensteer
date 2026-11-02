@@ -5,6 +5,7 @@ import {
   type PlaceEnteredEventView,
 } from "@opensteer/core";
 import { computerAppIdentityKey, type MachineSummary } from "@opensteer/protocol";
+import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
 import type { SurfaceDestination } from "./surfaces.js";
 
 /** Current Run places live outside every transcript window and catalog. */
@@ -81,11 +82,26 @@ export class RunPlaceStore {
 /** A viewing binding never decides whether the Run's place exists. */
 export function runPlaceDestination(
   entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
-  snapshot: { readonly machines: readonly MachineSummary[] },
+  snapshot: {
+    readonly machines: readonly MachineSummary[];
+    readonly browserSessions?: readonly BrowserSessionSummary[];
+    readonly workspaceTabs?: HostSnapshot["workspaceTabs"];
+  },
 ): SurfaceDestination | null {
   const place = entry.data.place;
-  if (place.kind === "browser")
-    return { kind: "browser", sessionId: place.sessionId, tabId: place.surfaceId };
+  if (place.kind === "browser") {
+    const durable = snapshot.workspaceTabs
+      ?.flatMap((group) => group.tabs ?? [])
+      .find((tab) => tab.id === place.surfaceId);
+    const candidates = snapshot.browserSessions?.filter(
+      (session) =>
+        session.state === "ready" &&
+        session.tabCatalog?.tabs.some((tab) => tab.id === place.surfaceId),
+    );
+    const ready =
+      candidates?.find((session) => session.id === durable?.sessionId) ?? candidates?.[0];
+    return { kind: "browser", sessionId: ready?.id ?? place.sessionId, tabId: place.surfaceId };
+  }
   const machine = snapshot.machines.find((machine) => machine.id === place.machineId);
   const session = machine?.computerUse?.sessions.find(
     (session) =>

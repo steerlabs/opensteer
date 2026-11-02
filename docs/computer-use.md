@@ -416,7 +416,10 @@ mapping are covered under [owner input](#negotiated-mac-owner-input).
 Privacy suppression/terminal state/login change clears pending and displayed pixels.
 Static-frame age and complete-frame silence do not end authority or indicate failure.
 Source/socket replacement retires earlier decoder output; web/Electron may retain a
-picture temporarily but refuse its input until the current socket draws. Expo clears it.
+picture temporarily but refuse its input until the current socket draws. Expo's
+interactive viewer clears it. Passive Run previews retain displayed pixels through
+temporary binding gaps while releasing transport; logical target or authority changes
+clear them on every client.
 Suspended capture clears pixels and checks tracked lifecycle before restoration.
 Transient same-source recovery may retain a valid picture. Replay decodes from a keyframe
 but never draws frames older than the advertised replay boundary. Acknowledgement follows

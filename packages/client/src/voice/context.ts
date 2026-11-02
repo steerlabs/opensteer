@@ -1,6 +1,6 @@
 import { placeIdentityKey } from "@opensteer/core";
 import { voiceAnswerMaxLength, voiceContextMaxLength } from "@opensteer/protocol/voice";
-import type { HostSnapshot, PlaceEntry, ThreadSummary } from "../host/client.js";
+import type { HostSnapshot, PlaceEntry, ThreadSummary, TranscriptEntry } from "../host/client.js";
 import { placeList, placeSearchFields, type PlaceItem } from "../host/places.js";
 import { heldThread, taskAttention, taskList } from "../host/task-list.js";
 import { nativeViewerSource, type WorkspaceSurfaceDestination } from "../host/surfaces.js";
@@ -63,6 +63,7 @@ export class VoiceContextLinks {
   readonly #refs = new Map<string, WorkspaceSurfaceDestination>();
   readonly #threads = new Set<string>();
   readonly #seen = new Map<string, string>();
+  readonly #historyRecency = new WeakMap<readonly TranscriptEntry[], ReadonlyMap<string, string>>();
   readonly #canShow: (destination: WorkspaceSurfaceDestination) => boolean;
   #visible: string | undefined;
   #next = 0;
@@ -92,9 +93,20 @@ export class VoiceContextLinks {
     const remember = (key: string, at: string) => {
       if (at > (activity.get(key) ?? "")) activity.set(key, at);
     };
-    for (const entries of Object.values(snapshot.transcripts))
-      for (const entry of entries)
-        if (entry.kind === "place") remember(placeIdentityKey(entry.place), entry.createdAt);
+    for (const entries of Object.values(snapshot.transcripts)) {
+      let recent = this.#historyRecency.get(entries);
+      if (!recent) {
+        const indexed = new Map<string, string>();
+        for (const entry of entries) {
+          if (entry.kind !== "place") continue;
+          const key = placeIdentityKey(entry.place);
+          if (entry.createdAt > (indexed.get(key) ?? "")) indexed.set(key, entry.createdAt);
+        }
+        recent = indexed;
+        this.#historyRecency.set(entries, recent);
+      }
+      for (const [key, at] of recent) remember(key, at);
+    }
     for (const session of snapshot.browserSessions)
       for (const use of session.uses ?? [])
         if (use.tabId) remember(`browser:${session.id}:${use.tabId}`, use.lastUsedAt);
