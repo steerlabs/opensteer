@@ -1,3 +1,4 @@
+import { VoiceFindInputSchema } from "@opensteer/protocol/voice";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -15,7 +16,7 @@ import {
   type VoiceRefusalReason,
 } from "@opensteer/protocol";
 import { CodexStdioClient, type CodexStdioClientOptions } from "./process.js";
-import { VOICE_AGENT_INSTRUCTIONS, voiceAgentTools } from "./voice-agent.js";
+import { voiceAgentConfiguration } from "./voice-agent.js";
 import { requireObject, requireString, type JsonObject } from "./protocol.js";
 
 export const VOICE_PROMPT =
@@ -34,7 +35,7 @@ export interface CodexVoiceCall {
 export type CodexVoiceInput = Pick<
   HarnessInspectionContext,
   "environment" | "providerState" | "runtimeBoundary" | "signal" | "workingDirectory"
-> & { readonly offer: string; readonly agent: boolean };
+> & { readonly offer: string; readonly agent: boolean; readonly find?: boolean };
 export interface CodexVoiceAdapter extends HarnessAdapter {
   startVoiceCall(input: CodexVoiceInput): Promise<CodexVoiceCall>;
 }
@@ -156,11 +157,13 @@ export async function startCodexVoiceCall(options: {
             const id = message.id;
             const params = message.params;
             const schema =
-              params.tool === "show"
-                ? z.strictObject({ link: z.string().min(1).max(16_000) })
-                : params.tool === "send_to_chat"
-                  ? z.strictObject({ messages: z.number().int().min(1).max(5).default(1) })
-                  : undefined;
+              params.tool === "find" && input.find
+                ? VoiceFindInputSchema
+                : params.tool === "show"
+                  ? z.strictObject({ link: z.string().min(1).max(16_000) })
+                  : params.tool === "send_to_chat"
+                    ? z.strictObject({ messages: z.number().int().min(1).max(5).default(1) })
+                    : undefined;
             const parsed = schema?.safeParse(params.arguments);
             const respond = (ok: boolean, text: string) =>
               client!
@@ -271,12 +274,12 @@ export async function startCodexVoiceCall(options: {
           approvalPolicy: "never",
           sandbox: "read-only",
           ephemeral: true,
-          dynamicTools: input.agent ? voiceAgentTools : [],
+          dynamicTools: input.agent ? voiceAgentConfiguration(input.find === true).tools : [],
           selectedCapabilityRoots: [],
           environments: [],
           runtimeWorkspaceRoots: [],
           baseInstructions: input.agent
-            ? VOICE_AGENT_INSTRUCTIONS
+            ? voiceAgentConfiguration(input.find === true).instructions
             : "You only acknowledge speech and relay messages. Never use tools or do work.",
           developerInstructions: "",
           config: input.agent ? { ...config, model_reasoning_effort: "low" } : config,

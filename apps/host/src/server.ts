@@ -3182,6 +3182,7 @@ export function advertisedCapabilities(
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-v1",
     "voice-agent-v1",
+    "voice-find-v1",
     "thread-titles-v1",
     "task-marks-v1",
     "task-family-v1",

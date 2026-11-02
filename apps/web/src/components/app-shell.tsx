@@ -312,13 +312,20 @@ export function AppShell({
   const voicePlaces = useBrowserTabStrip(hostClient).ordered;
   const voice = useVoiceRuntime(
     hostClient,
-    (target) => {
-      if (target.kind === "back") void routerNavigate(-1);
+    async (target) => {
+      if (target.kind === "back") {
+        if (!(window.history.state?.idx > 0)) return false;
+        await routerNavigate(-1);
+        return true;
+      }
+      const before = nav.address();
       // Settings covers places, so a shown place opens over Chat instead.
-      else if (target.kind === "place")
+      if (target.kind === "place")
         if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
         else nav.showPlace(target.destination);
       else nav.openConversation(target.kind === "chat" ? "/" : nav.threadPath(target.threadId));
+      const after = nav.address();
+      return before.pathname !== after.pathname || before.search !== after.search;
     },
     dictation,
     async () => {

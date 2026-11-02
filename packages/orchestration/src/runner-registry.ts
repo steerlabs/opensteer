@@ -1317,6 +1317,9 @@ export class RunnerRegistry {
       });
     const agentSupported = connection.identity.capabilities.includes("voice-agent-v1");
     const requestedAgent = command.action === "start" && command.agent === true;
+    const requestedFind = command.action === "start" && command.find === true;
+    const findSupported =
+      agentSupported && connection.identity.capabilities.includes("voice-find-v1");
     if (!agentSupported && ["next", "answer", "context"].includes(command.action))
       throw new OpensteerError({
         code: "conflict",
@@ -1330,8 +1333,12 @@ export class RunnerRegistry {
         message: "Update Opensteer on this computer to use voice.",
       });
     if (command.action === "start" && !agentSupported) {
-      const { agent: _agent, ...legacy } = command;
+      const { agent: _agent, find: _find, ...legacy } = command;
       command = legacy;
+    }
+    if (command.action === "start" && (!findSupported || !requestedAgent)) {
+      const { find: _find, ...withoutFind } = command;
+      command = withoutFind;
     }
     const requestId = CorrelationIdSchema.parse(`voice:${randomUUID()}`);
     const pending = deferred<RunnerVoiceResult>();
@@ -1353,7 +1360,13 @@ export class RunnerRegistry {
         "This computer didn't answer the voice request in time.",
       );
       return requestedAgent && result.ok
-        ? { ...result, agent: agentSupported && result.agent === true }
+        ? {
+            ...result,
+            agent: agentSupported && result.agent === true,
+            ...(requestedFind
+              ? { find: findSupported && result.agent === true && result.find === true }
+              : {}),
+          }
         : result;
     } finally {
       connection.pendingVoice.delete(requestId);

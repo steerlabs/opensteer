@@ -2589,7 +2589,7 @@ describe("Runner voice relay", () => {
     harnessInstanceId,
     offer: "private-offer",
   };
-  async function fixture(voice = true, agent = false) {
+  async function fixture(voice = true, agent = false, find = false) {
     const registry = new RunnerRegistry({
       hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
     });
@@ -2600,12 +2600,63 @@ describe("Runner voice relay", () => {
       registry,
       {
         ...identity,
-        capabilities: voice ? ["voice-v1", ...(agent ? ["voice-agent-v1" as const] : [])] : [],
+        capabilities: voice
+          ? [
+              "voice-v1",
+              ...(agent ? ["voice-agent-v1" as const] : []),
+              ...(find ? ["voice-find-v1" as const] : []),
+            ]
+          : [],
       },
       peer,
     );
     return { registry, environmentId, peer };
   }
+  it.each(
+    [false, true].flatMap((client) =>
+      [false, true].flatMap((host) => [false, true].map((runner) => ({ client, host, runner }))),
+    ),
+  )(
+    "negotiates find for client=$client Host=$host Runner=$runner without extending an old strict relay",
+    async ({ client, host, runner }) => {
+      const f = await fixture(true, true, runner);
+      try {
+        const requested = client && host;
+        const pending = f.registry.voice(
+          f.environmentId,
+          userId,
+          { ...command, agent: true, ...(requested ? { find: true as const } : {}) },
+          new AbortController().signal,
+        );
+        const sent = f.peer.messages.at(-1);
+        if (sent?.type !== "host.voice") throw new Error("Voice request missing");
+        expect(sent.command).toEqual({
+          ...command,
+          agent: true,
+          ...(requested && runner ? { find: true } : {}),
+        });
+        await f.registry.handle(f.peer, {
+          ...fenceOf(f.peer),
+          type: "runner.voice",
+          requestId: sent.requestId,
+          result: {
+            ok: true,
+            answer: "answer",
+            agent: true,
+            ...(requested && runner ? { find: true } : {}),
+          },
+        });
+        expect(await pending).toEqual({
+          ok: true,
+          answer: "answer",
+          agent: true,
+          ...(requested ? { find: runner } : {}),
+        });
+      } finally {
+        await f.registry.close();
+      }
+    },
+  );
   it.each([false, true])(
     "negotiates agent support %s without sending new fields to old Runners",
     async (agent) => {

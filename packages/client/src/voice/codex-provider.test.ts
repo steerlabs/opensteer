@@ -50,7 +50,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup(agent = false) {
+function setup(agent = false, find = false) {
   const peer = new FakePeer();
   const track = { enabled: true, stop: vi.fn() };
   const stream = {
@@ -82,6 +82,7 @@ function setup(agent = false) {
     media,
     rpc,
     agent,
+    find,
     environmentId: "environment",
     harnessInstanceId: "account",
     createId: () => voiceTestId,
@@ -108,6 +109,27 @@ function refusal(reason: string) {
 }
 
 describe("Codex voice provider", () => {
+  it.each([false, true].flatMap((host) => [false, true].map((runner) => ({ host, runner }))))(
+    "negotiates find with Host=$host Runner=$runner",
+    async ({ host, runner }) => {
+      const f = setup(true, host);
+      f.rpc["voice.start"].mockResolvedValue({
+        ok: true,
+        data: { answer: "answer", agent: true, ...(host ? { find: runner } : {}) },
+      });
+      const call = await f.open();
+      expect(f.rpc["voice.start"].mock.calls[0]![0]).toEqual({
+        environmentId: "environment",
+        harnessInstanceId: "account",
+        sessionId: voiceTestId,
+        offer: "offer",
+        agent: true,
+        ...(host ? { find: true } : {}),
+      });
+      expect(call.find).toBe(host && runner);
+      await call.close();
+    },
+  );
   it("negotiates sendrecv audio, plays remote audio, receives V3, meters, mutes, renews and closes without any channel writes", async () => {
     const f = setup();
     const call = await f.open();

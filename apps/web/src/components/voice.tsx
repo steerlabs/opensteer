@@ -43,7 +43,7 @@ export const VoiceContext = createContext<VoiceControls | null>(null);
  */
 export function useVoiceRuntime(
   hostClient: HostClient,
-  navigate: (target: VoiceTarget) => void,
+  navigate: (target: VoiceTarget) => boolean | Promise<boolean>,
   dictation: DictationController | null,
   places?: VoiceControllerInput["places"],
   currentView?: VoiceControllerInput["currentView"],

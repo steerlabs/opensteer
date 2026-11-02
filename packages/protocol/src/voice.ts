@@ -42,11 +42,15 @@ export const VoiceStartInputSchema = z.strictObject({
    * the client sends every finished utterance to Chat itself.
    */
   agent: z.literal(true).optional(),
+  /** Sent only to a Host advertising `voice-find-v1`, together with `agent`. */
+  find: z.literal(true).optional(),
 });
 export const VoiceStartResultSchema = z.object({
   answer: VoiceSdpSchema,
   /** True when the call's agent runs; absent or false means a legacy call. */
   agent: z.boolean().optional(),
+  /** Included only when find was requested; true when the Runner installed it. */
+  find: z.boolean().optional(),
 });
 export const VoiceRenewInputSchema = z.strictObject(voiceCall);
 
@@ -118,3 +122,9 @@ export const VoiceRefusalReasonSchema = z.enum([
   "voice-ended",
 ]);
 export type VoiceRefusalReason = z.infer<typeof VoiceRefusalReasonSchema>;
+
+/** A page size bounds answers, never the inventory the voice can search. */
+export const VoiceFindInputSchema = z.strictObject({
+  query: z.string().trim().max(500),
+  offset: z.number().int().nonnegative().safe().default(0),
+});

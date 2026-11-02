@@ -35,9 +35,10 @@ async function fixture(scenario = "happy") {
   }).create({ instanceId: createId("harnessInstance"), config: {}, sourceId: "openai" });
   if (!isCodexVoiceAdapter(adapter)) throw new Error("Codex adapter must support voice");
   const root = join(directory, "voice");
-  const open = (agent = false) =>
+  const open = (agent = false, find = false) =>
     adapter.startVoiceCall({
       agent,
+      find,
       offer: "private-offer",
       signal: new AbortController().signal,
       environment: {
@@ -67,6 +68,31 @@ async function fixture(scenario = "happy") {
   };
 }
 describe("Codex voice calls", () => {
+  it.each([false, true])("installs and validates find only when negotiated: %s", async (find) => {
+    const f = await fixture("voice-agent");
+    const call = await f.open(true, find);
+    calls.push(call);
+    await call.say("find");
+    if (find) {
+      const tool = await call.next(new AbortController().signal);
+      expect(tool).toMatchObject({ tool: "find", input: { query: "gmail", offset: 5 } });
+      await call.answerCall(tool!.id, true, "1 match on this device.");
+    } else {
+      await vi.waitFor(async () =>
+        expect(
+          (await f.capture()).some((record) =>
+            JSON.stringify(record).includes("Unknown tool or invalid input"),
+          ),
+        ).toBe(true),
+      );
+    }
+    await call.stop();
+    const start = (await f.capture()).find((r) => r.method === "thread/start")!;
+    expect(
+      (start.params as { dynamicTools: { name: string }[] }).dynamicTools.map((tool) => tool.name),
+    ).toEqual(["show", "send_to_chat", ...(find ? ["find"] : [])]);
+    await f.adapter.close();
+  });
   it("confines the agent, validates tools, redelivers, expires and drains calls", async () => {
     const f = await fixture("voice-agent");
     const call = await f.open(true);

@@ -19,6 +19,7 @@ export interface CodexVoiceProviderInput extends VoiceTimers {
   readonly rpc: Pick<HostApiClient, "voice.start" | "voice.renew" | "voice.say" | "voice.stop">;
   readonly media: VoiceMediaPort;
   readonly agent?: boolean;
+  readonly find?: boolean;
   readonly environmentId: string;
   readonly harnessInstanceId: string;
   /** Fresh lowercase UUID v4 for each call. */
@@ -317,7 +318,13 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         if (!sdp) throw new VoiceStartError("connection-failed");
         hostMayHoldCall = true;
         const starting = input.rpc["voice.start"](
-          { ...address, offer: sdp, ...(input.agent ? { agent: true as const } : {}) },
+          {
+            ...address,
+            offer: sdp,
+            ...(input.agent
+              ? { agent: true as const, ...(input.find ? { find: true as const } : {}) }
+              : {}),
+          },
           { signal },
         );
         // Stop once more after a late admission, in case the first stop overtook start.
@@ -339,6 +346,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         }, 100);
         return {
           agent: result.data.agent === true,
+          find: input.find === true && result.data.agent === true && result.data.find === true,
           async say(text) {
             if (ended) throw new VoiceStartError("connection-failed");
             const result = await input.rpc["voice.say"]({ ...address, text });

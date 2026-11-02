@@ -1,6 +1,10 @@
 import type { PlaceContentPart } from "@opensteer/core";
 import { chatExecutionSelection } from "../host/model-catalog.js";
-import { VoiceSessionIdSchema, type VoiceToolCall } from "@opensteer/protocol/voice";
+import {
+  VoiceFindInputSchema,
+  VoiceSessionIdSchema,
+  type VoiceToolCall,
+} from "@opensteer/protocol/voice";
 import { ClientOperationError, classifyClientFailure } from "../connections/operation-error.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { PendingSendCommand } from "../host/pending-send.js";
@@ -20,7 +24,7 @@ import {
   type VoiceSnapshot,
   type VoiceTarget,
 } from "./contract.js";
-import { VoiceContextLinks, type VoiceView } from "./context.js";
+import { VoiceContextLinks, type VoiceView, type VoiceWorkingPlace } from "./context.js";
 import { VoiceSpeaker } from "./speaker.js";
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
 
@@ -107,7 +111,9 @@ function notice(kind: VoiceNoticeKind): VoiceNotice {
 export interface VoiceControllerInput extends VoiceTimers {
   readonly hostClient: HostClient;
   readonly media: VoiceMediaPort | null;
-  readonly navigate: (target: VoiceTarget) => void;
+  /** True only when the navigation was applied; false leaves the screen unchanged. */
+  readonly navigate: (target: VoiceTarget) => boolean | Promise<boolean>;
+  readonly runPlace?: (runId: string) => VoiceWorkingPlace | null;
   readonly createId: () => string;
   readonly currentView?: () => VoiceView;
   readonly places?: () => Promise<readonly PlaceContentPart[]>;
@@ -236,6 +242,7 @@ export class VoiceController {
         ...account,
         rpc: this.#input.hostClient.rpc,
         agent: baseline.voiceAgentAvailable === true,
+        find: baseline.voiceFindAvailable === true,
         media,
         createId: () => session.id,
       });
@@ -483,6 +490,10 @@ export class VoiceController {
     const text = session.links.build(
       this.#input.hostClient.getSnapshot(),
       this.#input.currentView?.(),
+      {
+        find: session.call?.find === true,
+        ...(this.#input.runPlace ? { runPlace: this.#input.runPlace } : {}),
+      },
     );
     if (text === session.contextDesired) return;
     session.contextDesired = text;
@@ -622,10 +633,25 @@ export class VoiceController {
           call.input.link,
           this.#input.hostClient.getSnapshot(),
         );
-        if (!resolved) return { ok: false, text: "That isn't open any more." };
-        this.#input.navigate(resolved.target);
+        if (!resolved) return { ok: false, text: "That isn't available on this device now." };
+        if (!(await this.#input.navigate(resolved.target)))
+          return { ok: false, text: "The screen did not change on this device." };
+        if (this.#session !== session) return { ok: false, text: "The call ended." };
         this.refreshContext(true);
         return { ok: true, text: `Showing ${resolved.title.slice(0, 180)}.` };
+      }
+      if (call.tool === "find" && session.call?.find) {
+        const input = VoiceFindInputSchema.safeParse(call.input);
+        if (!input.success)
+          return { ok: false, text: "Use a search query and a nonnegative integer offset." };
+        return {
+          ok: true,
+          text: session.links.find(
+            this.#input.hostClient.getSnapshot(),
+            input.data.query,
+            input.data.offset,
+          ).text,
+        };
       }
       if (call.tool === "send_to_chat") {
         const count = call.input.messages;
