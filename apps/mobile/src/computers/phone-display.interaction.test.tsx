@@ -237,14 +237,25 @@ async function setup(
     subscribeLifecycle: () => () => undefined,
     connectComputerDisplay: connect,
     retainComputerView: () => ({ release: () => undefined }),
-    listApprovedComputerApps: async () => [
-      { machineId: "machine", target: { kind: "phone", display: "main" } },
-    ],
+    listApprovedComputerApps: vi.fn(async () => [
+      {
+        machineId: "machine",
+        target: phone
+          ? { kind: "phone", display: "main" }
+          : {
+              kind: "app",
+              app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+            },
+      },
+    ]),
     openComputerView: vi.fn(async () => ({
       viewId: "new-owner",
       generation: 2,
       machineId: "machine",
-      target: { kind: "phone", display: "main" },
+      target: phone
+        ? { kind: "phone", display: "main" }
+        : { kind: "app", app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null } },
+      ...(phone ? {} : { window: { id: 42, title: "Shopping" } }),
     })),
   } as unknown as HostClient;
   const pool = sharedDisplayStreams(client);
@@ -299,6 +310,7 @@ async function setup(
             active={active}
             hostClient={client}
             viewId="owner-view"
+            windowId={phone ? undefined : 42}
             generation={1}
             machineId="machine"
             appKey={phone ? null : "com.apple.notes"}
@@ -926,4 +938,38 @@ it("reopens an ended phone owner view through the explicit open path", async () 
       generation: 2,
     },
   });
+});
+
+it("reopens an ended Mac view by app name and the same window, replacing its route", async () => {
+  const { endOwner, render, client } = await setup(false, "android", true, true, "owner");
+  endOwner();
+  await render();
+  await press("Reopen Notes");
+  expect(client.openComputerView).toHaveBeenCalledWith("machine", {
+    kind: "app",
+    app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+    window: 42,
+  });
+  expect(state.dispatch).toHaveBeenLastCalledWith({
+    name: "WorkspaceBrowser",
+    params: {
+      deploymentId: "deployment",
+      scope: "workspace",
+      appKey: "com.apple.notes",
+      machineId: "machine",
+      viewId: "new-owner",
+      generation: 2,
+      windowId: 42,
+    },
+  });
+});
+
+it("explains when the ended Mac app is no longer approved", async () => {
+  const { endOwner, render, client } = await setup(false, "android", true, true, "owner");
+  vi.mocked(client.listApprovedComputerApps).mockResolvedValue([]);
+  endOwner();
+  await render();
+  await press("Reopen Notes");
+  expect(container.textContent).toContain("This app is no longer approved for viewing.");
+  expect(client.openComputerView).not.toHaveBeenCalled();
 });

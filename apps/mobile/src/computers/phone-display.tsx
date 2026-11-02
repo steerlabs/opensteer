@@ -603,8 +603,8 @@ export function ComputerOwnerView(props: {
   const machineName = machine?.name ?? (phone ? "Your phone" : "Your Mac");
   const label = phone
     ? machineName
-    : current?.target.kind === "app"
-      ? current.target.app.displayName
+    : view?.target.kind === "app"
+      ? view.target.app.displayName
       : "This app";
   useSurfaceHeader({
     acting: false,
