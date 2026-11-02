@@ -833,9 +833,16 @@ export function incomingTranscriptMessages(
   // A turn's intermediate messages are inside its steps. Only its reply is
   // a message in the conversation, even after that turn has finished.
   const messages = conversation
-    ? groupTranscriptEntries(entries).flatMap((group) =>
+    ? conversationRows(groupTranscriptEntries(entries), {
+        live: false,
+        atComputer: () => false,
+      }).flatMap(({ group }) =>
+        // An automatic input is never a message in a conversation, whichever
+        // Run (if any) it joined: the Host does not count it unread either.
         group.kind === "message"
-          ? [group.entry]
+          ? group.entry.messageKind === "input" && group.entry.author.kind !== "human"
+            ? []
+            : [group.entry]
           : group.kind === "turn" && group.turn.reply !== null
             ? [group.turn.reply]
             : [],

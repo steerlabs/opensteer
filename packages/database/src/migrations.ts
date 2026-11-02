@@ -1,3 +1,5 @@
+import { conversationUnreadPredicate } from "./message-visibility.js";
+import { quietRunPredicate } from "./run-visibility.js";
 import {
   ContentPartSchema,
   harnessDriverLabel,
@@ -4673,6 +4675,7 @@ export function migrationProvider() {
         "0123_thread_asked_at": threadAskedAtMigration,
         "0124_browser_native_only": browserNativeOnlyMigration,
         "0125_run_place_events": runPlaceEventsMigration,
+        "0126_run_visibility": runVisibilityMigration,
       };
     },
   };
@@ -6556,6 +6559,32 @@ export const browserNativeOnlyMigration: Migration = {
       alter table browser_sessions drop constraint browser_sessions_profile_lease_check,
         drop constraint browser_sessions_lease_generation_check,
         drop column lease_token_hash, drop column lease_generation, drop column profile_lease_expires_at;
+    `.execute(database);
+  },
+};
+
+export const runVisibilityMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table runs add column person_waited boolean not null default false,
+        add column quiet boolean not null default false;
+      create index messages_conversation_unread on messages (thread_id, sequence)
+        where ${conversationUnreadPredicate()};
+      create index messages_run_replies on messages (run_id) where kind in ('assistant', 'run-result');
+      create index delegations_parent_run on delegations (parent_run_id) where parent_run_id is not null;
+      create index runs_seed_input on runs (seed_input_id);
+      with waited as (
+        select runs.id from runs join messages seed on seed.id = runs.seed_input_id
+          where seed.author->>'kind' = 'human'
+        union select input.run_id from messages input
+          where input.kind = 'input' and input.author->>'kind' = 'human' and input.run_id is not null
+        union select event.run_id from workspace_events event
+          where event.type in ('run.started', 'run.status', 'run.restarted', 'run.phase',
+            'run.completed', 'run.failed', 'run.interrupted')
+          and event.data @> '{"personWaiting":true}'::jsonb and event.run_id is not null
+      ) update runs set person_waited = true from waited where waited.id = runs.id;
+      update runs set quiet = ${quietRunPredicate}
+        where status in ('completed', 'failed', 'interrupted');
     `.execute(database);
   },
 };
