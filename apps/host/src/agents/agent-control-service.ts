@@ -31,6 +31,7 @@ import {
   AgentControlRequestSchema,
   AgentControlResponseSchema,
   agentWorkspaceView,
+  computerAppIdentityKey,
   type AgentControlRequest,
   type AgentControlResponse,
 } from "@opensteer/protocol";
@@ -41,6 +42,7 @@ import type { BrowserService } from "../browser/browser-service.js";
 import type { BrowserSourceService } from "../browser/browser-source-service.js";
 import type { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import type { PlaceContextService } from "../computer-use/place-context-service.js";
+import type { ComputerUseService } from "../computer-use/computer-use-service.js";
 import type { SignedTokenService } from "../identity/host-keys.js";
 import type { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
 import { callerWorkspaceStorage } from "../workspace/workspace-service.js";
@@ -101,6 +103,8 @@ export class AgentControlTokenService extends RunCapabilityTokenService<"openste
 }
 
 export class AgentControlService {
+  readonly #computerUse:
+    Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay"> | undefined;
   readonly #personShow:
     | ((userId: AgentControlRunScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
@@ -110,6 +114,7 @@ export class AgentControlService {
   readonly #browser: Pick<
     BrowserService,
     | "createProfile"
+    | "drainRunPlaces"
     | "closeAgentSession"
     | "listAgentSessions"
     | "listGrantedProfiles"
@@ -135,6 +140,7 @@ export class AgentControlService {
   readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
+    readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (
       userId: AgentControlRunScope["requestedBy"],
       message: PersonShowMessage,
@@ -145,6 +151,7 @@ export class AgentControlService {
     readonly browser: Pick<
       BrowserService,
       | "createProfile"
+      | "drainRunPlaces"
       | "closeAgentSession"
       | "listAgentSessions"
       | "listGrantedProfiles"
@@ -169,6 +176,7 @@ export class AgentControlService {
     readonly workspaceWake?: AgentWorkspaceWaker;
     readonly workspaces: AgentWorkspaceCreator;
   }) {
+    this.#computerUse = options.computerUse;
     this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
@@ -247,7 +255,39 @@ export class AgentControlService {
 
     if (request.type === "person.show") {
       if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
-      if ("tabId" in request.target) {
+      let target: PersonShowMessage["target"];
+      if ("current" in request.target) {
+        await this.#browser.drainRunPlaces(claims.runId);
+        const current = await this.#store.latestRunPlace(claims.runId);
+        if (!current) throw badRequest("This Run has no current place to show.");
+        target = { place: current.data.place };
+        const place = current.data.place;
+        if (place.kind !== "browser") {
+          const session = this.#computerUse
+            ?.sessionsForRunner(place.machineId)
+            .find(
+              (session) =>
+                session.runId === claims.runId &&
+                (place.kind === "phone"
+                  ? session.display && place.display === "main"
+                  : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
+            );
+          if (!session || !this.#computerUse)
+            throw forbidden("This Run's current place is unavailable.");
+          await this.#computerUse.authorizeDisplay(
+            session.sessionId,
+            claims.requestedBy,
+            place.kind === "app" ? place.appKey : undefined,
+          );
+        }
+      } else target = request.target;
+      const tabId =
+        "tabId" in target
+          ? target.tabId
+          : "place" in target && target.place.kind === "browser"
+            ? target.place.surfaceId
+            : null;
+      if (tabId !== null) {
         if (!this.#browserTabs) throw badRequest("Saved tabs are unavailable on this Host.");
         await this.#browserTabs.authorizeShow(
           {
@@ -257,15 +297,15 @@ export class AgentControlService {
             threadId: claims.threadId,
             agentBindingId: `run:${claims.runId}`,
           },
-          request.target.tabId,
+          tabId,
         );
-      } else {
-        const target = await this.#store.getThreadForOwner(
-          request.target.threadId,
+      } else if ("threadId" in target) {
+        const targetThread = await this.#store.getThreadForOwner(
+          target.threadId,
           claims.requestedBy,
         );
-        if (!target) throw forbidden("Thread is unavailable to this user");
-        this.#assertThreadScope(currentThread, target);
+        if (!targetThread) throw forbidden("Thread is unavailable to this user");
+        this.#assertThreadScope(currentThread, targetThread);
       }
       const admission = await this.#admit(claims, request);
       const connectedDevices = admission.wasDuplicate
@@ -274,7 +314,8 @@ export class AgentControlService {
             type: "host.show",
             workspaceId: claims.workspaceId,
             threadId: claims.threadId,
-            target: request.target,
+            runId: claims.runId,
+            target,
           });
       return AgentControlResponseSchema.parse({
         type: "person.show.result",

@@ -6,6 +6,7 @@ import {
   HarnessIdSchema,
   ModelSelectionSchema,
   provisionalThreadTitle,
+  OpensteerError,
   ThreadAccessModeSchema,
   type AgentEvent,
   type Message,
@@ -25,6 +26,8 @@ import {
   BrowserSurfaceIdSchema,
   createBrowserSessionId,
   HarnessInputSchema,
+  ComputerUseSessionSummarySchema,
+  mintComputerUseSessionId,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
@@ -83,7 +86,18 @@ integration("agent-to-agent messaging round trip", () => {
     onWorkspaceEvent: vi.fn(),
     store,
   });
+  const computerUse = {
+    sessionsForRunner: vi.fn<
+      import("../computer-use/computer-use-service.js").ComputerUseService["sessionsForRunner"]
+    >(() => []),
+    authorizeDisplay:
+      vi.fn<
+        import("../computer-use/computer-use-service.js").ComputerUseService["authorizeDisplay"]
+      >(),
+  };
+  const drainRunPlaces = vi.fn(async (_runId: Run["id"]) => undefined);
   const service = new AgentControlService({
+    computerUse,
     browserTabs,
     personShow: (userId, message) => realtime.showToPerson(userId, message),
     browserSources: {
@@ -97,6 +111,7 @@ integration("agent-to-agent messaging round trip", () => {
       },
     },
     browser: {
+      drainRunPlaces,
       createProfile: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
@@ -233,8 +248,10 @@ integration("agent-to-agent messaging round trip", () => {
       [],
     );
     await tabs.suspend(sessionId);
-    const show = (token: string, target: { tabId: string } | { threadId: string }) =>
-      service.handle(token, { type: "person.show", requestId: randomUUID(), target });
+    const show = (
+      token: string,
+      target: { tabId: string } | { threadId: string } | { current: true },
+    ) => service.handle(token, { type: "person.show", requestId: randomUUID(), target });
     await expect(show(f.tokenA, { tabId })).resolves.toMatchObject({
       type: "person.show.result",
       status: "no-device-connected",
@@ -313,6 +330,7 @@ integration("agent-to-agent messaging round trip", () => {
           type: "host.show",
           workspaceId: f.threadA.workspaceId,
           threadId: f.threadA.id,
+          runId: f.runA.id,
           target: { tabId },
         },
       ]);
@@ -322,6 +340,26 @@ integration("agent-to-agent messaging round trip", () => {
         connectedDevices: 0,
       });
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
+      await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
+        code: "bad_request",
+        message: "This Run has no current place to show.",
+      });
+      const place = { kind: "browser" as const, sessionId, surfaceId: tabId };
+      drainRunPlaces.mockImplementationOnce(async () => {
+        await store.recordRunPlace({
+          runId: f.runA.id,
+          bindingGeneration: 1,
+          data: { place, title: "Gmail", site: "https://mail.google.com" },
+        });
+      });
+      await expect(show(f.tokenA, { current: true })).resolves.toMatchObject({
+        status: "sent-unconfirmed",
+      });
+      expect(frames.at(-1)).toMatchObject({
+        type: "host.show",
+        runId: f.runA.id,
+        target: { place },
+      });
       release();
       frames.length = 0;
       release = await opted();
@@ -332,7 +370,100 @@ integration("agent-to-agent messaging round trip", () => {
     }
     await tabs.close(f.userId, tabId);
     await expect(show(f.tokenA, { tabId })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
   });
+
+  it.each(["app", "phone"] as const)(
+    "shows the Run's newest %s place through its authorized session",
+    async (kind) => {
+      const f = await createMessagingFixture();
+      const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
+      const session = ComputerUseSessionSummarySchema.parse({
+        sessionId: mintComputerUseSessionId(),
+        runId: f.runA.id,
+        threadId: f.threadA.id,
+        threadTitle: "Work",
+        openedAt: new Date().toISOString(),
+        actionCount: 1,
+        apps: kind === "app" ? [app] : [],
+        display: kind === "phone",
+      });
+      computerUse.sessionsForRunner.mockReturnValue([session]);
+      computerUse.authorizeDisplay.mockResolvedValue(f.runnerId);
+      const place =
+        kind === "app"
+          ? { kind, machineId: f.runnerId, appKey: "com.apple.notes" }
+          : { kind, machineId: f.runnerId, display: "main" };
+      await store.recordRunPlace({
+        runId: f.runA.id,
+        bindingGeneration: 1,
+        data: {
+          place: { kind: "app", machineId: f.runnerId, appKey: "earlier-app" },
+          title: "Earlier",
+          site: null,
+        },
+      });
+      await store.recordRunPlace({
+        runId: f.runA.id,
+        bindingGeneration: 1,
+        data: { place, title: kind, site: null },
+      });
+      const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
+      const release = await realtime.subscribe({
+        afterSequence: SequenceSchema.parse("0"),
+        userId: f.userId,
+        workspaceId: f.threadA.workspaceId,
+        personShow: "accept",
+        sink: {
+          id: randomUUID(),
+          send: async (message) => {
+            frames.push(message);
+          },
+          close: vi.fn(),
+        },
+      });
+      const show = () =>
+        service.handle(f.tokenA, {
+          type: "person.show",
+          requestId: randomUUID(),
+          target: { current: true },
+        });
+      try {
+        await expect(show()).resolves.toMatchObject({
+          status: "sent-unconfirmed",
+          connectedDevices: 1,
+        });
+        expect(frames.filter((message) => message.type === "host.show")).toEqual([
+          {
+            type: "host.show",
+            workspaceId: f.threadA.workspaceId,
+            threadId: f.threadA.id,
+            runId: f.runA.id,
+            target: { place },
+          },
+        ]);
+        expect(computerUse.authorizeDisplay).toHaveBeenLastCalledWith(
+          session.sessionId,
+          f.userId,
+          kind === "app" ? "com.apple.notes" : undefined,
+        );
+        computerUse.authorizeDisplay.mockRejectedValueOnce(
+          new OpensteerError({
+            code: "forbidden",
+            message: "Access revoked",
+          }),
+        );
+        await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+        computerUse.sessionsForRunner.mockReturnValue([{ ...session, runId: createId("run") }]);
+        await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+        expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
+      } finally {
+        release();
+        computerUse.sessionsForRunner.mockReset();
+        computerUse.authorizeDisplay.mockReset();
+      }
+    },
+  );
 
   it("searches asleep saved tabs before pagination and reports matching fields", async () => {
     const f = await createMessagingFixture();

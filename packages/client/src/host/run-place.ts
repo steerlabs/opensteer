@@ -80,7 +80,7 @@ export class RunPlaceStore {
 
 /** A viewing binding never decides whether the Run's place exists. */
 export function runPlaceDestination(
-  entry: { readonly runId: string; readonly data: EventData<"place.entered"> },
+  entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
   snapshot: { readonly machines: readonly MachineSummary[] },
 ): SurfaceDestination | null {
   const place = entry.data.place;

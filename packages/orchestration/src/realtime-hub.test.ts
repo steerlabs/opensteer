@@ -46,6 +46,7 @@ describe("snapshot-before-live synchronization", () => {
     try {
       const message = {
         type: "host.show" as const,
+        runId: createId("run"),
         workspaceId,
         threadId: createId("thread"),
         target: { tabId: BrowserSurfaceIdSchema.parse("gmail") },

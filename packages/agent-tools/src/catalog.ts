@@ -403,7 +403,7 @@ const definitions = [
     id: "person.show",
     name: "person_show",
     description:
-      "Send the person a request to open a saved tab or Thread while they are viewing this conversation. Use the tabId from browser_tab_read or a threadId. Returns connected-device delivery counts, without confirmation that they saw it.",
+      "Ask connected devices viewing this conversation to open a saved tab, Thread, or the place this Run is working in. Use {current: true} for 'show me what you're doing': the Host resolves this Run's latest tab, Mac app or Agent Phone; it fails if this Run has no current place. For a specific saved tab use tabId from browser_tab_read; for a Thread use threadId from thread_list. Returns delivery counts, without confirmation of navigation or viewing.",
     inputSchema: z.strictObject({ target: PersonShowTargetSchema }),
     annotations: {
       title: "Show Person",

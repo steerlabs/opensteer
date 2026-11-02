@@ -100,6 +100,19 @@ const expectedTools = {
 } as const;
 
 describe("agent tool catalog", () => {
+  it("accepts the current Run place without caller-supplied native identities", () => {
+    const schema = tool("main", "person_show").inputSchema;
+    expect(schema.parse({ target: { current: true } })).toEqual({ target: { current: true } });
+    expect(schema.safeParse({ target: { current: false } }).success).toBe(false);
+    expect(schema.safeParse({ target: { current: true, tabId: "another-tab" } }).success).toBe(
+      false,
+    );
+    expect(
+      schema.safeParse({
+        target: { place: { kind: "phone", machineId: "arbitrary", display: "main" } },
+      }).success,
+    ).toBe(false);
+  });
   it("exposes one exact tool list for each capability profile", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       expect(toolsForCapabilityProfile(profileId).map(({ name }) => name)).toEqual(

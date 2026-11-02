@@ -4,7 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
-import { PersonShowMessageSchema } from "@opensteer/protocol";
+import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
+import { createId } from "@opensteer/core";
 import { VoiceProvider } from "./context.js";
 
 const state = vi.hoisted(() => ({
@@ -84,12 +85,67 @@ async function mount() {
   );
   const message = PersonShowMessageSchema.parse({
     type: "host.show",
+    runId: createId("run"),
     workspaceId: source.workspaceId,
     threadId: source.id,
     target: { threadId: target.id },
   });
   return { host: state.host, snapshot, source, target, message };
 }
+
+it.each(["app", "phone"] as const)(
+  "opens the Run's current %s through shared navigation",
+  async (kind) => {
+    const f = await mount();
+    const machine = f.snapshot.machines.find((machine) =>
+      machine.computerUse?.sessions.some((session) => session.display === (kind === "phone")),
+    )!;
+    const session = machine.computerUse!.sessions.find(
+      (session) => session.display === (kind === "phone"),
+    )!;
+    const place =
+      kind === "app"
+        ? { kind, machineId: machine.id, appKey: computerAppIdentityKey(session.apps[0]!) }
+        : { kind, machineId: machine.id, display: "main" };
+    await act(async () =>
+      f.host.receivePersonShow(
+        PersonShowMessageSchema.parse({
+          ...f.message,
+          runId: session.runId,
+          target: { place },
+        }),
+      ),
+    );
+    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+      type: "PUSH",
+      payload: {
+        name: "WorkspaceBrowser",
+        params: {
+          deploymentId: f.snapshot.deploymentId,
+          scope: "workspace",
+          machineId: machine.id,
+          computerSessionId: session.sessionId,
+          ...(kind === "app"
+            ? { appKey: "appKey" in place ? place.appKey : null }
+            : { phone: true }),
+        },
+      },
+    });
+  },
+);
+
+it("routes an authorized unloaded Thread through the existing Thread screen", async () => {
+  const f = await mount();
+  const threadId = createId("thread");
+  await act(async () => f.host.receivePersonShow({ ...f.message, target: { threadId } }));
+  expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+    type: "PUSH",
+    payload: {
+      name: "Thread",
+      params: { deploymentId: f.snapshot.deploymentId, threadId },
+    },
+  });
+});
 
 it.each(["Home", "Thread"])(
   "opens the exact requested tab from the active %s conversation",

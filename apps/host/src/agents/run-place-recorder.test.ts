@@ -89,6 +89,45 @@ describe("per-Run place recording", () => {
     expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser]);
   });
 
+  it("records an earlier native success when the newer native operation fails", async () => {
+    const f = fixture();
+    const complete = f.recorder.begin(runId, 1);
+    f.recorder.begin(runId, 1); // The newer operation fails without entering a place.
+    complete(app);
+    await f.drain();
+    expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([app]);
+  });
+
+  it("keeps the newest successful admission when native operations finish out of order", async () => {
+    const f = fixture();
+    const earlier = f.recorder.begin(runId, 1);
+    const newer = f.recorder.begin(runId, 1);
+    newer(phone);
+    earlier(app);
+    await f.drain();
+    expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([phone]);
+  });
+
+  it("keeps browser/native ordering when an intervening native operation fails", async () => {
+    const f = fixture();
+    f.recorder.enter(runId, 1, browser);
+    const complete = f.recorder.begin(runId, 1);
+    f.recorder.begin(runId, 1);
+    complete(app);
+    f.recorder.enter(runId, 1, browser);
+    await f.drain();
+    expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser, app, browser]);
+  });
+
+  it("fences an old generation even when the new generation's operation fails", async () => {
+    const f = fixture();
+    const complete = f.recorder.begin(runId, 1);
+    f.recorder.begin(runId, 2);
+    complete(app);
+    await f.drain();
+    expect(f.write).not.toHaveBeenCalled();
+  });
+
   it("does not reuse the place cache across binding generations or after release", async () => {
     const f = fixture();
     f.recorder.enter(runId, 1, browser);

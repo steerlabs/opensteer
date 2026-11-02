@@ -43,6 +43,7 @@ describeStore("durable Run place entries", (it) => {
     expect(await new OpensteerStore(database).recordRunPlace(input)).toBeUndefined();
     const second = await store.recordRunPlace({ ...input, data: { ...input.data, place: b } });
     const third = await store.recordRunPlace(input);
+    expect(await new OpensteerStore(database).latestRunPlace(f.run.id)).toEqual(third);
     expect([first, second, third].every(Boolean)).toBe(true);
     expect(BigInt(first!.sequence)).toBeLessThan(BigInt(second!.sequence));
     expect(BigInt(second!.sequence)).toBeLessThan(BigInt(third!.sequence));

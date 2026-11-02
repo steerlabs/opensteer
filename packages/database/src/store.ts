@@ -811,6 +811,10 @@ export class OpensteerStore {
     return browserSessionStore.recordRunPlace(this.#database, input);
   }
 
+  latestRunPlace(runId: RunId) {
+    return browserSessionStore.latestRunPlace(this.#database, runId);
+  }
+
   async recordAgentBrowserUse(input: {
     readonly agentBindingId: string;
     readonly ownerId: UserId;

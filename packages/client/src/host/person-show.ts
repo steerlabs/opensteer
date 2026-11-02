@@ -2,6 +2,7 @@ import type { PersonShowMessage } from "@opensteer/protocol";
 import type { HostSnapshot } from "./client.js";
 import { placeList } from "./places.js";
 import { heldThread } from "./task-list.js";
+import { runPlaceDestination } from "./run-place.js";
 import type { VoiceTarget } from "../voice/contract.js";
 
 /** The platform reports the conversation actually visible now; covered routes name none. */
@@ -21,7 +22,6 @@ export function handlePersonShow(
   if (!source || source.workspaceId !== message.workspaceId) return false;
   const target = message.target;
   if ("threadId" in target) {
-    if (!heldThread(snapshot, target.threadId)) return false;
     return (
       navigate(
         target.threadId === snapshot.homeThreadId
@@ -29,6 +29,10 @@ export function handlePersonShow(
           : { kind: "thread", threadId: target.threadId },
       ) !== false
     );
+  }
+  if ("place" in target) {
+    const destination = runPlaceDestination({ runId: message.runId, data: target }, snapshot);
+    return destination !== null && navigate({ kind: "place", destination }) !== false;
   }
   const place = placeList(snapshot).find(
     (place) => place.destination.kind === "browser" && place.destination.tabId === target.tabId,

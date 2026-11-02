@@ -14034,6 +14034,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     const release = f.client.subscribePersonShow(received);
     const message = {
       type: "host.show" as const,
+      runId: createId("run"),
       workspaceId: f.workspace.id,
       threadId: f.thread.id,
       target: { threadId: f.other.id },

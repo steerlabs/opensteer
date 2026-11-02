@@ -1933,6 +1933,7 @@ function makeService(options: {
       browser: {
         createProfile: options.browser?.createProfile ?? unexpectedBrowserRequest,
         closeAgentSession: options.browser?.closeAgentSession ?? unexpectedBrowserRequest,
+        drainRunPlaces: async () => undefined,
         listAgentSessions: options.browser?.listAgentSessions ?? unexpectedBrowserRequest,
         listGrantedProfiles: options.browser?.listGrantedProfiles ?? unexpectedBrowserRequest,
         openAgentSession: options.browser?.openAgentSession ?? unexpectedBrowserRequest,

@@ -3,7 +3,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   IsoDateTimeSchema,
-  PersonShowTargetSchema,
+  BrowserSurfaceIdSchema,
   WorkspaceIdSchema,
 } from "@opensteer/core";
 
@@ -11,7 +11,12 @@ export const PersonShowMessageSchema = z.object({
   type: z.literal("host.show"),
   workspaceId: WorkspaceIdSchema,
   threadId: ThreadIdSchema,
-  target: PersonShowTargetSchema,
+  runId: RunIdSchema,
+  target: z.union([
+    z.object({ tabId: BrowserSurfaceIdSchema }),
+    z.object({ threadId: ThreadIdSchema }),
+    z.object({ place: PlaceIdentityViewSchema }),
+  ]),
 });
 export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;
 

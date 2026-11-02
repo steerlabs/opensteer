@@ -58,6 +58,7 @@ import {
   findCommandByIdempotency,
   idempotencyConflict,
   jsonValue,
+  eventFromRow,
   lockCommandIdempotency,
   principalIdForUser,
 } from "./store-primitives.js";
@@ -2120,6 +2121,20 @@ export async function interruptPendingBrowserTabOpens(
     database,
     databaseOperationOptions(),
   );
+}
+
+export async function latestRunPlace(database: Kysely<DatabaseSchema>, runId: RunId) {
+  const row = await database
+    .selectFrom("workspaceEvents")
+    .selectAll()
+    .where("runId", "=", runId)
+    .where("type", "=", "place.entered")
+    .orderBy("sequence", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (!row) return null;
+  const event = eventFromRow(row);
+  return event.type === "place.entered" ? event : null;
 }
 
 /** The Run fence precedes the Workspace allocator, including on delegated Runs. */

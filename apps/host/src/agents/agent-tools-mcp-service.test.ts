@@ -1551,6 +1551,15 @@ it("negotiates person_show and saved-tab query with the calling Runner", async (
       "token",
       expect.objectContaining({ type: "person.show", target: { tabId: "gmail" } }),
     );
+    const current = await client.callTool({
+      name: "person_show",
+      arguments: { target: { current: true } },
+    });
+    expect(current.structuredContent).toEqual({ status: "sent-unconfirmed", connectedDevices: 2 });
+    expect(handle).toHaveBeenLastCalledWith(
+      "token",
+      expect.objectContaining({ type: "person.show", target: { current: true } }),
+    );
     supported = false;
     expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_show");
     await fixture.service.close();

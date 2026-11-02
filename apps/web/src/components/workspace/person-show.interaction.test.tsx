@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import { PersonShowMessageSchema } from "@opensteer/protocol";
+import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
+import { createId } from "@opensteer/core";
 import {
   client,
   element,
@@ -12,6 +13,67 @@ import {
   placeParams,
   tabSearch,
 } from "./workspace.interaction.test-support.js";
+
+it.each(["app", "phone"] as const)(
+  "opens the Run's current %s through shared navigation",
+  async (kind) => {
+    await mount("/");
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    element<HTMLTextAreaElement>("[data-composer-input]").focus();
+    const snapshot = client.getSnapshot();
+    const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+    const machine = snapshot.machines.find((machine) =>
+      machine.computerUse?.sessions.some((session) => session.display === (kind === "phone")),
+    )!;
+    const session = machine.computerUse!.sessions.find(
+      (session) => session.display === (kind === "phone"),
+    )!;
+    const place =
+      kind === "app"
+        ? { kind, machineId: machine.id, appKey: computerAppIdentityKey(session.apps[0]!) }
+        : { kind, machineId: machine.id, display: "main" };
+    await act(async () =>
+      client.receivePersonShow(
+        PersonShowMessageSchema.parse({
+          type: "host.show",
+          workspaceId: source.workspaceId,
+          threadId: source.id,
+          runId: session.runId,
+          target: { place },
+        }),
+      ),
+    );
+    const params = new URLSearchParams(history.at(-1)!.search);
+    expect(params.get("computerSession")).toBe(session.sessionId);
+    if (kind === "app") {
+      expect(params.get("mac")).toBe(machine.id);
+      expect(params.get("app")).toBe("appKey" in place ? place.appKey : null);
+    } else expect(params.get("phone")).toBe(machine.id);
+  },
+);
+
+it("routes an authorized unloaded Thread through the existing Thread route", async () => {
+  await mount("/");
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  element<HTMLTextAreaElement>("[data-composer-input]").focus();
+  const snapshot = client.getSnapshot();
+  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const threadId = createId("thread");
+  await act(async () =>
+    client.receivePersonShow(
+      PersonShowMessageSchema.parse({
+        type: "host.show",
+        runId: createId("run"),
+        workspaceId: source.workspaceId,
+        threadId: source.id,
+        target: { threadId },
+      }),
+    ),
+  );
+  expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+});
 
 it.each(["Chat", "task"])(
   "shows a requested tab from %s while its composer has focus",
@@ -36,6 +98,7 @@ it.each(["Chat", "task"])(
       client.receivePersonShow(
         PersonShowMessageSchema.parse({
           type: "host.show",
+          runId: createId("run"),
           workspaceId: snapshot.threads.find((thread) => thread.id === threadId)!.workspaceId,
           threadId,
           target: { tabId: place.destination.kind === "browser" ? place.destination.tabId : null },
@@ -56,6 +119,7 @@ it("leaves other focused work, hidden windows and other conversations alone with
   const target = snapshot.threads.find((thread) => thread.id !== source.id)!;
   const message = PersonShowMessageSchema.parse({
     type: "host.show",
+    runId: createId("run"),
     workspaceId: source.workspaceId,
     threadId: source.id,
     target: { threadId: target.id },

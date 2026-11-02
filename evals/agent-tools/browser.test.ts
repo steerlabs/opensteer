@@ -12,6 +12,7 @@ describe("browser profile corpus", () => {
     "show-old-asleep-gmail",
     "show-gmail-follows-search-cursor",
     "show-duplicate-tab-titles",
+    "show-current-run-place",
   ])("rejects claimed viewing in %s", (id) => {
     const testCase = cases.find((testCase) => testCase.id === id)!;
     const calls = testCase.expect.calls.map((call) => ({ ...call, valid: true }));

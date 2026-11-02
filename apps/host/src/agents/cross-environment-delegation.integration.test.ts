@@ -108,6 +108,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     browser: {
       createProfile: unexpected,
       closeAgentSession: unexpected,
+      drainRunPlaces: async () => undefined,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
       openAgentSession: unexpected,

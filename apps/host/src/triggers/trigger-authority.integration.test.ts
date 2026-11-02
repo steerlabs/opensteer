@@ -179,6 +179,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     browser: {
       createProfile: unexpected,
       closeAgentSession: unexpected,
+      drainRunPlaces: async () => undefined,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
       openAgentSession: unexpected,
