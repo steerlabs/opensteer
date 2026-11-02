@@ -3,13 +3,22 @@ import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList } from "../host/places.js";
 import { VoiceContextLinks } from "./context.js";
 import { voiceSavedTabs } from "./voice.test-support.js";
+import type { HostSnapshot } from "../host/client.js";
+import type { PlaceEntry } from "../host/transcript.js";
+
+/** The fixture's places as the per-Run store would hold them. */
+const placeOf = (snapshot: HostSnapshot) => (runId: string) =>
+  Object.values(snapshot.transcripts)
+    .flat()
+    .findLast((entry): entry is PlaceEntry => entry.kind === "place" && entry.runId === runId) ??
+  null;
 
 it("finds every saved tab with continuation and puts Chat's old asleep tab ahead of the partial list", () => {
   const host = new MockHostClient({ latencyMs: 0 });
   try {
     const snapshot = voiceSavedTabs(host.getSnapshot());
     const links = new VoiceContextLinks();
-    const text = links.build(snapshot, undefined, { find: true });
+    const text = links.build(snapshot, undefined, { find: true, runPlace: placeOf(snapshot) });
     const working = text.split("\n").find((line) => line.startsWith("Chat is working in:"))!;
     expect(working).toContain("Gmail");
     const link = working.match(/opensteer:\/\/place\/\d+/)![0];
@@ -76,8 +85,8 @@ it("uses the per-Run reader outside transcript windows and ranks equal titles by
     expect(links.resolve(offered, used)?.target).toMatchObject({
       destination: { tabId: "tab_saved17" },
     });
-    expect(links.build(used)).toContain('Chat is working in: "Gmail"');
-    expect(links.build({ ...snapshot, runQueue: [] })).not.toContain("Chat is working in:");
+    expect(links.build(used, undefined, { runPlace: placeOf(used) })).toContain('Chat is working in: "Gmail"');
+    expect(links.build({ ...snapshot, runQueue: [] }, undefined, { runPlace: placeOf(snapshot) })).not.toContain("Chat is working in:");
     const thread = snapshot.threads.find((t) => t.id !== home)!;
     const threadLinks = new VoiceContextLinks();
     expect(threadLinks.resolve(`opensteer://thread/${thread.id}`, snapshot)).toBeNull();
@@ -125,9 +134,9 @@ it("keeps exact browser tabs distinct and rejects stale places and unknown threa
     await host.openComputerView(app.machineId, app.target);
     const snapshot = host.getSnapshot();
     const links = new VoiceContextLinks();
-    const text = links.build(snapshot);
+    const text = links.build(snapshot, undefined, { runPlace: placeOf(snapshot) });
     expect(text.length).toBeLessThanOrEqual(16_000);
-    expect(links.build(snapshot)).toBe(text);
+    expect(links.build(snapshot, undefined, { runPlace: placeOf(snapshot) })).toBe(text);
     const offered = [...text.matchAll(/opensteer:\/\/place\/\d+/g)].map((m) => m[0]);
     expect(offered.length).toBeGreaterThan(1);
     const destinations = offered.map((link) => links.resolve(link, snapshot)!.target);
@@ -183,7 +192,7 @@ it("never offers or resolves a place this device can't show", async () => {
     const snapshot = host.getSnapshot();
     let apps = true;
     const links = new VoiceContextLinks((destination) => apps || destination.kind !== "app");
-    const appLink = [...links.build(snapshot).matchAll(/opensteer:\/\/place\/\d+/g)]
+    const appLink = [...links.build(snapshot, undefined, { runPlace: placeOf(snapshot) }).matchAll(/opensteer:\/\/place\/\d+/g)]
       .map((m) => m[0])
       .find((link) => {
         const target = links.resolve(link, snapshot)?.target;
@@ -192,7 +201,7 @@ it("never offers or resolves a place this device can't show", async () => {
     expect(appLink, "the mock offers a Mac app place").toBeDefined();
 
     apps = false;
-    const shown = links.build(snapshot);
+    const shown = links.build(snapshot, undefined, { runPlace: placeOf(snapshot) });
     expect(shown.split("\n").filter((line) => line.includes("| app"))).toEqual([]);
     expect(links.resolve(appLink!, snapshot)).toBeNull();
     for (const link of shown.matchAll(/opensteer:\/\/place\/\d+/g))

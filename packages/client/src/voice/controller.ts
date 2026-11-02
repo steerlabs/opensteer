@@ -24,7 +24,7 @@ import {
   type VoiceSnapshot,
   type VoiceTarget,
 } from "./contract.js";
-import { VoiceContextLinks, type VoiceView, type VoiceWorkingPlace } from "./context.js";
+import { VoiceContextLinks, type VoiceView } from "./context.js";
 import { VoiceSpeaker } from "./speaker.js";
 import { voiceTimers, type VoiceTimer, type VoiceTimers } from "./timers.js";
 
@@ -113,7 +113,6 @@ export interface VoiceControllerInput extends VoiceTimers {
   readonly media: VoiceMediaPort | null;
   /** True only when the navigation was applied; false leaves the screen unchanged. */
   readonly navigate: (target: VoiceTarget) => boolean | Promise<boolean>;
-  readonly runPlace?: (runId: string) => VoiceWorkingPlace | null;
   readonly createId: () => string;
   readonly currentView?: () => VoiceView;
   readonly places?: () => Promise<readonly PlaceContentPart[]>;
@@ -492,7 +491,7 @@ export class VoiceController {
       this.#input.currentView?.(),
       {
         find: session.call?.find === true,
-        ...(this.#input.runPlace ? { runPlace: this.#input.runPlace } : {}),
+        runPlace: (runId) => this.#input.hostClient.runPlace(runId)?.data ?? null,
       },
     );
     if (text === session.contextDesired) return;

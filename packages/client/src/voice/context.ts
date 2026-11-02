@@ -36,8 +36,8 @@ const label = (text: string, max = 180) => JSON.stringify(text.slice(0, max));
 export type VoiceWorkingPlace = Pick<PlaceEntry, "place" | "title" | "site">;
 export interface VoiceContextOptions {
   readonly find?: boolean;
-  /** The per-Run store supplies this independently of the loaded transcript window. */
-  readonly runPlace?: (runId: string) => VoiceWorkingPlace | null;
+  /** The working Run's place, from the per-Run store rather than the loaded transcript window. */
+  readonly runPlace: (runId: string) => VoiceWorkingPlace | null;
 }
 
 const matchesPlace = (place: PlaceItem, working: VoiceWorkingPlace) => {
@@ -123,7 +123,7 @@ export class VoiceContextLinks {
       }),
     );
   }
-  build(snapshot: HostSnapshot, view?: VoiceView, options: VoiceContextOptions = {}): string {
+  build(snapshot: HostSnapshot, view: VoiceView | undefined, options: VoiceContextOptions): string {
     const places = this.#places(snapshot);
     const visible = view?.destination ? identity(view.destination) : undefined;
     if (visible && visible !== this.#visible) this.#seen.set(visible, new Date().toISOString());
@@ -137,15 +137,7 @@ export class VoiceContextLinks {
     ];
     const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
     const run = home && threadStopTarget({ thread: home, runQueue: snapshot.runQueue });
-    // The controller can bind runPlace to HostClient's per-Run store. The
-    // transcript fallback is only for clients without that reader yet.
-    const working =
-      run &&
-      (options.runPlace
-        ? options.runPlace(run.id)
-        : (snapshot.transcripts[home!.id] ?? []).findLast(
-            (entry): entry is PlaceEntry => entry.kind === "place" && entry.runId === run.id,
-          ));
+    const working = run && options.runPlace(run.id);
     if (working) {
       const current = places.find((place) => {
         if (!matchesPlace(place, working)) return false;
