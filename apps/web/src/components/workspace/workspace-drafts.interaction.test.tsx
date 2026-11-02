@@ -660,6 +660,76 @@ describe("the draft's places", () => {
     },
   );
 
+  it.each(["held", "handed back"] as const)(
+    "lets its automatic page go when that tab closes, but keeps an explicit pick, greyed (%s)",
+    async (how) => {
+      await mount((source) => `/${tabSearch(pageTab(source))}`);
+      await settle(100);
+      const place = pageTab();
+      const other = placeList(client.getSnapshot()).find(
+        (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
+      )!;
+      if (other.destination.kind !== "browser") throw new Error("Missing another tab");
+      const titles = () =>
+        [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent);
+      const field = element<HTMLTextAreaElement>("[data-composer-input]");
+      await write(field, "About this");
+      await click(element('.composer__attach[aria-label="Attach"]'));
+      await click(
+        [...document.querySelectorAll<HTMLButtonElement>(".popover--attach .place-pick")].find(
+          (button) => button.textContent?.includes(other.title),
+        )!,
+      );
+      await settle(100);
+      expect(titles()).toEqual([place.title, other.title]);
+      if (how === "handed back") {
+        // A refused message comes back with its places exactly as they were sent.
+        vi.spyOn(client, "dispatch").mockRejectedValueOnce(
+          new HostClientRequestError({ code: "forbidden", message: "Refused", status: 403 }),
+        );
+        await click(element(".composer__send"));
+        await settle(100);
+        expect(titles()).toEqual([place.title, other.title]);
+      }
+      const close = async (closed: PlaceItem) => {
+        if (closed.destination.kind !== "browser" || !closed.destination.tabId)
+          throw new Error("tab");
+        const { sessionId, tabId } = closed.destination;
+        const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
+        await act(async () => client.closeBrowserTab(sessionId, tabId, session.tabCatalog!));
+        await settle(100);
+      };
+      await close(place);
+      expect(titles()).toEqual([other.title]);
+      // A snapshot that can no longer prove the end never brings the closed page back.
+      const connected = client.getSnapshot.bind(client);
+      const seen = new WeakMap<HostSnapshot, HostSnapshot>();
+      const offline = vi.spyOn(client, "getSnapshot").mockImplementation(() => {
+        const snapshot = connected();
+        if (!seen.has(snapshot)) seen.set(snapshot, { ...snapshot, connection: "offline" });
+        return seen.get(snapshot)!;
+      });
+      await close(other);
+      expect(titles()).toEqual([other.title]);
+      expect(document.querySelector(".context-chip--gone")).not.toBeNull();
+      const dispatch = vi.spyOn(client, "dispatch");
+      dispatch.mockClear();
+      await click(element(".composer__send"));
+      await settle(100);
+      expect(dispatch).toHaveBeenCalledOnce();
+      const command = dispatch.mock.calls[0]![0];
+      if (command.type !== "thread.sendMessage") throw new Error("Missing send");
+      expect(command.content.filter((part) => part.type !== "text")).toEqual([
+        expect.objectContaining({
+          type: "browser-page",
+          auto: false,
+          tabId: other.destination.tabId,
+        }),
+      ]);
+      offline.mockRestore();
+    },
+  );
+
   it("hands a forbidden message back ahead of the newer draft without duplicate places or refusal UI", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     await settle(100);
@@ -702,6 +772,15 @@ describe("the draft's places", () => {
     expect(document.querySelector(".context-chip--refused, .context-refusal")).toBeNull();
     expect(document.body.textContent).not.toContain("Send without it");
     expect(document.body.textContent).not.toContain("Include it");
+    // The page came back automatic, but the newer draft picked it: closing it keeps that pick.
+    if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
+    const { sessionId, tabId } = place.destination;
+    const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
+    await act(async () => client.closeBrowserTab(sessionId, tabId, session.tabCatalog!));
+    await settle(100);
+    expect(
+      [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
+    ).toEqual([place.title, other.title]);
   });
 
   it("an automatic page alone does not enable Send; an explicit pick alone does", async () => {
@@ -841,6 +920,24 @@ describe("the draft's places", () => {
       await click(element(".context-chip__remove"));
       await show(keynote);
       expect(chip()).toBeNull();
+    });
+
+    it("lets its automatic app go when its view closes", async () => {
+      await mount("/?panel=browser");
+      await openTile("Keynote on");
+      const keynote = viewed(studioMac, "com.apple.Keynote");
+      await write(field(), "About this");
+      expect(chip()).toBe(keynote.title);
+      const view = keynote.ownerView!;
+      await act(async () => client.closeComputerView(view.viewId, view.generation));
+      await settle(100);
+      expect(chip()).toBeNull();
+      const dispatch = vi.spyOn(client, "dispatch");
+      await click(element(".composer__send"));
+      await settle(100);
+      const command = dispatch.mock.calls[0]![0];
+      if (command.type !== "thread.sendMessage") throw new Error("Missing send");
+      expect(command.content.filter((part) => part.type !== "text")).toEqual([]);
     });
 
     it("sends the place as it is now when it is renamed in the same place", async () => {
