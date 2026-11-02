@@ -228,7 +228,12 @@ export function BrowserPage(props: {
     onViewing(latestViewed.current);
   }, [onViewing, viewedKey]);
   useEffect(() => () => onViewing(null), [onViewing]);
-  useEffect(() => onTyping(typing || addressOpen), [addressOpen, onTyping, typing]);
+  // A page's prompt takes the keyboard too, so its answer and buttons stay above it.
+  const prompting = dialog?.type === "prompt";
+  useEffect(
+    () => onTyping(typing || addressOpen || prompting),
+    [addressOpen, onTyping, prompting, typing],
+  );
 
   // The page's place: its width, whether it is regular, and the room it rests
   // in. The resting room is kept while the keyboard is up, so the page keeps
@@ -237,14 +242,17 @@ export function BrowserPage(props: {
   const regular = width >= regularWidth;
   const [room, setRoom] = useState({ height: 0, width: 0 });
   const [visibleHeight, setVisibleHeight] = useState(0);
-  const lifted = typing || addressOpen;
+  const lifted = typing || addressOpen || prompting;
   const onStage = (event: LayoutChangeEvent) => {
     const { height, width: stageWidth } = event.nativeEvent.layout;
     setVisibleHeight(height);
-    // A page opened straight into its address has no resting room yet: the
-    // first measure stands for it until the keyboard goes.
+    // The keyboard only takes height: while it is up, the resting height is
+    // kept and anything else — a rotation, a pane resizing beside it — is
+    // measured anew. A page opened straight into its address has no resting
+    // room yet, so its first measure stands for it until the keyboard goes.
     setRoom((current) =>
-      (lifted && current.height > 0) || (current.height === height && current.width === stageWidth)
+      (current.height === height && current.width === stageWidth) ||
+      (lifted && current.height > 0 && current.width === stageWidth)
         ? current
         : { height, width: stageWidth },
     );
@@ -735,7 +743,12 @@ function usePageZoom(
   const scale = useSharedValue(1);
   const x = useSharedValue(0);
   const y = useSharedValue(0);
-  const start = useSharedValue({ scale: 1, x: 0, y: 0 });
+  // Each gesture keeps its own starting point. A pinch both zooms and follows
+  // the fingers, so while one is under way the two-finger pan only keeps
+  // its own start current, and carries on from wherever the pinch left off.
+  const pinchStart = useSharedValue({ focalX: 0, focalY: 0, scale: 1, x: 0, y: 0 });
+  const panStart = useSharedValue({ x: 0, y: 0 });
+  const pinching = useSharedValue(false);
   useEffect(() => {
     scale.value = withSpring(1, settle);
     x.value = withSpring(0, settle);
@@ -743,23 +756,32 @@ function usePageZoom(
   }, [height, held, scale, width, x, y]);
   const pinch = usePinchGesture({
     enabled: !held && width > 0,
-    onActivate: () => {
+    onActivate: (event) => {
       "worklet";
-      start.value = { scale: scale.value, x: x.value, y: y.value };
+      pinching.value = true;
+      pinchStart.value = {
+        focalX: event.focalX - left,
+        focalY: event.focalY,
+        scale: scale.value,
+        x: x.value,
+        y: y.value,
+      };
     },
     onUpdate: (event) => {
       "worklet";
-      const next = Math.min(maxZoom, Math.max(0.85, start.value.scale * event.scale));
-      // The point under the fingers stays under them as the page grows.
-      const ratio = next / start.value.scale;
-      scale.value = next;
-      // The fingers are measured from the page's place; the picture may be inset in it.
-      const focalX = event.focalX - left;
-      x.value = clampTo(focalX - (focalX - start.value.x) * ratio, width, next);
-      y.value = clampTo(event.focalY - (event.focalY - start.value.y) * ratio, height, next);
+      const placed = pinched(
+        pinchStart.value,
+        // The fingers are measured from the page's place; the picture may be inset in it.
+        { focalX: event.focalX - left, focalY: event.focalY, scale: event.scale },
+        { height, width },
+      );
+      scale.value = placed.scale;
+      x.value = placed.x;
+      y.value = placed.y;
     },
     onDeactivate: () => {
       "worklet";
+      pinching.value = false;
       if (scale.value < 1.05) {
         scale.value = withSpring(1, settle);
         x.value = withSpring(0, settle);
@@ -773,12 +795,16 @@ function usePageZoom(
     minPointers: 2,
     onActivate: () => {
       "worklet";
-      start.value = { scale: scale.value, x: x.value, y: y.value };
+      panStart.value = { x: x.value, y: y.value };
     },
     onUpdate: (event) => {
       "worklet";
-      x.value = clampTo(start.value.x + event.translationX, width, scale.value);
-      y.value = clampTo(start.value.y + event.translationY, height, scale.value);
+      if (pinching.value) {
+        panStart.value = { x: x.value - event.translationX, y: y.value - event.translationY };
+        return;
+      }
+      x.value = clampTo(panStart.value.x + event.translationX, width, scale.value);
+      y.value = clampTo(panStart.value.y + event.translationY, height, scale.value);
     },
   });
   const gesture = useSimultaneousGestures(pinch, pan);
@@ -786,6 +812,32 @@ function usePageZoom(
 }
 
 const settle = { damping: 24, stiffness: 240 } as const;
+
+/**
+ * Where a pinch puts the picture: the point of the page that was under the
+ * fingers when the pinch began stays under them as they spread and move.
+ */
+export function pinched(
+  start: {
+    readonly focalX: number;
+    readonly focalY: number;
+    readonly scale: number;
+    readonly x: number;
+    readonly y: number;
+  },
+  now: { readonly focalX: number; readonly focalY: number; readonly scale: number },
+  size: { readonly height: number; readonly width: number },
+): { readonly scale: number; readonly x: number; readonly y: number } {
+  "worklet";
+  const scale = Math.min(maxZoom, Math.max(0.85, start.scale * now.scale));
+  const pageX = (start.focalX - start.x) / start.scale;
+  const pageY = (start.focalY - start.y) / start.scale;
+  return {
+    scale,
+    x: clampTo(now.focalX - pageX * scale, size.width, scale),
+    y: clampTo(now.focalY - pageY * scale, size.height, scale),
+  };
+}
 
 /** Keeps a zoomed picture covering its own place: no gap opens at either edge. */
 function clampTo(offset: number, size: number, scale: number): number {

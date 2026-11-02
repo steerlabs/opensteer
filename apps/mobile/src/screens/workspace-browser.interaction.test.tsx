@@ -11,7 +11,7 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
-import { pictureBox, slideFor } from "../browser/browser-page.js";
+import { pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import { BrowserPageContentPartSchema } from "@opensteer/core";
 import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
@@ -1775,6 +1775,23 @@ describe("a page beside its agent's thread", () => {
     typingPage.render();
     expect(slot(typingPage.container, "page").avoids).toBe(true);
     expect(slot(typingPage.container, "conversation").avoids).toBe(false);
+
+    // A page's own prompt takes the keyboard for its answer, as the address does.
+    const prompted = openPage();
+    expect(slot(prompted.container, "page").avoids).toBe(false);
+    const [browser] = state.snapshot!.browserSessions;
+    state.snapshot = {
+      ...state.snapshot!,
+      browserSessions: [
+        {
+          ...browser!,
+          dialog: { id: "dialog-1", message: "Your name?", surfaceId: "page-1", type: "prompt" },
+        } as BrowserSessionSummary,
+      ],
+    };
+    prompted.render();
+    expect(slot(prompted.container, "page").avoids).toBe(true);
+    expect(slot(prompted.container, "conversation").avoids).toBe(false);
   });
 
   it("lifts the thread for its composer, and leaves the page where it is", () => {
@@ -2073,6 +2090,45 @@ describe("native page layout and controls", () => {
     expect(slideFor({ x: 0.5, y: 0.2, height: 0.02 }, 800, 400)).toBe(0);
     expect(slideFor({ x: 0.5, y: 0.95, height: 0.02 }, 800, 400)).toBe(-400);
     expect(slideFor({ x: 0.5, y: 0.9, height: 0.02 }, 200, 400)).toBe(0);
+  });
+
+  it("keeps the point under a pinch under the fingers as they spread and move, inside the page", () => {
+    const size = { height: 300, width: 400 };
+    const start = { focalX: 200, focalY: 100, scale: 1, x: 0, y: 0 };
+    // Spread in place: the page point under the fingers stays put.
+    expect(pinched(start, { focalX: 200, focalY: 100, scale: 2 }, size)).toEqual({
+      scale: 2,
+      x: -200,
+      y: -100,
+    });
+    // Spread and moved left together: the same point follows the fingers.
+    expect(pinched(start, { focalX: 150, focalY: 100, scale: 2 }, size)).toEqual({
+      scale: 2,
+      x: -250,
+      y: -100,
+    });
+    // A pinch begun already zoomed in measures from where the page is, not from its own size.
+    expect(
+      pinched(
+        { ...start, scale: 2, x: -200, y: -100 },
+        { focalX: 200, focalY: 100, scale: 1.5 },
+        size,
+      ),
+    ).toEqual({ scale: 3, x: -400, y: -200 });
+    // No gap ever opens at an edge, and it stops at its furthest zoom.
+    // Fingers spread from the corner and dragged inward would pull the page off its corner.
+    expect(
+      pinched({ ...start, focalX: 0, focalY: 0 }, { focalX: 100, focalY: 50, scale: 10 }, size),
+    ).toEqual({
+      scale: 4,
+      x: 0,
+      y: 0,
+    });
+    expect(pinched(start, { focalX: 400, focalY: 300, scale: 1 }, size)).toEqual({
+      scale: 1,
+      x: 0,
+      y: 0,
+    });
   });
 
   function open() {
