@@ -168,6 +168,7 @@ export class ComputerUseService {
   /** The grants the helper last reported since this app started, if it has. */
   #ownerViewVersion: number | undefined;
   #ownerInputVersion: 2 | undefined;
+  #videoProfile: 1 | undefined;
   #computerUseVersion: 2 | undefined;
   #loginReceiver: LoginReceiverKey | null = null;
   readonly #capabilityListeners = new Set<() => void>();
@@ -439,6 +440,7 @@ export class ComputerUseService {
       },
       ownerViewVersion: () => this.#ownerViewVersion,
       ownerInputVersion: () => this.#ownerInputVersion,
+      videoProfile: () => this.#videoProfile,
       computerUseVersion: () => this.#computerUseVersion,
       loginReceiver: () => this.#loginReceiver,
       onCapabilitiesChanged: (listener) => {
@@ -601,6 +603,7 @@ export class ComputerUseService {
       if (error instanceof ComputerUseHelperFailure && error.code === "incompatible-version") {
         this.#ownerViewVersion = undefined;
         this.#ownerInputVersion = undefined;
+        this.#videoProfile = undefined;
         this.#computerUseVersion = undefined;
         this.#forgetClient();
       }
@@ -695,12 +698,14 @@ export class ComputerUseService {
           permissions,
           ownerViewVersion,
           ownerInputVersion,
+          videoProfile,
           loginText,
           protocolVersion,
         }) => {
           this.#loginReceiver = loginText ?? null;
           this.#ownerViewVersion = ownerViewVersion;
           this.#ownerInputVersion = ownerInputVersion;
+          this.#videoProfile = videoProfile;
           // A Mac whose macOS lacks window groups still speaks this version; the
           // helper refuses each window call with the sentence that says why.
           this.#computerUseVersion = protocolVersion === 10 ? 2 : undefined;

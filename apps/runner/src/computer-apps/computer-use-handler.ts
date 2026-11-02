@@ -168,6 +168,7 @@ export class ComputerUseHandler {
         this.#announceApproval({ kind: "sync" });
       },
       ownerInputVersion: () => this.#readiness?.ownerInputVersion,
+      videoProfile: () => this.#readiness?.videoProfile,
       onEvent: (event) => this.#receiveEvent(event),
       onLost: () => this.#bridgeLost(),
       token: options.bridge.token,
@@ -278,6 +279,7 @@ export class ComputerUseHandler {
           previous.permissions.screenRecording !== result.permissions.screenRecording ||
           previous.ownerViewVersion !== result.ownerViewVersion ||
           previous.ownerInputVersion !== result.ownerInputVersion ||
+          previous.videoProfile !== result.videoProfile ||
           previous.computerUseVersion !== result.computerUseVersion)
       )
         this.#announceReadinessChanged("readiness-changed");
@@ -334,6 +336,10 @@ export class ComputerUseHandler {
 
   computerUseVersion(): 2 | undefined {
     return this.#readiness?.computerUseVersion;
+  }
+
+  videoProfile(): 1 | undefined {
+    return this.#readiness?.videoProfile;
   }
 
   ownerViewVersion(): number | undefined {

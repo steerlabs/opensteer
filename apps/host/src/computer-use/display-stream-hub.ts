@@ -396,7 +396,7 @@ export class DisplayStreamHub {
         streamId,
       });
       stream = {
-        ...(live.displayProfile === 1 && !target ? { displayProfile: 1 as const } : {}),
+        ...(live.displayProfile === 1 ? { displayProfile: 1 as const } : {}),
         maxBitrate: null,
         bitrateAt: -Infinity,
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
@@ -443,9 +443,7 @@ export class DisplayStreamHub {
       start = {
         ...stream.fence,
         type: "host.integrations.display.start",
-        ...(live.displayProfile === 1 && !target
-          ? { displayProfile: 1 as const, maxBitrate: null }
-          : {}),
+        ...(live.displayProfile === 1 ? { displayProfile: 1 as const, maxBitrate: null } : {}),
         ...(live.sharedInput === 1 && !target ? { sharedInput: 1 as const } : {}),
         ...(live.editingVersion === 1 ? { editingVersion: 1 as const } : {}),
         ...(live.displayCut === 1 && !target ? { displayCut: 1 as const } : {}),
@@ -464,7 +462,7 @@ export class DisplayStreamHub {
         streamId,
         dataTicket: issued.ticket,
         maxLongSide: displayDefaultMaxLongSide,
-        maxFps: displayDefaultMaxFps,
+        maxFps: target && live.displayProfile === 1 ? 60 : displayDefaultMaxFps,
       };
     }
     const attached = stream;
@@ -481,7 +479,7 @@ export class DisplayStreamHub {
       phoneOwnerControl: options.phoneOwnerControl === true,
       displayWindow: options.displayWindow === true,
       ackDelays: [],
-      bitrate: new DisplayViewerBitrate(),
+      bitrate: new DisplayViewerBitrate(attached.target ? 20_000_000 : 4_000_000),
       sharedInput: options.sharedInput === true,
       authorized,
       inputSequence: -1,
@@ -1580,8 +1578,11 @@ export class DisplayStreamHub {
       viewer.displayWindow && viewer.bitrate.cap !== null ? [viewer.bitrate.cap] : [],
     );
     const cap = caps.length ? Math.min(...caps) : null;
-    if (cap === stream.maxBitrate || this.#now() - stream.bitrateAt < 2_000) return false;
+    if (cap === stream.maxBitrate) return false;
+    const decreasing = cap !== null && (stream.maxBitrate === null || cap < stream.maxBitrate);
+    if (!decreasing && this.#now() - stream.bitrateAt < 2_000) return false;
     if (
+      !decreasing &&
       cap !== null &&
       stream.maxBitrate !== null &&
       Math.abs(cap - stream.maxBitrate) / stream.maxBitrate < 0.15

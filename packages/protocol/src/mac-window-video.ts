@@ -13,6 +13,13 @@ import {
 } from "./display-stream.js";
 
 export const MacOwnerSourceSchema = DisplaySourceSchema.options[1];
+export const MacVideoProfileSchema = z
+  .number()
+  .int()
+  .positive()
+  .transform((value) => (value === 1 ? (1 as const) : undefined))
+  .optional();
+
 /**
  * Owner input version 2 is shared input: the person's batches go into an app
  * alongside the agent's actions. Version 1 was an exclusive Take over lease and
@@ -59,12 +66,14 @@ export const macWindowVideoParams = {
     target: MacWindowTargetSchema,
     sources: DisplayDemandSchema,
     maxLongSide: DisplayMaxLongSideSchema,
-    maxFps: z.number().int().min(1).max(30),
+    maxFps: z.number().int().min(1).max(60),
+    maxBitrate: z.number().int().min(400_000).max(20_000_000).nullable().optional(),
   }),
   "display.demand": z.strictObject({
     streamId: DisplayStreamIdSchema,
     revision: z.number().int().nonnegative(),
     sources: DisplayDemandSchema,
+    maxBitrate: z.number().int().min(400_000).max(20_000_000).nullable().optional(),
     warm: MacDisplayWarmSchema.optional(),
     maxLongSide: DisplayMaxLongSideSchema.optional(),
   }),

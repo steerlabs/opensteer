@@ -79,6 +79,7 @@ export function prepareIntegrationsModule(options: {
       ...(computerUse
         ? {
             macWindowVideoVersion: 1,
+            displayProfile: 1,
             macOwnerInputVersion: 2,
             computerAppApprovals: true,
             loginText: 1,
