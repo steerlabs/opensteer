@@ -50,6 +50,25 @@ describe("LocalWorkspaceAuthority", () => {
     expect((await registryDocument(fixture.registryFilePath)).bindings).toEqual([]);
   });
 
+  it("reads existing specialized registry fingerprints without changing binding identity", async () => {
+    const fixture = await provisionedFixture();
+    const current = await registryDocument(fixture.registryFilePath);
+    await overwriteRegistry(fixture.registryFilePath, {
+      ...current,
+      bindings: current.bindings.map((binding) => ({
+        ...binding,
+        provisionFingerprint: { ...binding.provisionFingerprint, kind: "specialized" },
+      })),
+    });
+    const reopened = new LocalWorkspaceAuthority(fixture.options);
+    expect(await reopened.inspect(fixture.binding)).toEqual({ status: "ready" });
+    await reopened.provision(fixture.request);
+    expect((await reopened.resolveReadAuthority(fixture.binding)).root).toBe(fixture.workspacePath);
+    expect((await registryDocument(fixture.registryFilePath)).bindings[0]?.bindingId).toBe(
+      fixture.binding.bindingId,
+    );
+  });
+
   it("mints one storage authority identity and never rewrites it", async () => {
     const fixture = await createFixture();
 
@@ -172,16 +191,16 @@ describe("LocalWorkspaceAuthority", () => {
     await expect(lstat(fixture.registryFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("uses stable managed paths for Main and specialized Workspaces", async () => {
+  it("uses stable managed paths for Main and project Workspaces", async () => {
     const fixture = await createFixture();
     const main = await fixture.provision({ kind: "main" });
-    const specialized = await fixture.provision({ kind: "specialized" });
+    const project = await fixture.provision({ kind: "project" });
 
     expect((await fixture.authority.resolveReadAuthority(main.binding)).root).toBe(
       path.join(fixture.visibleRootPath, "main"),
     );
-    expect((await fixture.authority.resolveReadAuthority(specialized.binding)).root).toBe(
-      path.join(fixture.visibleRootPath, specialized.intent.workspaceId),
+    expect((await fixture.authority.resolveReadAuthority(project.binding)).root).toBe(
+      path.join(fixture.visibleRootPath, project.intent.workspaceId),
     );
   });
 
@@ -549,7 +568,7 @@ describe("LocalWorkspaceAuthority", () => {
 interface ProvisionIntent {
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
-  readonly kind: "main" | "specialized";
+  readonly kind: "main" | "project";
   readonly ownerEnvironmentId: EnvironmentId;
   readonly workspaceId: ReturnType<typeof createId<"workspace">>;
 }
@@ -561,7 +580,7 @@ function provisionIntent(
   return {
     createdBy: createId("user"),
     idempotencyKey: `workspace:${createId("workspace")}:provision:v1:1`,
-    kind: "specialized",
+    kind: "project",
     ownerEnvironmentId,
     workspaceId: createId("workspace"),
     ...overrides,

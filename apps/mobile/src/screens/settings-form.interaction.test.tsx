@@ -107,9 +107,9 @@ describe("Settings on a phone", () => {
     expect(document.body.textContent).not.toContain("Passwords");
   });
 
-  it("keeps specialist mutes while this phone isn't registered for notifications", async () => {
+  it("keeps project mutes while this phone isn't registered for notifications", async () => {
     await render({ agents: [{ muted: true, name: "Research", workspaceId: "wks_research" }] });
-    expect(document.body.textContent).toContain("Notifications from specialists");
+    expect(document.body.textContent).toContain("Notifications from projects");
   });
 
   it("shows no Account or notifications in a build without an Account service", async () => {

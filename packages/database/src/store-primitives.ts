@@ -411,7 +411,7 @@ export function workspaceFromRow(row: {
   readonly icon: string | null;
   readonly color: NonNullable<Workspace["color"]>;
   readonly id: WorkspaceId;
-  readonly kind: "main" | "specialized";
+  readonly kind: "main" | "project";
   readonly name: string;
   readonly status: string;
   readonly storageErrorAt: Date | null;

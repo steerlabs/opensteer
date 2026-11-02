@@ -52,7 +52,7 @@ describe("browser profile patches", () => {
       createdAt: now,
       id,
       profileId,
-      workspaceId: "specialist",
+      workspaceId: "project",
     });
     const snapshot = {
       ...baseSnapshot(),

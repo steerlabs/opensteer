@@ -24,14 +24,14 @@ import { ComputerScreen } from "./screens/computer.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
-import { NewSpecialistScreen } from "./screens/new-specialist.js";
+import { NewProjectScreen } from "./screens/new-project.js";
 import { NewTaskScreen } from "./screens/new-task.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
 import { SettingsScreen } from "./screens/settings.js";
-import { SpecialistScreen } from "./screens/specialist.js";
-import { SpecialistsScreen } from "./screens/specialists.js";
+import { ProjectScreen } from "./screens/project.js";
+import { ProjectsScreen } from "./screens/projects.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadScreen } from "./screens/thread.js";
@@ -53,10 +53,10 @@ import { color } from "./theme.js";
  * path. The header uses the platform face and stays native chrome.
  *
  * Chat (`Home`) is the root of every Deployment's stack and stays mounted
- * under everything pushed over it. Specialists, Tabs and Schedules are the
+ * under everything pushed over it. Projects, Tabs and Schedules are the
  * sidebar's other destinations: each is pushed over Chat with the Menu in place of
  * Back, and choosing Chat from the sidebar returns to it, so the stack never
- * grows by moving around the sidebar. Everything else — a task, search, a specialist, a
+ * grows by moving around the sidebar. Everything else — a task, search, a project, a
  * watcher — is an ordinary push with the native Back, which returns to the
  * screen it was opened from.
  *
@@ -116,11 +116,11 @@ const RootStack = createNativeStackNavigator({
     // other screen of it is pushed over. It renders Home itself — or the first
     // message before Home exists — and never hands over to another route.
     Home: { screen: HomeScreen, options: { title: CHAT_THREAD_TITLE } },
-    Specialists: {
-      screen: SpecialistsScreen,
-      options: { ...destinationOptions(), title: "Specialists" },
+    Projects: {
+      screen: ProjectsScreen,
+      options: { ...destinationOptions(), title: "Projects" },
     },
-    // Every tab this person may see, from the sidebar like Specialists. A tab
+    // Every tab this person may see, from the sidebar like Projects. A tab
     // opened from here is shown alone.
     Tabs: { screen: TabsScreen, options: { ...destinationOptions(), title: "Tabs" } },
     // Everything set to run on its own, from the sidebar like Tabs.
@@ -131,9 +131,9 @@ const RootStack = createNativeStackNavigator({
     // One schedule, from Schedules or a thread's Around sheet. Its name is
     // the large title, set once it loads.
     Schedule: { screen: ScheduleScreen, options: { headerLargeTitle: true, title: "" } },
-    // One specialist, over the directory. Its name is the large title, set
+    // One project, over the directory. Its name is the large title, set
     // once it loads, so it folds into the bar as its work scrolls under it.
-    Specialist: { screen: SpecialistScreen, options: { headerLargeTitle: true, title: "" } },
+    Project: { screen: ProjectScreen, options: { headerLargeTitle: true, title: "" } },
     Thread: {
       screen: ThreadScreen,
       // A task just started takes the place of its New task screen: it fades
@@ -217,16 +217,16 @@ const RootStack = createNativeStackNavigator({
         title: "Choose AI",
       },
     },
-    // A new specialist is a name, an icon and where its files live; like the
+    // A new project is a name, an icon and where its files live; like the
     // model picker it draws its own bar, for the same Android reason.
-    NewSpecialist: {
-      screen: NewSpecialistScreen,
+    NewProject: {
+      screen: NewProjectScreen,
       options: {
         headerShown: false,
         presentation: "formSheet",
         sheetAllowedDetents: [0.95],
         sheetGrabberVisible: true,
-        title: "New specialist",
+        title: "New project",
       },
     },
     // One step of an agent's work. Its own content names it, so the sheet has
@@ -434,7 +434,7 @@ type OpensteerRootParamList = {
     readonly quote?: ThreadDraftQuote | undefined;
     readonly requestId?: string | undefined;
   };
-  readonly NewSpecialist: { readonly deploymentId: string };
+  readonly NewProject: { readonly deploymentId: string };
   readonly NewTask: { readonly deploymentId: string; readonly workspaceId: string };
   readonly NewThread: {
     readonly deploymentId: string;
@@ -447,8 +447,8 @@ type OpensteerRootParamList = {
   readonly Schedule: ScheduleDestination;
   readonly Schedules: { readonly deploymentId: string };
   readonly Settings: undefined;
-  readonly Specialist: { readonly deploymentId: string; readonly workspaceId: string };
-  readonly Specialists: { readonly deploymentId: string };
+  readonly Project: { readonly deploymentId: string; readonly workspaceId: string };
+  readonly Projects: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
   readonly Thread: {

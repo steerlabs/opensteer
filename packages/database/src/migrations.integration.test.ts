@@ -1,3 +1,4 @@
+import { describeStore } from "./store.integration.test-support.js";
 import { strongRowLockViolations } from "./strong-row-locks.test-support.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -14,6 +15,7 @@ import { createDatabase } from "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
 import { OpensteerStore } from "./store.js";
 import {
+  projectsMigration,
   advertisedAgentsCapacityMigration,
   betterAuth17Migration,
   agentPhoneOwnerAccessMigration,
@@ -485,11 +487,11 @@ integration.sequential("browser sources retirement migration", () => {
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
-          'wsp_origin', 'Origin', 'ready', 'usr_owner', 'specialized',
+          'wsp_origin', 'Origin', 'ready', 'usr_owner', 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"origin","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         ), (
-          'wsp_target', 'Target', 'ready', 'usr_owner', 'specialized',
+          'wsp_target', 'Target', 'ready', 'usr_owner', 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"target","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         );
@@ -1293,7 +1295,7 @@ integration("one machine identity migration", () => {
       insert into public.workspaces(
         id, name, kind, status, created_by, backing, capacity_policy
       ) values (
-        'wsp_11111111-1111-4111-8111-111111111111', 'Workspace', 'specialized', 'ready',
+        'wsp_11111111-1111-4111-8111-111111111111', 'Workspace', 'project', 'ready',
         'usr_11111111-1111-4111-8111-111111111111',
         '{"kind": "portablefs", "serviceId": "svc", "volumeId": "vol", "generation": 1}'::jsonb,
         '{"kind": "hard-quota", "blockHardLimitBytes": 1024, "inodeHardLimit": 16}'::jsonb
@@ -3140,7 +3142,7 @@ integration("Runner-owned local Workspace migration", () => {
             'wsp_22222222-2222-4222-8222-222222222222',
             'Unfenced',
             'usr_11111111-1111-4111-8111-111111111111',
-            'specialized',
+            'project',
             '{"kind":"local-directory","bindingId":"wbd_22222222-2222-4222-8222-222222222222","ownerEnvironmentId":"env_11111111-1111-4111-8111-111111111111","generation":1}'::jsonb,
             '{"kind":"host-filesystem"}'::jsonb
           )
@@ -3156,7 +3158,7 @@ integration("Runner-owned local Workspace migration", () => {
             'wsp_33333333-3333-4333-8333-333333333333',
             'Elsewhere',
             'usr_11111111-1111-4111-8111-111111111111',
-            'specialized',
+            'project',
             '{"kind":"local-directory","bindingId":"wbd_33333333-3333-4333-8333-333333333333","ownerEnvironmentId":"env_99999999-9999-4999-8999-999999999999","storageAuthorityId":"sta_33333333-3333-4333-8333-333333333333","generation":1}'::jsonb,
             '{"kind":"host-filesystem"}'::jsonb
           )
@@ -3180,7 +3182,7 @@ integration("Runner-owned local Workspace migration", () => {
           'wsp_44444444-4444-4444-8444-444444444444',
           'Shared',
           'usr_11111111-1111-4111-8111-111111111111',
-          'specialized',
+          'project',
           '{"kind":"portablefs","serviceId":"svc","volumeId":"vol-1","generation":1}'::jsonb,
           '{"kind":"hard-quota","blockHardLimitBytes":1048576,"inodeHardLimit":1000}'::jsonb
         );
@@ -4500,7 +4502,7 @@ integration("channel dead concepts migration", () => {
       insert into public.workspaces(
         id, name, kind, status, created_by, backing, capacity_policy
       ) values (
-        'wsp_44444444-4444-4444-8444-444444444441', 'Routed', 'specialized', 'ready',
+        'wsp_44444444-4444-4444-8444-444444444441', 'Routed', 'project', 'ready',
         'usr_44444444-4444-4444-8444-444444444441',
         '{"kind":"portablefs","generation":1,"serviceId":"test","volumeId":"vol_dead"}'::jsonb,
         '{"kind":"hard-quota","blockHardLimitBytes":1000,"inodeHardLimit":100}'::jsonb);
@@ -5619,7 +5621,7 @@ integration.sequential("browser sign-ins migration", () => {
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
-          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', 'usr_00000000-0000-4000-8000-000000000001', 'specialized',
+          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', 'usr_00000000-0000-4000-8000-000000000001', 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"origin","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         );
@@ -5987,7 +5989,7 @@ integration.sequential("assignments migration", () => {
         insert into public.workspaces(
           id, name, status, created_by, kind, backing, capacity_policy
         ) values (
-          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', ${owner}, 'specialized',
+          'wsp_00000000-0000-4000-8000-000000000002', 'Origin', 'ready', ${owner}, 'project',
           '{"kind":"portablefs","serviceId":"test","volumeId":"origin","generation":1}',
           '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}'
         )
@@ -7000,7 +7002,7 @@ integration.sequential("notifications migration", () => {
             ${chat}
           ),
           (
-            ${missing}, 'Research', 'ready', 1, ${owner}, 'specialized',
+            ${missing}, 'Research', 'ready', 1, ${owner}, 'project',
             '{"kind":"portablefs","serviceId":"test","volumeId":"research","generation":1}',
             '{"kind":"hard-quota","blockHardLimitBytes":1000000,"inodeHardLimit":1000}',
             null
@@ -7498,5 +7500,69 @@ integration.sequential("screen presentation removal migration", () => {
         ) values ('run_1', ${randomUUID()}, 'thr_1', 'screen.show', 'screen.show', ${"b".repeat(64)})
       `.execute(database),
     ).rejects.toThrow(/violates check constraint "agent_control_requests_action/u);
+  });
+});
+
+describeStore("Project kind conversion", (it) => {
+  it("preserves rows and backing identities and restores the immutable-kind trigger", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const owner = await store.createUser("Project owner");
+    const workspace = await store.createWorkspace({
+      backing: {
+        kind: "portablefs",
+        generation: 1,
+        serviceId: "test-portablefs",
+        volumeId: "project-kind-conversion",
+      },
+      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 536870912, inodeHardLimit: 50000 },
+      createdBy: owner,
+      idempotencyKey: "project-kind-conversion",
+      kind: "project",
+      name: "Existing files",
+      status: "ready",
+    });
+    const constraints = () =>
+      sql<{ definition: string }>`
+      select pg_get_constraintdef(oid) as definition from pg_constraint
+      where conrelid = 'public.workspaces'::regclass order by conname
+    `.execute(database);
+    const baselineConstraints = (await constraints()).rows;
+    const before = await database
+      .selectFrom("workspaces")
+      .selectAll()
+      .where("id", "=", workspace.id)
+      .executeTakeFirstOrThrow();
+    await sql`
+      alter table public.workspaces disable trigger workspaces_immutable_kind;
+      alter table public.workspaces drop constraint workspaces_kind_check;
+      alter table public.workspaces alter column kind set default 'specialized';
+      alter table public.workspaces add constraint workspaces_kind_check
+        check (kind = any (array['main'::text, 'specialized'::text]));
+      alter table public.workspaces enable trigger workspaces_immutable_kind;
+    `.execute(database);
+    await sql`alter table public.workspaces disable trigger workspaces_immutable_kind`.execute(
+      database,
+    );
+    await sql`update public.workspaces set kind = 'specialized' where id = ${workspace.id}`.execute(
+      database,
+    );
+    await sql`alter table public.workspaces enable trigger workspaces_immutable_kind`.execute(
+      database,
+    );
+    await projectsMigration.up(database);
+    const after = await database
+      .selectFrom("workspaces")
+      .selectAll()
+      .where("id", "=", workspace.id)
+      .executeTakeFirstOrThrow();
+    expect(after).toEqual(before);
+    expect((await constraints()).rows).toEqual(baselineConstraints);
+    await expect(
+      sql`update public.workspaces set kind = 'main' where id = ${workspace.id}`.execute(database),
+    ).rejects.toThrow("workspace kind is immutable");
+    await projectsMigration.up(database);
+    expect((await constraints()).rows).toEqual(baselineConstraints);
   });
 });

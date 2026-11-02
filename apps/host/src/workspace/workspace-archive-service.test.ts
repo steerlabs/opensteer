@@ -357,7 +357,7 @@ function readyWorkspace(): PortableFsWorkspace {
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Ready",
     status: "ready",
     storageIssue: null,

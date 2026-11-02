@@ -108,8 +108,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
   const selectedWorkspaceId = workspaceId ?? homeWorkspaceId;
   const workspace =
     snapshot.workspaces.find((candidate) => candidate.id === selectedWorkspaceId) ?? null;
-  const workspaceKind: "main" | "specialized" =
-    workspace?.kind === "specialized" ? "specialized" : "main";
+  const workspaceKind: "main" | "project" = workspace?.kind === "project" ? "project" : "main";
 
   const [dashboard, setDashboard] = useState<IntegrationDashboard | null>(null);
   const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
@@ -704,7 +703,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                 Settings
               </Link>
             }
-            description="Connect your accounts, install integrations, and decide exactly which tools and skills each specialist can use."
+            description="Connect your accounts, install integrations, and decide exactly which tools and skills each project can use."
             eyebrow="Connections"
             title="Integrations"
           />

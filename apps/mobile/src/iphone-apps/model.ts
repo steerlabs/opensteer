@@ -201,7 +201,7 @@ export const addIphoneNameHint = "This is how it's listed on Computers.";
  * nothing else on the iPhone is reachable.
  */
 export function addIphoneFootnote(opensteer: string): string {
-  return `What agents see goes to ${opensteer} and the AI service the task uses. Tasks in Main can use these apps; a specialist needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.`;
+  return `What agents see goes to ${opensteer} and the AI service the task uses. Tasks in Main can use these apps; a project needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.`;
 }
 
 /** Add's label says how many apps it turns on, since switching them is only a draft until then. */
@@ -674,7 +674,7 @@ export function iphoneAnswerFailure(outcome: IphoneAnswerOutcome, name: string):
 
 /** What allowing a task's request lasts for, in the Workspaces' own terms. */
 export const iphoneTaskScope =
-  "Allowing lasts until you change it, not only for this task. The Workspace that asked can use it; other specialists still need your approval.";
+  "Allowing lasts until you change it, not only for this task. The Workspace that asked can use it; other projects still need your approval.";
 
 /** An unknown change, in its sheet and under its row. */
 export function iphoneUnknownChange(name: string, label: string): string {

@@ -157,7 +157,7 @@ export interface WorkspaceSummary {
   fileCount: number;
   harnessLabel: string;
   id: string;
-  /** "main" is the owner's implicit home; only "specialized" Workspaces are listed. */
+  /** "main" is the owner's implicit home; only "project" Workspaces are listed. */
   kind: WorkspaceView["kind"];
   /**
    * The computer holding this Workspace's folder, by name. Null for shared
@@ -870,7 +870,7 @@ export interface HostSnapshot {
    * Thread started from a message is named from it by its engine.
    */
   threadRenameAvailable: boolean;
-  /** The Host serves `task-marks-v1`: task icons and specialist colours can be chosen. */
+  /** The Host serves `task-marks-v1`: task icons and project colours can be chosen. */
   taskMarksAvailable: boolean;
   sharedTaskDoneAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */

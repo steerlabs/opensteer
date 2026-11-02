@@ -116,7 +116,7 @@ export function TaskIconPicker(props: {
   );
 }
 
-export function SpecialistMarkPicker(props: {
+export function ProjectMarkPicker(props: {
   readonly hostClient: HostClient;
   readonly workspace: WorkspaceSummary;
   readonly editable: boolean;
@@ -155,7 +155,7 @@ export function SpecialistMarkPicker(props: {
       );
     } catch (failure) {
       props.onRefused();
-      setError(failure instanceof Error ? failure.message : "The specialist could not be changed.");
+      setError(failure instanceof Error ? failure.message : "The project could not be changed.");
     } finally {
       inFlight.current = false;
       setSaving(false);
@@ -163,7 +163,7 @@ export function SpecialistMarkPicker(props: {
   };
   return (
     <PickerSheet
-      title="Specialist appearance"
+      title="Project appearance"
       closing={!props.editable}
       error={error}
       onClose={props.onClose}

@@ -99,7 +99,7 @@ function archivedWorkspace(): Workspace & {
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Archived",
     status: "archived",
     storageIssue: null,

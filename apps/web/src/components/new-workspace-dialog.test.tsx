@@ -137,6 +137,6 @@ describe("NewWorkspaceDialog", () => {
     expect(html).toContain("An offline computer cannot be chosen");
     expect(html).not.toContain("created once it reconnects");
     // The one online computer still makes the form usable.
-    expect(html).toContain("Create specialist");
+    expect(html).toContain("Create project");
   });
 });

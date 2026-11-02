@@ -177,7 +177,7 @@ export interface ShellContext {
   /** Returns from Settings to the workspace address left behind, or Home if opened there. */
   leaveSettings: () => void;
   openMobileNavigation: () => void;
-  /** Opens the dialog that creates a specialist. */
+  /** Opens the dialog that creates a project. */
   openNewWorkspace: () => void;
   /**
    * Runs one action against this computer's Runner slot. It records the

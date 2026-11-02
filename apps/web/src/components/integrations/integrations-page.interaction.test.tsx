@@ -1050,15 +1050,15 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
 
 describe("Settings shows the selected Workspace's access", () => {
   // The ways it could fail: disconnecting an account with Main selected
-  // reloads the page, and the person picks a specialist before that reload,
+  // reloads the page, and the person picks a project before that reload,
   // or the disconnect itself, answers. A read for Main answers last and
-  // replaces the specialist's grants, which disappear under its name.
+  // replaces the project's grants, which disappear under its name.
   it.each(["reload", "disconnect"] as const)(
-    "keeps a specialist's grants when Main's %s answers after the switch",
+    "keeps a project's grants when Main's %s answers after the switch",
     async (late) => {
       const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const specialist = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized");
-      if (!specialist) throw new Error("The mock seeds a specialist.");
+      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
+      if (!project) throw new Error("The mock seeds a project.");
       const container = await mountSettings(client);
       let answer: (() => void) | null = null;
       const hold = <T,>(work: () => Promise<T>) =>
@@ -1090,23 +1090,23 @@ describe("Settings shows the selected Workspace's access", () => {
       await vi.waitFor(() => expect(answer).not.toBeNull());
 
       const workspace = workspaceSelect(container);
-      await choose(workspace, specialist.id);
+      await choose(workspace, project.id);
       await vi.waitFor(() => expect(container.querySelectorAll(".intg-grant").length).toBe(2));
       await act(async () => answer?.());
 
-      expect(workspace?.value).toBe(specialist.id);
+      expect(workspace?.value).toBe(project.id);
       expect(container.querySelectorAll(".intg-grant").length).toBe(2);
     },
   );
 
   // The ways it could fail: Main's reload after a disconnect stalls, and the
-  // person picks a specialist, whose access loads. The disconnect waits for
+  // person picks a project, whose access loads. The disconnect waits for
   // Main's read all the same, and every change on the page stays disabled
   // under access that has already loaded.
   it("lets the person change access once a newer read loads, while an older one stalls", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-    const specialist = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized");
-    if (!specialist) throw new Error("The mock seeds a specialist.");
+    const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
+    if (!project) throw new Error("The mock seeds a project.");
     const container = await mountSettings(client);
     const grants = client.rpc["integration.grants.list"];
     let answerMain: (() => void) | null = null;
@@ -1124,7 +1124,7 @@ describe("Settings shows the selected Workspace's access", () => {
     await click(buttonWithText(row ?? container, "Confirm disconnect"));
     await vi.waitFor(() => expect(answerMain).not.toBeNull());
 
-    await choose(workspaceSelect(container), specialist.id);
+    await choose(workspaceSelect(container), project.id);
     await vi.waitFor(() => expect(container.querySelectorAll(".intg-grant").length).toBe(2));
 
     expect(buttonWithText(container, "Revoke")?.disabled).toBe(false);
@@ -1133,15 +1133,15 @@ describe("Settings shows the selected Workspace's access", () => {
     expect(buttonWithText(container, "Revoke")?.disabled).toBe(false);
   });
 
-  // The ways it could fail: the person picks a specialist that has access,
+  // The ways it could fail: the person picks a project that has access,
   // and while that access loads, or once its read fails, the page says
   // nothing is allowed there; or it stops saying so where nothing is.
   it.each(["fails", "finds nothing"] as const)(
     "says nothing is allowed only once a read finds nothing, not while one loads or %s",
     async (answer) => {
       const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const specialist = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized");
-      if (!specialist) throw new Error("The mock seeds a specialist.");
+      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
+      if (!project) throw new Error("The mock seeds a project.");
       const nothing = "Nothing is allowed here yet";
       const failed = "Workspace access could not be read";
       const container = await mountSettings(client);
@@ -1158,7 +1158,7 @@ describe("Settings shows the selected Workspace's access", () => {
           }),
       });
 
-      await choose(workspaceSelect(container), specialist.id);
+      await choose(workspaceSelect(container), project.id);
 
       expect(container.textContent).not.toContain(nothing);
       expect(container.querySelector('[aria-label="Loading Workspace access"]')).not.toBeNull();
@@ -1216,9 +1216,9 @@ describe("Settings retires only the page read failure that a newer read supersed
     "reports a failed post-disconnect refresh once and recovers (overlapping Workspace read: %s)",
     async (overlap) => {
       const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const specialist = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized");
+      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
       const main = client.getSnapshot().workspaces.find(({ kind }) => kind === "main");
-      if (!specialist || !main) throw new Error("Both Workspaces exist.");
+      if (!project || !main) throw new Error("Both Workspaces exist.");
       const container = await mountSettings(client);
       const read = client.rpc["integration.grants.list"];
       const dispatch = vi.spyOn(client, "dispatch");
@@ -1244,7 +1244,7 @@ describe("Settings retires only the page read failure that a newer read supersed
       );
       if (overlap) {
         withRpc(client, { "integration.grants.list": async () => failure() });
-        await choose(workspaceSelect(container), specialist.id);
+        await choose(workspaceSelect(container), project.id);
       }
       await vi.waitFor(() => expect(container.textContent).toContain(failed));
       const alerts = () =>
@@ -1257,8 +1257,8 @@ describe("Settings retires only the page read failure that a newer read supersed
       withRpc(client, {
         "integration.grants.list": (input) => read(input as Parameters<typeof read>[0]),
       });
-      await choose(workspaceSelect(container), overlap ? main.id : specialist.id);
-      await choose(workspaceSelect(container), specialist.id);
+      await choose(workspaceSelect(container), overlap ? main.id : project.id);
+      await choose(workspaceSelect(container), project.id);
       await vi.waitFor(() => expect(container.querySelectorAll(".intg-grant")).toHaveLength(2));
       expect(alerts()).toEqual([]);
       expect(row?.isConnected).toBe(false);
@@ -1271,9 +1271,9 @@ describe("Settings retires only the page read failure that a newer read supersed
     "recovers the selected Workspace with %s",
     async (result) => {
       const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const specialist = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized");
+      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
       const main = client.getSnapshot().workspaces.find(({ kind }) => kind === "main");
-      if (!specialist || !main) throw new Error("Both Workspaces exist.");
+      if (!project || !main) throw new Error("Both Workspaces exist.");
       const container = await mountSettings(client);
       const read = client.rpc["integration.grants.list"];
       const failed = "Workspace access could not be read";
@@ -1283,7 +1283,7 @@ describe("Settings retires only the page read failure that a newer read supersed
           error: { code: "internal", message: failed, retryable: true },
         }),
       });
-      await choose(workspaceSelect(container), specialist.id);
+      await choose(workspaceSelect(container), project.id);
       await vi.waitFor(() =>
         expect(container.querySelector('[role="alert"]')?.textContent).toBe(failed),
       );
@@ -1301,7 +1301,7 @@ describe("Settings retires only the page read failure that a newer read supersed
       });
       await choose(workspaceSelect(container), main.id);
       expect(container.querySelector('[role="alert"]')).toBeNull();
-      await choose(workspaceSelect(container), specialist.id);
+      await choose(workspaceSelect(container), project.id);
       expect(container.querySelector('[aria-label="Loading Workspace access"]')).not.toBeNull();
       await act(async () => finish());
       expect(container.querySelector('[role="alert"]')).toBeNull();
@@ -1313,9 +1313,9 @@ describe("Settings retires only the page read failure that a newer read supersed
 
   it("ignores an older success after the newest Workspace read fails", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-    const specialist = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized");
+    const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
     const main = client.getSnapshot().workspaces.find(({ kind }) => kind === "main");
-    if (!specialist || !main) throw new Error("Both Workspaces exist.");
+    if (!project || !main) throw new Error("Both Workspaces exist.");
     const container = await mountSettings(client);
     const read = client.rpc["integration.grants.list"];
     let finishOld = () => {};
@@ -1325,7 +1325,7 @@ describe("Settings retires only the page read failure that a newer read supersed
           finishOld = () => resolve(read(input as Parameters<typeof read>[0]));
         }),
     });
-    await choose(workspaceSelect(container), specialist.id);
+    await choose(workspaceSelect(container), project.id);
     withRpc(client, {
       "integration.grants.list": async () => ({
         ok: false,

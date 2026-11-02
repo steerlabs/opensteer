@@ -554,7 +554,7 @@ function describeConfigurationConformance(
         { headers: ownerHeaders },
       );
       if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-      expect(created.workspace).toMatchObject({ kind: "specialized", status: "ready" });
+      expect(created.workspace).toMatchObject({ kind: "project", status: "ready" });
 
       const replayed = await testRpcData(
         origin,

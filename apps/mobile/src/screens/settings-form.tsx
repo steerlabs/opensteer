@@ -10,7 +10,7 @@ import {
   chromeSettingsRow,
   computersSettingsFooter,
   connectedAppsSettingsRow,
-  specialistNotificationsFooter,
+  projectNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
@@ -172,7 +172,7 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
 
         {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
         {notifications === null || props.agents.length === 0 ? null : (
-          <Section footer={specialistNotificationsFooter} label="Notifications from specialists">
+          <Section footer={projectNotificationsFooter} label="Notifications from projects">
             <RowGroup>
               {props.agents.map((agent) => (
                 <SwitchRow

@@ -455,7 +455,7 @@ the attach for retry.
 ## Profiles and identity
 
 Profiles are durable identities, not account names. Main and the person create
-empty profiles; a specialized Workspace needs an atomic creation-and-grant
+empty profiles; a Project needs an atomic creation-and-grant
 browser-access Request. Delegated and trigger work creates none. Choose the
 profile before signing in: Guest state is ephemeral and cannot be promoted.
 The profile list provides identities and grants, never proof of a website login.

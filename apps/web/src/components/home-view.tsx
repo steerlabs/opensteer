@@ -313,7 +313,7 @@ export function WorkspaceHomeRoute() {
   const { workspaceId } = useParams();
   const { hostClient, snapshot } = useShell();
   const workspace = snapshot.workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
-  // Opening a specialist, from wherever it was opened, follows its stream.
+  // Opening a project, from wherever it was opened, follows its stream.
   const activeWorkspaceId = workspace?.id ?? null;
   useEffect(() => {
     if (activeWorkspaceId) hostClient.activateWorkspace(activeWorkspaceId);
@@ -428,8 +428,8 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
   };
 
   const health = useMemo(() => workspaceHealth(workspace, snapshot), [snapshot, workspace]);
-  const specialists = useMemo(
-    () => snapshot.workspaces.filter((candidate) => candidate.kind === "specialized"),
+  const projects = useMemo(
+    () => snapshot.workspaces.filter((candidate) => candidate.kind === "project"),
     [snapshot.workspaces],
   );
   const greeting = home
@@ -444,7 +444,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
         title={home ? "New task" : workspace.name}
       />
 
-      <div className={home ? "hero" : "hero hero--specialist"}>
+      <div className={home ? "hero" : "hero hero--project"}>
         <div className="hero__inner">
           {home ? null : (
             <div className="hero__workspace">
@@ -460,7 +460,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
           ) : health ? (
             <h2 className="hero__title">{health.heading}</h2>
           ) : null}
-          {home ? null : <SpecialistTasks workspaceId={workspace.id} />}
+          {home ? null : <ProjectTasks workspaceId={workspace.id} />}
           {health ? (
             <>
               <p className="hero__subtitle">{health.body}</p>
@@ -485,7 +485,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
                 )}
                 sendBlocked={sendBlocked}
                 sendLabel="Start task"
-                leadingFooter={<AssigneePicker specialists={specialists} workspace={workspace} />}
+                leadingFooter={<AssigneePicker projects={projects} workspace={workspace} />}
                 footerExtras={
                   <>
                     <ExecutionControls
@@ -547,7 +547,7 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
               onClick={() => openSharing(workspace.id)}
               type="button"
             >
-              <Icon name="share" /> Share this specialist
+              <Icon name="share" /> Share this project
             </button>
           ) : null}
           {!home && workspace.status === "ready" ? (
@@ -560,12 +560,12 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
 }
 
 /**
- * The specialist's own tasks, on the same rows and in the same groups as the
+ * The project's own tasks, on the same rows and in the same groups as the
  * sidebar: Working, Ready, then Done. They are read for this Workspace
- * alone, so a specialist's older work shows here without paging the reader's
+ * alone, so a project's older work shows here without paging the reader's
  * whole list.
  */
-function SpecialistTasks({ workspaceId }: { readonly workspaceId: string }) {
+function ProjectTasks({ workspaceId }: { readonly workspaceId: string }) {
   const { hostClient, reportActionError, setTaskDone } = useShell();
   const snapshot = useTaskSnapshot(hostClient);
   const now = useMinuteClock();
@@ -582,9 +582,9 @@ function SpecialistTasks({ workspaceId }: { readonly workspaceId: string }) {
   const list = useMemo(() => workspaceTaskList(snapshot, workspaceId), [snapshot, workspaceId]);
   const loaded = snapshot.workspaceTasks[workspaceId] !== undefined;
   const groups = [
-    { done: false, id: "specialist-working", rows: list.working, title: "Working" },
-    { done: false, id: "specialist-ready", rows: list.ready, title: "Ready" },
-    { done: true, id: "specialist-done", rows: list.done, title: "Done" },
+    { done: false, id: "project-working", rows: list.working, title: "Working" },
+    { done: false, id: "project-ready", rows: list.ready, title: "Ready" },
+    { done: true, id: "project-done", rows: list.done, title: "Done" },
   ].filter((group) => group.rows.length > 0);
   const motionList = useRef<HTMLElement | null>(null);
   return (
@@ -597,10 +597,10 @@ function SpecialistTasks({ workspaceId }: { readonly workspaceId: string }) {
       snap={false}
       nested
     >
-      <section aria-label="Tasks" className="specialist-tasks" ref={motionList}>
+      <section aria-label="Tasks" className="project-tasks" ref={motionList}>
         {loaded ? (
           groups.length === 0 ? (
-            <p className="specialist-tasks__empty">No tasks yet.</p>
+            <p className="project-tasks__empty">No tasks yet.</p>
           ) : (
             groups.map((group) => (
               <TaskGroup
@@ -623,8 +623,8 @@ function SpecialistTasks({ workspaceId }: { readonly workspaceId: string }) {
             ))
           )
         ) : failed ? (
-          <p className="specialist-tasks__empty">
-            Couldn’t load this specialist’s tasks.{" "}
+          <p className="project-tasks__empty">
+            Couldn’t load this project’s tasks.{" "}
             <button
               className="link-btn"
               onClick={() => setAttempt((value) => value + 1)}
@@ -638,7 +638,7 @@ function SpecialistTasks({ workspaceId }: { readonly workspaceId: string }) {
         )}
         {list.hasMore ? (
           <button
-            className="btn btn--ghost btn--small specialist-tasks__more"
+            className="btn btn--ghost btn--small project-tasks__more"
             disabled={loadingMore}
             onClick={() => {
               setLoadingMore(true);
@@ -727,7 +727,7 @@ export function workspaceHealth(
       ),
       blocking: true,
       body: "Its files are kept for the retention window, then removed for good. You can still bring it back.",
-      heading: "This specialist is scheduled for deletion",
+      heading: "This project is scheduled for deletion",
     };
   }
   if (workLocation === "none") {
@@ -763,7 +763,7 @@ export function workspaceHealth(
 }
 
 /**
- * The large mark on a specialized Workspace's home. Only an owner may change
+ * The large mark on a project Workspace's home. Only an owner may change
  * its icon, so the picker appears once the reader's membership says so; the
  * read is the one the sharing dialog uses.
  */
@@ -773,7 +773,7 @@ function WorkspaceIcon({ workspace }: { workspace: WorkspaceSummary }) {
   const [owner, setOwner] = useState(false);
   const userId = snapshot.user?.id ?? null;
   const changeable =
-    workspace.kind === "specialized" &&
+    workspace.kind === "project" &&
     workspace.status !== "deleting" &&
     workspace.status !== "deleted";
   // Membership can change while the page is open, so it is read again
@@ -872,7 +872,7 @@ function WorkspaceDeletionAction({
       onClick={() => {
         if (
           deleting &&
-          !window.confirm("Delete this specialist? You can recover it during the retention window.")
+          !window.confirm("Delete this project? You can recover it during the retention window.")
         ) {
           return;
         }
@@ -891,10 +891,10 @@ function WorkspaceDeletionAction({
       {deleting
         ? pending
           ? "Deleting…"
-          : "Delete this specialist"
+          : "Delete this project"
         : pending
           ? "Recovering…"
-          : "Keep this specialist"}
+          : "Keep this project"}
     </button>
   );
 }

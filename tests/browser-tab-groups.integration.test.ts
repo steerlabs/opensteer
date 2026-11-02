@@ -951,10 +951,10 @@ integration("agent organization and durable ownership", () => {
       .where("id", "=", opened.sessionId)
       .executeTakeFirstOrThrow();
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const specialized = await stack.createWorkspace("Special research");
+    const project = await stack.createWorkspace("Special research");
     const outside = await command(stack, {
       type: "browser.session.start",
-      workspaceId: specialized.id,
+      workspaceId: project.id,
       input: { fresh: true, reuseExisting: false },
       idempotencyKey: randomUUID(),
     });
@@ -980,7 +980,7 @@ integration("agent organization and durable ownership", () => {
       await stack.host.store.createBrowserSession({
         id,
         runnerId: session.runnerId,
-        workspaceId: index < 70 ? specialized.id : session.workspaceId,
+        workspaceId: index < 70 ? project.id : session.workspaceId,
         profileId: null,
         origin: "workspace",
         runtimeId: session.runtimeId,
@@ -1033,7 +1033,7 @@ integration("agent organization and durable ownership", () => {
     expect(
       new Set((await new BrowserTabGroupStore(db).layout(owner.id)).groups.map((g) => g.id)).size,
     ).toBe(2);
-    const scoped = await agent(stack, specialized.id, {
+    const scoped = await agent(stack, project.id, {
       paginate: true,
       calls: [
         {
@@ -1114,7 +1114,7 @@ integration("agent organization and durable ownership", () => {
         (call) => !call.error && BrowserTabWriteResultSchema.parse(call.result).action === "move",
       ),
     ).toBe(true);
-    const scopedMove = await agent(stack, specialized.id, {
+    const scopedMove = await agent(stack, project.id, {
       calls: [
         {
           name: "browser_tab_write",

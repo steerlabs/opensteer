@@ -37,7 +37,7 @@ function localWorkspace(options: {
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Research",
     status: options.status ?? "ready",
     storageIssue: null,

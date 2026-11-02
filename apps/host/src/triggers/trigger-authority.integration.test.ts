@@ -479,15 +479,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "A3/F12 Workspace list",
       f.specialist.id,
       "list",
-      "only specialized Workspace",
+      "only project Workspace",
       async () => {
         const result = hostApi["triggers.list"].success.parse(
           await agentTrigger(f.specialistToken, { operation: "list", limit: 100 }),
         );
         expect(result.triggers.length).toBeGreaterThan(0);
-        expect(result.triggers.every(({ workspaceId }) => workspaceId === f.specialized.id)).toBe(
-          true,
-        );
+        expect(result.triggers.every(({ workspaceId }) => workspaceId === f.project.id)).toBe(true);
         expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(false);
         return result;
       },
@@ -674,14 +672,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
         async () => {
           const response = await control.handle(token, {
             type: "thread.delegate",
-            workspaceId: f.specialized.id,
+            workspaceId: f.project.id,
             task: "Local authorized work",
             requestId: randomUUID(),
           });
           if (response.type !== "thread.delegate.result")
             throw new Error("Expected local delegation");
           expect(response.result.thread).toMatchObject({
-            workspaceId: f.specialized.id,
+            workspaceId: f.project.id,
             lineageRootThreadId: f.specialist.id,
             accessMode: "auto",
           });
@@ -735,7 +733,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         const response = await programs.handle(triggerToken, {
           type: "thread.delegate",
-          workspaceId: f.specialized.id,
+          workspaceId: f.project.id,
           task: "Work after mode change",
           requestId: randomUUID(),
         });
@@ -803,7 +801,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       { type: "workspace.inspect" },
       { type: "workspace.create", name: "Program-created Workspace" },
       { type: "thread.read", threadId: f.specialist.id },
-      { type: "thread.delegate", workspaceId: f.specialized.id, task: "Owner-wide delegation" },
+      { type: "thread.delegate", workspaceId: f.project.id, task: "Owner-wide delegation" },
       {
         type: "thread.message",
         threadId: f.unrelated.id,
@@ -2309,7 +2307,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     readonly createdBy: UserId;
     readonly idempotencyKey: string;
     readonly name: string;
-    readonly kind?: "main" | "specialized";
+    readonly kind?: "main" | "project";
   }) {
     return store.createWorkspace({
       ...input,
@@ -2409,11 +2407,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
       name: "Main Workspace",
       kind: "main",
     });
-    const specialized = await createWorkspace({
+    const project = await createWorkspace({
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
-      name: "Specialized Workspace",
-      kind: "specialized",
+      name: "Project Workspace",
+      kind: "project",
     });
     const harness = await store.createHarnessInstance({
       config: { model: "test" },
@@ -2455,7 +2453,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const delegated = await child("Delegated worker", main, "auto");
     const fullChild = await child("Full-access author", main, "full-access");
     const sibling = await child("Same-Workspace sibling", main, "auto");
-    const crossChild = await child("Cross-Workspace sibling", specialized, "auto");
+    const crossChild = await child("Cross-Workspace sibling", project, "auto");
     const { thread: specialist } = await store.createThread({
       accessMode: "full-access",
       createdBy: ownerId,
@@ -2464,7 +2462,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       idempotencyKey: randomUUID(),
       modelSelection,
       title: "Specialist root",
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     const { thread: unrelated } = await store.createThread({
       accessMode: "approval-required",
@@ -2495,7 +2493,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       task: [{ type: "text", text: "Work outside Chat's delegation lineage" }],
       title: "Specialist's delegated worker",
       titleSource: "chosen",
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     expect(chat.capabilityProfileId).toBe("main");
     expect(specialist.capabilityProfileId).toBe("workspace");
@@ -2506,7 +2504,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     return {
       ...base,
       main,
-      specialized,
+      project,
       chat,
       child: delegated,
       fullChild,

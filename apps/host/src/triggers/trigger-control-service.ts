@@ -279,7 +279,7 @@ export class TriggerControlService {
         ...(request.icon ? { icon: request.icon } : {}),
         ...(request.color ? { color: request.color } : {}),
         idempotencyKey: idempotencyKey(claims, request.requestId, "workspace"),
-        kind: "specialized",
+        kind: "project",
         name: request.name,
         storage: callerWorkspaceStorage({
           callerEnvironmentId: claims.environmentId,

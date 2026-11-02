@@ -76,7 +76,7 @@ import {
  * and unfolding keep every screen, draft, scroll position and stream exactly
  * where it was.
  *
- * The drawer can be dragged open only from Chat, Specialists, Tabs and
+ * The drawer can be dragged open only from Chat, Projects, Tabs and
  * Schedules — the screens that carry the Menu and have no Back of their own —
  * so it never competes with a task's edge-swipe back or a sheet's gestures.
  */
@@ -86,7 +86,7 @@ const sidebarMinimumWidth = 260;
 const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
   "Home",
   "Schedules",
-  "Specialists",
+  "Projects",
   "Tabs",
 ]);
 
@@ -287,7 +287,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const actions = useMemo<SidebarActions>(() => {
     const navigation = props.navigation;
     /**
-     * Goes to a place the sidebar offers. From Chat, Specialists or Tabs — the
+     * Goes to a place the sidebar offers. From Chat, Projects or Tabs — the
      * only screens the drawer opens over — a task or tab is pushed, so Back
      * returns there. A docked sidebar is beside every other screen, so from
      * anywhere else the choice returns to Chat's level first: Chat's own route
@@ -369,7 +369,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         navigation.dispatch(StackActions.push("Settings"));
       },
       onSchedules: () => show("Schedules"),
-      onSpecialists: () => show("Specialists"),
+      onProjects: () => show("Projects"),
       onTabs: () => show("Tabs"),
     };
   }, [close, leave, props.navigation]);

@@ -141,18 +141,18 @@ describe("WorkspaceMountRegistry", () => {
     ]);
   });
 
-  it("derives owner-scoped Main and specialized canonical paths", async () => {
+  it("derives owner-scoped Main and project canonical paths", async () => {
     const fixture = await registryFixture("owner-scoped");
     const userId = createId("user");
     const main = mountPlan({ createdBy: userId, workspaceKind: "main" });
-    const specialized = mountPlan({ createdBy: userId });
+    const project = mountPlan({ createdBy: userId });
 
     expect((await fixture.registry.ensureMounted(main, new AbortController().signal)).path).toBe(
       resolve(fixture.root, userId, "main"),
     );
-    expect(
-      (await fixture.registry.ensureMounted(specialized, new AbortController().signal)).path,
-    ).toBe(resolve(fixture.root, userId, specialized.workspaceId));
+    expect((await fixture.registry.ensureMounted(project, new AbortController().signal)).path).toBe(
+      resolve(fixture.root, userId, project.workspaceId),
+    );
   });
 
   it("fails closed when another volume occupies the canonical path", async () => {
@@ -571,7 +571,7 @@ function mountPlan(
     kind: "portablefs",
     volumeId,
     workspaceId: createId("workspace"),
-    workspaceKind: "specialized",
+    workspaceKind: "project",
     ...overrides,
   };
 }

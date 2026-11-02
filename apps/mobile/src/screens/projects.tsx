@@ -31,34 +31,34 @@ import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js"
 import { Symbol } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { specialistStatus } from "./specialist.js";
+import { projectStatus } from "./project.js";
 
-export type SpecialistsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
+export type ProjectsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
 /**
- * Specialists: this Deployment's specialized Workspaces.
+ * Projects: this Deployment's project Workspaces.
  *
  * Each is a place with its own files, instructions and access, not a voice
  * Chat puts on — opening one shows its own work and starts tasks inside it.
  * Nobody has to choose one to ask for something: Chat hands work to them.
  */
-export function SpecialistsScreen(props: SpecialistsScreenProps): ReactNode {
+export function ProjectsScreen(props: ProjectsScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   useSidebarMenu(hostClient);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
-  return <SpecialistDirectory deploymentId={deploymentId} hostClient={hostClient} />;
+  return <ProjectDirectory deploymentId={deploymentId} hostClient={hostClient} />;
 }
 
-/** The specialists, and whether a new one can be made from here right now. */
+/** The projects, and whether a new one can be made from here right now. */
 interface Directory {
   readonly canCreate: boolean;
   readonly hasMore: boolean;
   readonly loaded: boolean;
-  readonly specialists: readonly WorkspaceSummary[];
+  readonly projects: readonly WorkspaceSummary[];
 }
 
-function SpecialistDirectory(props: {
+function ProjectDirectory(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
 }): ReactNode {
@@ -77,13 +77,13 @@ function SpecialistDirectory(props: {
       canCreate: canRespondToRequests(snapshot),
       hasMore: snapshot.workspaceWindow.hasMore,
       loaded: snapshot.workspaces.length > 0,
-      specialists: snapshot.workspaces.filter(({ kind }) => kind === "specialized"),
+      projects: snapshot.workspaces.filter(({ kind }) => kind === "project"),
     }),
     [snapshot],
   );
 
   const create = useCallback(
-    () => navigation.navigate("NewSpecialist", { deploymentId }),
+    () => navigation.navigate("NewProject", { deploymentId }),
     [deploymentId, navigation],
   );
   useLayoutEffect(() => {
@@ -91,11 +91,11 @@ function SpecialistDirectory(props: {
       headerActions({
         right: {
           accessibilityLabel: directory.canCreate
-            ? "New specialist"
-            : "New specialist unavailable while offline",
+            ? "New project"
+            : "New project unavailable while offline",
           disabled: !directory.canCreate,
           icon: "plus",
-          label: "New specialist",
+          label: "New project",
           onPress: create,
         },
       }),
@@ -103,7 +103,7 @@ function SpecialistDirectory(props: {
   }, [create, directory.canCreate, navigation]);
 
   const open = useCallback(
-    (workspaceId: string) => navigation.navigate("Specialist", { deploymentId, workspaceId }),
+    (workspaceId: string) => navigation.navigate("Project", { deploymentId, workspaceId }),
     [deploymentId, navigation],
   );
 
@@ -114,7 +114,7 @@ function SpecialistDirectory(props: {
     void props.hostClient
       .loadEarlierWorkspaces()
       .catch((error: unknown) =>
-        setFailure(operationDetail(error, "More specialists could not be loaded.")),
+        setFailure(operationDetail(error, "More projects could not be loaded.")),
       )
       .finally(() => {
         loadingMoreRef.current = false;
@@ -124,7 +124,7 @@ function SpecialistDirectory(props: {
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<WorkspaceSummary>) => (
-      <SpecialistRow onPress={open} workspace={item} />
+      <ProjectRow onPress={open} workspace={item} />
     ),
     [open],
   );
@@ -134,7 +134,7 @@ function SpecialistDirectory(props: {
       <FlatList
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
-        data={directory.specialists}
+        data={directory.projects}
         keyExtractor={(workspace) => workspace.id}
         ListEmptyComponent={
           !directory.loaded && loadError === null ? (
@@ -144,13 +144,13 @@ function SpecialistDirectory(props: {
           ) : (
             <View style={styles.empty}>
               <Symbol name="person.2" size={30} tint={color.mutedDim} />
-              <AppText role="title">No specialists yet</AppText>
+              <AppText role="title">No projects yet</AppText>
               <AppText role="secondary" style={styles.centred} tone="muted">
-                A specialist keeps its own files, instructions and access for work you come back to.
+                A project keeps its own files, instructions and access for work you come back to.
                 You don’t need one to ask in Chat.
               </AppText>
               {directory.canCreate ? (
-                <SecondaryButton compact label="New specialist" onPress={create} />
+                <SecondaryButton compact label="New project" onPress={create} />
               ) : null}
             </View>
           )
@@ -179,18 +179,18 @@ function SpecialistDirectory(props: {
   );
 }
 
-interface SpecialistRowProps {
+interface ProjectRowProps {
   readonly onPress: (workspaceId: string) => void;
   readonly workspace: WorkspaceSummary;
 }
 
-const SpecialistRow = memo(function SpecialistRow(props: SpecialistRowProps): ReactNode {
+const ProjectRow = memo(function ProjectRow(props: ProjectRowProps): ReactNode {
   const { workspace } = props;
-  const status = specialistStatus(workspace);
+  const status = projectStatus(workspace);
   const detail = workspace.description.trim();
   return (
     <Pressable
-      accessibilityHint="Opens this specialist"
+      accessibilityHint="Opens this project"
       accessibilityLabel={[workspace.name, detail, status].filter(Boolean).join(". ")}
       accessibilityRole="button"
       onPress={() => props.onPress(workspace.id)}
@@ -215,9 +215,9 @@ const SpecialistRow = memo(function SpecialistRow(props: SpecialistRowProps): Re
       <Symbol name="chevron.right" size={13} tint={color.mutedDim} />
     </Pressable>
   );
-}, sameSpecialistRowProps);
+}, sameProjectRowProps);
 
-function sameSpecialistRowProps(left: SpecialistRowProps, right: SpecialistRowProps): boolean {
+function sameProjectRowProps(left: ProjectRowProps, right: ProjectRowProps): boolean {
   const a = left.workspace;
   const b = right.workspace;
   return (

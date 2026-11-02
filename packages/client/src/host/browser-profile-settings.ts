@@ -6,8 +6,8 @@ import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.j
 export interface BrowserProfileSettingsRow {
   readonly profile: BrowserProfileSummary;
   readonly identity: PlaceBrowserIdentity;
-  /** The specialists allowed to use it, each with the grant that allows it. */
-  readonly specialists: readonly {
+  /** The projects allowed to use it, each with the grant that allows it. */
+  readonly projects: readonly {
     readonly grantId: string;
     readonly workspace: WorkspaceSummary;
   }[];
@@ -27,9 +27,9 @@ export function browserProfileSettingsRows(
     .map((profile) => ({
       profile,
       identity: browserIdentity(profile.id, snapshot.browserProfiles),
-      specialists: snapshot.browserProfileGrants.flatMap((grant) => {
+      projects: snapshot.browserProfileGrants.flatMap((grant) => {
         const workspace = snapshot.workspaces.find(
-          (candidate) => candidate.id === grant.workspaceId && candidate.kind === "specialized",
+          (candidate) => candidate.id === grant.workspaceId && candidate.kind === "project",
         );
         return grant.profileId === profile.id && workspace
           ? [{ grantId: grant.id, workspace }]
@@ -41,26 +41,26 @@ export function browserProfileSettingsRows(
     }));
 }
 
-/** The specialists a profile can be given to, by name. */
-export function browserProfileSpecialists(
+/** The projects a profile can be given to, by name. */
+export function browserProfileProjects(
   snapshot: Pick<HostSnapshot, "workspaces">,
 ): WorkspaceSummary[] {
   return snapshot.workspaces
-    .filter((workspace) => workspace.kind === "specialized")
+    .filter((workspace) => workspace.kind === "project")
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-/** Who may browse as a profile: Opensteer always, then each specialist allowed. */
+/** Who may browse as a profile: Opensteer always, then each project allowed. */
 export function browserProfileAccessSummary(row: BrowserProfileSettingsRow): string {
-  if (row.specialists.length === 0) return "Opensteer only";
-  return spokenList(["Opensteer", ...row.specialists.map(({ workspace }) => workspace.name)]);
+  if (row.projects.length === 0) return "Opensteer only";
+  return spokenList(["Opensteer", ...row.projects.map(({ workspace }) => workspace.name)]);
 }
 
 /** What deleting a profile takes with it, beyond its sign-ins and site data. */
 export function browserProfileDeleteConsequence(row: BrowserProfileSettingsRow): string {
   const sentences = ["Its sign-ins and site data are erased from this Opensteer."];
-  if (row.specialists.length > 0) {
-    const names = row.specialists.map(({ workspace }) => workspace.name);
+  if (row.projects.length > 0) {
+    const names = row.projects.map(({ workspace }) => workspace.name);
     sentences.push(`${spokenList(names)} ${names.length === 1 ? "loses" : "lose"} access.`);
   }
   if (row.tabs > 0) {

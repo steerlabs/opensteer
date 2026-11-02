@@ -8,7 +8,7 @@ import { threadInDirectory } from "./host-snapshot-selectors.js";
  *   `--bg`), in the OKLCH palette of `MarkColorSchema`.
  * - `cursor` is the same hue deepened until white 11px label text on it
  *   reaches 4.5:1, so an agent's cursor reads on light and dark pages alike.
- * - `tile` is a specialist's filled tile, light to dark, under a white glyph.
+ * - `tile` is a project's filled tile, light to dark, under a white glyph.
  * - `wash` is a task's tile under its `glyph`: the tile's dark stop at 70%
  *   over `--surface`, quiet enough that a long list of tasks stays calm.
  */

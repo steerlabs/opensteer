@@ -302,7 +302,7 @@ function readyWorkspace(): PortableWorkspace {
     homeThreadId: null,
     icon: null,
     id,
-    kind: "specialized",
+    kind: "project",
     name: "Client",
     status: "ready",
     storageIssue: null,

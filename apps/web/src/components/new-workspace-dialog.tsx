@@ -76,7 +76,7 @@ export function NewWorkspaceDialog({
 
   if (!sharedStorageAvailable && availableMachines.length === 0) {
     return (
-      <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New specialist">
+      <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New project">
         <div className="card__form">
           <p className="section__hint">{noWorkspaceStorageExplanation(machines.length)}</p>
           <div className="form-actions">
@@ -93,7 +93,7 @@ export function NewWorkspaceDialog({
   }
 
   return (
-    <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New specialist">
+    <Dialog labelledBy="new-workspace-title" onClose={onClose} title="New project">
       <form
         className="card__form"
         onSubmit={(event) => {
@@ -227,7 +227,7 @@ export function NewWorkspaceDialog({
             Cancel
           </button>
           <button className="btn btn--primary" disabled={!submittable} type="submit">
-            {creating ? "Creating…" : "Create specialist"}
+            {creating ? "Creating…" : "Create project"}
           </button>
         </div>
       </form>

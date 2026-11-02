@@ -201,7 +201,7 @@ function readyWorkspace(backingKind: "local-directory" | "portablefs"): Workspac
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Files route",
     status: "ready",
     storageIssue: null,

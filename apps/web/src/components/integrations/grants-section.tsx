@@ -47,7 +47,7 @@ export function GrantsSection({
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
   readonly workspaceId: string | null;
-  readonly workspaceKind: "main" | "specialized";
+  readonly workspaceKind: "main" | "project";
   readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const [editing, setEditing] = useState(false);
@@ -83,7 +83,7 @@ export function GrantsSection({
             <strong>Main Workspace access</strong>
             <p>
               Opensteer and your tasks can use all of your connected accounts and installed
-              integrations. Specialists need explicit access.
+              integrations. Projects need explicit access.
             </p>
           </div>
         </div>

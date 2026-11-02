@@ -921,7 +921,7 @@ describeStore("PostgreSQL store", (it) => {
   it.for(["nested-delegation", "cancel-request", "drain-pending"] as const)(
     "orders Assignment projection fences (%s)",
     async (scenario, { storeFixture }) => {
-      const { startRunFixture, store, database, bindAgentControlRun, createSpecializedWorkspace } =
+      const { startRunFixture, store, database, bindAgentControlRun, createProjectWorkspace } =
         storeFixture;
       const fixture = await startRunFixture("assignment-projection-prefix");
       const delegated = await store.delegateThread({
@@ -964,7 +964,7 @@ describeStore("PostgreSQL store", (it) => {
           workspaceId: fixture.workspace.id,
         }),
       });
-      const target = await createSpecializedWorkspace(fixture.userId, "projection-request-target");
+      const target = await createProjectWorkspace(fixture.userId, "projection-request-target");
       const opened =
         scenario !== "nested-delegation"
           ? await store.requests.create({
@@ -1215,12 +1215,9 @@ describeStore("PostgreSQL store", (it) => {
   });
 
   it("uses its Workspace fence for durable Request membership reads", async ({ storeFixture }) => {
-    const { startRunFixture, createSpecializedWorkspace, store, database } = storeFixture;
+    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("request-membership-read");
-    const target = await createSpecializedWorkspace(
-      fixture.userId,
-      "request-membership-read-target",
-    );
+    const target = await createProjectWorkspace(fixture.userId, "request-membership-read-target");
     const opened = await store.requests.create({
       callId: "membership-read",
       kind: "browser.access",

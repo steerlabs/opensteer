@@ -2971,9 +2971,9 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     );
   });
 
-  it("leaves specialized and unsatisfied Main Requests pending", async () => {
+  it("leaves project and unsatisfied Main Requests pending", async () => {
     const connectionId = createIntegrationId("connection");
-    const specialized = integrationRequest("integration.access", "pending");
+    const project = integrationRequest("integration.access", "pending");
     const unsatisfied = {
       ...integrationRequest("integration.access", "pending"),
       targetWorkspaceId: createId("workspace"),
@@ -2996,7 +2996,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
             {
               access: "read",
               installationId: createIntegrationId("installation"),
-              request: specialized,
+              request: project,
               requestedServerId: null,
             },
             {
@@ -3013,7 +3013,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
 
     await service.fulfillSatisfiedMainAccessRequests({
       connectionId,
-      ownerUserId: specialized.requestedBy,
+      ownerUserId: project.requestedBy,
     });
 
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();

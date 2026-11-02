@@ -133,7 +133,7 @@ interface HomeResolution {
 function homeResolution(snapshot: HostSnapshot): HomeResolution {
   return {
     homeThreadId: snapshot.homeThreadId,
-    // Home belongs in Main's files and no other Workspace — not the specialist
+    // Home belongs in Main's files and no other Workspace — not the project
     // last looked at — stands in.
     mainWorkspaceId: mainWorkspace(snapshot)?.id ?? null,
     preparing: snapshot.workspaces.length === 0,

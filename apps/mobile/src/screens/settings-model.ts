@@ -322,8 +322,8 @@ export const chromeSettingsRow = {
   detail: "Your Chrome and the sites agents can sign in to",
   title: "Chrome",
 } as const;
-/** Under the specialists' switches: what muting one silences, and what it never does. */
-export const specialistNotificationsFooter =
+/** Under the projects' switches: what muting one silences, and what it never does. */
+export const projectNotificationsFooter =
   "Turning one off silences its replies and updates. Approvals and questions still notify you, and its work keeps running.";
 
 /**

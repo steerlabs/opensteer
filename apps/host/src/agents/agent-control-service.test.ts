@@ -1555,7 +1555,7 @@ function makeService(options: {
   createWorkspace?: (input: {
     readonly createdBy: typeof ownerId;
     readonly idempotencyKey: string;
-    readonly kind: "specialized";
+    readonly kind: "project";
     readonly name: string;
   }) => Promise<Workspace>;
   disconnectedEnvironmentId?: EnvironmentId;
@@ -2117,7 +2117,7 @@ function workspace(
     homeThreadId: null,
     icon: null,
     id,
-    kind: id === workspaceId ? "main" : "specialized",
+    kind: id === workspaceId ? "main" : "project",
     name,
     status: "ready",
     storageIssue: null,

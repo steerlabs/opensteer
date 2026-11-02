@@ -56,7 +56,7 @@ describe("workspaceViewFromWorkspace", () => {
       icon: null,
       homeThreadId: null,
       id: createId("workspace"),
-      kind: "specialized",
+      kind: "project",
       name: "Research",
       status: "ready",
       storageIssue: null,

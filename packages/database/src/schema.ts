@@ -678,7 +678,7 @@ export interface WorkspaceTable {
   deletionRequestedBy: UserId | null;
   icon: ColumnType<string | null, string | null | undefined, string | null>;
   id: WorkspaceId;
-  kind: "main" | "specialized";
+  kind: "main" | "project";
   lastActivityAt: Timestamp;
   name: string;
   /** Generated from the backing so the owning machine is a real reference the

@@ -61,7 +61,7 @@ import { useThreadHeader } from "./thread-header.js";
 
 export type NewTaskScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
-  /** Main for a task from Tasks; a specialist's own Workspace from its page. */
+  /** Main for a task from Tasks; a project's own Workspace from its page. */
   readonly workspaceId: string;
 }>;
 
@@ -383,7 +383,7 @@ function NewTask(props: {
     ],
   );
 
-  const specialist = workspace !== null && workspace.kind === "specialized" ? workspace : null;
+  const project = workspace !== null && workspace.kind === "project" ? workspace : null;
   const empty = text.trim() === "" && held === null && staged.items.length === 0;
 
   return (
@@ -420,14 +420,14 @@ function NewTask(props: {
     >
       <FirstMessageInvitation
         detail={
-          specialist === null
+          project === null
             ? "It runs as its own task, apart from Chat, and you can follow it in Tasks."
-            : "It works with this specialist’s own files, instructions and access."
+            : "It works with this project’s own files, instructions and access."
         }
         title={
-          specialist === null
+          project === null
             ? "What should this task take care of?"
-            : `What should ${specialist.name} take care of?`
+            : `What should ${project.name} take care of?`
         }
       />
       {empty ? (

@@ -176,7 +176,7 @@ function workspace(): Workspace & { readonly backing: LocalWorkspaceBacking } {
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Research",
     status: "ready",
     storageIssue: null,

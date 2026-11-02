@@ -196,7 +196,7 @@ describe("MockHostClient", () => {
     },
   );
 
-  it("settles an unclassified mock name to document and allocates seven serial colours independently of specialist colour", async () => {
+  it("settles an unclassified mock name to document and allocates seven serial colours independently of project colour", async () => {
     const client = createClient();
     try {
       const workspace = client.getSnapshot().workspaces[0]!;
@@ -215,15 +215,13 @@ describe("MockHostClient", () => {
           "document",
         ),
       );
-      const specialist = client
-        .getSnapshot()
-        .workspaces.find(({ kind }) => kind === "specialized")!;
+      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
       const before = client.getSnapshot().threads.map(({ id, color }) => ({ id, color }));
       const result = await client.dispatch({
         type: "workspace.color.set",
-        workspaceId: specialist.id,
+        workspaceId: project.id,
         color: "magenta",
-        idempotencyKey: "specialist-color",
+        idempotencyKey: "project-color",
       });
       expect(result).toMatchObject({
         type: "workspace.color.set",

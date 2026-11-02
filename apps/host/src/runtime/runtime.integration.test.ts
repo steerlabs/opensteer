@@ -639,9 +639,9 @@ integration("Host vertical slice", () => {
     if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
     expect(created.workspace.status).toBe("ready");
     // Main was provisioned by the first bootstrap; this is the second volume.
-    expect(created.workspace.kind).toBe("specialized");
+    expect(created.workspace.kind).toBe("project");
     expect(portableFs.createCalls).toBe(2);
-    const bootstrapAfterSpecializedWorkspace = await testRpcData(
+    const bootstrapAfterProjectWorkspace = await testRpcData(
       origin,
       "bootstrap.get",
       {},
@@ -649,8 +649,8 @@ integration("Host vertical slice", () => {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrapAfterSpecializedWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
-    expect(bootstrapAfterSpecializedWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
+    expect(bootstrapAfterProjectWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
+    expect(bootstrapAfterProjectWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
     const duplicate = await testRpcData(
       origin,
       "commands.dispatch",
@@ -3806,42 +3806,42 @@ integration("Host vertical slice", () => {
       name: "Main",
     });
     expect(JSON.stringify(bootstrap.workspaces[0])).not.toContain(dataDirectory);
-    const specialized = await testRpcData(
+    const project = await testRpcData(
       origin,
       "commands.dispatch",
       {
-        idempotencyKey: "personal-specialized-workspace",
+        idempotencyKey: "personal-project-workspace",
         name: "Private research",
         type: "workspace.create",
       },
       { headers: sessionHeaders },
     );
-    if (specialized.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(specialized.workspace).toMatchObject({
+    if (project.type !== "workspace.create") throw new Error("Workspace command mismatch.");
+    expect(project.workspace).toMatchObject({
       location: { environmentId: ownerEnvironmentId, kind: "machine" },
       name: "Private research",
       status: "ready",
     });
-    const sharingSpecialized = await testRpcRequest(
+    const sharingProject = await testRpcRequest(
       origin,
       "commands.dispatch",
       {
-        idempotencyKey: "share-personal-specialized",
+        idempotencyKey: "share-personal-project",
         role: "collaborator",
         type: "workspace.invitation.create",
-        workspaceId: specialized.workspace.id,
+        workspaceId: project.workspace.id,
       },
       { headers: sessionHeaders },
     );
-    expect(sharingSpecialized.status).toBe(403);
-    expect(await sharingSpecialized.json()).toMatchObject({
+    expect(sharingProject.status).toBe(403);
+    expect(await sharingProject.json()).toMatchObject({
       error: {
         code: "forbidden",
         message: "Workspace sharing is unavailable for this Deployment",
       },
     });
 
-    // Main is the mount point for specialized Workspaces, so it cannot be shared.
+    // Main is the mount point for project Workspaces, so it cannot be shared.
     const mainWorkspace = bootstrap.workspaces[0];
     if (!mainWorkspace) throw new Error("Main Workspace is missing.");
     const sharingMain = await testRpcRequest(

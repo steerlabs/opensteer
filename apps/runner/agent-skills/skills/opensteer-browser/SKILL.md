@@ -14,7 +14,7 @@ Every Browser Session has an ID, and every browser command names the session it 
 Choose the identity for each piece of work from what the person asked and what you can observe. One conversation may use several profiles.
 
 - **Work as the person, or work they want kept:** use a profile. `browser_profile_list` lists every profile available here without a Request; the list provides identities and grants. A name never proves an account or current login; verify on the website. Ask the person only when their intent stays ambiguous after looking.
-- **A new profile:** when the person asks for one, or names a profile they do not have, call `browser_profile_create` in Main, then open the returned `profile.id` with `browser_session_open` before anyone signs in. In a specialized Workspace, ask with `browser_access_request` and `suggestion: {kind: "new", suggestedName}`; its continuation names the profile to open.
+- **A new profile:** when the person asks for one, or names a profile they do not have, call `browser_profile_create` in Main, then open the returned `profile.id` with `browser_session_open` before anyone signs in. In a Project, ask with `browser_access_request` and `suggestion: {kind: "new", suggestedName}`; its continuation names the profile to open.
 - **Public or throwaway work:** open a Guest session with `fresh: true`. The person sees it as Guest. It can be signed in to websites, but nothing in it is kept when it closes, so never have the person sign in there for work they expect to keep.
 - **Continue work:** reuse the session ID from earlier in the Thread, or find it with `browser_session_list` (`attached` marks sessions this Run has open). `browser_tab_read` gives every saved tab's `profileId`, asleep tabs included (null is Guest). An ended session is not listed and does not mean its profile went away: open the profile again.
 
@@ -45,7 +45,7 @@ Opensteer browsers offer websites no passkeys or security keys, so a site that c
 
 Named profiles keep browser data on their owning computer; Guest keeps nothing. Creating an empty profile may leave placement unset until first open. Main inherits every owner profile and creates new empty ones with `browser_profile_create`; it never needs a Request for itself.
 
-`browser_access_request` asks the owner for a profile a specialized Workspace cannot use yet, existing or new; it does not log in. A profile `browser_profile_list` already returns needs no Request. In Main, pass that Workspace's exact `workspaceId`. In a Workspace Thread, omit it. Suggest an existing profile, a new empty profile, or `user_choice`; the owner chooses in the Request surface, and the fulfilled Request names the exact profile. A declined Request leaves the profiles this Workspace already had untouched.
+`browser_access_request` asks the owner for a profile a Project cannot use yet, existing or new; it does not log in. A profile `browser_profile_list` already returns needs no Request. In Main, pass that Workspace's exact `workspaceId`. In a Workspace Thread, omit it. Suggest an existing profile, a new empty profile, or `user_choice`; the owner chooses in the Request surface, and the fulfilled Request names the exact profile. A declined Request leaves the profiles this Workspace already had untouched.
 
 A browser error is about that session, not about profile access: read its message, which says what to do next. Never request profile access because a browser command failed.
 

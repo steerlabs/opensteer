@@ -468,7 +468,7 @@ const MainIntegrationAccessResponseSchema = z.strictObject({
     }),
   ]),
 });
-const SpecializedIntegrationAccessResponseSchema = z.strictObject({
+const ProjectIntegrationAccessResponseSchema = z.strictObject({
   kind: z.literal("external"),
   value: z.discriminatedUnion("decision", [
     DeclinedIntegrationAccessDecisionSchema,
@@ -8603,7 +8603,7 @@ class MockHostState {
       homeThreadId: null,
       icon: input.icon ?? null,
       id: this.nextId("workspace"),
-      kind: "specialized" as const,
+      kind: "project" as const,
       machineName: "Main runner",
       name,
       runnerLabel: this.snapshot.environments[0]?.name ?? "Main runner",
@@ -10176,7 +10176,7 @@ class MockHostState {
       const response = (
         target.kind === "main"
           ? MainIntegrationAccessResponseSchema
-          : SpecializedIntegrationAccessResponseSchema
+          : ProjectIntegrationAccessResponseSchema
       ).parse(input.response);
       if (response.value.decision === "fulfilled") {
         this.#verifyMockIntegrationAccessFulfillment(request, response.value.connectionId);
@@ -12265,7 +12265,7 @@ function createInitialSnapshot(): HostSnapshot {
         fileCount: 27,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000002",
-        kind: "specialized",
+        kind: "project",
         icon: "rocket",
         machineName: "Main runner",
         name: "Customer launch",
@@ -12281,7 +12281,7 @@ function createInitialSnapshot(): HostSnapshot {
         fileCount: 42,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000003",
-        kind: "specialized",
+        kind: "project",
         icon: "chart",
         machineName: "Main runner",
         name: "Finance & operations",

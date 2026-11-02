@@ -317,7 +317,7 @@ function makeService(options: {
   create?: (input: {
     readonly createdBy: typeof ownerId;
     readonly idempotencyKey: string;
-    readonly kind: "specialized";
+    readonly kind: "project";
     readonly name: string;
   }) => Promise<Workspace>;
   listEnvironmentsForUser?: (
@@ -589,7 +589,7 @@ function workspace(id: Workspace["id"], name: string): Workspace {
     homeThreadId: null,
     icon: null,
     id,
-    kind: "specialized",
+    kind: "project",
     name,
     status: "ready",
     storageIssue: null,

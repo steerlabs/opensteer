@@ -19,7 +19,7 @@ import { ComputersPage } from "../computers-page.js";
 import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "../home-view.js";
 import { SettingsRedirect } from "../settings/settings-redirect.js";
 import { SettingsSectionRoute, SettingsShell } from "../settings/settings-shell.js";
-import { SpecialistsPage } from "../specialists-page.js";
+import { ProjectsPage } from "../projects-page.js";
 import { ThreadRoute } from "../thread-view.js";
 import { ToastProvider } from "../toast.js";
 import { LiveRedirect } from "./live-redirect.js";
@@ -146,7 +146,7 @@ async function mount(
                 <Route path="new" element={<NewTaskRoute />} />
                 <Route path="threads/:threadId" element={<ThreadRoute />} />
                 <Route path="live" element={<LiveRedirect />} />
-                <Route path="specialists" element={<SpecialistsPage />} />
+                <Route path="projects" element={<ProjectsPage />} />
                 <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
                 <Route path="automations" element={<AutomationsPage />} />
                 <Route path="automations/:triggerId" element={<AutomationDetailPage />} />

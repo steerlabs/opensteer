@@ -4624,7 +4624,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("accepts a local specialized Workspace plan without PortableFS mount segments", async () => {
+  it("accepts a local project Workspace plan without PortableFS mount segments", async () => {
     const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
@@ -4696,7 +4696,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("lets Main attach a specialized Workspace already used by a child Run", async () => {
+  it("lets Main attach a project Workspace already used by a child Run", async () => {
     const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
@@ -5540,7 +5540,7 @@ function executeCommand(
       threadRole: "work",
       threadState: { previousAssignment: null, previousRun: null },
       workspaceId,
-      workspaceKind: "specialized",
+      workspaceKind: "project",
       machineAccess: { callerMachineName: "cloud-1", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: null,
       workspaceAccess: {
@@ -5551,7 +5551,7 @@ function executeCommand(
         kind: "portablefs",
         volumeId: "workspace_volume",
         workspaceId,
-        workspaceKind: "specialized",
+        workspaceKind: "project",
       },
     },
     correlationId: CorrelationIdSchema.parse("runtime-test"),
@@ -5617,7 +5617,7 @@ function triggerCommand(
         kind: "portablefs",
         volumeId: "workspace_volume",
         workspaceId,
-        workspaceKind: "specialized",
+        workspaceKind: "project",
       },
     },
     correlationId: CorrelationIdSchema.parse("trigger-runtime-test"),

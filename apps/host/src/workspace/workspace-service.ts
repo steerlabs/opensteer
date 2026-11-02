@@ -151,7 +151,7 @@ export class WorkspaceService {
       capacityPolicy,
       createdBy: input.createdBy,
       idempotencyKey: provisioningKey,
-      kind: input.kind ?? "specialized",
+      kind: input.kind ?? "project",
       name: input.name,
       workspaceId: id,
     } as const;

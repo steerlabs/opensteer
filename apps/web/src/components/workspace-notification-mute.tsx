@@ -33,8 +33,8 @@ export function WorkspaceNotificationMute({ workspace }: { readonly workspace: W
       </button>
       <p className="workspace-mute__note">
         {muted
-          ? "This specialist's own conversations and tasks no longer notify you. Approvals and questions still do, and so does Opensteer when it passes something on from this specialist. Its work keeps running."
-          : "Silences this specialist's own conversations and tasks. Approvals and questions still notify you, and so does Opensteer when it passes something on from this specialist."}
+          ? "This project's own conversations and tasks no longer notify you. Approvals and questions still do, and so does Opensteer when it passes something on from this project. Its work keeps running."
+          : "Silences this project's own conversations and tasks. Approvals and questions still notify you, and so does Opensteer when it passes something on from this project."}
       </p>
     </div>
   );

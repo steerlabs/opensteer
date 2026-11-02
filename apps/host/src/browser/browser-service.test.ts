@@ -4110,7 +4110,7 @@ describe("BrowserService", () => {
     });
   });
 
-  it("targets only owned specialized Workspaces and treats profile suggestions as advisory", async () => {
+  it("targets only owned project Workspaces and treats profile suggestions as advisory", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
@@ -4121,7 +4121,7 @@ describe("BrowserService", () => {
       repository: new MemoryBrowserRepository(ownerId, workspaceId, "main"),
       signer,
     });
-    const specialized = new BrowserService({
+    const project = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, workspaceId),
@@ -4141,13 +4141,13 @@ describe("BrowserService", () => {
     await expect(main.requestAccess(request)).rejects.toMatchObject({
       code: "bad_request",
       message:
-        "browser_access_request grants a browser profile only to a specialized Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
+        "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
     });
     await expect(
-      specialized.requestAccess({ ...request, workspaceId: createId("workspace") }),
+      project.requestAccess({ ...request, workspaceId: createId("workspace") }),
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
-      specialized.requestAccess({
+      project.requestAccess({
         ...request,
         callId: "browser-access-advisory-profile",
         suggestion: { kind: "existing", profileId: createId("browserProfile") },
@@ -4557,7 +4557,7 @@ describe("BrowserService", () => {
       runnerId: established.runnerId,
     });
 
-    const sessionWorkspaceId = repository.addWorkspace("specialized");
+    const sessionWorkspaceId = repository.addWorkspace("project");
     const existing = await service.start({
       fresh: true,
       ownerId,
@@ -4721,7 +4721,7 @@ describe("BrowserService", () => {
       workspaceId,
     });
 
-    const otherWorkspaceId = repository.addWorkspace("specialized");
+    const otherWorkspaceId = repository.addWorkspace("project");
     await expect(
       service.openAgentSession({
         agentBindingId: "run:other-workspace",
@@ -5107,17 +5107,17 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     workspaceId: WorkspaceId;
   } | null = null;
   readonly #ownerId: UserId;
-  readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "specialized">();
+  readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "project">();
   readonly #profiles = new Map<BrowserProfileId, BrowserProfileRecord>();
   readonly #deletedProfiles = new Set<BrowserProfileId>();
   readonly #sessions = new Map<BrowserSessionId, BrowserSessionRecord>();
   readonly #workspaceId: WorkspaceId;
-  readonly #workspaceKind: "main" | "specialized";
+  readonly #workspaceKind: "main" | "project";
 
-  constructor(ownerId: UserId, workspaceId: WorkspaceId, workspaceKind?: "main" | "specialized") {
+  constructor(ownerId: UserId, workspaceId: WorkspaceId, workspaceKind?: "main" | "project") {
     this.#ownerId = ownerId;
     this.#workspaceId = workspaceId;
-    this.#workspaceKind = workspaceKind ?? "specialized";
+    this.#workspaceKind = workspaceKind ?? "project";
   }
 
   readonly requests: BrowserSessionRepository["requests"] = {
@@ -5211,11 +5211,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         pending.targetWorkspaceId === this.#workspaceId
           ? this.#workspaceKind
           : this.#otherWorkspaces.get(pending.targetWorkspaceId);
-      if (
-        fulfilled &&
-        profile &&
-        (pending.kind === "browser.access" || targetKind === "specialized")
-      ) {
+      if (fulfilled && profile && (pending.kind === "browser.access" || targetKind === "project")) {
         if (
           this.#grant &&
           (this.#grant.profileId !== profile.id ||
@@ -5591,14 +5587,14 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
   async getWorkspaceForOwner(
     workspaceId: WorkspaceId,
     ownerId: UserId,
-  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "specialized" } | null> {
+  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "project" } | null> {
     if (ownerId !== this.#ownerId) return null;
     if (workspaceId === this.#workspaceId) return { id: workspaceId, kind: this.#workspaceKind };
     const kind = this.#otherWorkspaces.get(workspaceId);
     return kind ? { id: workspaceId, kind } : null;
   }
 
-  addWorkspace(kind: "main" | "specialized"): WorkspaceId {
+  addWorkspace(kind: "main" | "project"): WorkspaceId {
     const workspaceId = createId("workspace");
     this.#otherWorkspaces.set(workspaceId, kind);
     return workspaceId;

@@ -547,7 +547,7 @@ integration("cross-environment delegation reaches the Runner", () => {
   });
 
   it("Workspace and delegated agents discover Sol by name and delegate typed model options through MCP", async () => {
-    const fixture = await createFixture({ specialized: true });
+    const fixture = await createFixture({ project: true });
     const base = readyCatalog(fixture.mainHarnessInstanceId, nativeDriver);
     if (base.status !== "ready") throw new Error("Expected ready catalog");
     const selected = {
@@ -2497,7 +2497,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     options: {
       /** The assigning Thread is the person's Home rather than one of their tasks. */
       readonly home?: boolean;
-      readonly specialized?: boolean;
+      readonly project?: boolean;
       readonly lentDriverKind?: ReturnType<typeof HarnessIdSchema.parse>;
       readonly workspaceId?: WorkspaceId;
     } = {},
@@ -2524,7 +2524,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       runnerKind: "local",
     });
     const workspace = await store.createWorkspace({
-      kind: options.specialized ? "specialized" : "main",
+      kind: options.project ? "project" : "main",
       backing: {
         generation: 1,
         kind: "portablefs",

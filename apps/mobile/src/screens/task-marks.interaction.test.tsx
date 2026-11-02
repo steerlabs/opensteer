@@ -16,7 +16,7 @@ import type { ThreadHeaderState } from "../thread/thread-pane.js";
 
 // Failure journeys: a closed picker is released before native dismissal or
 // focuses a missing opener; connection health loses to assignment state;
-// an unloaded specialist is called Opensteer; a member is offered owner edits,
+// an unloaded project is called Opensteer; a member is offered owner edits,
 // or a refused edit/focus return keeps stale permission.
 const harness = vi.hoisted(() => ({
   client: null as HostClient | null,
@@ -195,7 +195,7 @@ vi.mock("../ui/task-mark.js", () => ({
   ),
 }));
 
-const { SpecialistScreen } = await import("./specialist.js");
+const { ProjectScreen } = await import("./project.js");
 const { useThreadHeader } = await import("./thread-header.js");
 const { AssignmentLines, TaskScopeContext } = await import("../thread/task-line.js");
 const { TaskMenu } = await import("../thread/task-status.js");
@@ -264,9 +264,9 @@ function hold(snapshot: HostSnapshot) {
     },
   };
 }
-async function specialist(role: "owner" | "member", state: "active" | "revoked" = "active") {
+async function project(role: "owner" | "member", state: "active" | "revoked" = "active") {
   const host = await client();
-  const workspace = host.getSnapshot().workspaces.find(({ kind }) => kind === "specialized")!;
+  const workspace = host.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
   const rpc = host.rpc;
   const read = rpc["workspace.members.list"].bind(rpc);
   let membership = { role, state };
@@ -285,9 +285,7 @@ async function specialist(role: "owner" | "member", state: "active" | "revoked" 
     }),
   });
   const container = render(
-    <SpecialistScreen
-      route={{ params: { deploymentId: "deployment", workspaceId: workspace.id } }}
-    />,
+    <ProjectScreen route={{ params: { deploymentId: "deployment", workspaceId: workspace.id } }} />,
   );
   await settle();
   return {
@@ -305,22 +303,22 @@ describe("mobile task mark review journeys", () => {
   it.each(["member", "owner"] as const)(
     "only gives an active owner the appearance editor (%s)",
     async (role) => {
-      const { container, members, workspace } = await specialist(role);
+      const { container, members, workspace } = await project(role);
       expect(members).toHaveBeenCalledWith({ workspaceId: workspace.id });
       expect(container.querySelector("[data-workspace]")).not.toBeNull();
       expect(
-        container.querySelector('[aria-label="Change specialist icon and colour"]') !== null,
+        container.querySelector('[aria-label="Change project icon and colour"]') !== null,
       ).toBe(role === "owner");
     },
   );
 
   it("does not give an inactive owner the editor", async () => {
-    const { container } = await specialist("owner", "revoked");
-    expect(container.querySelector('[aria-label="Change specialist icon and colour"]')).toBeNull();
+    const { container } = await project("owner", "revoked");
+    expect(container.querySelector('[aria-label="Change project icon and colour"]')).toBeNull();
   });
 
   it("rereads ownership on screen focus and foreground return", async () => {
-    const fixture = await specialist("owner");
+    const fixture = await project("owner");
     fixture.setMembership("member");
     await act(async () => {
       harness.focusEffects.forEach((cleanup, effect) => {
@@ -330,7 +328,7 @@ describe("mobile task mark review journeys", () => {
     });
     await settle();
     expect(
-      fixture.container.querySelector('[aria-label="Change specialist icon and colour"]'),
+      fixture.container.querySelector('[aria-label="Change project icon and colour"]'),
     ).toBeNull();
     fixture.setMembership("owner");
     await act(async () => {
@@ -338,14 +336,14 @@ describe("mobile task mark review journeys", () => {
     });
     await settle();
     expect(
-      fixture.container.querySelector('[aria-label="Change specialist icon and colour"]'),
+      fixture.container.querySelector('[aria-label="Change project icon and colour"]'),
     ).not.toBeNull();
   });
 
-  it("retains a specialist Modal until dismissal, then focuses its actual opener", async () => {
-    const { container } = await specialist("owner");
-    const opener = container.querySelector('[aria-label="Change specialist icon and colour"]');
-    await press(container, "Change specialist icon and colour");
+  it("retains a project Modal until dismissal, then focuses its actual opener", async () => {
+    const { container } = await project("owner");
+    const opener = container.querySelector('[aria-label="Change project icon and colour"]');
+    await press(container, "Change project icon and colour");
     harness.focus.mockImplementation(() => {
       expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
     });
@@ -361,19 +359,19 @@ describe("mobile task mark review journeys", () => {
   });
 
   it("rechecks after refusal and dismisses a revoked owner's editor", async () => {
-    const { host, container, setMembership, members } = await specialist("owner");
-    await press(container, "Change specialist icon and colour");
+    const { host, container, setMembership, members } = await project("owner");
+    await press(container, "Change project icon and colour");
     setMembership("member");
     vi.spyOn(host, "dispatch").mockRejectedValueOnce(new Error("Owner required"));
     await press(container, "Magenta");
     expect(members.mock.calls.length).toBeGreaterThan(1);
-    expect(container.querySelector('[aria-label="Change specialist icon and colour"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Change project icon and colour"]')).toBeNull();
     expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
     act(() => harness.dismiss?.());
     expect(container.querySelector("[data-modal-visible]")).toBeNull();
   });
 
-  it.each(["task", "specialist"] as const)(
+  it.each(["task", "project"] as const)(
     "schedules Android focus after hiding the %s picker",
     async (kind) => {
       harness.platform = "android";
@@ -384,7 +382,7 @@ describe("mobile task mark review journeys", () => {
       });
       vi.stubGlobal("cancelAnimationFrame", vi.fn());
       let container: HTMLElement;
-      if (kind === "specialist") container = (await specialist("owner")).container;
+      if (kind === "project") container = (await project("owner")).container;
       else {
         const host = await client();
         const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
@@ -404,12 +402,9 @@ describe("mobile task mark review journeys", () => {
       const opener = container.querySelector(
         kind === "task"
           ? '[aria-label$="Task actions"]'
-          : '[aria-label="Change specialist icon and colour"]',
+          : '[aria-label="Change project icon and colour"]',
       );
-      await press(
-        container,
-        kind === "task" ? "Change icon…" : "Change specialist icon and colour",
-      );
+      await press(container, kind === "task" ? "Change icon…" : "Change project icon and colour");
       await press(container, "Close");
       expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
       expect(harness.focus).not.toHaveBeenCalled();
@@ -492,7 +487,7 @@ describe("mobile task mark review journeys", () => {
   // a second bar line repeating the menu's state; dropping that line also
   // drops the state from what VoiceOver reads; a state that still asks for the
   // reader (working, waiting, failed, stopped) or a lost connection disappears
-  // with it; the specialist's name or the task menu goes too.
+  // with it; the project's name or the task menu goes too.
   it.each([
     ["completed", "Finished", null, false],
     ["completed", "Finished", "Travel", false],
@@ -502,7 +497,7 @@ describe("mobile task mark review journeys", () => {
     ["waiting", "Needs you", null, false],
     ["working", "Working", null, false],
   ] as const)(
-    "keeps a %s task's menu state accessible while compacting only Finished (%s, specialist %s, offline %s)",
+    "keeps a %s task's menu state accessible while compacting only Finished (%s, project %s, offline %s)",
     async (tone, word, workspaceName, offline) => {
       const host = await client();
       const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
@@ -570,7 +565,7 @@ describe("mobile task mark review journeys", () => {
     const host = await client();
     const snapshot = host.getSnapshot();
     const workspace = {
-      ...snapshot.workspaces.find(({ kind }) => kind === "specialized")!,
+      ...snapshot.workspaces.find(({ kind }) => kind === "project")!,
       name: "Travel",
       icon: "luggage" as const,
       color: "blue" as const,
@@ -613,11 +608,11 @@ describe("mobile task mark review journeys", () => {
     expect(open).toHaveBeenCalledWith(thread.id);
   });
 
-  it("does not call an unloaded completed specialist Opensteer and resolves attribution when loaded", async () => {
+  it("does not call an unloaded completed project Opensteer and resolves attribution when loaded", async () => {
     const host = await client();
     const snapshot = host.getSnapshot();
     const workspace = {
-      ...snapshot.workspaces.find(({ kind }) => kind === "specialized")!,
+      ...snapshot.workspaces.find(({ kind }) => kind === "project")!,
       name: "Travel",
     };
     const thread = {

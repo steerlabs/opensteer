@@ -2,7 +2,7 @@
  * Failure checklist: subject/state independence, quiet done rows without dimming
  * failures, 16/20/22px optical sizes, pending/old metadata, generated arrival,
  * icon-only edits in rows/headers/occupants/cursors without new activity,
- * default locking, keyboard/focus, specialist colour independence, Chat,
+ * default locking, keyboard/focus, project colour independence, Chat,
  * reduced motion, cursor contrast and the isolated glass transport.
  * Evidence is captured from the production build at actual 1x and 2x density.
  */
@@ -141,12 +141,12 @@ try {
     );
     await page.goto(`${web.origin}/workspaces/${travel}`);
     await page.locator(".workspace-icon-chooser").waitFor();
-    await capture(page, "specialist-page", density);
-    await check(`${density}x · specialist colour changes only the tile`, async () => {
+    await capture(page, "project-page", density);
+    await check(`${density}x · project colour changes only the tile`, async () => {
       await page.locator(".workspace-icon-chooser").click();
       const colors = page.getByRole("group", { name: "Colour", exact: true });
       await colors.waitFor();
-      await capture(page, "specialist-colour-picker", density);
+      await capture(page, "project-colour-picker", density);
       const count = await colors.getByRole("button").count();
       await colors.getByRole("button", { name: "Purple", exact: true }).click();
       await page.waitForFunction(
@@ -164,14 +164,14 @@ try {
       expectThat(
         observed,
         count === 7 && observed.taskColor === "lime",
-        "specialist colour changed task identity or palette is wrong",
+        "project colour changed task identity or palette is wrong",
       );
       await page.keyboard.press("Escape");
       return observed;
     });
-    await page.goto(`${web.origin}/specialists`);
-    await page.locator(".specialist-cards").waitFor();
-    await capture(page, "specialists", density);
+    await page.goto(`${web.origin}/projects`);
+    await page.locator(".project-cards").waitFor();
+    await capture(page, "projects", density);
     await page.goto(`${web.origin}/`);
     await page.locator(".task-line").first().waitFor();
     await capture(page, "conversation-assignment", density);

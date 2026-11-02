@@ -1283,7 +1283,7 @@ label.action-row input {
   background-color: var(--fill-plate-hover);
 }
 
-/* Who should do it: Opensteer or a specialist, under the composer that will
+/* Who should do it: Opensteer or a project, under the composer that will
    start the task. */
 .assignee {
   display: inline-flex;

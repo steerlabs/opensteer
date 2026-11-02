@@ -67,7 +67,7 @@ integration("managed teardown upgrades a stopped Host database", () => {
     await database.transaction().execute(async (transaction) => {
       await sql`
         insert into workspaces (id, name, status, created_by, kind, backing, capacity_policy)
-        values (${workspaceId}, 'Retained workspace', 'ready', ${userId}, 'specialized',
+        values (${workspaceId}, 'Retained workspace', 'ready', ${userId}, 'project',
           ${JSON.stringify(backing)}::jsonb,
           '{"blockHardLimitBytes":1024,"inodeHardLimit":10,"kind":"hard-quota"}'::jsonb)
       `.execute(transaction);

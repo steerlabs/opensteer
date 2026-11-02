@@ -36,7 +36,8 @@ export function localWorkspaceBindingId(input: {
     .update("\0", "utf8")
     .update(input.createdBy, "utf8")
     .update("\0", "utf8")
-    .update(input.kind, "utf8")
+    // Keep the original hash vocabulary: changing it would orphan existing bindings.
+    .update(input.kind === "project" ? "specialized" : input.kind, "utf8")
     .update("\0", "utf8")
     .update(input.idempotencyKey, "utf8")
     .digest()

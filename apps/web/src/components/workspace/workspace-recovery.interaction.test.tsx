@@ -194,11 +194,11 @@ describe("the review's findings", () => {
     expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
   });
 
-  it("4 · Specialists and Automations links keep the place in the middle", async () => {
-    await mount((source) => `/specialists${tabSearch(pageTab(source))}`);
+  it("4 · Projects and Automations links keep the place in the middle", async () => {
+    await mount((source) => `/projects${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const middle = element(".place");
-    await click(element(".specialist-card"));
+    await click(element(".project-card"));
     expect(history.at(-1)!.path).toMatch(/^\/workspaces\//u);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     expect(element(".place")).toBe(middle);

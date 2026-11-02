@@ -1075,11 +1075,11 @@ describe("IntegrationToolsMcpService access classes", () => {
       "A Trigger execution may only request integration access for its own Workspace. Omit workspaceId and request access where the Trigger runs.",
     );
 
-    const specialized = await createHarness({
+    const project = await createHarness({
       inventory: [entry],
       runScope: { ...scope, capabilityProfileId: "workspace" },
     });
-    const specializedResponse = await specialized.handler(
+    const projectResponse = await project.handler(
       {
         params: {
           arguments: {
@@ -1091,9 +1091,9 @@ describe("IntegrationToolsMcpService access classes", () => {
           name: "integration_request",
         },
       },
-      callExtra("specialized-cross-workspace"),
+      callExtra("project-cross-workspace"),
     );
-    expect(errorText(specializedResponse)).toBe(
+    expect(errorText(projectResponse)).toBe(
       "Only a main-profile agent may target another Workspace",
     );
   });

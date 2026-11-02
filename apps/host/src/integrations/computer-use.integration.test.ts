@@ -66,7 +66,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const store = new OpensteerStore(database);
     const persistence = new IntegrationPlatformStore(database);
     const connections = new IntegrationStore(database);
-    const task = await createComputerUseTask(store, randomUUID(), { kind: "specialized" });
+    const task = await createComputerUseTask(store, randomUUID(), { kind: "project" });
     const runnerId = createId("runner");
     const keys = generateKeyPairSync("ed25519");
     await database
@@ -449,7 +449,7 @@ integration.sequential("Host computer-use approval transactions", () => {
 
     // The same person's task in another Workspace cannot resolve this
     // Workspace's grant.
-    const elsewhere = await createWorkspace(test.store, task.userId, randomUUID(), "specialized");
+    const elsewhere = await createWorkspace(test.store, task.userId, randomUUID(), "project");
     const { thread } = await test.store.createThread({
       createdBy: task.userId,
       environmentId: task.environmentId,
@@ -603,7 +603,7 @@ async function createWorkspace(
   store: OpensteerStore,
   createdBy: ReturnType<typeof createId<"user">>,
   suffix: string,
-  kind?: "main" | "specialized",
+  kind?: "main" | "project",
 ) {
   return store.createWorkspace({
     backing: {
@@ -629,7 +629,7 @@ async function createWorkspace(
 async function createComputerUseTask(
   store: OpensteerStore,
   suffix: string,
-  options: { readonly kind?: "main" | "specialized" } = {},
+  options: { readonly kind?: "main" | "project" } = {},
 ) {
   const userId = await store.createUser(`Owner ${suffix}`);
   const runnerId = createId("runner");

@@ -158,11 +158,11 @@ export function InvitationOnboarding({
     <OnboardingCard
       description={
         <>
-          {preview.inviterName} shared this entire specialist with you as {article(preview.role)}{" "}
+          {preview.inviterName} shared this entire project with you as {article(preview.role)}{" "}
           {preview.role}. You’ll see its files, Threads, history, and future agent work.
         </>
       }
-      eyebrow="Specialist invitation"
+      eyebrow="Project invitation"
       footnote={
         <>
           <Icon name="key" />
@@ -189,7 +189,7 @@ export function InvitationOnboarding({
             onClick={() => void onAccept()}
             type="button"
           >
-            {pending ? "Joining…" : "Join specialist"}
+            {pending ? "Joining…" : "Join project"}
             <Icon name="arrow-right" />
           </button>
         </div>

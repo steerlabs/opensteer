@@ -2092,7 +2092,7 @@ describe("Personal sharing boundary", () => {
 describe("Workspace invitation issuance", () => {
   function invitationServer() {
     const ownerId = createId("user");
-    const workspace = specializedWorkspace(ownerId);
+    const workspace = projectWorkspace(ownerId);
     const createWorkspaceInvitation = vi.fn(
       async (input: { readonly intendedEmail?: string; readonly type: "email" | "link" }) => ({
         invitation: {
@@ -4089,7 +4089,7 @@ describe("durable harness catalogs", () => {
 describe("Workspace Files routes", () => {
   it("authorizes Workspace membership and forwards only the bounded directory request", async () => {
     const ownerId = createId("user");
-    const workspace = specializedWorkspace(ownerId);
+    const workspace = projectWorkspace(ownerId);
     const list = vi.fn(async () => ({
       cursor: null,
       entries: [],
@@ -4622,7 +4622,7 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-function specializedWorkspace(ownerId: Workspace["createdBy"]): Workspace {
+function projectWorkspace(ownerId: Workspace["createdBy"]): Workspace {
   const now = new Date().toISOString();
   const id = createId("workspace");
   return {
@@ -4642,7 +4642,7 @@ function specializedWorkspace(ownerId: Workspace["createdBy"]): Workspace {
     homeThreadId: null,
     icon: null,
     id,
-    kind: "specialized",
+    kind: "project",
     name: "Client",
     status: "ready",
     storageIssue: null,

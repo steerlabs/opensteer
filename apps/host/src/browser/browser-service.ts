@@ -376,7 +376,7 @@ export interface BrowserSessionRepository {
   getWorkspaceForOwner(
     workspaceId: WorkspaceId,
     ownerId: UserId,
-  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "specialized" } | null>;
+  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "project" } | null>;
   listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]>;
   renameBrowserProfile(input: {
     readonly name: string;
@@ -3040,7 +3040,7 @@ export class BrowserService {
       throw new OpensteerError({
         code: "bad_request",
         message:
-          "browser_access_request grants a browser profile only to a specialized Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
+          "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
       });
     }
     // Asking the owner for access the Workspace already holds would only put a

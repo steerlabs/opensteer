@@ -5264,7 +5264,7 @@ async function createWorld(
   const persistence = new IntegrationPlatformStore(database);
   const connections = new IntegrationStore(database);
   const owner = await createOwner(store, randomUUID(), options.ownerUserId);
-  const workspace = await createWorkspace(store, owner.userId, randomUUID(), "specialized");
+  const workspace = await createWorkspace(store, owner.userId, randomUUID(), "project");
   // The Runner authenticates with its own key; the person's approvals are
   // signed with the desktop's, which is a different key entirely.
   const keys = generateKeyPairSync("ed25519");
@@ -5535,7 +5535,7 @@ async function createWorld(
         ]),
       );
     },
-    async createWorkspace(name: string, kind: "main" | "specialized" = "specialized") {
+    async createWorkspace(name: string, kind: "main" | "project" = "project") {
       return createWorkspace(store, owner.userId, randomUUID(), kind, name);
     },
     async requestById(id: string) {
@@ -5686,7 +5686,7 @@ async function createWorkspace(
   store: OpensteerStore,
   createdBy: UserId,
   suffix: string,
-  kind: "main" | "specialized",
+  kind: "main" | "project",
   name = `Workspace ${suffix}`,
 ) {
   return store.createWorkspace({

@@ -210,9 +210,9 @@ integration("Host, Runner, and Codex harness integration", () => {
     expectRecordedUsage(await recordedUsage(stack, turn.runId), { attempt: null, nodes: [] });
 
     // The owner's Main Workspace is provisioned on first bootstrap, and this
-    // test then creates one specialized Workspace of its own.
+    // test then creates one project Workspace of its own.
     expect(stack.portableFsCreateCalls()).toBe(2);
-    expect(workspace.kind).toBe("specialized");
+    expect(workspace.kind).toBe("project");
     expect(mountCalls).toHaveLength(1);
     expect(mountCalls[0]).toMatchObject({
       plan: {

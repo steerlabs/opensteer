@@ -86,7 +86,7 @@ function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
 
 /**
  * Who does a task, when it says something: the reader's own Opensteer or a
- * specialist. The line keeps it to its name and tooltip; null while the
+ * project. The line keeps it to its name and tooltip; null while the
  * Workspace is not loaded, rather than a guess.
  */
 function taskOwner(assignment: AssignmentSummary, snapshot: HostSnapshot): string | null {

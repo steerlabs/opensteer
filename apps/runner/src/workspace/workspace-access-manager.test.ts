@@ -53,7 +53,7 @@ describe("RunWorkspaceManager", () => {
       manager.writableRoots({
         plan: fixture.plan,
         requestedBy: createId("user"),
-        workspaceKind: "specialized",
+        workspaceKind: "project",
         workspacePath: fixture.workspacePath,
       }),
     ).toEqual([fixture.workspacePath]);
@@ -179,7 +179,7 @@ async function localFixture() {
   const intent = {
     createdBy: createId("user"),
     idempotencyKey: globalThis.crypto.randomUUID(),
-    kind: "specialized" as const,
+    kind: "project" as const,
     ownerEnvironmentId: environmentId,
     workspaceId: createId("workspace"),
   };
@@ -225,6 +225,6 @@ function portableFsPlan(): PortableFsWorkspaceExecutionAccessPlan {
     kind: "portablefs",
     volumeId: "workspace_volume",
     workspaceId,
-    workspaceKind: "specialized",
+    workspaceKind: "project",
   };
 }

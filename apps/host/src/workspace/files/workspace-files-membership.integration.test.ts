@@ -68,7 +68,7 @@ integration("Workspace Files membership generation", () => {
               },
         createdBy: ownerId,
         idempotencyKey: `files-membership-${backingKind}`,
-        kind: "specialized",
+        kind: "project",
         name: "Shared files",
         status: "ready",
       });

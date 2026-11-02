@@ -324,7 +324,7 @@ describe("AgentToolsMcpService", () => {
             capacity: { kind: "managed-quota" as const },
             createdAt: "2026-09-24T00:00:00.000Z",
             id: workspaceId,
-            kind: "specialized" as const,
+            kind: "project" as const,
             location: { kind: "shared-storage" as const },
             name: "Travel",
             status: "ready" as const,
@@ -346,7 +346,7 @@ describe("AgentToolsMcpService", () => {
         workspaces: [
           {
             id: workspaceId,
-            kind: "specialized" as const,
+            kind: "project" as const,
             name: "Client",
             status: "ready" as const,
           },
@@ -427,7 +427,7 @@ describe("AgentToolsMcpService", () => {
     });
     expect(result.structuredContent).toEqual({
       window: { ...emptyWindow(), itemCount: 1, totalItems: 1 },
-      workspaces: [{ id: workspaceId, kind: "specialized", name: "Client", status: "ready" }],
+      workspaces: [{ id: workspaceId, kind: "project", name: "Client", status: "ready" }],
     });
     expect(handle).toHaveBeenCalledWith(
       "main-token",
@@ -506,7 +506,7 @@ describe("AgentToolsMcpService", () => {
     const threadId = createId("thread");
     const workspace = {
       id: workspaceId,
-      kind: "specialized" as const,
+      kind: "project" as const,
       name: "Client",
       status: "ready" as const,
     };
@@ -759,7 +759,7 @@ describe("AgentToolsMcpService", () => {
 
   it("returns an actionable browser domain error to the model verbatim", async () => {
     const message =
-      "browser_access_request grants a browser profile only to a specialized Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.";
+      "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.";
     const fixture = await startService({
       agentControl: {
         handle: vi.fn(async () => {
@@ -1341,7 +1341,7 @@ it.each([false, true])(
         expect(legacy.map(({ name }) => name)).not.toContain("environment_list");
         for (const [name, hash] of Object.entries({
           workspace_list: "73c4e227619784907796f4779d37f020dca2f8dca8a255ccab8057dac73bb633",
-          workspace_create: "ceee05f38f402957dd3adadf9d68774564486df88b3def17711d2364e29197a9",
+          workspace_create: "ba7dba0a463a8f3a905d169463099134f0c7b4cfe88e4d65493395c5f4cfc638",
           thread_delegate: "0ae90e18d6b458996d2828b9b583b59b3ffe148aa3e6d8247ec8926e1b83225e",
         })) {
           const definition = legacy.find((tool) => tool.name === name);

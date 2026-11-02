@@ -2,7 +2,7 @@ import type { HostSnapshot, ThreadSummary, WorkspaceSummary } from "./client.js"
 
 /**
  * Main: the Workspace Chat and its tasks live in, named by the Host or by its
- * own kind. No other Workspace stands in for it — a specialist turned into
+ * own kind. No other Workspace stands in for it — a project turned into
  * Chat would put a person's conversation in somebody else's files.
  */
 export function mainWorkspace(

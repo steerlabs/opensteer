@@ -20,8 +20,8 @@ export function workspaceStorageMachines(
 /** A disabled form explains nothing; this says which of the two states it is. */
 export function noWorkspaceStorageExplanation(machineCount: number): string {
   return machineCount === 0
-    ? "No computer can hold a specialist's files yet. Add a computer that can run agents, then come back here."
-    : "The computers that can hold a specialist's files are offline. Turn one on, then come back here.";
+    ? "No computer can hold a project's files yet. Add a computer that can run agents, then come back here."
+    : "The computers that can hold a project's files are offline. Turn one on, then come back here.";
 }
 
 /**

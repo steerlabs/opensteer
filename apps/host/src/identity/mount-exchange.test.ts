@@ -116,7 +116,7 @@ function setup(runnerKind: "local" | "managed") {
     id: createId("workspace"),
     homeThreadId: null,
     icon: null,
-    kind: "specialized",
+    kind: "project",
     name: "Test",
     status: "ready",
     storageIssue: null,

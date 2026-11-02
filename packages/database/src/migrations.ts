@@ -4677,6 +4677,7 @@ export function migrationProvider() {
         "0125_run_place_events": runPlaceEventsMigration,
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
+        "0128_projects": projectsMigration,
       };
     },
   };
@@ -6611,5 +6612,20 @@ const personShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+/** Kind conversion never changes backing identities or removes application records. */
+export const projectsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.workspaces disable trigger workspaces_immutable_kind;
+      alter table public.workspaces drop constraint workspaces_kind_check;
+      update public.workspaces set kind = 'project' where kind = 'specialized';
+      alter table public.workspaces alter column kind set default 'project';
+      alter table public.workspaces add constraint workspaces_kind_check
+        check (kind = any (array['main'::text, 'project'::text]));
+      alter table public.workspaces enable trigger workspaces_immutable_kind;
+    `.execute(database);
   },
 };

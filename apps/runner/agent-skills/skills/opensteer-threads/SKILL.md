@@ -73,7 +73,7 @@ from the message's authored context when replying.
 
 1. Call `thread_delegate` once with a focused outcome and either `workspaceId` to start a new task
    Thread or `threadId` to give an existing task Thread its next task with that Thread's context.
-   Do not provide both. Reuse a suitable specialist when its context is useful. A Thread works on
+   Do not provide both. Reuse a suitable Project when its context is useful. A Thread works on
    one task at a time. Give a new task a `title`: two to five plain words naming the outcome, the
    way the person would find it in their task list ("Hyatt Seoul booking", not the request's first
    sentence).
@@ -158,7 +158,7 @@ A user can change the engine inside the same conversation. A new native session 
 authored history; older messages remain readable. Use `thread_read` with `query` to locate earlier
 text, or `aroundMessageId` to inspect an exact referenced message. Follow its page cursor for more
 context. Treat a missing search match as a search result, not proof that something never happened.
-Preserve the distinction between the person's words, specialist reports and quoted source material.
+Preserve the distinction between the person's words, Project reports and quoted source material.
 
 To choose where delegated work runs, search `environment_list` for the requested
 engine or model. Use its account-specific `harnessInstanceId`, canonical

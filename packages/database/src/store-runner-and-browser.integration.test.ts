@@ -1221,12 +1221,12 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("agent-thread-list");
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         generation: 1,
         kind: "portablefs",
         serviceId: "test-portablefs",
-        volumeId: "wsp_agent_thread_list_specialized",
+        volumeId: "wsp_agent_thread_list_project",
       },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
@@ -1234,8 +1234,8 @@ describeStore("PostgreSQL store", (it) => {
         kind: "hard-quota",
       },
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-agent-thread-list-specialized",
-      name: "Specialized listing workspace",
+      idempotencyKey: "workspace-agent-thread-list-project",
+      name: "Project listing workspace",
       status: "ready",
     });
     const makeThread = async (
@@ -1275,7 +1275,7 @@ describeStore("PostgreSQL store", (it) => {
       child.id,
     );
     const unrelated = await makeThread("unrelated", "Report_2026 100% done", fixture.workspace.id);
-    const specializedThread = await makeThread("specialized", "Client onboarding", specialized.id);
+    const projectThread = await makeThread("project", "Client onboarding", project.id);
     const foreignOwnerId = await store.createUser("Foreign listing owner");
     const foreignWorkspace = await store.createWorkspace({
       backing: {
@@ -1309,7 +1309,7 @@ describeStore("PostgreSQL store", (it) => {
       sibling.id,
       grandchild.id,
       unrelated.id,
-      specializedThread.id,
+      projectThread.id,
     ];
 
     const everything = await store.agentThreadPageForOwner({
@@ -1326,20 +1326,20 @@ describeStore("PostgreSQL store", (it) => {
       nextBefore: null,
       totalItems: ownedIds.length,
     });
-    expect(everything.threads.find(({ id }) => id === specializedThread.id)).toMatchObject({
+    expect(everything.threads.find(({ id }) => id === projectThread.id)).toMatchObject({
       parentThreadId: null,
       status: "idle",
       title: "Client onboarding",
-      workspaceId: specialized.id,
-      workspaceName: "Specialized listing workspace",
+      workspaceId: project.id,
+      workspaceName: "Project listing workspace",
     });
 
     const scoped = await store.agentThreadPageForOwner({
       ownerId: fixture.userId,
-      scope: { kind: "workspace", workspaceId: specialized.id },
-      scopeId: specializedThread.id,
+      scope: { kind: "workspace", workspaceId: project.id },
+      scopeId: projectThread.id,
     });
-    expect(scoped.threads.map(({ id }) => id)).toEqual([specializedThread.id]);
+    expect(scoped.threads.map(({ id }) => id)).toEqual([projectThread.id]);
     expect(scoped.window.totalItems).toBe(1);
 
     const lineage = await store.agentThreadPageForOwner({
@@ -1719,7 +1719,7 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "workspace-other-lineage",
       status: "ready",
     });
-    expect(otherWorkspace.kind).toBe("specialized");
+    expect(otherWorkspace.kind).toBe("project");
     const crossWorkspaceCreation = await store.createThread({
       createdBy: userId,
       environmentId,
@@ -1847,7 +1847,7 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .updateTable("workspaces")
-        .set({ kind: "specialized" })
+        .set({ kind: "project" })
         .where("id", "=", workspace.id)
         .execute(),
     ).rejects.toThrow(/workspace kind.*immutable/);
@@ -3804,7 +3804,7 @@ describeStore("PostgreSQL store", (it) => {
       },
       createdBy: ownerId,
       idempotencyKey: "workspace-profile-delete-specialist",
-      kind: "specialized",
+      kind: "project",
       name: "Buyer",
       status: "ready",
     });
@@ -3982,12 +3982,12 @@ describeStore("PostgreSQL store", (it) => {
         ({ grantId }) => grantId,
       ),
     ).toEqual(inheritedMainGrants.map(({ grantId }) => grantId));
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         generation: 1,
         kind: "portablefs",
         serviceId: "test-portablefs",
-        volumeId: "wsp_browser_specialized",
+        volumeId: "wsp_browser_project",
       },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
@@ -3995,44 +3995,42 @@ describeStore("PostgreSQL store", (it) => {
         kind: "hard-quota",
       },
       createdBy: ownerId,
-      idempotencyKey: "workspace-browser-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-browser-project",
+      kind: "project",
       name: "Browser specialist",
       status: "ready",
     });
-    expect(await store.listActiveBrowserProfileGrantsForWorkspace(specialized.id, ownerId)).toEqual(
-      [],
-    );
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual([]);
     const browserGrant = await store.createBrowserProfileGrant({
       access: "full-control",
       createdBy: ownerId,
       profileId: clientProfile.id,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     const secondBrowserGrant = await store.createBrowserProfileGrant({
       access: "full-control",
       createdBy: ownerId,
       profileId: profile.id,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     expect(browserGrant.grantId).toMatch(/^bpg_/);
-    expect(await store.listActiveBrowserProfileGrantsForWorkspace(specialized.id, ownerId)).toEqual(
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ grantId: browserGrant.grantId, profileId: clientProfile.id }),
         expect.objectContaining({ grantId: secondBrowserGrant.grantId, profileId: profile.id }),
       ]),
     );
     await store.revokeBrowserProfileGrant(browserGrant.grantId, ownerId);
-    expect(await store.listActiveBrowserProfileGrantsForWorkspace(specialized.id, ownerId)).toEqual(
-      [expect.objectContaining({ grantId: secondBrowserGrant.grantId, profileId: profile.id })],
-    );
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual([
+      expect.objectContaining({ grantId: secondBrowserGrant.grantId, profileId: profile.id }),
+    ]);
     await store.revokeBrowserProfileGrant(secondBrowserGrant.grantId, ownerId);
     await expect(
       sql`
         insert into browser_profile_grants (
           id, workspace_id, created_by, profile_id, access
         ) values (
-          ${`grt_${randomUUID()}`}, ${specialized.id}, ${ownerId}, ${clientProfile.id},
+          ${`grt_${randomUUID()}`}, ${project.id}, ${ownerId}, ${clientProfile.id},
           ${"full-control"}
         )
       `.execute(database),
@@ -4042,7 +4040,7 @@ describeStore("PostgreSQL store", (it) => {
         insert into browser_profile_grants (
           id, workspace_id, created_by, profile_id, access
         ) values (
-          ${`bpg_${randomUUID()}`}, ${specialized.id}, ${ownerId}, ${clientProfile.id},
+          ${`bpg_${randomUUID()}`}, ${project.id}, ${ownerId}, ${clientProfile.id},
           ${"read-only"}
         )
       `.execute(database),
@@ -4056,7 +4054,7 @@ describeStore("PostgreSQL store", (it) => {
       access: "full-control",
       createdBy: ownerId,
       profileId: profile.id,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     expect(laptopGrant.access).toBe("full-control");
 
@@ -4082,16 +4080,16 @@ describeStore("PostgreSQL store", (it) => {
         profileId: profile.id,
         runnerId: hostedRunnerId,
         runtimeId: "hosted-browser-1",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toMatchObject({ profileId: profile.id });
 
     await expect(
       store.attachBrowserSession({
-        agentBindingId: "trigger:specialized-browser",
+        agentBindingId: "trigger:project-browser",
         ownerId,
         sessionId: otherSessionId,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toBe(true);
     await store.attachBrowserSession({
@@ -4135,19 +4133,19 @@ describeStore("PostgreSQL store", (it) => {
       await store.listActiveBrowserSessionsForAgent({
         allOwnerWorkspaces: false,
         ownerId,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).toEqual([expect.objectContaining({ activeAttachmentCount: 2, id: otherSessionId })]);
     expect(
       await store.detachBrowserSessionAttachmentsForProfileGrant({
         ownerId,
         profileId: profile.id,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).toBe(1);
-    expect(
-      await store.listActiveBrowserSessionsForAgentBinding("trigger:specialized-browser"),
-    ).toEqual([]);
+    expect(await store.listActiveBrowserSessionsForAgentBinding("trigger:project-browser")).toEqual(
+      [],
+    );
     expect(
       (await store.listActiveBrowserSessionsForAgentBinding("trigger:main-browser")).map(
         ({ id }) => id,

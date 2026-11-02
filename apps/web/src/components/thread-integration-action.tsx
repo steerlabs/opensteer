@@ -706,7 +706,7 @@ export function ThreadIntegrationAction({
           ? `Allow ${plan.installationTitle} in ${targetWorkspace.name}`
           : integrationAccessSummary(plan, grantedAccess)}
       </ActionNote>
-      {targetWorkspace.kind === "specialized" ? (
+      {targetWorkspace.kind === "project" ? (
         <ActionNote>{`Access will be granted to ${targetWorkspace.name}.`}</ActionNote>
       ) : !computerRequirement && (showApiKeyForm || connectOffered) ? (
         <ActionNote>{mainConnectAllowsNote(targetWorkspace.name)}</ActionNote>
@@ -767,7 +767,7 @@ export function ThreadIntegrationAction({
           />
         </label>
       ) : null}
-      {targetWorkspace.kind === "specialized" &&
+      {targetWorkspace.kind === "project" &&
       optionalWriteAccess &&
       plan.requestedAccess === "read" ? (
         <label className="check-item">
@@ -787,7 +787,7 @@ export function ThreadIntegrationAction({
           </span>
         </label>
       ) : null}
-      {targetWorkspace.kind === "specialized" && plan.requestedAccess === "read-write" ? (
+      {targetWorkspace.kind === "project" && plan.requestedAccess === "read-write" ? (
         <ActionNote>
           {plan.writeCount > 0
             ? `This task requires read-write access, including ${changingOperationCount(plan.writeCount)}.`

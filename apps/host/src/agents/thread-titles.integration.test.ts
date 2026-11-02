@@ -996,7 +996,7 @@ integration.sequential("Thread title lifecycle", () => {
       await store.createWorkspace({
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
-        kind: "specialized",
+        kind: "project",
         name: `Specialist ${index}`,
         status: "ready",
         backing: {
@@ -1235,7 +1235,7 @@ integration.sequential("Thread title lifecycle", () => {
       capacityPolicy: f.workspace.capacityPolicy,
       createdBy: f.userId,
       idempotencyKey: randomUUID(),
-      kind: "specialized" as const,
+      kind: "project" as const,
       name: "Specialist",
       status: "ready" as const,
     };

@@ -551,7 +551,7 @@ describe("wire protocol", () => {
           kind: "portablefs",
           volumeId: "volume-4",
           workspaceId,
-          workspaceKind: "specialized",
+          workspaceKind: "project",
         },
         runId: createId("run"),
         threadId: createId("thread"),
@@ -962,7 +962,7 @@ describe("wire protocol", () => {
       type: "workspace.inspect.result",
       workspaces: Array.from({ length: 50 }, () => ({
         id: createId("workspace"),
-        kind: "specialized" as const,
+        kind: "project" as const,
         name: "w".repeat(160),
         status: "ready" as const,
       })),

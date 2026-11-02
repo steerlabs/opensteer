@@ -1372,7 +1372,7 @@ function SidebarFooter({
     readonly label: string;
     readonly onSelect: () => void;
   }[] = [
-    { icon: "users", label: "Specialists", onSelect: () => go("/specialists", true) },
+    { icon: "users", label: "Projects", onSelect: () => go("/projects", true) },
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
   ];

@@ -1,11 +1,11 @@
 ---
 name: opensteer-specialization
-description: When establishing a specialist, learning standing preferences or fixing recurring mistakes, maintain durable Workspace instructions, knowledge, skills, scripts and task state.
+description: When establishing a Project, learning standing preferences or fixing recurring mistakes, maintain durable Workspace instructions, knowledge, skills, scripts and task state.
 ---
 
-# Opensteer Specialization
+# Durable instructions and skills
 
-A Workspace carries a specialist's knowledge across Threads and Runs. Leave enough context for
+A Workspace carries durable knowledge across Threads and Runs. Leave enough context for
 another Run to do the work without the user explaining it again. Use ordinary file tools in the
 current Workspace, or a path Main obtained from `workspace_mount`.
 

@@ -389,7 +389,7 @@ export interface SettledComputerConnection {
  * the app that approval names, under the catalog it was issued under: a
  * change that kept an older identity (an unsigned same-access edit, or an
  * automatic grant on the connection as it is) answers nothing an approval for
- * the app as the Mac now resolves it is waiting for, and each specialized Workspace
+ * the app as the Mac now resolves it is waiting for, and each project Workspace
  * among them gets the widest access its Requests asked for, never less than
  * a grant it already holds. The approval itself is used up when it was the
  * one consumed or when the connection covers all of it; otherwise it keeps

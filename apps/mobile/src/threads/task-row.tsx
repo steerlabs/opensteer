@@ -29,7 +29,7 @@ import { useReducedMotion } from "react-native-reanimated";
 import { Symbol } from "../ui/symbol.js";
 
 /**
- * One of the reader's tasks, as the sidebar, search and a specialist's page
+ * One of the reader's tasks, as the sidebar, search and a project's page
  * all draw it, from the shared task list (`taskList` in `@opensteer/client/host`)
  * and nothing else, on one line: its subject mark, title, and state — "Needs you", a spinner,
  * waiting or failure words, with a separate unread dot and finished time.

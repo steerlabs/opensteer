@@ -291,7 +291,7 @@ export const controlFontScaleLimit = 1.6;
 export const headerFontScaleLimit = 1.2;
 
 /**
- * A Deployment's independent identity palette, kept apart from task and specialist marks.
+ * A Deployment's independent identity palette, kept apart from task and project marks.
  */
 export const deploymentPaint = {
   violet: { fill: "#342d3e", ink: "#cfc4dd" },

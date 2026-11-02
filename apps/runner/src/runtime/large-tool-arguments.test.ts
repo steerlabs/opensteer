@@ -101,7 +101,7 @@ it("records a successful Codex command with large inline arguments without faili
       threadRole: "work",
       threadState: { previousAssignment: null, previousRun: null },
       workspaceId,
-      workspaceKind: "specialized",
+      workspaceKind: "project",
       machineAccess: { callerMachineName: "test-runner", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: null,
       workspaceAccess: {
@@ -112,7 +112,7 @@ it("records a successful Codex command with large inline arguments without faili
         kind: "portablefs",
         volumeId: "test-volume",
         workspaceId,
-        workspaceKind: "specialized",
+        workspaceKind: "project",
       },
     },
     correlationId: "large-tool-arguments",

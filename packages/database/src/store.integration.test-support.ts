@@ -912,7 +912,7 @@ export async function createStoreFixture() {
     });
   }
 
-  function createSpecializedWorkspace(ownerId: UserId, suffix: string, id?: Workspace["id"]) {
+  function createProjectWorkspace(ownerId: UserId, suffix: string, id?: Workspace["id"]) {
     return store.createWorkspace({
       ...(id ? { id } : {}),
       backing: {
@@ -928,7 +928,7 @@ export async function createStoreFixture() {
       },
       createdBy: ownerId,
       idempotencyKey: `workspace-${suffix}`,
-      kind: "specialized" as const,
+      kind: "project" as const,
       name: `Workspace ${suffix}`,
       status: "ready" as const,
     });
@@ -1293,7 +1293,7 @@ export async function createStoreFixture() {
     stagedRequestRace,
     startTriggerOccurrence,
     openLiveRequest,
-    createSpecializedWorkspace,
+    createProjectWorkspace,
     sqlCanExecute,
     principalIdFor,
     createCloudBindingFixture,

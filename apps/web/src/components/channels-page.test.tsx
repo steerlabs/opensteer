@@ -338,7 +338,7 @@ function workspace(fields: { id: string; name: string }): WorkspaceSummary {
     homeThreadId: null,
     harnessLabel: "Claude",
     icon: null,
-    kind: "specialized",
+    kind: "project",
     machineName: null,
     runnerLabel: "Main",
     status: "ready",

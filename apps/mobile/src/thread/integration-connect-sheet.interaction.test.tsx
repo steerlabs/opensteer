@@ -264,7 +264,7 @@ describe("IntegrationConnectSheet", () => {
   // so the key form, the browser sign-in, or a key repair that opens straight
   // on its key connects in silence; Main promised only the access the request
   // asked for, when its tasks use every operation of every account it
-  // connects; or the sheet promises that for a specialized Workspace, whose
+  // connects; or the sheet promises that for a project Workspace, whose
   // account still waits for Allow.
   it("connects an API key without leaving the access sheet", async () => {
     const client = fakeClient({ requirementKind: "api-key", sources: [] });
@@ -362,10 +362,8 @@ describe("IntegrationConnectSheet", () => {
     },
   );
 
-  it("promises nothing about connecting for a specialized Workspace", async () => {
-    await render(
-      fakeClient({ requirementKind: "api-key", sources: [], workspaceKind: "specialized" }),
-    );
+  it("promises nothing about connecting for a project Workspace", async () => {
+    await render(fakeClient({ requirementKind: "api-key", sources: [], workspaceKind: "project" }));
 
     expect(text()).toContain("Connect account");
     expect(text()).toContain("Read only · 1 of 2 operations");
@@ -706,7 +704,7 @@ describe("IntegrationConnectSheet", () => {
       connections: [connection(connectionId)],
       selected: hosted,
       sources: [hosted],
-      workspaceKind: "specialized",
+      workspaceKind: "project",
     });
     await render(client, request("read-write"));
 
@@ -730,7 +728,7 @@ describe("IntegrationConnectSheet", () => {
       connections: [connection(connectionId)],
       selected: hosted,
       sources: [hosted],
-      workspaceKind: "specialized",
+      workspaceKind: "project",
     });
     await render(client, request("read"));
 
@@ -901,7 +899,7 @@ describe("IntegrationConnectSheet", () => {
       machines: [mac()],
       requirementKind: "computer",
       sources: [],
-      workspaceKind: "specialized",
+      workspaceKind: "project",
     });
     await render(client);
 
@@ -923,7 +921,7 @@ describe("IntegrationConnectSheet", () => {
       machines: [mac()],
       requirementKind: "computer",
       sources: [],
-      workspaceKind: "specialized",
+      workspaceKind: "project",
     });
     await render(client, request("read"));
 
@@ -1002,7 +1000,7 @@ describe("IntegrationConnectSheet", () => {
       machines: [mac(), mac({ id: macBookId, name: "MacBook" })],
       requirementKind: "computer",
       sources: [],
-      workspaceKind: "specialized",
+      workspaceKind: "project",
     });
     await render(client);
 
@@ -1329,7 +1327,7 @@ function fakeClient(input: {
   readonly provider?: "github" | "slack";
   /** Attached from another device, as a phone always is to a Personal Opensteer. */
   readonly remote?: boolean;
-  readonly workspaceKind?: "main" | "specialized";
+  readonly workspaceKind?: "main" | "project";
 }) {
   const provider = input.provider ?? "slack";
   let sources = input.sources;
@@ -1342,7 +1340,7 @@ function fakeClient(input: {
       {
         id: "wsp_00000000-0000-4000-8000-000000000001",
         kind: input.workspaceKind ?? "main",
-        name: input.workspaceKind === "specialized" ? "Support" : "Main",
+        name: input.workspaceKind === "project" ? "Support" : "Main",
       },
     ],
   };

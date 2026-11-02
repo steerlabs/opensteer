@@ -155,7 +155,7 @@ interface TaskMenuProps {
   readonly task: TaskHeading | null;
   readonly threadId: string | null;
   readonly title: string;
-  readonly specialistName?: string | null;
+  readonly projectName?: string | null;
   readonly connectionLabel?: string | null;
 }
 
@@ -326,7 +326,7 @@ function Menu(
         <View
           ref={trigger}
           accessibilityHint="Shows what you can do with this task"
-          accessibilityLabel={`${title}${props.specialistName ? `, ${props.specialistName}` : ""}${props.connectionLabel ? `, ${props.connectionLabel}` : task === null ? "" : `, ${task.word}`}. Task actions`}
+          accessibilityLabel={`${title}${props.projectName ? `, ${props.projectName}` : ""}${props.connectionLabel ? `, ${props.connectionLabel}` : task === null ? "" : `, ${task.word}`}. Task actions`}
           accessibilityRole="button"
           accessible
           style={[styles.trigger, { maxWidth: props.maxWidth }]}

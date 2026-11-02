@@ -20,20 +20,20 @@ import { useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { ColorChoices, IconChoices } from "../ui/mark-choices.js";
 
-export type NewSpecialistScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
+export type NewProjectScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
 type Backing = "local-directory" | "portablefs";
 
 /**
- * A new specialist: a name, an optional icon, and where its files live.
+ * A new project: a name, an optional icon, and where its files live.
  *
- * It is the web's new-specialist dialog on a phone, against the same command.
- * A name is only a name — what the specialist is for is written into its
+ * It is the web's new-project dialog on a phone, against the same command.
+ * A name is only a name — what the project is for is written into its
  * instructions by working with it, not invented from here. Where its files go
  * is asked only when there is more than one real answer, and a computer that
  * is off cannot be chosen, because the Host needs it on to make the folder.
  */
-export function NewSpecialistScreen(props: NewSpecialistScreenProps): ReactNode {
+export function NewProjectScreen(props: NewProjectScreenProps): ReactNode {
   const navigation = useNavigation();
   const { deploymentId } = props.route.params;
   const { selection } = useMobileState();
@@ -43,14 +43,14 @@ export function NewSpecialistScreen(props: NewSpecialistScreenProps): ReactNode 
       <Sheet onClose={() => navigation.goBack()}>
         <Notice
           detail="This deployment is no longer open."
-          title="A specialist can’t be created right now"
+          title="A project can’t be created right now"
           tone="neutral"
         />
       </Sheet>
     );
   }
   return (
-    <NewSpecialistForm
+    <NewProjectForm
       deploymentId={deploymentId}
       hostClient={selection.hostClient}
       key={deploymentId}
@@ -58,7 +58,7 @@ export function NewSpecialistScreen(props: NewSpecialistScreenProps): ReactNode 
   );
 }
 
-function NewSpecialistForm(props: {
+function NewProjectForm(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
 }): ReactNode {
@@ -133,17 +133,17 @@ function NewSpecialistForm(props: {
       .then((result) => {
         if (result.type !== "workspace.create") throw new Error("Workspace command mismatch.");
         // Cancel closes the sheet but cannot recall a command already sent: if
-        // it lands, the specialist is simply in the list, and nothing moves the
+        // it lands, the project is simply in the list, and nothing moves the
         // reader somewhere they just chose to leave.
         if (!navigation.isFocused()) return;
         navigation.goBack();
-        navigation.navigate("Specialist", {
+        navigation.navigate("Project", {
           deploymentId: props.deploymentId,
           workspaceId: result.workspace.id,
         });
       })
       .catch((error: unknown) => {
-        setFailure(operationDetail(error, "The specialist could not be created."));
+        setFailure(operationDetail(error, "The project could not be created."));
       })
       .finally(() => {
         inFlight.current = false;
@@ -258,16 +258,16 @@ function NewSpecialistForm(props: {
           An offline computer cannot be chosen: it has to be on to make the folder.
         </AppText>
       ) : null}
-      {failure === null ? null : <Notice detail={failure} title="The specialist was not created" />}
+      {failure === null ? null : <Notice detail={failure} title="The project was not created" />}
       {connected ? null : (
         <AppText role="caption" tone="muted">
-          Reconnect to create a specialist.
+          Reconnect to create a project.
         </AppText>
       )}
       <PrimaryButton
         busy={creating}
         disabled={!submittable}
-        label="Create specialist"
+        label="Create project"
         onPress={create}
       />
     </Sheet>
@@ -285,8 +285,8 @@ function Sheet(props: { readonly children: ReactNode; readonly onClose: () => vo
     >
       <View style={styles.bar}>
         <View style={styles.barSide} />
-        <AppText accessibilityLabel="New specialist" role="title" style={styles.barTitle}>
-          New specialist
+        <AppText accessibilityLabel="New project" role="title" style={styles.barTitle}>
+          New project
         </AppText>
         <Pressable
           accessibilityLabel="Cancel"

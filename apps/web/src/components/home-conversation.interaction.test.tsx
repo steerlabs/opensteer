@@ -1083,7 +1083,7 @@ it("quiet Chat hides non-human work, names its reply source and opens homeRun hu
                 description: "",
                 fileCount: 0,
                 harnessLabel: "Codex",
-                kind: "specialized",
+                kind: "project",
                 machineName: null,
                 name: "Research",
                 icon: null,

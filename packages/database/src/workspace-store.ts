@@ -203,7 +203,7 @@ export async function createWorkspace(
       .where("createdBy", "=", input.createdBy)
       .where("kind", "=", "main")
       .executeTakeFirst(databaseOperationOptions());
-    const kind = input.kind ?? (currentMain ? "specialized" : "main");
+    const kind = input.kind ?? (currentMain ? "project" : "main");
     if (kind === "main" && currentMain) {
       throw new OpensteerError({
         code: "conflict",
@@ -510,6 +510,9 @@ export async function requestWorkspaceDeletion(
           code: "forbidden",
           message: "Only an active Workspace owner may delete this Workspace",
         });
+      }
+      if (workspace.kind === "main") {
+        throw new OpensteerError({ code: "forbidden", message: "Main cannot be deleted" });
       }
       if (workspace.status === "deleting") {
         if (workspace.deletionRequestedBy === input.requestedBy) {

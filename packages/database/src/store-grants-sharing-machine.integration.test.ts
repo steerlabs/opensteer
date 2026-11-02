@@ -1189,12 +1189,12 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("integration-skill-lifecycle");
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         generation: 1,
         kind: "portablefs",
         serviceId: "test-portablefs",
-        volumeId: "wsp_integration_skill_lifecycle_specialized",
+        volumeId: "wsp_integration_skill_lifecycle_project",
       },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
@@ -1202,9 +1202,9 @@ describeStore("PostgreSQL store", (it) => {
         kind: "hard-quota",
       },
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-skill-lifecycle-specialized",
-      kind: "specialized",
-      name: "Specialized integration skill lifecycle",
+      idempotencyKey: "workspace-integration-skill-lifecycle-project",
+      kind: "project",
+      name: "Project integration skill lifecycle",
       status: "ready",
     });
     const platform = new IntegrationPlatformStore(database);
@@ -1264,14 +1264,14 @@ describeStore("PostgreSQL store", (it) => {
       isDefault: true,
       ownerUserId: fixture.userId,
       providerAuthorizations: {},
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
 
     await expect(
       platform.listGrantedSkills({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({
@@ -1308,7 +1308,7 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       platform.listGrants({
         ownerUserId: fixture.userId,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({
@@ -1322,7 +1322,7 @@ describeStore("PostgreSQL store", (it) => {
       platform.listGrantedSkills({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({
@@ -1342,12 +1342,12 @@ describeStore("PostgreSQL store", (it) => {
         startRunFixture,
         store,
         database,
-        createSpecializedWorkspace,
+        createProjectWorkspace,
         enqueueHumanTrigger,
         stagedRequestRace,
       } = storeFixture;
       const fixture = await startRunFixture("integration-access-widening");
-      const specialized = await store.createWorkspace({
+      const project = await store.createWorkspace({
         backing: {
           generation: 1,
           kind: "portablefs",
@@ -1360,8 +1360,8 @@ describeStore("PostgreSQL store", (it) => {
           kind: "hard-quota",
         },
         createdBy: fixture.userId,
-        idempotencyKey: "workspace-integration-access-widening-specialized",
-        kind: "specialized",
+        idempotencyKey: "workspace-integration-access-widening-project",
+        kind: "project",
         name: "Integration access widening",
         status: "ready",
       });
@@ -1427,7 +1427,7 @@ describeStore("PostgreSQL store", (it) => {
           reason: `Need ${access} records access`,
           requestedBy: fixture.userId,
           requestedServerId: serverId,
-          targetWorkspaceId: specialized.id,
+          targetWorkspaceId: project.id,
         });
       const resolve = (
         requestId: ReturnType<typeof createId<"request">>,
@@ -1449,7 +1449,7 @@ describeStore("PostgreSQL store", (it) => {
           },
         });
 
-      const origin = await createSpecializedWorkspace(
+      const origin = await createProjectWorkspace(
         fixture.userId,
         "covered-removal",
         WorkspaceIdSchema.parse(originId),
@@ -1511,7 +1511,7 @@ describeStore("PostgreSQL store", (it) => {
         () =>
           store.requestWorkspaceDeletion({
             requestedBy: fixture.userId,
-            workspaceId: specialized.id,
+            workspaceId: project.id,
             purgeAfter: new Date(Date.now() + 86_400_000),
           }),
       );
@@ -1523,10 +1523,10 @@ describeStore("PostgreSQL store", (it) => {
   it("avoids a deadlock when integration resolution discovers a new origin during withdrawal", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, store, database, createSpecializedWorkspace, enqueueHumanTrigger } =
+    const { startRunFixture, store, database, createProjectWorkspace, enqueueHumanTrigger } =
       storeFixture;
     const fixture = await startRunFixture("integration-access-widening");
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         generation: 1,
         kind: "portablefs",
@@ -1539,8 +1539,8 @@ describeStore("PostgreSQL store", (it) => {
         kind: "hard-quota",
       },
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-widening-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-integration-access-widening-project",
+      kind: "project",
       name: "Integration access widening",
       status: "ready",
     });
@@ -1624,7 +1624,7 @@ describeStore("PostgreSQL store", (it) => {
         reason: `Need ${access} records access`,
         requestedBy: fixture.userId,
         requestedServerId: serverId,
-        targetWorkspaceId: specialized.id,
+        targetWorkspaceId: project.id,
       });
     const resolve = (
       requestId: ReturnType<typeof createId<"request">>,
@@ -1646,7 +1646,7 @@ describeStore("PostgreSQL store", (it) => {
         },
       });
 
-    const newWorkspace = await createSpecializedWorkspace(fixture.userId, "new-request-origin");
+    const newWorkspace = await createProjectWorkspace(fixture.userId, "new-request-origin");
     const { thread: newThread } = await store.createThread({
       createdBy: fixture.userId,
       environmentId: fixture.environmentId,
@@ -1701,7 +1701,7 @@ describeStore("PostgreSQL store", (it) => {
           database,
         )
       ).rows;
-    const releaseTarget = await hold(specialized.id);
+    const releaseTarget = await hold(project.id);
     const resolving = resolve(writing.request.id, "read-write");
     void resolving.catch(() => undefined);
     let releaseOrigin: (() => Promise<void>) | undefined;
@@ -1739,7 +1739,7 @@ describeStore("PostgreSQL store", (it) => {
       const expandedLockQuery = database
         .selectFrom("workspaces")
         .select("id")
-        .where("id", "in", [fixture.workspace.id, specialized.id, newWorkspace.id])
+        .where("id", "in", [fixture.workspace.id, project.id, newWorkspace.id])
         .orderBy("id", "asc")
         .forNoKeyUpdate()
         .compile().sql;
@@ -1772,7 +1772,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("integration-access-widening");
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         generation: 1,
         kind: "portablefs",
@@ -1785,8 +1785,8 @@ describeStore("PostgreSQL store", (it) => {
         kind: "hard-quota",
       },
       createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-widening-specialized",
-      kind: "specialized",
+      idempotencyKey: "workspace-integration-access-widening-project",
+      kind: "project",
       name: "Integration access widening",
       status: "ready",
     });
@@ -1852,7 +1852,7 @@ describeStore("PostgreSQL store", (it) => {
         reason: `Need ${access} records access`,
         requestedBy: fixture.userId,
         requestedServerId: serverId,
-        targetWorkspaceId: specialized.id,
+        targetWorkspaceId: project.id,
       });
     const resolve = (
       requestId: ReturnType<typeof createId<"request">>,
@@ -1882,7 +1882,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations: {},
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({ tool: expect.objectContaining({ name: "get" }) }),
@@ -1904,7 +1904,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations: {},
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({ tool: expect.objectContaining({ name: "create" }) }),
@@ -1913,17 +1913,17 @@ describeStore("PostgreSQL store", (it) => {
     ]);
   });
 
-  it("derives all user-scoped integration access in Main and keeps specialized access explicit", async ({
+  it("derives all user-scoped integration access in Main and keeps project access explicit", async ({
     storeFixture,
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("integration-main-inheritance");
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         generation: 1,
         kind: "portablefs",
         serviceId: "test-portablefs",
-        volumeId: "wsp_integration-main-inheritance-specialized",
+        volumeId: "wsp_integration-main-inheritance-project",
       },
       capacityPolicy: {
         blockHardLimitBytes: 10_000_000,
@@ -1931,8 +1931,8 @@ describeStore("PostgreSQL store", (it) => {
         kind: "hard-quota",
       },
       createdBy: fixture.userId,
-      idempotencyKey: "integration-main-inheritance-specialized",
-      kind: "specialized",
+      idempotencyKey: "integration-main-inheritance-project",
+      kind: "project",
       name: "Mail specialist",
       status: "ready",
     });
@@ -2064,7 +2064,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([]);
 
@@ -2146,7 +2146,7 @@ describeStore("PostgreSQL store", (it) => {
       ).map(({ grant }) => grant.id),
     ).toEqual(firstMainTools.map(({ grant }) => grant.id));
 
-    const specializedGrant = await platform.createGrant({
+    const projectGrant = await platform.createGrant({
       access: "read",
       alias: "Personal only",
       connectionId: personalConnectionId,
@@ -2155,14 +2155,14 @@ describeStore("PostgreSQL store", (it) => {
       isDefault: true,
       ownerUserId: fixture.userId,
       providerAuthorizations,
-      workspaceId: specialized.id,
+      workspaceId: project.id,
     });
     await expect(
       platform.listCallableTools({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({
@@ -2174,17 +2174,17 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ]);
     await platform.revokeGrant({
-      grantId: specializedGrant.id,
+      grantId: projectGrant.id,
       ownerUserId: fixture.userId,
-      requestId: "revoke-specialized-main-inheritance-grant",
-      workspaceId: specialized.id,
+      requestId: "revoke-project-main-inheritance-grant",
+      workspaceId: project.id,
     });
     await expect(
       platform.listCallableTools({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([]);
 
@@ -2208,7 +2208,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).resolves.toEqual([]);
   });

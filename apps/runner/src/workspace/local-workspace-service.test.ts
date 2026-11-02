@@ -188,7 +188,7 @@ async function fixture() {
     > => {
       const intent = {
         createdBy: createId("user"),
-        kind: "specialized" as const,
+        kind: "project" as const,
         ownerEnvironmentId: environmentId as EnvironmentId,
         workspaceId: createId("workspace"),
       };

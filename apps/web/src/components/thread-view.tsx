@@ -1360,8 +1360,8 @@ function ConversationSheetHandle({
 }) {
   const { nav } = useWorkspace();
   const directory = useTaskDirectory(hostClient);
-  const specialistHome = directory.snapshot.workspaces.find(
-    (workspace) => workspace.homeThreadId === threadId && workspace.kind === "specialized",
+  const projectHome = directory.snapshot.workspaces.find(
+    (workspace) => workspace.homeThreadId === threadId && workspace.kind === "project",
   );
   const tone = directory.rows.get(threadId)?.tone ?? "working";
   const start = useRef<number | null>(null);
@@ -1395,11 +1395,11 @@ function ConversationSheetHandle({
         <span aria-hidden className="thread__sheet-mark">
           {home ? (
             <ChatOrb size={20} />
-          ) : specialistHome ? (
+          ) : projectHome ? (
             <WorkspaceOrb
-              icon={specialistHome.icon}
-              name={specialistHome.name}
-              color={specialistHome.color}
+              icon={projectHome.icon}
+              name={projectHome.name}
+              color={projectHome.color}
               size="small"
             />
           ) : (

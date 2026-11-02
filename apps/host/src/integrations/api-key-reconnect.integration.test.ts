@@ -500,35 +500,35 @@ integration("API-key reconnect incident", () => {
         connection: connectionEvidence(afterOldRejection),
       });
 
-      const specialized = await dispatchCallerRun(host, caller, {
-        key: "api-key-specialized",
+      const project = await dispatchCallerRun(host, caller, {
+        key: "api-key-project",
         title: "Use only the approved Vapi account",
       });
-      closers.unshift(() => specialized.complete());
+      closers.unshift(() => project.complete());
       await testRpcData(
         host.origin,
         "commands.dispatch",
         {
           type: "integration.grant.create",
-          idempotencyKey: "api-key-specialized-grant",
+          idempotencyKey: "api-key-project-grant",
           input: {
             access: "read",
             alias: "Vapi API",
             connectionId: aId,
             installationId: installation.id,
             isDefault: true,
-            workspaceId: specialized.workspaceId,
+            workspaceId: project.workspaceId,
           },
         },
         { headers: host.ownerHeaders },
       );
-      const specializedGateway = await integrationGateway(specialized.integrationTools);
-      closers.unshift(() => specializedGateway.close());
-      const specializedSearch = await specializedGateway.call("integration_search", {
+      const projectGateway = await integrationGateway(project.integrationTools);
+      closers.unshift(() => projectGateway.close());
+      const projectSearch = await projectGateway.call("integration_search", {
         query: "Vapi API",
       });
-      expect(operations(specializedSearch).map(({ connectionId }) => connectionId)).toEqual([aId]);
-      record("stored grant exposes only A in a specialized Workspace", specializedSearch);
+      expect(operations(projectSearch).map(({ connectionId }) => connectionId)).toEqual([aId]);
+      record("stored grant exposes only A in a project Workspace", projectSearch);
 
       // A fulfilled target can fail before outbox delivery. Seed an undelivered
       // copy of the real fulfilled Request after A fails, while B still works;

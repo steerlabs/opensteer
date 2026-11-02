@@ -903,7 +903,7 @@ function SetupPanel({
           </label>
         ) : null}
         <p className="computer-apps__workspace-lead">
-          Opensteer and your tasks use this access. Specialists keep their current settings.
+          Opensteer and your tasks use this access. Projects keep their current settings.
         </p>
         <div className="form-actions">
           <button className="btn btn--ghost btn--small" onClick={onClose} type="button">

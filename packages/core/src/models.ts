@@ -168,7 +168,7 @@ export const WorkspaceStorageIssueSchema = z.object({
 });
 export type WorkspaceStorageIssue = z.infer<typeof WorkspaceStorageIssueSchema>;
 
-export const WorkspaceKindSchema = z.enum(["main", "specialized"]);
+export const WorkspaceKindSchema = z.enum(["main", "project"]);
 export type WorkspaceKind = z.infer<typeof WorkspaceKindSchema>;
 
 export const PortableFsServiceIdSchema = z

@@ -442,7 +442,7 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
       generation: 1,
       kind: "portablefs",
       volumeId: "volume",
-      workspaceKind: "specialized",
+      workspaceKind: "project",
       workspaceId,
     },
   });

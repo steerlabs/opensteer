@@ -5,7 +5,7 @@ import { color } from "../theme.js";
 import { WorkspaceIconGlyph } from "./workspace-mark.js";
 
 /**
- * A task's subject, independent of its state, unread status or specialist: a
+ * A task's subject, independent of its state, unread status or project: a
  * tile tinted with the task's colour under its symbol, and a neutral tile,
  * empty until the task has a symbol, where either is missing. The web's
  * `.task-mark` draws the same tile at the same sizes.

@@ -1,7 +1,7 @@
 interface:
   display_name: "Opensteer Workspaces"
   short_description: "Create and mount durable Workspaces, then write their AGENTS.md identity"
-  default_prompt: "Use $opensteer-workspaces to create a specialized Workspace and define its AGENTS.md identity."
+  default_prompt: "Use $opensteer-workspaces to create a Project and define its AGENTS.md identity."
 dependencies:
   tools:
     - type: "mcp"

@@ -10,7 +10,7 @@ import { BrandMark } from "./components/brand.js";
 import { AppShell } from "./components/app-shell.js";
 import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "./components/home-view.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
-import { SpecialistsPage } from "./components/specialists-page.js";
+import { ProjectsPage } from "./components/projects-page.js";
 import { ThreadRoute } from "./components/thread-view.js";
 import { InviteRoute } from "./components/invitation-onboarding.js";
 import { IntegrationsPage } from "./components/integrations/integrations-page.js";
@@ -444,7 +444,7 @@ export function App({
             <Route path="new" element={<NewTaskRoute />} />
             <Route path="threads/:threadId" element={<ThreadRoute />} />
             <Route path="live" element={<LiveRedirect />} />
-            <Route path="specialists" element={<SpecialistsPage />} />
+            <Route path="projects" element={<ProjectsPage />} />
             <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
             <Route
               path="channels"

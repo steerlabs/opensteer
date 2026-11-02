@@ -9,7 +9,7 @@ import { color } from "../theme.js";
 
 /* Interaction failures: identity disappears behind state; unread replaces state;
  * Done hides a failure; a mark-only update is memoized away; default/search/edit
- * errors are inaccessible; a specialist edit recolours its tasks; targets shrink. */
+ * errors are inaccessible; a project edit recolours its tasks; targets shrink. */
 const harness = vi.hoisted(() => ({
   reducedMotion: false,
   client: null as MockHostClient | null,
@@ -194,11 +194,11 @@ vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: Children) => <div>{children}</div>,
   useReadingColumn: () => ({}),
 }));
-import { SpecialistScreen } from "../screens/specialist.js";
-import { NewSpecialistScreen } from "../screens/new-specialist.js";
+import { ProjectScreen } from "../screens/project.js";
+import { NewProjectScreen } from "../screens/new-project.js";
 import { TaskRowState, TaskRowView } from "./task-row.js";
 import { TaskMark } from "../ui/task-mark.js";
-import { SpecialistMarkPicker } from "../ui/mark-picker.js";
+import { ProjectMarkPicker } from "../ui/mark-picker.js";
 import { IconChoices } from "../ui/mark-choices.js";
 
 let root: Root | null = null;
@@ -366,15 +366,15 @@ it("offers all 130 searchable icons with accessible selected states and a distin
   expect(choose).toHaveBeenLastCalledWith("plane");
 });
 
-it("changes a specialist colour through the client without recolouring its tasks, retaining all seven swatches", async () => {
+it("changes a project colour through the client without recolouring its tasks, retaining all seven swatches", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   clients.push(client);
   await client.load();
-  const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized")!;
+  const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
   const original = client.getSnapshot().threads.map(({ id, color }) => ({ id, color }));
   const dispatch = vi.spyOn(client, "dispatch");
   render(
-    <SpecialistMarkPicker
+    <ProjectMarkPicker
       hostClient={client}
       workspace={workspace}
       editable
@@ -399,22 +399,22 @@ it("changes a specialist colour through the client without recolouring its tasks
   expect(client.getSnapshot().threads.map(({ id, color }) => ({ id, color }))).toEqual(original);
 });
 
-it("opens colour editing from the specialist screen and hides it on an old Host", async () => {
+it("opens colour editing from the project screen and hides it on an old Host", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   clients.push(client);
   await client.load();
   harness.client = client;
-  const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "specialized")!;
+  const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
   const route = {
-    key: "specialist",
-    name: "Specialist",
+    key: "project",
+    name: "Project",
     params: { deploymentId: "test", workspaceId: workspace.id },
   };
-  render(<SpecialistScreen route={route} />);
+  render(<ProjectScreen route={route} />);
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  await act(async () => button("Change specialist icon and colour").click());
+  await act(async () => button("Change project icon and colour").click());
   await act(async () => button("Teal").click());
   expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe("teal");
   await act(async () => button("Close").click());
@@ -429,18 +429,18 @@ it("opens colour editing from the specialist screen and hides it on an old Host"
     taskMarksAvailable: false,
   });
   harness.client = oldClient;
-  render(<SpecialistScreen route={route} />);
-  expect(container.querySelector('[aria-label="Change specialist icon and colour"]')).toBeNull();
+  render(<ProjectScreen route={route} />);
+  expect(container.querySelector('[aria-label="Change project icon and colour"]')).toBeNull();
 });
 
-it("creates a specialist with the chosen colour, keeping colour choices off old Hosts", async () => {
+it("creates a project with the chosen colour, keeping colour choices off old Hosts", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   clients.push(client);
   await client.load();
   harness.client = client;
   const dispatch = vi.spyOn(client, "dispatch");
-  const route = { key: "new-specialist", name: "NewSpecialist", params: { deploymentId: "test" } };
-  render(<NewSpecialistScreen route={route} />);
+  const route = { key: "new-project", name: "NewProject", params: { deploymentId: "test" } };
+  render(<NewProjectScreen route={route} />);
   await act(async () => button("Sky").click());
   const input = container.querySelector<HTMLInputElement>('[aria-label="Name"]')!;
   await act(async () => {
@@ -468,6 +468,6 @@ it("creates a specialist with the chosen colour, keeping colour choices off old 
     taskMarksAvailable: false,
   });
   harness.client = oldClient;
-  render(<NewSpecialistScreen route={route} />);
+  render(<NewProjectScreen route={route} />);
   expect(container.querySelector('[aria-label="Sky"]')).toBeNull();
 });

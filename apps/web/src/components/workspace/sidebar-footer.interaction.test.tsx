@@ -93,7 +93,7 @@ function desktop(expired = false) {
 it("web keeps only app pages in the menu and ? still opens shortcuts", async () => {
   await mount("/");
   await openMenu();
-  expect(menuLabels()).toEqual(["Specialists", "Automations", "Settings"]);
+  expect(menuLabels()).toEqual(["Projects", "Automations", "Settings"]);
   expect(document.body.textContent).not.toContain("Switch computer…");
   expect(document.body.textContent).not.toContain("Keyboard shortcuts");
   await act(async () =>
@@ -111,7 +111,7 @@ it("desktop opens places in a dialog and closes it when selecting or adding", as
   const fixture = desktop();
   await mount("/");
   await openMenu();
-  expect(menuLabels()).toEqual(["Specialists", "Automations", "Settings", "Switch computer…"]);
+  expect(menuLabels()).toEqual(["Projects", "Automations", "Settings", "Switch computer…"]);
   expect(document.querySelector(".place-row")).toBeNull();
   expect(document.body.textContent).not.toContain("Add a computer or server");
   expect(document.body.textContent).toContain("alex@example.test");

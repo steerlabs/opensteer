@@ -1,5 +1,13 @@
 # Workspace storage and mount lifecycle
 
+## Project trust
+
+Projects are shared work contexts, not security sandboxes. A Run's working
+directory, writable roots and instructions guide file access; they do not
+isolate it from the owner's computer. Members of a shared Project must be
+trusted users of that computer. Project membership does not grant Main
+membership or authority over its connected accounts.
+
 ## Local-directory authority
 
 The Host owns metadata, membership and retention; the owning Runner owns local

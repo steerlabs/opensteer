@@ -76,7 +76,7 @@ export interface AgentWorkspaceCreator {
   create(input: {
     readonly createdBy: AgentControlRunScope["requestedBy"];
     readonly idempotencyKey: string;
-    readonly kind: "specialized";
+    readonly kind: "project";
     readonly name: string;
     readonly storage?: WorkspaceStorageChoice;
   }): Promise<Workspace>;
@@ -466,7 +466,7 @@ export class AgentControlService {
         ...(request.icon ? { icon: request.icon } : {}),
         ...(request.color ? { color: request.color } : {}),
         idempotencyKey: idempotencyKey(claims, request.requestId, "workspace"),
-        kind: "specialized",
+        kind: "project",
         name: request.name,
         storage: callerWorkspaceStorage({
           callerEnvironmentId: claims.environmentId,

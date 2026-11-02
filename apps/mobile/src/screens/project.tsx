@@ -23,11 +23,11 @@ import { color, space } from "../theme.js";
 import { TasksPane } from "../threads/tasks-pane.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
-import { SpecialistMarkPicker } from "../ui/mark-picker.js";
+import { ProjectMarkPicker } from "../ui/mark-picker.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 
-export type SpecialistScreenProps = StaticScreenProps<{
+export type ProjectScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly workspaceId: string;
 }>;
@@ -36,7 +36,7 @@ export type SpecialistScreenProps = StaticScreenProps<{
  * What a Workspace that is not ready says about itself, or null when it is.
  * A storage problem the Host reported is said in the Host's own words.
  */
-export function specialistStatus(workspace: WorkspaceSummary): string | null {
+export function projectStatus(workspace: WorkspaceSummary): string | null {
   switch (workspace.status) {
     case "ready":
       return workspace.storageIssue?.message ?? null;
@@ -56,7 +56,7 @@ export function specialistStatus(workspace: WorkspaceSummary): string | null {
 }
 
 /**
- * One specialist: who it is, what it holds, and its own tasks, in the
+ * One project: who it is, what it holds, and its own tasks, in the
  * sidebar's rows.
  *
  * Start a task opens a task inside this Workspace, with its files and access;
@@ -64,12 +64,12 @@ export function specialistStatus(workspace: WorkspaceSummary): string | null {
  * states — its description, and the computer holding its files when that
  * computer is named — and nothing else is implied.
  */
-export function SpecialistScreen(props: SpecialistScreenProps): ReactNode {
+export function ProjectScreen(props: ProjectScreenProps): ReactNode {
   const { deploymentId, workspaceId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return (
-    <SpecialistDetail
+    <ProjectDetail
       deploymentId={deploymentId}
       hostClient={hostClient}
       key={`${deploymentId}:${workspaceId}`}
@@ -78,7 +78,7 @@ export function SpecialistScreen(props: SpecialistScreenProps): ReactNode {
   );
 }
 
-function SpecialistDetail(props: {
+function ProjectDetail(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly workspaceId: string;
@@ -99,7 +99,7 @@ function SpecialistDetail(props: {
   const userId = snapshot.user?.id ?? null;
   const changeable =
     snapshot.taskMarksAvailable &&
-    workspace?.kind === "specialized" &&
+    workspace?.kind === "project" &&
     workspace.status !== "deleting" &&
     workspace.status !== "deleted";
   useFocusEffect(
@@ -161,7 +161,7 @@ function SpecialistDetail(props: {
             <>
               <Notice
                 detail="It may have been deleted, or it belongs to another deployment."
-                title="This specialist is not here"
+                title="This project is not here"
                 tone="neutral"
               />
               <SecondaryButton label="Back" onPress={() => navigation.goBack()} />
@@ -172,7 +172,7 @@ function SpecialistDetail(props: {
     );
   }
 
-  const status = specialistStatus(workspace);
+  const status = projectStatus(workspace);
 
   const canEditMark =
     changeable &&
@@ -182,7 +182,7 @@ function SpecialistDetail(props: {
   return (
     <Screen edgeToEdge>
       {editingMark ? (
-        <SpecialistMarkPicker
+        <ProjectMarkPicker
           hostClient={hostClient}
           workspace={workspace}
           editable={canEditMark}
@@ -203,7 +203,7 @@ function SpecialistDetail(props: {
                 <Pressable
                   ref={markTrigger}
                   accessibilityRole="button"
-                  accessibilityLabel="Change specialist icon and colour"
+                  accessibilityLabel="Change project icon and colour"
                   onPress={() => setEditingMark(true)}
                   style={styles.markControl}
                 >

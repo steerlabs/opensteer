@@ -34,6 +34,33 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("PostgreSQL store", (it) => {
+  it("refuses Main deletion without changing its status", async ({ storeFixture }) => {
+    const { store } = storeFixture;
+    const owner = await store.createUser("Main owner");
+    const main = await store.createWorkspace({
+      backing: {
+        kind: "portablefs",
+        generation: 1,
+        serviceId: "test-portablefs",
+        volumeId: "main-deletion-refusal",
+      },
+      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 536870912, inodeHardLimit: 50000 },
+      createdBy: owner,
+      idempotencyKey: "main-deletion-refusal",
+      kind: "main",
+      name: "Main",
+      status: "ready",
+    });
+    await expect(
+      store.requestWorkspaceDeletion({
+        purgeAfter: new Date(),
+        requestedBy: owner,
+        workspaceId: main.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", message: "Main cannot be deleted" });
+    expect((await store.getWorkspaceForOwner(main.id, owner))?.status).toBe("ready");
+  });
+
   it("trims a person's execution history to the limit, dropping the oldest", async ({
     storeFixture,
   }) => {
@@ -1169,7 +1196,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Main",
       status: "ready",
     });
-    const specialized = await store.createWorkspace({
+    const project = await store.createWorkspace({
       backing: {
         bindingId: createId("workspaceBinding"),
         generation: 1,
@@ -1179,8 +1206,8 @@ describeStore("PostgreSQL store", (it) => {
       },
       capacityPolicy: { kind: "host-filesystem" },
       createdBy: ownerId,
-      idempotencyKey: "personal-specialized-workspace",
-      kind: "specialized",
+      idempotencyKey: "personal-project-workspace",
+      kind: "project",
       name: "Research",
       status: "ready",
     });
@@ -1198,7 +1225,7 @@ describeStore("PostgreSQL store", (it) => {
         state: "active",
         updatedAt: new Date(),
         userId: otherId,
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       })
       .executeTakeFirstOrThrow();
     const harness = await store.createHarnessInstance({
@@ -1216,7 +1243,7 @@ describeStore("PostgreSQL store", (it) => {
         idempotencyKey: "personal-second-user-thread",
         modelSelection: testModelSelection,
         title: "Forbidden",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
@@ -1230,7 +1257,7 @@ describeStore("PostgreSQL store", (it) => {
         selector: "personal-invitation-selector-0001",
         tokenHash: "sha256:personal-invitation-secret",
         type: "link",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
 
@@ -1253,7 +1280,7 @@ describeStore("PostgreSQL store", (it) => {
         selector: legacySelector,
         tokenHash: "sha256:personal-legacy-secret",
         type: "link",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       })
       .executeTakeFirstOrThrow();
     await expect(
@@ -1284,7 +1311,7 @@ describeStore("PostgreSQL store", (it) => {
         capacityPolicy: { kind: "host-filesystem" },
         createdBy: ownerId,
         idempotencyKey: key,
-        kind: "specialized" as const,
+        kind: "project" as const,
         name: key,
         status: "ready" as const,
       });
@@ -1304,7 +1331,7 @@ describeStore("PostgreSQL store", (it) => {
       },
       createdBy: ownerId,
       idempotencyKey: "local-listing-shared",
-      kind: "specialized",
+      kind: "project",
       name: "Shared",
       status: "ready",
     });
@@ -1762,7 +1789,7 @@ describeStore("PostgreSQL store", (it) => {
       capacityPolicy: { kind: "host-filesystem" },
       createdBy: ownerId,
       idempotencyKey: "workspace-archive-claim-local",
-      kind: "specialized",
+      kind: "project",
       name: "Local archive claim",
       status: "ready",
     });

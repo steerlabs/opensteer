@@ -1675,12 +1675,12 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const chat = await createFixture("title-chat", true);
       const work = await addThread(chat, { suffix: "title-work" });
-      const specialized = await store.createWorkspace({
+      const project = await store.createWorkspace({
         backing: {
           generation: 1,
           kind: "portablefs",
           serviceId: "test-portablefs",
-          volumeId: "wsp_title-specialized",
+          volumeId: "wsp_title-project",
         },
         capacityPolicy: {
           blockHardLimitBytes: 10_000_000,
@@ -1688,14 +1688,14 @@ integration("notification decision boundary", () => {
           kind: "hard-quota",
         },
         createdBy: chat.ownerId,
-        idempotencyKey: "workspace-title-specialized",
+        idempotencyKey: "workspace-title-project",
         name: "Research",
         status: "ready",
       });
       const specialist = await addThread(chat, {
-        suffix: "title-specialized",
+        suffix: "title-project",
         title: "Research desk",
-        workspaceId: specialized.id,
+        workspaceId: project.id,
       });
 
       await appendCompletedReply(chat, text("From Chat."));

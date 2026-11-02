@@ -1684,7 +1684,7 @@ export async function createHostServer(
           createdBy: userId,
           ...(command.icon ? { icon: command.icon } : {}),
           idempotencyKey: command.idempotencyKey,
-          kind: "specialized",
+          kind: "project",
           name: command.name,
           ...(command.storage ? { storage: command.storage } : {}),
         });
@@ -1767,7 +1767,7 @@ export async function createHostServer(
         if (workspace?.kind === "main") {
           throw new OpensteerError({
             code: "forbidden",
-            message: "Main cannot be shared. Invite people to a specialist instead.",
+            message: "Main cannot be shared. Invite people to a Project instead.",
           });
         }
         const result = await dependencies.authenticator.identity.createWorkspaceInvitation({

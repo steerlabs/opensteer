@@ -5,7 +5,7 @@ import {
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
   browserProfileSettingsRows,
-  browserProfileSpecialists,
+  browserProfileProjects,
   mutationIdempotencyKey,
   type BrowserProfileSettingsRow,
 } from "@opensteer/client/host";
@@ -19,7 +19,7 @@ import { SectionHeader } from "../primitives.js";
 
 /**
  * Settings → Browser profiles. Each profile is its own browser with its own
- * sign-ins; Opensteer may browse as any of them, a specialist only as the ones
+ * sign-ins; Opensteer may browse as any of them, a project only as the ones
  * chosen for it here.
  */
 export function BrowserProfilesSection() {
@@ -77,7 +77,7 @@ export function BrowserProfilesSection() {
           </div>
         </div>
         <p className="settings-footnote">
-          Opensteer can use every profile. A specialist can only use the profiles you choose for it.
+          Opensteer can use every profile. A project can only use the profiles you choose for it.
         </p>
       </section>
     </>
@@ -155,7 +155,7 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
   const { profile } = row;
   // An older Host can list, create and share profiles but not rename or delete them.
   const manageable = snapshot.browserProfileManageAvailable === true;
-  const [mode, setMode] = useState<"view" | "rename" | "specialists" | "delete">("view");
+  const [mode, setMode] = useState<"view" | "rename" | "projects" | "delete">("view");
   const [menuOpen, setMenuOpen] = useState(false);
   const [draft, setDraft] = useState(profile.name);
   const [pending, setPending] = useState<string | null>(null);
@@ -304,14 +304,14 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
             ) : null}
             <button
               className="picker__row"
-              onClick={() => choose("specialists")}
+              onClick={() => choose("projects")}
               role="menuitem"
               type="button"
             >
               <span className="picker__check picker__check--icon">
                 <Icon name="users" />
               </span>
-              <span className="picker__label">Choose specialists…</span>
+              <span className="picker__label">Choose projects…</span>
             </button>
           </div>
           {manageable ? (
@@ -331,8 +331,8 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
           ) : null}
         </Popover>
       ) : null}
-      {mode === "specialists" ? (
-        <SpecialistAccess onDone={close} pending={pending} row={row} run={run} />
+      {mode === "projects" ? (
+        <ProjectAccess onDone={close} pending={pending} row={row} run={run} />
       ) : null}
       {mode === "delete" ? (
         <div aria-label={`Delete ${profile.name}`} className="settings-item__confirm" role="group">
@@ -362,8 +362,8 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
   );
 }
 
-/** Each specialist, on or off for this profile. Opensteer itself needs no choice. */
-function SpecialistAccess({
+/** Each project, on or off for this profile. Opensteer itself needs no choice. */
+function ProjectAccess({
   onDone,
   pending,
   row,
@@ -375,25 +375,25 @@ function SpecialistAccess({
   readonly run: (key: string, action: () => Promise<unknown>) => void;
 }) {
   const { hostClient, snapshot } = useShell();
-  const specialists = browserProfileSpecialists(snapshot);
+  const projects = browserProfileProjects(snapshot);
   return (
     <div
-      aria-label={`Specialists that can use ${row.profile.name}`}
-      className="browser-profile-settings__specialists"
+      aria-label={`Projects that can use ${row.profile.name}`}
+      className="browser-profile-settings__projects"
       role="group"
     >
-      {specialists.length === 0 ? (
+      {projects.length === 0 ? (
         <p className="browser-profile-settings__none">
-          You have no specialists yet. Opensteer can already use this profile.
+          You have no projects yet. Opensteer can already use this profile.
         </p>
       ) : (
         <ul>
-          {specialists.map((workspace) => {
-            const grant = row.specialists.find((entry) => entry.workspace.id === workspace.id);
+          {projects.map((workspace) => {
+            const grant = row.projects.find((entry) => entry.workspace.id === workspace.id);
             const key = `access:${workspace.id}`;
             return (
               <li key={workspace.id}>
-                <span className="browser-profile-settings__specialist">{workspace.name}</span>
+                <span className="browser-profile-settings__project">{workspace.name}</span>
                 <button
                   aria-checked={grant !== undefined}
                   aria-label={`${workspace.name} can use ${row.profile.name}`}
@@ -428,8 +428,8 @@ function SpecialistAccess({
         </ul>
       )}
       <p className="browser-profile-settings__note">
-        A specialist you allow gets full control of this profile, including every account signed in
-        to it.
+        A project you allow gets full control of this profile, including every account signed in to
+        it.
       </p>
       <button className="btn btn--small" onClick={onDone} type="button">
         Done

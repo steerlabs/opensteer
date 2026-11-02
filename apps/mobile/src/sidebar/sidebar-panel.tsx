@@ -73,7 +73,7 @@ import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 
 /** The root destinations the sidebar switches between. */
-export type SidebarDestination = "Home" | "Schedules" | "Specialists" | "Tabs";
+export type SidebarDestination = "Home" | "Schedules" | "Projects" | "Tabs";
 
 export interface SidebarActions {
   /** Closes the sidebar and hands focus back to whatever opened it. */
@@ -86,7 +86,7 @@ export interface SidebarActions {
   readonly onSchedules: () => void;
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
-  readonly onSpecialists: () => void;
+  readonly onProjects: () => void;
   readonly onTabs: () => void;
 }
 
@@ -213,7 +213,7 @@ function useDoneShelf(): readonly [boolean, () => void] {
 
 /**
  * The sidebar is the one place to move between everything: Chat, New task,
- * Specialists and Schedules; tasks grouped by what each asks of the reader —
+ * Projects and Schedules; tasks grouped by what each asks of the reader —
  * Working, with anything waiting on them first; Ready; Done — then the Deployment's tabs,
  * apps and phones, and All tabs; and below them Settings and which
  * Deployment this is. Each row comes from the shared task and place lists, so
@@ -397,10 +397,10 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             />
           )}
           <DestinationRow
-            current={destination === "Specialists"}
+            current={destination === "Projects"}
             icon="person.2"
-            label="Specialists"
-            onPress={actions.onSpecialists}
+            label="Projects"
+            onPress={actions.onProjects}
           />
           <DestinationRow
             current={destination === "Schedules"}

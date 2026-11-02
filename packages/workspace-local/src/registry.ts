@@ -46,7 +46,7 @@ export type FilesystemIdentity = NativeDirectoryIdentity;
 
 const ProvisionFingerprintSchema = z.strictObject({
   createdBy: UserIdSchema,
-  kind: WorkspaceKindSchema,
+  kind: z.preprocess((value) => (value === "specialized" ? "project" : value), WorkspaceKindSchema),
   ownerEnvironmentId: EnvironmentIdSchema,
   workspaceId: WorkspaceIdSchema,
 });

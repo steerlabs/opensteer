@@ -723,7 +723,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     } as unknown as PersonalHostAccessRouteEnvelope;
   }
 
-  /** An owner, a specialized Workspace, a running agent in it, and a live fresh session. */
+  /** An owner, a project Workspace, a running agent in it, and a live fresh session. */
   async function scene() {
     const ownerId = await store.createUser("Chrome owner");
     await store.ensureDeployment({
@@ -732,7 +732,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       hostInstanceId: createId("hostInstance"),
     });
     const workspace = await store.createWorkspace({
-      kind: "specialized",
+      kind: "project",
       backing: {
         kind: "portablefs",
         generation: 1,

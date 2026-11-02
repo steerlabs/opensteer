@@ -371,7 +371,7 @@ html.sidebar-drawer-open body {
 }
 
 /* ---- Task rows ----
-   One line each, in the sidebar, in search and on a specialist's page: a mark
+   One line each, in the sidebar, in search and on a project's page: a mark
    for what the task is doing, its title, and only what the reader needs
    beside it. A task waiting on its reader is the one loud row — tinted, with
    an amber "Needs you". A working task names where it works; an unread one

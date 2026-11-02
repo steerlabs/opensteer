@@ -33,7 +33,7 @@ import {
   chromeSettingsRow,
   computersSettingsFooter,
   connectedAppsSettingsRow,
-  specialistNotificationsFooter,
+  projectNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
 import type { SFSymbolName } from "../ui/symbol.js";
@@ -195,8 +195,8 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         {/* Mutes are kept by the Host, so they don't wait on this phone's registration. */}
         {notifications === null || props.agents.length === 0 ? null : (
           <Section
-            footer={<Footer text={specialistNotificationsFooter} />}
-            title="Notifications from specialists"
+            footer={<Footer text={projectNotificationsFooter} />}
+            title="Notifications from projects"
           >
             {props.agents.map((agent) => (
               <Toggle

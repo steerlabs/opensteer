@@ -221,7 +221,7 @@ function workspace<Backing extends Workspace["backing"]>(
     homeThreadId: null,
     icon: null,
     id: createId("workspace"),
-    kind: "specialized",
+    kind: "project",
     name: "Workspace",
     status: "ready",
     storageIssue: null,

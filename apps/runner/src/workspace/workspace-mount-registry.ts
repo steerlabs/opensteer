@@ -50,7 +50,10 @@ const PersistedMountRecordSchema = z.strictObject({
   mountPath: z.string().min(1),
   volumeId: z.string().min(1).max(255),
   workspaceId: WorkspaceIdSchema,
-  workspaceKind: WorkspaceKindSchema,
+  workspaceKind: z.preprocess(
+    (value) => (value === "specialized" ? "project" : value),
+    WorkspaceKindSchema,
+  ),
 });
 
 interface WorkspaceMountRecord {
@@ -60,7 +63,7 @@ interface WorkspaceMountRecord {
   readonly mountPath: string;
   readonly volumeId: string;
   readonly workspaceId: WorkspaceId;
-  readonly workspaceKind: "main" | "specialized";
+  readonly workspaceKind: "main" | "project";
 }
 
 export interface MountIdentityIssuer {
@@ -550,7 +553,7 @@ export class WorkspaceMountRegistry {
   #mountPath(workspace: {
     readonly createdBy: UserId;
     readonly workspaceId: WorkspaceId;
-    readonly workspaceKind: "main" | "specialized";
+    readonly workspaceKind: "main" | "project";
   }): string {
     const path = resolve(
       this.#root,

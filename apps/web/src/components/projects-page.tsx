@@ -9,28 +9,28 @@ import { WorkspaceOrb } from "./workspace-orb.js";
 import { AreaLink } from "./workspace/area-link.js";
 
 /**
- * Every specialist the reader belongs to, each with one line saying whether
- * its tasks need them, are working, or are idle, with the sidebar's mark. A card opens the specialist;
+ * Every project the reader belongs to, each with one line saying whether
+ * its tasks need them, are working, or are idle, with the sidebar's mark. A card opens the project;
  * the last one starts a new one.
  */
-export function SpecialistsPage() {
+export function ProjectsPage() {
   const { hostClient, openMobileNavigation, openNewWorkspace, reportActionError } = useShell();
   const snapshot = useTaskSnapshot(hostClient);
   const [loadingMore, setLoadingMore] = useState(false);
   const working = useMemo(() => taskList(snapshot).working, [snapshot]);
-  const specialists = snapshot.workspaces.filter((workspace) => workspace.kind === "specialized");
+  const projects = snapshot.workspaces.filter((workspace) => workspace.kind === "project");
   return (
-    <div className="page specialists-page">
-      <PageTopbar onOpenNavigation={openMobileNavigation} title="Specialists" />
+    <div className="page projects-page">
+      <PageTopbar onOpenNavigation={openMobileNavigation} title="Projects" />
       <div className="page__inner">
         <PageHeader
-          description="A specialist is Opensteer set up for one kind of work, with its own instructions, files and accounts. Give one a task, or let Opensteer hand work to it."
-          title="Specialists"
+          description="A project is Opensteer set up for one kind of work, with its own instructions, files and accounts. Give one a task, or let Opensteer hand work to it."
+          title="Projects"
         />
-        <ul className="specialist-cards">
-          {specialists.map((workspace) => (
+        <ul className="project-cards">
+          {projects.map((workspace) => (
             <li key={workspace.id}>
-              <SpecialistCard
+              <ProjectCard
                 rows={working.filter((row) => row.workspaceId === workspace.id)}
                 workspace={workspace}
               />
@@ -38,18 +38,18 @@ export function SpecialistsPage() {
           ))}
           <li>
             <button
-              className="specialist-card specialist-card--new"
+              className="project-card project-card--new"
               onClick={openNewWorkspace}
               type="button"
             >
               <Icon name="plus" />
-              New specialist
+              New project
             </button>
           </li>
         </ul>
         {snapshot.workspaceWindow.hasMore ? (
           <button
-            className="btn btn--ghost btn--small specialists-page__more"
+            className="btn btn--ghost btn--small projects-page__more"
             disabled={loadingMore}
             onClick={() => {
               setLoadingMore(true);
@@ -68,11 +68,11 @@ export function SpecialistsPage() {
   );
 }
 
-function SpecialistCard({
+function ProjectCard({
   rows,
   workspace,
 }: {
-  /** The specialist's work under way, as the task list reads it. */
+  /** The project's work under way, as the task list reads it. */
   readonly rows: readonly TaskRow[];
   readonly workspace: WorkspaceSummary;
 }) {
@@ -82,18 +82,18 @@ function SpecialistCard({
       ? "working"
       : null;
   return (
-    <AreaLink className="specialist-card" to={`/workspaces/${encodeURIComponent(workspace.id)}`}>
+    <AreaLink className="project-card" to={`/workspaces/${encodeURIComponent(workspace.id)}`}>
       <WorkspaceOrb
         icon={workspace.icon}
         name={workspace.name}
         size="large"
         color={workspace.color}
       />
-      <span className="specialist-card__name">{workspace.name}</span>
+      <span className="project-card__name">{workspace.name}</span>
       {workspace.description ? (
-        <span className="specialist-card__about">{workspace.description}</span>
+        <span className="project-card__about">{workspace.description}</span>
       ) : null}
-      <span className={`specialist-card__state specialist-card__state--${state ?? "idle"}`}>
+      <span className={`project-card__state project-card__state--${state ?? "idle"}`}>
         {state === null ? null : <TaskState state={state} />}
         {state === "needs-you" ? "Needs you" : state === "working" ? "Working" : "Nothing running"}
       </span>

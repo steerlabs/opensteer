@@ -696,7 +696,7 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: { capabilityProfileId: null, id: threadId, role: input.role ?? "work" },
-          workspace: { id: createId("workspace"), kind: "specialized", status: "ready" },
+          workspace: { id: createId("workspace"), kind: "project", status: "ready" },
         }),
         notificationState: { timeZoneFor },
         recordHarnessCatalogs: async ({
@@ -749,7 +749,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
         name: "Run computer",
         runnerId: createId("runner"),
       };
-      const workspace = { id: workspaceId, kind: "specialized", status: "ready" };
+      const workspace = { id: workspaceId, kind: "project", status: "ready" };
       const plan = vi.fn(async () => ({ kind: "test-plan" }));
       const dispatch = vi.fn(async () => undefined);
       const command = {

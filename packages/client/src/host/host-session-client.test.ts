@@ -2172,16 +2172,16 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("hydrates the explicit Main home when a specialized Workspace is more recent", async () => {
+  it("hydrates the explicit Main home when a project Workspace is more recent", async () => {
     const main = makeWorkspace("Opensteer");
-    const specialized = {
+    const project = {
       ...makeWorkspace("Gmail Briefing"),
-      kind: "specialized" as const,
+      kind: "project" as const,
       updatedAt: "2026-08-09T20:01:00.000Z",
     };
     const mainThread = makeThread(main.id);
     const sockets: FakeSocket[] = [];
-    const payload = bootstrap([specialized]);
+    const payload = bootstrap([project]);
     const client = createHttpHostClient({
       fetch: async () =>
         json({
@@ -2200,7 +2200,7 @@ describe("HttpHostClient durable realtime", () => {
     await client.load();
 
     expect(client.getSnapshot().homeWorkspaceId).toBe(main.id);
-    expect(client.getSnapshot().workspaces.map(({ id }) => id)).toEqual([main.id, specialized.id]);
+    expect(client.getSnapshot().workspaces.map(({ id }) => id)).toEqual([main.id, project.id]);
     // The supplemental Home entry does not exhaust the authoritative catalog cursor.
     expect(client.getSnapshot().workspaceWindow.hasMore).toBe(true);
     expect(sockets).toHaveLength(1);
@@ -7982,7 +7982,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("rolls back an icon failure without a newer event and refuses mark commands on an old Host", async () => {
-    const workspace = { ...makeWorkspace(), kind: "specialized" as const, color: "green" as const };
+    const workspace = { ...makeWorkspace(), kind: "project" as const, color: "green" as const };
     const thread = { ...makeThread(workspace.id), icon: "hotel" as const };
     const { answer, asked, client } = await delayedRead({
       path: "/v1/rpc/commands.dispatch",
@@ -8039,11 +8039,11 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 
   it.each(["success", "failure"] as const)(
-    "optimistically changes specialist colour and settles %s",
+    "optimistically changes project colour and settles %s",
     async (outcome) => {
       const workspace = {
         ...makeWorkspace(),
-        kind: "specialized" as const,
+        kind: "project" as const,
         color: "green" as const,
       };
       const { answer, asked, client } = await delayedRead({
@@ -8085,7 +8085,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   async function pendingMarks() {
-    const workspace = { ...makeWorkspace(), kind: "specialized" as const, color: "green" as const };
+    const workspace = { ...makeWorkspace(), kind: "project" as const, color: "green" as const };
     const thread = { ...makeThread(workspace.id), icon: "hotel" as const };
     const socket = new FakeSocket();
     const responses: ReturnType<typeof Promise.withResolvers<Response>>[] = [];
@@ -11279,7 +11279,7 @@ describe("HttpHostClient task list", () => {
     "renames an unopened task across global and Workspace pages (%s)",
     async (outcome) => {
       const main = makeWorkspace("Main");
-      const research = { ...makeWorkspace("Research"), kind: "specialized" as const };
+      const research = { ...makeWorkspace("Research"), kind: "project" as const };
       const venue = {
         ...task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z"),
         status: "running" as const,
@@ -11416,7 +11416,7 @@ describe("HttpHostClient task list", () => {
     "changes the icon of an unopened task across global and Workspace pages (%s)",
     async (outcome) => {
       const main = makeWorkspace("Main");
-      const research = { ...makeWorkspace("Research"), kind: "specialized" as const };
+      const research = { ...makeWorkspace("Research"), kind: "project" as const };
       const venue = {
         ...task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z"),
         status: "running" as const,
@@ -11563,7 +11563,7 @@ describe("HttpHostClient task list", () => {
 
   it("keeps the task list of each Workspace a screen asked for, rereading it with the rest", async () => {
     const main = makeWorkspace("Main");
-    const research = { ...makeWorkspace("Research"), kind: "specialized" as const };
+    const research = { ...makeWorkspace("Research"), kind: "project" as const };
     const host = taskHost([main, research]);
     const socket = sockets();
     const client = createHttpHostClient({
@@ -11742,7 +11742,7 @@ describe("HttpHostClient task list", () => {
 
   it("drops the tasks of a Workspace the Host refuses this reader", async () => {
     const home = makeWorkspace("Main");
-    const other = { ...makeWorkspace("Research"), kind: "specialized" as const };
+    const other = { ...makeWorkspace("Research"), kind: "project" as const };
     const host = taskHost([home, other]);
     const socket = sockets();
     const client = createHttpHostClient({
@@ -13988,7 +13988,7 @@ describe("task marks through the production client and mock transport", () => {
               ? { ...command, threadId: second!.id }
               : {
                   type: "workspace.color.set",
-                  workspaceId: source.workspaces.find(({ kind }) => kind === "specialized")!.id,
+                  workspaceId: source.workspaces.find(({ kind }) => kind === "project")!.id,
                   color: "purple",
                   idempotencyKey: command.idempotencyKey,
                 },
@@ -14152,34 +14152,34 @@ describe("task marks through the production client and mock transport", () => {
             idempotencyKey: `transport-${mode}`,
           });
           expect(result.type).toBe("thread.icon.set");
-          const specialist = source.workspaces.find(({ kind }) => kind === "specialized")!;
+          const project = source.workspaces.find(({ kind }) => kind === "project")!;
           await client.dispatch({
             type: "workspace.color.set",
-            workspaceId: specialist.id,
+            workspaceId: project.id,
             color: "purple",
             idempotencyKey: `transport-color-${mode}`,
           });
-          expect(
-            client.getSnapshot().workspaces.find(({ id }) => id === specialist.id)?.color,
-          ).toBe(mode === "future" ? null : "purple");
+          expect(client.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
+            mode === "future" ? null : "purple",
+          );
           await client.dispatch({
             type: "workspace.color.set",
-            workspaceId: specialist.id,
+            workspaceId: project.id,
             color: "green",
             idempotencyKey: `transport-new-color-${mode}`,
           });
           await client.dispatch({
             type: "workspace.color.set",
-            workspaceId: specialist.id,
+            workspaceId: project.id,
             color: "purple",
             idempotencyKey: `transport-color-${mode}`,
           });
-          expect(mock.getSnapshot().workspaces.find(({ id }) => id === specialist.id)?.color).toBe(
+          expect(mock.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
             "green",
           );
-          expect(
-            client.getSnapshot().workspaces.find(({ id }) => id === specialist.id)?.color,
-          ).toBe(mode === "future" ? null : "green");
+          expect(client.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
+            mode === "future" ? null : "green",
+          );
           expect(client.getSnapshot().threads.find(({ id }) => id === task.id)).toMatchObject({
             icon: "gift",
             color: expected.color,

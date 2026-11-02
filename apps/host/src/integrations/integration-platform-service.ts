@@ -3330,7 +3330,7 @@ export class IntegrationPlatformService {
   }
 }
 
-/** Mirrors the connection an access decision fulfills, for both Main and specialized payloads. */
+/** Mirrors the connection an access decision fulfills, for both Main and project payloads. */
 /**
  * What a session on this connection operates, from its definition and the
  * connection alone: the app it names, or a phone's whole display. Null for a
