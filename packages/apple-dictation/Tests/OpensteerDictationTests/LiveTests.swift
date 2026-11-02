@@ -141,14 +141,13 @@ final class LiveTests: XCTestCase {
           ])
           try await exitOwnedSpeechService()
         }
+        // Follow the controller: availability decides whether the press downloads.
         let availability = await service.availability()
-        guard case .available = availability else {
+        guard case .available(_, _, let model, _) = availability else {
           XCTFail("Unavailable: \(availability)")
           return
         }
-        if await !SpeechTranscriber.installedLocales.contains(where: {
-          localeIdentity($0) == localeIdentity(Locale(identifier: "en-US"))
-        }) {
+        if model == .download {
           try await service.download(session: downloadID)
           await fulfillment(of: [downloaded], timeout: 180)
           guard events.ended.last?.payload == .ended(.completed, nil) else {
