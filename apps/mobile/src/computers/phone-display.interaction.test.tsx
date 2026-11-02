@@ -256,7 +256,7 @@ async function setup(
                   viewId: "owner-view",
                   generation: 1,
                   state: "ready",
-                  target: { kind: "app", app: { displayName: "Notes" } },
+                  target: { kind: "app", app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null } },
                   expiresAt: "2099-01-01T00:00:00.000Z",
                 },
               ]

@@ -10,12 +10,13 @@ import {
   type DisplayLease,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
-import { displayViewerWindowFrames } from "@opensteer/protocol";
+import { displayViewerWindowFrames, type ComputerAppIdentity } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
+import { MacAppIcon } from "./app-mark.js";
 import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
@@ -57,6 +58,8 @@ export function decodeDisplayFrame(
  * page's is. A tile's preview has none.
  */
 export interface ComputerBar {
+  /** The Mac app shown, whose own icon names it; absent for a phone. */
+  readonly app?: ComputerAppIdentity | undefined;
   /** The Mac an app is on; null for a phone, whose own name is the title. */
   readonly detail: string | null;
   readonly menu: NativeMenuSection;
@@ -460,7 +463,11 @@ export function ComputerDisplay({
           </GlassSurface>
         ) : null}
         <ToolbarCapsule style={styles.name}>
-          <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
+          {bar.app !== undefined && machineId !== undefined ? (
+            <MacAppIcon app={bar.app} hostClient={hostClient} machineId={machineId} size={22} />
+          ) : (
+            <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
+          )}
           <View style={styles.nameWords}>
             <AppText
               maxFontSizeMultiplier={controlFontScaleLimit}
@@ -528,6 +535,7 @@ export function ComputerTaskView(props: {
   ) : (
     <ComputerDisplay
       bar={{
+        app,
         detail: phone ? null : machineName,
         menu: session
           ? [
@@ -694,6 +702,7 @@ export function ComputerOwnerView(props: {
   return (
     <ComputerDisplay
       bar={{
+        app: current.target.kind === "app" ? current.target.app : undefined,
         detail: phone ? null : machineName,
         menu: [],
         onTyping: props.onTyping,
