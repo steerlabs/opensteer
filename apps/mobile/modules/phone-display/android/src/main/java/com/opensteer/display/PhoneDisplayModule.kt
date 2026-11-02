@@ -172,13 +172,12 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
   fun decode(frame: FrameMetadata, promise: Promise, read: () -> ByteArray) {
     val wanted = frame.epoch; val width = frame.width; val height = frame.height
     val pts = frame.pts.toLong(); val key = frame.key; val replayed = frame.replayed
+    val number = fence.arrive()
     if (wanted != epoch || !available || !visible || !attached) {
-      lost(wanted); promise.resolve(false); return
+      if (wanted == epoch) fence.lost(number); promise.resolve(false); return
     }
-    if (pending.incrementAndGet() > 4) { pending.decrementAndGet(); lost(wanted); promise.resolve(false); return }
+    if (pending.incrementAndGet() > 4) { pending.decrementAndGet(); fence.lost(number); promise.resolve(false); return }
     val stamp = revision
-    // A key queued before a later ingress drop cannot repair that drop.
-    val loss = fence.captureLoss()
     worker.post {
       var admitted = false
       try {
@@ -221,12 +220,12 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
         buffer.clear(); buffer.put(bytes)
         output.getOrPut(pts) { java.util.ArrayDeque() }.addLast(!replayed)
         decoder.queueInputBuffer(index, 0, bytes.size, pts, 0)
-        fence.enqueued(key, loss)
+        fence.enqueued(key, number)
         admitted = true
         drainOutput(decoder)
         promise.resolve(true)
       } catch (_: Exception) { recover(); promise.resolve(false) }
-      finally { if (!admitted && wanted == epoch && stamp == revision) fence.lost(); pending.decrementAndGet() }
+      finally { if (!admitted && wanted == epoch && stamp == revision) fence.lost(number); pending.decrementAndGet() }
     }
   }
   private fun drainOutput(decoder: MediaCodec, firstTimeoutUs: Long = 0) {

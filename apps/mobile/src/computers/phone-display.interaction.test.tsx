@@ -829,6 +829,36 @@ it.each([0, 1])(
   },
 );
 
+it("holds every delta after a frame it had no room for until a key arrives", async () => {
+  await setup();
+  const finish: ((accepted: boolean) => void)[] = [];
+  state.decodeResult = () => new Promise((resolve) => finish.push(resolve));
+  const send = (sequence: number, key: boolean) =>
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence,
+          ptsUs: sequence * 1000,
+          width: 200,
+          height: 400,
+          ...(key ? { key: true, codec: "avc1.42C01F" } : { key: false }),
+        },
+        Uint8Array.of(sequence),
+      ).slice().buffer,
+    });
+  // Four frames fill the queue, so the fifth is dropped and its successors lose their reference.
+  await act(async () => {
+    for (let sequence = 2; sequence <= 6; sequence++) send(sequence, false);
+  });
+  expect(socket.sent).toContainEqual({ type: "display.keyframe" });
+  await act(async () => finish.forEach((resolve) => resolve(true)));
+  await act(async () => send(7, false));
+  expect(state.decoded.slice(1).map((frame) => frame.bytes)).toEqual([[2], [3], [4], [5]]);
+  await act(async () => send(8, true));
+  expect(state.decoded.at(-1)?.bytes).toEqual([8]);
+});
+
 it("keeps native submissions bounded with a larger viewer window and fences pending work on hide", async () => {
   const { render } = await setup();
   const finish: ((accepted: boolean) => void)[] = [];

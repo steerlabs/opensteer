@@ -164,7 +164,7 @@ it("cancels the Open wake when the person leaves before the phone opens", async 
       viewId: "phone-view",
       generation: 3,
     });
-    expect(state.close).toHaveBeenCalledWith("phone-view", 3);
+    expect(state.close).not.toHaveBeenCalled();
   } finally {
     state.focused = true;
     await act(async () => root.unmount());

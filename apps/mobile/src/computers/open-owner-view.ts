@@ -10,8 +10,9 @@ import { computerAppIdentityKey, type ComputerViewTarget } from "@opensteer/prot
 /**
  * Opens the person's own view of a Mac app (or one of its windows) or a phone
  * for a person still on the screen that asked. One who left meanwhile gets
- * neither the navigation nor the view: it is closed again, so nothing they did
- * not stay for holds a capture on their Mac or arms a phone's wake.
+ * neither the navigation nor the phone's wake. The view itself is left to
+ * expire unwatched: the Host answers an open of a view another device already
+ * has with that same view, so closing it here could end what they're watching.
  */
 export async function openOwnerView(
   hostClient: HostClient,
@@ -26,7 +27,6 @@ export async function openOwnerView(
     viewId: view.viewId,
     generation: view.generation,
   });
-  void hostClient.closeComputerView(view.viewId, view.generation).catch(() => undefined);
   return null;
 }
 

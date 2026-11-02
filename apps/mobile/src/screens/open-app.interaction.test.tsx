@@ -297,7 +297,7 @@ it("retries the approved list and shows its empty state", async () => {
   expect(container.textContent).toContain("No apps to open yet");
 });
 it.each(["unmount", "blur"])(
-  "closes a late owner view without navigating after %s",
+  "leaves a late owner view to expire, without navigating, after %s",
   async (leave) => {
     const w = await setup();
     let finish!: (view: Awaited<ReturnType<typeof w.host.openComputerView>>) => void;
@@ -321,7 +321,8 @@ it.each(["unmount", "blur"])(
         target: w.app.target,
       } as Awaited<ReturnType<typeof w.host.openComputerView>>),
     );
-    expect(w.close).toHaveBeenCalledWith("late", 3);
+    // The Host may have answered with a view another device is watching.
+    expect(w.close).not.toHaveBeenCalled();
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.dispatch).not.toHaveBeenCalled();
   },
@@ -351,4 +352,21 @@ it("switches to an existing owner view of the exact window without opening again
   await press("Notes, Open");
   expect(open).not.toHaveBeenCalled();
   expect(state.dispatch).toHaveBeenCalled();
+});
+it("asks the Host for the front window when windows are unknown, even with one already open", async () => {
+  const w = await setup();
+  w.open.mockRestore();
+  vi.mocked(w.host.getSnapshot).mockRestore();
+  if (w.app.target.kind !== "app") throw new Error("Missing app fixture");
+  w.windows.mockRestore();
+  const [first] = await w.host.listComputerAppWindows(w.app.machineId, w.app.target.app);
+  await w.host.openComputerView(w.app.machineId, { ...w.app.target, window: first!.id });
+  const snapshot = { ...w.host.getSnapshot(), deploymentId: "deployment" };
+  vi.spyOn(w.host, "getSnapshot").mockReturnValue(snapshot);
+  const open = vi.spyOn(w.host, "openComputerView");
+  // An older Host can't say which windows are open, so the front one may be another.
+  vi.spyOn(w.host, "listComputerAppWindows").mockRejectedValue(new Error("unsupported"));
+  await w.render();
+  await press("Notes");
+  expect(open).toHaveBeenCalledWith(w.app.machineId, w.app.target);
 });

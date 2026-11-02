@@ -203,7 +203,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
         hostClient={hostClient}
         last={index === section.data.length - 1}
         onOpen={open}
-        open={heldView(places, item, item.target) !== null}
+        openWindows={openWindows(places, item, windows.get(item.connectionId))}
         opening={opening}
         windows={windows.get(item.connectionId)}
       />
@@ -260,9 +260,10 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
 }
 
 /**
- * The person's own open view of exactly this target, if one is live: the same
- * window when one is named, else the app's view while it has a single window.
- * A task's hold on the app is never it.
+ * The person's own open view of exactly this target, if one is live: a phone's
+ * screen, or a Mac app's view of the very window named. An app open naming no
+ * window is the Host's to resolve to the front window, so it never matches
+ * here; nor does a task's hold on the app.
  */
 function heldView(
   places: readonly PlaceItem[],
@@ -278,8 +279,34 @@ function heldView(
       if (view.target.kind !== "app") return false;
       if (view.target.app.bundleId.toLowerCase() !== target.app.bundleId.toLowerCase())
         return false;
-      return target.window === undefined || view.window?.id === target.window;
+      return target.window !== undefined && view.window?.id === target.window;
     }) ?? null
+  );
+}
+
+/**
+ * What a row opens with a tap: a phone's screen, or a Mac app's only window
+ * when the Mac has said which it is; otherwise the app, for the Host to resolve.
+ */
+function rowTarget(
+  app: ApprovedComputerApp,
+  windows: readonly OwnerWindowInfo[] | null | undefined,
+): ComputerViewTarget {
+  return app.target.kind === "app" && windows?.length === 1
+    ? { ...app.target, window: windows[0]!.id }
+    : app.target;
+}
+
+/** The ids of this app's windows (or the phone's screen, as 0) the person already has open. */
+function openWindows(
+  places: readonly PlaceItem[],
+  app: ApprovedComputerApp,
+  windows: readonly OwnerWindowInfo[] | null | undefined,
+): readonly number[] {
+  if (app.target.kind === "phone") return heldView(places, app, app.target) ? [0] : [];
+  const target = app.target;
+  return (windows ?? []).flatMap((window) =>
+    heldView(places, app, { ...target, window: window.id }) ? [window.id] : [],
   );
 }
 
@@ -334,13 +361,19 @@ const AppRow = memo(function AppRow(props: {
   readonly hostClient: HostClient;
   readonly last: boolean;
   readonly onOpen: (app: ApprovedComputerApp, target: ComputerViewTarget, key: string) => void;
-  readonly open: boolean;
+  /** Windows already open as the person's own views; a single-window row is open when its is. */
+  readonly openWindows: readonly number[];
   readonly opening: string | null;
   readonly windows: readonly OwnerWindowInfo[] | null | undefined;
 }): ReactNode {
   const { app, windows } = props;
   const busy = props.opening !== null && props.opening.startsWith(app.connectionId);
-  const detail = app.target.kind === "phone" ? "Screen" : windowWords(windows, props.open);
+  const tapTarget = rowTarget(app, windows);
+  const open =
+    tapTarget.kind === "phone"
+      ? props.openWindows.length > 0
+      : tapTarget.window !== undefined && props.openWindows.includes(tapTarget.window);
+  const detail = app.target.kind === "phone" ? "Screen" : windowWords(windows, open);
   const style = ({ pressed }: { readonly pressed: boolean }) => [
     styles.row,
     props.first && styles.rowFirst,
@@ -378,7 +411,7 @@ const AppRow = memo(function AppRow(props: {
       </View>
       {busy ? (
         <ActivityIndicator color={color.muted} />
-      ) : props.open ? (
+      ) : open ? (
         <StatusDot size={8} tone="green" />
       ) : (
         <Symbol name="chevron.right" size={13} tint={color.muted} weight="semibold" />
@@ -398,6 +431,7 @@ const AppRow = memo(function AppRow(props: {
         options={windows.map((window) => ({
           id: String(window.id),
           label: window.title || "Untitled window",
+          selected: props.openWindows.includes(window.id),
           onPress: () =>
             props.onOpen(app, { ...target, window: window.id }, `${app.connectionId}:${window.id}`),
         }))}
@@ -409,20 +443,12 @@ const AppRow = memo(function AppRow(props: {
     );
   return (
     <Pressable
-      accessibilityHint={props.open ? `Shows ${app.name}` : `Opens ${app.name} on this phone`}
+      accessibilityHint={open ? `Shows ${app.name}` : `Opens ${app.name} on this phone`}
       accessibilityLabel={detail === null ? app.name : `${app.name}, ${detail}`}
       accessibilityRole="button"
       accessibilityState={{ busy, disabled: props.disabled }}
       disabled={props.disabled}
-      onPress={() =>
-        props.onOpen(
-          app,
-          target.kind === "app" && windows?.length === 1
-            ? { ...target, window: windows[0]!.id }
-            : target,
-          app.connectionId,
-        )
-      }
+      onPress={() => props.onOpen(app, tapTarget, app.connectionId)}
       style={style}
     >
       {body}

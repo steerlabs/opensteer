@@ -189,6 +189,7 @@ export function ComputerDisplay({
     let submitting = 0;
     const queued: { frame: DisplayFrame; epoch: number }[] = [];
     let bytes = 0;
+    let awaitingKey = false;
     const pending = new Set<DisplayFrame>();
     const clear = () => {
       epoch.current++;
@@ -289,6 +290,11 @@ export function ComputerDisplay({
         connection = frame.connection;
         generation = frame.header.generation;
       }
+      // A dropped frame breaks the reference chain, so nothing but a key follows it.
+      if (awaitingKey && !frame.header.key) {
+        frame.done();
+        return;
+      }
       if (
         pending.size >=
           (frame.replayed
@@ -299,9 +305,11 @@ export function ComputerDisplay({
         (pending.size > 0 && bytes + frame.payload.byteLength > 1_048_576)
       ) {
         frame.done();
+        awaitingKey = true;
         lease.requestKeyframe();
         return;
       }
+      awaitingKey = false;
       pending.add(frame);
       bytes += frame.payload.byteLength;
       queued.push({ frame, epoch: epoch.current });
