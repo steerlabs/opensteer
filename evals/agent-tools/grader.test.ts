@@ -115,20 +115,22 @@ it("validates structured seeds with production authorship rules and preserves hu
   ])
     expect(() => parseCases(line({ turns: [{ ...turn, ...patch }] }))).toThrow();
 });
-it("silence rejects earlier assistant text even with an empty final reply and unknown forbidden tools", () => {
+it("silence rejects any assistant text and unknown forbidden tools, after an earlier delivery", () => {
   const c = parseCases(
     line({
       expect: {
         noAssistantText: true,
         notCalls: ["person_message", "person_notify"],
-        textMustNot: ["[\\s\\S]"],
+        earlierTextMust: ["42"],
       },
     }),
   )[0]!;
-  expect(grade(c.expect, [], "", "").every((c) => c.pass)).toBe(true);
-  expect(grade(c.expect, [], "", "Nothing new").every((c) => c.pass)).toBe(false);
+  expect(grade(c.expect, [], "", "", "42 services").every((c) => c.pass)).toBe(true);
+  // Silence on the repeat proves nothing unless the earlier turn delivered it.
+  expect(grade(c.expect, [], "", "", "").every((c) => c.pass)).toBe(false);
+  expect(grade(c.expect, [], "", "Nothing new", "42 services").every((c) => c.pass)).toBe(false);
   expect(
-    grade(c.expect, [{ tool: "person_notify", args: {}, valid: false }], "", "").every(
+    grade(c.expect, [{ tool: "person_notify", args: {}, valid: false }], "", "", "42").every(
       (c) => c.pass,
     ),
   ).toBe(false);

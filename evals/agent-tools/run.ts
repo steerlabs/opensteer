@@ -197,6 +197,7 @@ async function main() {
             let host: Awaited<ReturnType<typeof startFakeHost>> | undefined;
             let finalText = "";
             let assistantText = "";
+            let earlierText = "";
             const usage: unknown[] = [];
             const nativeCalls: unknown[] = [];
             let treatment = { prompt: "unavailable", schema: "unavailable" };
@@ -220,6 +221,7 @@ async function main() {
                 checkout,
                 signal: AbortSignal.any([stop.signal, AbortSignal.timeout(180_000)]),
                 onTurnStart: () => {
+                  earlierText += assistantText;
                   finalText = "";
                   assistantText = "";
                   nativeCalls.splice(0);
@@ -257,7 +259,7 @@ async function main() {
               }
             }
             const calls = host?.calls ?? [];
-            const checks = grade(c.expect, calls, finalText, assistantText);
+            const checks = grade(c.expect, calls, finalText, assistantText, earlierText);
             const row = {
               caseId: c.id,
               sample,

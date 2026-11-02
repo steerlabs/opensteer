@@ -73,6 +73,8 @@ export const CaseSchema = z.strictObject({
     noAssistantText: z.boolean().default(false),
     textMust: z.array(regex).default([]),
     textMustNot: z.array(regex).default([]),
+    /** Checked against assistant text from turns before the graded last turn. */
+    earlierTextMust: z.array(regex).default([]),
     maxInvalidCalls: z.number().int().nonnegative().default(0),
   }),
 });
