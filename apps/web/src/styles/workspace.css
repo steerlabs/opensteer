@@ -1407,6 +1407,12 @@ button.side-needs:hover {
   white-space: nowrap;
 }
 
+/* The frame is too small for a cursor's name tag, and the words beside it
+   already say where the agent is. */
+.cursor-layer--viewfinder .acur__name {
+  display: none;
+}
+
 /* Under the name, past the dot. */
 .viewfinder__site {
   padding-left: calc(6px + var(--space-6));
