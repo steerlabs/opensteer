@@ -14,7 +14,13 @@ import type { ThreadHeaderState } from "./thread-pane.js";
  * - an empty control sits in the bar of a conversation with nothing around it;
  * - the control's counts or marks miss a place, a task or a schedule, or a
  *   place an agent works in does not say so;
- * - the sheet's sections move, or an empty one keeps its header;
+ * - a tile stands for an empty section, or tiles show with only one section;
+ * - the sheet opens on something other than what needs the reader, or jumps
+ *   to another section as the Host's data changes while it is open, or keeps
+ *   showing a section that emptied;
+ * - earlier tasks lose their day, or some are hidden;
+ * - a schedule's switch settles on the tap rather than the Host's answer, or
+ *   can be flipped again while the Host is asked, or offline;
  * - a row opens a sibling of what it names, or a parent is opened a second
  *   time over the child instead of gone back to;
  * - a streamed token redraws the bar;
@@ -28,37 +34,93 @@ const harness = vi.hoisted(() => ({
   setOptions: vi.fn(),
   navigate: vi.fn(),
   dispatch: vi.fn(),
+  fontScale: 1,
   goBack: vi.fn(),
+  haptic: vi.fn(async () => undefined),
   routes: [] as { name: string; params?: object }[],
 }));
 
-vi.mock("react-native", () => {
+vi.mock("react-native", async () => {
+  const { useLayoutEffect } = await import("react");
   type Props = {
-    readonly children?: ReactNode;
+    readonly children?: ReactNode | ((state: { pressed: boolean }) => ReactNode);
     readonly accessibilityLabel?: string;
     readonly accessibilityHint?: string;
     readonly accessibilityRole?: string;
+    readonly accessibilityState?: { readonly selected?: boolean };
+    readonly onLayout?: (event: { nativeEvent: { layout: { width: number } } }) => void;
     readonly onPress?: () => void;
+    readonly style?: unknown;
   };
+  const contents = (props: Props) =>
+    typeof props.children === "function" ? props.children({ pressed: false }) : props.children;
   return {
-    Platform: { OS: "ios" },
-    Pressable: (props: Props) => (
-      <button
-        aria-label={props.accessibilityLabel}
-        title={props.accessibilityHint}
-        onClick={props.onPress}
-      >
-        {props.children}
-      </button>
-    ),
-    ScrollView: (props: Props) => <div>{props.children}</div>,
-    StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
-    Text: (props: Props) => <span>{props.children}</span>,
-    View: (props: Props) => (
-      <div aria-label={props.accessibilityLabel} role={props.accessibilityRole}>
-        {props.children}
+    Alert: { alert: vi.fn() },
+    // Every page at once: which one shows is the selected tab's to say.
+    FlatList: (props: {
+      data: readonly string[];
+      renderItem: (info: { index: number; item: string }) => ReactNode;
+    }) => (
+      <div>
+        {props.data.map((item, index) => (
+          <div key={item}>{props.renderItem({ index, item })}</div>
+        ))}
       </div>
     ),
+    Image: () => <img />,
+    Platform: { OS: "ios" },
+    Pressable: (props: Props) => {
+      const style =
+        typeof props.style === "function" ? props.style({ pressed: false }) : props.style;
+      const width = [style]
+        .flat(9)
+        .findLast((entry): entry is { width: number } => typeof entry?.width === "number")?.width;
+      return (
+        <button
+          aria-label={props.accessibilityLabel}
+          aria-selected={props.accessibilityState?.selected}
+          data-width={width}
+          role={props.accessibilityRole}
+          title={props.accessibilityHint}
+          onClick={props.onPress}
+        >
+          {contents(props)}
+        </button>
+      );
+    },
+    SectionList: (props: {
+      accessibilityLabel: string;
+      keyExtractor: (item: never) => string;
+      renderItem: (info: { index: number; item: never; section: never }) => ReactNode;
+      renderSectionHeader: (info: { section: never }) => ReactNode;
+      sections: readonly { data: readonly never[]; key: string }[];
+    }) => (
+      <section aria-label={props.accessibilityLabel}>
+        {props.sections.map((section) => (
+          <div key={section.key}>
+            {props.renderSectionHeader({ section: section as never })}
+            {section.data.map((item, index) => (
+              <div key={props.keyExtractor(item)}>
+                {props.renderItem({ index, item, section: section as never })}
+              </div>
+            ))}
+          </div>
+        ))}
+      </section>
+    ),
+    StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
+    Text: (props: Props) => <span>{contents(props)}</span>,
+    // Laid out at once, 351pt across: a 375pt phone less the sheet's insets.
+    View: (props: Props) => {
+      const { onLayout } = props;
+      useLayoutEffect(() => onLayout?.({ nativeEvent: { layout: { width: 351 } } }), [onLayout]);
+      return (
+        <div aria-label={props.accessibilityLabel} role={props.accessibilityRole}>
+          {contents(props)}
+        </div>
+      );
+    },
+    useWindowDimensions: () => ({ fontScale: harness.fontScale, height: 800, width: 375 }),
   };
 });
 vi.mock("@react-navigation/native", () => ({
@@ -79,6 +141,11 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useHostUserId: () => "user",
   useMobileState: () => ({ selection: { deploymentId, hostClient: harness.client } }),
 }));
+vi.mock("expo-haptics", () => ({ selectionAsync: harness.haptic }));
+vi.mock("../client/mobile-client.js", () => ({
+  operationDetail: (error: unknown, fallback: string) =>
+    error instanceof Error ? error.message : fallback,
+}));
 vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => true }));
 vi.mock("../ui/pane.js", () => ({
   useContentInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
@@ -92,6 +159,21 @@ vi.mock("../ui/primitives.js", () => ({
     readonly maxFontSizeMultiplier?: number;
   }) => <span data-font-limit={maxFontSizeMultiplier}>{children}</span>,
   Notice: ({ title }: { readonly title: string }) => <p>{title}</p>,
+  StatusDot: ({ tone }: { readonly tone: string }) => <i data-dot={tone} />,
+  Toggle: (props: {
+    readonly accessibilityLabel: string;
+    readonly disabled?: boolean;
+    readonly onChange: (value: boolean) => void;
+    readonly value: boolean;
+  }) => (
+    <button
+      aria-checked={props.value}
+      aria-label={props.accessibilityLabel}
+      disabled={props.disabled === true}
+      role="switch"
+      onClick={() => props.onChange(!props.value)}
+    />
+  ),
 }));
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { readonly name: string }) => <i data-symbol={name} />,
@@ -133,7 +215,14 @@ afterEach(() => {
   harness.client = null;
   harness.options = {};
   harness.routes = [];
-  for (const spy of [harness.setOptions, harness.navigate, harness.dispatch, harness.goBack])
+  harness.fontScale = 1;
+  for (const spy of [
+    harness.setOptions,
+    harness.navigate,
+    harness.dispatch,
+    harness.goBack,
+    harness.haptic,
+  ])
     spy.mockClear();
 });
 
@@ -152,8 +241,16 @@ async function world(options: { readonly automations?: "absent" } = {}) {
   await loaded.load();
   let current = loaded.getSnapshot();
   const listeners = new Set<() => void>();
+  let gate: Promise<void> = Promise.resolve();
+  // The mock Host's own commands and reads, behind a gate the test can hold.
+  const dispatch = vi.fn(async (command: Parameters<HostClient["dispatch"]>[0]) => {
+    await gate;
+    return loaded.dispatch(command);
+  });
   const client = {
+    dispatch,
     getSnapshot: () => current,
+    rpc: loaded.rpc,
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -162,6 +259,13 @@ async function world(options: { readonly automations?: "absent" } = {}) {
   harness.client = client;
   return {
     client,
+    dispatch,
+    /** Holds the Host's answer to commands until the returned release. */
+    hold: () => {
+      let release = () => undefined as void;
+      gate = new Promise((resolve) => (release = resolve));
+      return () => release();
+    },
     snapshot: () => current,
     move(next: HostSnapshot) {
       act(() => {
@@ -220,8 +324,26 @@ function sheet(threadId: string): HTMLElement {
   return render(<AroundScreen route={{ params: { deploymentId, threadId } }} />);
 }
 
-function sections(container: HTMLElement): string[] {
-  return [...container.querySelectorAll('[role="header"]')].map((node) => node.textContent ?? "");
+/** The sheet's tiles, by label, and which one is chosen. */
+function tabs(container: HTMLElement): { label: string; selected: boolean }[] {
+  return [...container.querySelectorAll('[role="tab"]')].map((tab) => ({
+    label: tab.getAttribute("aria-label") ?? "",
+    selected: tab.getAttribute("aria-selected") === "true",
+  }));
+}
+
+function chosen(container: HTMLElement): string | undefined {
+  return tabs(container)
+    .find(({ selected }) => selected)
+    ?.label.split(",")[0];
+}
+
+function named(container: HTMLElement, label: RegExp): HTMLButtonElement {
+  const target = [...container.querySelectorAll("button")].find((node) =>
+    label.test(node.getAttribute("aria-label") ?? ""),
+  );
+  if (!target) throw new Error(`No control named ${String(label)}`);
+  return target;
 }
 
 function press(container: HTMLElement, label: string): void {
@@ -354,64 +476,109 @@ describe("the conversation's bar", () => {
     const button = control(bar(w.client, home).android())!;
     expect(button.getAttribute("aria-label")).not.toContain("schedule");
     expect(button.querySelector('[data-symbol="clock"]')).toBeNull();
-    expect(sections(sheet(home))).toEqual([
-      `Places · ${aroundPlaces(w.snapshot(), home).length}`,
-      "Tasks · 1",
-    ]);
+    expect(tabs(sheet(home)).map(({ label }) => label.split(",")[0])).toEqual(["Places", "Tasks"]);
   });
 });
 
 describe("Around this thread", () => {
-  it("shows Places, Tasks and Schedules in order and opens exactly the row pressed", async () => {
+  it("has a tile for each section with anything in it, and opens on the task that needs the reader", async () => {
     const w = await world();
     const home = w.snapshot().homeThreadId!;
     const places = aroundPlaces(w.snapshot(), home);
     const automations = w.snapshot().threadAutomations[home]!.length;
-    harness.routes = [
-      { name: "Home", params: { deploymentId } },
-      {
-        name: "WorkspaceBrowser",
-        params: { deploymentId, scope: "workspace", sessionId: "page", tabId: "beside" },
-      },
-      { name: "ThreadAround", params: { deploymentId, threadId: home } },
-    ];
     const container = sheet(home);
-    expect(sections(container)).toEqual([
-      `Places · ${places.length}`,
-      "Tasks · 1",
-      `Schedules · ${automations}`,
+    expect(container.querySelector('[role="tablist"]')).not.toBeNull();
+    expect(tabs(container)).toEqual([
+      { label: `Places, ${places.length}, ${places.length} working`, selected: false },
+      { label: "Tasks, 1, 1 needs you", selected: true },
+      { label: `Schedules, ${automations}`, selected: false },
     ]);
     expect(container.textContent).not.toContain("From");
-    // Working places are listed first and say so.
-    const rows = [...container.querySelectorAll("button")].map((node) =>
-      node.getAttribute("aria-label"),
-    );
-    expect(rows[0]).toMatch(/agent working$/u);
-    const last = places.at(-1)!;
-    press(container, rows[places.length - 1]!);
-    expect(harness.goBack).toHaveBeenCalledOnce();
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "PUSH",
-      name: "WorkspaceBrowser",
-      params: surfaceRoute(deploymentId, home, last.destination),
-    });
-    const worker = w.titled("Book a table for Friday");
-    const task = rows.find((label) => label?.startsWith("Book a table for Friday"))!;
-    press(container, task);
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "PUSH",
-      name: "Thread",
-      params: { deploymentId, threadId: worker },
-    });
   });
 
-  it("folds earlier tasks under the rest, four at a time, and opens a schedule's own screen from its row", async () => {
+  it("opens on a place an agent works in when nothing needs the reader", async () => {
+    const w = await world();
+    w.move({ ...w.snapshot(), waitingRequests: [] });
+    expect(chosen(sheet(w.snapshot().homeThreadId!))).toBe("Places");
+  });
+
+  it("keeps the reader's section as the Host changes, and gives way only when it empties", async () => {
+    const w = await world();
+    const original = w.snapshot();
+    const home = original.homeThreadId!;
+    const container = sheet(home);
+    // What it opened on stops needing the reader: the sheet stays where it is.
+    w.move({ ...w.snapshot(), waitingRequests: [] });
+    expect(chosen(container)).toBe("Tasks");
+    press(container, `Schedules, ${original.threadAutomations[home]!.length}`);
+    expect(chosen(container)).toBe("Schedules");
+    expect(harness.haptic).toHaveBeenCalledOnce();
+
+    press(container, "Tasks, 1");
+    const open = Object.values(original.assignments).find(
+      (assignment) => assignment.parentThreadId === home && assignment.status === "open",
+    )!;
+    w.move({
+      ...w.snapshot(),
+      assignments: {
+        ...original.assignments,
+        [open.id]: { ...open, finishedAt: new Date().toISOString(), status: "completed" },
+      },
+    });
+    // The task finished: its tile is gone, and the sheet falls to the first section.
+    expect(tabs(container).map(({ label }) => label.split(",")[0])).toEqual([
+      "Places",
+      "Earlier",
+      "Schedules",
+    ]);
+    expect(chosen(container)).toBe("Places");
+    // A section that comes back does not take the sheet back with it.
+    w.move({ ...w.snapshot(), assignments: original.assignments });
+    expect(chosen(container)).toBe("Places");
+  });
+
+  it("shows a lone section's list without tiles", async () => {
+    const w = await world();
+    const container = sheet(w.titled("Check the delivery ETA"));
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(named(container, /^Phone, Pixel 7, agent working$/u)).toBeDefined();
+  });
+
+  it("wraps four tiles two by two at large text sizes rather than squeezing their labels", async () => {
+    const w = await world();
+    const home = w.snapshot().homeThreadId!;
+    const open = Object.values(w.snapshot().assignments).find(
+      ({ parentThreadId }) => parentThreadId === home,
+    )!;
+    const earlier = {
+      ...open,
+      finishedAt: new Date().toISOString(),
+      id: createId("delegation"),
+      status: "completed" as const,
+      workerThread: { ...open.workerThread, id: createId("thread") },
+    };
+    w.move({
+      ...w.snapshot(),
+      assignments: { ...w.snapshot().assignments, [earlier.id]: earlier },
+    });
+    const widths = (container: HTMLElement) =>
+      [...container.querySelectorAll('[role="tab"]')].map((tab) =>
+        Number(tab.getAttribute("data-width")),
+      );
+    // 351pt across less three 8pt gaps: four tiles fit at the default size.
+    expect(widths(sheet(home))).toEqual([81.75, 81.75, 81.75, 81.75]);
+    harness.fontScale = 1.4;
+    expect(widths(sheet(home))).toEqual([171.5, 171.5, 171.5, 171.5]);
+  });
+
+  it("lists every earlier task under the day it finished, and opens a schedule's own screen from its row", async () => {
     const w = await world();
     const parent = w.titled("Reconcile August expenses");
     const seed = Object.values(w.snapshot().assignments)[0]!;
-    const settled = Array.from({ length: 5 }, (_, index) => ({
+    const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString();
+    const settled = [0, 0, 1, 1, 1].map((offset) => ({
       ...seed,
-      finishedAt: `2026-10-0${index + 1}T00:00:00.000Z`,
+      finishedAt: day(offset),
       id: createId("delegation"),
       parentThreadId: parent as typeof seed.parentThreadId,
       status: "completed" as const,
@@ -428,21 +595,22 @@ describe("Around this thread", () => {
       },
     });
     const container = sheet(parent);
-    expect(sections(container)).toEqual([
-      `Places · ${aroundPlaces(w.snapshot(), parent).length}`,
-      "Tasks · 5",
-      "Schedules · 2",
+    expect(tabs(container).map(({ label }) => label)).toEqual([
+      `Places, ${aroundPlaces(w.snapshot(), parent).length}`,
+      "Earlier, 5",
+      "Schedules, 2",
+    ]);
+    const list = container.querySelector('[aria-label="Earlier"]')!;
+    expect([...list.querySelectorAll('[role="header"]')].map((node) => node.textContent)).toEqual([
+      "Today",
+      "Yesterday",
     ]);
     const title = taskFamily(w.snapshot(), parent).earlier[0]!.title;
-    const earlier = () =>
-      [...container.querySelectorAll("button")].filter((node) =>
+    expect(
+      [...list.querySelectorAll("button")].filter((node) =>
         node.getAttribute("aria-label")?.startsWith(`${title}, `),
-      ).length;
-    expect(earlier()).toBe(0);
-    press(container, "Earlier · 5");
-    expect(earlier()).toBe(4);
-    press(container, "Show all");
-    expect(earlier()).toBe(5);
+      ),
+    ).toHaveLength(5);
     expect(container.querySelector('[aria-label="Repository, Watching"]')).not.toBeNull();
     press(container, "Later, Paused");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
@@ -452,11 +620,100 @@ describe("Around this thread", () => {
     });
   });
 
+  it("pauses and resumes a schedule on what the Host confirms, and not while it is asked or offline", async () => {
+    const w = await world();
+    w.move({ ...w.snapshot(), connection: "connected" });
+    const home = w.snapshot().homeThreadId!;
+    const id = w
+      .snapshot()
+      .threadAutomations[home]!.find(({ name }) => name === "Morning email summary")!.id;
+    const container = sheet(home);
+    const toggle = () => named(container, /^Morning email summary$/u);
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+
+    const release = w.hold();
+    act(() => toggle().click());
+    expect(w.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "paused", triggerId: id, type: "trigger.status.set" }),
+    );
+    // Asked, not yet answered: it says what the Host last said, and holds still.
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+    expect(toggle().disabled).toBe(true);
+    await act(async () => release());
+    await vi.waitFor(
+      () =>
+        expect(toggle().getAttribute("aria-checked"), "the Host's pause never showed").toBe(
+          "false",
+        ),
+      { timeout: 2000 },
+    );
+    expect(toggle().disabled).toBe(false);
+    expect(named(container, /^Morning email summary, Paused$/u)).toBeDefined();
+
+    // Resumed on another device before this thread's list ever said paused: the
+    // list, reread for that change, stays as it was, and the notice of it hands
+    // the switch back to the list.
+    w.move({ ...w.snapshot(), triggerRevision: w.snapshot().triggerRevision + 1 });
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+
+    // What the Host reports afterwards wins over what this sheet asked.
+    const reported = (paused: boolean) =>
+      w.move({
+        ...w.snapshot(),
+        threadAutomations: {
+          ...w.snapshot().threadAutomations,
+          [home]: w
+            .snapshot()
+            .threadAutomations[home]!.map((item) => (item.id === id ? { ...item, paused } : item)),
+        },
+      });
+    reported(true);
+    reported(false);
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+
+    w.move({ ...w.snapshot(), connection: "offline" });
+    expect(toggle().disabled).toBe(true);
+  });
+
+  it("opens exactly the place or task pressed, working places first", async () => {
+    const w = await world();
+    const home = w.snapshot().homeThreadId!;
+    const places = aroundPlaces(w.snapshot(), home);
+    harness.routes = [
+      { name: "Home", params: { deploymentId } },
+      {
+        name: "WorkspaceBrowser",
+        params: { deploymentId, scope: "workspace", sessionId: "page", tabId: "beside" },
+      },
+      { name: "ThreadAround", params: { deploymentId, threadId: home } },
+    ];
+    const container = sheet(home);
+    const rows = [...container.querySelectorAll('section[aria-label="Places"] button')].map(
+      (node) => node.getAttribute("aria-label")!,
+    );
+    expect(rows[0]).toMatch(/agent working$/u);
+    const last = places.at(-1)!;
+    press(container, rows[places.length - 1]!);
+    expect(harness.goBack).toHaveBeenCalledOnce();
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "PUSH",
+      name: "WorkspaceBrowser",
+      params: surfaceRoute(deploymentId, home, last.destination),
+    });
+    act(() => named(container, /^Book a table for Friday, Needs you/u).click());
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "PUSH",
+      name: "Thread",
+      params: { deploymentId, threadId: w.titled("Book a table for Friday") },
+    });
+  });
+
   it("gives a task the way back to the conversation it works for, and nothing else when that is all", async () => {
     const w = await world();
     const worker = w.titled("Book a table for Friday");
     const container = sheet(worker);
-    expect(sections(container)).toEqual([]);
+    expect(tabs(container)).toEqual([]);
+    expect(container.querySelector("section")).toBeNull();
     press(container, "From Chat");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "POP_TO",

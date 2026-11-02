@@ -16,7 +16,7 @@ import {
   useSyncExternalStore,
   type Ref,
 } from "react";
-import { Pressable, StyleSheet, View, type GestureResponderEvent } from "react-native";
+import { StyleSheet, View, type GestureResponderEvent } from "react-native";
 import {
   NativeEditingProxy,
   type NativeEditingProxyHandle,
@@ -24,7 +24,8 @@ import {
 import { createMobileClipboardPort } from "../../modules/remote-text-input/src/clipboard.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { material } from "../theme.js";
+import { ToolbarButton, ToolbarCapsule } from "../browser/toolbar.js";
+import { material, radius, space } from "../theme.js";
 
 const emptyEditing: DisplayEditingSnapshot = { context: null, receipt: null };
 const getEmptyEditing = () => emptyEditing;
@@ -38,17 +39,25 @@ export interface DisplayPicture {
 
 export interface DisplayControlsHandle {
   resetInput(): void;
+  /** Brings up the keyboard for the field the display reports, from the place's bar. */
+  startTyping(): void;
 }
 
 /** Input uses the geometry actually decoded, and the same lease that owns its pixels. */
 export function DisplayControls({
   lease,
+  onCanType,
+  onTyping,
   picture,
   phone,
   visible,
   ref,
 }: {
   readonly lease: DisplayLease;
+  /** Whether a field has focus to type into now, for the bar's keyboard button. */
+  readonly onCanType?: (canType: boolean) => void;
+  /** The keyboard is up for the display, and its pane should make room. */
+  readonly onTyping?: (typing: boolean) => void;
   readonly picture: DisplayPicture | null;
   readonly phone: boolean;
   readonly visible: boolean;
@@ -69,6 +78,18 @@ export function DisplayControls({
   );
   const context = snapshot.display?.generation === picture?.generation ? editing.context : null;
   const [typing, setTyping] = useState(false);
+  const canType = held && negotiated && context?.field != null;
+  useEffect(() => {
+    onCanType?.(canType);
+    // Controls that are gone cannot type, so the bar's Keyboard must not offer it.
+    return () => onCanType?.(false);
+  }, [canType, onCanType]);
+  const keyboardUp = held && typing;
+  useEffect(() => onTyping?.(keyboardUp), [keyboardUp, onTyping]);
+  useEffect(() => () => onTyping?.(false), [onTyping]);
+  useEffect(() => {
+    if (!canType) setTyping(false);
+  }, [canType]);
   const [receipt, setReceipt] = useState<string | null>(null);
   useEffect(() => setReceipt(null), [snapshot.input, snapshot.display?.generation]);
   const proxy = useRef<NativeEditingProxyHandle>(null);
@@ -78,6 +99,9 @@ export function DisplayControls({
       resetInput() {
         proxy.current?.cancel();
         lease.resetInput();
+      },
+      startTyping() {
+        setTyping(true);
       },
     }),
     [lease],
@@ -268,20 +292,14 @@ export function DisplayControls({
         onTouchEnd={(event) => touch("up", event)}
         onTouchCancel={(event) => touch("cancel", event)}
       />
-      <View style={[styles.controls, phone && { bottom: 56 }]}>
-        {held && context?.field ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Keyboard"
-            onPress={() => setTyping(true)}
-          >
-            <AppText>Keyboard</AppText>
-          </Pressable>
-        ) : null}
-        <AppText>{receipt ?? editing.receipt}</AppText>
-        {!negotiated ? <AppText>Editing is unavailable for this display.</AppText> : null}
-        {held && typing ? (
-          <View style={styles.keyboard}>
+      {(receipt ?? editing.receipt) ? (
+        <View pointerEvents="none" style={styles.receipt}>
+          <AppText role="caption">{receipt ?? editing.receipt}</AppText>
+        </View>
+      ) : null}
+      {held && typing ? (
+        <View style={styles.typing}>
+          <ToolbarCapsule style={styles.field}>
             <NativeEditingProxy
               cancelCompositionOnBlur
               ref={proxy}
@@ -294,33 +312,41 @@ export function DisplayControls({
                 setTyping(false);
               }}
             />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Done"
-              onPress={() => {
-                proxy.current?.cancel();
-                lease.resetInput();
-                setTyping(false);
-              }}
-            >
-              <AppText>Done</AppText>
-            </Pressable>
-          </View>
-        ) : null}
-      </View>
+          </ToolbarCapsule>
+          <ToolbarButton
+            label="Done"
+            onPress={() => {
+              proxy.current?.cancel();
+              lease.resetInput();
+              setTyping(false);
+            }}
+            selected
+            symbol="checkmark"
+          />
+        </View>
+      ) : null}
     </View>
   );
 }
 const styles = StyleSheet.create({
-  controls: {
+  field: { flex: 1, minWidth: 0, paddingHorizontal: space[12] },
+  // What a copy or a refused edit came to, said briefly over the picture's foot.
+  receipt: {
     ...material.float,
+    alignSelf: "center",
+    borderRadius: radius.full,
+    bottom: space[12],
+    paddingHorizontal: space[14],
+    paddingVertical: space[6],
     position: "absolute",
-    bottom: 12,
-    left: 12,
-    right: 12,
-    padding: 12,
-    gap: 8,
-    borderRadius: 12,
   },
-  keyboard: { minHeight: 44, flexDirection: "row", alignItems: "center" },
+  typing: {
+    alignItems: "center",
+    bottom: space[8],
+    flexDirection: "row",
+    gap: space[8],
+    left: space[12],
+    position: "absolute",
+    right: space[12],
+  },
 });

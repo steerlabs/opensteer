@@ -1,6 +1,6 @@
 import { browserAddressParts } from "@opensteer/client/host";
-import { memo } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { memo, useLayoutEffect } from "react";
+import { ActivityIndicator, StyleSheet, View } from "react-native";
 import {
   StackActions,
   useNavigation,
@@ -10,10 +10,10 @@ import {
 import type { BrowserTabOpenHandle, BrowserTabOpenInput, HostClient } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { space } from "../theme.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
-import { Screen } from "../ui/screen.js";
-import { useSurfaceHeader } from "./surface-header.js";
 import type { SurfacesRoute } from "./surface-route.js";
+import { Toolbar, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 
 export function showPendingBrowserTab(
   navigation: Pick<NavigationProp<ParamListBase>, "dispatch"> & {
@@ -86,13 +86,14 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
         : pending
           ? "Opening…"
           : "This opening is no longer available";
-  useSurfaceHeader({
-    acting: false,
-    secondary: parts ? `${parts.host}${parts.rest}` : null,
-    glyph: "globe",
-    title,
-    menu: [{ id: "close", icon: "xmark", label: "Close tab", onPress: close }],
-  });
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => null,
+      headerTitle: undefined,
+      title: "New tab",
+      unstable_headerRightItems: () => [],
+    });
+  }, [navigation]);
   const retry = (target?: BrowserTabOpenInput) => {
     if (!pending || pending.state === "opening") return;
     const opening = hostClient.beginBrowserTabOpen(target ?? pending.target, {
@@ -106,27 +107,31 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
     showPendingBrowserTab(navigation, route, opening);
   };
   return (
-    <Screen>
-      <View>
-        <AppText
-          accessibilityLabel={pending?.url ?? "New tab"}
-          style={{ fontSize: 13 }}
-          numberOfLines={1}
-        >
-          {parts?.host ?? "New tab"}
-          <AppText style={{ opacity: 0.55, fontSize: 13 }}>{parts?.rest ?? ""}</AppText>
-        </AppText>
+    <View style={styles.fill}>
+      <View accessibilityLiveRegion="polite" style={styles.status}>
         {pending?.state === "opening" ? (
           <ActivityIndicator accessibilityLabel="Opening tab" />
         ) : null}
-        <Notice
-          title={title}
-          detail={
-            pending?.state === "unknown"
-              ? "The Host may have opened this tab. Retry to recover the same opening."
-              : (pending?.error?.message ?? "")
-          }
-        />
+        <AppText accessibilityLabel={pending?.url ?? "New tab"} numberOfLines={1} role="bodyMedium">
+          {parts?.host ?? "New tab"}
+          <AppText role="bodyMedium" tone="muted">
+            {parts?.rest ?? ""}
+          </AppText>
+        </AppText>
+        {pending?.state === "opening" ? (
+          <AppText role="secondary" tone="muted">
+            {title}
+          </AppText>
+        ) : (
+          <Notice
+            title={title}
+            detail={
+              pending?.state === "unknown"
+                ? "The Host may have opened this tab. Retry to recover the same opening."
+                : (pending?.error?.message ?? "")
+            }
+          />
+        )}
         {pending && pending.state !== "opening" ? (
           <SecondaryButton label="Retry" onPress={() => retry()} />
         ) : null}
@@ -149,10 +154,43 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
                 />
               ))
           : null}
-        <SecondaryButton label="Close tab" onPress={close} />
       </View>
-    </Screen>
+      <Toolbar edge="bottom" testID="page-toolbar">
+        <ToolbarCapsule style={styles.address}>
+          <AppText numberOfLines={1} role="secondaryMedium" tone="muted">
+            {parts?.host ?? "New tab"}
+          </AppText>
+        </ToolbarCapsule>
+        <ToolbarMenu
+          label="More"
+          sections={[
+            [
+              {
+                destructive: true,
+                icon: "xmark.circle",
+                id: "close",
+                label: "Close tab",
+                onPress: close,
+              },
+            ],
+          ]}
+          symbol="ellipsis"
+        />
+      </Toolbar>
+    </View>
   );
+});
+
+const styles = StyleSheet.create({
+  address: { flex: 1, justifyContent: "center", minWidth: 0, paddingHorizontal: space[16] },
+  fill: { flex: 1 },
+  status: {
+    alignItems: "center",
+    flex: 1,
+    gap: space[12],
+    justifyContent: "center",
+    padding: space[24],
+  },
 });
 
 export const PendingBrowserTabRows = memo(function PendingBrowserTabRows({

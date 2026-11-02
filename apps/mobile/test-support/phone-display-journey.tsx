@@ -248,6 +248,7 @@ function Journey() {
                         machineId: connection.target.machineId,
                       }}
                       hostClient={connection.client}
+                      onTyping={() => undefined}
                     />
                   </View>
                 ) : (

@@ -15,6 +15,7 @@ import {
   type BrowserProfilesDestination,
 } from "./screens/browser-profiles.js";
 import { BrowserHistoryScreen, type BrowserHistoryDestination } from "./screens/browser-history.js";
+import { BrowserTabsScreen } from "./screens/browser-tabs.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ConnectedAppsScreen, type ConnectedAppsDestination } from "./screens/connected-apps.js";
 import type { SurfacesRoute } from "./browser/surface-route.js";
@@ -155,6 +156,18 @@ const RootStack = createNativeStackNavigator({
     // alone, from Tabs or the sidebar. The native
     // Back (and swipe, and Android's back) returns, and leaving stops nothing.
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
+    // One browser's tabs, from the tab button in a page's bar. It opens at the
+    // height its rows need and grows for a browser with many.
+    BrowserTabs: {
+      screen: BrowserTabsScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.5, 0.95],
+        sheetGrabberVisible: true,
+        title: "Tabs",
+      },
+    },
     // The model picker starts compact and can expand for a long catalog. It
     // draws its own bar as the list's header: Android's form sheet has no
     // native header, and the list must be the sheet's direct child for iOS to
@@ -446,6 +459,11 @@ type OpensteerRootParamList = {
     readonly threadId: string;
   };
   readonly WorkspaceBrowser: SurfacesRoute;
+  readonly BrowserTabs: {
+    readonly deploymentId: string;
+    readonly sessionId: string;
+    readonly tabId: string;
+  };
 };
 
 export type RootParamList = OpensteerRootParamList;

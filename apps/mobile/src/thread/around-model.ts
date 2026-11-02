@@ -12,7 +12,9 @@ import {
   type ConversationSurfaceSource,
   type HostSnapshot,
   type RequesterLink,
+  type FamilyTask,
   type SurfaceItem,
+  type TaskFamily,
   type TaskFamilyGlance,
   type TaskSurfaceDestination,
 } from "@opensteer/client/host";
@@ -34,6 +36,8 @@ export interface AroundPlace {
   readonly title: string;
   /** The page's site, or the Mac an app is on; null for a phone or a page with no address. */
   readonly detail: string | null;
+  /** The page's site icon, while this client has one. */
+  readonly favicon: string | null;
   /** An agent of this conversation acts in it now. */
   readonly working: boolean;
   readonly destination: TaskSurfaceDestination;
@@ -62,6 +66,7 @@ function aroundPlace(item: SurfaceItem, working: boolean): AroundPlace {
         : item.kind === "app"
           ? item.machine.name
           : null,
+    favicon: item.kind === "browser" ? item.favicon : null,
     glyph: surfaceGlyph(item),
     key: item.key,
     title:
@@ -87,11 +92,89 @@ export function sameAroundPlaces(
         place.key === other.key &&
         place.title === other.title &&
         place.detail === other.detail &&
+        place.favicon === other.favicon &&
         place.working === other.working &&
         sameDestination(place.destination, other.destination)
       );
     })
   );
+}
+
+/** The sheet's sections, in the order the header button draws their parts. */
+export type AroundSection = "places" | "tasks" | "earlier" | "schedules";
+
+/** The sections with something in them: a tile never stands for an empty list. */
+export function aroundSections(
+  places: readonly AroundPlace[],
+  family: TaskFamily,
+): readonly AroundSection[] {
+  return [
+    ...(places.length > 0 ? (["places"] as const) : []),
+    ...(family.running.length > 0 ? (["tasks"] as const) : []),
+    ...(family.earlier.length > 0 ? (["earlier"] as const) : []),
+    ...(family.automations.length > 0 ? (["schedules"] as const) : []),
+  ];
+}
+
+/**
+ * Where the sheet opens: a task that needs the reader, else a place an agent
+ * works in, else the first section with anything in it.
+ */
+export function openingSection(
+  places: readonly AroundPlace[],
+  family: TaskFamily,
+): AroundSection | null {
+  if (family.running.some(({ needsYou }) => needsYou)) return "tasks";
+  if (places.some(({ working }) => working)) return "places";
+  return aroundSections(places, family)[0] ?? null;
+}
+
+/** The chosen section while it has anything in it, else the first that does. */
+export function shownSection(
+  chosen: AroundSection,
+  sections: readonly AroundSection[],
+): AroundSection | null {
+  return sections.includes(chosen) ? chosen : (sections[0] ?? null);
+}
+
+/** Finished tasks under the day they finished, newest first, as Messages and Mail group mail. */
+export interface EarlierDay {
+  readonly title: string;
+  readonly tasks: readonly FamilyTask[];
+}
+
+export function earlierDays(tasks: readonly FamilyTask[], now: number): readonly EarlierDay[] {
+  const days: { title: string; tasks: FamilyTask[] }[] = [];
+  for (const task of tasks) {
+    const title = task.finishedAt === null ? "Earlier" : dayTitle(Date.parse(task.finishedAt), now);
+    const last = days.at(-1);
+    if (last?.title === title) last.tasks.push(task);
+    else days.push({ tasks: [task], title });
+  }
+  return days;
+}
+
+const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long" });
+const monthDay = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "long" });
+const monthDayYear = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+
+function dayTitle(time: number, now: number): string {
+  const day = new Date(time);
+  const today = new Date(now);
+  // Calendar days, not 24-hour spans, so a task done before midnight is yesterday's.
+  const days = Math.round(
+    (new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() -
+      new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime()) /
+      86_400_000,
+  );
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return weekday.format(time);
+  return (day.getFullYear() === today.getFullYear() ? monthDay : monthDayYear).format(time);
 }
 
 /**
