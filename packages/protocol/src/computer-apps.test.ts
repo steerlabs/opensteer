@@ -1,5 +1,8 @@
 import { createId } from "@opensteer/core";
-import { createIntegrationId } from "@opensteer/integration-core";
+import {
+  ComputerAppSetupRequestViewSchema,
+  createIntegrationId,
+} from "@opensteer/integration-core";
 import { describe, expect, it } from "vitest";
 import {
   ComputerAppRemedySchema,
@@ -267,8 +270,7 @@ describe("computer app approval and discovery contracts", () => {
       parse({ idempotencyKey: "policy", type: "integration.computer.setup.request", input: policy })
         .success,
     ).toBe(true);
-    // A signed consume is the Mac's answer on its own Runner stream: no client
-    // command carries a signature, for an app or for the policy.
+    // Clients answer an exact pending request through the owner command.
     for (const input of [policy, { ...policy, approval }, { ...app, approval }]) {
       expect(
         parse({ idempotencyKey: "signed", type: "integration.computer.setup.set", input }).success,
@@ -280,13 +282,10 @@ describe("computer app approval and discovery contracts", () => {
     ).toBe(true);
     expect(
       parse({
-        idempotencyKey: "key",
-        type: "integration.computer.approval-key.set",
-        input: {
-          publicKey:
-            "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n-----END PUBLIC KEY-----\n",
-          runnerId,
-        },
+        idempotencyKey: "answer",
+        type: "integration.computer.setup.respond",
+        setupRequestId: approval.requestId,
+        decision: "allow",
       }).success,
     ).toBe(true);
     expect(
@@ -369,3 +368,71 @@ it.each([null, 149_999, 150_000, 4_000_000, 20_000_000, 20_000_001])(
     ).toBe(valid);
   },
 );
+
+describe("computer approval review privacy", () => {
+  it("strips program paths, environment and header values from owner summaries", () => {
+    const full = {
+      id: "00000000-0000-4000-8000-000000000001",
+      deploymentId: createId("deployment"),
+      ownerUserId: createId("user"),
+      runnerId: createId("runner"),
+      definitionId: "isv_00000000-0000-4000-8000-000000000002",
+      definitionDigest: "digest",
+      access: "read-write",
+      kind: "server",
+      policyAppApproval: null,
+      app: null,
+      server: {
+        serverId: "isv_00000000-0000-4000-8000-000000000002",
+        name: "MCP",
+        installationTitle: "Plugin",
+        launch: {
+          type: "stdio",
+          command: "/private/program",
+          args: [],
+          cwd: "/private/work",
+          env: { TOKEN: "private-value" },
+        },
+      },
+      reason: null,
+      threadId: null,
+      workspaceId: null,
+      workspaceName: null,
+      threadTitle: null,
+      createdAt: "2026-10-01T00:00:00Z",
+      expiresAt: "2026-10-02T00:00:00Z",
+    };
+    const ownerReview = hostApi["integration.computer.setup.review"].success.parse({
+      request: {
+        ...full,
+        future: true,
+        server: { ...full.server, future: true, launch: { ...full.server.launch, future: true } },
+      },
+      app: null,
+      future: true,
+    });
+    expect(ownerReview.request.server?.launch).toEqual(full.server.launch);
+    const summary = ComputerAppSetupRequestViewSchema.parse(full);
+    expect(summary.server).toEqual({
+      serverId: full.server.serverId,
+      name: "MCP",
+      installationTitle: "Plugin",
+    });
+    const text = JSON.stringify(summary);
+    for (const secret of ["/private/program", "/private/work", "private-value"])
+      expect(text).not.toContain(secret);
+    const http = ComputerAppSetupRequestViewSchema.parse({
+      ...full,
+      server: {
+        ...full.server,
+        launch: {
+          type: "http",
+          url: "http://127.0.0.1:1234/private",
+          headers: { Authorization: "private-header" },
+        },
+      },
+    });
+    expect(JSON.stringify(http)).not.toContain("private-header");
+    expect(JSON.stringify(http)).not.toContain("127.0.0.1");
+  });
+});

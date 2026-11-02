@@ -1,16 +1,11 @@
-import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import WebSocket, { WebSocketServer } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId, type EnvironmentId } from "@opensteer/core";
-import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
-import type {
-  ComputerAppApproval,
-  ComputerAppSetupRequest,
-  IntegrationAccess,
-} from "@opensteer/integration-core";
+import type { ComputerAppSetupSummary, IntegrationAccess } from "@opensteer/integration-core";
 import type { MessagingModule } from "@opensteer/messaging-module";
 import {
   ComputerUseBridgeRequestSchema,
@@ -22,21 +17,13 @@ import {
   RunnerBootIdSchema,
   RunnerDescriptorSchema,
   runnerIntegrationsProtocolVersion,
-  HostIntegrationsComputerAppApprovalKeyChallengeSchema,
-  type ComputerAppApprovalAnswer,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcome,
-  type ComputerAppApprovalOutcomeFrame,
   type RunnerAuxiliaryModule,
   type RunnerMessagingModule,
   type RunnerIntegrationsModule,
   type RunnerModuleName,
   type RunnerDevice,
 } from "@opensteer/protocol";
-import {
-  createRunnerAuxiliarySignature,
-  signComputerAppApprovalKeyChallenge,
-} from "@opensteer/runner-auth";
+import { createRunnerAuxiliarySignature } from "@opensteer/runner-auth";
 import {
   ComputerAppModuleHandler,
   type ComputerAppProvider,
@@ -74,7 +61,6 @@ export async function connectComputerAppMachine(
     readonly desktop?: Pick<ComputerAppModuleHandlerOptions, "computerUse" | "localMcp">;
     readonly messaging?: RunnerMessagingModule;
     readonly integrations?: RunnerIntegrationsModule;
-    readonly registerApprovalKey?: boolean;
     readonly statusIntervalMs?: number;
   } = {},
 ) {
@@ -105,7 +91,6 @@ export async function connectComputerAppMachine(
         : {}),
       // A desktop supervises it, so it relays approvals.
       integrations: options.integrations ?? {
-        computerAppApprovals: true,
         platform: "darwin",
         protocolVersion: runnerIntegrationsProtocolVersion,
       },
@@ -131,7 +116,6 @@ export async function connectComputerAppMachine(
     mainSocket,
   );
   if (options.personalMain) acknowledgeCommands(primary, () => true);
-  const approvalKey = generateKeyPairSync("ed25519");
   let module: Awaited<ReturnType<typeof attachIntegrations>>;
   const close = async () => {
     disk?.stop();
@@ -147,32 +131,37 @@ export async function connectComputerAppMachine(
       host.hostPort,
       primary,
       providers,
-      approvalKey.privateKey,
       options.statusIntervalMs,
       desktop,
     );
-    if (options.registerApprovalKey !== false)
-      await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: `approval-key:${runnerId}`,
-          input: {
-            publicKey: approvalKey.publicKey.export({ format: "pem", type: "spki" }).toString(),
-            runnerId,
-          },
-          type: "integration.computer.approval-key.set",
-        },
-        { headers: host.ownerHeaders },
-      );
   } catch (error) {
     await close();
     throw error;
   }
   return {
-    answer: (setupRequestId: string, answer: ComputerAppApprovalAnswer) =>
-      module.answer(setupRequestId, answer),
-    approvalKey,
+    answer: async (
+      setupRequestId: string,
+      answer: ComputerAppApprovalAnswer,
+    ): Promise<ComputerAppApprovalOutcome> => {
+      if (answer.setupRequestId !== setupRequestId)
+        return { kind: "refused", message: "This answer names another request." };
+      try {
+        await testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "integration.computer.setup.respond",
+            setupRequestId,
+            decision: answer.kind,
+            idempotencyKey: `computer-answer:${setupRequestId}:${randomUUID()}`,
+          },
+          { headers: host.ownerHeaders },
+        );
+        return { kind: answer.kind === "allow" ? "allowed" : "declined" };
+      } catch (error) {
+        return { kind: "refused", message: error instanceof Error ? error.message : "Refused" };
+      }
+    },
     primary,
     get auxiliaryStreamId() {
       return module.auxiliaryStreamId;
@@ -192,7 +181,6 @@ export async function connectComputerAppMachine(
         host.hostPort,
         primary,
         providers,
-        approvalKey.privateKey,
         options.statusIntervalMs,
         restarted ?? desktop,
       );
@@ -317,7 +305,6 @@ export async function attachIntegrations(
   hostPort: number,
   primary: PrimaryConnection,
   providers: readonly ComputerAppProvider[],
-  approvalKey: KeyObject,
   statusIntervalMs = 60_000,
   desktop: Pick<ComputerAppModuleHandlerOptions, "computerUse" | "localMcp"> = {},
 ) {
@@ -341,46 +328,11 @@ export async function attachIntegrations(
     if (!isBinary) {
       const parsed = JSON.parse(frame.toString("utf8")) as { readonly type: string };
       if (parsed.type === "host.auxiliary.lease-renewed") return;
-      if (parsed.type === "host.integrations.computer-app-approval-key-challenge") {
-        const message = HostIntegrationsComputerAppApprovalKeyChallengeSchema.parse(parsed);
-        const { challengeId, expiresAt, keyId, nonce, runnerId } = message;
-        const challenge = { challengeId, expiresAt, keyId, nonce, runnerId };
-        socket.send(
-          JSON.stringify({
-            ...fence,
-            challengeId: challenge.challengeId,
-            signature: signComputerAppApprovalKeyChallenge(approvalKey, challenge),
-            type: "runner.integrations.computer-app-approval-key-proof",
-          }),
-        );
-        return;
-      }
     }
     void handler.handleFrame(frame, isBinary);
   });
   socket.once("close", () => handler.detach());
   return {
-    /** The person's answer on this Mac, and the Host's outcome for it. */
-    answer: async (
-      setupRequestId: string,
-      answer: ComputerAppApprovalAnswer,
-    ): Promise<ComputerAppApprovalOutcome> => {
-      const decided = waitForMessage(
-        socket,
-        (message) =>
-          message.type === "host.integrations.computer-app-approval-outcome" &&
-          (message as { readonly setupRequestId?: string }).setupRequestId === setupRequestId,
-      );
-      socket.send(
-        JSON.stringify({
-          ...fence,
-          answer,
-          setupRequestId,
-          type: "runner.integrations.computer-app-approval-answer",
-        }),
-      );
-      return ((await decided) as { readonly outcome: ComputerAppApprovalOutcome }).outcome;
-    },
     auxiliaryStreamId: fence.auxiliaryStreamId,
     streamLeaseExpiresAt: welcome.streamLeaseExpiresAt,
     close: async () => {
@@ -467,7 +419,7 @@ export async function requestComputerAppSetup(
   access: IntegrationAccess,
   key: string,
   definitionId = "apple-messages",
-): Promise<ComputerAppSetupRequest> {
+): Promise<ComputerAppSetupSummary> {
   const result = await testRpcData(
     host.origin,
     "commands.dispatch",
@@ -488,11 +440,16 @@ export async function requestComputerAppSetup(
  */
 export async function setComputerApp(
   host: MachineAccessHost,
-  computer: { readonly answer: IntegrationsModule["answer"] },
-  request: ComputerAppSetupRequest,
-  approval: ComputerAppApproval,
+  computer: {
+    readonly answer: (
+      setupRequestId: string,
+      answer: ComputerAppApprovalAnswer,
+    ) => Promise<ComputerAppApprovalOutcome>;
+  },
+  request: ComputerAppSetupSummary,
+  setupRequestId: string,
 ) {
-  const outcome = await computer.answer(request.id, { approval, kind: "allow" });
+  const outcome = await computer.answer(request.id, { setupRequestId, kind: "allow" });
   if (outcome.kind !== "allowed") {
     throw new Error(
       `The Host ${outcome.kind === "refused" ? `refused: ${outcome.message}` : "declined"}`,
@@ -507,8 +464,6 @@ export async function setComputerApp(
     .executeTakeFirstOrThrow();
   return { connection };
 }
-
-type IntegrationsModule = Awaited<ReturnType<typeof attachIntegrations>>;
 
 export function waitForMessage(
   socket: WebSocket,
@@ -571,10 +526,8 @@ export async function startFakeDesktop(
 ) {
   const token = randomUUID();
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  const outcomes: ComputerAppApprovalOutcomeFrame[] = [];
   const requests: ComputerUseBridgeRequest[] = [];
   /** Every approval a list has shown this desktop, by setup request. */
-  const shown = new Map<string, ComputerAppSetupRequest>();
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("The fake desktop has no port");
@@ -606,71 +559,14 @@ export async function startFakeDesktop(
                   },
                 },
               }
-            : frame.method === "approvals.list" || frame.method === "approvals.outcome"
-              ? (() => {
-                  if (frame.method === "approvals.outcome") {
-                    outcomes.push(frame.params as ComputerAppApprovalOutcomeFrame);
-                  } else {
-                    for (const { request } of (frame.params as ComputerAppApprovalList).approvals) {
-                      shown.set(request.id, request);
-                    }
-                  }
-                  return { result: {} };
-                })()
-              : (answer(frame) ?? {
-                  error: { code: "unsupported", message: "The fake desktop has no such method." },
-                });
+            : (answer(frame) ?? {
+                error: { code: "unsupported", message: "The fake desktop has no such method." },
+              });
       socket.send(JSON.stringify({ id: frame.id, kind: "response", ...answered }));
     });
   });
   return {
     requests,
-    /**
-     * The person's answer on the Mac, sent as desktop main sends it — to the
-     * Runner over its bridge, which carries it to the Host — and the Host's
-     * outcome, as it comes back the same way.
-     */
-    answer: async (
-      setupRequestId: string,
-      answer: ComputerAppApprovalAnswer,
-    ): Promise<ComputerAppApprovalOutcome> => {
-      // Desktop main answers only what a list showed it.
-      const shownBy = Date.now() + 15_000;
-      let request = shown.get(setupRequestId);
-      while (!request) {
-        if (Date.now() > shownBy) throw new Error("The Mac was never shown this approval");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        request = shown.get(setupRequestId);
-      }
-      // Allowing a server names the launch the person saw, as desktop main does.
-      const allowedServer =
-        answer.kind === "allow" && request.kind === "server" && request.server
-          ? {
-              launchDigest: localMcpLaunchDigest(request.server.launch),
-              serverId: request.server.serverId,
-            }
-          : null;
-      const before = outcomes.length;
-      for (const client of server.clients) {
-        client.send(
-          JSON.stringify({
-            event: "approval.answer",
-            kind: "event",
-            params: { answer, setupRequestId },
-            server: allowedServer,
-          }),
-        );
-      }
-      const deadline = Date.now() + 15_000;
-      for (;;) {
-        const found = outcomes
-          .slice(before)
-          .find((outcome) => outcome.setupRequestId === setupRequestId);
-        if (found) return found.outcome;
-        if (Date.now() > deadline) throw new Error("The Host never answered the Mac");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    },
     close: async () => {
       for (const client of server.clients) client.terminate();
       server.close();
@@ -732,3 +628,11 @@ export function toolText(value: unknown): string {
     (value as { readonly content: readonly { readonly text: string }[] }).content[0]?.text ?? ""
   );
 }
+
+export type ComputerAppApprovalAnswer = {
+  readonly kind: "allow" | "deny";
+  readonly setupRequestId: string;
+};
+export type ComputerAppApprovalOutcome =
+  | { readonly kind: "allowed" | "declined" }
+  | { readonly kind: "refused"; readonly message: string };

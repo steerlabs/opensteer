@@ -91,13 +91,7 @@ public final class IphoneAppsModule: Module {
       guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
       return try await IphoneExecutorRuntime.shared.choosePhotos()
     }
-    AsyncFunction("answerApproval") { (input: ApprovalAnswerInput) async throws -> [String: Any] in
-      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
-      guard input.decision == "allow" || input.decision == "deny" else { throw Self.refusal("unsupported") }
-      return await IphoneExecutorRuntime.shared.answerApproval(requestId: input.setupRequestId,
-        decision: input.decision, definitionId: input.expected.definitionId,
-        access: input.expected.access)
-    }
+
   }
 
   private static func refusal(_ code: String) -> Exception {
@@ -117,10 +111,10 @@ public final class IphoneAppsModule: Module {
   private static func unsupported(_ reason: String) -> [String: Any?] {
     ["revision": 0, "supported": false, "unsupportedReason": reason,
       "deviceName": UIDevice.current.name, "enrollment": nil, "connection": "none",
-      "retryAt": nil, "issue": nil, "issueMessage": nil, "approvalKey": nil,
+      "retryAt": nil, "issue": nil, "issueMessage": nil,
       "permissions": Dictionary(uniqueKeysWithValues: InvokeRules.apps.map { ($0, "not-determined") }),
       "locationAccuracy": nil,
-      "approvals": [[String: Any]](), "working": 0]
+      "working": 0]
   }
 }
 

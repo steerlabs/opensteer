@@ -1979,21 +1979,7 @@ interface ComputerUsePolicyTable {
   ownerUserId: UserId;
   appApproval: "ask" | "automatic";
   revision: number;
-  approval: JsonColumn<{
-    request: import("@opensteer/integration-core").ComputerAppSetupRequest;
-    approval: import("@opensteer/integration-core").ComputerAppApproval;
-  } | null>;
   updatedAt: Timestamp;
-}
-
-/** The one key a Mac's desktop signs that Mac's approvals with. */
-interface ComputerUseApprovalKeyTable {
-  runnerId: RunnerId;
-  /** Who registered it, at the Mac; approvals by anybody else are refused. */
-  ownerUserId: UserId;
-  publicKeyPem: string;
-  keyId: string;
-  registeredAt: Timestamp;
 }
 
 /** A person's Stop for one Run on one Mac; it lasts as long as the Run. */
@@ -2029,7 +2015,6 @@ interface ComputerAppSetupRequestTable {
 
 export interface DatabaseSchema {
   attachments: AttachmentTable;
-  computerUseApprovalKeys: ComputerUseApprovalKeyTable;
   computerUsePolicies: ComputerUsePolicyTable;
   computerUseStops: ComputerUseStopTable;
   computerAppSetupRequests: ComputerAppSetupRequestTable;

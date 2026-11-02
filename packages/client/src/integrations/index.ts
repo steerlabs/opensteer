@@ -14,6 +14,7 @@ export * from "./native-authorization.js";
 export type {
   // Clients that do not depend on the integration package — the phone — read
   // these through the one integrations surface they already import.
+  ComputerAppSetupSummary,
   IntegrationAccess,
   IntegrationConnectionSummary,
   IntegrationDashboard,
@@ -35,3 +36,5 @@ export { apiKeyDisclosure, connectableApiKeyMethod } from "./api-key.js";
 export * from "./phone-display-stream.js";
 export * from "./display-editing.js";
 export * from "./display-input.js";
+
+export * from "./computer-app-approval.js";

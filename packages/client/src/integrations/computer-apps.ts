@@ -1,7 +1,7 @@
 import type {
   ComputerAppPlatformView,
   ComputerAppPresentationView,
-  ComputerAppSetupRequest,
+  ComputerAppSetupSummary as ComputerAppSetupRequest,
   IntegrationAccess,
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,

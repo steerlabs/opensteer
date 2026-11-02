@@ -1,11 +1,12 @@
+import { rmSync } from "node:fs";
+import path from "node:path";
 import {
   runnerIntegrationsProtocolVersion,
   macOwnerViewVersion,
   type RunnerIntegrationsModule,
 } from "@opensteer/protocol";
-import path from "node:path";
 import { ComputerUseHandler } from "./computer-use-handler.js";
-import { LocalMcpApprovals, LocalMcpServers } from "./local-mcp-servers.js";
+import { LocalMcpServers } from "./local-mcp-servers.js";
 import type { ComputerAppProvider } from "./provider.js";
 import { computerAppProviders } from "./registry.js";
 
@@ -28,7 +29,7 @@ export interface PreparedIntegrationsModule {
 export function prepareIntegrationsModule(options: {
   /** The bridge the desktop minted for this slot, on a Mac it supervises. */
   readonly computerUseBridge?: { readonly token: string; readonly url: URL };
-  /** Where this Runner keeps what its owner approved on this computer. */
+  /** Runner state root; obsolete local consent caches are removed at startup. */
   readonly dataDirectory: string;
   readonly platform: NodeJS.Platform;
 }): PreparedIntegrationsModule | undefined {
@@ -36,6 +37,13 @@ export function prepareIntegrationsModule(options: {
   // aix, freebsd, a future one — is narrowed out before the registry is asked:
   // it could only answer with providers none of them declares anyway.
   const { platform } = options;
+  // Only the Host's exact-launch consent remains authoritative after upgrade.
+  try {
+    rmSync(path.join(options.dataDirectory, "integrations", "mcp-approvals.json"), { force: true });
+  } catch {
+    /* Obsolete cache is never read. */
+  }
+
   if (platform !== "darwin" && platform !== "linux" && platform !== "win32") return undefined;
   // No other platform has a helper behind the bridge, so a pair configured
   // elsewhere opens nothing rather than a socket to a server that cannot exist.
@@ -61,15 +69,9 @@ export function prepareIntegrationsModule(options: {
     ...(computerUse
       ? {
           computerUse,
-          localMcp: new LocalMcpServers({
-            approvals: new LocalMcpApprovals(
-              path.join(options.dataDirectory, "integrations", "mcp-approvals.json"),
-            ),
-          }),
+          localMcp: new LocalMcpServers(),
         }
       : {}),
-    // A desktop on this Mac shows and answers its approvals, so this Runner
-    // says it relays them; without one, the Host never sends it any.
     descriptor: {
       // The signed descriptor states shipped protocol support. The status
       // cadence reports transient helper readiness on this same connection.
@@ -81,7 +83,6 @@ export function prepareIntegrationsModule(options: {
             macWindowVideoVersion: 1,
             displayProfile: 1,
             macOwnerInputVersion: 2,
-            computerAppApprovals: true,
             loginText: 1,
             passwordSignIn: 2,
           }

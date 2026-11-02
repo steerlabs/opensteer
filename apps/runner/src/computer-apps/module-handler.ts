@@ -18,17 +18,11 @@ import {
   type HostIntegrationsPasswordSignIn,
   type RunnerIntegrationsPasswordSignInEvent,
   type RunnerIntegrationsPasswordSignInResult,
-  type HostIntegrationsComputerAppApprovalOutcome,
-  type HostIntegrationsComputerAppApprovalKeyChallenge,
-  type HostIntegrationsComputerAppApprovals,
   type HostIntegrationsComputerUse,
   type HostIntegrationsComputerView,
   type HostIntegrationsComputerAppWindows,
   type RunnerIntegrationsComputerAppWindowsResult,
   type HostIntegrationsInvoke,
-  type RunnerIntegrationsComputerAppApprovalAnswer,
-  type RunnerIntegrationsComputerAppApprovalKeyProof,
-  type RunnerIntegrationsComputerAppApprovalsSync,
   type RunnerIntegrationsComputerUseResult,
   type RunnerIntegrationsComputerUseEvent,
   type RunnerIntegrationsResult,
@@ -62,8 +56,7 @@ export interface ComputerAppModuleHandlerOptions {
   readonly videoTransport?: RunnerTransportPolicy;
   /**
    * The MCP servers this computer runs, present exactly when `computerUse`
-   * is: a launch runs only once approved on this computer, and only the
-   * desktop app asks.
+   * is: the Host admits only the exact launch the computer owner approved.
    */
   readonly localMcp?: LocalMcpServers;
   readonly logger: RunnerLogger;
@@ -97,9 +90,6 @@ type OutboundEvent =
   | LocalMcpFrame
   | IntegrationsStatus
   | Pick<RunnerIntegrationsComputerUseEvent, "event" | "type">
-  | Pick<RunnerIntegrationsComputerAppApprovalAnswer, "answer" | "setupRequestId" | "type">
-  | Pick<RunnerIntegrationsComputerAppApprovalKeyProof, "challengeId" | "signature" | "type">
-  | Pick<RunnerIntegrationsComputerAppApprovalsSync, "type">
   | Pick<RunnerIntegrationsResult, "requestId" | "result" | "type">
   | Pick<RunnerIntegrationsComputerUseResult, "requestId" | "result" | "type">;
 
@@ -158,7 +148,7 @@ export class ComputerAppModuleHandler {
    */
   #executing = 0;
   #detachComputerUseEvents: (() => void) | undefined;
-  #detachApprovalEvents: (() => void) | undefined;
+
   #detachPasswordEvents: (() => void) | undefined;
   #detachGrantEvents: (() => void) | undefined;
   #inspectionWaiting: RunnerModuleStream | undefined;
@@ -202,26 +192,6 @@ export class ComputerAppModuleHandler {
         type: "runner.integrations.computer-use-event",
       }).catch((error: unknown) => {
         this.#logger.error("Computer use event could not be sent", {
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      });
-    });
-    // The person's answers, and desktop main asking for the whole list, go to
-    // the Host on this stream: approvals travel on the Mac's own connection.
-    this.#detachApprovalEvents = this.#computerUse?.onApprovalEvent((event) => {
-      // The person's own answer is what lets a server run here; the Host's
-      // outcome, which follows, grants nothing on this computer.
-      if (event.kind === "answer" && event.server) this.#localMcp?.allow(event.server);
-      const frame: OutboundEvent =
-        event.kind === "answer"
-          ? {
-              answer: event.answer.answer,
-              setupRequestId: event.answer.setupRequestId,
-              type: "runner.integrations.computer-app-approval-answer",
-            }
-          : { type: "runner.integrations.computer-app-approvals-sync" };
-      void this.#send(stream, frame).catch((error: unknown) => {
-        this.#logger.error("Computer app approval could not be sent", {
           reason: error instanceof Error ? error.message : String(error),
         });
       });
@@ -288,13 +258,6 @@ export class ComputerAppModuleHandler {
         this.#inFlight
           .get(message.requestId)
           ?.abort.abort(new Error("Computer app call cancelled"));
-        return;
-      case "host.integrations.computer-app-approvals":
-      case "host.integrations.computer-app-approval-outcome":
-        this.#relayApprovals(message);
-        return;
-      case "host.integrations.computer-app-approval-key-challenge":
-        this.#proveApprovalKey(message);
         return;
       case "host.integrations.mcp.open":
         if (this.#localMcp) await this.#localMcp.open(message);
@@ -428,57 +391,11 @@ export class ComputerAppModuleHandler {
     );
   }
 
-  #proveApprovalKey(message: HostIntegrationsComputerAppApprovalKeyChallenge): void {
-    const stream = this.#stream;
-    const computerUse = this.#computerUse;
-    if (!stream || !computerUse) return;
-    void computerUse
-      .proveApprovalKey({
-        challengeId: message.challengeId,
-        expiresAt: message.expiresAt,
-        keyId: message.keyId,
-        nonce: message.nonce,
-        runnerId: message.runnerId,
-      })
-      .then((proof) =>
-        this.#send(stream, {
-          ...proof,
-          type: "runner.integrations.computer-app-approval-key-proof",
-        }),
-      )
-      .catch((error: unknown) => {
-        this.#logger.info("Computer app approval key could not be verified", {
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }
-
   /**
    * Hands an approval frame to desktop main, which shows and answers it. It
    * is not awaited: the Host is owed nothing for it, and a desktop that is not
    * there asks for the whole list again when it connects.
    */
-  #relayApprovals(
-    message: HostIntegrationsComputerAppApprovals | HostIntegrationsComputerAppApprovalOutcome,
-  ): void {
-    const computerUse = this.#computerUse;
-    if (!computerUse) return;
-    const relayed =
-      message.type === "host.integrations.computer-app-approvals"
-        ? computerUse.relayApprovals({
-            approvalKeyId: message.approvalKeyId,
-            approvals: message.approvals,
-          })
-        : computerUse.relayApprovalOutcome({
-            outcome: message.outcome,
-            setupRequestId: message.setupRequestId,
-          });
-    void relayed.catch((error: unknown) => {
-      this.#logger.info("Computer app approvals did not reach the desktop app", {
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
 
   async #registerInvoke(message: HostIntegrationsInvoke): Promise<void> {
     const stream = this.#stream;
@@ -936,14 +853,14 @@ export class ComputerAppModuleHandler {
     );
   }
 
-  /** No desktop app here, so nothing is approved to run. */
+  /** This Runner was not prepared with a local MCP executor. */
   async #refuseMcp(sessionId: string): Promise<void> {
     const stream = this.#stream;
     if (!stream) return;
     await this.#send(stream, {
       error: {
-        code: "unapproved",
-        message: "MCP servers run only where the Opensteer desktop app approves them.",
+        code: "failed",
+        message: "This computer does not offer an MCP executor.",
       },
       sessionId,
       type: "runner.integrations.mcp.closed",
@@ -965,8 +882,6 @@ export class ComputerAppModuleHandler {
     this.#video = undefined;
     this.#detachComputerUseEvents?.();
     this.#detachComputerUseEvents = undefined;
-    this.#detachApprovalEvents?.();
-    this.#detachApprovalEvents = undefined;
     this.#detachPasswordEvents?.();
     this.#detachPasswordEvents = undefined;
     this.#detachGrantEvents?.();

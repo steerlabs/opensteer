@@ -33,19 +33,15 @@ import {
   handleComputerAppSetupShowAgain,
   handleComputerAppSetupStartDrag,
   handleComputerAppSetupStatus,
-  handleComputerUseApprovalKey,
   handleOpenComputerAppSetup,
-  handleReviewComputerAppSetup,
 } from "./methods/computer-apps.js";
 import {
   handleCloseComputerUsePermissionsPanel,
   handleUseComputerViewOnThisMac,
-  handleGetComputerUseApproval,
   handleGetComputerUsePermissions,
   handleOpenComputerUsePermissionsPanel,
   handleOpenComputerUseSystemSettings,
   handleRequestComputerUsePermissions,
-  handleRespondComputerUseApproval,
 } from "./methods/computer-use.js";
 import {
   handleCreateCloudDeployment,
@@ -232,8 +228,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   for (const [channel, handler] of browserPresentationHandlers(context)) register(channel, handler);
 
   register(desktopBridgeChannels.useComputerViewOnThisMac, handleUseComputerViewOnThisMac(context));
-  register(desktopBridgeChannels.computerUseApprovalKey, handleComputerUseApprovalKey(context));
-  register(desktopBridgeChannels.reviewComputerAppSetup, handleReviewComputerAppSetup(context));
   register(desktopBridgeChannels.openComputerAppSetup, handleOpenComputerAppSetup(context));
   register(desktopBridgeChannels.computerAppSetupStatus, handleComputerAppSetupStatus(context));
   register(desktopBridgeChannels.computerAppSetupBegin, handleComputerAppSetupBegin(context));
@@ -246,11 +240,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     handleComputerAppSetupStartDrag(context),
   );
   register(desktopBridgeChannels.closeComputerAppSetup, handleCloseComputerAppSetup(context));
-  register(desktopBridgeChannels.getComputerUseApproval, handleGetComputerUseApproval(context));
-  register(
-    desktopBridgeChannels.respondComputerUseApproval,
-    handleRespondComputerUseApproval(context),
-  );
   register(
     desktopBridgeChannels.getComputerUsePermissions,
     handleGetComputerUsePermissions(context),

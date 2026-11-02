@@ -776,7 +776,7 @@ export const LocalMcpServerSetupSchema = z.strictObject({
 export type LocalMcpServerSetup = z.infer<typeof LocalMcpServerSetupSchema>;
 
 /**
- * A durable request to review access on its own computer. It never starts an
+ * A durable request to review access to a computer. It never starts an
  * agent. `definitionId` names what is approved: a catalog definition, or for
  * `kind: "server"` the installed MCP server, whose launch `definitionDigest`
  * pins (`localMcpLaunchDigest`).
@@ -832,25 +832,18 @@ export const ComputerAppSetupRequestSchema = computerAppSetupRequestShapeSchema.
   validComputerAppSetupKind,
   "Setup request scope must match its kind",
 );
-export const ComputerAppSetupRequestViewSchema = z
-  .object({
-    ...computerAppSetupRequestShapeSchema.shape,
-    app: ComputerAppIdentityViewSchema.nullable(),
-    server: z
-      .object({ ...localMcpServerSetupShape, launch: LocalMcpLaunchViewSchema })
-      .nullable()
-      .default(null),
-  })
-  .refine(validComputerAppSetupKind, "Setup request scope must match its kind");
-export type ComputerAppSetupRequest = z.infer<typeof ComputerAppSetupRequestSchema>;
-
-/** A short-lived signature over the entire Host-issued request plus this expiration. */
-export const ComputerAppApprovalSchema = z.strictObject({
-  requestId: z.uuid(),
-  expiresAt: IsoDateTimeSchema,
-  signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/u),
+export const ComputerAppSetupRequestViewSchema = z.object({
+  ...computerAppSetupRequestShapeSchema.shape,
+  server: z.object(localMcpServerSetupShape).nullable(),
+  app: ComputerAppIdentityViewSchema.nullable(),
 });
-export type ComputerAppApproval = z.infer<typeof ComputerAppApprovalSchema>;
+/** Transient owner-only review; callers must not persist it in client snapshots. */
+export const ComputerAppSetupReviewRequestViewSchema = z.object({
+  ...ComputerAppSetupRequestViewSchema.shape,
+  server: z.object({ ...localMcpServerSetupShape, launch: LocalMcpLaunchViewSchema }).nullable(),
+});
+export type ComputerAppSetupSummary = z.infer<typeof ComputerAppSetupRequestViewSchema>;
+export type ComputerAppSetupRequest = z.infer<typeof ComputerAppSetupRequestSchema>;
 
 const computerAppSetupInputSchema = z.strictObject({
   kind: z.literal("app"),
@@ -871,27 +864,11 @@ export const RequestComputerAppSetupSchema = z.discriminatedUnion("kind", [
 /**
  * The owner may keep or lower a Mac app's access from any client. Creating,
  * widening or unblocking a Mac app, and turning automatic approval on, require
- * the person's signed answer on that Mac's Runner stream. The owner may also
+ * the computer owner's authenticated Host command. The owner may also
  * create or widen an Android phone's connection from any client.
  */
 export const SetComputerAppConnectionSchema = computerAppSetupInputSchema;
 export type SetComputerAppConnection = z.infer<typeof SetComputerAppConnectionSchema>;
-
-/**
- * The key a Mac desktop signs its own approvals with. It is never the
- * computer's Runner key, so the connection that carries agents' work cannot
- * also speak for its owner.
- */
-export const RegisterComputerUseApprovalKeySchema = z.strictObject({
-  /** Ed25519 SubjectPublicKeyInfo, PEM. */
-  publicKey: z
-    .string()
-    .min(1)
-    .max(512)
-    .regex(/^-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+-----END PUBLIC KEY-----\n?$/u),
-  runnerId: RunnerIdSchema,
-});
-export type RegisterComputerUseApprovalKey = z.infer<typeof RegisterComputerUseApprovalKeySchema>;
 
 /**
  * How a task asks for one app on one Mac, or for a whole Android phone, as an

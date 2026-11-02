@@ -20,6 +20,9 @@ vi.mock("expo-haptics", () => ({
   notificationAsync: vi.fn(async () => undefined),
 }));
 vi.mock("react-native", () => ({
+  Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
+    visible ? <div>{children}</div> : null,
+  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Platform: { OS: "ios", Version: "26" },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   ActivityIndicator: () => <span>Sending…</span>,
@@ -125,6 +128,54 @@ afterEach(() => {
  * - the agent's reason is shown twice, or unlabelled as if Opensteer said it;
  * - a settled sign-in reads "no longer waiting" instead of what happened.
  */
+describe("RequestCard computer owner approvals", () => {
+  it.each(["macos-app", "android-phone"] as const)(
+    "reviews %s from the phone and sends the owner command",
+    async (definitionId) => {
+      const request = computerAppRequest();
+      if (request.payload.kind !== "computer.app.access") throw new Error("Expected app request");
+      request.payload.definitionId = definitionId;
+      const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
+      const review = vi.fn(async () => ({
+        ok: true,
+        data: {
+          request: {
+            id:
+              request.payload.kind === "computer.app.access" ? request.payload.setupRequestId : "",
+            definitionId,
+            kind: "app",
+            access: "read-write",
+            app: null,
+          },
+          app: null,
+        },
+      }));
+      await render(surface(request), dispatch, { review });
+      expect(review).not.toHaveBeenCalled();
+      await click("Review request");
+      await click("Allow");
+      if (definitionId === "macos-app") {
+        expect(review).toHaveBeenCalledOnce();
+        await click("Allow");
+        expect(dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "integration.computer.setup.respond",
+            decision: "allow",
+          }),
+        );
+        expect(dispatch).not.toHaveBeenCalledWith(
+          expect.objectContaining({ type: "integration.computer.setup.set" }),
+        );
+      } else {
+        expect(review).not.toHaveBeenCalled();
+        expect(dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "integration.computer.setup.set" }),
+        );
+      }
+    },
+  );
+});
+
 describe("RequestCard saved-password sign-ins", () => {
   it("names the Mac where it waits and declines with its own command", async () => {
     let answer: ((value: unknown) => void) | undefined;
@@ -362,10 +413,8 @@ describe("RequestCard external requests", () => {
     await render(surface(computerAppRequest()), dispatch);
 
     await click("Review request");
-    expect(text()).toContain("Approve on Studio");
-    expect(text()).toContain(
-      "Can see and control. Opensteer shows the approval on Studio by itself.",
-    );
+    expect(text()).toContain("Allow on this device");
+    expect(text()).toContain("Can see and control. You can give agents access to Studio here.");
     expect(text()).not.toContain("that Mac");
     expect(text()).not.toContain("Not now");
 
@@ -489,6 +538,7 @@ async function render(
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
     readonly passwordRead?: ReturnType<typeof vi.fn>;
+    readonly review?: ReturnType<typeof vi.fn>;
   } = {},
 ): Promise<void> {
   const container = document.createElement("div");
@@ -505,6 +555,8 @@ async function render(
         hostClient={
           {
             dispatch,
+            refresh: async () => undefined,
+            subscribe: () => () => undefined,
             getSnapshot: () => ({
               identityConfig: { deployment: { name: "Alex’s Opensteer" } },
               workspaces: [{ id: workspaceId, name: "Research" }],
@@ -513,6 +565,7 @@ async function render(
               "browser.sources.inspect": options.inspect ?? vi.fn(),
               "browser.password-sign-in.get":
                 options.passwordRead ?? vi.fn(async () => ({ ok: true, data: { stage: "gone" } })),
+              "integration.computer.setup.review": options.review ?? vi.fn(),
             },
           } as never
         }

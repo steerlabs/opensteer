@@ -1,9 +1,6 @@
 import {
   DesktopUseComputerViewInputSchema,
   DesktopUseComputerViewResultSchema,
-  DesktopComputerUseApprovalInputSchema,
-  DesktopComputerUseApprovalPresentationSchema,
-  DesktopComputerUseApprovalRespondInputSchema,
   DesktopComputerUsePermissionsResultSchema,
   DesktopOpenComputerUsePermissionsPanelResultSchema,
   DesktopOpenComputerUseSettingsInputSchema,
@@ -14,26 +11,6 @@ import {
   type DesktopBridgeHandler,
 } from "../context.js";
 import { AdHocSignedHelperError } from "../../signed-helpers/signed-helper.js";
-
-export const handleGetComputerUseApproval =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    const input = DesktopComputerUseApprovalInputSchema.parse(envelope.input);
-    return DesktopComputerUseApprovalPresentationSchema.parse(
-      context.options.computerUse.approvalGet(input.token, event.sender),
-    );
-  };
-
-export const handleRespondComputerUseApproval =
-  (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  (event, envelope) => {
-    assertAuthorizedRenderer(context, event, envelope);
-    const input = DesktopComputerUseApprovalRespondInputSchema.parse(envelope.input);
-    // The window's own contents are the only sender that may answer: another
-    // renderer holding the token is still not the panel the person sees.
-    context.options.computerUse.approvalRespond(input.token, input.allow, event.sender);
-  };
 
 export const handleGetComputerUsePermissions =
   (context: DesktopBridgeContext): DesktopBridgeHandler =>

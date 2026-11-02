@@ -13,12 +13,10 @@ import type {
   ComputerUseDataGrants,
   ComputerUsePermissions,
 } from "@opensteer/protocol";
-import type { ComputerAppApprovalPresentation } from "../src/computer-app-approval-service.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { configureDesktopSession, desktopWebPreferences } from "../src/app/electron-window.js";
 import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import { registerDesktopBridge } from "../src/bridge/registration.js";
-import { ComputerUseApprovalPanel } from "../src/computer-use/computer-use-approval-panel.js";
 import { ComputerUsePermissionsPanel } from "../src/computer-use/computer-use-permissions-panel.js";
 import { ComputerAppSetupGuide } from "../src/computer-app-setup-guide.js";
 import { ComputerAppSetupPanel } from "../src/computer-use/computer-app-setup-panel.js";
@@ -80,16 +78,6 @@ async function run(): Promise<void> {
     null,
     smokeDownloads,
   );
-  const approvals: BrowserWindow[] = [];
-  const panels = new ComputerUseApprovalPanel({
-    screen,
-    webPreferences: preferences,
-    windowFactory: (options) => {
-      const window = new BrowserWindow(options);
-      approvals.push(window);
-      return window;
-    },
-  });
   let permissions: ComputerUsePermissions = { accessibility: "denied", screenRecording: "denied" };
   let permissionWindow: BrowserWindow | undefined;
   const permissionRequests: string[] = [];
@@ -185,8 +173,6 @@ async function run(): Promise<void> {
     agentPhone: { chooseUsbDevice: unused, readArtifact: unused },
     bridgeToken,
     computerApps: {
-      approvalKey: unused,
-      review: unused,
       dragIcon: async () => nativeImage.createFromPath(path.resolve("dist/web/computer-use.png")),
       setup: {
         begin: (input) => setupGuide.begin(input),
@@ -199,8 +185,7 @@ async function run(): Promise<void> {
     },
     computerUse: {
       onActivationError: () => undefined,
-      approvalGet: (token, sender) => panels.presentation(token, sender),
-      approvalRespond: (token, allow, sender) => panels.respond(token, allow, sender),
+
       closePermissionsPanel: async () => permissionPanel.close(),
       openPermissionsPanel: async () => {
         await permissionPanel.open();
@@ -250,176 +235,12 @@ async function run(): Promise<void> {
     portal: { openExternal: unused, pickFolder: unused },
     runner: { portableFs: unused, remove: unused, start: unused, status: unused, subscribe },
   });
-  const presentation: ComputerAppApprovalPresentation = {
-    kind: "app",
-    access: "read-write",
-    accessLabel: "Can see and control",
-    accessSummary:
-      "Agents can see the app and click, type, scroll, press keys, and open it in the background.",
-    app: {
-      bundleId: "com.opensteer.consent-fixture",
-      displayName: "Fixture App",
-      iconPng: null,
-      path: "/Applications/Fixture App.app",
-      risk: "elevated",
-      reason: "Fixture risk",
-    },
-    deploymentName: "Test Deployment",
-    machineName: "Test Mac",
-    reason: "Read the fixture note.",
-    threadTitle: "Verify consent",
-    workspaceName: "Test Workspace",
-  };
   const screenshots = path.join(
     process.env.OPENSTEER_JOURNEY_OUT ?? tmpdir(),
     "opensteer-consent-smoke-screenshots",
   );
   await mkdir(screenshots, { recursive: true });
   try {
-    const result = panels.ask(presentation);
-    // Cleanup rejects an unanswered ask if an earlier assertion fails.
-    void result.catch(() => undefined);
-    const window = approvals.at(-1);
-    assert(window);
-    await rendered(window, "Don't allow");
-    assert.equal(window.isFocused(), false, "Arrival must not focus the native panel");
-    const state = z
-      .object({
-        focused: z.string(),
-        nodeHidden: z.boolean(),
-        text: z.string(),
-        overflow: z.boolean(),
-      })
-      .parse(
-        await window.webContents.executeJavaScript(`({
-      focused: document.activeElement?.textContent,
-      nodeHidden: typeof require === 'undefined' && typeof process === 'undefined',
-      text: document.body.innerText,
-      overflow: document.documentElement.scrollHeight > innerHeight,
-    })`),
-      );
-    assert.equal(state.focused, "Don't allow");
-    assert.equal(state.nodeHidden, true);
-    assert.equal(state.overflow, false);
-    assert.match(state.text, /Test Workspace/);
-    assert.match(state.text, /signed-in accounts or system settings/);
-    await writeFile(
-      path.join(screenshots, "app.png"),
-      (await window.webContents.capturePage()).toPNG(),
-    );
-
-    const token = new URL(window.webContents.getURL()).searchParams.get("token");
-    assert(token);
-    const stranger = new BrowserWindow({ show: false, webPreferences: preferences });
-    await stranger.loadURL("app://opensteer/computer-use/approve?token=not-owned");
-    for (const method of ["computerUseApprovalGet", "computerUseApprovalRespond"]) {
-      const input: { token: string; allow?: boolean } =
-        method === "computerUseApprovalGet" ? { token } : { token, allow: true };
-      assert.equal(
-        await stranger.webContents.executeJavaScript(
-          `window.opensteerDesktop[${JSON.stringify(method)}](${JSON.stringify(input)}).then(() => false, error => /no longer open/.test(error.message))`,
-        ),
-        true,
-      );
-    }
-    stranger.destroy();
-    await click(window, "Allow");
-    assert.equal(await result, true);
-    assert.equal(window.isDestroyed(), true);
-
-    const long = panels.ask({
-      ...presentation,
-      app: { ...presentation.app, displayName: "Long application name ".repeat(12).slice(0, 255) },
-      deploymentName: "Deployment ".repeat(18),
-      reason: "<script>throw new Error('untrusted reason')</script> ".repeat(19),
-      threadTitle: "Detailed task title ".repeat(12),
-      workspaceName: "Workspace ".repeat(16),
-    });
-    void long.catch(() => undefined);
-    const longWindow = approvals.at(-1);
-    assert(longWindow);
-    await rendered(longWindow, "Allow");
-    assert.equal(
-      await longWindow.webContents.executeJavaScript(`(() => {
-      const content = document.querySelector('.cu-approve__content');
-      const heading = document.querySelector('#cu-approve-title').getBoundingClientRect();
-      return content?.scrollTop === 0 && heading.top >= 0 && heading.top < innerHeight;
-    })()`),
-      true,
-      "Long consent must initially show the task and app identity",
-    );
-    await writeFile(
-      path.join(screenshots, "long.png"),
-      (await longWindow.webContents.capturePage()).toPNG(),
-    );
-    assert.equal(
-      await longWindow.webContents
-        .executeJavaScript(`Array.from(document.querySelectorAll('button')).every(button => {
-      const bounds = button.getBoundingClientRect();
-      return bounds.top >= 0 && bounds.bottom <= innerHeight && bounds.left >= 0 && bounds.right <= innerWidth;
-    })`),
-      true,
-      "Both consent choices must remain visible with long names",
-    );
-    assert.equal(
-      await longWindow.webContents.executeJavaScript(`(() => {
-      const content = document.querySelector('.cu-approve__content');
-      content.scrollTop = content.scrollHeight;
-      const risk = document.querySelector('.cu-approve__elevated').getBoundingClientRect();
-      return content.scrollTop > 0 && risk.top >= 0 && risk.bottom <= innerHeight;
-    })()`),
-      true,
-      "Long consent must let the person read the access and risk text",
-    );
-    await click(longWindow, "Don't allow");
-    assert.equal(await long, false);
-
-    const policy = panels.ask({
-      kind: "policy",
-      appApproval: "automatic",
-      deploymentName: "Test Deployment",
-      machineName: "Test Mac",
-    });
-    const policyWindow = approvals.at(-1);
-    assert(policyWindow);
-    await rendered(policyWindow, "Cancel");
-    assert.equal(
-      await policyWindow.webContents.executeJavaScript("document.activeElement?.textContent"),
-      "Cancel",
-    );
-    await writeFile(
-      path.join(screenshots, "policy.png"),
-      (await policyWindow.webContents.capturePage()).toPNG(),
-    );
-    policyWindow.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
-    assert.equal(await policy, false);
-
-    const aborted = new AbortController();
-    const withdrawn = panels.ask(presentation, aborted.signal);
-    const withdrawnAssertion = assert.rejects(withdrawn, /ended somewhere else/);
-    const withdrawnWindow = approvals.at(-1);
-    assert(withdrawnWindow);
-    await rendered(withdrawnWindow, "Allow");
-    aborted.abort();
-    await withdrawnAssertion;
-    assert.equal(withdrawnWindow.isDestroyed(), true);
-
-    const crashed = panels.ask(presentation);
-    const crashAssertion = assert.rejects(crashed, /stopped before it was answered/);
-    const crashWindow = approvals.at(-1);
-    assert(crashWindow);
-    await rendered(crashWindow, "Allow");
-    crashWindow.webContents.forcefullyCrashRenderer();
-    await crashAssertion;
-    assert.equal(crashWindow.isDestroyed(), true);
-
-    const closed = panels.ask(presentation);
-    const closedWindow = approvals.at(-1);
-    assert(closedWindow);
-    await rendered(closedWindow, "Allow");
-    closedWindow.close();
-    assert.equal(await closed, false);
-
     await permissionPanel.open();
     assert(permissionWindow);
     await rendered(permissionWindow, "Enable Screen Recording");
@@ -617,16 +438,10 @@ async function run(): Promise<void> {
       `${JSON.stringify({ dataRequests, dataSettings, drags, journey, passed: true }, null, 2)}\n`,
     );
 
-    const quitting = panels.ask(presentation);
-    const quittingAssertion = assert.rejects(quitting, /quitting/);
-    panels.close();
-    await quittingAssertion;
-    await assert.rejects(panels.ask(presentation), /quitting/);
     process.stdout.write(
       `Consent renderer, IPC isolation, decisions, withdrawal, crash, close, quit, permission polling and app setup passed. Screenshots: ${screenshots}\n`,
     );
   } finally {
-    panels.close();
     permissionPanel.close();
     setupGuide.close();
     for (const window of BrowserWindow.getAllWindows()) window.destroy();

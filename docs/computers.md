@@ -41,8 +41,8 @@ Personal enrollment there.
 
 [iPhone apps](iphone-apps.md) owns native sharing. Its immutable enrollment profile is
 checked before consuming the token and on every authentication; a phone-shaped descriptor
-cannot choose Android authority. Approval must come from the data-holding iPhone with a
-separate proven key; automatic approval is Mac-only. Backgrounding makes apps unavailable:
+cannot choose Android authority. The computer owner approves agent access from any signed-in device. iOS permission
+prompts and enrollment still require the data-holding iPhone; automatic approval is Mac-only. Backgrounding makes apps unavailable:
 never queue raw commands, replay a lost write or move it to a Mac.
 
 ## 3. Host
@@ -101,13 +101,18 @@ mismatches and is not owner approval. Offline computers keep connections. Lost w
 are unknown outcomes and must never be retried. See
 [ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts).
 
-New/broader Mac access requires approval on the data-holding Mac. Automatic app policy
-covers only new GUI apps, never widening. Pin approval to owner, Runner, Deployment, app
-identity/digest and exact access. Desktop main signs with a distinct Keychain approval key
-whose registration proves possession over that Runner stream. Renderer locality is not proof.
-Lowering/off is owner-authorized anywhere and invalidates pending approvals. Setup requests
-must not start agent turns. Android approval instead follows
-[Agent Phone](agent-phone.md#7-access-and-stop).
+The computer's current owner approves new/broader access, unblocks apps and enables
+Mac automatic app approval through the Host from any signed-in device. Other Workspace
+members and administrators cannot approve someone else's computer. Review verifies GUI
+identity and the deny list with the target helper; an offline or unavailable helper
+leaves the request pending with a verification failure. OS grants remain on the target.
+Automatic policy covers only new GUI apps, never widening or unblocking. Lowering/off
+also works remotely and invalidates pending approvals. Setup requests never start turns.
+Android access follows [Agent Phone](agent-phone.md#7-access-and-stop).
+
+Revoking a session stops further approval decisions from that session. Previously
+committed app grants and automatic policy remain until the owner explicitly reduces,
+blocks or removes them; signing out does not take those grants back.
 
 Protected personal APIs belong in the Computer Use helper so their macOS grants do not
 reach every agent child process. The Runner relays them. Readiness is per target/operation,
@@ -122,13 +127,16 @@ Internet servers run through the Host over HTTPS; Host loopback is refused. On P
 the default is Main, where plugin files exist; a Host-local program path cannot imply those
 files exist on a different computer.
 
-Show the program, arguments, working directory and environment—or URL—verbatim before
-approval. Pin approval to the exact launch digest. The local Runner learns approval only from the
-person's desktop answer over its local bridge, never from Host lists/outcomes. Missing local
-approval records refuse execution and require asking again. Reinstallation closes sessions;
-an unchanged digest keeps approval, a changed launch asks again. Protocol-incompatible
-Runners retain other modules; never translate signed requests to an older approval format.
-See [local-mcp-servers.ts](../apps/runner/src/computer-apps/local-mcp-servers.ts).
+The owner reviews the program, arguments, working directory and environment—or URL
+and headers—verbatim from any signed-in device. Those details are fetched only for the
+owner's open review; shared Request events, agent projections and persisted client
+snapshots do not carry them. The Host binds consent to the exact current launch digest,
+server and target Runner, and rechecks that binding in admission before opening the
+MCP session. The authenticated target Runner trusts that Host decision; there is no
+separate local approval file or desktop signature. Removal/reinstallation closes existing
+sessions; an unchanged launch retains consent, while a changed launch requires review.
+An offline computer can retain consent but starts nothing until it reconnects.
+Protocol-incompatible Runners retain other modules and show an update refusal.
 
 Run servers with the person's login/manifest environment in their own process group. End
 the entire tree when the session, stream or Runner ends, including descendants of launchers

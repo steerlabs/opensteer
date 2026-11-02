@@ -91,10 +91,7 @@ export interface MachineProjectionInput {
    * computers this viewer effectively owns. Like `apps`, absence is the same
    * answer as "not yours to see".
    */
-  readonly computerUsePolicies?: ReadonlyMap<
-    string,
-    { readonly appApproval: "ask" | "automatic"; readonly approvalKeyId: string | null }
-  >;
+  readonly computerUsePolicies?: ReadonlyMap<string, { readonly appApproval: "ask" | "automatic" }>;
   readonly computerViews?: ReadonlyMap<
     string,
     { readonly ownerViews: readonly ComputerView[]; readonly ownerViewVersion?: number }
@@ -166,12 +163,7 @@ function projectModules(runner: MachineRunnerInput): MachineSummary["modules"] {
       };
       continue;
     }
-    if (
-      runner.connected &&
-      name === "integrations" &&
-      (runner.modules.integrations?.platform === "android" ||
-        runner.modules.integrations?.computerAppApprovals)
-    ) {
+    if (runner.connected && name === "integrations" && runner.modules.integrations !== undefined) {
       const detail = runnerIntegrationsCompatibilityReason(runner.modules.integrations);
       if (detail !== null) {
         modules.integrations = { checkedAt: null, detail, readiness: "unavailable" };
@@ -227,7 +219,6 @@ function projectPhoneComputerUse(
 ): MachineComputerUse {
   const base = {
     appApproval: null,
-    approvalKeyId: null,
     displayStreamSupported,
     permissions: null,
     sessions: [...sessions],
@@ -267,11 +258,10 @@ function projectComputerUse(
   sessions: readonly ComputerUseSessionSummary[] = [],
   policy: {
     readonly appApproval: "ask" | "automatic";
-    readonly approvalKeyId: string | null;
-  } = { appApproval: "ask", approvalKeyId: null },
+  } = { appApproval: "ask" },
   displayStreamSupported = false,
 ): MachineComputerUse {
-  const { appApproval, approvalKeyId } = policy;
+  const { appApproval } = policy;
   const entry = apps?.find(({ definitionId }) => definitionId === computerUseDefinitionId);
   if (!entry) {
     return {
@@ -280,7 +270,6 @@ function projectComputerUse(
       sessions: [...sessions],
       displayStreamSupported,
       appApproval,
-      approvalKeyId,
       state: "unavailable",
     };
   }
@@ -291,7 +280,6 @@ function projectComputerUse(
       sessions: [...sessions],
       displayStreamSupported,
       appApproval,
-      approvalKeyId,
       state: "ready",
     };
   }
@@ -315,7 +303,6 @@ function projectComputerUse(
       sessions: [...sessions],
       displayStreamSupported,
       appApproval,
-      approvalKeyId,
       state: "unavailable",
     };
   }
@@ -329,7 +316,6 @@ function projectComputerUse(
     sessions: [...sessions],
     displayStreamSupported,
     appApproval,
-    approvalKeyId,
     state: "permission-required",
   };
 }

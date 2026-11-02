@@ -132,7 +132,6 @@ private final class Journey {
   private let photos = FakePhotosPort()
   private let work = WorkRecorder()
   private var runnerKey: Curve25519.Signing.PrivateKey?
-  private var approvalKey: Curve25519.Signing.PrivateKey?
   private var descriptor: [String: Any] = [:]
   private var enrollmentToken: String?
   private var gate: AdmissionGate?
@@ -140,9 +139,6 @@ private final class Journey {
   private var primary: PrimaryFence?
   private var auxiliary: AuxiliaryFence?
   private var ticket: String?
-  private var approvalRules: ApprovalRules?
-  private var approvals: [[String: Any]] = []
-  private var hostKeyId: String?
   private var dropNextAnswer = false
 
   func call(_ input: [String: Any]) async throws -> [String: Any] {
@@ -150,7 +146,6 @@ private final class Journey {
     switch command {
     case "start":
       runnerKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seed(required(input, "runnerSeed")))
-      approvalKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seed(required(input, "approvalSeed")))
       descriptor = try WireField.object(input, "descriptor")
       enrollmentToken = try required(input, "enrollmentToken")
       let authority = AdmissionGate(runnerId: try required(descriptor, "runnerId"),
@@ -163,35 +158,11 @@ private final class Journey {
         "iphone-photos": IphonePhotosProvider(store: photos),
       ],
         onWorkChange: { [work] in work.record(authority.inFlight) })
-      if let approvalKey {
-        approvalRules = ApprovalRules(runnerId: try required(descriptor, "runnerId"),
-          keyId: IphoneProofs.keyId(approvalKey))
-      }
-      return ["kind": "started", "runnerId": try required(descriptor, "runnerId"),
-        "approvalPublicKey": IphoneProofs.publicKeyPem(approvalKey!),
-        "approvalKeyId": IphoneProofs.keyId(approvalKey!)]
+      return ["kind": "started", "runnerId": try required(descriptor, "runnerId")]
     case "primary":
       return try handlePrimary(WireField.object(input, "frame"))
     case "auxiliary":
       return await handleAuxiliary(try WireField.object(input, "frame"))
-    case "answer":
-      guard let approvalKey, let auxiliary, let rules = approvalRules,
-        let request = rules.request(try required(input, "setupRequestId")),
-        rules.mayAnswer(requestId: try required(input, "setupRequestId"),
-          expectedDefinition: try required(input, "definitionId"),
-          expectedAccess: try required(input, "access")),
-        rules.registered(hostKeyId: hostKeyId) else { return ["kind": "refused"] }
-      let decision = try required(input, "decision")
-      guard decision == "allow" || decision == "deny" else { throw IphoneWireError.invalid("decision") }
-      let deadline = try WireField.date(request, "expiresAt")
-      let expiresAt = iso(min(deadline, Date().addingTimeInterval(30)))
-      let signature = try IphoneProofs.approval(approvalKey, request: request,
-        decision: decision, expiresAt: expiresAt)
-      let answer = ["kind": decision, "approval": ["requestId": request["id"]!,
-        "expiresAt": expiresAt, "signature": signature]] as [String: Any]
-      return ["kind": "frame", "channel": "auxiliary", "frame": auxiliary.fields.merging([
-        "type": "runner.integrations.computer-app-approval-answer",
-        "setupRequestId": request["id"]!, "answer": answer]) { _, new in new }]
     case "heartbeat":
       guard let primary, let auxiliary else { throw IphoneWireError.invalid("connection") }
       let sentAt = iso(Date())
@@ -209,12 +180,10 @@ private final class Journey {
       if let gate { gate.detach(generation: gate.generation) }
       return ["kind": "detached"]
     case "resume":
-      guard let gate, let approvalKey else { throw IphoneWireError.invalid("identity") }
+      guard let gate else { throw IphoneWireError.invalid("identity") }
       gate.activate()
       primary = nil; auxiliary = nil; ticket = nil; enrollmentToken = nil
-      approvals = []; hostKeyId = nil; dropNextAnswer = false
-      approvalRules = ApprovalRules(runnerId: try required(descriptor, "runnerId"),
-        keyId: IphoneProofs.keyId(approvalKey))
+      dropNextAnswer = false
       return ["kind": "resumed"]
     case "disconnect": gate?.disconnect(); return ["kind": "disconnected"]
     default: throw IphoneWireError.unexpected(command)
@@ -270,8 +239,6 @@ private final class Journey {
           ["channel": "auxiliary", "frame": IphoneWire.status(welcome.fence,
             permissions: ["apple-calendar": .granted, "apple-contacts": .denied, "apple-reminders": .denied,
               "iphone-location": .granted, "iphone-photos": .limited], locationAccuracy: location.precise ? "precise" : "approximate")],
-          ["channel": "auxiliary", "frame": welcome.fence.fields.merging([
-            "type": "runner.integrations.computer-app-approvals-sync"]) { _, new in new }],
         ]]
       case "host.auxiliary.lease-renewed":
         guard let auxiliary, try AuxiliaryFence(frame) == auxiliary else { throw IphoneWireError.staleFence }
@@ -291,27 +258,6 @@ private final class Journey {
       case "host.integrations.cancel":
         dispatch?.cancel(try required(frame, "requestId"))
         return ["kind": "cancelled"]
-      case "host.integrations.computer-app-approvals":
-        guard let auxiliary, gate?.currentFence == auxiliary.tag,
-          try AuxiliaryFence(frame) == auxiliary else { throw IphoneWireError.staleFence }
-        guard let entries = frame["approvals"] as? [[String: Any]] else { throw IphoneWireError.invalid("approvals") }
-        approvals = entries.compactMap { $0["request"] as? [String: Any] }
-        approvalRules?.replace(approvals)
-        hostKeyId = frame["approvalKeyId"] as? String
-        return ["kind": "approvals", "count": approvals.count,
-          "requestIds": approvals.compactMap { $0["id"] as? String }]
-      case "host.integrations.computer-app-approval-key-challenge":
-        guard let auxiliary, let approvalKey,
-          approvalRules?.mayProve(keyId: try required(frame, "keyId"),
-            runnerId: try required(frame, "runnerId")) == true else { throw IphoneWireError.invalid("challenge") }
-        let challenge = ["challengeId": frame["challengeId"]!, "expiresAt": frame["expiresAt"]!,
-          "keyId": frame["keyId"]!, "nonce": frame["nonce"]!, "runnerId": frame["runnerId"]!]
-        let signature = try IphoneProofs.keyChallenge(approvalKey, challenge: challenge)
-        return ["kind": "frame", "channel": "auxiliary", "frame": auxiliary.fields.merging([
-          "type": "runner.integrations.computer-app-approval-key-proof",
-          "challengeId": frame["challengeId"]!, "signature": signature]) { _, new in new }]
-      case "host.integrations.computer-app-approval-outcome":
-        return ["kind": "outcome", "value": frame["outcome"] ?? NSNull()]
       default: throw IphoneWireError.unexpected(type)
       }
     } catch { return ["kind": "error", "message": "\(error)"] }

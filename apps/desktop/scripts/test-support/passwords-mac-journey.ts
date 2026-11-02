@@ -469,14 +469,6 @@ export async function runPasswordsMacJourney(): Promise<void> {
           },
         },
         ownership: new ComputerUseSessionOwnership(),
-        approvals: {
-          disconnected() {},
-          list() {},
-          outcome() {},
-          proveKeyChallenge: async () => {
-            throw new Error("No approval expected");
-          },
-        },
       });
       await old.start();
       const oldClient = new ComputerUseBridgeClient({ token: old.token, url: old.url });

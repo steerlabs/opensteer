@@ -60,10 +60,7 @@ export async function startPersonalPasswordsBridge() {
           reply({ authority: 1, receiver: null });
           return;
         }
-        if (request.method === "approvals.list" || request.method === "approvals.outcome") {
-          reply({});
-          return;
-        }
+
         if (request.method !== "passwords.control") {
           socket.send(
             JSON.stringify({

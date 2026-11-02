@@ -4678,6 +4678,7 @@ export function migrationProvider() {
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
         "0128_request_settlement_provenance": requestSettlementProvenanceMigration,
+        "0129_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
       };
     },
   };
@@ -6618,5 +6619,12 @@ const personShowMigration: Migration = {
 const requestSettlementProvenanceMigration: Migration = {
   async up(database) {
     await sql`alter table requests add column settlement_provenance jsonb`.execute(database);
+  },
+};
+
+export const ownerSessionComputerApprovalsMigration: Migration = {
+  async up(database) {
+    await sql`drop table if exists public.computer_use_approval_keys;
+      alter table public.computer_use_policies drop column if exists approval;`.execute(database);
   },
 };

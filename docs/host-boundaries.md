@@ -305,8 +305,7 @@ with `browser-target-control-unsupported` and never requests pictures instead
 
 Runner descriptors are signed and read through the owning schemas described above.
 Enrollment does not promise every execution contract is supported. The Host never relies
-on an optional feature that was not advertised, such as `device`,
-`modules.browser.stateImport` or `modules.integrations.computerAppApprovals`.
+on an optional feature that was not advertised, such as `device` or `modules.browser.stateImport`.
 Changing required execution or storage semantics needs an explicit compatibility
 contract; it cannot silently remove the bound agents environment. Upgrade the Host
 before Runners that require semantics it cannot read; a Personal Deployment ships
@@ -348,6 +347,12 @@ hide live-only sessions from other producers. Icons may outlive a session but
 require authorization against its latest session and must never start a browser.
 Group invalidation is owner-addressed. See
 [tab lifetime](browser-sessions.md#open-workspace-tabs).
+
+Computer app approvals use authenticated owner sessions on every device. Mac integrations
+protocol 6 and iPhone integrations protocol 2 remove the desktop/iPhone signing and
+approval relay contracts. Older integrations modules stay visible with an update refusal;
+other enrolled modules remain available. Android integrations and Runner proof format
+are unchanged. The Host alone admits local MCP launches against current owner consent.
 
 ### iPhone apps capability and release order
 

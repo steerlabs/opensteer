@@ -24,19 +24,13 @@ import {
   WorkspaceIconNameSchema,
   isBareOrigin,
   isSecureOrLoopbackOrigin,
-  requestReasonMaxLength,
 } from "@opensteer/core";
 import { z } from "zod";
-import {
-  ComputerAppBundleIdSchema,
-  IntegrationAccessSchema,
-  LocalMcpLaunchViewSchema,
-} from "@opensteer/integration-core";
+import { IntegrationAccessSchema } from "@opensteer/integration-core";
 import {
   ComputerUsePermissionsViewSchema,
   ComputerUsePermissionPaneSchema,
   ComputerUsePermissionsRequestParamsSchema,
-  ComputerUseRiskSchema,
   computerUseIconMaxBase64Length,
   ComputerUseDataAppIdSchema,
   ComputerUseDataGrantSchema,
@@ -374,140 +368,6 @@ export const DesktopUseComputerViewResultSchema = z.discriminatedUnion("activate
   }),
 ]);
 export type DesktopUseComputerViewResult = z.infer<typeof DesktopUseComputerViewResultSchema>;
-/**
- * This desktop's approval key, which the computer's page on this Mac registers
- * with the Host for this Mac's Runner (`integration.computer.approval-key.set`).
- * The private half never leaves desktop main; `keyId` is the fingerprint the
- * Host reports back in `MachineSummary.computerUse.approvalKeyId`, so the page
- * can tell whether the registered key is this desktop's.
- */
-export const DesktopComputerUseApprovalKeyResultSchema = z.strictObject({
-  keyId: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/u),
-  publicKey: z.string().min(1).max(512),
-});
-export type DesktopComputerUseApprovalKeyResult = z.infer<
-  typeof DesktopComputerUseApprovalKeyResultSchema
->;
-
-/**
- * One open approval, named by a token the main process minted.
- *
- * The panel is handed a token and nothing else: the presentation it renders is
- * read back from the main process, so a page cannot name an app, an access
- * level or a Deployment that nobody asked about, and a token the main process
- * has already answered is refused rather than answered twice.
- */
-export const DesktopComputerUseApprovalTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/u);
-export type DesktopComputerUseApprovalToken = z.infer<typeof DesktopComputerUseApprovalTokenSchema>;
-
-export const DesktopComputerUseApprovalInputSchema = z.strictObject({
-  token: DesktopComputerUseApprovalTokenSchema,
-});
-export type DesktopComputerUseApprovalInput = z.infer<typeof DesktopComputerUseApprovalInputSchema>;
-
-/**
- * The app the panel shows, as the Mac itself resolved it.
- *
- * It is the resolved app flattened to what a person reads — there is no team
- * identifier here, because nobody approves a team. `path` is shown when a name
- * could mean two things; `iconPng` is null for a definition whose connection
- * names no app (Messages and every app like it) and for an app the helper
- * could not draw; `risk` and `reason` are the helper's own verdict about the
- * app, never the Host's.
- */
-export const DesktopComputerUseApprovalAppSchema = z.strictObject({
-  bundleId: ComputerAppBundleIdSchema,
-  displayName: z.string().min(1).max(255),
-  iconPng: z
-    .string()
-    .regex(/^[A-Za-z0-9+/]*={0,2}$/u)
-    .max(computerUseIconMaxBase64Length)
-    .nullable(),
-  path: z.string().min(1).max(4_096).nullable(),
-  reason: z.string().min(1).max(1_000).nullable(),
-  risk: ComputerUseRiskSchema,
-});
-export type DesktopComputerUseApprovalApp = z.infer<typeof DesktopComputerUseApprovalAppSchema>;
-
-/**
- * What the approval panel renders: one app, or the Mac's automatic policy.
- *
- * An app request names the task that asked when there is one. `threadTitle`,
- * `workspaceName` and `reason` are null for a request the person started from
- * the picker, and each is null on its own when that context is absent. The
- * Host snapshots the labels in the signed setup request. A
- * policy request names no app: it is the one question whose answer covers
- * every app on this Mac, so it carries only where it applies.
- */
-export const DesktopComputerUseApprovalPresentationSchema = z.discriminatedUnion("kind", [
-  z.object({
-    access: IntegrationAccessSchema,
-    /** The exact access in the product's words. */
-    accessLabel: z.string().min(1).max(80),
-    accessSummary: z.string().min(1).max(500),
-    app: DesktopComputerUseApprovalAppSchema,
-    deploymentName: z.string().min(1).max(200),
-    kind: z.literal("app"),
-    machineName: z.string().min(1).max(200),
-    reason: z.string().min(1).max(requestReasonMaxLength).nullable(),
-    threadTitle: z.string().min(1).max(240).nullable(),
-    token: DesktopComputerUseApprovalTokenSchema,
-    workspaceName: z.string().min(1).max(160).nullable(),
-  }),
-  z.object({
-    appApproval: z.literal("automatic"),
-    deploymentName: z.string().min(1).max(200),
-    kind: z.literal("policy"),
-    machineName: z.string().min(1).max(200),
-    token: DesktopComputerUseApprovalTokenSchema,
-  }),
-  /** An MCP server to run on this Mac, shown exactly as it will run. */
-  z.object({
-    deploymentName: z.string().min(1).max(200),
-    installationTitle: z.string().min(1).max(160),
-    kind: z.literal("server"),
-    launch: LocalMcpLaunchViewSchema,
-    machineName: z.string().min(1).max(200),
-    serverName: z.string().min(1).max(128),
-    token: DesktopComputerUseApprovalTokenSchema,
-  }),
-]);
-export type DesktopComputerUseApprovalPresentation = z.infer<
-  typeof DesktopComputerUseApprovalPresentationSchema
->;
-
-/**
- * A setup request the page just created, by id, whose answer on this Mac the
- * page waits for.
- *
- * The page creates the request and nothing else: the Host pushes it to this
- * Mac's Runner, desktop main shows the panel from that push, and the answer
- * goes back over the same Runner stream. `allowed` is whether the person
- * allowed it and the Host took the approval; `false` is a refusal, or the
- * request ending some other way while it waited.
- */
-export const DesktopReviewComputerAppSetupInputSchema = z.strictObject({
-  setupRequestId: z.uuid(),
-});
-export type DesktopReviewComputerAppSetupInput = z.infer<
-  typeof DesktopReviewComputerAppSetupInputSchema
->;
-export const DesktopReviewComputerAppSetupResultSchema = z.strictObject({
-  allowed: z.boolean(),
-});
-export type DesktopReviewComputerAppSetupResult = z.infer<
-  typeof DesktopReviewComputerAppSetupResultSchema
->;
-
-export const DesktopComputerUseApprovalRespondInputSchema = z.strictObject({
-  allow: z.boolean(),
-  token: DesktopComputerUseApprovalTokenSchema,
-});
-export type DesktopComputerUseApprovalRespondInput = z.infer<
-  typeof DesktopComputerUseApprovalRespondInputSchema
->;
-
-/** The two macOS grants as the helper sees them right now, on this Mac. */
 export const DesktopComputerUsePermissionsResultSchema = ComputerUsePermissionsViewSchema;
 export type DesktopComputerUsePermissionsResult = z.infer<
   typeof DesktopComputerUsePermissionsResultSchema
@@ -1743,11 +1603,9 @@ export interface OpensteerDesktopBridge {
   useComputerViewOnThisMac?(
     input: DesktopUseComputerViewInput,
   ): Promise<DesktopUseComputerViewResult>;
-  computerUseApprovalKey(): Promise<DesktopComputerUseApprovalKeyResult>;
+
   /** Waits for this Mac's answer to a setup request the page just created. */
-  reviewComputerAppSetup(
-    input: DesktopReviewComputerAppSetupInput,
-  ): Promise<DesktopReviewComputerAppSetupResult>;
+
   /**
    * Opens this Mac's setup panel for one app the helper serves, which takes
    * every macOS step that access needs. False when macOS already gives them.
@@ -1772,10 +1630,7 @@ export interface OpensteerDesktopBridge {
    * presentation back, so nothing a page says decides which app, access or
    * Deployment somebody is being asked about.
    */
-  computerUseApprovalGet(
-    input: DesktopComputerUseApprovalInput,
-  ): Promise<DesktopComputerUseApprovalPresentation>;
-  computerUseApprovalRespond(input: DesktopComputerUseApprovalRespondInput): Promise<void>;
+
   /** Reads the two grants without prompting, which is what polling needs. */
   computerUsePermissionsGet(): Promise<DesktopComputerUsePermissionsResult>;
   /** Requests one macOS grant after an explicit action on this Mac. */

@@ -100,7 +100,6 @@ import type {
 } from "@opensteer/integration-core";
 import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import {
-  ComputerAppApprovalSchema,
   IntegrationInstallManifestSummarySchema,
   SetComputerAppConnectionSchema,
   integrationCredentialRejectedDetail,
@@ -1555,7 +1554,6 @@ const mockMachines: readonly MachineSummary[] = [
     computerUse: {
       displayStreamSupported: true,
       appApproval: "automatic",
-      approvalKeyId: `sha256:${"A".repeat(43)}`,
       detail: null,
       permissions: { accessibility: "granted", screenRecording: "granted" },
       sessions: [mockComputerUseSession, mockSlackLiveSession],
@@ -1639,7 +1637,6 @@ const mockMachines: readonly MachineSummary[] = [
     computerUse: {
       displayStreamSupported: false,
       appApproval: "ask",
-      approvalKeyId: null,
       detail: null,
       permissions: { accessibility: "denied", screenRecording: "granted" },
       sessions: [],
@@ -1719,7 +1716,6 @@ const mockMachines: readonly MachineSummary[] = [
       // Every client watches phone tasks and owner views through live display.
       displayStreamSupported: true,
       appApproval: null,
-      approvalKeyId: null,
       detail: null,
       permissions: null,
       sessions: [mockAgentPhoneSession],
@@ -2083,8 +2079,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     },
     "integration.computer.policy.get": async (input) =>
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
+    "integration.computer.setup.review": async ({ setupRequestId }) =>
+      rpcSuccess(client.reviewComputerAppSetup(setupRequestId)),
     "integration.computer.setup.list": async () =>
-      rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
+      rpcSuccess(
+        hostApi["integration.computer.setup.list"].success.parse({
+          requests: client.listComputerAppSetupRequests(),
+        }),
+      ),
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
@@ -2800,11 +2802,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         connection: await client.setComputerAppConnection(command.input),
         type: command.type,
       });
-    case "integration.computer.approval-key.set":
-      return rpcSuccess({
-        approvalKeyId: client.registerComputerUseApprovalKey(command.input),
-        type: command.type,
-      });
+    case "integration.computer.setup.respond":
+      await client.respondComputerAppSetup(command.setupRequestId, command.decision);
+      return rpcSuccess({ type: command.type });
     case "integration.computer.policy.set":
       await client.setComputerUsePolicy(command.input.runnerId);
       return rpcSuccess({ appApproval: "ask", type: command.type });
@@ -3409,12 +3409,12 @@ function mockBootstrap(
   };
 }
 
-/** The person's signed answer on a Mac, as its Runner stream carries it to a real Host. */
+/** An exact request the authenticated owner answers through the Host. */
 const MockMacAnswerSchema = z.discriminatedUnion("kind", [
-  SetComputerAppConnectionSchema.extend({ approval: ComputerAppApprovalSchema }),
+  SetComputerAppConnectionSchema.extend({ setupRequestId: z.string().uuid() }),
   z.strictObject({
     appApproval: z.literal("automatic"),
-    approval: ComputerAppApprovalSchema,
+    setupRequestId: z.string().uuid(),
     kind: z.literal("policy"),
     runnerId: RunnerIdSchema,
   }),
@@ -4154,23 +4154,6 @@ export class MockHostClient implements HostClient {
   /** Scripted bridge hooks: device reports and taps never enter the production Host API. */
   mockConnectIphone(input: { enrollmentId: string; runnerId: string; name: string }): void {
     this.#state.mockConnectIphone(input);
-  }
-
-  async mockAnswerIphoneApproval(input: {
-    setupRequestId: string;
-    decision: "allow" | "deny";
-  }): Promise<void> {
-    await this.#state.mockAnswerIphoneApproval(input);
-  }
-
-  /**
-   * The person's signed answer on a Mac. A real Host takes it on that Mac's
-   * own Runner stream, never as a client command, so the mock takes it here.
-   */
-  async answerComputerAppApprovalOnMac(
-    input: z.input<typeof MockMacAnswerSchema>,
-  ): Promise<IntegrationConnectionSummary | null> {
-    return this.#state.setComputerAppConnection(MockMacAnswerSchema.parse(input));
   }
 
   activateWorkspace(workspaceId: string): void {
@@ -5214,7 +5197,7 @@ class MockHostState {
       };
     }
   >();
-  private readonly iphoneApprovalKeys = new Map<string, string>();
+
   private readonly activeRuns = new Map<string, ActiveMockRun>();
   private readonly integrations = createInitialIntegrationState(mockUserId);
   private readonly integrationAttempts = new Map<string, MockIntegrationAttempt>();
@@ -6896,6 +6879,68 @@ class MockHostState {
     return { notice: null, revokedUpstream: false };
   }
 
+  reviewComputerAppSetup(setupRequestId: string) {
+    const request = this.computerAppSetupRequests.get(setupRequestId);
+    if (!request) throw new Error("This approval is no longer waiting.");
+    this.ownedComputer(request.runnerId);
+    return {
+      request,
+      app: request.app
+        ? {
+            identity: request.app,
+            allowed: true,
+            path: `/Applications/${request.app.displayName}.app`,
+            risk: "standard" as const,
+            reason: null,
+            running: false,
+          }
+        : null,
+    };
+  }
+  async respondComputerAppSetup(setupRequestId: string, decision: "allow" | "deny"): Promise<void> {
+    const { request } = this.reviewComputerAppSetup(setupRequestId);
+    if (decision === "deny") {
+      this.cancelComputerAppSetup(setupRequestId);
+      return;
+    }
+    if (request.kind === "server") throw new Error("This mock has no local MCP executor.");
+    if (
+      request.kind === "app" &&
+      !this.integrations.installations.some(({ servers }) =>
+        servers.some(
+          ({ connectionRequirement }) =>
+            connectionRequirement.kind === "computer" &&
+            connectionRequirement.definitionId === request.definitionId,
+        ),
+      )
+    ) {
+      if (this.snapshot.user?.instanceRole !== "administrator")
+        throw new Error("Ask an administrator to add this app.");
+      const catalog = this.integrations.catalog.find(
+        ({ definition }) => definition.id === request.definitionId,
+      );
+      if (!catalog) throw new Error("This app is not in the catalog.");
+      await this.installCatalogIntegration({
+        definitionId: request.definitionId,
+        digest: catalog.digest,
+      });
+    }
+
+    await this.setComputerAppConnection(
+      request.kind === "policy"
+        ? { kind: "policy", appApproval: "automatic", runnerId: request.runnerId, setupRequestId }
+        : {
+            kind: "app",
+            app: request.app,
+            definitionId: request.definitionId,
+            access: request.access,
+            runnerId: request.runnerId,
+            setupRequestId,
+          },
+    );
+    this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
+  }
+
   listComputerAppSetupRequests(): ComputerAppSetupRequest[] {
     return [...this.computerAppSetupRequests.values()].filter(
       (request) => Date.parse(request.expiresAt) > this.now().getTime(),
@@ -6962,6 +7007,7 @@ class MockHostState {
       workspaceName: null,
     };
     this.computerAppSetupRequests.set(request.id, request);
+    this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
     return request;
   }
 
@@ -6978,36 +7024,19 @@ class MockHostState {
     else this.computerAppSetupRequests.delete(requestId);
   }
 
-  /** Pins the desktop's approval key for one Mac, as the real Host does. */
-  registerComputerUseApprovalKey(
-    input: ParsedCommandOf<"integration.computer.approval-key.set">["input"],
-  ): string {
-    const machine = this.ownedComputer(input.runnerId);
-    if (machine?.device?.form === "phone" && machine.device?.platform === "android") {
-      throw new Error("An Android phone has no approval key.");
-    }
-    const keyId = `sha256:${input.publicKey
-      .replace(/[^A-Za-z0-9]/gu, "")
-      .slice(-43)
-      .padStart(43, "A")}`;
-    if (machine.device?.platform === "ios") this.iphoneApprovalKeys.set(input.runnerId, keyId);
-    else this.updateComputerUse(input.runnerId, (report) => ({ ...report, approvalKeyId: keyId }));
-    return keyId;
-  }
-
-  /** Applies owner-set phone access, Mac narrowing, or a signed Mac answer. */
+  /** Applies owner-set phone access, a reduction or an exact pending request. */
   async setComputerAppConnection(
     input: ParsedCommandOf<"integration.computer.setup.set">["input"] | MockMacAnswer,
   ): Promise<IntegrationConnectionSummary | null> {
     if (input.kind === "policy") {
-      const pending = this.computerAppSetupRequests.get(input.approval.requestId);
+      const pending = this.computerAppSetupRequests.get(input.setupRequestId);
       if (
         !pending ||
         pending.kind !== "policy" ||
         pending.runnerId !== input.runnerId ||
         Date.parse(pending.expiresAt) <= this.now().getTime()
       ) {
-        throw new Error("Confirm automatic approval in Opensteer on that Mac.");
+        throw new Error("Review automatic approval in Opensteer.");
       }
       this.computerAppSetupRequests.delete(pending.id);
       this.updateComputerUse(input.runnerId, (report) => ({ ...report, appApproval: "automatic" }));
@@ -7018,8 +7047,7 @@ class MockHostState {
     if (input.access === "read-write" && definition.computerApp.accessLevels.length < 2) {
       throw new Error(`${definition.name} can only be read.`);
     }
-    const machine = this.snapshot.machines.find((candidate) => candidate.id === input.runnerId);
-    if (!machine) throw new Error("That computer is not part of this deployment.");
+    const machine = this.ownedComputer(input.runnerId);
     if (machine.device?.platform === "ios") {
       this.ownedComputer(input.runnerId);
       if (!definition.computerApp.platforms.includes("ios"))
@@ -7033,7 +7061,7 @@ class MockHostState {
     if (input.definitionId === androidPhoneDefinitionId && !phone) {
       throw new Error("That is not an Android phone connection.");
     }
-    if (phone && "approval" in input) {
+    if (phone && "setupRequestId" in input) {
       throw new Error("Phone access is set by its owner in Opensteer.");
     }
     if (phone) this.ownedComputer(input.runnerId);
@@ -7054,7 +7082,7 @@ class MockHostState {
         sameMockApp(connection.computer.app, input.app) &&
         connection.status !== "revoked",
     );
-    const approval = "approval" in input ? input.approval : null;
+    const approval = "setupRequestId" in input ? input.setupRequestId : null;
     if (
       !phone &&
       (!existing ||
@@ -7062,7 +7090,7 @@ class MockHostState {
         (existing.computer.access === "read" && input.access === "read-write") ||
         approval)
     ) {
-      const pending = approval ? this.computerAppSetupRequests.get(approval.requestId) : undefined;
+      const pending = approval ? this.computerAppSetupRequests.get(approval) : undefined;
       if (
         !pending ||
         pending.kind !== "app" ||
@@ -7072,7 +7100,7 @@ class MockHostState {
         pending.access !== input.access ||
         Date.parse(pending.expiresAt) <= this.now().getTime()
       ) {
-        throw new Error("Approve this access in Opensteer on the computer that provides the app.");
+        throw new Error("Review this app access in Opensteer.");
       }
     }
     for (const request of this.computerAppSetupRequests.values()) {
@@ -7834,46 +7862,6 @@ class MockHostState {
           : machine,
       ),
     });
-  }
-
-  async mockAnswerIphoneApproval(input: {
-    setupRequestId: string;
-    decision: "allow" | "deny";
-  }): Promise<void> {
-    const request = this.listComputerAppSetupRequests().find(
-      ({ id }) => id === input.setupRequestId,
-    );
-    if (
-      !request ||
-      request.kind !== "app" ||
-      this.ownedComputer(request.runnerId).device?.platform !== "ios" ||
-      !this.iphoneApprovalKeys.has(request.runnerId)
-    )
-      throw new Error("This iPhone approval is no longer waiting.");
-    if (input.decision === "deny") this.cancelComputerAppSetup(request.id);
-    else {
-      const catalog = this.integrations.catalog.find(
-        ({ definition }) => definition.id === request.definitionId,
-      );
-      if (!catalog) throw new Error("That app is not in this catalog.");
-      await this.installCatalogIntegration({
-        definitionId: request.definitionId,
-        digest: catalog.digest,
-      });
-      await this.setComputerAppConnection({
-        kind: "app",
-        app: request.app,
-        runnerId: request.runnerId,
-        definitionId: request.definitionId,
-        access: request.access,
-        approval: {
-          requestId: request.id,
-          expiresAt: new Date(this.now().getTime() + 30_000).toISOString(),
-          signature: "A".repeat(86),
-        },
-      });
-    }
-    this.update({ ...this.snapshot });
   }
 
   async createManagedRunnerEnrollment(name: string) {

@@ -41,18 +41,12 @@ import type {
   DesktopAgentPhoneArtifact,
   DesktopChooseUsbDeviceInput,
   DesktopUsbDeviceChoice,
-  DesktopComputerUseApprovalKeyResult,
-  DesktopReviewComputerAppSetupInput,
-  DesktopReviewComputerAppSetupResult,
   DesktopComputerAppSetupStatus,
   DesktopComputerAppSetupTarget,
   DesktopOpenComputerAppSetupInput,
   DesktopOpenComputerAppSetupResult,
   DesktopAddDirectRouteInput,
   DesktopCloseHostWebSocketInput,
-  DesktopComputerUseApprovalInput,
-  DesktopComputerUseApprovalPresentation,
-  DesktopComputerUseApprovalRespondInput,
   DesktopComputerUsePermissionsResult,
   DesktopConfigurePersonalRemoteAccessInput,
   DesktopConnectPrivateDeploymentInput,
@@ -105,9 +99,6 @@ import {
   DesktopChooseUsbDeviceInputSchema,
   DesktopReadAgentPhoneArtifactResultSchema,
   DesktopUsbDeviceChoiceSchema,
-  DesktopComputerUseApprovalKeyResultSchema,
-  DesktopReviewComputerAppSetupInputSchema,
-  DesktopReviewComputerAppSetupResultSchema,
   DesktopComputerAppSetupStatusSchema,
   DesktopComputerAppSetupTargetSchema,
   DesktopOpenComputerAppSetupInputSchema,
@@ -116,9 +107,6 @@ import {
   DesktopCloseHostWebSocketInputSchema,
   DesktopUseComputerViewInputSchema,
   DesktopUseComputerViewResultSchema,
-  DesktopComputerUseApprovalInputSchema,
-  DesktopComputerUseApprovalPresentationSchema,
-  DesktopComputerUseApprovalRespondInputSchema,
   DesktopComputerUsePermissionsResultSchema,
   DesktopOpenComputerUsePermissionsPanelResultSchema,
   DesktopOpenComputerUseSettingsInputSchema,
@@ -477,19 +465,7 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         DesktopUseComputerViewInputSchema.parse(input),
       ),
     ),
-  computerUseApprovalKey: async () =>
-    DesktopComputerUseApprovalKeyResultSchema.parse(
-      await invoke<DesktopComputerUseApprovalKeyResult>(
-        desktopBridgeChannels.computerUseApprovalKey,
-      ),
-    ),
-  reviewComputerAppSetup: async (input: DesktopReviewComputerAppSetupInput) =>
-    DesktopReviewComputerAppSetupResultSchema.parse(
-      await invoke<DesktopReviewComputerAppSetupResult>(
-        desktopBridgeChannels.reviewComputerAppSetup,
-        DesktopReviewComputerAppSetupInputSchema.parse(input),
-      ),
-    ),
+
   openComputerAppSetup: async (input: DesktopOpenComputerAppSetupInput) =>
     DesktopOpenComputerAppSetupResultSchema.parse(
       await invoke<DesktopOpenComputerAppSetupResult>(
@@ -513,18 +489,7 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.closeComputerAppSetup,
       DesktopComputerAppSetupTargetSchema.parse(input),
     ),
-  computerUseApprovalGet: async (input: DesktopComputerUseApprovalInput) =>
-    DesktopComputerUseApprovalPresentationSchema.parse(
-      await invoke<DesktopComputerUseApprovalPresentation>(
-        desktopBridgeChannels.getComputerUseApproval,
-        DesktopComputerUseApprovalInputSchema.parse(input),
-      ),
-    ),
-  computerUseApprovalRespond: (input: DesktopComputerUseApprovalRespondInput) =>
-    invoke<void>(
-      desktopBridgeChannels.respondComputerUseApproval,
-      DesktopComputerUseApprovalRespondInputSchema.parse(input),
-    ),
+
   computerUseOpenSystemSettings: (input: DesktopOpenComputerUseSettingsInput) =>
     invoke<void>(
       desktopBridgeChannels.openComputerUseSystemSettings,

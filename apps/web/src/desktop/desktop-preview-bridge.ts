@@ -28,7 +28,6 @@ import {
   DesktopPersonalRemoteAccessStatusSchema,
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
-  type DesktopComputerUseApprovalPresentation,
   type DesktopPasswordsStatus,
   type DesktopDeploymentSelection,
   type DesktopDeploymentSummary,
@@ -293,12 +292,7 @@ export function desktopPreviewBridge(
     onWorkspaceTabCommand: () => () => undefined,
     getLocalVisibility: async () => true,
     onLocalVisibilityChanged: () => () => undefined,
-    computerUseApprovalKey: async () => ({
-      keyId: `sha256:${"p".repeat(43)}`,
-      publicKey:
-        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n-----END PUBLIC KEY-----\n",
-    }),
-    reviewComputerAppSetup: async () => ({ allowed: false }),
+
     // The preview carries no Agent Phone app and no USB phone to choose.
     readAgentPhoneArtifact: async () => null,
     onUsbDeviceChoice: () => () => undefined,
@@ -566,8 +560,7 @@ export function desktopPreviewBridge(
     // picker asks it, or `&approval=task` as a task asks it, or
     // `&approval=policy` for turning automatic approval on.
     closeComputerUsePermissionsPanel: async () => undefined,
-    computerUseApprovalGet: async () => previewComputerUseApproval(search),
-    computerUseApprovalRespond: async () => undefined,
+
     computerUseOpenSystemSettings: async () => undefined,
     computerUsePermissionsGet: async () => ({
       accessibility: "denied" as const,
@@ -883,36 +876,6 @@ export function desktopPreviewBridge(
   }
 
   return bridge;
-}
-
-function previewComputerUseApproval(search: string): DesktopComputerUseApprovalPresentation {
-  const variant = new URLSearchParams(search).get("approval");
-  const shared = {
-    deploymentName: "Alex's Deployment",
-    machineName: "Alex's MacBook Pro",
-    token: "preview",
-  };
-  if (variant === "policy") return { ...shared, appApproval: "automatic", kind: "policy" };
-  const task = variant === "task";
-  return {
-    ...shared,
-    access: "read-write",
-    accessLabel: "Can see and control",
-    accessSummary:
-      "Agents can see the app and click, type, scroll, press keys, and open it in the background. What the app can do, agents can do through it.",
-    app: {
-      bundleId: task ? "com.apple.finder" : "com.apple.Notes",
-      displayName: task ? "Finder" : "Notes",
-      iconPng: null,
-      path: task ? "/System/Library/CoreServices/Finder.app" : "/System/Applications/Notes.app",
-      reason: null,
-      risk: task ? "elevated" : "standard",
-    },
-    kind: "app",
-    reason: task ? "Collect the signed contracts from Downloads into the deal folder." : null,
-    threadTitle: task ? "Close the Q3 deals" : null,
-    workspaceName: task ? "Sales" : null,
-  };
 }
 
 function previewPasswordsStatus(search: string): DesktopPasswordsStatus {

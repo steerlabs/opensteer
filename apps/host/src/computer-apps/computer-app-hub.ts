@@ -30,10 +30,6 @@ import {
   computerAppMaxTimeoutMs,
   runnerIntegrationsCompatibilityReason,
   RunnerAuxiliaryRequestIdSchema,
-  type ComputerAppApprovalAnswerFrame,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcomeFrame,
-  type ComputerAppApprovalKeyChallenge,
   type ComputerAppErrorCode,
   type ComputerUseErrorCode,
   type ComputerUseHelperEvent,
@@ -287,12 +283,8 @@ export interface ComputerAppHubOptions {
    */
   readonly onRunnerAttached?: (runnerId: RunnerId) => void;
   /** The person's answer to one approval, from the Mac it waits on. */
-  readonly onComputerAppApprovalAnswer?: (
-    runnerId: RunnerId,
-    answer: ComputerAppApprovalAnswerFrame,
-  ) => void;
+
   /** That Mac asked for its whole approval list again. */
-  readonly onComputerAppApprovalsSync?: (runnerId: RunnerId) => void;
 }
 
 interface PendingInvoke {
@@ -339,7 +331,7 @@ interface AttachedIntegrations {
   readonly mcpSessions: Map<string, McpSessionEntry>;
   readonly peer: ComputerAppControlPeer;
   readonly pending: Map<RunnerAuxiliaryRequestId, PendingCall>;
-  readonly approvalKeyProofs: Map<string, (signature: string | null) => void>;
+
   stream: RunnerAuxiliaryStream;
 }
 
@@ -406,7 +398,7 @@ export class ComputerAppHub {
       mcpSessions: new Map(),
       peer,
       pending: new Map(),
-      approvalKeyProofs: new Map(),
+
       stream,
     };
     this.#byPeer.set(peer.id, entry);
@@ -495,25 +487,6 @@ export class ComputerAppHub {
     }
     if (message.type === "runner.integrations.computer-use-event") {
       this.#options.onComputerUseEvent?.(stream.identity.runnerId, message.event);
-      return;
-    }
-    // The runner is the one this authenticated, fenced stream belongs to, so
-    // an answer can only ever be about an approval waiting on this Mac.
-    if (message.type === "runner.integrations.computer-app-approval-answer") {
-      if (!this.relaysComputerAppApprovals(stream.identity.runnerId)) return;
-      this.#options.onComputerAppApprovalAnswer?.(stream.identity.runnerId, {
-        answer: message.answer,
-        setupRequestId: message.setupRequestId,
-      });
-      return;
-    }
-    if (message.type === "runner.integrations.computer-app-approvals-sync") {
-      if (!this.relaysComputerAppApprovals(stream.identity.runnerId)) return;
-      this.#options.onComputerAppApprovalsSync?.(stream.identity.runnerId);
-      return;
-    }
-    if (message.type === "runner.integrations.computer-app-approval-key-proof") {
-      entry.approvalKeyProofs.get(message.challengeId)?.(message.signature);
       return;
     }
     if (
@@ -1078,67 +1051,19 @@ export class ComputerAppHub {
    * them. An older Runner, or one no desktop supervises, is never sent an
    * approval frame: it could not parse it, and nobody there could answer it.
    */
-  relaysComputerAppApprovals(runnerId: RunnerId): boolean {
-    const entry = this.#byRunner.get(runnerId);
-    const module = entry?.stream.identity.modules.integrations;
-    return (
-      (module?.platform === "darwin" || module?.platform === "ios") &&
-      module.computerAppApprovals === true &&
-      runnerIntegrationsCompatibilityReason(module) === null
-    );
-  }
 
   /**
    * Why an attached computer cannot show its owner approvals, in that owner's
    * words, or null when it can. An offline computer is not refused: its
    * approvals wait for it to come back.
    */
-  approvalRelayRefusal(runnerId: RunnerId): string | null {
-    const entry = this.#byRunner.get(runnerId);
-    if (!entry || this.relaysComputerAppApprovals(runnerId)) return null;
-    if (entry.stream.identity.modules.integrations?.platform === "android") return null;
-    if (entry.stream.identity.modules?.integrations?.platform === "ios")
-      return "Update Opensteer on this iPhone to approve access.";
-    return "Update Opensteer on this Mac and open its desktop app to approve access.";
-  }
 
   /**
    * Sends one Mac every approval waiting on it. Best effort, like a cancel:
    * the list is complete every time, so the next one repairs a lost one.
    */
-  async sendComputerAppApprovals(
-    runnerId: RunnerId,
-    list: {
-      readonly approvalKeyId: ComputerAppApprovalList["approvalKeyId"];
-      readonly approvals: readonly ComputerAppApprovalList["approvals"][number][];
-    },
-  ): Promise<boolean> {
-    const entry = this.#byRunner.get(runnerId);
-    if (!entry || !this.relaysComputerAppApprovals(runnerId)) return false;
-    return this.#sendControl(entry, {
-      ...entry.stream.fence,
-      module: "integrations",
-      approvalKeyId: list.approvalKeyId,
-      approvals: [...list.approvals],
-      type: "host.integrations.computer-app-approvals",
-    });
-  }
 
   /** Tells one Mac what became of its answer. */
-  async sendComputerAppApprovalOutcome(
-    runnerId: RunnerId,
-    frame: ComputerAppApprovalOutcomeFrame,
-  ): Promise<boolean> {
-    const entry = this.#byRunner.get(runnerId);
-    if (!entry || !this.relaysComputerAppApprovals(runnerId)) return false;
-    return this.#sendControl(entry, {
-      ...entry.stream.fence,
-      module: "integrations",
-      outcome: frame.outcome,
-      setupRequestId: frame.setupRequestId,
-      type: "host.integrations.computer-app-approval-outcome",
-    });
-  }
 
   /**
    * Tells a phone that its owner's Stop is durably recorded, so it may stop
@@ -1161,37 +1086,6 @@ export class ComputerAppHub {
   }
 
   /** Proves that the desktop on the currently attached Mac holds a nominated key. */
-  async proveComputerAppApprovalKey(
-    runnerId: RunnerId,
-    challenge: ComputerAppApprovalKeyChallenge,
-  ): Promise<string | null> {
-    const entry = this.#byRunner.get(runnerId);
-    if (!entry || !this.relaysComputerAppApprovals(runnerId)) return null;
-    if (challenge.runnerId !== runnerId) return null;
-    let settle!: (signature: string | null) => void;
-    const proof = new Promise<string | null>((resolve) => {
-      settle = resolve;
-    });
-    const timer = setTimeout(
-      () => settle(null),
-      Math.max(0, Date.parse(challenge.expiresAt) - Date.now()),
-    );
-    timer.unref();
-    entry.approvalKeyProofs.set(challenge.challengeId, settle);
-    try {
-      const delivered = await this.#sendControl(entry, {
-        ...entry.stream.fence,
-        ...challenge,
-        module: "integrations",
-        type: "host.integrations.computer-app-approval-key-challenge",
-      });
-      if (!delivered) return null;
-      return await proof;
-    } finally {
-      clearTimeout(timer);
-      entry.approvalKeyProofs.delete(challenge.challengeId);
-    }
-  }
 
   /**
    * Every attached computer and what it says about one definition, by the name
@@ -1592,8 +1486,6 @@ export class ComputerAppHub {
       finish({ kind: "error", code: "failed", message });
     for (const pending of entry.pendingViews.values())
       pending.settle({ kind: "error", code: "unavailable", message });
-    for (const settle of entry.approvalKeyProofs.values()) settle(null);
-    entry.approvalKeyProofs.clear();
     const sessions = [...entry.mcpSessions.values()];
     entry.mcpSessions.clear();
     for (const session of sessions) {

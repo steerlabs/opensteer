@@ -1,6 +1,8 @@
-import { installDictation } from "./desktop/dictation-runtime.js";
 import { DictationContext } from "./components/dictation.js";
 import { StrictMode } from "react";
+import { StartupFailure } from "./components/onboarding-card.js";
+import { installDictation } from "./desktop/dictation-runtime.js";
+
 import { createRoot } from "react-dom/client";
 import { desktopBridge } from "./desktop/desktop-bridge.js";
 import "@fontsource-variable/inter/wght.css";
@@ -8,7 +10,7 @@ import "@fontsource-variable/fraunces/wght.css";
 import "@fontsource-variable/fraunces/wght-italic.css";
 import "./styles/index.css";
 import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay.js";
-import { StartupFailure } from "./components/onboarding-card.js";
+
 import { personalWebBuildId } from "@opensteer/protocol";
 import { chromeConnectPagePath } from "@opensteer/client/host";
 
@@ -31,7 +33,6 @@ const reactRoot = {
 const fullAccessPanelPath = "/full-access";
 /** The desktop's two computer-use windows: over System Settings, and the approval. */
 const computerUsePermissionsPanelPath = "/computer-use/permissions";
-const computerUseApprovalPanelPath = "/computer-use/approve";
 /** The desktop's setup panel for an app the helper serves, beside System Settings. */
 const computerAppSetupPanelPath = "/computer-app/setup";
 
@@ -81,16 +82,6 @@ async function renderOpensteer(): Promise<void> {
     reactRoot.render(
       <StrictMode>
         <ComputerAppSetupPanel bridge={bridge} />
-      </StrictMode>,
-    );
-    return;
-  }
-  if (bridge && window.location.pathname === computerUseApprovalPanelPath) {
-    const { ComputerUseApprovalPanel } = await import("./desktop/computer-use-approval-panel.js");
-    const token = new URLSearchParams(window.location.search).get("token") ?? "";
-    reactRoot.render(
-      <StrictMode>
-        <ComputerUseApprovalPanel bridge={bridge} token={token} />
       </StrictMode>,
     );
     return;

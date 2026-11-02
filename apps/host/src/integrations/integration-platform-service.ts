@@ -340,15 +340,10 @@ export class IntegrationPlatformService {
       ComputerAppHub,
       | "appStatus"
       | "reportsApp"
-      | "approvalRelayRefusal"
       | "attached"
       | "machinesFor"
       | "openMcpSession"
-      | "proveComputerAppApprovalKey"
-      | "relaysComputerAppApprovals"
       | "send"
-      | "sendComputerAppApprovalOutcome"
-      | "sendComputerAppApprovals"
       | "withRunnerAdmission"
     >;
     /**
@@ -433,7 +428,6 @@ export class IntegrationPlatformService {
       ...(options.onInputAccessWithdrawn
         ? { onInputAccessWithdrawn: options.onInputAccessWithdrawn }
         : {}),
-      onError: (error) => console.warn("Computer app approvals could not reach a Mac", error),
       onLocalServerApproved: (approved) => {
         void this.#discoverComputerServer(approved.serverId).catch((error: unknown) =>
           console.warn("An approved MCP server could not be started", error),
@@ -1054,7 +1048,6 @@ export class IntegrationPlatformService {
         code: "forbidden",
         message: "Local servers can't run on an iPhone.",
       });
-    this.computerAppApprovals.requireApprovalRelay(chosen);
     return chosen;
   }
 
@@ -1063,9 +1056,7 @@ export class IntegrationPlatformService {
    * approved as they now launch, and sends each one its approvals again.
    */
   async requestLocalServerApprovals(): Promise<void> {
-    for (const runnerId of await this.#store.localMcp.requestApprovals()) {
-      this.computerAppApprovals.pushComputerAppApprovals(runnerId);
-    }
+    await this.#store.localMcp.requestApprovals();
   }
 
   /**
@@ -1153,19 +1144,15 @@ export class IntegrationPlatformService {
       await this.#store.localMcp.recordTools({ launchDigest, serverId, tools });
     } catch (error) {
       if (signal.aborted) return;
-      if (error instanceof ComputerMcpSessionError && error.code === "unapproved") {
-        await this.#store.localMcp.forgetApproval({ launchDigest, serverId });
-        await this.requestLocalServerApprovals();
-      } else {
-        await this.#store.localMcp.recordFailure({
-          detail:
-            error instanceof ComputerMcpSessionError && error.code === "offline"
-              ? `${server.runnerName ?? "Its computer"} is offline; the server starts when it is back.`
-              : safeMessage(error, safeMessageOptions),
-          launchDigest,
-          serverId,
-        });
-      }
+
+      await this.#store.localMcp.recordFailure({
+        detail:
+          error instanceof ComputerMcpSessionError && error.code === "offline"
+            ? `${server.runnerName ?? "Its computer"} is offline; the server starts when it is back.`
+            : safeMessage(error, safeMessageOptions),
+        launchDigest,
+        serverId,
+      });
     } finally {
       this.#letGo(key, listing);
     }
@@ -1389,10 +1376,7 @@ export class IntegrationPlatformService {
     });
     this.#publishRequestEvents(mutation.requestEvents);
     for (const serverId of mutation.removedServerIds) this.#dropClient(serverId);
-    if (mutation.removedConnectionIds.length > 0) this.#onConnectionsChanged();
-    // An uninstall takes back every approval of its definition, on Macs that
-    // have no connection of it as well.
-    this.computerAppApprovals.approvalsChangedEverywhere();
+    this.#onConnectionsChanged();
     return {
       cancelledRequests: mutation.cancelledRequestIds.length,
       removedConnections: mutation.removedConnectionIds.length,
@@ -2242,13 +2226,6 @@ export class IntegrationPlatformService {
           server.runnerName,
           this.#isRunnerConnected(server.runnerId),
         );
-      case "unapproved":
-        await this.#store.localMcp.forgetApproval({
-          launchDigest: server.launchDigest,
-          serverId: server.id,
-        });
-        await this.requestLocalServerApprovals();
-        return `${title} needs approval on ${server.runnerName} again. Its owner has been asked there.`;
       case "failed":
       case "too-large":
         return `${title} did not start on ${server.runnerName}: ${error.message}`;
@@ -3264,6 +3241,11 @@ export class IntegrationPlatformService {
       });
       signal?.throwIfAborted();
       computer = new ComputerMcpTransport(this.#computerApps, {
+        authorize: () =>
+          this.#assertComputerServerCurrent(server.id, {
+            launch: transport.launch,
+            runnerId: transport.runnerId!,
+          }),
         launch: transport.launch,
         runnerId: transport.runnerId,
         serverId: server.id,

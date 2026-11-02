@@ -1,3 +1,4 @@
+import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { autoUpdater } from "electron-updater";
 import { DesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
@@ -5,12 +6,10 @@ import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
 import { DesktopPasskeyRequests } from "./passkeys/passkey-requests.js";
 import { createMacosNativePasskeys } from "./passkeys/macos-native-passkeys.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
-import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
+
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
 import { randomBytes } from "node:crypto";
-import { ComputerAppApprovalService } from "./computer-app-approval-service.js";
 import { ComputerAppSetupGuide, dataGrantSettingsUrls } from "./computer-app-setup-guide.js";
-import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { homedir, release } from "node:os";
 import { DictationService } from "./dictation/dictation-service.js";
 import { NativeDictationHelperClient } from "./dictation/helper-client.js";
@@ -134,8 +133,6 @@ import type { PersonalLocalRuntimePort } from "./supervisor/personal-local-runti
 import { probeFullDiskAccess } from "./full-disk-access/full-disk-access-probe.js";
 import { FullDiskAccessPanel } from "./full-disk-access/full-disk-access-panel.js";
 import { ComputerUseService } from "./computer-use/computer-use-service.js";
-import { ComputerUseApprovalPanel } from "./computer-use/computer-use-approval-panel.js";
-import { ComputerUseApprovalKey } from "./computer-use/approval-key.js";
 import { ComputerUsePermissionsPanel } from "./computer-use/computer-use-permissions-panel.js";
 import { ComputerAppSetupPanel } from "./computer-use/computer-app-setup-panel.js";
 import {
@@ -218,6 +215,9 @@ async function startDesktop(): Promise<void> {
   );
   app.once("will-quit", () => desktopLog?.close());
   await app.whenReady();
+  await privateFiles
+    .removeFile(path.join(loaded.config.dataDirectory, "computer-use-approval-key.v1.json"))
+    .catch(() => undefined);
   shutdown.signal.throwIfAborted();
   if (app.isPackaged && embeddedRelease.application.stage === "alpha") {
     app.setAboutPanelOptions({
@@ -838,23 +838,11 @@ async function runDesktop(
       void personalRemote.resumeDesiredConnect().catch(() => undefined);
     }
   });
-  const computerUseApprovalPanel = new ComputerUseApprovalPanel({
-    screen,
-    webPreferences: panelWebPreferences,
-    windowFactory: (options) => new BrowserWindow(options),
-  });
   const computerUsePermissionsPanel = new ComputerUsePermissionsPanel({
     openExternal: (url, options) => shell.openExternal(url, options),
     screen,
     webPreferences: panelWebPreferences,
     windowFactory: (options) => new BrowserWindow(options),
-  });
-  // The person's approvals are signed with this desktop's own key, kept in
-  // the keychain, never with a Runner's.
-  const computerUseApprovalKey = new ComputerUseApprovalKey({
-    cryptography: protectedStorage,
-    dataDirectory: loaded.config.dataDirectory,
-    privateFiles,
   });
   // Every macOS step for the apps the helper serves happens in one panel on
   // this Mac: after an approval, from the computer's page, or when an agent's
@@ -879,40 +867,6 @@ async function runDesktop(
   const detachSetupOffers = computerUse.supported
     ? computerUse.attachDataPermissionOffers((input) => computerAppSetup.offerForAgent(input))
     : () => undefined;
-  const computerAppApprovals = new ComputerAppApprovalService({
-    appIcon: (bundleId) => computerUse.appIcon(bundleId),
-    approvalKey: computerUseApprovalKey,
-    catalog: deploymentCatalog,
-    confirm: (presentation, signal) => computerUseApprovalPanel.ask(presentation, signal),
-    definitions: integrationDefinitions,
-    ...(computerUse.supported
-      ? {
-          setUp: (input) =>
-            void computerAppSetup
-              .open(input)
-              .catch((error: unknown) =>
-                reportNonFatal("desktop.computer-app.setup-open-failed", error),
-              ),
-        }
-      : {}),
-    local: localRunner,
-    log: (event, fields) => reportEvent(event, fields),
-    machineName: computerName,
-    personal,
-    resolveApp: (app) => computerUse.resolveApp(app),
-    sendAnswer: (deploymentId, frame, server) =>
-      computerUse.sendApprovalAnswer(deploymentId, frame, server),
-  });
-  // Desktop main holds no Host connection and uses nobody's Host session for
-  // approvals: each Host reaches this Mac through the Runner slot it
-  // supervises, and the person's answer goes back the same way.
-  const detachApprovals = computerUse.attachApprovals({
-    disconnected: (deploymentId) => computerAppApprovals.disconnected(deploymentId),
-    list: (deploymentId, list) => computerAppApprovals.list(deploymentId, list),
-    outcome: (deploymentId, frame) => computerAppApprovals.outcome(deploymentId, frame),
-    proveKeyChallenge: (deploymentId, challenge) =>
-      computerAppApprovals.proveKeyChallenge(deploymentId, challenge),
-  });
   const fullDiskAccessPanel = new FullDiskAccessPanel({
     appName: app.getName(),
     openExternal: (url, options) => shell.openExternal(url, options),
@@ -960,10 +914,7 @@ async function runDesktop(
       },
     },
     computerApps: {
-      approvalKey: () => computerUseApprovalKey.publicKey(),
       dragIcon: (file) => app.getFileIcon(file, { size: "normal" }),
-      review: (deploymentId, setupRequestId) =>
-        computerAppApprovals.review(deploymentId, setupRequestId),
       setup: {
         begin: (input) => computerAppSetup.begin(input),
         close: (input) => computerAppSetup.dismiss(input),
@@ -976,11 +927,11 @@ async function runDesktop(
     computerUse: {
       onActivationError: (error) => reportNonFatal("desktop.computer-use.activation-failed", error),
       checkLocalComputerViewTarget: (deploymentId, machineId) =>
-        computerAppApprovals.checkComputerUseRunnerTarget(deploymentId, machineId),
+        (personal.status.deploymentId === deploymentId
+          ? personal
+          : localRunner
+        ).checkComputerUseRunnerTarget(deploymentId, machineId),
       useComputerViewOnThisMac: (input) => computerUse.useComputerViewOnThisMac(input),
-      approvalGet: (token, sender) => computerUseApprovalPanel.presentation(token, sender),
-      approvalRespond: (token, allow, sender) =>
-        computerUseApprovalPanel.respond(token, allow, sender),
       closePermissionsPanel: async () => computerUsePermissionsPanel.close(),
       openPermissionsPanel: async () => {
         await computerUsePermissionsPanel.open();
@@ -1196,13 +1147,10 @@ async function runDesktop(
       detachAccountDirectoryRefresh();
       detachOpenAtLogin();
       detachReopenMenu();
-      detachApprovals();
       detachSetupOffers();
-      computerAppApprovals.close();
       computerAppSetup.close();
       fullDiskAccessPanel.close();
       computerUsePermissionsPanel.close();
-      computerUseApprovalPanel.close();
       unsubscribeOwnOrigins();
       access.dispose();
       hostSessions.dispose();

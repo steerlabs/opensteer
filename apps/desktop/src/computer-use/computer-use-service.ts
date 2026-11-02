@@ -2,7 +2,7 @@ import type {
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
 } from "@opensteer/protocol/desktop";
-import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
+import { DeploymentIdSchema } from "@opensteer/core";
 import {
   ComputerViewHelperRequestSchema,
   ComputerUseHelperRequestSchema,
@@ -10,11 +10,6 @@ import {
   computerUseMaxTimeoutMs,
   computerUseOutOfTimeSentence,
   type LoginReceiverKey,
-  type ComputerAppApprovalAnswerFrame,
-  type ComputerAppApprovalKeyChallenge,
-  type ComputerAppApprovalKeyProof,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcomeFrame,
   type ComputerUseHelperEvent,
   type ComputerUseHelperMethod,
   type ComputerUseDataGrant,
@@ -87,15 +82,6 @@ export interface ComputerUseBridgeHandle {
 }
 
 /** Where every slot's Runner hands the Host's approval frames, by slot. */
-export interface ComputerUseApprovalsPort {
-  disconnected(deploymentId: DeploymentId): void;
-  list(deploymentId: DeploymentId, list: ComputerAppApprovalList): void;
-  outcome(deploymentId: DeploymentId, frame: ComputerAppApprovalOutcomeFrame): void;
-  proveKeyChallenge(
-    deploymentId: DeploymentId,
-    challenge: ComputerAppApprovalKeyChallenge,
-  ): Promise<ComputerAppApprovalKeyProof>;
-}
 
 /** An app call on this Mac that found one of the helper's grants missing. */
 export type ComputerUseDataPermissionPort = NonNullable<
@@ -160,7 +146,7 @@ export class ComputerUseService {
    */
   readonly #helperEvents = new Set<(event: ComputerUseHelperEvent) => void>();
   readonly #helperDisconnects = new Set<() => void>();
-  #approvals: ComputerUseApprovalsPort | null = null;
+
   #dataPermissionRequired: ComputerUseDataPermissionPort | null = null;
   /** Work this service has started and not finished, connecting included. */
   #active = 0;
@@ -208,18 +194,6 @@ export class ComputerUseService {
       now: this.#now,
       onDataPermissionRequired: (input) => this.#dataPermissionRequired?.(input),
       ownership: this.#ownership,
-      // The slot's Deployment is fixed here, by the supervisor that started
-      // it, and never taken from the Runner: a list is that Host's, and an
-      // answer goes back to that Host and no other.
-      approvals: {
-        disconnected: () => this.#approvals?.disconnected(deploymentId),
-        list: (list) => this.#approvals?.list(deploymentId, list),
-        outcome: (frame) => this.#approvals?.outcome(deploymentId, frame),
-        proveKeyChallenge: async (challenge) => {
-          if (!this.#approvals) throw new Error("Computer app approvals are unavailable.");
-          return this.#approvals.proveKeyChallenge(deploymentId, challenge);
-        },
-      },
     });
     const url = await server.start();
     if (this.#stopped) {
@@ -263,12 +237,6 @@ export class ComputerUseService {
    * Host connection of its own: each Host reaches this Mac through the Runner
    * it supervises, on that Runner's own authenticated stream.
    */
-  attachApprovals(port: ComputerUseApprovalsPort): () => void {
-    this.#approvals = port;
-    return () => {
-      if (this.#approvals === port) this.#approvals = null;
-    };
-  }
 
   /**
    * Hears every slot's app call that found a macOS grant missing, whichever
@@ -286,13 +254,6 @@ export class ComputerUseService {
    * The person's answer, to the Runner of the slot the approval came from.
    * False when that Runner is not connected to this desktop right now.
    */
-  sendApprovalAnswer(
-    deploymentId: DeploymentId,
-    frame: ComputerAppApprovalAnswerFrame,
-    server: { readonly launchDigest: string; readonly serverId: string } | null,
-  ): boolean {
-    return this.#bridges.get(deploymentId)?.sendApprovalAnswer(frame, server) ?? false;
-  }
 
   async stopForSlot(deploymentId: string): Promise<void> {
     const server = this.#bridges.get(deploymentId);

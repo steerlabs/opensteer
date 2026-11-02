@@ -13,7 +13,7 @@ import {
  * The Host's MCP client transport for a server one computer runs: the
  * session is carried over that computer's `integrations` stream, and the
  * computer starts the server — or reaches it on its own loopback — only as
- * its owner approved it there. Everything above this is the same MCP client
+ * its owner approved through the Host. Everything above this is the same MCP client
  * every other server gets.
  */
 export class ComputerMcpTransport implements Transport {
@@ -22,8 +22,9 @@ export class ComputerMcpTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   /** Why the computer ended the session, when it said. */
   closeError: ComputerMcpSessionError | null = null;
-  readonly #hub: Pick<ComputerAppHub, "openMcpSession">;
+  readonly #hub: Pick<ComputerAppHub, "openMcpSession" | "withRunnerAdmission">;
   readonly #target: {
+    readonly authorize: () => Promise<void>;
     readonly launch: LocalMcpLaunch;
     readonly runnerId: RunnerId;
     readonly serverId: IntegrationServerId;
@@ -34,8 +35,9 @@ export class ComputerMcpTransport implements Transport {
   #session: ComputerMcpSession | undefined;
 
   constructor(
-    hub: Pick<ComputerAppHub, "openMcpSession">,
+    hub: Pick<ComputerAppHub, "openMcpSession" | "withRunnerAdmission">,
     target: {
+      readonly authorize: () => Promise<void>;
       readonly launch: LocalMcpLaunch;
       readonly runnerId: RunnerId;
       readonly serverId: IntegrationServerId;
@@ -46,20 +48,30 @@ export class ComputerMcpTransport implements Transport {
   }
 
   async start(): Promise<void> {
-    const session = await this.#hub.openMcpSession({
-      ...this.#target,
-      onclose: (error) => {
-        if (this.#closed) return;
-        this.#closed = true;
-        this.closeError = error;
-        if (error) this.onerror?.(error);
-        this.onclose?.();
-      },
-      // The computer relays what the server wrote, which the SDK parses as
-      // its own message shape.
-      onmessage: (message) => this.onmessage?.(message as JSONRPCMessage),
-      signal: this.#abandoned.signal,
+    const admitted = await this.#hub.withRunnerAdmission(this.#target.runnerId, async () => {
+      this.#abandoned.signal.throwIfAborted();
+      await this.#target.authorize();
+      this.#abandoned.signal.throwIfAborted();
+      return {
+        opening: this.#hub.openMcpSession({
+          launch: this.#target.launch,
+          runnerId: this.#target.runnerId,
+          serverId: this.#target.serverId,
+          onclose: (error) => {
+            if (this.#closed) return;
+            this.#closed = true;
+            this.closeError = error;
+            if (error) this.onerror?.(error);
+            this.onclose?.();
+          },
+          // The computer relays what the server wrote, which the SDK parses as
+          // its own message shape.
+          onmessage: (message) => this.onmessage?.(message as JSONRPCMessage),
+          signal: this.#abandoned.signal,
+        }),
+      };
     });
+    const session = await admitted.opening;
     // Closed just as the computer answered that it opened: the session ends
     // now rather than outliving the client that gave it up.
     if (this.#closed) {

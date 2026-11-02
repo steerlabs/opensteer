@@ -1,4 +1,4 @@
-# Computer use: the two desktop panels
+# Computer use: desktop permission panels
 
 The native panels cross a consent boundary. Schemas live in
 `packages/protocol/src/desktop.ts`, handlers in
@@ -16,46 +16,16 @@ input still reaches corner arcs inside the rectangle, never its outside margins.
 See [Browser sessions](../../../../docs/browser-sessions.md#shared-viewing-and-previews)
 and `apps/desktop/src/browser/page-glass.ts`.
 
-## Routes
+## Permission panels
 
-Approval and permissions windows use the ordinary sandboxed, context-isolated
-Desktop preload/bridge. Show them inactive: a task can ask while the person types
-elsewhere, and their next Return or Space must not become accidental consent.
-Initially focus Don't allow/Cancel with `preventScroll`. Keep consent text fully
-readable in a keyboard-accessible scroll region above fixed answer buttons; long
-app names, paths or task titles must not hide what is being approved.
+Permission and app-setup windows use the sandboxed, context-isolated Desktop bridge.
+They act only on this computer's OS permission state. Keep controls readable and
+keyboard-accessible, and do not let arrival steal typing from another app.
 
-Closing an approval normally means Don't allow; quitting leaves it unanswered.
-Renderer death leaves the request pending for a fresh panel, not declined or
-approved. Once quitting begins, open no further approval panels. See
-`computer-use-approval-panel.ts` and `computer-use-panels.test.ts` in this directory.
-
-## Bridge methods
-
-An approval token identifies main-held presentation, never renderer-selected app,
-access or Deployment. Reading and answering require that token's exact panel web
-contents; even another trusted app renderer holding the token must fail. Answers
-settle once. Main signs both decisions with the dedicated approval key and waits
-for Host acceptance before beginning app setup.
-
-The helper supplies the installed identity, path and elevated-risk judgement;
-the renderer must not replace them with Host-supplied labels. Main refuses a denied
-app before showing consent. Task context is the signed request's snapshot, not a
-fresh renderer Workspace lookup. Reuse supplied access labels/summaries. GUI approval
-permits everything the app interface offers; display the elevated warning.
-
-Approval review stays pinned to its original Deployment despite selection changes.
-Main consumes offers only over that Mac's Runner stream, never a person's Host
-session. A complete Host list missing a request closes its panel unanswered; bridge
-loss closes that slot's panels, and reconnect obtains a fresh list. Other slots keep
-their own lifetimes. Identity mismatch is neither a prompt nor a decline. Stale
-signatures cannot settle replacement requests. Sources: `computer-use-service.ts`
-and `approval-key.ts` in this directory.
-
-The private approval key stays in main, encrypted with Keychain-backed safeStorage.
-Registration needs owner authorization and a challenge answered on the named Mac;
-a Runner authentication key cannot approve apps. Missing Keychain/key/transport
-state must surface a retryable explanation, never apparent consent.
+App and local MCP consent use the same authenticated Host review and command on
+web, desktop and mobile. No renderer/native approval token or desktop approval key
+conveys authority. The target helper still supplies GUI identity, path, risk and deny-list
+validation. Sensitive review details belong only to the owner's transient review UI.
 
 Permission polling never prompts. A person requests exactly one permission at a
 time; a returned denial does not prove macOS showed or answered its asynchronous

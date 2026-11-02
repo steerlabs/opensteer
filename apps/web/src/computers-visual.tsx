@@ -145,10 +145,8 @@ const serverComputer = (input: {
 });
 // The approval key the fake bridge reports is already registered, so the page
 // shows the settled state rather than trying to register one.
-const approvalKeyId = `sha256:${"A".repeat(43)}`;
 const macbookWorking: MachineSummary = {
   ...macbook,
-  computerUse: macbook.computerUse && { ...macbook.computerUse, approvalKeyId },
   allowedModules: ["agents", "browser", "integrations", "shell"],
   modules: { ...macbook.modules, ...agentsModule },
 };
@@ -511,7 +509,6 @@ function fakeBridge(scenario: Scenario): OpensteerDesktopBridge {
     onUsbDeviceChoice: () => () => undefined,
     chooseUsbDevice: async () => undefined,
     checkFullDiskAccess: async () => ({ granted: true }),
-    computerUseApprovalKey: async () => ({ keyId: approvalKeyId, publicKey: "" }),
     // The setup panel is macOS's other window; the page only asks for it.
     openComputerAppSetup: async () => ({ opened: true }),
     configurePersonalRemoteAccess: async () => remote,

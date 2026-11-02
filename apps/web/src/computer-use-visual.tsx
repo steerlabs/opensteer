@@ -1,3 +1,8 @@
+import { MemoryRouter } from "react-router";
+import { AgentTranscript } from "./components/agent-activity.js";
+import { ComputerAppsSection } from "./components/computer-apps/computer-apps-section.js";
+import { ComputerAppSetupPanel } from "./desktop/computer-app-setup-panel.js";
+import { ComputerUsePermissionsPanel } from "./desktop/computer-use-permissions-panel.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
@@ -13,15 +18,8 @@ import type { MachineSummary } from "@opensteer/protocol";
 import type {
   DesktopComputerAppSetup,
   DesktopComputerAppSetupStep,
-  DesktopComputerUseApprovalPresentation,
 } from "@opensteer/protocol/desktop";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter } from "react-router";
-import { AgentTranscript } from "./components/agent-activity.js";
-import { ComputerAppsSection } from "./components/computer-apps/computer-apps-section.js";
-import { ComputerUseApprovalPanel } from "./desktop/computer-use-approval-panel.js";
-import { ComputerAppSetupPanel } from "./desktop/computer-app-setup-panel.js";
-import { ComputerUsePermissionsPanel } from "./desktop/computer-use-permissions-panel.js";
 
 /**
  * Scenarios, by `?scenario=`:
@@ -122,7 +120,6 @@ const machine = {
   allowedModules: ["integrations", "shell"],
   apps: null,
   computerUse: {
-    approvalKeyId: scenario === "unregistered" ? null : `sha256:${"a".repeat(43)}`,
     appApproval: scenario === "automatic" ? "automatic" : "ask",
     detail:
       state === "unavailable" ? "Computer use needs the Opensteer desktop app on this Mac." : null,
@@ -351,113 +348,8 @@ const hostClient = {
   },
 } as unknown as HostClient;
 
-const approvals: Record<string, DesktopComputerUseApprovalPresentation> = {
-  approve: {
-    access: "read-write",
-    accessLabel: "Can see and control",
-    accessSummary:
-      "Agents can see the app and click, type, scroll, press keys, and open it in the background. What the app can do, agents can do through it.",
-    app: {
-      bundleId: "com.apple.Notes",
-      displayName: "Notes",
-      iconPng: null,
-      path: "/System/Applications/Notes.app",
-      reason: null,
-      risk: "standard",
-    },
-    deploymentName: "Alex’s Deployment",
-    kind: "app",
-    machineName: "Alex’s MacBook Pro",
-    reason: null,
-    threadTitle: null,
-    token: "visual",
-    workspaceName: null,
-  },
-  policy: {
-    appApproval: "automatic",
-    deploymentName: "Alex’s Deployment",
-    kind: "policy",
-    machineName: "Alex’s MacBook Pro",
-    token: "visual",
-  },
-  task: {
-    access: "read-write",
-    accessLabel: "Can see and control",
-    accessSummary:
-      "Agents can see the app and click, type, scroll, press keys, and open it in the background. What the app can do, agents can do through it.",
-    app: {
-      bundleId: "com.apple.finder",
-      displayName: "Finder",
-      iconPng: null,
-      path: "/System/Library/CoreServices/Finder.app",
-      reason: null,
-      risk: "elevated",
-    },
-    deploymentName: "Alex’s Deployment",
-    kind: "app",
-    machineName: "Alex’s MacBook Pro",
-    reason: "Collect the signed contracts from Downloads into the deal folder.",
-    threadTitle: "Close the Q3 deals",
-    token: "visual",
-    workspaceName: "Sales",
-  },
-};
-
-// Messages asked for from the Mac's page or another device, with Full Disk
-// Access still off: the panel says what Allow leads to on this Mac.
-approvals["messages"] = {
-  access: "read",
-  accessLabel: "Read only",
-  accessSummary: "Allows searching and reading conversations. Sending is off.",
-  app: {
-    bundleId: "apple-messages",
-    displayName: "Apple Messages",
-    iconPng: null,
-    path: null,
-    reason: null,
-    risk: "standard",
-  },
-  deploymentName: "Alex’s MacBook Pro (3)",
-  kind: "app",
-  machineName: "Alex’s MacBook Pro",
-  reason: null,
-  threadTitle: null,
-  token: "visual",
-  workspaceName: null,
-};
-
-// The longest a task can make the panel: a long title, app name and reason.
-approvals["long"] = {
-  ...(approvals["task"] as Extract<DesktopComputerUseApprovalPresentation, { kind: "app" }>),
-  app: {
-    bundleId: "com.microsoft.Excel",
-    displayName: "Microsoft Excel for Mac (Office 365 Business Premium Edition)",
-    iconPng: null,
-    path: "/Applications/Microsoft Office/Microsoft Excel for Mac (Office 365 Business Premium Edition).app",
-    reason: null,
-    risk: "elevated",
-  },
-  reason:
-    "Open the quarterly revenue workbook, reconcile the regional tabs against the finance export in Downloads, fix the formulas that reference the old sheet names, and save a copy for the board pack before Thursday's review meeting.",
-  threadTitle: "Reconcile the Q3 regional revenue workbook against the finance export",
-};
-
 const root = createRoot(document.getElementById("root")!);
-const approval = panel ? approvals[panel] : undefined;
-
-if (approval) {
-  root.render(
-    <div style={{ height: 400, margin: "40px auto", width: 480 }}>
-      <ComputerUseApprovalPanel
-        bridge={{
-          computerUseApprovalGet: async () => approval,
-          computerUseApprovalRespond: async () => undefined,
-        }}
-        token="visual"
-      />
-    </div>,
-  );
-} else if (panel === "transcript") {
+if (panel === "transcript") {
   const runId = RunIdSchema.parse("run_00000000-0000-4000-8000-000000000001");
   const threadId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001");
   const visualUserId = UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000001");
@@ -614,23 +506,10 @@ if (approval) {
             </p>
             <ComputerAppsSection
               hostConnected
-              computerUseApprovalKeySetup={
-                params.has("key-error")
-                  ? {
-                      error: "This Mac could not register its approval key.",
-                      ready: false,
-                      retry: () => {
-                        params.delete("key-error");
-                        location.search = params.toString();
-                      },
-                    }
-                  : null
-              }
               computerUseLocal={
                 view === "local"
                   ? {
                       openPermissions: async () => ({ opened: true }),
-                      reviewSetup: async () => settle(true),
                     }
                   : null
               }

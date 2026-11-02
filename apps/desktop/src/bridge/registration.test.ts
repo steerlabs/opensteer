@@ -62,19 +62,14 @@ describe("desktop bridge", () => {
       access,
       agentPhone: agentPhone(),
       computerApps: {
-        approvalKey: async () => ({ keyId: `sha256:${"k".repeat(43)}`, publicKey: "key" }),
         dragIcon: async () => {
           throw new Error("not part of this test");
         },
         setup: computerAppSetupUnused,
-        review: async () => ({ allowed: false }),
       },
       computerUse: {
         onActivationError: () => undefined,
-        approvalGet: () => {
-          throw new Error("no approval is open");
-        },
-        approvalRespond: () => undefined,
+
         closePermissionsPanel: async () => undefined,
         openPermissionsPanel: async () => undefined,
         verifyBundledHelper: async () => undefined,
@@ -177,71 +172,6 @@ describe("desktop bridge", () => {
     expect(handlers).toHaveLength(0);
   });
 
-  it("reviews a page's setup request on the Deployment the page is attached to", async () => {
-    const handlers = new Map<string, (event: IpcMainInvokeEvent, input: unknown) => unknown>();
-    const pageDeploymentId = createId("deployment");
-    const review = vi.fn(async () => ({ allowed: true }));
-    const transport = hostTransport(pageDeploymentId);
-    registerDesktopBridge({
-      downloads: {
-        snapshot: () => ({ downloads: [] }),
-        subscribe: () => () => undefined,
-        open: async () => ({ status: "missing" }),
-        show: () => ({ status: "missing" }),
-        cancel: () => ({ status: "missing" }),
-      },
-      localVisibility: { getSnapshot: () => true, subscribe: () => () => undefined },
-      access: { ...accessOperationMocks(), snapshot, subscribe: vi.fn(() => () => undefined) },
-      agentPhone: agentPhone(),
-      bridgeToken: "b".repeat(43),
-      computerApps: {
-        approvalKey: async () => ({ keyId: `sha256:${"k".repeat(43)}`, publicKey: "key" }),
-        dragIcon: async () => {
-          throw new Error("not part of this test");
-        },
-        setup: computerAppSetupUnused,
-        review,
-      },
-      computerUse: {
-        onActivationError: () => undefined,
-        approvalGet: () => {
-          throw new Error("no approval is open");
-        },
-        approvalRespond: () => undefined,
-        closePermissionsPanel: async () => undefined,
-        openPermissionsPanel: async () => undefined,
-        verifyBundledHelper: async () => undefined,
-        openSystemSettings: async () => undefined,
-        permissions: async () => ({ accessibility: "denied", screenRecording: "denied" }) as const,
-        requestPermissions: async () =>
-          ({ accessibility: "granted", screenRecording: "granted" }) as const,
-      },
-      fullDiskAccess: fullDiskAccess(),
-      hostTransport: transport,
-      ipcMain: {
-        handle: (channel, handler) => handlers.set(channel, handler),
-        removeHandler: (channel) => handlers.delete(channel),
-      },
-      passwords: passwordsPort().port,
-      personalRemote: personalRemote(),
-      portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
-      runner: runnerController(),
-    });
-    const setupRequestId = "7c1a2b4c-5d6e-4f80-9a1b-2c3d4e5f6071";
-
-    await expect(
-      handlers.get(desktopBridgeChannels.reviewComputerAppSetup)?.(
-        ipcEvent("app://opensteer/computers"),
-        { bridgeToken: "b".repeat(43), input: { setupRequestId } },
-      ),
-    ).resolves.toEqual({ allowed: true });
-
-    // The page's own Host calls reach the attached Deployment, so that is the
-    // one it created the request on, and the review is handed exactly it.
-    expect(transport.current).toHaveBeenCalledOnce();
-    expect(review).toHaveBeenCalledWith(pageDeploymentId, setupRequestId);
-  });
-
   it("rejects callers outside the bundled main frame", async () => {
     const handlers = new Map<string, (event: IpcMainInvokeEvent, input: unknown) => unknown>();
     const unregister = registerDesktopBridge({
@@ -255,19 +185,14 @@ describe("desktop bridge", () => {
       localVisibility: { getSnapshot: () => true, subscribe: () => () => undefined },
       agentPhone: agentPhone(),
       computerApps: {
-        approvalKey: async () => ({ keyId: `sha256:${"k".repeat(43)}`, publicKey: "key" }),
         dragIcon: async () => {
           throw new Error("not part of this test");
         },
         setup: computerAppSetupUnused,
-        review: async () => ({ allowed: false }),
       },
       computerUse: {
         onActivationError: () => undefined,
-        approvalGet: () => {
-          throw new Error("no approval is open");
-        },
-        approvalRespond: () => undefined,
+
         closePermissionsPanel: async () => undefined,
         openPermissionsPanel: async () => undefined,
         verifyBundledHelper: async () => undefined,
@@ -454,19 +379,14 @@ function registerWith(
     agentPhone: agentPhone(),
     bridgeToken: "b".repeat(43),
     computerApps: {
-      approvalKey: async () => ({ keyId: `sha256:${"k".repeat(43)}`, publicKey: "key" }),
       dragIcon: async () => {
         throw new Error("not part of this test");
       },
       setup: computerAppSetupUnused,
-      review: async () => ({ allowed: false }),
     },
     computerUse: {
       onActivationError: () => undefined,
-      approvalGet: () => {
-        throw new Error("no approval is open");
-      },
-      approvalRespond: () => undefined,
+
       closePermissionsPanel: async () => undefined,
       openPermissionsPanel: async () => undefined,
       openSystemSettings: async () => undefined,

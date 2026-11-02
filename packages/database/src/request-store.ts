@@ -1712,7 +1712,7 @@ export class RequestStore {
         if (current?.computerBlockedAt)
           throw new OpensteerError({
             code: "forbidden",
-            message: `${app?.displayName ?? runner.name} is blocked on ${runner.name}. The person can unblock it on that Mac.`,
+            message: `${app?.displayName ?? runner.name} is blocked on ${runner.name}. The owner can unblock it from any Opensteer app.`,
           });
         const covered =
           !!current?.computerAccess &&
