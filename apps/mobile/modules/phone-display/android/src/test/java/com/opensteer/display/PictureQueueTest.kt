@@ -8,7 +8,7 @@ import org.junit.Test
 class PictureQueueTest {
   private val outcomes = linkedMapOf<String, MutableList<PictureOutcome>>()
   private fun request(generation: Int = 0, fence: String = "a", upscale: Boolean = true) =
-    PictureRequest(generation, fence, 8, 6, 8.0, 6.0, upscale, 0.0)
+    PictureRequest(generation, fence, 8, 6, 8.0, 6.0, upscale, 15.0)
   private fun receipt(key: String) = PictureReceipt { outcomes.getOrPut(key) { mutableListOf() }.add(it) }
 
   @Test fun keepsOneDecodingAndOnlyTheNewestWaitingAndSettlesEachOnce() {
@@ -61,5 +61,13 @@ class PictureQueueTest {
     assertArrayEquals(doubleArrayOf(0.0, 150.0, 400.0, 450.0), request().rect(400.0, 600.0), 0.0)
     assertArrayEquals(doubleArrayOf(196.0, 297.0, 204.0, 303.0), request(upscale = false).rect(400.0, 600.0), 0.0)
     assertNull(request().rect(0.0, 600.0))
+  }
+
+  @Test fun roundsOnlyAPictureThatFloatsFreeOfTheView() {
+    // Filling the width, it meets the sides square.
+    assertEquals(0.0, request().radius(400.0, 600.0), 0.0)
+    assertEquals(15.0, request(upscale = false).radius(400.0, 600.0), 0.0)
+    assertEquals(0.0, request(upscale = false).radius(8.0, 600.0), 0.0)
+    assertEquals(0.0, request().radius(0.0, 600.0), 0.0)
   }
 }

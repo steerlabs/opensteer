@@ -92,6 +92,17 @@ final class PictureQueueTests: XCTestCase {
     XCTAssertNil(crop.rect(in: CGSize(width: 400, height: 600)))
     XCTAssertNil(request().rect(in: .zero))
   }
+
+  func testRoundsOnlyAPictureThatFloatsFreeOfTheView() {
+    var picture = request()
+    picture.cornerRadius = 15
+    // Filling the width, it meets the sides square.
+    XCTAssertEqual(picture.radius(in: CGSize(width: 400, height: 600)), 0)
+    picture.upscale = false
+    XCTAssertEqual(picture.radius(in: CGSize(width: 400, height: 600)), 15)
+    XCTAssertEqual(picture.radius(in: CGSize(width: 8, height: 600)), 0)
+    XCTAssertEqual(picture.radius(in: .zero), 0)
+  }
 }
 
 final class PictureDecoderTests: XCTestCase {

@@ -32,6 +32,7 @@ import { color, material, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
 import {
   browserFrameContentRect,
+  browserFrameCornerRadii,
   browserCropCue,
   browserRasterDensity,
 } from "@opensteer/shared/browserPresentation";
@@ -539,17 +540,7 @@ export function BrowserStream({
           {displayed?.source.header.capture ? (
             <View
               pointerEvents="none"
-              style={[
-                styles.frame,
-                styles.nativeFrame,
-                browserFrameContentRect(
-                  { ...stageSize, left: 0, top: 0 },
-                  displayed.source.header.rasterWidth,
-                  displayed.source.header.rasterHeight,
-                  displayed.source.header.capture,
-                  "center",
-                ),
-              ]}
+              style={[styles.frame, framePlacement(stageSize, displayed.source.header)]}
             >
               <CropCues header={displayed.source.header} />
             </View>
@@ -560,21 +551,13 @@ export function BrowserStream({
       {[displayedSlot, decoding].map((slot) => {
         if (!slot) return null;
         const { header } = slot.source;
-        const rect = browserFrameContentRect(
-          { ...stageSize, left: 0, top: 0 },
-          header.rasterWidth,
-          header.rasterHeight,
-          header.capture,
-          "center",
-        );
         return (
           <View
             key={slot.frame.key}
             pointerEvents="none"
             style={[
               styles.frame,
-              rect,
-              header.capture ? styles.nativeFrame : null,
+              framePlacement(stageSize, header),
               slot !== displayedSlot ? styles.hidden : null,
             ]}
           >
@@ -642,6 +625,30 @@ export function submitBrowserCommand(
 }
 
 /** Fades the edges where a native capture is cut short of the page. */
+/** Where a picture sits in the stage, round only at the corners where it floats free. */
+function framePlacement(
+  stage: { readonly width: number; readonly height: number },
+  header: BrowserFrameView["header"],
+): ViewStyle | null {
+  const box = { ...stage, left: 0, top: 0 };
+  const rect = browserFrameContentRect(
+    box,
+    header.rasterWidth,
+    header.rasterHeight,
+    header.capture,
+    "center",
+  );
+  if (!rect) return null;
+  const [topLeft, topRight, bottomRight, bottomLeft] = browserFrameCornerRadii(box, rect);
+  return {
+    ...rect,
+    borderTopLeftRadius: topLeft,
+    borderTopRightRadius: topRight,
+    borderBottomRightRadius: bottomRight,
+    borderBottomLeftRadius: bottomLeft,
+  };
+}
+
 function CropCues({ header }: { readonly header: BrowserFrameView["header"] }) {
   const { capture } = header;
   return (
@@ -747,7 +754,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     overflow: "hidden",
   },
-  nativeFrame: { borderRadius: browserCropCue.radius },
   hidden: { opacity: 0 },
   cropRight: {
     position: "absolute",

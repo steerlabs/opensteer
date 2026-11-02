@@ -377,9 +377,10 @@ private class PictureSurface(context: Context, private val abandoned: () -> Unit
     // Laid out in density-independent pixels, as React Native lays out the page around it.
     val density = resources.displayMetrics.density
     // An empty view leaves the receipt to the bounded wait: a later layout may still draw it.
-    val rect = request?.rect(width / density.toDouble(), height / density.toDouble()) ?: return
+    val shape = request ?: return
+    val rect = shape.rect(width / density.toDouble(), height / density.toDouble()) ?: return
     target.set(rect[0].toFloat() * density, rect[1].toFloat() * density, rect[2].toFloat() * density, rect[3].toFloat() * density)
-    val radius = (request?.cornerRadius ?: 0.0).toFloat() * density
+    val radius = shape.radius(width / density.toDouble(), height / density.toDouble()).toFloat() * density
     canvas.save()
     if (radius > 0) {
       clip.reset(); clip.addRoundRect(target, radius, radius, Path.Direction.CW)
