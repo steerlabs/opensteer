@@ -189,8 +189,8 @@ a missing hop/key disable that feature; discovery does not start a helper.
 
 Mac helper hello requests `loginText: 1`; only a helper supporting that opt-in
 returns a receiver key. Its session pins the Run and sealed acts carry
-independent `loginContext`. Phone integrations protocol stays 4; Mac integrations
-stays 5. Browser fills retain `modules.browser.signIn: {version: 3}` and the
+independent `loginContext`. Agent Phone integrations protocol is 4; Mac
+integrations is 6. Browser fills retain `modules.browser.signIn: {version: 3}` and the
 calling agent Runner's `modules.agents.loginFill: 1` admission. Previous-release
 browser control remains an origin-only, session-bound adapter.
 The Host still serves `browser_sign_in` with its required session ID for
