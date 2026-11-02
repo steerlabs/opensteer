@@ -4,13 +4,16 @@ import { act, StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  BrowserEditingStore,
   placeList,
   type BrowserSessionSummary,
   type HostSnapshot,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
+import { Alert } from "react-native";
+import { pictureBox, slideFor } from "../browser/browser-page.js";
 import { BrowserPageContentPartSchema } from "@opensteer/core";
-import type { MachineSummary } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import type { SurfacesRoute } from "../browser/surface-route.js";
 import {
@@ -538,7 +541,7 @@ function setup(
     privateFiles: new MemoryPrivateFilesystem(),
   });
   state.hostClient.browserViewerState = () => liveFeed;
-  state.hostClient.browserFrames = { subscribe: () => () => undefined };
+  state.hostClient.browserFrames ??= { subscribe: () => () => undefined };
   state.snapshot = options.snapshot ?? snapshot([]);
   const container = document.createElement("div");
   document.body.append(container);
@@ -733,7 +736,7 @@ describe("mobile pages", () => {
       container.querySelector("[data-expected-surface]")?.getAttribute("data-expected-surface"),
     ).toBe(target);
     expect(sendBrowserCommand).not.toHaveBeenCalled();
-    press(menu(), "Reload");
+    press(container, "Reload");
     expect(sendBrowserCommand).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "navigation.reload",
       surfaceId: target,
@@ -751,7 +754,7 @@ describe("mobile pages", () => {
     state.hostClient.browserViewerState = () => feed;
     state.snapshot = snapshot([chosen]);
     render();
-    expect(() => press(menu(), "Reload")).not.toThrow();
+    expect(() => press(container, "Reload")).not.toThrow();
     expect(container.textContent).toContain("The page is reconnecting");
     feed = { ...liveFeed, admissionId: "admission-2", inputError: "A dialog is open on the page." };
     render();
@@ -1211,7 +1214,7 @@ describe("mobile pages", () => {
       subscribe: () => () => undefined,
     };
     state.hostClient.browserViewerState = () => liveFeed;
-    state.hostClient.browserFrames = { subscribe: () => () => undefined };
+    state.hostClient.browserFrames ??= { subscribe: () => () => undefined };
     const { container, render } = setup({
       sessionId: "delegate",
       tabId: "srf_00000000-0000-4000-8000-000000000001",
@@ -1219,7 +1222,11 @@ describe("mobile pages", () => {
     state.snapshot = snapshot([mailSession("delegate")]);
     render();
     // Not a permanent block under the page: it is asked for.
-    expect(container.textContent).not.toContain("Sign in with Chrome");
+    expect(
+      container
+        .querySelector('[data-testid="browser-page"]')
+        ?.textContent?.replace(menu().textContent ?? "", ""),
+    ).not.toContain("Sign in with Chrome");
 
     press(menu(), "Sign in with Chrome");
     await pressAsync(container, "Sign in with Chrome");
@@ -1275,7 +1282,7 @@ describe("mobile pages", () => {
       sendBrowserCommand,
     };
     state.hostClient.browserViewerState = () => liveFeed;
-    state.hostClient.browserFrames = { subscribe: () => () => undefined };
+    state.hostClient.browserFrames ??= { subscribe: () => () => undefined };
     const { container, render } = setup({
       sessionId: "delegate",
       tabId: "srf_00000000-0000-4000-8000-000000000001",
@@ -1366,7 +1373,7 @@ describe("the page's bar", () => {
   it("opens the one agent's Thread, and goes back to it when it is the screen under the page", () => {
     const { container } = openPage([{ acting: true, threadId: "thread-trip" }]);
     expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    press(container, "Tokyo trip, working here");
+    press(header(), "Tokyo trip, working here");
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
       name: "Thread",
       params: { deploymentId: "deployment-a", threadId: "thread-trip" },
@@ -1378,19 +1385,19 @@ describe("the page's bar", () => {
       { name: "Thread", params: { deploymentId: "deployment-a", threadId: "thread-trip" } },
       { name: "WorkspaceBrowser", params: { sessionId, tabId: "page-1" } },
     ];
-    press(container, "Tokyo trip, working here");
+    press(header(), "Tokyo trip, working here");
     expect(state.goBack).toHaveBeenCalledOnce();
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
   it("returns to Chat rather than pushing it, when Chat is the agent", () => {
-    const { container } = openPage([{ home: true, threadId: "thread-home" }]);
+    openPage([{ home: true, threadId: "thread-home" }]);
     state.routes = [
       { name: "Home" },
       { name: "Thread", params: { deploymentId: "deployment-a", threadId: "thread-trip" } },
       { name: "WorkspaceBrowser", params: { sessionId, tabId: "page-1" } },
     ];
-    press(container, "Chat, idle");
+    press(header(), "Chat, idle");
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
       name: "Home",
       params: { deploymentId: "deployment-a" },
@@ -1399,11 +1406,11 @@ describe("the page's bar", () => {
   });
 
   it("offers several agents as a menu, working first, then most recent", () => {
-    const { container } = openPage([
+    openPage([
       { lastActiveAt: "2026-10-13T00:05:00.000Z", threadId: "thread-trip" },
       { acting: true, lastActiveAt: "2026-10-13T00:01:00.000Z", threadId: "thread-agent" },
     ]);
-    const pill = element(container, "2 agents, 1 working");
+    const pill = element(header(), "2 agents, 1 working");
     expect(pill?.dataset["menuTitle"]).toBe("Open a thread");
     expect([...pill!.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "Compare hotels · Working here",
@@ -1418,11 +1425,11 @@ describe("the page's bar", () => {
   });
 
   it("updates the menu by identity when acting moves, and removes a departing agent", () => {
-    const { container, render } = openPage([
+    const { render } = openPage([
       { acting: true, threadId: "thread-trip" },
       { threadId: "thread-agent" },
     ]);
-    const pill = element(container, "2 agents, 1 working")!;
+    let pill = element(header(), "2 agents, 1 working")!;
     expect(pill.querySelector("button")?.textContent).toContain("Tokyo trip");
     state.snapshot = withAgents([
       occupied(sessionId, [
@@ -1431,6 +1438,7 @@ describe("the page's bar", () => {
       ]),
     ]);
     render();
+    pill = element(header(), "2 agents, 1 working")!;
     expect(pill.querySelector("button")?.textContent).toContain("Compare hotels");
     press(pill, "Tokyo trip · Idle");
     expect(state.dispatch).toHaveBeenLastCalledWith(
@@ -1440,31 +1448,31 @@ describe("the page's bar", () => {
     );
     state.snapshot = withAgents([occupied(sessionId, [])]);
     render();
-    expect(element(container, "Tokyo trip, idle")).toBeNull();
-    expect(element(container, "2 agents, 1 working")).toBeNull();
-    expect(element(container, "Ask")).not.toBeNull();
+    expect(element(header(), "Tokyo trip, idle")).toBeNull();
+    expect(element(header(), "2 agents, 1 working")).toBeNull();
+    expect(element(header(), "Ask")).not.toBeNull();
   });
 
   it("pushes an agent deeper in the stack and renders an old grid route without choosing a tab", () => {
-    const { container } = openPage([{ threadId: "thread-trip" }]);
+    openPage([{ threadId: "thread-trip" }]);
     state.routes = [
       { name: "Thread", params: { threadId: "thread-trip" } },
       { name: "Thread", params: { threadId: "thread-agent" } },
       { name: "WorkspaceBrowser" },
     ];
-    press(container, "Tokyo trip, idle");
+    press(header(), "Tokyo trip, idle");
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "PUSH" }));
     const legacy = setup({ threadId: "thread-trip" });
     expect(legacy.container.textContent).toContain("This tab isn’t available");
-    expect(legacy.container.querySelector('[data-testid="page-bar"]')).toBeNull();
+    expect(legacy.container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
   });
 
   it("hides Ask in Chat before Chat exists, including offline", () => {
-    const { container, render } = openPage([]);
+    const { render } = openPage([]);
     state.snapshot = { ...state.snapshot!, homeThreadId: null, network: "offline" };
     render();
-    const ask = element(container, "Ask")!;
+    const ask = element(header(), "Ask")!;
     expect(ask.textContent).not.toContain("Ask in Chat");
     press(ask, "New task");
     expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: "NewTask" }));
@@ -1472,26 +1480,28 @@ describe("the page's bar", () => {
 
   it("names nobody in an empty tab, and leaves Ask", () => {
     const { container } = openPage([]);
-    expect(container.querySelector('[data-testid="page-bar"]')).not.toBeNull();
-    expect(element(container, "Ask")).not.toBeNull();
-    expect(container.textContent).not.toContain("agent");
-    expect(container.textContent).not.toContain("Agent working");
+    expect(container.querySelector('[data-testid="page-toolbar"]')).not.toBeNull();
+    expect(element(header(), "Ask")).not.toBeNull();
+    const bar = header();
+    expect(bar.textContent).not.toContain("agent");
+    expect(bar.textContent).not.toContain("Agent working");
+    expect(bar.textContent).toContain("Page");
   });
 
   it("says an older Host's agent is working without naming or offering anyone", () => {
-    const { container, render } = openPage([]);
+    const { render } = openPage([]);
     // The browser says it is acting, and its one tab names no occupant.
     state.snapshot = withAgents([{ ...occupied(sessionId, []), acting: true }]);
     render();
-    const said = element(container, "Agent working");
+    const said = element(header(), "Agent working");
     expect(said).not.toBeNull();
     expect(said?.tagName).not.toBe("BUTTON");
-    expect(container.querySelector('button[aria-label="Agent working"]')).toBeNull();
+    expect(header().querySelector('button[aria-label="Agent working"]')).toBeNull();
   });
 
   it("asks in Chat or a new task with the page on that draft, this reader's alone, never in the route", () => {
-    const { container } = openPage([]);
-    const ask = element(container, "Ask")!;
+    openPage([]);
+    const ask = element(header(), "Ask")!;
     expect(ask.dataset["menuTitle"]).toBe("Ask about this page");
     const page = {
       sessionId,
@@ -1542,7 +1552,7 @@ describe("the page's bar", () => {
       });
       await act(() => state.drafts!.writeDraftPage("deployment-a", "user-a", draftKey, earlier));
       expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
-      press(element(opened.container, "Ask")!, "New task");
+      press(element(header(), "Ask")!, "New task");
       expect(state.dispatch).toHaveBeenCalledWith({
         name: "NewTask",
         type: "PUSH",
@@ -1555,15 +1565,17 @@ describe("the page's bar", () => {
   it("shows the same page whichever way it was reached", () => {
     const occupants = [{ acting: true, threadId: "thread-trip" }];
     const fromTask = openPage(occupants, { threadId: "thread-agent" });
+    const taskHeader = header().innerHTML;
     const fromTabs = openPage(occupants, {
       scope: "workspace",
       // A previous release's route from Tabs still named a conversation.
       threadId: "thread-agent",
     } as unknown as Partial<SurfacesRoute>);
     expect(fromTabs.container.innerHTML).toBe(fromTask.container.innerHTML);
+    expect(header().innerHTML).toBe(taskHeader);
     // Who is here is the page's occupant, never the conversation the route names.
-    expect(element(fromTask.container, "Tokyo trip, working here")).not.toBeNull();
-    expect(fromTask.container.textContent).not.toContain("Compare hotels");
+    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
+    expect(header().textContent).not.toContain("Compare hotels");
   });
 });
 
@@ -1686,7 +1698,7 @@ describe("a page beside its agent's thread", () => {
     ]);
     // The acting agent by default; nobody is pushed.
     expect(second(container)).toContain("Thread thread-agent beside");
-    const pill = element(container, "2 agents, 1 working")!;
+    const pill = element(header(), "2 agents, 1 working")!;
     expect(pill.dataset["menuTitle"]).toBe("Show beside the page");
     expect(pill.querySelector('button[aria-pressed="true"]')?.textContent).toBe(
       "Compare hotels · Working here",
@@ -1715,12 +1727,12 @@ describe("a page beside its agent's thread", () => {
     expect(second(container)).toBeNull();
     expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 0 });
 
-    press(element(container, "Ask")!, "Ask in Chat");
+    press(element(header(), "Ask")!, "Ask in Chat");
     expect(second(container)).toContain("Thread thread-home beside with Page");
     expect(state.drafts!.readDraft("deployment-a", "user-a", "thread-home")?.page?.title).toBe(
       "Page",
     );
-    press(element(container, "Ask")!, "New task");
+    press(element(header(), "Ask")!, "New task");
     expect(second(container)).toContain("New task beside");
     expect(
       state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(source.id))?.page?.title,
@@ -1734,12 +1746,12 @@ describe("a page beside its agent's thread", () => {
 
   it("puts the bar away while typing into the page, and keeps it mounted", () => {
     const { container, render } = openPage(true);
+    press(container, "Tap the page");
+    press(container, "Keyboard");
     state.keyboard = true;
     render();
-    const bar = container.querySelector<HTMLElement>('[data-testid="page-bar"]')!;
-    expect(JSON.parse(bar.parentElement?.dataset["style"] ?? "{}")).toMatchObject({
-      display: "none",
-    });
+    expect(container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
     expect(state.pageMounts).toBe(1);
   });
 
@@ -2038,7 +2050,203 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
       },
     );
     expect(container.textContent).toContain("Mac app");
-    expect(element(container, "Tokyo trip, working here")).not.toBeNull();
-    expect(container.textContent).not.toContain("Compare hotels");
+    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
+    expect(header().textContent).not.toContain("Compare hotels");
+  });
+});
+
+describe("native page layout and controls", () => {
+  it("pins a wide page to the top and fits a tall page by height, centred", () => {
+    expect(pictureBox({ width: 400, height: 800 }, 2)).toEqual({
+      width: 400,
+      height: 200,
+      left: 0,
+    });
+    expect(pictureBox({ width: 400, height: 800 }, 0.25)).toEqual({
+      width: 200,
+      height: 800,
+      left: 100,
+    });
+  });
+
+  it("leaves a visible caret alone and clamps sliding to the page foot", () => {
+    expect(slideFor({ x: 0.5, y: 0.2, height: 0.02 }, 800, 400)).toBe(0);
+    expect(slideFor({ x: 0.5, y: 0.95, height: 0.02 }, 800, 400)).toBe(-400);
+    expect(slideFor({ x: 0.5, y: 0.9, height: 0.02 }, 200, 400)).toBe(0);
+  });
+
+  function open() {
+    const send = vi.fn();
+    state.hostClient = { sendBrowserCommand: send, browserPreferences: {} };
+    const chosen = mailSession("chosen");
+    const opened = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    state.snapshot = snapshot([chosen]);
+    opened.render();
+    return { ...opened, chosen, send };
+  }
+
+  function changeAddress(container: HTMLElement, text: string) {
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Website address"]');
+    if (!input) throw new Error("Address editor did not open");
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return input;
+  }
+
+  it.each([
+    ["coffee near me", "https://www.google.com/search?q=coffee%20near%20me"],
+    ["example.org", "https://example.org/"],
+  ])("navigates %s from the address editor", (text, url) => {
+    const { container, chosen, send } = open();
+    press(container, "Address, mail.example.com");
+    const input = changeAddress(container, text);
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
+      type: "navigation.go",
+      surfaceId: chosen.tabs[0]!.id,
+      typed: true,
+      url,
+    });
+  });
+
+  it("cancels a draft address and switches a suggested tab in the page route", () => {
+    const { container, chosen, render, send } = open();
+    const other = {
+      ...chosen.tabs[0]!,
+      id: BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000002"),
+      title: "Other",
+      url: "https://other.example",
+    };
+    state.snapshot = snapshot([{ ...chosen, tabs: [...chosen.tabs, other] }]);
+    render();
+    press(container, "Address, mail.example.com");
+    changeAddress(container, "discard this");
+    press(container, "Cancel");
+    press(container, "Address, mail.example.com");
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
+    ).toBe(chosen.tabs[0]!.url);
+    changeAddress(container, "Other");
+    press(container, "Other, other.example");
+    expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+      editAddress: false,
+      tabId: other.id,
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("offers Fit only for a wide band outside address editing and fits the stage", () => {
+    state.layout = { width: 400, height: 800 };
+    const { container, send, chosen, render } = open();
+    expect(element(container, "Fit to screen")).not.toBeNull();
+    press(container, "Fit to screen");
+    expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
+      type: "viewport.set",
+      surfaceId: chosen.tabs[0]!.id,
+      width: 400,
+      height: 800,
+    });
+    press(container, "Address, mail.example.com");
+    expect(element(container, "Fit to screen")).toBeNull();
+    press(container, "Cancel");
+    state.layout = { width: 400, height: 225 };
+    render();
+    expect(element(container, "Fit to screen")).toBeNull();
+  });
+
+  it("asks before fitting an agent-sized page, cancels without sending, and applies on Fit", () => {
+    vi.mocked(Alert.alert).mockClear();
+    state.layout = { width: 400, height: 800 };
+    const { container, send, chosen, render } = open();
+    state.snapshot = snapshot([{ ...chosen, tabs: [{ ...chosen.tabs[0]!, sizedByAgent: true }] }]);
+    render();
+    press(container, "Fit to screen");
+    const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
+    expect(buttons?.map(({ text }) => text)).toEqual(["Cancel", "Fit"]);
+    act(() => {
+      buttons?.[0]?.onPress?.();
+    });
+    expect(send).not.toHaveBeenCalled();
+    act(() => {
+      buttons?.[1]?.onPress?.();
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
+      type: "viewport.set",
+      surfaceId: chosen.tabs[0]!.id,
+      width: 400,
+      height: 800,
+    });
+  });
+
+  it("disables catalog-refused history and admits history from older Hosts", () => {
+    const { container, chosen, send, render } = open();
+    const catalog = occupied(chosen.id, []).tabCatalog!;
+    state.snapshot = snapshot([
+      {
+        ...chosen,
+        tabCatalog: {
+          ...catalog,
+          tabs: [
+            { ...catalog.tabs[0]!, id: chosen.tabs[0]!.id, canGoBack: false, canGoForward: false },
+          ],
+        },
+      },
+    ]);
+    render();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Back"]')?.disabled).toBe(
+      true,
+    );
+    expect(
+      [...menu().querySelectorAll("button")].find((button) => button.textContent === "Forward")
+        ?.disabled,
+    ).toBe(true);
+    press(container, "Back");
+    press(menu(), "Forward");
+    expect(send).not.toHaveBeenCalled();
+    state.snapshot = snapshot([chosen]);
+    render();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Back"]')?.disabled).toBe(
+      false,
+    );
+    expect(
+      [...menu().querySelectorAll("button")].find((button) => button.textContent === "Forward")
+        ?.disabled,
+    ).toBe(false);
+    press(container, "Back");
+    press(menu(), "Forward");
+    expect(send.mock.calls).toEqual([
+      [chosen.id, { type: "navigation.back", surfaceId: chosen.tabs[0]!.id }],
+      [chosen.id, { type: "navigation.forward", surfaceId: chosen.tabs[0]!.id }],
+    ]);
+  });
+
+  it("opens the keyboard after a tapped negotiated page reports a field", () => {
+    const editing = new BrowserEditingStore(vi.fn());
+    editing.negotiate("chosen", 1);
+    state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
+    const chosen = mailSession("chosen");
+    const { container, render } = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    state.snapshot = snapshot([chosen]);
+    render();
+    press(container, "Tap the page");
+    expect(element(container, "Keyboard")).toBeNull();
+    expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId: chosen.tabs[0]!.id,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000001",
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        },
+      }),
+    );
+    expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
+    expect(element(container, "Keyboard")).toBeNull();
   });
 });
