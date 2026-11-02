@@ -18,8 +18,11 @@ const state = vi.hoisted(() => ({
   needsKeyframe: null as
     null | ((event: { nativeEvent: { epoch: string; pictureGone?: boolean } }) => void),
   binaryVersion: 1,
+  retentionSupported: true,
   geometry: "side:display@0",
   epoch: "",
+  pixels: false,
+  resets: [] as { epoch: string; keepPicture: boolean }[],
   ready: null as
     null | ((event: { nativeEvent: { epoch: string; width: number; height: number } }) => void),
   touch: null as null | Record<
@@ -104,14 +107,24 @@ vi.mock("expo", async () => {
           React.useImperativeHandle(ref, () => ({
             reset: async (epoch: string) => {
               state.epoch = epoch;
+              state.pixels = false;
+              state.resets.push({ epoch, keepPicture: false });
             },
+            ...(state.retentionSupported
+              ? {
+                  resetKeepingPicture: async (epoch: string) => {
+                    state.epoch = epoch;
+                    state.resets.push({ epoch, keepPicture: true });
+                  },
+                }
+              : {}),
             decode: async (frame: { epoch: string; data: string }) => {
-              state.epoch = frame.epoch;
+              if (state.epoch !== frame.epoch) return false;
               state.decoded.push({ epoch: frame.epoch, data: frame.data });
               return state.decodeResult ? state.decodeResult() : true;
             },
             decodeBytes: async (bytes: Uint8Array, metadata: { epoch: string }) => {
-              state.epoch = metadata.epoch;
+              if (state.epoch !== metadata.epoch) return false;
               state.decoded.push({ epoch: metadata.epoch, bytes: [...bytes] });
               return state.decodeResult ? state.decodeResult() : true;
             },
@@ -228,8 +241,12 @@ afterEach(async () => {
   state.geometry = "side:display@0";
   state.proxy = null;
   state.decoded = [];
+  state.epoch = "";
+  state.pixels = false;
+  state.resets = [];
   state.decodeResult = null;
   state.binaryVersion = 1;
+  state.retentionSupported = true;
   state.recovery = undefined;
 });
 async function setup(
@@ -461,9 +478,12 @@ async function setup(
       ).slice().buffer,
     });
   });
-  await act(async () =>
-    state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
-  );
+  if (state.decoded.length) {
+    state.pixels = true;
+    await act(async () =>
+      state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+    );
+  }
   return {
     connect,
     render,
@@ -1156,11 +1176,93 @@ it("keeps passive native decoded pixels while the session binding is missing or 
     await act(async () => view.move!({ machines: [changed] }));
     expect(socket.readyState).toBe(3);
     expect(container.querySelector("[data-native-display]")).toBe(nativeView);
-    expect(state.epoch).toBe(before);
+    expect(state.pixels).toBe(true);
     expect(container.textContent).not.toContain("Connecting");
   }
+  socket = new Socket();
+  await act(async () => view.move!({ machines: [machine] }));
+  expect(state.pixels).toBe(true);
+  expect(container.textContent).not.toContain("Connecting");
+  const oldEpoch = before;
+  await act(async () =>
+    state.ready?.({ nativeEvent: { epoch: oldEpoch, width: 999, height: 999 } }),
+  );
+  await act(async () => {
+    socket.readyState = 1;
+    socket.emit("open", {});
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence: 1,
+          ptsUs: 1000,
+          width: 200,
+          height: 400,
+          key: true,
+          codec: "avc1.42C01F",
+        },
+        Uint8Array.of(0, 0, 1, 0x65),
+      ).slice().buffer,
+    });
+  });
+  expect(state.decoded).toHaveLength(2);
+  expect(state.decoded.at(-1)?.epoch).not.toBe(oldEpoch);
+  expect(state.pixels).toBe(true);
   await act(async () =>
     view.move!({ machines: [{ ...machine, ownership: "other", computerUse: null }] }),
   );
   expect(state.epoch).not.toBe(before);
 });
+
+it.each([
+  [0, false],
+  [1, false],
+  [0, true],
+  [1, true],
+] as const)(
+  "initializes the passive native decoder before its first frame (binary %i, retention %s)",
+  async (binaryVersion, retentionSupported) => {
+    state.binaryVersion = binaryVersion;
+    state.retentionSupported = retentionSupported;
+    await setup(true, "android", false, false, "live");
+    expect(state.decoded).toHaveLength(1);
+    expect(state.resets[0]?.epoch).toBe(state.decoded[0]?.epoch);
+    expect(socket.sent).not.toContainEqual({ type: "display.keyframe" });
+  },
+);
+
+it.each(["before-release", "after-release", "before-session-removal"])(
+  "clears retained native pixels on capture denial %s",
+  async (order) => {
+    const view = await setup(true, "android", false, false, "live");
+    const machine = view.client.getSnapshot().machines[0]!;
+    expect(state.pixels).toBe(true);
+    if (order === "after-release") {
+      await act(async () =>
+        view.move!({
+          machines: [{ ...machine, computerUse: { ...machine.computerUse!, sessions: [] } }],
+        }),
+      );
+      expect(socket.readyState).toBe(3);
+      expect(state.pixels).toBe(true);
+    }
+    await act(async () =>
+      view.move!({
+        machines: [
+          {
+            ...machine,
+            computerUse: {
+              ...machine.computerUse!,
+              sessions: order === "before-session-removal" ? machine.computerUse!.sessions : [],
+              state: "permission-required",
+              permissions: { accessibility: "granted", screenRecording: "denied" },
+            },
+          },
+        ],
+      }),
+    );
+    expect(state.pixels).toBe(false);
+    expect(socket.readyState).toBe(3);
+    expect(state.resets.at(-1)).toEqual({ epoch: state.epoch, keepPicture: false });
+  },
+);

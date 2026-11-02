@@ -1,7 +1,14 @@
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import {
+  createId,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+  BrowserSurfaceIdSchema,
+} from "@opensteer/core";
 import { expect, it, vi } from "vitest";
+import type { TranscriptEntry } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList } from "../host/places.js";
+import { foldLiveRun } from "../host/transcript.js";
 import { VoiceContextLinks } from "./context.js";
 import { voiceSavedTabs } from "./voice.test-support.js";
 
@@ -230,19 +237,36 @@ it("reuses transcript recency through token rebuilds and refreshes changed histo
         return read();
       },
     };
-    const history = [recent];
+    let history: TranscriptEntry[] = [recent];
     const links = new VoiceContextLinks();
     const initial = { ...snapshot, transcripts: { [home]: history } };
     const first = links.build(initial, undefined, { runPlace: () => null });
     const reads = read.mock.calls.length;
     expect(reads).toBeGreaterThan(0);
-    expect(
-      links.build(
-        { ...initial, transcripts: { ...initial.transcripts, streaming: [] } },
-        undefined,
-        { runPlace: () => null },
-      ),
-    ).toBe(first);
+    const runId = createId("run"),
+      threadId = ThreadIdSchema.parse(home),
+      workspaceId = WorkspaceIdSchema.parse(
+        snapshot.threads.find((thread) => thread.id === home)!.workspaceId,
+      );
+    for (let token = 1; token <= 20; token++) {
+      const streamed = foldLiveRun(
+        history,
+        {
+          runId,
+          threadId,
+          workspaceId,
+          streams: [{ key: { stream: "assistant" }, length: token, tail: "x".repeat(token) }],
+        },
+        "2026-11-02T12:00:00.000Z",
+      );
+      expect(streamed).not.toBe(history);
+      expect(
+        links.build({ ...initial, transcripts: { [home]: streamed } }, undefined, {
+          runPlace: () => null,
+        }),
+      ).toBe(first);
+      history = streamed;
+    }
     expect(read).toHaveBeenCalledTimes(reads);
     const changed = {
       ...initial,
@@ -262,6 +286,8 @@ it("reuses transcript recency through token rebuilds and refreshes changed histo
     expect(
       links.resolve(found.text.match(/opensteer:\/\/place\/\d+/)![0], changed)?.target,
     ).toMatchObject({ destination: { tabId: "tab_saved17" } });
+    const removed = { ...changed, transcripts: { [home]: history } };
+    expect(links.build(removed, undefined, { runPlace: () => null })).toBe(first);
   } finally {
     host.dispose();
   }

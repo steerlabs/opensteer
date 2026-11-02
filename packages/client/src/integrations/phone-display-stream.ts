@@ -17,6 +17,7 @@ import {
   type DisplayViewerFrameHeader,
   type DisplayViewerServerMessage,
   type DisplayViewerState,
+  type MachineSummary,
 } from "@opensteer/protocol";
 import type { HostClient, HostSnapshot } from "../host/client.js";
 import type { WebSocketClient } from "../host/host-session-client.js";
@@ -904,6 +905,7 @@ export function computerDisplayScope(
   const machine = snapshot.machines.find(
     (candidate) =>
       canStreamComputerDisplay(candidate) &&
+      !captureRefused(candidate) &&
       (source.kind === "task-session"
         ? candidate.computerUse?.sessions.some(
             (session) =>
@@ -934,6 +936,13 @@ export function computerDisplayScope(
     : null;
 }
 
+function captureRefused(machine: MachineSummary): boolean {
+  return (
+    machine.computerUse?.permissions?.screenRecording === "denied" ||
+    machine.computerUse?.state === "permission-required"
+  );
+}
+
 /** A temporary task binding gap does not withdraw the viewer's authority over its picture. */
 export function computerDisplayAuthorityKey(
   snapshot: HostSnapshot,
@@ -950,6 +959,7 @@ export function computerDisplayAuthorityKey(
   if (
     machine &&
     (machine.ownership === "other" ||
+      captureRefused(machine) ||
       (machine.allowedModules && !machine.allowedModules.includes("integrations")) ||
       (machine.status === "online" && machine.computerUse === null))
   )

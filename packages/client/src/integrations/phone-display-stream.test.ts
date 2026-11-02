@@ -15,6 +15,7 @@ import {
   DisplayStreams,
   sharedDisplayStreams,
   computerDisplayScope,
+  computerDisplayAuthorityKey,
   computerDisplayStatus,
   type DisplayFrame,
   type DisplaySnapshot,
@@ -1436,5 +1437,50 @@ it("mock phone views cancel a hidden Open intent and withdraw write access live"
   } finally {
     pool.dispose();
     client.dispose();
+  }
+});
+
+it("retains picture authority through absent bindings but rejects explicit capture permission loss", () => {
+  const machine = {
+    id: "rnr_1",
+    status: "online",
+    computerUse: {
+      displayStreamSupported: true,
+      sessions: [{ sessionId, display: true, apps: [] }],
+    },
+  };
+  const snapshot = {
+    session: "authenticated",
+    user: { id: "usr_1" },
+    deploymentId: "dep_1",
+    machines: [machine],
+  } as unknown as HostSnapshot;
+  const authority = computerDisplayAuthorityKey(snapshot, source, machine.id);
+  expect(authority).not.toBeNull();
+  for (const changed of [
+    machine,
+    { ...machine, computerUse: { ...machine.computerUse, sessions: [] } },
+    { ...machine, status: "offline" },
+  ])
+    expect(
+      computerDisplayAuthorityKey(
+        { ...snapshot, machines: [changed] } as unknown as HostSnapshot,
+        source,
+        machine.id,
+      ),
+    ).toBe(authority);
+  for (const computerUse of [
+    {
+      ...machine.computerUse,
+      permissions: { screenRecording: "denied", accessibility: "granted" },
+    },
+    { ...machine.computerUse, state: "permission-required" },
+  ]) {
+    const refused = {
+      ...snapshot,
+      machines: [{ ...machine, computerUse }],
+    } as unknown as HostSnapshot;
+    expect(computerDisplayAuthorityKey(refused, source, machine.id)).toBeNull();
+    expect(computerDisplayScope(refused, source)).toBeNull();
   }
 });

@@ -32,6 +32,18 @@ import type {
   TranscriptEntry,
 } from "./client.js";
 
+const placesByTranscript = new WeakMap<readonly TranscriptEntry[], readonly PlaceEntry[]>();
+
+/** Live text changes never change the transcript's place markers. */
+export function transcriptPlaces(entries: readonly TranscriptEntry[]): readonly PlaceEntry[] {
+  let places = placesByTranscript.get(entries);
+  if (!places) {
+    places = entries.filter((entry): entry is PlaceEntry => entry.kind === "place");
+    placesByTranscript.set(entries, places);
+  }
+  return places;
+}
+
 /**
  * The transcript reducer. Folds the durable agent event stream into ordered,
  * structure-preserving entries. It is pure and idempotent per event, and is
@@ -716,6 +728,8 @@ export function foldLiveRun(
       }
     }
   }
+  const places = placesByTranscript.get(entries);
+  if (places) placesByTranscript.set(next, places);
   return next;
 }
 

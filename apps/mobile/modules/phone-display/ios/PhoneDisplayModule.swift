@@ -12,6 +12,7 @@ public final class PhoneDisplayModule: Module {
     View(PhoneDisplayView.self) {
       Events("onReady", "onNeedsKeyframe")
       AsyncFunction("reset") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch) }
+      AsyncFunction("resetKeepingPicture") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch, keepPicture: true) }
       AsyncFunction("decode") { (view: PhoneDisplayView, frame: FramePacket) -> Bool in
         guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { view.lost(frame.epoch); return false }
         return view.decode(bytes, FrameMetadata(frame))
@@ -118,13 +119,17 @@ final class PhoneDisplayView: ExpoView {
     super.didMoveToWindow()
     if window == nil { recover() } else { onNeedsKeyframe(["epoch": epoch]) }
   }
-  func reset(_ next: String) {
+  func reset(_ next: String, keepPicture: Bool = false) {
     epoch = next
     fence.lost()
-    // The renderer can retain the old surface while a flush and replay are queued.
-    // Keep it covered until a live sample is ready, even when replay needs decoding.
-    display.isHidden = true
-    display.flushAndRemoveImage()
+    // A binding gap keeps the displayed image, but a privacy/lifecycle reset
+    // removes it as well as every queued sample.
+    if keepPicture {
+      display.flush()
+    } else {
+      display.isHidden = true
+      display.flushAndRemoveImage()
+    }
     format = nil
     announced = false
     awaiting = nil

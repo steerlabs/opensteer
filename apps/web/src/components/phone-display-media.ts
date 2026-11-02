@@ -269,7 +269,11 @@ export interface PhoneDisplayPictureState {
  * or a transient reconnect keeps the last picture, which stays true until
  * something newer decodes.
  */
-function hidesPicture({ connection, closeCode, display }: DisplaySnapshot): boolean {
+export function hidesPhoneDisplayPicture({
+  connection,
+  closeCode,
+  display,
+}: DisplaySnapshot): boolean {
   return (
     connection === "closed" ||
     closeCode === displayViewerCloseCodes.loginEnded ||
@@ -323,7 +327,7 @@ export class PhoneDisplayPicture {
     const unframe = lease.onFrame((frame) => this.#push(frame));
     const unlisten = lease.subscribe(() => {
       const snapshot = lease.getSnapshot();
-      if (hidesPicture(snapshot)) this.clear();
+      if (hidesPhoneDisplayPicture(snapshot)) this.clear();
       else if (snapshot.connection !== "open" && this.#state.shown) {
         this.#current = null;
         this.#update({ stale: true });
@@ -386,7 +390,7 @@ export class PhoneDisplayPicture {
 
   #push(frame: DisplayFrame): void {
     // Defence in depth: the Host forwards nothing while the phone is hidden.
-    if (this.#disposed || hidesPicture(this.#lease.getSnapshot())) {
+    if (this.#disposed || hidesPhoneDisplayPicture(this.#lease.getSnapshot())) {
       frame.done();
       return;
     }

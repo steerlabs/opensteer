@@ -143,13 +143,21 @@ export function ComputerDisplay({
       mounted.current = false;
     };
   }, []);
-  const resetDecoder = useCallback((next: number) => {
+  const resetDecoder = useCallback((next: number, keepPicture = false) => {
     const native = decoder.current;
     if (!native) return;
-    void native.reset(String(next)).catch(() => {
+    if (keepPicture && !native.resetKeepingPicture) {
+      setPicture(null);
+      setShown(false);
+    }
+    const reset =
+      keepPicture && native.resetKeepingPicture
+        ? native.resetKeepingPicture(String(next))
+        : native.reset(String(next));
+    void reset.catch(() => {
       // Native teardown already clears its surface. A bridge call queued before
       // removal can reject after that view's tag is gone.
-      if (!mounted.current || decoder.current !== native) return;
+      if (!mounted.current || decoder.current !== native || epoch.current !== next) return;
       setShown(false);
       setWords("Video sharing is unavailable");
     });
@@ -160,7 +168,11 @@ export function ComputerDisplay({
   );
   const scope = useHostSelector(hostClient, selectScope);
   const preserve = preserveLastFrame && !interactive;
-  const authorityKey = computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId);
+  const selectAuthority = useCallback(
+    (snapshot: HostSnapshot) => computerDisplayAuthorityKey(snapshot, source, machineId),
+    [source, machineId],
+  );
+  const authorityKey = useHostSelector(hostClient, selectAuthority);
   const sourceKey = JSON.stringify(source);
   const pictureKey =
     preserve && source.kind === "task-session"
@@ -215,11 +227,12 @@ export function ComputerDisplay({
     return () => listener.remove();
   }, []);
   useLayoutEffect(() => {
-    if (unavailable || !active || !foreground || !scope) {
-      if (!preserve || !active || !foreground || authorityKey === null) {
+    if (unavailable || !active || !foreground || !scope || authorityKey === null) {
+      const keepPicture = preserve && active && foreground && authorityKey !== null;
+      if (!keepPicture) {
         setShown(false);
-        resetDecoder(++epoch.current);
       }
+      resetDecoder(++epoch.current, keepPicture);
       return;
     }
     const pool = sharedDisplayStreams(hostClient);
@@ -237,13 +250,13 @@ export function ComputerDisplay({
     let awaitingKey = false;
     const pending = new Set<DisplayFrame>();
     const clear = (keepPicture = false) => {
+      epoch.current++;
+      decodingPicture.current = null;
       if (!keepPicture) {
-        epoch.current++;
         setPicture(null);
-        decodingPicture.current = null;
         setShown(false);
-        resetDecoder(epoch.current);
       }
+      resetDecoder(epoch.current, keepPicture);
       generation = -1;
       for (const frame of pending) frame.done();
       pending.clear();

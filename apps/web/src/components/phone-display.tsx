@@ -44,6 +44,7 @@ import {
 } from "./phone-display-input.js";
 import {
   knownPhoneDisplayDecoding,
+  hidesPhoneDisplayPicture,
   phoneDisplayDecoding,
   retainPhoneDisplayPicture,
   type PhoneDisplayPicture,
@@ -148,11 +149,16 @@ export function useComputerDisplay({
     ],
   );
   const scope = useHostSelector(hostClient, selectScope);
-  const authorityKey = computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId);
+  const selectAuthority = useCallback(
+    (snapshot: HostSnapshot) => computerDisplayAuthorityKey(snapshot, source, machineId),
+    [machineId, source],
+  );
+  const authorityKey = useHostSelector(hostClient, selectAuthority);
   const [held, setHeld] = useState<{
     readonly lease: DisplayLease;
     readonly media: PhoneDisplayPicture;
     readonly editing: DisplayEditingSession;
+    readonly retained: PhoneDisplayPictureState | null;
   } | null>(null);
   const [input, setInput] = useState<PhoneDisplayInput | null>(null);
   // Bumped when the Host invalidates this scope, so a scope that comes back
@@ -176,15 +182,21 @@ export function useComputerDisplay({
       (previous.hostClient !== hostClient ||
         (preserveLastFrame ? previous.authorityKey !== authorityKey : previous.scope !== scope) ||
         previous.pictureKey !== pictureKey)
-    )
+    ) {
       held?.media.clear();
+      setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
+    }
     pictureOwner.current = { hostClient, scope, pictureKey, authorityKey };
   }, [hostClient, scope, pictureKey, held?.media, authorityKey, preserveLastFrame]);
   useLayoutEffect(() => {
     if (!held) return;
     const check = () => {
-      if (computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) !== authorityKey)
+      if (
+        computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) !== authorityKey
+      ) {
         held.media.clear();
+        setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
+      }
     };
     check();
     return hostClient.subscribe(check);
@@ -265,7 +277,7 @@ export function useComputerDisplay({
     };
   }, []);
   useEffect(() => {
-    if (!enabled || !streamable || !scope || !source || !decoding) return;
+    if (!enabled || !streamable || !scope || !source || !decoding || authorityKey === null) return;
     const streams = sharedDisplayStreams(hostClient, reportDisplayDiagnostic);
     const target = { scope, source, editing: 1 as const };
     const current = streams.retain(target);
@@ -276,7 +288,17 @@ export function useComputerDisplay({
       ...displayDiagnosticSource(source),
     });
     const editing = new DisplayEditingSession(current);
-    setHeld({ lease: current, media: shared.picture, editing });
+    setHeld((previous) => ({
+      lease: current,
+      media: shared.picture,
+      editing,
+      retained:
+        preserveLastFrame && previous
+          ? previous.media.getSnapshot().shown
+            ? previous.media.getSnapshot()
+            : previous.retained
+          : null,
+    }));
     let invalidated = false;
     // The old login's socket closes with the Host's change, not React's next effect.
     const unsubscribe = hostClient.subscribe(() => {
@@ -321,9 +343,14 @@ export function useComputerDisplay({
         mounted.current &&
         next.hostClient === hostClient &&
         next.pictureKey === pictureKey &&
+        authorityKey !== null &&
         computerDisplayAuthorityKey(hostClient.getSnapshot(), source, machineId) === authorityKey;
       shared.release(preserve);
-      if (!preserve) setHeld(null);
+      if (!preserve) {
+        if (preserveLastFrame)
+          setHeld((held) => (held?.retained ? { ...held, retained: null } : held));
+        else setHeld(null);
+      }
     };
   }, [
     decoding,
@@ -341,7 +368,14 @@ export function useComputerDisplay({
   ]);
 
   const display = snapshot ?? idleSnapshot;
-  const media = pictureState ?? idlePicture;
+  const media =
+    pictureState?.shown || !held?.retained || hidesPhoneDisplayPicture(display)
+      ? (pictureState ?? idlePicture)
+      : { ...held.retained, stale: true };
+  useEffect(() => {
+    if (pictureState?.shown || hidesPhoneDisplayPicture(display))
+      setHeld((current) => (current?.retained ? { ...current, retained: null } : current));
+  }, [pictureState?.shown, display]);
   const streamGeneration = Math.max(display.display?.generation ?? 0, media.generation);
   useEffect(() => {
     input?.geometryChanged(streamGeneration);

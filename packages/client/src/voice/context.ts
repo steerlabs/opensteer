@@ -1,6 +1,7 @@
 import { placeIdentityKey } from "@opensteer/core";
 import { voiceAnswerMaxLength, voiceContextMaxLength } from "@opensteer/protocol/voice";
-import type { HostSnapshot, PlaceEntry, ThreadSummary, TranscriptEntry } from "../host/client.js";
+import type { HostSnapshot, PlaceEntry, ThreadSummary } from "../host/client.js";
+import { transcriptPlaces } from "../host/transcript.js";
 import { placeList, placeSearchFields, type PlaceItem } from "../host/places.js";
 import { heldThread, taskAttention, taskList } from "../host/task-list.js";
 import { nativeViewerSource, type WorkspaceSurfaceDestination } from "../host/surfaces.js";
@@ -63,7 +64,7 @@ export class VoiceContextLinks {
   readonly #refs = new Map<string, WorkspaceSurfaceDestination>();
   readonly #threads = new Set<string>();
   readonly #seen = new Map<string, string>();
-  readonly #historyRecency = new WeakMap<readonly TranscriptEntry[], ReadonlyMap<string, string>>();
+  readonly #historyRecency = new WeakMap<readonly PlaceEntry[], ReadonlyMap<string, string>>();
   readonly #canShow: (destination: WorkspaceSurfaceDestination) => boolean;
   #visible: string | undefined;
   #next = 0;
@@ -94,16 +95,16 @@ export class VoiceContextLinks {
       if (at > (activity.get(key) ?? "")) activity.set(key, at);
     };
     for (const entries of Object.values(snapshot.transcripts)) {
-      let recent = this.#historyRecency.get(entries);
+      const places = transcriptPlaces(entries);
+      let recent = this.#historyRecency.get(places);
       if (!recent) {
         const indexed = new Map<string, string>();
-        for (const entry of entries) {
-          if (entry.kind !== "place") continue;
+        for (const entry of places) {
           const key = placeIdentityKey(entry.place);
           if (entry.createdAt > (indexed.get(key) ?? "")) indexed.set(key, entry.createdAt);
         }
         recent = indexed;
-        this.#historyRecency.set(entries, recent);
+        this.#historyRecency.set(places, recent);
       }
       for (const [key, at] of recent) remember(key, at);
     }

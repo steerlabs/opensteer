@@ -14,6 +14,8 @@ export interface DisplayFrameMetadata {
 
 export interface NativeDecoder {
   reset(epoch: string): Promise<void>;
+  /** Newer binaries can fence decoding without removing the displayed picture. */
+  resetKeepingPicture?(epoch: string): Promise<void>;
   decode(frame: DisplayFrameMetadata & { readonly data: string }): Promise<boolean>;
   /** Present only in a binary reporting `binaryPresentationVersion` 1 or later. */
   decodeBytes?(bytes: Uint8Array, metadata: DisplayFrameMetadata): Promise<boolean>;
