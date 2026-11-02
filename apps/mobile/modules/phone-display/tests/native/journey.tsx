@@ -554,13 +554,22 @@ function Journey() {
           `${name} replay key admitted`,
           await decodeDisplayFrame(native, binary, units[0]!, metadata(true, true)),
         );
-        await check(`${name}-replay-hidden`, pixels([0, 255, 0]), { never: true, ms: 800 });
+        await check(`${name}-replay-hidden`, pixels(black));
+        await check(`${name}-replay-never-displayed`, pixels([0, 255, 0]), {
+          never: true,
+          ms: 800,
+        });
         const first = ready.next((value) => value.epoch === epoch, `${name} onReady`);
         await expect(
           `${name} delta admitted`,
           await decodeDisplayFrame(native, binary, units[1]!, metadata(false)),
         );
-        await first;
+        const size = await first;
+        await expect(
+          `${name} announces new geometry`,
+          size.width === width && size.height === height,
+          size,
+        );
         await check(`${name}-delta`, pixels([0, 0, 255]));
         await expect(
           `${name} invalid sample dropped`,
@@ -598,6 +607,32 @@ function Journey() {
         await returned;
         await check(`${name}-returned`, pixels([0, 255, 0]));
       }
+      const noisy = await fixture("noisy.h264");
+      await expect("noisy key exceeds old relay bound", noisy.byteLength > 1024 * 1024, {
+        bytes: noisy.byteLength,
+      });
+      await native.reset("noisy");
+      const noiseReady = ready.next((value) => value.epoch === "noisy", "noisy key onReady");
+      await expect(
+        "noisy key admitted",
+        await decodeDisplayFrame(native, binary, noisy, {
+          epoch: "noisy",
+          width: 1920,
+          height: 1248,
+          pts: 0,
+          key: true,
+          replayed: false,
+        }),
+      );
+      const noiseSize = await noiseReady;
+      await expect(
+        "noisy key announces geometry",
+        noiseSize.width === 1920 && noiseSize.height === 1248,
+        noiseSize,
+      );
+      await check("noisy-key", [
+        { ...at(fit(area, 1920, 1248), 0.5, 0.5), color: backdrop, label: "decoded noise" },
+      ]);
       setVideoMounted(false);
     };
 
