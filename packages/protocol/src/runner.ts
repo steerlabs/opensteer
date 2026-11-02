@@ -1426,12 +1426,6 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .optional(),
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
   /**
-   * This Runner relays computer-app approvals between its Host and the
-   * desktop app supervising it or the iPhone's native executor
-   * (`host.integrations.computer-app-approvals` and the answer frames).
-   * Absent on an older Runner, which is never sent a frame it cannot parse.
-   */
-  /**
    * The person's input into exact Mac app windows, shared with the agent's
    * actions. Only version 2 is understood; the exclusive version 1 is disabled.
    */

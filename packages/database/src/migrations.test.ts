@@ -135,7 +135,9 @@ const releasedMigrationNames = [
   "0125_run_place_events",
   "0126_run_visibility",
   "0127_person_show",
-  "0128_remote_administration",
+  "0128_request_settlement_provenance",
+  "0129_owner_session_computer_approvals",
+  "0130_remote_administration",
 ];
 
 describe("migration names", () => {

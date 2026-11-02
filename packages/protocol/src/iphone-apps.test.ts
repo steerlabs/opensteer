@@ -33,9 +33,16 @@ describe("immutable iPhone profile admission", () => {
         integrations: { platform: "darwin", protocolVersion: 1, computerAppApprovals: true },
       },
     },
-    ...["loginText", "passwordSignIn", "ownerViewVersion", "macWindowVideoVersion"].map(
-      (field) => ({ modules: { integrations: { ...raw.modules.integrations, [field]: 1 } } }),
-    ),
+    ...(
+      [
+        ["loginText", 1],
+        ["passwordSignIn", 2],
+        ["ownerViewVersion", 1],
+        ["macWindowVideoVersion", 1],
+      ] as const
+    ).map(([field, version]) => ({
+      modules: { integrations: { ...raw.modules.integrations, [field]: version } },
+    })),
     {
       modules: {
         integrations: raw.modules.integrations,

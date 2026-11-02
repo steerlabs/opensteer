@@ -290,7 +290,7 @@ it("retains v4 origin releases while giving v5 an explicit app release kind", ()
     site: "https://example.com",
     transactionId,
     expiresAt: "2027-01-15T08:01:00.000Z",
-    protocolVersion: 5,
+    protocolVersion: 6,
     permissionVersion: 5,
   };
   expect(PasswordsBrokerSignInRequestV6ParamsSchema.safeParse(request).success).toBe(true);
