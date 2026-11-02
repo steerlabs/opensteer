@@ -155,14 +155,6 @@ function stopped(
     deploymentId,
     mayRunAgents: true,
     platform: "macos",
-    portableFs: {
-      binaryPath: null,
-      detail: "Not installed",
-      installAvailable: false,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: false,
     runner: {
       detail: "Off",

@@ -31,29 +31,6 @@ export const handleGetLocalExecutionStatus =
     );
   };
 
-export const handleInstallPortableFs = (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  localExecution(context, async (input) => {
-    const { deploymentId } = DesktopLocalExecutionInputSchema.parse(input);
-    await context.options.runner.portableFs().install();
-    return context.options.runner.status(deploymentId);
-  });
-
-export const handleOpenPortableFsSetup = (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  localExecution(context, async (input) => {
-    const { deploymentId } = DesktopLocalExecutionInputSchema.parse(input);
-    await context.options.runner.portableFs().openSetup();
-    return context.options.runner.status(deploymentId);
-  });
-
-export const handleAcknowledgePortableFsApproval = (
-  context: DesktopBridgeContext,
-): DesktopBridgeHandler =>
-  localExecution(context, async (input) => {
-    const { deploymentId } = DesktopLocalExecutionInputSchema.parse(input);
-    await context.options.runner.portableFs().acknowledgeApproval();
-    return context.options.runner.status(deploymentId);
-  });
-
 export const handleStartLocalRunner = (context: DesktopBridgeContext): DesktopBridgeHandler =>
   localExecution(context, (input) =>
     context.options.runner.start(DesktopStartLocalRunnerInputSchema.parse(input)),

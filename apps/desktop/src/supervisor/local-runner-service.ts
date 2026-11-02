@@ -44,11 +44,7 @@ import {
   NativePersonalUserEnvironment,
   type PersonalUserEnvironmentPort,
 } from "./personal-user-environment.js";
-import {
-  localExecutionStatus,
-  PortableFsSetupService,
-  unavailableLocalExecutionStatus,
-} from "../releases/portablefs-setup.js";
+import { localExecutionStatus, unavailableLocalExecutionStatus } from "./local-execution-status.js";
 
 const startupTimeoutMs = 90_000;
 const gracefulStopTimeoutMs = 5_000;
@@ -188,10 +184,6 @@ export interface LocalRunnerServiceDependencies {
   ) => UtilityProcessLike;
   readonly homeDirectory?: string;
   readonly inspectIdentity?: (dataDirectory: string) => Promise<RunnerIdentityDescriptor | null>;
-  readonly portableFs?: Pick<
-    PortableFsSetupService,
-    "acknowledgeApproval" | "install" | "openSetup" | "requireReadyBinary" | "status"
-  >;
   /** How long to wait before the nth restart of a crashed worker. */
   readonly restartDelayMs?: (attempt: number) => number;
   readonly runtimeRelease?: () => Promise<{
@@ -267,7 +259,6 @@ export class LocalRunnerService {
   readonly #homeDirectory: string;
   readonly #inspectIdentity: NonNullable<LocalRunnerServiceDependencies["inspectIdentity"]>;
   readonly #listeners = new Set<() => void>();
-  readonly #portableFs: NonNullable<LocalRunnerServiceDependencies["portableFs"]>;
   readonly #preferenceMutations = new MutationQueue();
   readonly #preferencePath: string;
   /** Failed starts since this Deployment's Runner last connected healthily. */
@@ -311,7 +302,6 @@ export class LocalRunnerService {
           );
         }
       });
-    this.#portableFs = dependencies.portableFs ?? new PortableFsSetupService(config.localExecution);
     this.#preferencePath = path.join(config.localExecution.dataDirectory, "desktop-runner.json");
     this.#restartDelayMs = dependencies.restartDelayMs;
     this.#stopTimeouts = {
@@ -392,11 +382,8 @@ export class LocalRunnerService {
         throw new Error("The deployment route changed while this computer's status was read.");
       }
     }
-    const [computer, portableFs] = await Promise.all([
-      this.#computerName(),
-      this.#portableFs.status(),
-    ]);
-    return localExecutionStatus(deploymentId, portableFs, this.#runnerSnapshot(slot), {
+    const computer = await this.#computerName();
+    return localExecutionStatus(deploymentId, this.#runnerSnapshot(slot), {
       computerName: computer,
       mayRunAgents: slot.mayRunAgents,
       runAgents: slot.runAgents,
@@ -536,11 +523,6 @@ export class LocalRunnerService {
     this.#listeners.clear();
   }
 
-  portableFs(): NonNullable<LocalRunnerServiceDependencies["portableFs"]> {
-    this.#assertEnabled();
-    return this.#portableFs;
-  }
-
   #assertEnabled(): void {
     if (!this.#config.localExecution.enabled) {
       throw new Error("This Opensteer release does not include local agent support.");
@@ -672,16 +654,6 @@ export class LocalRunnerService {
       throw new Error(slot.detail);
     }
     this.#assertCurrentIntent(slot, intentGeneration);
-    // Local directories are the baseline a machine that runs agents always
-    // offers. PortableFS is added only when it is genuinely ready, so a
-    // computer with no FUSE or FSKit can still run agents and still do work. A
-    // reach-only Runner mounts nothing at all, so it asks for neither.
-    const mountBinary = runAgents
-      ? await this.#portableFs
-          .requireReadyBinary()
-          .then((binary) => binary as string | null)
-          .catch(() => null)
-      : null;
     const [runtimeRelease, userEnvironment] = await Promise.all([
       this.#runtimeRelease(),
       this.#userEnvironment.resolve(),
@@ -779,7 +751,6 @@ export class LocalRunnerService {
                 "Workspaces",
                 target.deploymentId,
               ),
-              mountBinary,
             },
           }
         : {}),
@@ -1299,7 +1270,6 @@ interface RunnerExecutionEnvironment {
   readonly browserHarnessExecutable: string;
   readonly harnessExecutables: Record<ShippedHarnessKind, string>;
   readonly localWorkspaceRoot: string;
-  readonly mountBinary: string | null;
 }
 
 /**
@@ -1369,17 +1339,7 @@ function runnerEnvironment(input: {
             ),
             OPENSTEER_LOCAL_WORKSPACE_ROOT: execution.localWorkspaceRoot,
             OPENSTEER_MAX_CONCURRENT_RUNS: "2",
-            // Only the PortableFS mount identity needs OpenSSL, so a local-only
-            // machine is never asked for a binary it has no use for.
-            ...(execution.mountBinary
-              ? {
-                  OPENSTEER_OPENSSL_BINARY: "/usr/bin/openssl",
-                  OPENSTEER_PORTABLEFS_MOUNT_BINARY: execution.mountBinary,
-                }
-              : {}),
-            OPENSTEER_RUNNER_WORKSPACE_BACKINGS: execution.mountBinary
-              ? "local-directory,portablefs"
-              : "local-directory",
+            OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
           }
         : {}),
       OPENSTEER_DEPLOYMENT_KIND: input.deploymentShape.kind,

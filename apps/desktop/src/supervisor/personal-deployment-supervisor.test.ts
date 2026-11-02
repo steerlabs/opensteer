@@ -121,11 +121,9 @@ describe("PersonalDeploymentSupervisor", () => {
       OPENSTEER_RUNNER_NAME: defaultPersonalDeploymentName(),
       OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
     });
-    expect(host.environment).not.toHaveProperty("OPENSTEER_PORTABLEFS_MANAGER_URL");
-    expect(runner.environment).not.toHaveProperty("OPENSTEER_PORTABLEFS_MOUNT_BINARY");
-    expect(
-      fixture.processes.specs.some(({ executable }) => /(?:docker|portablefs)/iu.test(executable)),
-    ).toBe(false);
+    expect(fixture.processes.specs.some(({ executable }) => /docker/iu.test(executable))).toBe(
+      false,
+    );
     expect(JSON.stringify(fixture.files.manifest)).not.toContain(
       host.secretEnvironment?.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN,
     );

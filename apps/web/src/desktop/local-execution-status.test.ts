@@ -73,14 +73,6 @@ function status(
     deploymentId,
     mayRunAgents: true,
     platform: "macos",
-    portableFs: {
-      binaryPath: null,
-      detail: "Optional shared storage is not installed.",
-      installAvailable: true,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: true,
     runner: {
       detail: state === "failed" ? "Local agents stopped unexpectedly." : "Ready",

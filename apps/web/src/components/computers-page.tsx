@@ -1157,12 +1157,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
                 </div>
               )}
               {runsAgentsSwitch && localExecutionStatus ? (
-                <LocalReadiness
-                  action={localExecutionAction}
-                  deploymentName={deploymentName}
-                  onAction={performLocalExecutionAction}
-                  status={localExecutionStatus}
-                />
+                <LocalReadiness status={localExecutionStatus} />
               ) : null}
               {localExecutionError && here ? (
                 <p className="notice notice--error" role="alert">
@@ -1445,20 +1440,9 @@ function runsAgentsFact(machine: MachineSummary): string {
     : `Threads can’t be placed on ${machine.name}.`;
 }
 
-/**
- * What this computer has ready for the work placed on it. Cloud Workspaces are
- * an add-on, never a precondition: agents run here on folders of its own disk
- * whether or not PortableFS is set up.
- */
 function LocalReadiness({
-  action,
-  deploymentName,
-  onAction,
   status,
 }: {
-  readonly action: LocalExecutionAction | null;
-  readonly deploymentName: string;
-  readonly onAction: (action: LocalExecutionAction) => Promise<void>;
   readonly status: NonNullable<ReturnType<typeof useShell>["localExecutionStatus"]>;
 }) {
   return (
@@ -1469,64 +1453,7 @@ function LocalReadiness({
           ready={status.runner.state === "running"}
           text={localRunnerStateLabel(status.runner.state)}
         />
-        <ReadinessLine
-          label={`${deploymentName}'s cloud Workspaces (optional)`}
-          ready={status.portableFs.state === "ready-to-mount"}
-          text={cloudWorkspaceText(status)}
-        />
       </div>
-      {status.portableFs.state === "missing" && status.portableFs.installAvailable ? (
-        <div className="form-actions">
-          <button
-            className="btn btn--small"
-            disabled={action !== null}
-            onClick={() => void onAction({ kind: "install" }).catch(() => undefined)}
-            type="button"
-          >
-            {action?.kind === "install"
-              ? "Setting up…"
-              : `Also work on ${deploymentName}'s cloud Workspaces from here`}
-          </button>
-        </div>
-      ) : null}
-      {status.portableFs.state === "needs-user-approval" ? (
-        <div className="notice notice--warn">
-          <strong>One Mac setting, only for cloud Workspaces</strong>
-          <p>
-            Agents already run here without it. In System Settings, open General → Login Items &amp;
-            Extensions → File System Extensions, then enable PortableFS.
-          </p>
-          <div className="form-actions">
-            <button
-              className="btn btn--small"
-              disabled={action !== null}
-              onClick={() => void onAction({ kind: "open-setup" }).catch(() => undefined)}
-              type="button"
-            >
-              Open setup
-            </button>
-            <button
-              className="btn btn--primary btn--small"
-              disabled={action !== null}
-              onClick={() => void onAction({ kind: "acknowledge" }).catch(() => undefined)}
-              type="button"
-            >
-              I enabled it
-            </button>
-          </div>
-        </div>
-      ) : null}
-      {linuxFuseGuidance(status) ? (
-        <div className="notice notice--warn">
-          <strong>Cloud Workspaces need FUSE 3</strong>
-          <p>
-            Agents already run here without it. To also work on {deploymentName}&apos;s cloud
-            Workspaces, install your distribution&apos;s FUSE 3 package. Ubuntu or Debian:{" "}
-            <code>sudo apt install fuse3</code>. Fedora or RHEL: <code>sudo dnf install fuse3</code>
-            .
-          </p>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1546,40 +1473,5 @@ function ReadinessLine({
       <strong>{label}</strong>
       <span>{text}</span>
     </div>
-  );
-}
-
-/**
- * Absent PortableFS is never a fault here — the computer still runs agents on
- * folders of its own — so the wording stays an invitation rather than a repair.
- */
-function cloudWorkspaceText(
-  status: NonNullable<ReturnType<typeof useShell>["localExecutionStatus"]>,
-): string {
-  switch (status.portableFs.state) {
-    case "checking":
-      return "Checking";
-    case "installing":
-      return "Setting up";
-    case "missing":
-      return "Not set up yet";
-    case "needs-user-approval":
-      return "Needs your approval";
-    case "ready-to-mount":
-      return "Ready";
-    case "unsupported":
-      return status.platform === "windows" ? "Not available on Windows" : "Not available";
-    case "failed":
-      return "Needs attention";
-  }
-}
-
-function linuxFuseGuidance(
-  status: NonNullable<ReturnType<typeof useShell>["localExecutionStatus"]>,
-): boolean {
-  return (
-    status.platform === "linux" &&
-    status.portableFs.state === "failed" &&
-    status.portableFs.issue?.startsWith("fuse-") === true
   );
 }

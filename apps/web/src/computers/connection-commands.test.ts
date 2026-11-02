@@ -69,7 +69,6 @@ describe("computerConnectionCommands", () => {
     expect(commands.bareHost).toContain(
       'OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH="$HOME/.opensteer/computers/9f3c1d207a444c118b026d5e8f0a1b2c/workspace-bindings.v1.json"',
     );
-    expect(commands.sharedStorage).toBeNull();
   });
 
   it("installs the pinned runner distribution before running it", () => {
@@ -200,12 +199,11 @@ echo "runner ready"
   it("offers no bare-host command when this build has no published distribution", () => {
     const commands = computerConnectionCommands({
       ...base,
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       runnerDistribution: null,
     });
 
     expect(commands.bareHost).toBeNull();
-    expect(commands.sharedStorage?.bareHost).toBeNull();
     expect(commands.container).toContain("docker run");
   });
 
@@ -262,45 +260,16 @@ echo "runner ready"
     ).toThrow(/issued enrollment/u);
   });
 
-  it("still lends a local-only computer to a deployment that defaults to shared storage", () => {
+  it("lends a computer with local-directory Workspaces", () => {
     const commands = computerConnectionCommands({
       ...base,
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     });
 
     expect(commands.container).not.toContain("/dev/fuse");
-    expect(commands.container).not.toContain("OPENSTEER_PORTABLEFS_MOUNT_BINARY");
     expect(commands.bareHost).toContain("OPENSTEER_RUNNER_WORKSPACE_BACKINGS='local-directory'");
-    expect(commands.bareHost).toContain("OPENSTEER_DEFAULT_WORKSPACE_BACKING='portablefs'");
+    expect(commands.bareHost).toContain("OPENSTEER_DEFAULT_WORKSPACE_BACKING='local-directory'");
     expect(commands.bareHost).toContain("OPENSTEER_LOCAL_WORKSPACE_ROOT");
-  });
-
-  it("adds only the portable filesystem requirements to the shared-storage variant", () => {
-    const commands = computerConnectionCommands({
-      ...base,
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
-    });
-    const shared = commands.sharedStorage;
-    if (!shared) throw new Error("A portablefs deployment offers a shared-storage variant.");
-
-    expect(shared.container).toContain("--device /dev/fuse --cap-add SYS_ADMIN");
-    expect(shared.container).toContain(
-      "OPENSTEER_PORTABLEFS_MOUNT_BINARY='/opt/portablefs/portablefs'",
-    );
-    expect(shared.container).toContain(
-      "--volume /usr/local/bin/portablefs:/opt/portablefs/portablefs:ro",
-    );
-    expect(shared.container).toContain("OPENSTEER_PORTABLEFS_MOUNT_SHA256=");
-    expect(shared.bareHost).toContain(
-      "OPENSTEER_RUNNER_WORKSPACE_BACKINGS='local-directory,portablefs'",
-    );
-    expect(shared.bareHost).toContain(
-      'OPENSTEER_LOCAL_WORKSPACE_ROOT="$HOME/.opensteer/computers/9f3c1d207a444c118b026d5e8f0a1b2c/workspaces"',
-    );
-    // A mounted cloud Workspace must not land inside this computer's own folders.
-    expect(shared.bareHost).toContain(
-      'OPENSTEER_RUNNER_WORKSPACE_ROOT="$HOME/.opensteer/computers/9f3c1d207a444c118b026d5e8f0a1b2c/mounts"',
-    );
   });
 
   it("does not expand shell expressions in names that start with a home path", () => {
@@ -315,7 +284,7 @@ echo "runner ready"
 
   it("quotes names and tokens as shell data", () => {
     const commands = computerConnectionCommands({
-      deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       enrollmentId: base.enrollmentId,
       hostOrigin: base.hostOrigin,
       name: "Pat's laptop",

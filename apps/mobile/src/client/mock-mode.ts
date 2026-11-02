@@ -60,7 +60,7 @@ function mockConnection(input: {
       document: {
         canonicalOrigin: input.origin,
         deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         hostInstanceId: HostInstanceIdSchema.parse(input.hostInstanceId),
         hostKey: { algorithm: "Ed25519" },
       },

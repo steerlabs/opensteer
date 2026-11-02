@@ -95,42 +95,12 @@ export type {
   DesktopPasswordsStatus,
 } from "./desktop-passwords.js";
 
-/**
- * `windows` is a first-class local-execution platform even though PortableFS
- * does not run there: a Windows machine can hold its own Workspace directories
- * and run agents on them, which is what lending a computer is for.
- */
 export const DesktopLocalExecutionPlatformSchema = z.enum([
   "linux",
   "macos",
   "windows",
   "unsupported",
 ]);
-
-export const DesktopPortableFsStateSchema = z.enum([
-  "checking",
-  "installing",
-  "missing",
-  "needs-user-approval",
-  "ready-to-mount",
-  "unsupported",
-  "failed",
-]);
-export type DesktopPortableFsState = z.infer<typeof DesktopPortableFsStateSchema>;
-
-/**
- * Stable PortableFS mount-readiness issue. Opensteer preserves this machine
- * code so the Desktop UI can offer a platform-specific repair without ever
- * parsing PortableFS's human-readable diagnostics. New PortableFS issue codes
- * remain forward-compatible and still render their supplied detail.
- */
-export const DesktopPortableFsIssueSchema = z
-  .string()
-  .min(1)
-  .max(120)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
-  .nullable();
-export type DesktopPortableFsIssue = z.infer<typeof DesktopPortableFsIssueSchema>;
 
 export const DesktopRunnerStateSchema = z.enum([
   "disabled",
@@ -149,14 +119,6 @@ export const DesktopLocalExecutionStatusSchema = z
     /** Whether this Deployment's grant lets this computer run agents (server only). */
     mayRunAgents: z.boolean(),
     platform: DesktopLocalExecutionPlatformSchema,
-    portableFs: z.strictObject({
-      binaryPath: z.string().min(1).max(4_096).nullable(),
-      detail: z.string().min(1).max(2_000),
-      installAvailable: z.boolean(),
-      issue: DesktopPortableFsIssueSchema,
-      state: DesktopPortableFsStateSchema,
-      version: z.string().min(1).max(255).nullable(),
-    }),
     /** Whether the Runner is asked to advertise `agents` while it runs here. */
     runAgents: z.boolean(),
     runner: z.strictObject({
@@ -171,12 +133,7 @@ export const DesktopLocalExecutionStatusSchema = z
   .superRefine((status, context) => {
     if (
       !status.available &&
-      (status.portableFs.binaryPath !== null ||
-        status.portableFs.installAvailable ||
-        status.portableFs.issue !== null ||
-        status.portableFs.state !== "unsupported" ||
-        status.portableFs.version !== null ||
-        status.runner.enrolled ||
+      (status.runner.enrolled ||
         status.runner.environmentId !== null ||
         status.runner.runnerId !== null ||
         status.runner.state !== "disabled")
@@ -1823,9 +1780,6 @@ export interface OpensteerDesktopBridge {
   openComputerUsePermissionsPanel(): Promise<DesktopOpenComputerUsePermissionsPanelResult>;
   /** From the panel: done, or not now. */
   closeComputerUsePermissionsPanel(): Promise<void>;
-  acknowledgePortableFsApproval(
-    input: DesktopLocalExecutionInput,
-  ): Promise<DesktopLocalExecutionStatus>;
   addDirect(input: DesktopAddDirectRouteInput): Promise<void>;
   cancel(): Promise<void>;
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
@@ -1854,7 +1808,6 @@ export interface OpensteerDesktopBridge {
     input: DesktopHostBinaryTransferInput,
   ): Promise<DesktopHostResult<DesktopHostBinaryReadResult>>;
   hostBinaryClose(input: DesktopHostBinaryTransferInput): Promise<DesktopHostResult<null>>;
-  installPortableFs(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   onDeploymentAccessSnapshotChanged(
     listener: (snapshot: DeploymentAccessSnapshot) => void,
   ): () => void;
@@ -1874,7 +1827,6 @@ export interface OpensteerDesktopBridge {
     input: DesktopOpenIntegrationAuthorizationInput,
   ): Promise<DesktopOpenIntegrationAuthorizationResult>;
   openHostWebSocket(input: DesktopOpenHostWebSocketInput): Promise<DesktopOpenHostWebSocketResult>;
-  openPortableFsSetup(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   pickFolder(): Promise<DesktopPickFolderResult>;
   /** The grant as the helper sees it right now, on this Mac. */
   checkFullDiskAccess(): Promise<DesktopFullDiskAccessStatus>;

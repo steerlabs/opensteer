@@ -320,11 +320,6 @@ export function desktopPreviewBridge(
     closeComputerAppSetup: async () => {
       previewSetup = null;
     },
-    acknowledgePortableFsApproval: async (input) => {
-      const localExecution = readyPortableFs(localExecutionFor(input));
-      updateLocalExecution(localExecution);
-      return localExecution;
-    },
 
     addDirect: async (input) => {
       const parsed = DesktopAddDirectRouteInputSchema.parse(input);
@@ -504,12 +499,6 @@ export function desktopPreviewBridge(
     },
     hostBinaryClose: async () => ({ ok: true, data: null }),
 
-    installPortableFs: async (input) => {
-      const localExecution = readyPortableFs(localExecutionFor(input));
-      updateLocalExecution(localExecution);
-      return localExecution;
-    },
-
     issuePersonalPairingCode: async () => {
       if (remoteAccess.mode !== "private" || remoteAccess.phase !== "ready") {
         throw new Error("Enable Private network access before creating a pairing code.");
@@ -562,8 +551,6 @@ export function desktopPreviewBridge(
       queueMicrotask(() => emitSocket({ connectionId, type: "open" }));
       return { connectionId };
     },
-
-    openPortableFsSetup: async (input) => localExecutionFor(input),
 
     // The preview has no macOS grant to read, and no pane or panel to open:
     // the four Full access calls answer without a Mac behind them.
@@ -1181,15 +1168,6 @@ function initialLocalExecutionStatus(
     deploymentId,
     mayRunAgents: true,
     platform: "macos",
-    portableFs: {
-      binaryPath: null,
-      detail:
-        "PortableFS is needed only when this computer is enabled to run agents for a Cloud or self-hosted deployment.",
-      installAvailable: true,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: false,
     runner: {
       detail: "Local agents are off.",
@@ -1199,20 +1177,6 @@ function initialLocalExecutionStatus(
       state: "disabled",
     },
     schemaVersion: 4,
-  });
-}
-
-function readyPortableFs(current: DesktopLocalExecutionStatus): DesktopLocalExecutionStatus {
-  return DesktopLocalExecutionStatusSchema.parse({
-    ...current,
-    portableFs: {
-      binaryPath: "/Applications/PortableFS.app",
-      detail: "PortableFS is ready for shared-storage Workspaces.",
-      installAvailable: false,
-      issue: null,
-      state: "ready-to-mount",
-      version: "preview",
-    },
   });
 }
 

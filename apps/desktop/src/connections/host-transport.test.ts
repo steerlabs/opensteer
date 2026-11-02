@@ -1095,7 +1095,7 @@ function deployment(name: string, canonicalOrigin: string) {
       hostInstanceId: createId("hostInstance") as HostInstanceId,
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     }),

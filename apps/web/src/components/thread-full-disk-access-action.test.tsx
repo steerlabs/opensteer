@@ -222,14 +222,6 @@ function localStatus(runnerId: string): NonNullable<ShellContext["localExecution
     deploymentId: createId("deployment"),
     mayRunAgents: true,
     platform: "macos",
-    portableFs: {
-      binaryPath: null,
-      detail: "Not installed",
-      installAvailable: true,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: false,
     runner: {
       detail: "Ready",

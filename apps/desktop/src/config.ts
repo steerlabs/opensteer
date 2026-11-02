@@ -1,7 +1,5 @@
 import { PasskeysEnvironmentSchema } from "@opensteer/config/passkeys";
 import type { NativeOAuthIdentity } from "@opensteer/client/auth";
-import { requiredStringValue } from "@opensteer/shared/envParsing";
-import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { arch as hostArchitecture, platform as hostPlatform } from "node:os";
@@ -59,11 +57,9 @@ export interface DesktopReleaseIdentity {
 
 export interface DesktopLocalExecutionConfiguration {
   readonly dataDirectory: string;
-  /** Signed release capability. False means local PortableFS execution is unavailable. */
+  /** Signed release capability. Controls local agent execution. */
   readonly enabled: boolean;
   readonly nativeFsHelperBinary: string;
-  readonly portableFsBinary: string | undefined;
-  readonly portableFsInstaller: { readonly path: string; readonly version: string } | undefined;
   readonly runnerWorkerPath: string;
 }
 
@@ -95,9 +91,6 @@ const EnvironmentSchema = z.object({
   OPENSTEER_DESKTOP_HOST_URL: z.string().optional(),
   OPENSTEER_DESKTOP_MODE: z.string().optional(),
   OPENSTEER_DESKTOP_NATIVE_FS_HELPER: z.string().optional(),
-  OPENSTEER_DESKTOP_PORTABLEFS_BINARY: z.string().optional(),
-  OPENSTEER_DESKTOP_PORTABLEFS_INSTALLER: z.string().optional(),
-  OPENSTEER_DESKTOP_PORTABLEFS_VERSION: z.string().optional(),
   OPENSTEER_DESKTOP_PORTAL_URL: z.string().optional(),
   OPENSTEER_DESKTOP_RUNNER_WORKER: z.string().optional(),
   OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: z.string().optional(),
@@ -174,33 +167,6 @@ export function readDesktopConfiguration(
     };
   }
 
-  const portableFsInstallerPath = optional(parsed.OPENSTEER_DESKTOP_PORTABLEFS_INSTALLER);
-  const portableFsVersion = optional(parsed.OPENSTEER_DESKTOP_PORTABLEFS_VERSION);
-  if (options.packaged && (portableFsInstallerPath || portableFsVersion)) {
-    throw new Error("Packaged PortableFS release identity cannot be overridden at runtime.");
-  }
-  if (portableFsInstallerPath && !portableFsVersion) {
-    throw new Error(
-      "OPENSTEER_DESKTOP_PORTABLEFS_INSTALLER and OPENSTEER_DESKTOP_PORTABLEFS_VERSION must be configured together.",
-    );
-  }
-  if (
-    portableFsVersion &&
-    !/^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(portableFsVersion)
-  ) {
-    throw new Error("OPENSTEER_DESKTOP_PORTABLEFS_VERSION must be stable SemVer.");
-  }
-  const packagedPortableFsRunner =
-    packagedDesktop === undefined
-      ? portableFsVersion !== undefined ||
-        optional(parsed.OPENSTEER_DESKTOP_PORTABLEFS_BINARY) !== undefined
-      : packagedDesktop.portableFs;
-  const packagedPortableFs = options.packaged
-    ? readPackagedPortableFsRelease(resourcesDirectory, packagedPortableFsRunner)
-    : undefined;
-  // Running agents on this computer no longer needs PortableFS: a machine can
-  // hold its own Workspace directories. PortableFS is the separate capability
-  // that also lets it mount this Deployment's shared storage.
   const localAgentsEnabled = packagedDesktop?.localAgents ?? true;
   const packagedNativeFsHelper = options.packaged
     ? readPackagedNativeFsHelper(resourcesDirectory)
@@ -214,23 +180,6 @@ export function readDesktopConfiguration(
         path.join(resourcesDirectory, "runner", "opensteer-native-fs"),
       "OPENSTEER_DESKTOP_NATIVE_FS_HELPER",
     ),
-    portableFsBinary: optional(parsed.OPENSTEER_DESKTOP_PORTABLEFS_BINARY)
-      ? absolutePath(
-          requiredStringValue(parsed.OPENSTEER_DESKTOP_PORTABLEFS_BINARY, "PortableFS binary"),
-          "OPENSTEER_DESKTOP_PORTABLEFS_BINARY",
-        )
-      : undefined,
-    portableFsInstaller:
-      packagedPortableFs ??
-      (portableFsVersion
-        ? {
-            path: absolutePath(
-              portableFsInstallerPath ?? path.join(resourcesDirectory, "portablefs", "install.sh"),
-              "OPENSTEER_DESKTOP_PORTABLEFS_INSTALLER",
-            ),
-            version: portableFsVersion.replace(/^v/u, ""),
-          }
-        : undefined),
     runnerWorkerPath: absolutePath(
       optional(parsed.OPENSTEER_DESKTOP_RUNNER_WORKER) ??
         fileURLToPath(new URL("./runner-worker.js", import.meta.url)),
@@ -282,12 +231,6 @@ export function readDesktopConfiguration(
   };
 }
 
-const PackagedPortableFsReleaseSchema = z.strictObject({
-  installerSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  schemaVersion: z.literal(1),
-  version: z.string().regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/),
-});
-
 const NativeOAuthCallbackSchema = z.string().superRefine((value, context) => {
   let url: URL;
   try {
@@ -338,7 +281,6 @@ const PackagedDesktopReleaseBaseSchema = z.strictObject({
     connect: z.boolean(),
     personal: z.literal(true),
     localAgents: z.boolean(),
-    portableFs: z.boolean(),
   }),
   oauth: DesktopOAuthIdentitySchema,
   /** Present only for a build that belongs to a managed portal. */
@@ -390,40 +332,10 @@ const PackagedRunnerReleaseSchema = z.strictObject({
   schemaVersion: z.literal(1),
 });
 
-function readPackagedPortableFsRelease(
-  resourcesDirectory: string,
-  requiredByRelease = true,
-): NonNullable<DesktopLocalExecutionConfiguration["portableFsInstaller"]> | undefined {
-  const directory = path.join(resourcesDirectory, "portablefs");
-  const manifestPath = path.join(directory, "release.json");
-  const installerPath = path.join(directory, "install.sh");
-  const manifestExists = pathExists(manifestPath);
-  const installerExists = pathExists(installerPath);
-  if (!manifestExists && !installerExists && !requiredByRelease) return undefined;
-  if (manifestExists !== installerExists || (!manifestExists && requiredByRelease)) {
-    throw new Error("Packaged PortableFS release is incomplete.");
-  }
-  for (const candidate of [manifestPath, installerPath]) {
-    const metadata = lstatSync(candidate);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new Error("Packaged PortableFS release files must be real regular files.");
-    }
-  }
-  const manifest = PackagedPortableFsReleaseSchema.parse(
-    JSON.parse(readFileSync(manifestPath, "utf8")),
-  );
-  const digest = createHash("sha256").update(readFileSync(installerPath)).digest("hex");
-  if (digest !== manifest.installerSha256) {
-    throw new Error("Packaged PortableFS installer does not match its signed release manifest.");
-  }
-  return { path: installerPath, version: manifest.version };
-}
-
 function readPackagedDesktopRelease(manifestPath: string): {
   readonly updates?: DesktopUpdates;
   readonly accountUrl: string | null;
   readonly localAgents: boolean;
-  readonly portableFs: boolean;
   readonly portalUrl: string | undefined;
   readonly release: DesktopReleaseIdentity;
 } {
@@ -435,7 +347,6 @@ function readPackagedDesktopRelease(manifestPath: string): {
     ...(manifest.updates ? { updates: manifest.updates } : {}),
     accountUrl: accountUrl?.origin ?? null,
     localAgents: manifest.capabilities.localAgents,
-    portableFs: manifest.capabilities.portableFs,
     portalUrl: manifest.portalUrl
       ? serviceOrigin(manifest.portalUrl, "production", "Opensteer portal URL").origin
       : undefined,
@@ -491,16 +402,6 @@ function readPackagedNativeFsHelper(resourcesDirectory: string): string {
     throw new Error("Packaged Native filesystem helper does not match its release manifest.");
   }
   return helperPath;
-}
-
-function pathExists(filePath: string): boolean {
-  try {
-    lstatSync(filePath);
-    return true;
-  } catch (error) {
-    if (nodeErrorCode(error) === "ENOENT") return false;
-    throw error;
-  }
 }
 
 export function desktopDataDirectory(

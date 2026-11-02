@@ -30,7 +30,7 @@ export function previewBootstrap(
       sessions: [],
     },
     deploymentShape: {
-      defaultWorkspaceBacking: selected.kind === "personal" ? "local-directory" : "portablefs",
+      defaultWorkspaceBacking: "local-directory",
       kind: selected.kind === "personal" ? "personal" : "server",
     },
     environments: [

@@ -94,10 +94,7 @@ import {
   handleRequestFullDiskAccess,
 } from "./methods/full-disk-access.js";
 import {
-  handleAcknowledgePortableFsApproval,
   handleGetLocalExecutionStatus,
-  handleInstallPortableFs,
-  handleOpenPortableFsSetup,
   handleStartLocalRunner,
   handleStopLocalRunner,
 } from "./methods/local-execution.js";
@@ -289,10 +286,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.openPasswords, handleOpenPasswords(context));
   register(desktopBridgeChannels.getPasswordsSignIn, handleGetPasswordsSignIn(context));
   register(desktopBridgeChannels.approvePasswordsSignIn, handleApprovePasswordsSignIn(context));
-  register(
-    desktopBridgeChannels.acknowledgePortableFsApproval,
-    handleAcknowledgePortableFsApproval(context),
-  );
   register(desktopBridgeChannels.addDirect, handleAddDirect(context));
   register(desktopBridgeChannels.cancel, handleCancel(context));
   register(desktopBridgeChannels.checkFullDiskAccess, handleCheckFullDiskAccess(context));
@@ -327,7 +320,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.hostBinaryFinish, handleHostBinaryFinish(context));
   register(desktopBridgeChannels.hostBinaryRead, handleHostBinaryRead(context));
   register(desktopBridgeChannels.hostBinaryClose, handleHostBinaryClose(context));
-  register(desktopBridgeChannels.installPortableFs, handleInstallPortableFs(context));
   register(desktopBridgeChannels.issuePersonalPairingCode, handleIssuePersonalPairingCode(context));
   register(desktopBridgeChannels.linkPersonal, handleLinkPersonal(context));
   const webLinkOwner = options.webLinks
@@ -352,7 +344,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     desktopBridgeChannels.openIntegrationAuthorization,
     handleOpenIntegrationAuthorization(context),
   );
-  register(desktopBridgeChannels.openPortableFsSetup, handleOpenPortableFsSetup(context));
   register(desktopBridgeChannels.pickFolder, handlePickFolder(context));
   register(desktopBridgeChannels.readAgentPhoneArtifact, handleReadAgentPhoneArtifact(context));
   register(desktopBridgeChannels.reauthorize, handleReauthorize(context));

@@ -199,7 +199,7 @@ export interface ShellContext {
 
 /**
  * The three things a person does to this computer's membership of the viewed
- * Deployment, and the PortableFS setup steps that sit beside them.
+ * Deployment.
  *
  * Adding and removing are the only operations that touch identity; running
  * agents is a restart with the other module set, and never a second
@@ -207,7 +207,7 @@ export interface ShellContext {
  * of two positional arguments a given action reads.
  */
 export type LocalExecutionAction =
-  | { readonly kind: "acknowledge" | "install" | "open-setup" | "refresh" | "remove" }
+  | { readonly kind: "refresh" | "remove" }
   | { readonly kind: "add"; readonly name: string; readonly runAgents: boolean }
   | { readonly kind: "set-run-agents"; readonly runAgents: boolean };
 
@@ -873,19 +873,6 @@ export function AppShell({
               runnerId: localRunnerId,
             });
             await hostClient.refresh();
-            break;
-          case "install": {
-            status = await localBridge.installPortableFs(localExecutionInput);
-            if (status.portableFs.state === "needs-user-approval") {
-              status = await localBridge.openPortableFsSetup(localExecutionInput);
-            }
-            break;
-          }
-          case "open-setup":
-            status = await localBridge.openPortableFsSetup(localExecutionInput);
-            break;
-          case "acknowledge":
-            status = await localBridge.acknowledgePortableFsApproval(localExecutionInput);
             break;
           case "refresh":
             status = await localBridge.getLocalExecutionStatus(localExecutionInput);

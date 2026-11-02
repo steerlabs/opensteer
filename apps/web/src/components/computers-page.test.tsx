@@ -902,7 +902,7 @@ function withMessagesNeedingFullDiskAccess(
 function serverSnapshot(client: MockHostClient): ShellContext["snapshot"] {
   return {
     ...client.getSnapshot(),
-    deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
   };
 }
 
@@ -919,14 +919,6 @@ function localStatus(input: {
     deploymentId: input.deploymentId ?? createId("deployment"),
     mayRunAgents: true,
     platform: input.platform ?? "macos",
-    portableFs: {
-      binaryPath: null,
-      detail: "Not installed",
-      installAvailable: true,
-      issue: null,
-      state: "missing",
-      version: null,
-    },
     runAgents: input.runAgents ?? false,
     runner: {
       detail: input.enrolled ? "Ready" : "Off",
