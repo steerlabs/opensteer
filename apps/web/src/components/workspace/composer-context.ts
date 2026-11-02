@@ -288,6 +288,14 @@ export function useComposerContext({
     frozenRef.current = next;
     setFrozen(next);
   }, []);
+  // A proven end is final for the draft: a later snapshot that cannot prove it,
+  // such as one offline, never brings the chip back.
+  useEffect(() => {
+    const held = frozenRef.current;
+    if (!held) return;
+    const kept = standing(held, placeState);
+    if (kept.length < held.length) hold(kept);
+  }, [frozen, hold, placeState]);
   /**
    * An explicit pick freezes the draft at once and stands as a chip while its
    * exact reference is read; the answer replaces that chip only if it is still
@@ -353,12 +361,17 @@ export function useComposerContext({
   );
   const prepend = useCallback(
     (parts: readonly PlacePart[]) => {
-      const returned = parts.map((part) => handedBack(part));
+      const held = frozenRef.current ?? chipsRef.current;
+      // A place the newer draft picked explicitly stays that pick, in the returned place.
+      const picked = new Map(
+        held.flatMap((chip) => (chip.auto ? [] : [[chip.key, chip] as const])),
+      );
+      const returned = parts.map((part) => {
+        const chip = handedBack(part);
+        return chip.auto ? (picked.get(chip.key) ?? chip) : chip;
+      });
       const keys = new Set(returned.map((chip) => chip.key));
-      hold([
-        ...returned,
-        ...(frozenRef.current ?? chipsRef.current).filter((chip) => !keys.has(chip.key)),
-      ]);
+      hold([...returned, ...held.filter((chip) => !keys.has(chip.key))]);
     },
     [handedBack, hold],
   );

@@ -691,14 +691,25 @@ describe("the draft's places", () => {
         await settle(100);
         expect(titles()).toEqual([place.title, other.title]);
       }
-      for (const closed of [place, other]) {
+      const close = async (closed: PlaceItem) => {
         if (closed.destination.kind !== "browser" || !closed.destination.tabId)
           throw new Error("tab");
         const { sessionId, tabId } = closed.destination;
         const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
         await act(async () => client.closeBrowserTab(sessionId, tabId, session.tabCatalog!));
-      }
-      await settle(100);
+        await settle(100);
+      };
+      await close(place);
+      expect(titles()).toEqual([other.title]);
+      // A snapshot that can no longer prove the end never brings the closed page back.
+      const connected = client.getSnapshot.bind(client);
+      const seen = new WeakMap<HostSnapshot, HostSnapshot>();
+      const offline = vi.spyOn(client, "getSnapshot").mockImplementation(() => {
+        const snapshot = connected();
+        if (!seen.has(snapshot)) seen.set(snapshot, { ...snapshot, connection: "offline" });
+        return seen.get(snapshot)!;
+      });
+      await close(other);
       expect(titles()).toEqual([other.title]);
       expect(document.querySelector(".context-chip--gone")).not.toBeNull();
       const dispatch = vi.spyOn(client, "dispatch");
@@ -715,6 +726,7 @@ describe("the draft's places", () => {
           tabId: other.destination.tabId,
         }),
       ]);
+      offline.mockRestore();
     },
   );
 
@@ -760,6 +772,15 @@ describe("the draft's places", () => {
     expect(document.querySelector(".context-chip--refused, .context-refusal")).toBeNull();
     expect(document.body.textContent).not.toContain("Send without it");
     expect(document.body.textContent).not.toContain("Include it");
+    // The page came back automatic, but the newer draft picked it: closing it keeps that pick.
+    if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
+    const { sessionId, tabId } = place.destination;
+    const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
+    await act(async () => client.closeBrowserTab(sessionId, tabId, session.tabCatalog!));
+    await settle(100);
+    expect(
+      [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
+    ).toEqual([place.title, other.title]);
   });
 
   it("an automatic page alone does not enable Send; an explicit pick alone does", async () => {
