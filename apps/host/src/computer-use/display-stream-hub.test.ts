@@ -3152,7 +3152,8 @@ describe("viewer-driven phone bitrate", () => {
     const mac = await f.phone();
     await f.state();
     const refreshes = () => f.sent.filter((m) => m.type === "host.integrations.display.refresh");
-    const chunk = new Uint8Array(100_000);
+    // Both replayed frames fit an unmeasured link's in-flight credit.
+    const chunk = new Uint8Array(60_000);
     mac.socket.send(f.frame(1, true, 1, chunk));
     mac.socket.send(f.frame(2, false, 1, chunk));
     await mac.received(() => mac.json().length === 2);
@@ -3160,9 +3161,9 @@ describe("viewer-driven phone bitrate", () => {
     await until(() => short.media().length === 2);
     expect(refreshes()).toHaveLength(0);
     // Keys come only on demand, so a long chain would take seconds on a slow link.
-    for (let sequence = 3; sequence <= 6; sequence++)
+    for (let sequence = 3; sequence <= 9; sequence++)
       mac.socket.send(f.frame(sequence, false, 1, chunk));
-    await mac.received(() => mac.json().length === 6);
+    await mac.received(() => mac.json().length === 9);
     const long = await f.viewer(false, false, true);
     await until(() => refreshes().length === 1);
     await long.roundTrip();
