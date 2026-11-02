@@ -1292,7 +1292,10 @@ function TracePlace({ entry, turn }: { entry: PlaceEntry; turn: Turn }) {
   if (page === null) return null;
   // An agent is in one tab at a time, so only the turn's latest stop can be live.
   const acting =
-    page.acting && !page.ended && turn.work.findLast((work) => work.kind === "place") === entry;
+    turnState(turn) !== "settled" &&
+    page.acting &&
+    !page.ended &&
+    turn.work.findLast((work) => work.kind === "place") === entry;
   const site = page.site !== null && page.site !== page.title ? page.site : null;
   const label = [page.title, page.site, page.ended ? "closed" : acting ? "agent working" : null]
     .filter(Boolean)
