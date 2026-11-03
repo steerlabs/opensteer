@@ -168,7 +168,9 @@ struct MessagesReader {
           displayName: DataText.present(name).map { Self.bounded($0).text },
           isGroup: row.integer(4) == 43 || handles.count > 1,
           lastMessageAt: lastDate > 0 ? clock.text(Self.instant(lastDate)) : nil,
-          participants: handles.map { ConversationParticipant(handle: $0, name: contacts.name(for: $0)) },
+          participants: handles.map {
+            ConversationParticipant(handle: $0, name: contacts.name(for: $0).map { Self.bounded($0).text })
+          },
           service: row.text(3) ?? "unknown"),
         Key(date: lastDate, rowId: chat)
       )
@@ -342,7 +344,7 @@ struct MessagesReader {
       id: row.text(1) ?? "",
       isFromMe: isFromMe,
       sender: sender,
-      senderName: isFromMe ? nil : contacts.name(for: sender),
+      senderName: isFromMe ? nil : contacts.name(for: sender).map { Self.bounded($0).text },
       sentAt: clock.text(Self.instant(row.integer(6))),
       service: DataText.present(row.text(5)) ?? "unknown",
       text: bounded?.text,

@@ -57,6 +57,20 @@ final class MessagesReaderTests: XCTestCase {
     XCTAssertTrue(page.messages.filter(\.isFromMe).allSatisfy { $0.senderName == nil })
   }
 
+  func testContactNamesAreBoundedLikeConversationNamesButMatchInFull() throws {
+    let long = String(repeating: "a", count: MessagesReader.maxTextBytes) + " Mayank"
+    var subject = reader()
+    subject.contacts = MessagesContacts([ContactRecord(id: "long", name: long, organization: nil,
+      emails: [], phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)])
+    let found = try subject.listConversations(arguments(ListConversationsArguments.self,
+      #"{"query":"mayank"}"#)).conversations
+    let name = try XCTUnwrap(found.first?.participants.first?.name)
+    XCTAssertEqual(name.utf8.count, MessagesReader.maxTextBytes)
+    let page = try subject.readMessages(arguments(ReadMessagesArguments.self,
+      #"{"conversationId":"\#(MessagesFixture.Chat.direct)"}"#), timeLeft: { 60 })
+    XCTAssertEqual(page.messages.first { !$0.isFromMe }?.senderName?.utf8.count, MessagesReader.maxTextBytes)
+  }
+
   func testAmbiguousContactKeysNeverGuessEmailsIgnoreCaseAndBusinessesUseTheirCompany() {
     let records = [
       ContactRecord(id: "one", name: "One", organization: nil,
