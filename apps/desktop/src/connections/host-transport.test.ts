@@ -11,7 +11,12 @@ import {
   type HostNetworkRequest,
   type HostNetworkSocketEvents,
 } from "@opensteer/client/connections";
-import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
+import {
+  signTestDiscoveryEnvelope,
+  signTestPersonalAccessRoute,
+  testDiscoveryEnvelope,
+  testHostAuthorityKeys,
+} from "@opensteer/client/test-support";
 import type { HostSessionRecovery } from "@opensteer/client/auth";
 import { DesktopAccessProjection } from "./access-projection.js";
 import { DesktopHostTransport } from "./host-transport.js";
@@ -807,6 +812,115 @@ describe("DesktopHostTransport", () => {
       });
     },
   );
+
+  it.each([false, true])(
+    "publishes the place list while its selected Personal route is unavailable; signed: %s",
+    async (retainSignedRoute) => {
+      const base = deployment("Studio Mac", "http://127.0.0.1:4310");
+      const keys = testHostAuthorityKeys();
+      const authority = signTestDiscoveryEnvelope(
+        {
+          ...base.authority.document,
+          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        },
+        keys,
+      );
+      const routeOrigin = "https://studio.connect.opensteer.test";
+      const signedRoute = signTestPersonalAccessRoute(
+        {
+          authority: authority.document,
+          documentVersion: 2,
+          purpose: "opensteer-personal-access-route",
+          route: { generation: 1, kind: "connect", origin: routeOrigin },
+        },
+        keys,
+      );
+      const live = DeploymentConnectionSchema.parse({
+        ...base,
+        authority,
+        endpoints: [{ kind: "direct", origin: routeOrigin, verifiedAt: base.updatedAt }],
+        kind: "personal",
+        personalAccessRoute: signedRoute,
+        preferredEndpointOrigin: routeOrigin,
+        reachability: "routed",
+      });
+      const unavailable = DeploymentConnectionSchema.parse({
+        ...live,
+        endpoints: base.endpoints,
+        personalAccessRoute: retainSignedRoute ? signedRoute : null,
+        preferredEndpointOrigin: null,
+      });
+      const other = deployment("Other computer", "https://other.opensteer.test");
+      const selectedId = authority.document.deploymentId;
+      const catalog = catalogStore([unavailable, other], selectedId);
+      const networkSocket = socket();
+      const request = vi.fn(async () => new Response("{}"));
+      const openWebSocket = vi.fn(() => networkSocket);
+      const transport = desktopHostTransport({
+        catalog,
+        network: { openWebSocket, request },
+      });
+      const selection = {
+        deployments: [
+          { access: null, id: selectedId, name: "Studio Mac" },
+          { id: other.authority.document.deploymentId, name: "Other computer" },
+        ],
+        selectedDeploymentId: selectedId,
+      };
+
+      await expect(transport.selection()).resolves.toMatchObject(selection);
+      await expect(
+        transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
+      ).rejects.toThrow("no live remote access route");
+      expect(request).not.toHaveBeenCalled();
+      expect(openWebSocket).not.toHaveBeenCalled();
+
+      catalog.replace([live, other], selectedId);
+      await transport.selection();
+      await transport.openWebSocket(7, { path: "/v1/realtime" }, vi.fn());
+      expect(transport.currentKey()).not.toBeNull();
+
+      catalog.replace([unavailable, other], selectedId);
+      await expect(transport.selection()).resolves.toMatchObject(selection);
+      expect(transport.currentKey()).toBeNull();
+      expect(networkSocket.close).toHaveBeenCalledExactlyOnceWith(4_001, "Deployment changed");
+      await transport.selection();
+      await expect(
+        transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
+      ).rejects.toThrow("no live remote access route");
+      expect(networkSocket.close).toHaveBeenCalledTimes(1);
+      expect(request).not.toHaveBeenCalled();
+
+      catalog.replace([live, other], selectedId);
+      await expect(transport.selection()).resolves.toMatchObject({
+        deployments: [
+          expect.objectContaining({ access: "connect", id: selectedId }),
+          expect.anything(),
+        ],
+        selectedDeploymentId: selectedId,
+      });
+      await transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" });
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ url: `${routeOrigin}/v1/bootstrap` }),
+      );
+    },
+  );
+
+  it("preserves credential failures when refreshing the place list", async () => {
+    const selected = deployment("Home", "https://home.opensteer.test");
+    const failure = new Error("Host credential store is unavailable");
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      credentials: {
+        authorizationHeader: async () => {
+          throw failure;
+        },
+      },
+      network: { openWebSocket: () => socket(), request: async () => new Response("{}") },
+    });
+
+    await expect(transport.selection()).rejects.toBe(failure);
+  });
 
   it("closes old sockets when Account reconciliation removes the selected authority", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
