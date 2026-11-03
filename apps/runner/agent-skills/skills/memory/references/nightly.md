@@ -21,10 +21,14 @@ expired, and keep stated facts apart from inferences, with enough date and sourc
 conflicts. Choose and reorganize the structure of `memory/` as it grows; keep every note reachable
 by links from the summary, and keep the `## Memory` section of `AGENTS.md` current, under 4 KB,
 and free of the person's own instructions, which you leave alone. Keep its `Background passes:`
-line. Chat may correct or forget something while you work: reread each file right before a
-targeted edit, never write back an earlier read, and check `memory/forgotten.md` again before
-saving. Delete exactly the scrap files you consumed, never newer ones. Advance your checkpoint
-only after the work it covers is saved.
+line. Delete exactly the scrap files you consumed, by name. Advance your checkpoint only after the
+work it covers is saved.
+
+Chat may correct or forget something while you work. Commit every change to `AGENTS.md`,
+`memory/` or `skills/light-pass/` by writing the new version to a temporary file, then, in one
+shell command, moving it into place only if the `Background passes:` line still says `set up` and
+`memory/forgotten.md` and the target are unchanged since you read them, for example by comparing
+`shasum` output. If anything changed, reread and redo that file.
 
 With no checkpoint, this is your first run: build the initial picture from roughly the last four
 weeks of Chat and the person's connected sources. This is when the structure first forms.

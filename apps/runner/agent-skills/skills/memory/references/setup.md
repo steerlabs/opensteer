@@ -7,14 +7,16 @@ person except by queueing a message to Chat.
 
 Chat sets both up once, on its own, without asking or announcing it. They are visible in the
 person's task list and Automations, where the person can pause or delete them. The
-`Background passes:` line in the `## Memory` section of Main's `AGENTS.md` records setup:
+`Background passes:` line in the `## Memory` section of Main's `AGENTS.md` records setup. When
+memory is on:
 
-- `Background passes: setting up, see memory/passes/setup.md.` Finish setup from that file.
-- `Background passes: set up YYYY-MM-DD, see memory/passes/setup.md.` Done; never set up again.
-- `Background passes: off at the person's request.` Set up only when the person asks.
+- No line: set up with the steps below. A `## Memory` section without one, from the person or a
+  remembered fact, still gets setup: add the line and keep everything in it.
+- `Background passes: setting up, see memory/passes/setup.md.` Resume setup from that file,
+  checking its recorded IDs before creating anything.
+- `Background passes: set up YYYY-MM-DD, see memory/passes/setup.md.` Done; leave it alone.
+- `Background passes: off at the person's request.` Leave it alone until the person asks.
 
-Set up only when memory is on and no such line exists. A `## Memory` section without one, from
-the person or a remembered fact, still gets setup: add the line and keep everything in it.
 A pause or deletion the person made in Automations is their choice; keep it.
 
 ## Files
@@ -113,12 +115,19 @@ and the mail, Messages and calendar integrations connected to Main.
 A pause the person asks for is `trigger_write` action `set_status` `paused` on both Triggers;
 resume them with `active` when asked.
 
-To turn the passes off, first stop both workers with `thread_write` action `done` and each
-worker's `threadId`. That cancels queued wakes and interrupts a running pass, so neither can write
-afterwards. Then archive both Triggers with `trigger_write` action `set_status` `archived`, and
-change the line to `off at the person's request`. To stop remembering altogether, stop and
-archive the same way, then delete `memory/` and `skills/light-pass/`, and replace the whole
-section with `Memory: off at the person's request.`
+To turn the passes off, first change the line to `off at the person's request`; the passes check
+it when they wake and again as they write. Then call `thread_write` action `done` with each
+worker's `threadId`, which cancels queued wakes and asks a running pass to stop, and archive both
+Triggers with `trigger_write` action `set_status` `archived`.
+
+To stop remembering altogether, first replace the whole section with
+`Memory: off at the person's request; deleting memory once both passes stop.`, then mark both
+workers Done and archive their Triggers the same way. Done stops a running pass asynchronously, so
+delete nothing until `thread_read` shows each worker's status is neither `running` nor `waiting`.
+Then delete `memory/` and `skills/light-pass/` and shorten the line to
+`Memory: off at the person's request.` If a worker is still stopping, tell the person deletion
+finishes shortly and finish it on your next Run instead of waiting. Never say memory is erased
+before the deletion is done.
 
 To turn them back on, reopen each worker listed in `memory/passes/setup.md` with `thread_write`
 action `reopen` before touching its schedule, then resume a paused Trigger or create a new one in

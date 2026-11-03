@@ -24,17 +24,19 @@ doesn't say `set up`, end at once and write nothing.
 4. If something does, send one `thread_message` with `threadId: "home"` and `delivery: "queue"`. Say
    what happened, why it matters, and where it came from, so Chat can tell the person without
    opening this Thread.
-5. If you learned something lasting about the person, add a new scrap with its source as
-   `memory/inbox/<UTC time like 20261103T142500Z>-light.md`.
+5. If you learned something lasting about the person, add a `light` scrap to `memory/inbox/` as
+   opensteer:memory describes.
 6. Update your state.
 
 ## Your state
 
 `memory/passes/light.md` is yours; only a forget edits it otherwise. Keep in it, in Markdown: the
 position you reached in each source, each item you reported with its source ID and one line, and
-what you are watching for. Prune resolved and old entries so it stays short. Reread it right
-before writing, so a forget since your first read stays gone, then write a temporary file and
-rename it over the old one.
+what you are watching for. Prune resolved and old entries so it stays short. Write the new
+version to a temporary file, then commit it in one shell command that renames it over the old one
+only if the `Background passes:` line still says `set up` and `memory/forgotten.md` and your
+state file are unchanged since you read them, for example by comparing `shasum` output. If
+anything changed, reread, redo the update and commit again.
 
 ## Hard rules
 
