@@ -30,10 +30,14 @@ export function AgentDevicesSection() {
     : null;
   return (
     <>
-      <SectionHeader title="Devices" lead={null} />
-      <button className="btn btn--primary" type="button" onClick={() => setAdding("choose")}>
-        Add device
-      </button>
+      <SectionHeader
+        title="Devices"
+        action={
+          <button className="btn btn--primary" type="button" onClick={() => setAdding("choose")}>
+            Add device
+          </button>
+        }
+      />
       {adding === "computer" ? (
         <AddComputerDialog
           client={hostClient}
@@ -100,12 +104,23 @@ export function AgentDevicesSection() {
               </span>
               <span className="card__row-detail">
                 {device.status === "online"
-                  ? "Online"
+                  ? snapshot.machines
+                      .find((machine) => machine.id === device.id)
+                      ?.apps?.map((app) =>
+                        app.definitionId.replace(/^apple-/, "").replaceAll("-", " "),
+                      )
+                      .join(", ") ||
+                    (device.device?.platform === "android" ? "Agent Phone" : "Apps and files")
                   : device.status === "offline"
                     ? "Offline"
                     : device.status}
               </span>
             </Link>
+            <span
+              className={`status-dot status-dot--${device.status === "online" ? "ok" : "muted"}`}
+              aria-label={device.status}
+            />
+            <Icon name="chevron-right" />
           </li>
         ))}
       </ul>
