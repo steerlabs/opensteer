@@ -3222,14 +3222,11 @@ describe("HttpHostClient durable realtime", () => {
       options: {
         hold?: boolean;
         silentTurns?: number;
-        empty?: boolean;
+        tail?: boolean;
         stuck?: boolean;
-        earlier?: boolean;
         conversation?: boolean;
         conversationRows?: number;
         asOf?: string;
-        budget?: number;
-        scan?: boolean;
       } = {},
     ) {
       const workspace = makeWorkspace();
@@ -3294,21 +3291,18 @@ describe("HttpHostClient durable realtime", () => {
           ];
         }).flat();
       }
-      if (options.empty || options.stuck) pages["4"]!.events = [];
-      if (options.stuck) pages["4"]!.nextBefore = "4";
-      if (options.earlier) {
-        pages["4"]!.nextBefore = "1";
-        const oldest = makeMessage(thread.id, "input", "Oldest question");
-        pages["1"] = {
-          events: [
-            agentEvent(workspace.id, thread.id, oldest.runId, "0", "message.created", {
-              input: makeThreadInput(oldest),
-              message: oldest,
-            }),
-          ],
-          nextBefore: null,
-        };
+      if (options.tail) {
+        // The newest page holds only the end of the earlier turn: its reply is older.
+        pages.newest!.events = [
+          agentEvent(workspace.id, thread.id, question.runId, "4", "run.completed", {
+            status: "completed",
+            replyMessageId: reply.id,
+          }),
+        ];
+        pages["4"]!.events = pages["4"]!.events.slice(0, 2);
       }
+      if (options.stuck) pages["4"]!.events = [];
+      if (options.stuck) pages["4"]!.nextBefore = "4";
       if (options.conversation) {
         pages.newest = {
           events: Array.from({ length: options.conversationRows ?? 10 }, (_, index) => {
@@ -3351,9 +3345,7 @@ describe("HttpHostClient durable realtime", () => {
               timeoutError: () => new Error("The held opening page was never released."),
             });
           }
-          const page = options.scan
-            ? { events: [], nextBefore: requests.length < 30 ? String(requests.length) : null }
-            : capturedPage!;
+          const page = capturedPage!;
           return json({
             thread,
             threadId: thread.id,
@@ -3363,7 +3355,7 @@ describe("HttpHostClient durable realtime", () => {
               asOfSequence: options.asOf ?? page.events.at(-1)?.sequence ?? "5",
             },
             window: {
-              byteCount: options.budget ?? 256,
+              byteCount: 256,
               itemCount: page.events.length,
               totalItems: 5,
               threadId: thread.id,
@@ -3473,6 +3465,18 @@ describe("HttpHostClient durable realtime", () => {
         }
       },
     );
+
+    it("reads back past the tail of a long turn until the opening draws", async () => {
+      const f = await openThread("conversation", ["history-turns-v1"], { tail: true });
+      try {
+        await finishOpening(f);
+        expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
+        expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
+      } finally {
+        f.olderAnswer.resolve();
+        f.client.dispose();
+      }
+    });
 
     it("reads one page of a task whose newest Run draws its work", async () => {
       const { client, requests, thread } = await openThread("work", ["history-turns-v1"]);
