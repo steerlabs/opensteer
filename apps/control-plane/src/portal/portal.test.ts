@@ -4,7 +4,8 @@ import {
   type AccountDeployment,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
-import { createId } from "@opensteer/core";
+import { createId, DeploymentIdSchema } from "@opensteer/core";
+import { runInNewContext } from "node:vm";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
@@ -48,6 +49,78 @@ describe("portal vhost identity", () => {
     });
     expect(response.statusCode).toBe(302);
     await app.close();
+  });
+});
+
+describe("public portal routes", () => {
+  it("guards routes, renders safe links, and validates fragments against DeploymentId", async () => {
+    const router = createPortalRouter({
+      portalOrigin: new URL("https://portal.test"),
+      publicOrigin: new URL("https://accounts.test"),
+      auth: {} as never,
+      store: {} as never,
+      portalSessions: { read: vi.fn() } as never,
+      desktopDownloadUrl: "https://download.test/app",
+      iosAppUrl: "https://store.test/?a=1&b=2",
+      androidAppUrl: 'https://android.test/?q="hello"',
+    });
+    const app = Fastify();
+    router.register(app);
+    app.get("/", (request, reply) => router.home(request, reply));
+    for (const url of ["/open", "/mac"]) {
+      expect((await app.inject({ url, headers: { host: "other.test" } })).statusCode).toBe(404);
+    }
+    const headers = { host: "portal.test" };
+    const page = await app.inject({ url: "/open?d=server-content", headers });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["set-cookie"]).toBeUndefined();
+    expect(page.body).not.toContain("server-content");
+    expect(page.body).toContain("https://store.test/?a=1&amp;b=2");
+    expect(page.body).toContain("&quot;hello&quot;");
+    const script = page.body.match(/<script nonce="([^"]+)">([\s\S]*?)<\/script>/u);
+    expect(script).not.toBeNull();
+    expect(page.headers["content-security-policy"]).toContain(`script-src 'nonce-${script![1]}'`);
+    expect(page.headers["content-security-policy"]).not.toContain("script-src 'unsafe-inline'");
+    for (const fragment of [
+      `#d=${createId("deployment")}`,
+      "",
+      "#d=dep_invalid",
+      `#d=${createId("deployment")}&x=1`,
+      "#d=DEP_00000000-0000-4000-8000-000000000001",
+      "#d=dep_00000000-0000-0000-8000-000000000001",
+    ]) {
+      const button = { href: "", hidden: true };
+      const incomplete = { hidden: true };
+      const location = { hash: fragment, href: "" };
+      runInNewContext(script![2]!, {
+        location,
+        document: { getElementById: (id: string) => (id === "open-app" ? button : incomplete) },
+      });
+      const valid =
+        fragment.startsWith("#d=") && DeploymentIdSchema.safeParse(fragment.slice(3)).success;
+      expect(button.hidden).toBe(!valid);
+      expect(incomplete.hidden).toBe(valid);
+      expect(location.href).toBe(valid ? `com.opensteer.mobile:/open?d=${fragment.slice(3)}` : "");
+    }
+    expect((await app.inject({ url: "/mac", headers })).headers.location).toBe(
+      "https://download.test/app",
+    );
+    expect((await app.inject({ url: "/", headers })).body).toContain("Get the Desktop app");
+    await app.close();
+
+    const bare = Fastify();
+    createPortalRouter({
+      portalOrigin: new URL("https://portal.test"),
+      publicOrigin: new URL("https://accounts.test"),
+      auth: {} as never,
+      store: {} as never,
+      portalSessions: {} as never,
+    }).register(bare);
+    const noStores = await bare.inject({ url: "/open", headers });
+    expect(noStores.body).not.toContain("Get it for iPhone");
+    expect(noStores.body).not.toContain("Get it for Android");
+    expect((await bare.inject({ url: "/mac", headers })).headers.location).toBe("/");
+    await bare.close();
   });
 });
 

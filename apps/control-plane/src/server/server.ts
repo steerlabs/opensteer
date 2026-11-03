@@ -60,6 +60,8 @@ export async function createControlPlaneServer(
     readonly connectLifecycle: ConnectLifecycleService;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
     readonly desktopDownloadUrl?: string;
+    readonly iosAppUrl?: string;
+    readonly androidAppUrl?: string;
     readonly portalOrigin: URL;
     readonly notifications?: ControlPlaneNotificationStore;
     readonly notificationPlatforms?: readonly NotificationDevicePlatform[];
@@ -107,6 +109,8 @@ export async function createControlPlaneServer(
   const portal = dependencies.portalSessions
     ? createPortalRouter({
         auth: dependencies.auth,
+        ...(dependencies.iosAppUrl ? { iosAppUrl: dependencies.iosAppUrl } : {}),
+        ...(dependencies.androidAppUrl ? { androidAppUrl: dependencies.androidAppUrl } : {}),
         ...(dependencies.desktopDownloadUrl
           ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
           : {}),
