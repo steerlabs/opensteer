@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   query as anthropicQuery,
   startup as anthropicStartup,
@@ -123,19 +123,6 @@ const claudeBuiltinTools = [
   "ToolSearch",
   "Write",
 ] as const;
-/**
- * The plugins Claude Code builds in and loads in every session; no setting
- * turns them off. Each is inert in a Run: `cc-plugin-agents-md` loads AGENTS.md
- * only where CLAUDE.md would load, and a Run loads neither;
- * `cc-plugin-plugin-authoring` contributes a skill the Run's skill list leaves
- * out; `cc-plugin-sec-default` adds no policy of its own. A built-in plugin a
- * later release adds is refused until it is reviewed here.
- */
-const claudeBuiltinPlugins: ReadonlySet<string> = new Set([
-  "cc-plugin-agents-md",
-  "cc-plugin-plugin-authoring",
-  "cc-plugin-sec-default",
-]);
 const claudeDelegationTools = ["Agent", "Task"] as const;
 /** The subagent tool Claude Code runs in the foreground; `Task` is its older name. */
 const claudeSubagentTool = "Agent";
@@ -2122,7 +2109,11 @@ class ClaudeHarnessSession implements HarnessSession {
       }
       this.#ensureRunStarted(active);
       // Starting a subagent is not itself an action: everything it does asks.
-      if ((claudeDelegationTools as readonly string[]).includes(toolName)) {
+      // A plugin safety check can still require approval of the launch itself.
+      if (
+        (claudeDelegationTools as readonly string[]).includes(toolName) &&
+        !options.decisionReason
+      ) {
         return { behavior: "allow", updatedInput: { ...input } };
       }
       const nodeId = await this.#requestingNode(active, options);
@@ -2169,7 +2160,12 @@ class ClaudeHarnessSession implements HarnessSession {
   ): Promise<PermissionResult> {
     const requestId = createId("request");
     const callId = requireNonEmptyString(options.toolUseID, "Claude tool call id");
-    const detail = options.description ?? options.title ?? describeToolRequest(toolName, input);
+    const detail = [
+      options.description ?? options.title ?? describeToolRequest(toolName, input),
+      options.decisionReason,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
     const responses = new Map<string, PermissionResult>([
       [
         "allow-once",
@@ -2356,6 +2352,27 @@ class ClaudeHarnessSession implements HarnessSession {
     // the SDK does not type. Results already say which messages a turn consumed.
     const frame: string = message.type;
     if (frame === "command_lifecycle") return;
+
+    // Mods can hold a tool call until someone interacts with a terminal pane.
+    // Close the query via the failure path; interrupt may never be acknowledged.
+    const subtype: unknown = Reflect.get(message, "subtype");
+    if (message.type === "system" && subtype === "ui_panes") {
+      const paneId: unknown = Reflect.get(message, "focus_requested_id");
+      if (typeof paneId === "string" && paneId.trim()) {
+        const panes: unknown = Reflect.get(message, "panes");
+        const pane: unknown = Array.isArray(panes)
+          ? panes.find((entry: unknown) => isRecord(entry) && entry.id === paneId)
+          : undefined;
+        const plugin =
+          isRecord(pane) && typeof pane.plugin === "string" && pane.plugin.trim()
+            ? pane.plugin.trim()
+            : paneId.trim();
+        this.#markUnusable(
+          `The Claude Code plugin "${plugin}" is waiting for input in its terminal pane, which Opensteer cannot show. Disable the plugin for Opensteer sessions, or run the task in the Claude Code terminal.`,
+        );
+      }
+      return;
+    }
 
     if (message.type === "system" && message.subtype === "init") {
       this.#validateInit(message);
@@ -2850,15 +2867,13 @@ class ClaudeHarnessSession implements HarnessSession {
         `Claude exposed tools outside the Opensteer runtime boundary: ${unexpectedTools.join(", ")}`,
       );
     }
-    const unexpectedPlugins = message.plugins.filter(
-      ({ name, path }) =>
-        !this.#skillPlugin?.paths.includes(path) &&
-        !(path === "builtin" && claudeBuiltinPlugins.has(name)),
-    );
-    if (unexpectedPlugins.length > 0) {
-      this.#markUnusable(
-        `Claude exposed plugins outside the Opensteer runtime boundary: ${unexpectedPlugins.map(({ name }) => name).join(", ")}`,
-      );
+    // Other plugins belong to the CLI, but none may impersonate the skills
+    // supplied from this Thread's synthetic plugin directories.
+    for (const path of this.#skillPlugin?.paths ?? []) {
+      const name = basename(path);
+      if (message.plugins.some((plugin) => plugin.name === name && plugin.path !== path)) {
+        this.#markUnusable(`Claude replaced the Opensteer synthetic plugin "${name}"`);
+      }
     }
     const advertised = new Set(message.capabilities ?? []);
     const missing = requiredRuntimeCapabilities.filter((capability) => !advertised.has(capability));

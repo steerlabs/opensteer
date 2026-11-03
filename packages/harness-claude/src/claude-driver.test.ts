@@ -1234,48 +1234,62 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
-  it("bridges tool approval using the provider tool-call identity", async () => {
-    let permissionResult: PermissionResult | null | undefined;
-    const sdk = new FakeSdk((parameters) =>
-      generatedQuery(async function* () {
-        const sessionId = providerSessionId(parameters.options);
-        yield initMessage(sessionId);
-        const controller = new AbortController();
-        permissionResult = await parameters.options.canUseTool?.(
-          "Bash",
-          { command: "pnpm test" },
-          {
-            description: "Run the test suite",
-            requestId: "provider-request-1",
-            signal: controller.signal,
-            toolUseID: "tool-approval-1",
-          },
-        );
-        yield successMessage(sessionId, "Tests passed.");
-      }),
-    );
-    const { adapter, session } = await openSession(sdk);
-    const observer = observe(session.events);
-    const running = send(session, "Run tests");
-    const requested = await observer.waitFor("request.opened");
+  it.each(
+    (["approval-required", "auto-accept-edits", "auto", "full-access"] as const).flatMap(
+      (accessMode) => ["Bash", "Agent"].map((toolName) => ({ accessMode, toolName })),
+    ),
+  )(
+    "bridges plugin approval for $toolName in $accessMode using the provider tool-call identity",
+    async ({ accessMode, toolName }) => {
+      let permissionResult: PermissionResult | null | undefined;
+      const sdk = new FakeSdk((parameters) =>
+        generatedQuery(async function* () {
+          const sessionId = providerSessionId(parameters.options);
+          yield initMessage(sessionId);
+          const controller = new AbortController();
+          permissionResult = await parameters.options.canUseTool?.(
+            toolName,
+            { command: "pnpm test" },
+            {
+              description: "Run the test suite",
+              decisionReason: "Plugin privacy check: this action may send account information",
+              requestId: "provider-request-1",
+              signal: controller.signal,
+              toolUseID: "tool-approval-1",
+            },
+          );
+          yield successMessage(sessionId, "Tests passed.");
+        }),
+      );
+      const { adapter, session } = await openSession(sdk, { accessMode });
+      const observer = observe(session.events);
+      const running = send(session, "Run tests");
+      const requested = await observer.waitFor("request.opened");
+      expect(sdk.calls[0]?.options.permissionMode).toBe(
+        claudeAccessModeConfiguration(accessMode).permissionMode,
+      );
 
-    await session.resolveRequest(requested.data.request.id, {
-      kind: "choice",
-      optionId: "allow-once",
-    });
-    await running;
-    await session.stop();
-    await observer.done;
+      await session.resolveRequest(requested.data.request.id, {
+        kind: "choice",
+        optionId: "allow-once",
+      });
+      await running;
+      await session.stop();
+      await observer.done;
 
-    expect(permissionResult).toEqual({
-      behavior: "allow",
-      decisionClassification: "user_temporary",
-      updatedInput: { command: "pnpm test" },
-    });
-    expect(requested.data.request.callId).toBe("tool-approval-1");
-    expect(normalizedTypes(observer.events)).toContain("request.opened");
-    await adapter.close();
-  });
+      expect(permissionResult).toEqual({
+        behavior: "allow",
+        decisionClassification: "user_temporary",
+        updatedInput: { command: "pnpm test" },
+      });
+      expect(requested.data.request.presentation).toMatchObject({
+        detail: expect.stringContaining("Plugin privacy check"),
+      });
+      expect(requested.data.request.callId).toBe("tool-approval-1");
+      expect(normalizedTypes(observer.events)).toContain("request.opened");
+      await adapter.close();
+    },
+  );
 
   it("re-scopes provider permission suggestions to this Run and forwards a denial note", async () => {
     const permissionResults: PermissionResult[] = [];
@@ -2245,6 +2259,71 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
+  it("accepts CLI built-in plugins without an allowlist", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options), {
+          plugins: [
+            { name: "cc-plugin-privacy", path: "builtin" },
+            { name: "future-builtin", path: "builtin" },
+          ],
+        }),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Hello");
+    expect(await observer.waitFor("run.completed")).toBeDefined();
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
+
+  it.each(["privacy-mod", null])(
+    "fails promptly for a focused plugin pane (%s)",
+    async (plugin) => {
+      const sdk = new FakeSdk((parameters) =>
+        scriptedQuery([
+          initMessage(providerSessionId(parameters.options)),
+          message({
+            type: "system",
+            subtype: "ui_panes",
+            session_id: providerSessionId(parameters.options),
+            focus_requested_id: "confirmation",
+            panes: [{ id: "confirmation", ...(plugin ? { plugin } : {}) }],
+          }),
+        ]),
+      );
+      const { adapter, session } = await openSession(sdk);
+      const observer = observe(session.events);
+      await send(session, "Hello");
+      const failure = await observer.waitFor("run.failed");
+      expect(failure.data.message).toContain(plugin ?? "confirmation");
+      expect(failure.data.message).toContain("Claude Code terminal");
+      await session.stop();
+      await observer.done;
+      await adapter.close();
+    },
+  );
+
+  it("rejects a plugin impersonating the synthetic Opensteer plugin", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options), {
+          plugins: [{ name: "opensteer", path: "/ambient/opensteer" }],
+        }),
+      ]),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Hello");
+    expect((await observer.waitFor("run.failed")).data.message).toContain("synthetic plugin");
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
+
   it.each([
     {
       expected: "MCP servers outside",
@@ -2258,14 +2337,6 @@ describe("Claude Agent SDK harness", () => {
       // Addressing an agent resumes it in the background, which no turn owns.
       expected: "tools outside",
       overrides: { tools: ["Read", "SendMessage"] },
-    },
-    {
-      expected: "plugins outside",
-      overrides: {
-        plugins: [
-          { plugin: null, localName: "ambient", fullName: "ambient", path: "/user/plugin" },
-        ],
-      },
     },
   ])(
     "fails closed if Claude reports provider-native $expected the boundary",
@@ -2956,6 +3027,7 @@ class Gate {
 async function openSession(
   sdk: ClaudeAgentSdk,
   overrides: {
+    readonly accessMode?: HarnessSessionContext["accessMode"];
     readonly additionalWritableDirectory?: string;
     readonly config?: unknown;
     readonly environment?: Readonly<Record<string, string>>;
@@ -2991,6 +3063,7 @@ async function openSession(
   );
   const sessionContext: HarnessSessionContext = {
     ...baseContext,
+    accessMode: overrides.accessMode ?? baseContext.accessMode,
     machineAccessNotice: overrides.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: overrides.machineAccessPlatform,
     machineAccessRelaySocket: overrides.machineAccessRelaySocket,

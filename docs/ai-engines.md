@@ -58,7 +58,7 @@ Engines never receive a Host token. The loopback proxy gives each Run a secret u
 
 Token refresh belongs only to the Runner boot holding the Run. Refusal ends access; temporary unavailability does not revoke it. Existing MCP sessions authorize each request with its current token; open shell/browser connections remain bound to the grant, not the original token's lifetime. Warm-engine relays serve one Run at a time and suspend between Runs. See [Run tool authority](agent-orchestration.md#run-tool-authority) and [Warm engines](agent-orchestration.md#warm-engines).
 
-Claude defers Opensteer tool schemas through ToolSearch, which must remain available in every mode; disable ambient settings. Pi receives the Host's JSON Schema unchanged, including constraints and coercion semantics; Host validation remains authoritative.
+Claude defers Opensteer tool schemas through ToolSearch, which must remain available in every mode; disable ambient settings. Its private synthetic project root supplies loose skills without loading the real project settings. CLI-bundled plugins remain enabled; plugin permission callbacks use Requests in every access mode, while terminal-pane focus requests fail because Opensteer cannot display them. Pi receives the Host's JSON Schema unchanged, including constraints and coercion semantics; Host validation remains authoritative.
 
 ## Instructions and skills
 
