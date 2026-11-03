@@ -2959,7 +2959,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "specialist.add":
       return rpcSuccess({
         type: command.type,
-        specialist: client.addSpecialist(command.workspaceId, command.pluginId),
+        specialist: await client.addSpecialist(command.workspaceId, command.pluginId),
       });
     case "specialist.bind":
       return rpcSuccess({ type: command.type, specialist: client.bindSpecialist(command) });
@@ -4959,7 +4959,7 @@ class MockHostState {
       access,
     };
   }
-  addSpecialist(workspaceId: string, pluginId: string) {
+  async addSpecialist(workspaceId: string, pluginId: string) {
     const plugin = this.plugins.find((p) => p.id === pluginId);
     const version = plugin?.versions.find((v) => v.id === plugin.currentVersionId);
     if (!plugin || !version?.specialistManifest)
@@ -4971,7 +4971,7 @@ class MockHostState {
     );
     if (previous && previous.ownerUserId !== ownerUserId)
       throw new Error("Only the consent owner may re-add this specialist");
-    this.mutatePlugin({
+    await this.mutatePlugin({
       type: "plugin.activation.set",
       idempotencyKey: crypto.randomUUID(),
       pluginId,

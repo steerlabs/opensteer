@@ -93,7 +93,9 @@ export function DevicesSettingsController(): ReactNode {
         />
       </SettingsPageLayout>
       <Sheet open={adding} title="Add device" onClose={() => setAdding(false)}>
-        {adding && selection.hostClient && selection.hostClient.getSnapshot().user?.instanceRole === "administrator" ? (
+        {adding &&
+        selection.hostClient &&
+        selection.hostClient.getSnapshot().user?.instanceRole === "administrator" ? (
           <SettingsComputerEnrollment host={selection.hostClient} />
         ) : null}
         <NativeSettingsPage

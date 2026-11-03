@@ -289,8 +289,10 @@ describe("Settings manages a proposed MCP server's accounts", () => {
     expect(accountStatus(rows[0])).toBe("Connected");
     expect(container.textContent).not.toContain("List boards");
 
-    await click(buttonWithText(rows[0] ?? container, "Disconnect"));
-    await click(buttonWithText(rows[0] ?? container, "Confirm disconnect"));
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
+    await click(buttonWithText(document.body, "Disconnect"));
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
+    await click(buttonWithText(document.body, "Confirm disconnect"));
 
     await vi.waitFor(() => expect(container.textContent).toContain("No account yet"));
     expect(container.querySelector(".notice--warn")).toBeNull();
@@ -328,7 +330,9 @@ describe("Settings manages a proposed MCP server's accounts", () => {
     const rows = sectionRows(container, "Accounts");
     expect(rows).toHaveLength(1);
     expect(accountStatus(rows[0])).toBe("Needs attention");
-    expect(buttonWithText(rows[0] ?? container, "Disconnect")).not.toBeNull();
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
+    expect(buttonWithText(document.body, "Disconnect")).not.toBeNull();
+    await click(rows[0]!.querySelector('[aria-label="Account actions"]'));
     expect(buttonWithText(container, "Reconnect")).toBeNull();
     expect(container.textContent).not.toContain("No account yet");
     expect(container.textContent).toContain(`Authorize ${trellis} again`);
@@ -461,7 +465,9 @@ describe("Settings reconnects an OAuth account by signing in again", () => {
       expect(row.querySelector(".intg-account__status")?.getAttribute("title")).toBe(
         "Opensteer changed how this service connects. Reconnect this account to keep using it.",
       );
-      expect(buttonWithText(row, "Disconnect")).not.toBeNull();
+      await click(row.querySelector('[aria-label="Account actions"]'));
+      expect(buttonWithText(document.body, "Disconnect")).not.toBeNull();
+      await click(row.querySelector('[aria-label="Account actions"]'));
     }
     const broken = rows.find((row) => row.textContent?.includes("alex@example.com"));
     await click(buttonWithText(broken ?? container, "Reconnect"));
