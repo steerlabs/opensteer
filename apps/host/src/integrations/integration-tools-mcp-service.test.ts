@@ -1,4 +1,10 @@
-import { createId, OpensteerError, requestReasonMaxLength } from "@opensteer/core";
+import { requestSpecialistRequirements } from "./specialist-access-requests.js";
+import {
+  SpecialistRegistrationSchema,
+  createId,
+  OpensteerError,
+  requestReasonMaxLength,
+} from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -1915,4 +1921,97 @@ describe("computer use discovery", () => {
     expect(JSON.stringify(answer)).not.toContain("teamId");
     expect(JSON.stringify(answer)).not.toContain("iconPng");
   });
+});
+
+it("specialist integration and app asks use ordinary Requests with their Run origin", async () => {
+  const harness = await createHarness({
+    inventory: [],
+    computerUseMacs: [{ name: "Mac", ready: true, runnerId: scope.runnerId }],
+  });
+  await harness.service.requestSpecialistAccess(
+    scope,
+    {
+      type: "integration",
+      service: definition.id,
+      level: "read",
+      reason: "Find invoices",
+    },
+    "specialist-integration",
+  );
+  expect(harness.requests.createIntegrationAccessRequest).toHaveBeenCalledWith(
+    expect.objectContaining({
+      originatingRunId: scope.runId,
+      originatingThreadId: scope.threadId,
+      requestedBy: scope.requestedBy,
+      access: "read",
+    }),
+  );
+  await harness.service.requestSpecialistAccess(
+    scope,
+    { type: "computer-app", app: "com.apple.Safari", level: "read-write", reason: "Browse" },
+    "specialist-app",
+  );
+  expect(harness.requestComputerAppAccess).toHaveBeenCalledWith(
+    expect.objectContaining({
+      originatingRunId: scope.runId,
+      app: "com.apple.Safari",
+      access: "read-write",
+    }),
+  );
+});
+
+it("agent specialist add requests only missing requirements, preserving the Run origin", async () => {
+  const browser = { requestAccess: vi.fn() };
+  const integrations = { requestSpecialistAccess: vi.fn() };
+  const requirement = {
+    type: "browser-profile",
+    level: "read",
+    reason: "Research",
+    binding: null,
+    candidates: [],
+  };
+  const registration = SpecialistRegistrationSchema.parse({
+    id: "specialist",
+    workspaceId: scope.workspaceId,
+    pluginId: "plugin",
+    pluginVersionId: "version",
+    ownerUserId: scope.requestedBy,
+    plugin: "research",
+    version: "digest",
+    models: [{ engine: "claude", model: "haiku" }],
+    fallback: "none",
+    status: "pending",
+    access: [
+      { ...requirement, state: "needs-access" },
+      {
+        ...requirement,
+        state: "choose",
+        candidates: [{ resourceId: "candidate", name: "Choose me" }],
+      },
+      {
+        ...requirement,
+        state: "bound",
+        binding: { requirement: 2, resourceId: "bound", level: "read" },
+      },
+      { ...requirement, type: "integration", service: "gmail", state: "needs-access" },
+      { ...requirement, type: "computer-app", app: "com.apple.Safari", state: "needs-access" },
+    ],
+  });
+  await requestSpecialistRequirements({ registration, scope, browser, integrations });
+  expect(browser.requestAccess).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      runId: scope.runId,
+      threadId: scope.threadId,
+      ownerId: scope.requestedBy,
+      originatingWorkspaceId: scope.workspaceId,
+      workspaceId: scope.workspaceId,
+      suggestion: { kind: "user_choice" },
+    }),
+  );
+  expect(integrations.requestSpecialistAccess).toHaveBeenCalledTimes(2);
+  expect(integrations.requestSpecialistAccess).toHaveBeenCalledWith(
+    scope,
+    expect.objectContaining({ type: "integration", service: "gmail" }),
+    "specialist:specialist:version:3",
+  );
 });

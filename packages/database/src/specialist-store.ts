@@ -96,6 +96,68 @@ export class SpecialistStore {
     });
   }
 
+  async bind(input: {
+    workspaceId: WorkspaceId;
+    specialistId: string;
+    actorUserId: UserId;
+    requirement: number;
+    resourceId: string;
+  }) {
+    await this.authorize(input.workspaceId, input.actorUserId);
+    const owned = await this.database
+      .selectFrom("specialists")
+      .select("id")
+      .where("id", "=", input.specialistId)
+      .where("workspaceId", "=", input.workspaceId)
+      .where("ownerUserId", "=", input.actorUserId)
+      .executeTakeFirst();
+    if (!owned)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the consent owner may bind this specialist",
+      });
+    const current = await this.refresh(input.specialistId);
+    if (current.workspaceId !== input.workspaceId || current.ownerUserId !== input.actorUserId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the consent owner may bind this specialist",
+      });
+    const requirement = current.access[input.requirement];
+    if (!requirement?.candidates.some((c) => c.resourceId === input.resourceId))
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Choose a currently allowed candidate",
+      });
+    const updated = await this.database
+      .updateTable("specialists")
+      .set({
+        bindings: jsonValue([
+          ...current.access.flatMap((a, i) =>
+            i !== input.requirement && a.binding ? [a.binding] : [],
+          ),
+          {
+            requirement: input.requirement,
+            resourceId: input.resourceId,
+            level: requirement.level,
+          },
+        ]),
+      })
+      .where("id", "=", input.specialistId)
+      .where("pluginVersionId", "=", current.pluginVersionId)
+      .where(
+        "bindings",
+        "=",
+        jsonValue(current.access.flatMap((a) => (a.binding ? [a.binding] : []))),
+      )
+      .executeTakeFirst();
+    if (updated.numUpdatedRows !== 1n)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Specialist changed while choosing access; list again",
+      });
+    return this.refresh(input.specialistId);
+  }
+
   async refresh(id: string) {
     const row = await this.database
       .selectFrom("specialists")
@@ -107,22 +169,41 @@ export class SpecialistStore {
       .executeTakeFirstOrThrow();
     const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
     const bindings: SpecialistBinding[] = [];
+    const states = [];
     for (const [index, requirement] of (manifest.access ?? []).entries()) {
       const previous = row.bindings.find((binding) => binding.requirement === index);
-      const resourceId = await this.bind(
-        row.workspaceId,
-        row.ownerUserId,
-        requirement,
-        previous?.resourceId,
-      );
-      if (resourceId) bindings.push({ requirement: index, resourceId, level: requirement.level });
+      const candidates = await this.candidates(row.workspaceId, row.ownerUserId, requirement);
+      const resourceId =
+        previous && candidates.some((c) => c.resourceId === previous.resourceId)
+          ? previous.resourceId
+          : candidates.length === 1
+            ? candidates[0]!.resourceId
+            : null;
+      const binding = resourceId
+        ? { requirement: index, resourceId, level: requirement.level }
+        : null;
+      if (binding) bindings.push(binding);
+      states.push({
+        ...requirement,
+        binding,
+        state: binding
+          ? ("bound" as const)
+          : candidates.length
+            ? ("choose" as const)
+            : ("needs-access" as const),
+        candidates,
+      });
     }
-    const status = bindings.length === (manifest.access ?? []).length ? "ready" : "pending";
+    const status =
+      bindings.length === (manifest.access ?? []).length
+        ? ("ready" as const)
+        : ("pending" as const);
     const update = await this.database
       .updateTable("specialists")
       .set({ bindings: jsonValue(bindings), status, updatedAt: new Date() })
       .where("id", "=", id)
       .where("pluginVersionId", "=", row.pluginVersionId)
+      .where("bindings", "=", jsonValue(row.bindings))
       .executeTakeFirst();
     if (update.numUpdatedRows !== 1n)
       throw new OpensteerError({
@@ -140,10 +221,7 @@ export class SpecialistStore {
       status,
       models: manifest.models,
       fallback: manifest.fallback,
-      access: (manifest.access ?? []).map((requirement, index) => ({
-        ...requirement,
-        binding: bindings.find((binding) => binding.requirement === index) ?? null,
-      })),
+      access: states,
     };
   }
 
@@ -169,11 +247,10 @@ export class SpecialistStore {
     // Invocation lifecycle attaches cancellation and .specialists/<id> cleanup here.
   }
 
-  private async bind(
+  private async candidates(
     workspaceId: WorkspaceId,
     ownerUserId: UserId,
     requirement: SpecialistAccessRequirement,
-    pinnedResourceId?: string,
   ) {
     const membership = await this.database
       .selectFrom("workspaceMemberships")
@@ -181,17 +258,17 @@ export class SpecialistStore {
       .where("workspaceId", "=", workspaceId)
       .where("userId", "=", ownerUserId)
       .executeTakeFirst();
-    if (membership?.state !== "active") return null;
+    const candidates: { resourceId: string; name: string }[] = [];
+    if (membership?.state !== "active") return candidates;
     if (requirement.type === "browser-profile") {
       const profiles = await this.database
         .selectFrom("browserProfiles")
-        .select("id")
+        .select(["id", "name"])
         .where("ownerId", "=", ownerUserId)
         .where("archivedAt", "is", null)
         .orderBy("id")
         .execute();
       for (const profile of profiles) {
-        if (pinnedResourceId && profile.id !== pinnedResourceId) continue;
         const grants = await this.database
           .selectFrom("browserProfileGrants")
           .select("access")
@@ -209,9 +286,9 @@ export class SpecialistStore {
           explicitAccess,
         });
         if (decision.access === "read-write" || decision.access === requirement.level)
-          return profile.id;
+          candidates.push({ resourceId: profile.id, name: profile.name });
       }
-      return null;
+      return candidates;
     }
     const connections = await this.database
       .selectFrom("integrationConnections")
@@ -221,7 +298,6 @@ export class SpecialistStore {
       .orderBy("id")
       .execute();
     for (const connection of connections) {
-      if (pinnedResourceId && connection.id !== pinnedResourceId) continue;
       if (
         requirement.type === "integration" &&
         connection.provider !== requirement.service &&
@@ -258,8 +334,11 @@ export class SpecialistStore {
           : {}),
       });
       if (decision.access === "read-write" || decision.access === requirement.level)
-        return connection.id;
+        candidates.push({
+          resourceId: connection.id,
+          name: connection.displayName ?? connection.id,
+        });
     }
-    return null;
+    return candidates;
   }
 }

@@ -109,6 +109,7 @@ export type IntegrationPlatformCommand = Extract<
       | "plugin.update"
       | "plugin.remove"
       | "plugin.activation.set"
+      | "specialist.bind"
       | "specialist.add"
       | "specialist.remove"
       | "specialist.list"
@@ -204,6 +205,14 @@ export async function handleIntegrationPlatformCommand(
         requestId: context.requestId,
       });
       return { type: command.type };
+    case "specialist.bind":
+      return {
+        type: command.type,
+        specialist: await options.platform.store.specialists.bind({
+          ...command,
+          actorUserId: session.user.id,
+        }),
+      };
     case "specialist.add":
       return {
         type: command.type,

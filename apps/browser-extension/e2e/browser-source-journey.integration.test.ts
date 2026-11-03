@@ -969,15 +969,22 @@ async function launchEverydayChrome(
       `--disable-extensions-except=${extensionDirectory}`,
       `--load-extension=${extensionDirectory}`,
     ],
+    // This fixture exercises extension background networking, including Chrome startup.
+    ignoreDefaultArgs: ["--disable-background-networking"],
     channel: "chromium",
     headless: true,
     ignoreHTTPSErrors: true,
     viewport: { height: 760, width: 1_000 },
   });
-  const worker =
-    context.serviceWorkers()[0] ??
-    (await context.waitForEvent("serviceworker", { timeout: 15_000 }));
-  return { context, worker };
+  try {
+    const worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent("serviceworker", { timeout: 15_000 }));
+    return { context, worker };
+  } catch (error) {
+    await context.close();
+    throw error;
+  }
 }
 
 type ExtensionConnection = {

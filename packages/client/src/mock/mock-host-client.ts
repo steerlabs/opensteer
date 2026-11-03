@@ -11,6 +11,10 @@ import { emptySavedViewReadiness } from "../host/saved-host-view.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import {
+  SpecialistManifestSchema,
+  type SpecialistRegistration,
+  type SpecialistManifest,
+  type SpecialistBinding,
   AgentEventSchema,
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
@@ -1771,6 +1775,7 @@ const mockMachines: readonly MachineSummary[] = [
 ];
 
 export interface MockHostClientOptions {
+  specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
@@ -2083,7 +2088,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
     "integration.computer.setup.list": async () =>
       rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
-    "specialist.list": async () => rpcSuccess({ specialists: client.listSpecialists() }),
+    "specialist.list": async (input) =>
+      rpcSuccess({ specialists: client.listSpecialists(input.workspaceId) }),
     "plugin.list": async () => rpcSuccess({ plugins: client.listPlugins() }),
     "integration.platform.get": async () =>
       rpcSuccess(
@@ -2838,10 +2844,19 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       await client.disconnectMcpConnection(command.connectionId);
       return rpcSuccess({ type: command.type });
     case "specialist.list":
-      return rpcSuccess({ type: command.type, specialists: client.listSpecialists() });
+      return rpcSuccess({
+        type: command.type,
+        specialists: client.listSpecialists(command.workspaceId),
+      });
     case "specialist.add":
-      throw new Error("Install a specialist package first");
+      return rpcSuccess({
+        type: command.type,
+        specialist: client.addSpecialist(command.workspaceId, command.pluginId),
+      });
+    case "specialist.bind":
+      return rpcSuccess({ type: command.type, specialist: client.bindSpecialist(command) });
     case "specialist.remove":
+      client.removeSpecialist(command.workspaceId, command.specialistId);
       return rpcSuccess({ type: command.type });
     case "plugin.list":
       return rpcSuccess({ type: command.type, plugins: client.listPlugins() });
@@ -2927,8 +2942,12 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       );
     }
     case "browser.profile.create":
-      await client.createBrowserProfile(command.input.name);
-      return unsupportedMockRpc();
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          profile: await client.createBrowserProfile(command.input.name),
+        }),
+      );
     case "browser.source.pair":
       return rpcSuccess({ pairing: client.chrome.pair(mockPreviewOrigin()), type: command.type });
     case "browser.source.rename":
@@ -2947,11 +2966,15 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.password-sign-in.decline":
       return rpcSuccess({ status: client.declinePasswordSignIn(command), type: command.type });
     case "browser.profile.grant":
-      await client.grantBrowserProfile(command);
-      return unsupportedMockRpc();
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          grant: await client.grantBrowserProfile(command),
+        }),
+      );
     case "browser.profileGrant.revoke":
       await client.revokeBrowserProfileGrant(command.grantId);
-      return unsupportedMockRpc();
+      return rpcSuccess({ type: command.type });
     case "browser.history.remove":
       client.places!.removeHistory(command.profileId, command.url);
       return rpcSuccess({ type: command.type });
@@ -4676,13 +4699,164 @@ interface MockPlugin {
   scope: string;
   workspaceId: null;
   currentVersionId: string;
-  versions: { id: string; digest: string }[];
+  versions: { id: string; digest: string; specialistManifest?: SpecialistManifest | undefined }[];
   activations: { workspaceId: string }[];
 }
 class MockHostState {
   private readonly plugins: MockPlugin[] = [];
-  listSpecialists(): Record<string, unknown>[] {
-    return [];
+  private readonly specialists: {
+    id: string;
+    workspaceId: string;
+    pluginId: string;
+    pluginVersionId: string;
+    ownerUserId: string;
+    bindings: SpecialistBinding[];
+    manifest: SpecialistManifest;
+  }[] = [];
+  listSpecialists(workspaceId: string) {
+    return this.specialists
+      .filter((s) => s.workspaceId === workspaceId)
+      .map((s) => this.refreshSpecialist(s));
+  }
+  private refreshSpecialist(s: (typeof this.specialists)[number]): SpecialistRegistration {
+    const plugin = this.plugins.find((p) => p.id === s.pluginId)!;
+    const main =
+      this.snapshot.homeWorkspaceId === s.workspaceId && s.ownerUserId === this.snapshot.user?.id;
+    const access = (s.manifest.access ?? []).map((requirement, index) => {
+      const candidates =
+        requirement.type === "browser-profile"
+          ? this.snapshot.browserProfiles
+              .filter(
+                (p) =>
+                  main ||
+                  this.snapshot.browserProfileGrants.some(
+                    (g) =>
+                      g.workspaceId === s.workspaceId &&
+                      g.profileId === p.id &&
+                      (g.access === "read-write" || g.access === requirement.level),
+                  ),
+              )
+              .map((p) => ({ resourceId: p.id, name: p.name }))
+          : this.integrations.connections
+              .filter(
+                (c) =>
+                  c.status === "connected" &&
+                  (requirement.type === "integration"
+                    ? c.provider === requirement.service || c.definitionId === requirement.service
+                    : requirement.type === "phone"
+                      ? c.definitionId === "android-phone"
+                      : c.definitionId === "macos-app" &&
+                        c.computer?.app?.bundleId.toLowerCase() ===
+                          requirement.app.toLowerCase()) &&
+                  (!c.computer ||
+                    (c.computer.blockedAt === null &&
+                      (c.computer.access === "read-write" ||
+                        c.computer.access === requirement.level))) &&
+                  (main ||
+                    this.integrations.grants.some(
+                      (g) =>
+                        g.workspaceId === s.workspaceId &&
+                        g.ownerUserId === s.ownerUserId &&
+                        g.connectionId === c.id &&
+                        g.status === "active" &&
+                        g.revokedAt === null &&
+                        (g.access === "read-write" || g.access === requirement.level),
+                    )),
+              )
+              .map((c) => ({ resourceId: c.id, name: c.id }));
+      const previous = s.bindings.find((b) => b.requirement === index);
+      const resourceId =
+        previous && candidates.some((c) => c.resourceId === previous.resourceId)
+          ? previous.resourceId
+          : candidates.length === 1
+            ? candidates[0]!.resourceId
+            : null;
+      const binding = resourceId
+        ? { requirement: index, resourceId, level: requirement.level }
+        : null;
+      return {
+        ...requirement,
+        binding,
+        candidates,
+        state: binding
+          ? ("bound" as const)
+          : candidates.length
+            ? ("choose" as const)
+            : ("needs-access" as const),
+      };
+    });
+    s.bindings = access.flatMap((a) => (a.binding ? [a.binding] : []));
+    return {
+      id: s.id,
+      workspaceId: s.workspaceId,
+      pluginId: s.pluginId,
+      pluginVersionId: s.pluginVersionId,
+      ownerUserId: s.ownerUserId,
+      plugin: plugin.name,
+      version: plugin.versions.find((v) => v.id === s.pluginVersionId)!.digest,
+      models: s.manifest.models,
+      fallback: s.manifest.fallback,
+      status: access.every((a) => a.binding) ? "ready" : "pending",
+      access,
+    };
+  }
+  addSpecialist(workspaceId: string, pluginId: string) {
+    const plugin = this.plugins.find((p) => p.id === pluginId);
+    const version = plugin?.versions.find((v) => v.id === plugin.currentVersionId);
+    if (!plugin || !version?.specialistManifest)
+      throw new Error("Install a specialist package first");
+    const ownerUserId = this.snapshot.user!.id;
+    const previous = this.specialists.find(
+      (s) => s.workspaceId === workspaceId && s.pluginId === pluginId,
+    );
+    if (previous && previous.ownerUserId !== ownerUserId)
+      throw new Error("Only the consent owner may re-add this specialist");
+    this.mutatePlugin({
+      type: "plugin.activation.set",
+      idempotencyKey: crypto.randomUUID(),
+      pluginId,
+      workspaceId: WorkspaceIdSchema.parse(workspaceId),
+      active: true,
+    });
+    const registration = {
+      id: previous?.id ?? crypto.randomUUID(),
+      workspaceId,
+      pluginId,
+      pluginVersionId: version.id,
+      ownerUserId,
+      bindings: [],
+      manifest: version.specialistManifest,
+    };
+    if (previous) this.specialists.splice(this.specialists.indexOf(previous), 1);
+    this.specialists.push(registration);
+    return this.refreshSpecialist(registration);
+  }
+  bindSpecialist(input: {
+    workspaceId: string;
+    specialistId: string;
+    requirement: number;
+    resourceId: string;
+  }) {
+    const s = this.specialists.find(
+      (s) => s.id === input.specialistId && s.workspaceId === input.workspaceId,
+    );
+    if (!s || s.ownerUserId !== this.snapshot.user?.id)
+      throw new Error("Only the consent owner may bind this specialist");
+    const requirement = this.refreshSpecialist(s).access[input.requirement];
+    if (!requirement?.candidates.some((c) => c.resourceId === input.resourceId))
+      throw new Error("Choose a currently allowed candidate");
+    s.bindings = [
+      ...s.bindings.filter((b) => b.requirement !== input.requirement),
+      { requirement: input.requirement, resourceId: input.resourceId, level: requirement.level },
+    ];
+    return this.refreshSpecialist(s);
+  }
+  removeSpecialist(workspaceId: string, id: string) {
+    const index = this.specialists.findIndex(
+      (s) =>
+        s.id === id && s.workspaceId === workspaceId && s.ownerUserId === this.snapshot.user?.id,
+    );
+    if (index >= 0) this.specialists.splice(index, 1);
   }
   listPlugins(): Record<string, unknown>[] {
     return this.plugins.map((p) => ({ ...p }));
@@ -4696,10 +4870,18 @@ class MockHostState {
     const index = this.plugins.findIndex((p) => p.id === command.pluginId);
     const plugin = this.plugins[index];
     if (!plugin) throw new Error("Plugin not found");
-    if (command.type === "plugin.remove") this.plugins.splice(index, 1);
-    else if (command.type === "plugin.update") {
+    if (command.type === "plugin.remove") {
+      this.plugins.splice(index, 1);
+      for (let i = this.specialists.length - 1; i >= 0; i--)
+        if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
+    } else if (command.type === "plugin.update") {
       const id = crypto.randomUUID();
-      plugin.versions.push({ id, digest: id });
+      plugin.versions.push({
+        id,
+        digest: id,
+        specialistManifest: plugin.versions.find((v) => v.id === plugin.currentVersionId)
+          ?.specialistManifest,
+      });
       plugin.currentVersionId = id;
     } else {
       if (
@@ -5358,6 +5540,20 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    for (const p of options.specialistPlugins ?? []) {
+      const id = crypto.randomUUID();
+      this.plugins.push({
+        id: p.id,
+        name: p.name,
+        scope: "deployment",
+        workspaceId: null,
+        currentVersionId: id,
+        versions: [
+          { id, digest: id, specialistManifest: SpecialistManifestSchema.parse(p.manifest) },
+        ],
+        activations: [],
+      });
+    }
     this.sessions = [
       ...(options.sessions ?? [
         {
@@ -8603,20 +8799,36 @@ class MockHostState {
   }
 
   async createBrowserProfile(
-    _name: string,
+    name: string,
   ): Promise<import("../host/client.js").BrowserProfileSummary> {
-    throw new Error("The opt-in mock does not provide browser profiles.");
+    const profile = { id: createId("browserProfile"), name };
+    this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
+    return profile;
   }
-
-  async grantBrowserProfile(_input: {
+  async grantBrowserProfile(input: {
     profileId: string;
     workspaceId: string;
+    access?: "read" | "read-write";
   }): Promise<BrowserProfileGrantSummary> {
-    throw new Error("The opt-in mock does not provide browser profile grants.");
+    if (!this.snapshot.browserProfiles.some((p) => p.id === input.profileId))
+      throw new Error("Profile not found");
+    const grant = {
+      ...input,
+      access: input.access ?? ("read-write" as const),
+      id: createId("browserProfileGrant"),
+      createdAt: this.now().toISOString(),
+    };
+    this.update({
+      ...this.snapshot,
+      browserProfileGrants: [...this.snapshot.browserProfileGrants, grant],
+    });
+    return grant;
   }
-
-  async revokeBrowserProfileGrant(_grantId: string): Promise<void> {
-    throw new Error("The opt-in mock does not provide browser profile grants.");
+  async revokeBrowserProfileGrant(grantId: string): Promise<void> {
+    this.update({
+      ...this.snapshot,
+      browserProfileGrants: this.snapshot.browserProfileGrants.filter((g) => g.id !== grantId),
+    });
   }
 
   dispose(): void {

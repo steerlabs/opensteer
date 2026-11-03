@@ -1,3 +1,4 @@
+import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
 import { randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import {
@@ -2100,6 +2101,13 @@ export async function createHostRuntime(
                     actorUserId: scope.requestedBy,
                   })
                 : null;
+            if (registration)
+              await requestSpecialistRequirements({
+                registration,
+                scope: { ...scope, aud: "opensteer-integration-tools" },
+                browser,
+                integrations: integrationTools,
+              });
             return { pluginId, issues: result.issues, specialist: result.specialist, registration };
           },
         });

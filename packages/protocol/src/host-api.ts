@@ -13,6 +13,7 @@ import {
 } from "@opensteer/channel-core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
+  SpecialistRegistrationSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   AssignmentViewSchema,
@@ -803,6 +804,14 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.bind"),
+    workspaceId: WorkspaceIdSchema,
+    specialistId: z.string().min(1),
+    requirement: z.number().int().nonnegative(),
+    resourceId: z.string().min(1),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     type: z.literal("specialist.remove"),
     workspaceId: WorkspaceIdSchema,
     specialistId: z.string().min(1),
@@ -1264,11 +1273,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("integration.mcp.disconnect") }),
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
-  z.object({ type: z.literal("specialist.add"), specialist: z.record(z.string(), z.unknown()) }),
+  z.object({ type: z.literal("specialist.add"), specialist: SpecialistRegistrationSchema }),
+  z.object({ type: z.literal("specialist.bind"), specialist: SpecialistRegistrationSchema }),
   z.object({ type: z.literal("specialist.remove") }),
   z.object({
     type: z.literal("specialist.list"),
-    specialists: z.array(z.record(z.string(), z.unknown())),
+    specialists: z.array(SpecialistRegistrationSchema),
   }),
   z.object({ type: z.literal("plugin.activation.set") }),
   z.object({ type: z.literal("plugin.list"), plugins: z.array(z.record(z.string(), z.unknown())) }),
@@ -1642,7 +1652,7 @@ export const hostApi = defineRpc({
   "specialist.list": declaration(
     "GET",
     z.strictObject({ workspaceId: WorkspaceIdSchema }),
-    z.object({ specialists: z.array(z.record(z.string(), z.unknown())) }),
+    z.object({ specialists: z.array(SpecialistRegistrationSchema) }),
   ),
   "plugin.list": declaration(
     "GET",

@@ -1473,7 +1473,11 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
   it("is not redrawn by a streamed token, and a sign-in waiting on the reader marks only its tab", async () => {
     let host!: ReturnType<typeof steerable>;
     const w = await world({
-      prepare: (mock) => void (host = steerable(mock)),
+      prepare: (mock) => {
+        // Live mock activity has its own clock; this case drives only transcript and Request changes.
+        mock.scriptPlaces();
+        host = steerable(mock);
+      },
       routes: [{ name: "Tabs", params: { deploymentId } }],
     });
     const drawn = () => [

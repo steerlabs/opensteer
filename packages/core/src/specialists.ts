@@ -44,3 +44,27 @@ export const SpecialistBindingSchema = z.strictObject({
   level: ResourceAccessLevelSchema,
 });
 export type SpecialistBinding = z.infer<typeof SpecialistBindingSchema>;
+
+export const SpecialistRegistrationSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  pluginId: z.string().min(1),
+  pluginVersionId: z.string().min(1),
+  ownerUserId: z.string().min(1),
+  plugin: z.string(),
+  version: z.string(),
+  status: z.enum(["pending", "ready"]),
+  models: SpecialistManifestSchema.shape.models,
+  fallback: z.enum(["none", "caller"]),
+  access: z.array(
+    z.intersection(
+      SpecialistAccessRequirementSchema,
+      z.object({
+        binding: SpecialistBindingSchema.nullable(),
+        state: z.enum(["bound", "choose", "needs-access"]),
+        candidates: z.array(z.object({ resourceId: z.string().min(1), name: z.string() })),
+      }),
+    ),
+  ),
+});
+export type SpecialistRegistration = z.infer<typeof SpecialistRegistrationSchema>;
