@@ -301,12 +301,19 @@ export class SpecialistStore {
         message: "Only the consent owner may remove this specialist",
       });
     try {
-      if (!this.removalHandler)
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Specialist removal is unavailable",
-        });
-      await this.removalHandler(input);
+      const workspace = await this.database
+        .selectFrom("workspaces")
+        .select("status")
+        .where("id", "=", input.workspaceId)
+        .executeTakeFirstOrThrow();
+      if (workspace.status !== "deleted") {
+        if (!this.removalHandler)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Specialist removal is unavailable",
+          });
+        await this.removalHandler(input);
+      }
     } catch (error) {
       await this.database
         .updateTable("specialists")
@@ -358,12 +365,8 @@ export class SpecialistStore {
       .selectFrom("specialists")
       .selectAll()
       .where("pluginId", "=", pluginId)
-      .execute();
-    // Revoke every registration before attempting any remote cleanup.
-    await this.database
-      .updateTable("specialists")
-      .set({ removedAt: new Date(), status: "removing" })
-      .where("pluginId", "=", pluginId)
+      .orderBy("createdAt")
+      .orderBy("id")
       .execute();
     for (const row of rows)
       await this.cleanup({

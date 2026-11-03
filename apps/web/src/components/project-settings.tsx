@@ -701,7 +701,10 @@ function AccessItemRow({
   readonly onBind: (requirement: number, resourceId: string) => void;
   readonly workspaceId: string;
 }) {
-  const [choice, setChoice] = useState(item.candidates[0]?.resourceId ?? "");
+  const [selectedChoice, setChoice] = useState("");
+  const choice = item.candidates.some(({ resourceId }) => resourceId === selectedChoice)
+    ? selectedChoice
+    : (item.candidates[0]?.resourceId ?? "");
   const bound = item.binding
     ? (item.candidates.find(({ resourceId }) => resourceId === item.binding?.resourceId)?.name ??
       null)
@@ -725,9 +728,10 @@ function AccessItemRow({
             <Icon name="check" />
             {bound ? `Uses ${bound}` : "Allowed"}
           </span>
-        ) : item.state === "choose" ? (
+        ) : item.state === "choose" || (item.state === "rebind" && item.candidates.length > 0) ? (
           editable ? (
             <span className="specialist-access__choose">
+              {item.state === "rebind" ? <span>Choose which account to use now</span> : null}
               <select
                 aria-label={`Which to use for ${name}`}
                 className="select-input"

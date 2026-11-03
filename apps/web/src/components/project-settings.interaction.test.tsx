@@ -42,7 +42,7 @@ const section = (title: string) => {
   return heading.closest("section")!;
 };
 
-async function openProjectSettings({ offline = false } = {}) {
+async function openProjectSettings({ offline = false, rebind = false, restoreAccess = true } = {}) {
   await mount(
     (source) => {
       // Every snapshot the Host publishes reads as a lost connection.
@@ -58,7 +58,18 @@ async function openProjectSettings({ offline = false } = {}) {
       }
       return "/projects";
     },
-    { mock: { specialistPlugins: plugins } },
+    {
+      mock: {
+        specialistPlugins: rebind
+          ? [
+              {
+                ...plugins[0]!,
+                manifest: { ...researcher, access: researcher.access!.slice(0, 1) },
+              },
+            ]
+          : plugins,
+      },
+    },
   );
   const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
   const workspaceId = WorkspaceIdSchema.parse(project.id);
@@ -84,12 +95,67 @@ async function openProjectSettings({ offline = false } = {}) {
       workspaceId,
     });
   });
+  await act(async () => {
+    if (rebind) {
+      const result = await client.rpc["specialist.list"]({ workspaceId });
+      if (!result.ok) throw new Error("Specialists unavailable");
+      const specialist = result.data.specialists[0]!;
+      await client.dispatch({
+        type: "specialist.bind",
+        workspaceId,
+        specialistId: specialist.id,
+        requirement: 0,
+        resourceId: specialist.access[0]!.candidates[0]!.resourceId,
+        idempotencyKey: mutationIdempotencyKey("bind"),
+      });
+      for (const grant of client
+        .getSnapshot()
+        .browserProfileGrants.filter((g) => g.workspaceId === workspaceId)) {
+        await client.dispatch({
+          type: "browser.profileGrant.revoke",
+          grantId: grant.id,
+          idempotencyKey: mutationIdempotencyKey("revoke"),
+        });
+      }
+      const revoked = await client.rpc["specialist.list"]({ workspaceId });
+      expect(revoked).toMatchObject({
+        data: { specialists: [{ access: [{ state: "rebind", candidates: [] }] }] },
+      });
+      if (restoreAccess) {
+        await client.dispatch({
+          type: "browser.profile.grant",
+          workspaceId,
+          profileId: BrowserProfileIdSchema.parse(specialist.access[0]!.candidates[0]!.resourceId),
+          idempotencyKey: mutationIdempotencyKey("restore"),
+        });
+      }
+    }
+  });
   await act(async () => goTo!(`/workspaces/${project.id}/settings`));
   await settle(60);
   return project;
 }
 
 describe("a Project's settings", () => {
+  it("offers access setup for revoked access with no remaining candidates", async () => {
+    await openProjectSettings({ rebind: true, restoreAccess: false });
+    expect(button("Allow access", section("Specialists"))).toBeTruthy();
+    expect(section("Specialists").querySelector("select")).toBeNull();
+  });
+
+  it("offers an explicit choice after revoked access is restored and returns to ready", async () => {
+    await openProjectSettings({ rebind: true });
+    const dispatch = vi.spyOn(client, "dispatch");
+    expect(section("Specialists").textContent).toContain("Choose which account to use now");
+    await click(button("Use", section("Specialists")));
+    await settle();
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "specialist.bind", requirement: 0 }),
+    );
+    expect(section("Specialists").textContent).toContain("Uses Work");
+    expect(section("Specialists").textContent).not.toContain("Needs setup");
+  });
+
   it("walks a specialist from a choice to its remaining access, then removes it", async () => {
     const project = await openProjectSettings();
     const specialists = section("Specialists");

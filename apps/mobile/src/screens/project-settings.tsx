@@ -719,7 +719,10 @@ function SpecialistsSection(props: {
   const mine = list?.filter((registration) => registration.ownerUserId === props.userId) ?? [];
   const needsIntegration = mine.some((registration) =>
     registration.access.some(
-      (item) => item.type === "integration" && item.state === "needs-access",
+      (item) =>
+        item.type === "integration" &&
+        (item.state === "needs-access" ||
+          (item.state === "rebind" && item.candidates.length === 0)),
     ),
   );
   const accounts = useHostRead(
@@ -1024,14 +1027,14 @@ function AccessState(props: {
       </View>
     );
   }
-  if (item.state === "choose") {
+  if (item.state === "choose" || (item.state === "rebind" && item.candidates.length > 0)) {
     return props.editable ? (
       <ChoiceMenu
         accessibilityLabel={`Which to use for ${props.name}`}
         busy={props.busy}
         choices={item.candidates.map(({ name, resourceId }) => ({ id: resourceId, title: name }))}
         disabled={props.disabled}
-        label="Choose which to use"
+        label={item.state === "rebind" ? "Choose which account to use now" : "Choose which to use"}
         onChoose={props.onBind}
       />
     ) : (

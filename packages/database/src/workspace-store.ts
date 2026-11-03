@@ -677,6 +677,12 @@ export async function markWorkspaceDeleted(
         )
         .execute(databaseOperationOptions());
     }
+    // The durable destruction receipt also proves cleanup of specialist folders
+    // inside this Workspace's subtree.
+    await transaction
+      .deleteFrom("specialists")
+      .where("workspaceId", "=", input.workspaceId)
+      .execute(databaseOperationOptions());
     const deletedAt = new Date();
     const row = await transaction
       .updateTable("workspaces")

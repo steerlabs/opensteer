@@ -1,7 +1,7 @@
 import { createIntegrationId } from "@opensteer/integration-core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { createId, SpecialistManifestSchema } from "@opensteer/core";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { resolveResourceAccess } from "./resource-access.js";
@@ -232,7 +232,7 @@ describeStore("specialist registration", (test) => {
     expect((await check(profile.id)).access).toBeNull();
   });
 
-  test("plugin retirement revokes all registrations before cleanup and keeps offline cleanup retryable", async ({
+  test("plugin retirement keeps other Projects ready when one cleanup fails and can be retried", async ({
     storeFixture: fixture,
   }) => {
     const owner = await fixture.createRunFixture("retire-plugin");
@@ -256,7 +256,7 @@ describeStore("specialist registration", (test) => {
       pluginId,
       actorUserId: owner.userId,
     });
-    await platform.specialists.add({
+    const unaffected = await platform.specialists.add({
       workspaceId: owner.workspace.id,
       pluginId,
       actorUserId: owner.userId,
@@ -271,7 +271,14 @@ describeStore("specialist registration", (test) => {
       .where("pluginId", "=", pluginId)
       .execute();
     expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.removedAt && row.status !== "ready")).toBe(true);
+    expect(rows.find((row) => row.id === registration.id)).toMatchObject({
+      status: "removal-failed",
+      removedAt: expect.any(Date),
+    });
+    expect(rows.find((row) => row.id === unaffected.id)).toMatchObject({
+      status: "ready",
+      removedAt: null,
+    });
     await expect(platform.plugins.remove(pluginId)).rejects.toThrow("specialist");
     await expect(
       platform.specialists.assertRunnable(registration.id, workspace.id, owner.userId),
@@ -288,6 +295,72 @@ describeStore("specialist registration", (test) => {
     });
     await platform.plugins.remove(pluginId);
     expect((await platform.plugins.list()).some((plugin) => plugin.id === pluginId)).toBe(false);
+  });
+
+  test("purging a Project finalizes its specialists and plugin uninstall cleans the other Project", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("purge-specialist");
+    const a = await fixture.createProjectWorkspace(owner.userId, "purged");
+    const b = await fixture.createProjectWorkspace(owner.userId, "remaining");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "purge",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "e".repeat(64),
+      manifest: { name: "purge" },
+      specialistManifest: SpecialistManifestSchema.parse({
+        version: 1,
+        models: [{ engine: "claude", model: "haiku" }],
+      }),
+    });
+    for (const workspace of [a, b]) {
+      await platform.specialists.add({
+        workspaceId: workspace.id,
+        pluginId,
+        actorUserId: owner.userId,
+      });
+    }
+    const legacy = await fixture.database
+      .selectFrom("specialists")
+      .selectAll()
+      .where("workspaceId", "=", a.id)
+      .executeTakeFirstOrThrow();
+    await fixture.store.requestWorkspaceDeletion({
+      workspaceId: a.id,
+      requestedBy: owner.userId,
+      purgeAfter: new Date(),
+    });
+    // This commit follows the storage authority's durable destruction receipt.
+    await fixture.store.markWorkspaceDeleted({ workspaceId: a.id });
+    expect(await platform.specialists.list(a.id, owner.userId)).toEqual([]);
+    const cleanup = vi.fn(async ({ workspaceId }: { workspaceId: string }): Promise<void> => {
+      if (workspaceId === a.id) throw new Error("Binding destroyed");
+      throw new Error("B offline");
+    });
+    platform.specialists.setRemovalHandler(cleanup);
+    await expect(platform.specialists.retirePlugin(pluginId)).rejects.toThrow("B offline");
+    expect(await platform.specialists.list(a.id, owner.userId)).toEqual([]);
+    await expect(platform.plugins.remove(pluginId)).rejects.toThrow("specialist");
+    // An older Host may have committed destruction without removing its registration.
+    await fixture.database
+      .insertInto("specialists")
+      .values({
+        ...legacy,
+        bindings: sql`'[]'::jsonb`,
+      })
+      .execute();
+    cleanup.mockImplementation(async ({ workspaceId }) => {
+      if (workspaceId === a.id) throw new Error("Binding destroyed");
+    });
+    await platform.specialists.retirePlugin(pluginId);
+    await platform.plugins.remove(pluginId);
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: b.id }));
+    expect(await platform.specialists.list(b.id, owner.userId)).toEqual([]);
   });
 
   test("ambiguous consent requires an owner choice and list revalidates revocations", async ({
@@ -366,7 +439,13 @@ describeStore("specialist registration", (test) => {
       .execute();
     expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
       status: "pending",
-      access: [{ state: "rebind", binding: null }],
+      access: [
+        {
+          state: "rebind",
+          binding: null,
+          candidates: [{ resourceId: profiles[0]!.id, name: "First" }],
+        },
+      ],
     });
     expect((await platform.specialists.list(workspace.id, owner.userId))[0]?.status).toBe(
       "pending",
