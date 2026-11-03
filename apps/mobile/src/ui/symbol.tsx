@@ -75,6 +75,7 @@ export type SFSymbolName =
   | "photo"
   | "play"
   | "plus"
+  | "powerplug"
   | "puzzlepiece.extension"
   | "rectangle.on.rectangle"
   | "repeat"
@@ -235,6 +236,7 @@ const glyph: Record<SFSymbolName, string> = {
   photo: "▨",
   play: "▶\uFE0E",
   plus: "+",
+  powerplug: "⌁",
   "puzzlepiece.extension": "⧉",
   "rectangle.on.rectangle": "❐",
   repeat: "↻",

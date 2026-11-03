@@ -78,12 +78,18 @@ describe("Settings on a phone", () => {
   });
 
   it("lists each sign-in page, says where Passwords are kept, and opens each", async () => {
-    const signIns = { onBrowserProfiles: vi.fn(), onChrome: vi.fn(), onConnectedApps: vi.fn() };
+    const signIns = {
+      onBrowserProfiles: vi.fn(),
+      onChrome: vi.fn(),
+      onConnectedApps: vi.fn(),
+      onPlugins: vi.fn(),
+    };
     const onPasswordsAction = vi.fn();
     await render({ onPasswordsAction, signIns });
-    expect(document.body.textContent).toContain("Sign-ins");
+    expect(document.body.textContent).toContain("For agents");
     expect(labels().slice(1)).toEqual([
-      "Connected apps, Gmail, GitHub and the other accounts agents use",
+      "Connections, Gmail, GitHub and the other accounts agents use",
+      "Plugins, Skills, tools and specialists for your agents",
       "Chrome, Your Chrome and the sites agents can sign in to",
       "Browser profiles, Separate browsers with their own sign-ins",
       "Passwords, Kept on Mac mini",
@@ -99,11 +105,15 @@ describe("Settings on a phone", () => {
       buttonLabelled("Chrome, Your Chrome and the sites agents can sign in to")?.click(),
     );
     expect(signIns.onChrome).toHaveBeenCalledOnce();
+    await act(async () =>
+      buttonLabelled("Plugins, Skills, tools and specialists for your agents")?.click(),
+    );
+    expect(signIns.onPlugins).toHaveBeenCalledOnce();
   });
 
   it("shows no sign-ins while no Deployment is open", async () => {
     await render({ passwords: null, signIns: null });
-    expect(document.body.textContent).not.toContain("Sign-ins");
+    expect(document.body.textContent).not.toContain("For agents");
     expect(document.body.textContent).not.toContain("Passwords");
   });
 
@@ -194,7 +204,12 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
       facts: [],
       title: "Passwords",
     },
-    signIns: { onBrowserProfiles: vi.fn(), onChrome: vi.fn(), onConnectedApps: vi.fn() },
+    signIns: {
+      onBrowserProfiles: vi.fn(),
+      onChrome: vi.fn(),
+      onConnectedApps: vi.fn(),
+      onPlugins: vi.fn(),
+    },
     storageError: null,
     version: "1.0.0",
     ...overrides,

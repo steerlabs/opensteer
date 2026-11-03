@@ -31,11 +31,12 @@ export interface EngineUpdateRow {
   readonly updating: boolean;
 }
 
-/** The open Deployment's sign-in pages, which belong to it. */
+/** The open Deployment's pages for what agents use, which belong to it. */
 export interface SignInsSettingsActions {
   readonly onBrowserProfiles: () => void;
   readonly onChrome: () => void;
   readonly onConnectedApps: () => void;
+  readonly onPlugins: () => void;
 }
 
 export interface SettingsFormActionHandlers {

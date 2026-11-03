@@ -29,10 +29,12 @@ import { StyleSheet } from "react-native";
 import { color, deploymentPaint } from "../theme.js";
 import type { DeploymentMark } from "../threads/deployment-identity.js";
 import {
+  agentAccessSectionTitle,
   browserProfilesSettingsRow,
   chromeSettingsRow,
   computersSettingsFooter,
   connectedAppsSettingsRow,
+  pluginsSettingsRow,
   projectNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
@@ -136,12 +138,18 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         )}
 
         {props.signIns === null ? null : (
-          <Section title="Sign-ins">
+          <Section title={agentAccessSectionTitle}>
             <LinkRow
               detail={connectedAppsSettingsRow.detail}
               onPress={props.signIns.onConnectedApps}
-              symbol="puzzlepiece.extension"
+              symbol="powerplug"
               title={connectedAppsSettingsRow.title}
+            />
+            <LinkRow
+              detail={pluginsSettingsRow.detail}
+              onPress={props.signIns.onPlugins}
+              symbol="puzzlepiece.extension"
+              title={pluginsSettingsRow.title}
             />
             <LinkRow
               detail={chromeSettingsRow.detail}

@@ -3,8 +3,11 @@ import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
+  folderSignalWords,
+  groupTasksByProject,
   listedRowThreadId,
   mainWorkspace,
+  projectStatusLabel,
   sameTaskListSource,
   taskList,
   taskRowLabel,
@@ -12,6 +15,8 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
+  type ProjectFolder,
+  type ProjectGrouping,
   type TaskList,
   type TaskRow,
   type WorkspaceSurfaceDestination,
@@ -71,6 +76,8 @@ import { useContentInsets } from "../ui/pane.js";
 import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
+import { WorkspaceMark } from "../ui/workspace-mark.js";
+import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
 
 /** The root destinations the sidebar switches between. */
 export type SidebarDestination = "Home" | "Schedules" | "Projects" | "Tabs";
@@ -79,7 +86,10 @@ export interface SidebarActions {
   /** Closes the sidebar and hands focus back to whatever opened it. */
   readonly close: () => void;
   readonly onChat: () => void;
+  readonly onNewProject: (deploymentId: string) => void;
   readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
+  /** A Project's own page: its chat, tasks and settings. */
+  readonly onOpenProject: (deploymentId: string, workspaceId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
   readonly onOpenPlace: (destination: WorkspaceSurfaceDestination) => void;
   readonly onOpenTask: (deploymentId: string, threadId: string) => void;
@@ -95,6 +105,8 @@ export interface SidebarActions {
  * where a task started here would run.
  */
 interface SidebarModel {
+  /** Main's tasks, then one folder per Project, from the grouping web shares. */
+  readonly grouping: ProjectGrouping;
   readonly list: TaskList;
   /** The Host has sent its first page of tasks. */
   readonly loaded: boolean;
@@ -108,11 +120,13 @@ function sidebarModel(
   previous: Pick<TaskList, "ready"> | null,
 ): SidebarModel {
   const main = mainWorkspace(snapshot);
+  const list = taskList(snapshot, {
+    openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
+    previous,
+  });
   return {
-    list: taskList(snapshot, {
-      openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
-      previous,
-    }),
+    grouping: groupTasksByProject(snapshot, list),
+    list,
     loaded: snapshot.tasks !== null,
     taskWorkspaceId: main?.status === "ready" ? main.id : null,
   };
@@ -124,6 +138,8 @@ function sidebarModel(
  * opened from one must keep its shelf in whichever shows next.
  */
 export interface ShelfMemory {
+  /** Projects the reader folded; open is the default, so a new Project's first task shows. */
+  closedProjects: ReadonlySet<string>;
   list: Pick<TaskList, "ready"> | null;
 }
 
@@ -213,8 +229,9 @@ function useDoneShelf(): readonly [boolean, () => void] {
 
 /**
  * The sidebar is the one place to move between everything: Chat, New task,
- * Projects and Schedules; tasks grouped by what each asks of the reader —
- * Working, with anything waiting on them first; Ready; Done — then the Deployment's tabs,
+ * Projects and Schedules; Main's tasks grouped by what each asks of the reader —
+ * Working, with anything waiting on them first; Ready; Done — then each
+ * Project as a folder of its chat and work under way; then the Deployment's tabs,
  * apps and phones, and All tabs; and below them Settings and which
  * Deployment this is. Each row comes from the shared task and place lists, so
  * a task or tab reads the same here as on the web.
@@ -240,6 +257,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly selectedThreadId: string | null;
   /** The task whose conversation is on screen; opening it never moves its row. */
   readonly openThreadId: string | null;
+  /** The Project whose page or settings are in front. */
+  readonly openProjectId: string | null;
   readonly visible: boolean;
 }): ReactNode {
   const insets = useContentInsets();
@@ -261,6 +280,17 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   );
   const identity = useDeploymentIdentity(deploymentId);
   const [doneOpen, toggleDone] = useDoneShelf();
+  const [closedProjects, setClosedProjects] = useState(props.shelves.closedProjects);
+  const shelves = props.shelves;
+  const toggleProject = useCallback(
+    (workspaceId: string) => {
+      const next = new Set(shelves.closedProjects);
+      if (!next.delete(workspaceId)) next.add(workspaceId);
+      shelves.closedProjects = next;
+      setClosedProjects(next);
+    },
+    [shelves],
+  );
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
   const heading = useRef<TextInstance>(null);
@@ -309,11 +339,19 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     const threadId = listedRowThreadId(snapshot, selectedThreadId);
     return { chat: threadId === snapshot.homeThreadId, threadId };
   }, [hostClient, model, selectedThreadId]);
+  const main = model?.grouping.main ?? null;
+  const folders = useMemo(
+    () =>
+      model === null
+        ? []
+        : sidebarFolders(model.grouping.folders, closedProjects, selectedRow.threadId),
+    [closedProjects, model, selectedRow.threadId],
+  );
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
-  const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf) =>
+  const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf, nested = false) =>
     tasks.map((task) => (
-      <Animated.View key={task.threadId} layout={move}>
+      <Animated.View key={task.threadId} layout={move} style={nested && styles.nested}>
         <TaskRowView
           onOpen={openTask}
           onSetDone={moveTask}
@@ -398,7 +436,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           )}
           <DestinationRow
             current={destination === "Projects"}
-            icon="person.2"
+            icon="folder"
             label="Projects"
             onPress={actions.onProjects}
           />
@@ -417,14 +455,15 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             capturedAt={savedTasks.capturedAt}
           />
         ) : null}
-        {model === null ? null : !model.loaded ? (
+        {model === null || main === null ? null : !model.loaded ? (
           <View style={styles.loading}>
             <ActivityIndicator color={color.muted} />
           </View>
-        ) : model.list.working.length === 0 &&
-          model.list.ready.length === 0 &&
-          model.list.done.length === 0 &&
-          !model.list.hasMore ? (
+        ) : main.working.length === 0 &&
+          main.ready.length === 0 &&
+          main.done.length === 0 &&
+          !model.list.hasMore &&
+          folders.length === 0 ? (
           <View style={styles.welcome}>
             <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondaryMedium">
               Your tasks will show up here
@@ -435,12 +474,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             </AppText>
           </View>
         ) : (
-          // One keyed run of rows across every shelf, so a task changing shelves
-          // keeps its view and slides to its new place instead of reappearing.
+          // One keyed run of rows across every shelf and folder, so a task
+          // changing shelves keeps its view and slides to its new place
+          // instead of reappearing.
           [
             ...[
-              { rows: model.list.working, title: "Working" },
-              { rows: model.list.ready, title: "Ready" },
+              { rows: main.working, title: "Working" },
+              { rows: main.ready, title: "Ready" },
             ].flatMap((group) =>
               group.rows.length === 0
                 ? []
@@ -453,15 +493,17 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                     ...taskRows(group.rows, "open"),
                   ],
             ),
-            model.list.working.length === 0 && model.list.ready.length === 0 ? (
+            main.working.length === 0 &&
+            main.ready.length === 0 &&
+            (main.done.length > 0 || model.list.hasMore) ? (
               <AppText key="caught-up" role="caption" style={styles.empty} tone="muted">
                 You’re all caught up.
               </AppText>
             ) : null,
-            model.list.done.length === 0 ? null : (
+            main.done.length === 0 ? null : (
               <Pressable
-                accessibilityLabel={`Done, ${model.list.done.length} ${
-                  model.list.done.length === 1 ? "task" : "tasks"
+                accessibilityLabel={`Done, ${main.done.length} ${
+                  main.done.length === 1 ? "task" : "tasks"
                 }`}
                 accessibilityRole="button"
                 accessibilityState={{ expanded: doneOpen }}
@@ -488,35 +530,92 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                   role="caption"
                   style={styles.count}
                 >
-                  {String(model.list.done.length)}
+                  {String(main.done.length)}
                 </AppText>
               </Pressable>
             ),
-            ...(doneOpen ? taskRows(model.list.done, "done") : []),
-          ]
-        )}
-
-        {model === null || !model.list.hasMore ? null : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ busy: loadingEarlier }}
-            disabled={loadingEarlier}
-            onPress={loadEarlier}
-            style={({ pressed }) => [styles.more, pressed && styles.pressed]}
-          >
-            {loadingEarlier ? (
-              <ActivityIndicator color={color.muted} size="small" />
-            ) : (
-              <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
-                Show more
+            ...(doneOpen ? taskRows(main.done, "done") : []),
+            !model.list.hasMore ? null : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ busy: loadingEarlier }}
+                disabled={loadingEarlier}
+                key="show-more"
+                onPress={loadEarlier}
+                style={({ pressed }) => [styles.more, pressed && styles.pressed]}
+              >
+                {loadingEarlier ? (
+                  <ActivityIndicator color={color.muted} size="small" />
+                ) : (
+                  <AppText
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    role="caption"
+                    tone="muted"
+                  >
+                    Show more
+                  </AppText>
+                )}
+              </Pressable>
+            ),
+            earlierFailure === null ? null : (
+              <AppText key="earlier-failure" role="caption" style={styles.empty} tone="danger">
+                {earlierFailure}
               </AppText>
-            )}
-          </Pressable>
-        )}
-        {earlierFailure === null ? null : (
-          <AppText role="caption" style={styles.empty} tone="danger">
-            {earlierFailure}
-          </AppText>
+            ),
+            ...(folders.length === 0 || deploymentId === null
+              ? []
+              : [
+                  <ProjectsHead
+                    key="projects-head"
+                    onNewProject={() => actions.onNewProject(deploymentId)}
+                    onProjects={actions.onProjects}
+                  />,
+                  ...folders.flatMap((entry) => [
+                    <Animated.View key={`folder:${entry.folder.workspace.id}`} layout={move}>
+                      <ProjectFolderRow
+                        current={props.openProjectId === entry.folder.workspace.id}
+                        entry={entry}
+                        onNewTask={(workspaceId) => actions.onNewTask(deploymentId, workspaceId)}
+                        onOpen={(workspaceId) => actions.onOpenProject(deploymentId, workspaceId)}
+                        onToggle={toggleProject}
+                      />
+                    </Animated.View>,
+                    entry.chat === null ? null : (
+                      <Animated.View key={entry.chat.threadId} layout={move} style={styles.nested}>
+                        <FolderChatRow
+                          onOpen={openTask}
+                          row={entry.chat}
+                          selected={entry.chat.threadId === selectedRow.threadId}
+                        />
+                      </Animated.View>
+                    ),
+                    ...taskRows(entry.shown, "open", true),
+                    entry.more === 0 ? null : (
+                      <Pressable
+                        accessibilityHint={`Opens ${entry.folder.workspace.name}`}
+                        accessibilityRole="button"
+                        key={`more:${entry.folder.workspace.id}`}
+                        onPress={() =>
+                          actions.onOpenProject(deploymentId, entry.folder.workspace.id)
+                        }
+                        style={({ pressed }) => [
+                          styles.more,
+                          styles.nested,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <AppText
+                          maxFontSizeMultiplier={controlFontScaleLimit}
+                          role="caption"
+                          tone="muted"
+                        >
+                          {`${entry.more} more`}
+                        </AppText>
+                      </Pressable>
+                    ),
+                  ]),
+                ]),
+          ]
         )}
 
         <View style={styles.tabs}>
@@ -667,6 +766,156 @@ function ChatAccessory(props: { readonly row: TaskRow | null }): ReactNode {
   return row.unread ? <UnreadDot /> : null;
 }
 
+/**
+ * The Projects group's head: its name opens the directory, and + starts a
+ * new Project, so neither needs a trip through the list above.
+ */
+function ProjectsHead(props: {
+  readonly onNewProject: () => void;
+  readonly onProjects: () => void;
+}): ReactNode {
+  return (
+    <View style={styles.projectsHead}>
+      <Pressable
+        accessibilityHint="Opens all projects"
+        accessibilityLabel="Projects"
+        accessibilityRole="button"
+        onPress={props.onProjects}
+        style={({ pressed }) => [styles.projectsTitle, pressed && styles.pressed]}
+      >
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          role="caption"
+          style={styles.groupTitle}
+          tone="muted"
+        >
+          Projects
+        </AppText>
+      </Pressable>
+      <IconButton icon="plus" label="New project" onPress={props.onNewProject} small />
+    </View>
+  );
+}
+
+/**
+ * A Project as a folder: its mark and name open its page, + starts a task in
+ * it, and the chevron folds its rows away. Folded, it still says the one
+ * thing worth knowing about what it hides, so closing a folder never hides a
+ * question waiting on the reader.
+ */
+function ProjectFolderRow(props: {
+  readonly current: boolean;
+  readonly entry: SidebarFolder;
+  readonly onNewTask: (workspaceId: string) => void;
+  readonly onOpen: (workspaceId: string) => void;
+  readonly onToggle: (workspaceId: string) => void;
+}): ReactNode {
+  const { entry } = props;
+  const { workspace, signal, needsYou } = entry.folder;
+  const words = folderSignalWords(signal, needsYou);
+  const problem = projectStatusLabel(workspace);
+  const ready = workspace.status === "ready";
+  const hidden = (entry.folder.chat === null ? 0 : 1) + entry.folder.rows.length;
+  return (
+    <View style={[styles.folder, (props.current || entry.holdsOpenRow) && styles.current]}>
+      <Pressable
+        accessibilityHint="Opens this project"
+        accessibilityLabel={[workspace.name, words, problem].filter(Boolean).join(", ")}
+        accessibilityRole="button"
+        accessibilityState={{ selected: props.current }}
+        onPress={() => props.onOpen(workspace.id)}
+        style={({ pressed }) => [styles.folderMain, pressed && styles.pressed]}
+      >
+        <View style={styles.destinationMark}>
+          <WorkspaceMark
+            color={workspace.color}
+            icon={workspace.icon}
+            name={workspace.name}
+            size="mini"
+          />
+        </View>
+        <Text
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          style={[
+            type.secondary,
+            problem !== null
+              ? styles.disabledLabel
+              : props.current
+                ? styles.currentLabel
+                : styles.destinationLabel,
+          ]}
+        >
+          {workspace.name}
+        </Text>
+        {problem === null ? null : (
+          <Symbol name="exclamationmark.circle" size={14} tint={color.amber} />
+        )}
+        {/* Open, its rows say it themselves; folded, the folder says it for them. */}
+        {entry.open && entry.foldable ? null : <FolderSignal folder={entry.folder} />}
+      </Pressable>
+      <IconButton
+        disabled={!ready}
+        icon="plus"
+        label={
+          ready ? `New task in ${workspace.name}` : `New task in ${workspace.name}, unavailable`
+        }
+        onPress={() => props.onNewTask(workspace.id)}
+        small
+      />
+      {entry.foldable ? (
+        <IconButton
+          expanded={entry.open}
+          icon={entry.open ? "chevron.down" : "chevron.right"}
+          label={`${entry.open ? "Fold" : "Unfold"} ${workspace.name}${
+            !entry.open && hidden > 0 ? `, ${hidden} hidden` : ""
+          }`}
+          onPress={() => props.onToggle(workspace.id)}
+          small
+        />
+      ) : (
+        <View style={styles.iconSpacer} />
+      )}
+    </View>
+  );
+}
+
+/** What a folded folder says for the work it hides, loudest first. */
+function FolderSignal(props: { readonly folder: ProjectFolder }): ReactNode {
+  switch (props.folder.signal) {
+    case "needs-you":
+      return <NeedsYouTag />;
+    case "working":
+      return <ActivityIndicator color={color.ember} size="small" />;
+    case "failed":
+      return <Symbol name="exclamationmark.circle" size={14} tint={color.red} />;
+    case "unread":
+      return <UnreadDot />;
+    case null:
+      return null;
+  }
+}
+
+/** A Project's own chat, first in its folder. */
+function FolderChatRow(props: {
+  readonly onOpen: (threadId: string) => void;
+  readonly row: TaskRow;
+  readonly selected: boolean;
+}): ReactNode {
+  const { row } = props;
+  return (
+    <DestinationRow
+      accessibilityLabel={taskRowLabel(row, { chat: true })}
+      accessory={<ChatAccessory row={row} />}
+      current={props.selected}
+      icon="bubble.left"
+      label={CHAT_THREAD_TITLE}
+      mark={<ChatOrb size={16} />}
+      onPress={() => props.onOpen(row.threadId)}
+    />
+  );
+}
+
 /** A group's label over its rows: Working with its count, Ready. */
 function GroupHead(props: { readonly count?: number; readonly title: string }): ReactNode {
   return (
@@ -697,6 +946,8 @@ function GroupHead(props: { readonly count?: number; readonly title: string }): 
 /** A glyph-only control in the sidebar's head or a section's head, at a full touch target. */
 function IconButton(props: {
   readonly disabled?: boolean;
+  /** For a control that folds something: whether it is open now. */
+  readonly expanded?: boolean;
   readonly icon: SFSymbolName;
   readonly label: string;
   readonly onPress: () => void;
@@ -707,7 +958,10 @@ function IconButton(props: {
     <Pressable
       accessibilityLabel={props.label}
       accessibilityRole="button"
-      accessibilityState={{ disabled: props.disabled === true }}
+      accessibilityState={{
+        disabled: props.disabled === true,
+        ...(props.expanded === undefined ? {} : { expanded: props.expanded }),
+      }}
       disabled={props.disabled}
       onPress={props.onPress}
       style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
@@ -846,6 +1100,44 @@ const styles = StyleSheet.create({
     paddingTop: space[16],
   },
   groupTitle: { fontWeight: "600" },
+  folder: {
+    alignItems: "center",
+    borderColor: "transparent",
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    minHeight: touchTarget,
+  },
+  folderMain: {
+    alignItems: "center",
+    alignSelf: "stretch",
+    borderRadius: radius.md,
+    cursor: "pointer",
+    flex: 1,
+    flexDirection: "row",
+    gap: space[12],
+    minWidth: 0,
+    paddingHorizontal: space[12] - 1,
+  },
+  iconSpacer: { width: touchTarget },
+  // A folder's rows step in under its mark, so they read as its contents.
+  nested: { marginLeft: space[12] },
+  projectsHead: {
+    alignItems: "center",
+    borderColor: color.line,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    marginTop: space[12],
+    paddingLeft: space[12],
+    paddingTop: space[4],
+  },
+  projectsTitle: {
+    borderRadius: radius.xs,
+    cursor: "pointer",
+    flex: 1,
+    justifyContent: "center",
+    minHeight: touchTarget,
+  },
   head: {
     alignItems: "center",
     flexDirection: "row",

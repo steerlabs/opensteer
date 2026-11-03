@@ -152,7 +152,10 @@ vi.mock("../threads/tasks-pane.js", () => ({
   TasksPane: ({ header }: { readonly header: ReactNode }) => <>{header}</>,
 }));
 vi.mock("../thread/thread-pane.js", () => ({ sameThreadHeader: () => false }));
-vi.mock("../navigation-header.js", () => ({ browserHeaderActions: () => ({}) }));
+vi.mock("../navigation-header.js", () => ({
+  browserHeaderActions: () => ({}),
+  headerActions: () => ({}),
+}));
 vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => false }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined }));
 vi.mock("../ui/screen.js", () => ({
@@ -160,7 +163,8 @@ vi.mock("../ui/screen.js", () => ({
 }));
 vi.mock("../ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
 vi.mock("../client/mobile-client.js", () => ({
-  operationDetail: (_error: unknown, fallback: string) => fallback,
+  operationDetail: (error: unknown, fallback: string) =>
+    error instanceof Error ? error.message : fallback,
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
@@ -180,6 +184,9 @@ vi.mock("../ui/primitives.js", () => ({
     readonly onPress: () => void;
   }) => <button onClick={onPress}>{label}</button>,
   StatusDot: () => null,
+  CodeBlock: ({ label, text }: { readonly label?: string; readonly text: string }) => (
+    <pre aria-label={label}>{text}</pre>
+  ),
 }));
 vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,

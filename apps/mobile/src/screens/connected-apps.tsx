@@ -58,7 +58,7 @@ export function ConnectedAppsScreen({
           <AppText role="secondary" tone="muted">
             {row === undefined
               ? "This deployment is no longer on this phone."
-              : `Open ${row.name} to manage its connected apps.`}
+              : `Open ${row.name} to manage its connections.`}
           </AppText>
         </View>
       </Screen>
@@ -78,7 +78,7 @@ function SignedInConnectedApps(props: {
       <Screen>
         <View style={styles.away}>
           <AppText role="secondary" tone="muted">
-            Sign in to this deployment to manage its connected apps.
+            Sign in to this deployment to manage its connections.
           </AppText>
         </View>
       </Screen>
@@ -115,7 +115,7 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
       setLoadError(null);
       return dashboard;
     } catch (reason) {
-      setLoadError(operationDetail(reason, "Connected apps could not be loaded."));
+      setLoadError(operationDetail(reason, "Connections could not be loaded."));
       return null;
     }
   }, [hostClient, hostName]);
@@ -271,7 +271,7 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
           <Notice
             action={{ label: "Try again", onPress: () => void load() }}
             detail={loadError}
-            title="Connected apps could not be loaded"
+            title="Connections could not be loaded"
           />
         )}
         {apps !== null && apps.length === 0 ? (

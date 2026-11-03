@@ -30,7 +30,9 @@ import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
 import { SettingsScreen } from "./screens/settings.js";
+import { PluginsScreen, type PluginsDestination } from "./screens/plugins.js";
 import { ProjectScreen } from "./screens/project.js";
+import { ProjectSettingsScreen } from "./screens/project-settings.js";
 import { ProjectsScreen } from "./screens/projects.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
@@ -134,6 +136,9 @@ const RootStack = createNativeStackNavigator({
     // One project, over the directory. Its name is the large title, set
     // once it loads, so it folds into the bar as its work scrolls under it.
     Project: { screen: ProjectScreen, options: { headerLargeTitle: true, title: "" } },
+    // A project's people, access, plugins, specialists, mute and deletion,
+    // from the gear in its bar. Back returns to the project.
+    ProjectSettings: { screen: ProjectSettingsScreen, options: { title: "Project settings" } },
     Thread: {
       screen: ThreadScreen,
       // A task just started takes the place of its New task screen: it fades
@@ -316,7 +321,19 @@ const RootStack = createNativeStackNavigator({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
         presentation: "modal",
-        title: "Connected apps",
+        title: "Connections",
+      }),
+    },
+    // Plugins, a modal over Settings like Connections, or over a project's
+    // settings from its Plugins section.
+    Plugins: {
+      screen: PluginsScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({
+          right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
+        }),
+        presentation: "modal",
+        title: "Plugins",
       }),
     },
     Computer: {
@@ -447,7 +464,9 @@ type OpensteerRootParamList = {
   readonly Schedule: ScheduleDestination;
   readonly Schedules: { readonly deploymentId: string };
   readonly Settings: undefined;
+  readonly Plugins: PluginsDestination;
   readonly Project: { readonly deploymentId: string; readonly workspaceId: string };
+  readonly ProjectSettings: { readonly deploymentId: string; readonly workspaceId: string };
   readonly Projects: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };

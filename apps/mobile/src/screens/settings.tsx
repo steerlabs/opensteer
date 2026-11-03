@@ -138,6 +138,7 @@ export function SettingsScreen(): ReactNode {
             onBrowserProfiles: () => navigation.navigate("BrowserProfiles", { deploymentId }),
             onChrome: () => navigation.navigate("Chrome", { deploymentId }),
             onConnectedApps: () => navigation.navigate("ConnectedApps", { deploymentId }),
+            onPlugins: () => navigation.navigate("Plugins", { deploymentId }),
           },
     [deploymentId, navigation, selection.hostClient],
   );

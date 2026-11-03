@@ -6,10 +6,12 @@ import { AppText, RowGroup, SecondaryButton, SectionLabel, SwitchRow } from "../
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
+  agentAccessSectionTitle,
   browserProfilesSettingsRow,
   chromeSettingsRow,
   computersSettingsFooter,
   connectedAppsSettingsRow,
+  pluginsSettingsRow,
   projectNotificationsFooter,
   type SettingsActionModel,
 } from "./settings-model.js";
@@ -96,15 +98,22 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
         )}
 
         {props.signIns === null ? null : (
-          <Section label="Sign-ins">
+          <Section label={agentAccessSectionTitle}>
             <RowGroup>
               {[
                 <LinkRow
                   detail={connectedAppsSettingsRow.detail}
                   key="connected-apps"
-                  lead={<Tile symbol="puzzlepiece.extension" />}
+                  lead={<Tile symbol="powerplug" />}
                   onPress={props.signIns.onConnectedApps}
                   title={connectedAppsSettingsRow.title}
+                />,
+                <LinkRow
+                  detail={pluginsSettingsRow.detail}
+                  key="plugins"
+                  lead={<Tile symbol="puzzlepiece.extension" />}
+                  onPress={props.signIns.onPlugins}
+                  title={pluginsSettingsRow.title}
                 />,
                 <LinkRow
                   detail={chromeSettingsRow.detail}

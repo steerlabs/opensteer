@@ -147,7 +147,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // column are different views of it, and the shell outlives both, so a fold
   // that swaps one for the other returns the list where it was.
   const scrollMemory = useRef<ScrollMemory>({ offset: 0 }).current;
-  const shelfMemory = useRef<ShelfMemory>({ list: null }).current;
+  const shelfMemory = useRef<ShelfMemory>({ closedProjects: new Set(), list: null }).current;
   const { fontScale } = window;
   const rtl = I18nManager.isRTL;
   const [visible, setVisible] = useState(false);
@@ -175,6 +175,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const selectedThreadId =
     focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
       ? focusedParams["threadId"]
+      : null;
+  const openProjectId =
+    (focused?.name === "Project" || focused?.name === "ProjectSettings") &&
+    typeof focusedParams?.["workspaceId"] === "string"
+      ? focusedParams["workspaceId"]
       : null;
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
@@ -343,9 +348,25 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         // whom it talks to.
         go("WorkspaceBrowser", workspaceRoute(targetDeploymentId, destination), false);
       },
+      onNewProject: (targetDeploymentId) => {
+        leave();
+        navigation.dispatch(StackActions.push("NewProject", { deploymentId: targetDeploymentId }));
+      },
       onNewTask: (targetDeploymentId, workspaceId) => {
         leave();
         go("NewTask", { deploymentId: targetDeploymentId, workspaceId }, false);
+      },
+      onOpenProject: (targetDeploymentId, workspaceId) => {
+        leave();
+        const state = latest.current;
+        const current = state.routes[state.index];
+        if (
+          current?.name === "Project" &&
+          isRecord(current.params) &&
+          current.params["workspaceId"] === workspaceId
+        )
+          return;
+        go("Project", { deploymentId: targetDeploymentId, workspaceId }, false);
       },
       onOpenTask: (targetDeploymentId, threadId) => {
         leave();
@@ -411,6 +432,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
+                  openProjectId={openProjectId}
                   selectedThreadId={selectedThreadId}
                   openThreadId={selectedThreadId}
                   visible={visible}
@@ -447,6 +469,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
+                      openProjectId={openProjectId}
                       selectedThreadId={selectedThreadId}
                       openThreadId={selectedThreadId}
                       visible

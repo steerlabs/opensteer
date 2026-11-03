@@ -313,9 +313,18 @@ export const browserProfilesSettingsRow = {
 } as const;
 
 /** Chrome is connected from a computer; the phone sees it and manages allowed sites. */
+/** The section of what agents can reach: accounts, plugins, browsers and passwords. */
+export const agentAccessSectionTitle = "For agents";
+
 export const connectedAppsSettingsRow = {
   detail: "Gmail, GitHub and the other accounts agents use",
-  title: "Connected apps",
+  title: "Connections",
+} as const;
+
+/** Installed by an administrator, then turned on per project, apart from what it may access. */
+export const pluginsSettingsRow = {
+  detail: "Skills, tools and specialists for your agents",
+  title: "Plugins",
 } as const;
 
 export const chromeSettingsRow = {

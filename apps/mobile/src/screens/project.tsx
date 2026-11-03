@@ -1,9 +1,8 @@
 import {
-  mutationIdempotencyKey,
+  canRespondToRequests,
   sameStableHostSnapshot,
   unwrapRpcResult,
   type HostClient,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -19,14 +18,17 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import { headerActions } from "../navigation-header.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { color, space } from "../theme.js";
+import { color, material, radius, space, touchTarget } from "../theme.js";
 import { TasksPane } from "../threads/tasks-pane.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
+import { ChatOrb } from "../ui/chat-orb.js";
 import { Screen } from "../ui/screen.js";
 import { ProjectMarkPicker } from "../ui/mark-picker.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { ProjectHealthNotice } from "./project-health.js";
 
 export type ProjectScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -34,32 +36,8 @@ export type ProjectScreenProps = StaticScreenProps<{
 }>;
 
 /**
- * What a Workspace that is not ready says about itself, or null when it is.
- * A storage problem the Host reported is said in the Host's own words.
- */
-export function projectStatus(workspace: WorkspaceSummary): string | null {
-  if (workspace.storageIssue?.code === "relocation-required") return null;
-  switch (workspace.status) {
-    case "ready":
-      return workspace.storageIssue?.message ?? null;
-    case "provisioning":
-      return "Preparing its files";
-    case "archiving":
-    case "archived":
-      return "Archived";
-    case "unavailable":
-      return workspace.storageIssue?.message ?? "Its files are unavailable right now";
-    case "failed":
-      return workspace.storageIssue?.message ?? "Its storage could not be set up";
-    case "deleting":
-    case "deleted":
-      return "Being deleted";
-  }
-}
-
-/**
- * One project: who it is, what it holds, and its own tasks, in the
- * sidebar's rows.
+ * One project: who it is, what it holds, its chat and its own tasks, in
+ * the sidebar's rows, with its settings one tap away in the bar.
  *
  * Start a task opens a task inside this Workspace, with its files and access;
  * Back from that task returns here. The facts shown are the ones the Host
@@ -87,8 +65,6 @@ function ProjectDetail(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const [editingMark, setEditingMark] = useState(false);
-  const [adopting, setAdopting] = useState(false);
-  const [relocationError, setRelocationError] = useState<string | null>(null);
   const markTrigger = useRef<HostInstance>(null);
   const [membershipRead, setMembershipRead] = useState(0);
   const [ownership, setOwnership] = useState<{
@@ -145,9 +121,21 @@ function ProjectDetail(props: {
     }, [changeable, hostClient, membershipRead, userId, workspaceId]),
   );
 
+  const hasWorkspace = workspace !== null;
   useLayoutEffect(() => {
-    navigation.setOptions({ title: workspace?.name ?? "" });
-  }, [navigation, workspace?.name]);
+    navigation.setOptions({
+      title: workspace?.name ?? "",
+      ...(hasWorkspace
+        ? headerActions({
+            right: {
+              icon: "gearshape",
+              label: "Project settings",
+              onPress: () => navigation.navigate("ProjectSettings", { deploymentId, workspaceId }),
+            },
+          })
+        : {}),
+    });
+  }, [deploymentId, hasWorkspace, navigation, workspace?.name, workspaceId]);
 
   const openTask = useCallback(
     (threadId: string) => navigation.navigate("Thread", { deploymentId, threadId }),
@@ -176,13 +164,10 @@ function ProjectDetail(props: {
     );
   }
 
-  const status = projectStatus(workspace);
-
-  const canEditMark =
-    changeable &&
-    ownership?.hostClient === hostClient &&
-    ownership.userId === userId &&
-    ownership.owner;
+  const owner =
+    ownership?.hostClient === hostClient && ownership.userId === userId && ownership.owner;
+  const canEditMark = changeable && owner;
+  const connected = canRespondToRequests(snapshot);
   return (
     <Screen edgeToEdge>
       {editingMark ? (
@@ -237,56 +222,45 @@ function ProjectDetail(props: {
                     is not the same thing as shared storage. */}
                 {workspace.machineName === null ? null : (
                   <AppText role="caption" tone="muted">
-                    {`Files on ${workspace.machineName}`}
-                  </AppText>
-                )}
-                {status === null ? null : (
-                  <AppText role="caption" style={styles.status}>
-                    {status}
+                    {`Its folder is in Main on ${workspace.machineName}`}
                   </AppText>
                 )}
               </View>
             </View>
-            {workspace.storageIssue?.code === "relocation-required" ? (
-              <View>
-                <Notice
-                  title="Move this Project into Main"
-                  detail={workspace.storageIssue.message}
-                  tone="neutral"
-                />
-                {relocationError ? <AppText>{relocationError}</AppText> : null}
-                <SecondaryButton
-                  label="I moved it"
-                  disabled={adopting}
-                  onPress={() => {
-                    setAdopting(true);
-                    setRelocationError(null);
-                    void hostClient
-                      .dispatch({
-                        type: "workspace.adoptRelocated",
-                        workspaceId,
-                        idempotencyKey: mutationIdempotencyKey("workspace-adopt"),
-                      })
-                      .catch((error: unknown) =>
-                        setRelocationError(
-                          error instanceof Error ? error.message : "Could not confirm relocation",
-                        ),
-                      )
-                      .finally(() => setAdopting(false));
-                  }}
+            <ProjectHealthNotice
+              connected={connected}
+              hostClient={hostClient}
+              owner={owner}
+              workspace={workspace}
+            />
+            {connected ? null : (
+              <AppText role="caption" tone="muted">
+                Opensteer can’t be reached right now. Changes wait until it’s back.
+              </AppText>
+            )}
+            <View style={styles.actions}>
+              {workspace.homeThreadId ? (
+                <Pressable
+                  accessibilityHint="Opens this project’s chat"
+                  accessibilityLabel={`Chat in ${workspace.name}`}
+                  accessibilityRole="button"
+                  onPress={() => openTask(workspace.homeThreadId!)}
+                  style={({ pressed }) => [styles.chat, pressed && styles.chatPressed]}
+                >
+                  <ChatOrb size={20} />
+                  <AppText role="bodyMedium">Chat</AppText>
+                </Pressable>
+              ) : null}
+              {/* A task is written before it is made, so only a Workspace that
+                  cannot hold one stops it; the notice above already says why. */}
+              <View style={styles.grow}>
+                <PrimaryButton
+                  disabled={workspace.status !== "ready"}
+                  label="New task"
+                  onPress={() => navigation.navigate("NewTask", { deploymentId, workspaceId })}
                 />
               </View>
-            ) : null}
-            {workspace.homeThreadId ? (
-              <SecondaryButton label="Chat" onPress={() => openTask(workspace.homeThreadId!)} />
-            ) : null}
-            {/* A task is written before it is made, so only a Workspace that
-                cannot hold one stops it; the line above already says why. */}
-            <PrimaryButton
-              disabled={workspace.status !== "ready"}
-              label="Start a task"
-              onPress={() => navigation.navigate("NewTask", { deploymentId, workspaceId })}
-            />
+            </View>
           </View>
         }
         hostClient={hostClient}
@@ -300,6 +274,18 @@ function ProjectDetail(props: {
 }
 
 const styles = StyleSheet.create({
+  actions: { alignItems: "center", flexDirection: "row", gap: space[12] },
+  chat: {
+    ...material.control,
+    alignItems: "center",
+    borderRadius: radius.full,
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: touchTarget,
+    paddingHorizontal: space[16],
+  },
+  chatPressed: { ...material.quiet },
+  grow: { flex: 1 },
   markControl: {
     minWidth: Platform.OS === "android" ? 48 : 44,
     minHeight: Platform.OS === "android" ? 48 : 44,
@@ -311,5 +297,4 @@ const styles = StyleSheet.create({
   facts: { flex: 1, gap: space[4], justifyContent: "center", minHeight: 32 },
   hero: { gap: space[16], paddingBottom: space[8], paddingTop: space[4] },
   identity: { alignItems: "flex-start", flexDirection: "row", gap: space[12] },
-  status: { color: color.amber },
 });

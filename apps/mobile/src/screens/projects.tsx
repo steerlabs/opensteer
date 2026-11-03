@@ -1,8 +1,12 @@
 import {
   canRespondToRequests,
+  folderSignalWords,
+  groupTasksByProject,
+  projectStatusLabel,
   sameStableHostSnapshot,
+  taskList,
   type HostClient,
-  type WorkspaceSummary,
+  type ProjectFolder,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -30,13 +34,15 @@ import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
+import { NeedsYouTag, UnreadDot } from "../threads/task-row.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { projectStatus } from "./project.js";
 
 export type ProjectsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
 /**
- * Projects: this Deployment's project Workspaces.
+ * Projects: this Deployment's project Workspaces, each with the one thing
+ * worth knowing about it now — a folder problem, or what its work asks of
+ * the reader — from the same grouping the sidebar folders read.
  *
  * Each is a place with its own files, instructions and access, not a voice
  * Chat puts on — opening one shows its own work and starts tasks inside it.
@@ -55,7 +61,7 @@ interface Directory {
   readonly canCreate: boolean;
   readonly hasMore: boolean;
   readonly loaded: boolean;
-  readonly projects: readonly WorkspaceSummary[];
+  readonly projects: readonly ProjectFolder[];
 }
 
 function ProjectDirectory(props: {
@@ -77,7 +83,7 @@ function ProjectDirectory(props: {
       canCreate: canRespondToRequests(snapshot),
       hasMore: snapshot.workspaceWindow.hasMore,
       loaded: snapshot.workspaces.length > 0,
-      projects: snapshot.workspaces.filter(({ kind }) => kind === "project"),
+      projects: groupTasksByProject(snapshot, taskList(snapshot)).folders,
     }),
     [snapshot],
   );
@@ -123,9 +129,7 @@ function ProjectDirectory(props: {
   };
 
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<WorkspaceSummary>) => (
-      <ProjectRow onPress={open} workspace={item} />
-    ),
+    ({ item }: ListRenderItemInfo<ProjectFolder>) => <ProjectRow folder={item} onPress={open} />,
     [open],
   );
 
@@ -135,7 +139,7 @@ function ProjectDirectory(props: {
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
         data={directory.projects}
-        keyExtractor={(workspace) => workspace.id}
+        keyExtractor={(folder) => folder.workspace.id}
         ListEmptyComponent={
           !directory.loaded && loadError === null ? (
             <View style={styles.loading}>
@@ -143,11 +147,11 @@ function ProjectDirectory(props: {
             </View>
           ) : (
             <View style={styles.empty}>
-              <Symbol name="person.2" size={30} tint={color.mutedDim} />
+              <Symbol name="folder" size={30} tint={color.mutedDim} />
               <AppText role="title">No projects yet</AppText>
               <AppText role="secondary" style={styles.centred} tone="muted">
-                A project keeps its own files, instructions and access for work you come back to.
-                You don’t need one to ask in Chat.
+                Give recurring or long-running work its own folder inside Main, with its own chat,
+                tasks, people and access. You don’t need one to ask in Chat.
               </AppText>
               {directory.canCreate ? (
                 <SecondaryButton compact label="New project" onPress={create} />
@@ -165,8 +169,23 @@ function ProjectDirectory(props: {
         ListHeaderComponent={
           loadError === null && failure === null ? undefined : (
             <Notice
+              action={{
+                label: "Try again",
+                onPress: () => {
+                  if (failure === null) {
+                    void props.hostClient.refresh().catch(() => undefined);
+                    return;
+                  }
+                  setFailure(null);
+                  loadMore();
+                },
+              }}
               detail={failure ?? loadError ?? ""}
-              title="Something did not work"
+              title={
+                failure === null
+                  ? "Projects could not be read"
+                  : "More projects could not be loaded"
+              }
               tone="neutral"
             />
           )
@@ -180,18 +199,25 @@ function ProjectDirectory(props: {
 }
 
 interface ProjectRowProps {
+  readonly folder: ProjectFolder;
   readonly onPress: (workspaceId: string) => void;
-  readonly workspace: WorkspaceSummary;
 }
 
 const ProjectRow = memo(function ProjectRow(props: ProjectRowProps): ReactNode {
-  const { workspace } = props;
-  const status = projectStatus(workspace);
-  const detail = workspace.description.trim();
+  const { workspace, signal, needsYou, rows } = props.folder;
+  const problem = projectStatusLabel(workspace);
+  const words = problem ?? folderSignalWords(signal, needsYou);
+  const description = workspace.description.trim();
+  const detail =
+    description !== ""
+      ? description
+      : rows.length > 0
+        ? `${rows.length} ${rows.length === 1 ? "task" : "tasks"} open`
+        : null;
   return (
     <Pressable
       accessibilityHint="Opens this project"
-      accessibilityLabel={[workspace.name, detail, status].filter(Boolean).join(". ")}
+      accessibilityLabel={[workspace.name, words, detail].filter(Boolean).join(". ")}
       accessibilityRole="button"
       onPress={() => props.onPress(workspace.id)}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
@@ -201,34 +227,70 @@ const ProjectRow = memo(function ProjectRow(props: ProjectRowProps): ReactNode {
         <AppText numberOfLines={1} role="title">
           {workspace.name}
         </AppText>
-        {detail === "" ? null : (
+        {detail === null ? null : (
           <AppText numberOfLines={2} role="secondary" tone="muted">
             {detail}
           </AppText>
         )}
-        {status === null ? null : (
-          <AppText role="caption" style={styles.status} tone="muted">
-            {status}
-          </AppText>
+        {problem === null ? null : (
+          <View style={styles.problem}>
+            <Symbol name="exclamationmark.circle" size={13} tint={color.amber} />
+            <AppText role="caption" style={styles.status}>
+              {problem}
+            </AppText>
+          </View>
         )}
       </View>
+      {problem === null ? <FolderState folder={props.folder} /> : null}
       <Symbol name="chevron.right" size={13} tint={color.mutedDim} />
     </Pressable>
   );
 }, sameProjectRowProps);
 
+/** What its work asks of the reader, in the sidebar folder's own marks. */
+function FolderState(props: { readonly folder: ProjectFolder }): ReactNode {
+  const { signal, rows } = props.folder;
+  switch (signal) {
+    case "needs-you":
+      return <NeedsYouTag />;
+    case "working": {
+      const working = rows.filter((row) => row.tone === "working").length;
+      return (
+        <AppText role="caption" tone="ember">
+          {working > 1 ? `${working} working` : "Working"}
+        </AppText>
+      );
+    }
+    case "failed":
+      return (
+        <AppText role="caption" tone="danger">
+          Couldn’t finish
+        </AppText>
+      );
+    case "unread":
+      return <UnreadDot />;
+    case null:
+      return null;
+  }
+}
+
 function sameProjectRowProps(left: ProjectRowProps, right: ProjectRowProps): boolean {
-  const a = left.workspace;
-  const b = right.workspace;
+  const a = left.folder;
+  const b = right.folder;
   return (
     left.onPress === right.onPress &&
-    a.id === b.id &&
-    a.name === b.name &&
-    a.description === b.description &&
-    a.icon === b.icon &&
-    a.color === b.color &&
-    a.status === b.status &&
-    a.storageIssue === b.storageIssue
+    a.workspace.id === b.workspace.id &&
+    a.workspace.name === b.workspace.name &&
+    a.workspace.description === b.workspace.description &&
+    a.workspace.icon === b.workspace.icon &&
+    a.workspace.color === b.workspace.color &&
+    a.workspace.status === b.workspace.status &&
+    a.workspace.storageIssue === b.workspace.storageIssue &&
+    a.signal === b.signal &&
+    a.needsYou === b.needsYou &&
+    a.rows.length === b.rows.length &&
+    a.rows.filter((row) => row.tone === "working").length ===
+      b.rows.filter((row) => row.tone === "working").length
   );
 }
 
@@ -244,6 +306,7 @@ const styles = StyleSheet.create({
   footer: { paddingVertical: space[16] },
   loading: { alignItems: "center", paddingVertical: space[48] },
   pressed: { backgroundColor: color.surfacePressed },
+  problem: { alignItems: "center", flexDirection: "row", gap: space[4] },
   row: {
     alignItems: "center",
     borderRadius: radius.md,
