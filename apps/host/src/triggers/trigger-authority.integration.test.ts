@@ -391,7 +391,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     }
   });
 
-  it("A2/A3: defines only within the actor's profile and Workspace and scopes reads by reach", async () => {
+  it("A2/A3: defines only within the actor's reach and scopes reads by reach", async () => {
     const f = await fixture();
     for (const anchor of [f.fullChild, f.sibling, f.specialist]) {
       const actor = anchor.id === f.specialist.id ? f.specialist : f.fullChild;
@@ -445,15 +445,27 @@ integration.sequential("Trigger authority through real Host services and Postgre
         },
       );
     }
+    // Delegated workers inherit their root's reach, so a full-access child of
+    // Chat defines wherever Chat reaches, including its lineage in a Project.
+    for (const [scenario, anchor] of [
+      ["F1 child at Chat", "home"],
+      ["F2 child at cross-Workspace lineage sibling", f.crossChild.id],
+    ] as const) {
+      await check(scenario, f.fullChild.id, "create", "success", async () => {
+        const created = await agentCreate(f.fullChildToken, anchor);
+        expect(created.trigger.createdByThreadId).toBe(f.fullChild.id);
+        return created.trigger;
+      });
+    }
+    // A Project Thread cannot reach work that inherits Main, even in its Workspace.
+    await denied(
+      "F3 Workspace Thread at delegated anchor",
+      f.specialist.id,
+      "create",
+      "not_found",
+      () => agentCreate(f.specialistToken, f.crossChild.id),
+    );
     for (const [scenario, token, actor, anchor] of [
-      ["F1 child at Chat", f.fullChildToken, f.fullChild, "home"],
-      [
-        "F2 child at cross-Workspace lineage sibling",
-        f.fullChildToken,
-        f.fullChild,
-        f.crossChild.id,
-      ],
-      ["F3 Workspace Thread at delegated anchor", f.specialistToken, f.specialist, f.crossChild.id],
       ["F4b non-full-access child at itself", f.childToken, f.child, f.child.id],
       ["F4b non-full-access main at itself", f.chatToken, f.chat, f.chat.id],
     ] as const) {
@@ -474,11 +486,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
         { operation: "set_status", triggerId: target.trigger.id, status: "archived" },
       ]) {
         await denied(
-          `F2/F5/F6/F7 full-access child ${input.operation}`,
-          f.fullChild.id,
+          `F5/F6/F7 Project Thread ${input.operation} outside its reach`,
+          f.specialist.id,
           input.operation,
-          "forbidden",
-          () => agentTrigger(f.fullChildToken, input),
+          "not_found",
+          () => agentTrigger(f.specialistToken, input),
         );
       }
     }
@@ -497,16 +509,18 @@ integration.sequential("Trigger authority through real Host services and Postgre
         return result;
       },
     );
-    await check("F12 delegated list", f.child.id, "list", "only lineage", async () => {
+    await check("F12 delegated list", f.child.id, "list", "its root's reach", async () => {
       const result = hostApi["triggers.list"].success
         .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
         .parse(await agentTrigger(f.childToken, { operation: "list", limit: 100 }));
-      expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(true);
-      expect(
-        result.triggers.some(
-          ({ id }) => id === outside.trigger.id || id === specialistTrigger.trigger.id,
-        ),
-      ).toBe(false);
+      const listed = result.triggers.map(({ id }) => id);
+      expect(listed).toEqual(
+        expect.arrayContaining([
+          chatTrigger.trigger.id,
+          outside.trigger.id,
+          specialistTrigger.trigger.id,
+        ]),
+      );
       return result;
     });
     for (const target of [outside, chatTrigger]) {
@@ -540,11 +554,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
         },
       }[operation];
       await denied(
-        `F11/F13 delegated ${operation} outside`,
-        f.fullChild.id,
+        `F11/F13 Project Thread ${operation} outside`,
+        f.specialist.id,
         operation,
         "not_found",
-        () => agentTrigger(f.fullChildToken, input),
+        () => agentTrigger(f.specialistToken, input),
       );
     }
     await denied("F13 nonexistent indistinguishable", f.child.id, "get", "not_found", () =>
@@ -1018,7 +1032,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     );
   });
 
-  it("A7/F13b: detail omits downstream Runs on an unrelated reused work Thread", async () => {
+  it("A7/F13b: detail shows downstream Runs only to readers that reach the anchor", async () => {
     const f = await fixture();
     const created = await personCreate(f, f.chat);
     const token = await startProgram(f, created);
@@ -1043,18 +1057,14 @@ integration.sequential("Trigger authority through real Host services and Postgre
         return detail.downstreamRuns;
       },
     );
-    await check(
-      "A7 child detail filters downstream Run",
-      f.child.id,
-      "get",
-      { downstreamRuns: [] },
-      async () => {
-        const detail = await agentDetail(f.childToken, created.trigger.id);
-        expect(detail.trigger.id).toBe(created.trigger.id);
-        expect(detail.downstreamRuns).toEqual([]);
-        expect(detail.downstreamRunsTruncated).toBe(false);
-        return detail;
-      },
+    // A child of Chat reaches what Chat reaches, including the reused Thread.
+    await check("A7 child detail shows downstream Run", f.child.id, "get", { runId }, async () => {
+      const detail = await agentDetail(f.childToken, created.trigger.id);
+      expect(detail.downstreamRuns.map(({ run }) => run.id)).toContain(runId);
+      return detail;
+    });
+    await denied("A7 Project Thread detail outside", f.specialist.id, "get", "not_found", () =>
+      agentDetail(f.specialistToken, created.trigger.id),
     );
   });
 

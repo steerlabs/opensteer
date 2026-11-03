@@ -84,7 +84,7 @@
     "file": "apps/host/src/triggers/trigger-authority.integration.test.ts",
     "name": [
       "Trigger authority through real Host services and PostgreSQL",
-      "A7/F13b: detail omits downstream Runs on an unrelated reused work Thread"
+      "A7/F13b: detail shows downstream Runs only to readers that reach the anchor"
     ],
     "area": "Triggers",
     "owner": "Triggers maintainers",
