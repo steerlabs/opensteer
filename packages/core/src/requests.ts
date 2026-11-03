@@ -688,13 +688,20 @@ const waitingRequestAssignments = z
 /** The subagent that asked a Request, as its Run named it. */
 const askingSubagent = z.object({ id: ExecutionNodeIdSchema, title: z.string().min(1).max(240) });
 
+export const WaitingRequestPresentationSchema = z.object({
+  threadId: ThreadIdSchema,
+  workerThread: z.object({ id: ThreadIdSchema, title: z.string().min(1).max(240) }),
+});
+
 export const WaitingRequestSchema = z.object({
+  presentation: WaitingRequestPresentationSchema.nullable().optional(),
   assignments: waitingRequestAssignments,
   /** The subagent of the Run that asked, when it was not the Run's own agent. */
   subagent: askingSubagent.nullable().default(null),
   request: PendingRequestSchema,
 });
 export const WaitingRequestViewSchema = z.object({
+  presentation: WaitingRequestPresentationSchema.nullable().optional(),
   assignments: waitingRequestAssignments,
   subagent: askingSubagent.nullable().default(null),
   request: PendingRequestViewSchema,

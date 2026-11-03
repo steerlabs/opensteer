@@ -661,7 +661,7 @@ const definitions = [
       title: "Read Triggers",
     },
     description:
-      "Read reachable schedule, webhook and watch Triggers. list accepts workspaceId and limit. get needs triggerId and returns the Trigger and recent occurrences, bounded by occurrenceLimit.",
+      "Read reachable schedule, webhook and watch Triggers. list accepts workspaceId, systemRole and limit. get needs triggerId and returns the Trigger and recent occurrences, bounded by occurrenceLimit.",
     id: "trigger.read",
     inputSchema: TriggerReadInputSchema,
     name: "trigger_read",
@@ -675,7 +675,7 @@ const definitions = [
       title: "Write Triggers",
     },
     description:
-      "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, program/source changes, manual runs and archiving require full access and, outside Main, the anchor profile and Workspace. create needs name, anchorThreadId (home is Chat), program and source. update needs triggerId, expectedRevisionId and changed fields. set_status needs triggerId and status. set_next_fire needs triggerId and future ISO nextFireAt; it moves an active cron's next unclaimed run, then cadence resumes, leaving queued/running work untouched. run needs a non-archived schedule/webhook triggerId; it queues a real occurrence with optional payload. cancel needs triggerId and optional occurrenceId; omission cancels all pending occurrences. Started work keeps running.",
+      "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, program/source changes, manual runs and archiving require full access and, outside Main, the anchor profile and Workspace. create needs name, anchorThreadId (home is Chat), program and source. update needs triggerId, expectedRevisionId and changed fields. set_status needs triggerId and status. set_next_fire needs triggerId and future ISO nextFireAt; it moves an active cron's next unclaimed run, then cadence resumes, leaving queued/running work untouched. run needs a non-archived schedule/webhook triggerId; it queues a real occurrence with optional payload. cancel needs triggerId and optional occurrenceId; omission cancels all pending occurrences. Started work keeps running. Managed memory passes refuse archive, run, name/program edits and non-cron sources.",
     id: "trigger.write",
     inputSchema: TriggerWriteInputSchema,
     name: "trigger_write",
@@ -787,7 +787,7 @@ export const agentCapabilityProfiles: readonly AgentCapabilityProfile[] = Object
       "trigger.read",
       "trigger.write",
     ],
-    `Main has owner-level access. Create a Project when the person wants a durable area kept separate, such as work versus personal or a client; delegate one-off tasks in the current Workspace. For a Project, load opensteer:projects; establish AGENTS.md and verify durable setup before calling it ready. The person's memory lives in Main, never Projects: load opensteer:memory to remember, correct or forget what they ask at once; in a task, to add lasting facts about them to memory/inbox/; in Chat, when memory is on and AGENTS.md has no "Background passes:" line (even with no Memory section) or it says "setting up", quietly finish setting up both background passes before replying; leave "set up" or "off" alone. ${browserGuidance} ${computerUseGuidance} Resolve children’s missing profile access with browser_access_request for their workspaceId, never Main. Use the absolute path returned by project_create with ordinary file tools.`,
+    `Main has owner-level access. Create a Project when the person wants a durable area kept separate, such as work versus personal or a client; delegate one-off tasks in the current Workspace. For a Project, load opensteer:projects; establish AGENTS.md and verify durable setup before calling it ready. The person's memory lives in Main, never Projects: load opensteer:memory to remember, correct or forget what they ask at once, and in a task to add lasting facts about them to memory/inbox/. ${browserGuidance} ${computerUseGuidance} Resolve children’s missing profile access with browser_access_request for their workspaceId, never Main. Use the absolute path returned by project_create with ordinary file tools.`,
   ),
   profile(
     AgentCapabilityProfileIdSchema.parse("workspace"),

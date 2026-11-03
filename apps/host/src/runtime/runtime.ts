@@ -177,6 +177,7 @@ import {
   TriggerControlService,
   TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
+import { MemoryPassService } from "../agents/memory-pass-service.js";
 import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
 import {
   WatchCapabilityTokenService,
@@ -196,7 +197,10 @@ import {
 } from "../workspace/runner-local-workspace-driver.js";
 import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import { WorkspaceReconcileLoop } from "../workspace/workspace-reconcile-loop.js";
+import {
+  WorkspaceReconcileLoop,
+  reconcileWorkspaceServices,
+} from "../workspace/workspace-reconcile-loop.js";
 import { WorkspaceService } from "../workspace/workspace-service.js";
 import { withDevelopmentDatabaseReset } from "./development-database.js";
 import { LocalBootstrapService } from "./local-bootstrap.js";
@@ -2447,6 +2451,19 @@ export async function createHostRuntime(
       }
     };
     reportWorkspaceStorageHealth(await workspaces.reconcile());
+    const memoryPasses = new MemoryPassService({
+      store,
+      runners,
+      files,
+      onEvent: publishWorkspaceEvent,
+      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onError: (workspaceId, error) =>
+        app.log.warn(
+          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
+          "Memory pass provisioning failed",
+        ),
+    });
+    await memoryPasses.reconcileMissing();
     coordinator.start();
     continuations.start();
     automationFailures.start();
@@ -2482,59 +2499,56 @@ export async function createHostRuntime(
       intervalMs: 30_000,
       onError: (error) => app.log.error({ err: error }, "Workspace reconciliation failed"),
       reconcile: async () => {
-        const results = await Promise.allSettled([
-          (async () => {
-            // Delegation deliveries are a durable recovery ledger. Reconcile
-            // them even while a Runner remains connected: a transient
-            // post-commit delivery failure must not require a Host restart.
-            const returns = await store.drainPendingAssignmentReturns();
-            for (const event of returns.events) publishWorkspaceEvent(event);
-            for (const { assignmentId, error } of returns.failures) {
-              reportAssignmentReturnError(assignmentId, error);
-            }
-          })(),
-          workspaces.reconcile().then(reportWorkspaceStorageHealth),
-          workspaceDeletion.purgeDue(new Date()),
-          ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
-          // What a work location can run is durable state like any other, so it
-          // is reconciled rather than captured once and hoped for.
-          store.listEnvironments().then(async (environments) => {
-            const identities = options.onRunnerCatalogsCommitted
-              ? new Map(
-                  environments.flatMap((environment) => {
-                    const identity = runners.identityForEnvironment(environment.id);
-                    return identity ? [[environment.id, identity] as const] : [];
-                  }),
-                )
-              : undefined;
-            await reconcileHarnessCatalogs({
-              catalogs: store,
-              connectedEnvironmentIds: environments
-                .filter((environment) => runners.isAvailable(environment.id))
-                .map((environment) => environment.id),
-              runners,
-              signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
-              ...(identities
-                ? {
-                    onCommitted: (
-                      environmentId: EnvironmentId,
-                      catalogs: readonly HarnessInstanceCatalog[],
-                    ) => {
-                      const identity = identities.get(environmentId);
-                      if (identity) observeRunnerCatalogs(identity, environmentId, catalogs);
-                    },
-                  }
-                : {}),
-            });
-          }),
-          securityEffects.reconcile(),
-        ]);
-        const failures = results.flatMap((result) =>
-          result.status === "rejected" ? [result.reason] : [],
+        await reconcileWorkspaceServices(
+          [
+            (async () => {
+              // Delegation deliveries are a durable recovery ledger. Reconcile
+              // them even while a Runner remains connected: a transient
+              // post-commit delivery failure must not require a Host restart.
+              const returns = await store.drainPendingAssignmentReturns();
+              for (const event of returns.events) publishWorkspaceEvent(event);
+              for (const { assignmentId, error } of returns.failures) {
+                reportAssignmentReturnError(assignmentId, error);
+              }
+            })(),
+            workspaces.reconcile().then(reportWorkspaceStorageHealth),
+            workspaceDeletion.purgeDue(new Date()),
+            ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
+            // What a work location can run is durable state like any other, so it
+            // is reconciled rather than captured once and hoped for.
+            store.listEnvironments().then(async (environments) => {
+              const identities = options.onRunnerCatalogsCommitted
+                ? new Map(
+                    environments.flatMap((environment) => {
+                      const identity = runners.identityForEnvironment(environment.id);
+                      return identity ? [[environment.id, identity] as const] : [];
+                    }),
+                  )
+                : undefined;
+              await reconcileHarnessCatalogs({
+                catalogs: store,
+                connectedEnvironmentIds: environments
+                  .filter((environment) => runners.isAvailable(environment.id))
+                  .map((environment) => environment.id),
+                runners,
+                signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
+                ...(identities
+                  ? {
+                      onCommitted: (
+                        environmentId: EnvironmentId,
+                        catalogs: readonly HarnessInstanceCatalog[],
+                      ) => {
+                        const identity = identities.get(environmentId);
+                        if (identity) observeRunnerCatalogs(identity, environmentId, catalogs);
+                      },
+                    }
+                  : {}),
+              });
+            }),
+            securityEffects.reconcile(),
+          ],
+          () => memoryPasses.reconcileMissing(),
         );
-        if (failures.length > 0) {
-          throw new AggregateError(failures, "Storage reconciliation failed");
-        }
       },
       sweep: () => 0,
     });

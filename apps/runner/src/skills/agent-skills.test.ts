@@ -352,11 +352,17 @@ function skillNames(...input: Parameters<typeof planAgentSkills>): readonly stri
   return planAgentSkills(...input).map(({ fullName }) => fullName);
 }
 
-it("sets up memory with Chat's alias and the engine's delegation model", async () => {
-  const setup = await readFile(join(bundleDirectory, "skills/memory/references/setup.md"), "utf8");
-  expect(setup).toContain('`threadId: "home"` and `maxMessages: 1`');
-  expect(setup).toContain("`thread.workspaceId`");
-  expect(setup).toContain("`lightModel`");
-  expect(setup).toContain("`harnessInstanceId`");
-  expect(setup).not.toContain("`project_list`");
+it("ships role-based memory controls without an agent setup recipe", async () => {
+  const memory = await readFile(join(bundleDirectory, "skills/memory/SKILL.md"), "utf8");
+  const controls = await readFile(
+    join(bundleDirectory, "skills/memory/references/controls.md"),
+    "utf8",
+  );
+  expect(memory).toContain("references/controls.md");
+  expect(memory).not.toContain("references/setup.md");
+  for (const field of ["systemRole", "memory-light", "memory-nightly", "anchorThreadId"])
+    expect(controls).toContain(`\`${field}\``);
+  await expect(
+    readFile(join(bundleDirectory, "skills/memory/references/setup.md"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
 });

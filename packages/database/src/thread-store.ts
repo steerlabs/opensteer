@@ -983,182 +983,195 @@ export async function createThread(
   database: Kysely<DatabaseSchema>,
   input: CreateThreadInput,
 ): Promise<ThreadCreationResult> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.createdBy, input.idempotencyKey);
-    const resolvedInput = {
-      ...input,
-      accessMode: await resolveCreateThreadAccessMode(transaction, input),
-    };
-    const requestPayload = canonicalCreateThreadInput(resolvedInput);
-    const existing = await findExistingThreadCreation(transaction, resolvedInput, requestPayload);
-    if (existing) return existing;
+  return withDatabaseTransaction(database, (transaction) =>
+    createThreadInTransaction(transaction, input),
+  );
+}
 
-    const id = input.id ?? createId("thread");
-    const commandId = createId("command");
-    const workspace = await transaction
-      .selectFrom("workspaces")
-      .select(["homeThreadId", "id", "kind", "status"])
-      .where("id", "=", input.workspaceId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!workspace) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-    const membership = await transaction
-      .selectFrom("workspaceMemberships")
-      .select(["role", "state"])
-      .where("workspaceId", "=", input.workspaceId)
-      .where("userId", "=", input.createdBy)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (!membership || membership.state !== "active") {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Thread creator must be an active Workspace member",
-      });
-    }
-    if (
-      input.home &&
-      (membership.role !== "owner" || input.parentThreadId || input.role === "work")
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Home must be an owner's root conversation Thread",
-      });
-    }
-    if (input.home && workspace.homeThreadId) {
-      const home = await transaction
-        .selectFrom("threads")
-        .selectAll()
-        .select([
-          threadPendingRequestsSelection,
-          threadProviderSessionSelection,
-          threadContinuationIdentitySelection,
-        ])
-        .where("id", "=", workspace.homeThreadId)
-        .executeTakeFirstOrThrow();
-      return {
-        asOfSequence: await workspaceHead(transaction, home.workspaceId),
-        thread: threadFromRow(home),
-        wasDuplicate: true,
-      };
-    }
-    const insertThread = await prepareThreadInsertion(transaction, {
+export async function createThreadInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: CreateThreadInput,
+  prepared?: {
+    readonly insertThread: Awaited<ReturnType<typeof prepareThreadInsertion>>;
+    readonly unlisted: true;
+  },
+): Promise<ThreadCreationResult> {
+  await lockCommandIdempotency(transaction, input.createdBy, input.idempotencyKey);
+  const resolvedInput = {
+    ...input,
+    accessMode: await resolveCreateThreadAccessMode(transaction, input),
+  };
+  const requestPayload = canonicalCreateThreadInput(resolvedInput);
+  const existing = await findExistingThreadCreation(transaction, resolvedInput, requestPayload);
+  if (existing) return existing;
+
+  const id = input.id ?? createId("thread");
+  const commandId = createId("command");
+  const workspace = await transaction
+    .selectFrom("workspaces")
+    .select(["homeThreadId", "id", "kind", "status"])
+    .where("id", "=", input.workspaceId)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  if (!workspace) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
+  const membership = await transaction
+    .selectFrom("workspaceMemberships")
+    .select(["role", "state"])
+    .where("workspaceId", "=", input.workspaceId)
+    .where("userId", "=", input.createdBy)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  if (!membership || membership.state !== "active") {
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Thread creator must be an active Workspace member",
+    });
+  }
+  if (
+    input.home &&
+    (membership.role !== "owner" || input.parentThreadId || input.role === "work")
+  ) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Home must be an owner's root conversation Thread",
+    });
+  }
+  if (input.home && workspace.homeThreadId) {
+    const home = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .select([
+        threadPendingRequestsSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .where("id", "=", workspace.homeThreadId)
+      .executeTakeFirstOrThrow();
+    return {
+      asOfSequence: await workspaceHead(transaction, home.workspaceId),
+      thread: threadFromRow(home),
+      wasDuplicate: true,
+    };
+  }
+  const insertThread =
+    prepared?.insertThread ??
+    (await prepareThreadInsertion(transaction, {
       createdBy: input.createdBy,
       environmentId: input.environmentId,
       harnessInstanceId: input.harnessInstanceId,
+    }));
+  if (workspace.status !== "ready") {
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Workspace filesystem is not ready",
+      retryable: workspace.status === "provisioning" || workspace.status === "unavailable",
     });
-    if (workspace.status !== "ready") {
+  }
+  let lineageRootThreadId = id;
+  let listed = true;
+  if (input.parentThreadId) {
+    const parent = await transaction
+      .selectFrom("threads")
+      .select(["lineageRootThreadId", "role", "workspaceId"])
+      .where("threads.id", "=", input.parentThreadId)
+      .executeTakeFirst();
+    if (!parent) {
+      throw new OpensteerError({ code: "not_found", message: "Parent thread not found" });
+    }
+    const parentMembership = await transaction
+      .selectFrom("workspaceMemberships")
+      .select("state")
+      .where("workspaceId", "=", parent.workspaceId)
+      .where("userId", "=", input.createdBy)
+      .executeTakeFirst();
+    if (!parentMembership || parentMembership.state !== "active") {
       throw new OpensteerError({
-        code: "conflict",
-        message: "Workspace filesystem is not ready",
-        retryable: workspace.status === "provisioning" || workspace.status === "unavailable",
+        code: "forbidden",
+        message: "Thread creator must be a member of both parent and child Workspaces",
       });
     }
-    let lineageRootThreadId = id;
-    let listed = true;
-    if (input.parentThreadId) {
-      const parent = await transaction
-        .selectFrom("threads")
-        .select(["lineageRootThreadId", "role", "workspaceId"])
-        .where("threads.id", "=", input.parentThreadId)
-        .executeTakeFirst();
-      if (!parent) {
-        throw new OpensteerError({ code: "not_found", message: "Parent thread not found" });
-      }
-      const parentMembership = await transaction
-        .selectFrom("workspaceMemberships")
-        .select("state")
-        .where("workspaceId", "=", parent.workspaceId)
-        .where("userId", "=", input.createdBy)
-        .executeTakeFirst();
-      if (!parentMembership || parentMembership.state !== "active") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Thread creator must be a member of both parent and child Workspaces",
-        });
-      }
-      lineageRootThreadId = parent.lineageRootThreadId;
-      listed = parent.role === "conversation";
-    }
-    const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
-    const thread = await insertThread({
-      accessMode: resolvedInput.accessMode,
-      capabilityProfileId: input.parentThreadId
-        ? "delegated"
-        : workspace.kind === "main" && membership.role === "owner"
-          ? "main"
-          : "workspace",
-      createdByPrincipalId: actorPrincipalId,
-      id,
-      lineageRootThreadId,
-      listed,
-      modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
-      parentThreadId: input.parentThreadId ?? null,
-      role: input.role ?? (input.home ? "conversation" : "work"),
-      status: deriveThreadStatus({
-        earliestActiveRunStatus: null,
-        inputQueuePaused: false,
-        lastRunFailed: false,
-      }),
-      title: input.home ? CHAT_THREAD_TITLE : input.title,
-      titleSource: input.generateTitle && !input.home ? "provisional" : "chosen",
-      icon: null,
-      iconSource: input.home ? "chosen" : "provisional",
-      workspaceId: input.workspaceId,
-    });
-    await ensureSelectedProviderSession(transaction, thread);
-    if (input.home) {
-      await transaction
-        .updateTable("workspaces")
-        .set({ homeThreadId: thread.id })
-        .where("id", "=", workspace.id)
-        .where("homeThreadId", "is", null)
-        .executeTakeFirstOrThrow();
-    }
-    await transaction
-      .insertInto("commands")
-      .values({
-        actorPrincipalId,
-        authoritySource: jsonValue({ kind: "user-session", userId: input.createdBy }),
-        dispatcherId: null,
-        environmentId: input.environmentId,
-        id: commandId,
-        idempotencyKey: input.idempotencyKey,
-        lastError: null,
-        payload: requestPayload,
-        requestedBy: input.createdBy,
-        runId: null,
-        status: "succeeded",
-        threadId: id,
-        type: "thread.create",
-      })
-      .executeTakeFirstOrThrow();
-    const selectedSessionId = await transaction
-      .selectFrom("providerSessions")
-      .select("id")
-      .where("threadId", "=", thread.id)
-      .where("active", "=", true)
-      .executeTakeFirstOrThrow();
-    const parsedThread = threadFromRow({
-      ...thread,
-      continuationIdentity: null,
-      providerSessionId: selectedSessionId.id,
-      pendingRequests: thread.pendingRequestCount,
-    });
-    const event = await appendHostWorkspaceEvent(transaction, {
-      data: { thread: parsedThread, ...(input.home ? { home: true as const } : {}) },
-      environmentId: parsedThread.environmentId,
-      runId: null,
-      threadId: parsedThread.id,
-      type: "thread.created",
-      workspaceId: parsedThread.workspaceId,
-    });
-    return {
-      asOfSequence: await workspaceHead(transaction, parsedThread.workspaceId),
-      event,
-      thread: parsedThread,
-      wasDuplicate: false,
-    };
+    lineageRootThreadId = parent.lineageRootThreadId;
+    listed = parent.role === "conversation";
+  }
+  const actorPrincipalId = await principalIdForUser(transaction, input.createdBy);
+  const thread = await insertThread({
+    accessMode: resolvedInput.accessMode,
+    capabilityProfileId: input.parentThreadId
+      ? "delegated"
+      : workspace.kind === "main" && membership.role === "owner"
+        ? "main"
+        : "workspace",
+    createdByPrincipalId: actorPrincipalId,
+    id,
+    lineageRootThreadId,
+    listed: prepared?.unlisted ? false : listed,
+    modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
+    parentThreadId: input.parentThreadId ?? null,
+    role: input.role ?? (input.home ? "conversation" : "work"),
+    status: deriveThreadStatus({
+      earliestActiveRunStatus: null,
+      inputQueuePaused: false,
+      lastRunFailed: false,
+    }),
+    title: input.home ? CHAT_THREAD_TITLE : input.title,
+    titleSource: input.generateTitle && !input.home ? "provisional" : "chosen",
+    icon: null,
+    iconSource: input.home ? "chosen" : "provisional",
+    workspaceId: input.workspaceId,
   });
+  await ensureSelectedProviderSession(transaction, thread);
+  if (input.home) {
+    await transaction
+      .updateTable("workspaces")
+      .set({ homeThreadId: thread.id })
+      .where("id", "=", workspace.id)
+      .where("homeThreadId", "is", null)
+      .executeTakeFirstOrThrow();
+  }
+  await transaction
+    .insertInto("commands")
+    .values({
+      actorPrincipalId,
+      authoritySource: jsonValue({ kind: "user-session", userId: input.createdBy }),
+      dispatcherId: null,
+      environmentId: input.environmentId,
+      id: commandId,
+      idempotencyKey: input.idempotencyKey,
+      lastError: null,
+      payload: requestPayload,
+      requestedBy: input.createdBy,
+      runId: null,
+      status: "succeeded",
+      threadId: id,
+      type: "thread.create",
+    })
+    .executeTakeFirstOrThrow();
+  const selectedSessionId = await transaction
+    .selectFrom("providerSessions")
+    .select("id")
+    .where("threadId", "=", thread.id)
+    .where("active", "=", true)
+    .executeTakeFirstOrThrow();
+  const parsedThread = threadFromRow({
+    ...thread,
+    continuationIdentity: null,
+    providerSessionId: selectedSessionId.id,
+    pendingRequests: thread.pendingRequestCount,
+  });
+  const event = await appendHostWorkspaceEvent(transaction, {
+    data: { thread: parsedThread, ...(input.home ? { home: true as const } : {}) },
+    environmentId: parsedThread.environmentId,
+    runId: null,
+    threadId: parsedThread.id,
+    type: "thread.created",
+    workspaceId: parsedThread.workspaceId,
+  });
+  return {
+    asOfSequence: await workspaceHead(transaction, parsedThread.workspaceId),
+    event,
+    thread: parsedThread,
+    wasDuplicate: false,
+  };
 }
 
 export async function findDelegatedThreadByIdempotency(

@@ -4699,6 +4699,7 @@ export function migrationProvider() {
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
+        "0148_managed_memory_passes": managedMemoryPassesMigration,
       };
     },
   };
@@ -7085,5 +7086,16 @@ export const quietAssignmentResultsMigration: Migration = {
           or (result_status = 'undeliverable' and completed_at is not null
             and result_message_id is null and result_reason is not null));
     `.execute(database);
+  },
+};
+
+export const managedMemoryPassesMigration: Migration = {
+  async up(database) {
+    await sql`alter table triggers add column system_role text
+      check (system_role in ('memory-light', 'memory-nightly'));
+      create unique index triggers_system_role_unique on triggers(workspace_id, system_role)
+        where system_role is not null;
+      create unique index triggers_managed_anchor_unique on triggers(anchor_thread_id)
+        where system_role is not null;`.execute(database);
   },
 };

@@ -111,6 +111,7 @@ export class TriggerService {
   list(
     ownerId: UserId,
     input: {
+      readonly systemRole?: Parameters<TriggerStore["listForOwner"]>[0]["systemRole"];
       readonly limit?: number;
       readonly workspaceId?: Parameters<TriggerStore["listForOwner"]>[0]["workspaceId"];
       readonly anchorThreadId?: Parameters<TriggerStore["listForOwner"]>[0]["anchorThreadId"];
@@ -118,6 +119,7 @@ export class TriggerService {
     scope: ThreadReachScope,
   ) {
     return this.#store.listForOwner({
+      ...(input.systemRole ? { systemRole: input.systemRole } : {}),
       ...(input.anchorThreadId === undefined ? {} : { anchorThreadId: input.anchorThreadId }),
       ...(input.limit === undefined ? {} : { limit: input.limit }),
       ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),

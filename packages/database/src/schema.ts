@@ -1128,6 +1128,7 @@ interface RequestContinuationTable {
 }
 
 interface TriggerTable {
+  systemRole: Generated<"memory-light" | "memory-nightly" | null>;
   id: TriggerId;
   workspaceId: WorkspaceId;
   anchorThreadId: ThreadId;
