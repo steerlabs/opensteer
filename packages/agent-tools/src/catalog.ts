@@ -1,3 +1,4 @@
+import type { AgentToolAnnotations } from "./registry.js";
 import {
   AppPublishInputSchema,
   AppFetchInputSchema,
@@ -91,13 +92,6 @@ export const AgentToolNameSchema = z.enum([
 ]);
 export type AgentToolName = z.infer<typeof AgentToolNameSchema>;
 
-export interface AgentToolAnnotations {
-  readonly destructiveHint: boolean;
-  readonly idempotentHint: boolean;
-  readonly openWorldHint: boolean;
-  readonly readOnlyHint: boolean;
-  readonly title: string;
-}
 
 export interface AgentToolDefinition<Input extends z.ZodType = z.ZodType> {
   readonly annotations: AgentToolAnnotations;
