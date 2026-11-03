@@ -28,7 +28,8 @@ export function accountDoorPresentation(
         : "Your Account lists every deployment you can reach."
       : (unavailableDetail ?? "This build was made without an Opensteer Account service."),
     disabled: !account.available,
-    title: "Sign in",
+    // Retrying is only something to offer when signing in is possible at all.
+    title: account.available && account.status === "error" ? "Try signing in again" : "Sign in",
   };
 }
 
