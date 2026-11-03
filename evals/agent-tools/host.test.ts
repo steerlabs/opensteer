@@ -99,3 +99,51 @@ it("serves the production inventory and validates mocked calls through real MCP 
     await host.close();
   }
 }, 30_000);
+
+it("validates prompt overhaul case inputs and mocked positive calls with production boundaries", async () => {
+  for (const file of ["integrations", "triggers", "browser"]) {
+    const cases = parseCases(
+      await readFile(new URL(`./cases/${file}.ndjson`, import.meta.url), "utf8"),
+    );
+    for (const c of cases.filter(
+      (c) => c.source.commit === "b0efe75413a275f2e4a5cb06d1606fae7cd96713",
+    )) {
+      const host = await startFakeHost(c);
+      const clients: Client[] = [];
+      try {
+        for (const required of c.expect.calls) {
+          const endpoint = [...host.endpoints].find(([, endpoint]) =>
+            endpoint.tools.some((t) => t.name === required.tool),
+          );
+          expect(endpoint, `${c.id}: ${required.tool} is offered`).toBeDefined();
+          const client = new Client({ name: "eval-case-validation", version: "1" });
+          clients.push(client);
+          await client.connect(
+            new StreamableHTTPClientTransport(new URL(`/${endpoint![0]}`, host.url), {
+              requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+            }) as unknown as Transport,
+          );
+          const args =
+            required.tool === "computer"
+              ? { code: 'return await app("Notes")' }
+              : required.tool === "integration_call"
+                ? { ...required.args, arguments: {} }
+                : required.tool === "integration_search"
+                  ? { query: "Notes" }
+                  : required.args;
+          await client.callTool({
+            name: required.tool,
+            arguments:
+              required.tool === "sign_in"
+                ? { ...args, reason: "Check the assigned account" }
+                : args,
+          });
+          expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool} args`).toBe(true);
+        }
+      } finally {
+        await Promise.allSettled(clients.map((c) => c.close()));
+        await host.close();
+      }
+    }
+  }
+});

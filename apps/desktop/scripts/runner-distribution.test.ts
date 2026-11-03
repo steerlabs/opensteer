@@ -40,6 +40,7 @@ function manifest(
     { mode: "code", path: "pi/node_modules/jiti/lib/jiti.cjs" },
     { mode: "data", path: "agent-skills/plugin.json" },
     { mode: "data", path: "agent-skills/skills/opensteer-triggers/SKILL.md" },
+    { mode: "data", path: "agent-skills/skills/opensteer-triggers/references/example.md" },
     { mode: "executable", path: "node/bin/node" },
     { mode: "executable", path: "postgres/bin/postgres" },
     { mode: "code", path: "services/browser-harness.mjs" },
@@ -109,6 +110,7 @@ describe("Runner distribution", () => {
       "THIRD_PARTY_NOTICES.md",
       "agent-skills/plugin.json",
       "agent-skills/skills/opensteer-triggers/SKILL.md",
+      "agent-skills/skills/opensteer-triggers/references/example.md",
       "bin/browser-harness",
       "bin/opencode",
       "bin/opensteer-native-fs",
@@ -187,6 +189,7 @@ describe("Runner distribution", () => {
         "services/runner.mjs",
         "agent-skills/plugin.json",
         "agent-skills/skills/opensteer-triggers/SKILL.md",
+        "agent-skills/skills/opensteer-triggers/references/example.md",
         "runner-release.json",
       ]),
     );
@@ -197,6 +200,12 @@ describe("Runner distribution", () => {
     const extracted = path.join(directory, "extracted");
     await mkdir(extracted, { recursive: true });
     await run("tar", ["-xzf", packed.archivePath, "-C", extracted]);
+    expect(
+      await readFile(
+        path.join(extracted, "agent-skills/skills/opensteer-triggers/references/example.md"),
+        "utf8",
+      ),
+    ).toBe("agent-skills/skills/opensteer-triggers/references/example.md\n");
     expect(
       JSON.parse(await readFile(path.join(extracted, "runner-release.json"), "utf8")) as unknown,
     ).toMatchObject({

@@ -172,6 +172,7 @@ export async function runEngine(input: {
   let events: Promise<void> | undefined;
   let finalText = "";
   let turnFinished: (() => void) | undefined;
+  const assignmentId = createId("delegation");
   let eventFailure: unknown;
   let failure: string | undefined;
   try {
@@ -212,8 +213,10 @@ export async function runEngine(input: {
           assignment:
             (c.assigned ?? c.profile === "delegated")
               ? {
-                  id: createId("delegation"),
-                  objective: typeof c.turns[0] === "string" ? c.turns[0] : c.turns[0]!.text,
+                  id: assignmentId,
+                  objective: inputForCaseTurn(c.turns[0]!)
+                    .content.flatMap((part) => (part.type === "text" ? [part.text] : []))
+                    .join("\n"),
                   origin: "run",
                   parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
