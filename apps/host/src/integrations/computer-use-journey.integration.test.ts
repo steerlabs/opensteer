@@ -5265,7 +5265,13 @@ async function createWorld(
   const persistence = new IntegrationPlatformStore(database);
   const connections = new IntegrationStore(database);
   const owner = await createOwner(store, randomUUID(), options.ownerUserId);
-  const workspace = await createWorkspace(store, owner.userId, randomUUID(), "project");
+  const workspace = await createWorkspace(
+    store,
+    owner.userId,
+    randomUUID(),
+    "project",
+    owner.environmentId,
+  );
   // The Runner authenticates with its own key; the person's approvals are
   // signed with the desktop's, which is a different key entirely.
   const keys = generateKeyPairSync("ed25519");
@@ -5537,7 +5543,7 @@ async function createWorld(
       );
     },
     async createWorkspace(name: string, kind: "main" | "project" = "project") {
-      return createWorkspace(store, owner.userId, randomUUID(), kind, name);
+      return createWorkspace(store, owner.userId, randomUUID(), kind, owner.environmentId, name);
     },
     async requestById(id: string) {
       const request = await persistence.requests.get(id as never);
@@ -5688,6 +5694,7 @@ async function createWorkspace(
   createdBy: UserId,
   suffix: string,
   kind: "main" | "project",
+  ownerEnvironmentId: EnvironmentId,
   name = `Workspace ${suffix}`,
 ) {
   return createTestWorkspace(store, {
@@ -5695,7 +5702,7 @@ async function createWorkspace(
       kind: "local-directory",
       generation: 1,
       bindingId: createId("workspaceBinding"),
-      ownerEnvironmentId: createId("environment"),
+      ownerEnvironmentId,
       storageAuthorityId: createId("storageAuthority"),
     },
 
