@@ -1,5 +1,5 @@
+import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
-import { quietRunPredicate } from "./run-visibility.js";
 import {
   ContentPartSchema,
   harnessDriverLabel,
@@ -27,7 +27,6 @@ import {
   type MigrationResultSet,
 } from "kysely/migration";
 import { createHash } from "node:crypto";
-import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
@@ -4680,16 +4679,23 @@ export function migrationProvider() {
         "0125_run_place_events": runPlaceEventsMigration,
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
-        "0128_projects": projectsMigration,
-        "0129_project_slugs": projectSlugsMigration,
-        "0130_project_relocation": projectRelocationMigration,
-        "0131_project_control_actions": projectControlActionsMigration,
-        "0132_local_directory_only": localDirectoryOnlyMigration,
-        "0133_resource_access_levels": resourceAccessLevelsMigration,
-        "0134_plugins": pluginsMigration,
-        "0135_specialists": specialistsMigration,
-        "0136_specialist_threads": specialistThreadsMigration,
-        "0137_project_chats": projectChatsMigration,
+        "0128_person_message": personMessageMigration,
+        "0129_apps": appsMigration,
+        "0130_request_settlement_provenance": requestSettlementProvenanceMigration,
+        "0131_owner_session_computer_approvals": ownerSessionComputerApprovalsMigration,
+        "0132_remote_administration": remoteAdministrationMigration,
+        "0133_personal_account_link_sealing": personalAccountLinkSealingMigration,
+        "0134_personal_account_operation": personalAccountOperationMigration,
+        "0135_projects": projectsMigration,
+        "0136_project_slugs": projectSlugsMigration,
+        "0137_project_relocation": projectRelocationMigration,
+        "0138_project_control_actions": projectControlActionsMigration,
+        "0139_local_directory_only": localDirectoryOnlyMigration,
+        "0140_resource_access_levels": resourceAccessLevelsMigration,
+        "0141_plugins": pluginsMigration,
+        "0142_specialists": specialistsMigration,
+        "0143_specialist_threads": specialistThreadsMigration,
+        "0144_project_chats": projectChatsMigration,
       };
     },
   };
@@ -6597,7 +6603,16 @@ export const runVisibilityMigration: Migration = {
             'run.completed', 'run.failed', 'run.interrupted')
           and event.data @> '{"personWaiting":true}'::jsonb and event.run_id is not null
       ) update runs set person_waited = true from waited where waited.id = runs.id;
-      update runs set quiet = ${quietRunPredicate}
+      -- This historical backfill precedes app_versions; finalization uses the current predicate.
+      update runs set quiet = (
+        exists (select 1 from messages seed where seed.id = runs.seed_input_id
+          and seed.author->>'kind' <> 'human')
+        and not runs.person_waited
+        and not exists (select 1 from messages reply where reply.run_id = runs.id
+          and reply.kind in ('assistant', 'run-result'))
+        and not exists (select 1 from delegations child where child.parent_run_id = runs.id)
+        and not exists (select 1 from requests request where request.originating_run_id = runs.id)
+      )
         where status in ('completed', 'failed', 'interrupted');
     `.execute(database);
   },
@@ -6624,6 +6639,117 @@ const personShowMigration: Migration = {
         )
         .execute(database);
     }
+  },
+};
+
+const requestSettlementProvenanceMigration: Migration = {
+  async up(database) {
+    await sql`alter table requests add column settlement_provenance jsonb`.execute(database);
+  },
+};
+
+export const ownerSessionComputerApprovalsMigration: Migration = {
+  async up(database) {
+    await sql`drop table if exists public.computer_use_approval_keys;
+      alter table public.computer_use_policies drop column if exists approval;`.execute(database);
+  },
+};
+
+export const remoteAdministrationMigration: Migration = {
+  async up(database) {
+    await sql`
+      drop table machine_local_sessions;
+      create table personal_remote_administration (
+        position bigserial unique,
+        execution_id text not null,
+        requested_intent jsonb not null,
+        id text primary key,
+        requested_by text not null references users(id),
+        idempotency_key text not null,
+        intent jsonb not null,
+        state text not null check (state in ('pending', 'running', 'succeeded', 'failed')),
+        detail text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (requested_by, idempotency_key)
+      );
+      create index personal_remote_administration_latest on personal_remote_administration (position desc);
+    `.execute(database);
+  },
+};
+
+const personalAccountLinkSealingMigration: Migration = {
+  async up(database) {
+    await sql`create table personal_account_link_keys (
+      challenge_id text primary key,
+      public_key text not null,
+      private_key text not null,
+      expires_at timestamptz not null
+    )`.execute(database);
+  },
+};
+
+const personalAccountOperationMigration: Migration = {
+  async up(database) {
+    await sql`alter table personal_remote_account_link add column account_operation jsonb;
+      update personal_remote_account_link
+      set account_operation = jsonb_build_object('id', grant_id, 'kind', 'activate')
+      where state = 'activating';`.execute(database);
+  },
+};
+
+const personMessageMigration: Migration = {
+  async up(database) {
+    const constraints = await sql<{ name: string; definition: string }>`
+      select conname as name, pg_get_constraintdef(oid) as definition
+      from pg_constraint where conrelid = 'public.agent_control_requests'::regclass
+      and conname in ('agent_control_requests_action_check', 'agent_control_requests_action_mapping_check')
+    `.execute(database);
+    for (const constraint of constraints.rows) {
+      await sql`alter table agent_control_requests drop constraint ${sql.id(constraint.name)}`.execute(
+        database,
+      );
+    }
+    await sql`update agent_control_requests set action = 'person.message' where action = 'person.notify'`.execute(
+      database,
+    );
+    for (const constraint of constraints.rows) {
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint "${constraint.name}" ${constraint.definition.replaceAll("'person.notify'", "'person.message'")}`,
+        )
+        .execute(database);
+    }
+  },
+};
+
+const appsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table apps (
+        id text primary key check (id ~ '^app_[0-9a-f-]{36}$'),
+        workspace_id text not null references workspaces(id) on delete cascade,
+        thread_id text not null references threads(id) on delete cascade,
+        run_id text not null references runs(id) on delete cascade,
+        title text not null check (length(title) between 1 and 160),
+        latest_version integer not null check (latest_version > 0),
+        created_at timestamptz not null, updated_at timestamptz not null
+      );
+      create index apps_workspace on apps(workspace_id);
+      create table app_versions (
+        app_id text not null references apps(id) on delete cascade,
+        version integer not null check (version > 0),
+        sha256 text check (sha256 ~ '^[0-9a-f]{64}$'),
+        size_bytes integer check (size_bytes between 1 and 5242880),
+        server jsonb,
+        check ((server is null and sha256 is not null and size_bytes is not null)
+          or (server is not null and sha256 is null and size_bytes is null)),
+        created_by_run text references runs(id) on delete set null,
+        publish_key text not null,
+        created_at timestamptz not null,
+        primary key (app_id, version), unique (created_by_run, publish_key)
+      );
+    `.execute(database);
   },
 };
 
@@ -6759,7 +6885,7 @@ const projectControlActionsMigration: Migration = {
         .execute(database);
       await sql
         .raw(
-          `alter table ${table} add constraint ${table}_action_mapping_check check (action_class = case when action = 'person.notify' then 'thread.message' else action end)`,
+          `alter table ${table} add constraint ${table}_action_mapping_check check (action_class = case when action = 'person.message' then 'thread.message' else action end)`,
         )
         .execute(database);
       for (const column of ["action", "action_class"] as const)

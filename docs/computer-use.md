@@ -19,17 +19,15 @@ choose placement or authority. Source: `apps/host/src/integrations/computer-app-
 `apps/host/src/integrations/integration-platform-service.ts`, and
 `apps/desktop/native/computer-use/Sources/ComputerUseCore/Apps/`.
 
-Automatic app approval never widens an existing connection. Access increases still
-require a native prompt. Turning automatic on requires a signed decision on that Mac;
-turning it off is owner-authorized from anywhere. Under automatic, removing an app
-blocks it and revokes grants instead of allowing the next request to recreate it.
-Unblocking requires a signed app approval on that Mac. Decisions run under the Mac's
-row lock against its current policy, so turning automatic off during a request takes
-effect before settlement.
+Automatic app approval never widens an existing connection. Access increases and
+unblocking require the owner's explicit Host approval from any signed-in device.
+Turning automatic on requires review of its policy; turning it off is also available
+remotely. Under automatic, removing an app blocks it and revokes grants so the next
+request cannot recreate it. Decisions use the Mac's row lock against current policy.
 
 One pending approval per app/Mac joins compatible asks. Wider access, changed identity
-or changed catalog contracts replace the approval ID and move its waiters; a signature
-over the old request cannot settle the replacement. Declining one task's Request must
+or changed catalog contracts replace the approval ID and move its waiters; an answer
+naming the old request cannot settle the replacement. Declining one task's Request must
 not strand other waiters. Settlement creates the connection, appropriate grants and
 fulfilment atomically; approval never lowers an existing grant. See
 `packages/database/src/computer-app-approvals.ts` and nearby tests for the joining rules.
@@ -331,15 +329,12 @@ settle. Preserve transcript first-arrival order. See
 
 ## 5. Desktop
 
-Desktop owns helper lifecycle, native approval and grant prompts for every supervised
-slot. Runner cannot request macOS permission prompts. Approval review pins its Deployment
-transport for its lifetime; changing the selected Deployment cannot move an answer.
-Both Allow and Don't allow are signed with the dedicated approval key, never the Runner
-authentication key. Identity mismatch is not a user decline. Key registration requires
-owner authorization plus a challenge answered on the named Mac. The private key stays
-in main, encrypted through Keychain-backed safeStorage. Sources:
-`apps/desktop/src/computer-use/approval-key.ts`, `computer-use-service.ts`, and
-[renderer contract](../apps/desktop/src/computer-use/RENDERER-CONTRACT.md).
+Desktop owns helper lifecycle and OS grant prompts for every supervised slot. Runner
+cannot request macOS permission prompts. App approval is an authenticated owner command
+on every client, including the desktop. The Host verifies the target helper's app identity,
+deny-list verdict and elevated risk before Allow; unavailable verification is never a
+user decline. Permission setup remains on the computer that holds those OS grants.
+See [the renderer contract](../apps/desktop/src/computer-use/RENDERER-CONTRACT.md).
 
 ## 6. The page
 
@@ -357,7 +352,7 @@ It never launches a replacement app or accepts Runner-requested activation.
 
 ## 7. Out of scope by decision
 
-No one-task-only app approval, remote/mobile native approval, concurrent agent sessions
+No one-task-only app approval, concurrent agent sessions
 in one app, physical-input recording, tree diffs or command escape under an app identity.
 Mac control requires Desktop and an unlocked Mac. Other platforms' contracts remain
 separate.

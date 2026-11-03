@@ -6064,3 +6064,18 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
   expect(warmEngineKey(input)).not.toBe(before);
 });
+
+it("stops app servers on primary connection loss and Runner shutdown", async () => {
+  const runtime = configuredRuntime({
+    environmentId: createId("environment"),
+    registry: new HarnessRegistry(),
+  });
+  const stopAll = vi.spyOn(runtime.appServers, "stopAll");
+  try {
+    await runtime.connectionLost({ send: async () => undefined });
+    expect(stopAll).toHaveBeenCalledTimes(1);
+  } finally {
+    await runtime.close();
+  }
+  expect(stopAll).toHaveBeenCalledTimes(2);
+});

@@ -188,7 +188,7 @@ Stops, restarts, failures, lost leases and draining Runners end the engine.
 
 Idle engines have no authority: credential proxies and relays refuse access.
 Reuse requires the same authority, native session, launch configuration and
-sandbox, including integration skill contents and computer routes. A changed
+sandbox, including pinned plugin versions and computer routes. A changed
 route or pinned key requires a new engine; live computer policy is still checked
 on each connection. Relays are suspended and sessions closed before reuse is
 considered, so a connection accepted by one Run never proceeds under the next.
@@ -275,8 +275,11 @@ reconnect; unconfirmed steers are not. See
 
 Role controls instructions and presentation, never access. Membership,
 capability profile, execution placement and tool admission remain independent.
-An addressed message from person_notify alerts the Run's requester in the same
-Thread without ending work; reports remain passive context for another agent.
+person_message addresses the Run's requester in the same Thread without ending
+work. Only a Run answering the person directly may use it or person_show: the
+Host refuses both for delegated Threads and for any Run on an Assignment, even
+on a Thread the person started, because a task answers its assigner. Reports
+remain passive agent context.
 Addressed messages are excluded from reply selection. A completed Run's last
 substantive reply is the single result used by
 conversations, channels and Assignments. Stopped/failed Runs have no completed

@@ -62,7 +62,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     const fake = fakeBridge(available("not-set-up"));
     const page = await mount({ bridge: fake.bridge });
     expect(text(page)).toContain(
-      "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account with Touch ID or your Mac password.",
+      "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.",
     );
     expect(text(page)).toContain("Import from Chrome, Safari, Firefox, 1Password or Bitwarden.");
     expect(text(page)).toContain(
@@ -83,7 +83,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     expect(page.querySelector(".chip")?.textContent).toBe("On");
     expect(text(page)).not.toContain("Waiting for you");
     expect(text(page)).toContain(
-      "You allow an account once per Workspace with Touch ID or your Mac password. After that, agents there sign in with it on their own.",
+      "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
     );
     expect(text(page)).toContain("Take that access away any time in the Passwords window.");
     expect(text(page)).toContain("Sign-ins can stay saved in the browser profile.");
@@ -127,7 +127,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
         .sort(),
     ).toEqual([first.id, second.id]);
     expect(
-      dispatch.mock.calls.every(([command]) => command.type === "browser.password-sign-in.decline"),
+      dispatch.mock.calls.every(([command]) => command.type === "browser.password-sign-in.respond"),
     ).toBe(true);
     await act(async () => {
       open();
@@ -144,36 +144,6 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     expect(fake.listeners.size).toBe(1);
     for (const root of roots.splice(0)) act(() => root.unmount());
     expect(fake.listeners.size).toBe(0);
-  });
-
-  it("counts and declines only sign-ins still waiting for the person", async () => {
-    const approval = mockPasswordSignInRequest({ index: 1 });
-    const signingIn = mockPasswordSignInRequest({ index: 2 });
-    const needsYou = mockPasswordSignInRequest({ index: 3 });
-    const client = new MockHostClient({
-      latencyMs: 0,
-      pendingRequests: [approval, signingIn, needsYou],
-    });
-    const dispatch = vi.spyOn(client, "dispatch");
-    const fake = fakeBridge(available("ready"));
-    if (signingIn.payload.kind !== "browser.password-sign-in") throw new Error("Expected sign-in");
-    const signingInOperationId = signingIn.payload.operationId;
-    fake.bridge.passwordsSignInGet.mockImplementation(async ({ operationId }) =>
-      operationId === signingInOperationId
-        ? { stage: "authorized", account: "t•••@example.com" }
-        : { stage: "approval", accounts: [], site: "https://github.com" },
-    );
-    const page = await mount({ bridge: fake.bridge, client });
-    expect(text(page)).toContain("2 sign-ins to answer in their conversations");
-    await click(button(page, "Don’t allow all"));
-    expect(
-      dispatch.mock.calls
-        .map(([command]) => ("requestId" in command ? command.requestId : null))
-        .sort(),
-    ).toEqual([approval.id, needsYou.id].sort());
-    expect(
-      client.getSnapshot().waitingRequests.some(({ request }) => request.id === signingIn.id),
-    ).toBe(true);
   });
 
   it.each([
@@ -281,16 +251,6 @@ function fakeBridge(initial: DesktopPasswordsStatus | Error) {
   let current = initial;
   const listeners = new Set<(status: DesktopPasswordsStatus) => void>();
   const bridge = {
-    passwordsSignInGet: vi.fn(
-      async (_input: {
-        readonly operationId: string;
-      }): ReturnType<OpensteerDesktopBridge["passwordsSignInGet"]> => ({
-        stage: "approval",
-        accounts: [],
-        site: "https://github.com",
-      }),
-    ),
-    onPasswordsSignInChanged: vi.fn(() => () => undefined),
     onPasswordsStatusChanged: vi.fn((listener: (status: DesktopPasswordsStatus) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

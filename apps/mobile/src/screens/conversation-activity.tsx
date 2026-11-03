@@ -14,7 +14,7 @@ import { useCallback, useMemo, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { color, space } from "../theme.js";
-import { AttachmentReader } from "../thread/attachment-views.js";
+import { TranscriptHostClientContext } from "../thread/attachment-views.js";
 import {
   ReplySurfaces,
   TranscriptSurfacesContext,
@@ -127,7 +127,7 @@ function ReplyActivity(props: {
     );
   }
   return (
-    <AttachmentReader value={hostClient}>
+    <TranscriptHostClientContext value={hostClient}>
       <Frame
         status={
           activity.live
@@ -155,7 +155,7 @@ function ReplyActivity(props: {
           />
         )}
       </Frame>
-    </AttachmentReader>
+    </TranscriptHostClientContext>
   );
 }
 

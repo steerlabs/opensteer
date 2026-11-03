@@ -29,6 +29,10 @@ import type { DatabaseSchema } from "./schema.js";
 
 type HostWorkspaceEventInput =
   | Pick<
+      Extract<AgentEvent, { readonly type: "app.published" }>,
+      "type" | "data" | "environmentId" | "runId" | "threadId" | "workspaceId"
+    >
+  | Pick<
       Extract<AgentEvent, { readonly type: "place.entered" }>,
       "type" | "data" | "environmentId" | "runId" | "threadId" | "workspaceId"
     >

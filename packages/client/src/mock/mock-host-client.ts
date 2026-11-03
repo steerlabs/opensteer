@@ -1,3 +1,4 @@
+import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
@@ -104,7 +105,6 @@ import type {
 } from "@opensteer/integration-core";
 import { createIntegrationId, type IntegrationConnectionId } from "@opensteer/integration-core/ids";
 import {
-  ComputerAppApprovalSchema,
   IntegrationInstallManifestSummarySchema,
   SetComputerAppConnectionSchema,
   integrationCredentialRejectedDetail,
@@ -1559,7 +1559,6 @@ const mockMachines: readonly MachineSummary[] = [
     computerUse: {
       displayStreamSupported: true,
       appApproval: "automatic",
-      approvalKeyId: `sha256:${"A".repeat(43)}`,
       detail: null,
       permissions: { accessibility: "granted", screenRecording: "granted" },
       sessions: [mockComputerUseSession, mockSlackLiveSession],
@@ -1643,7 +1642,6 @@ const mockMachines: readonly MachineSummary[] = [
     computerUse: {
       displayStreamSupported: false,
       appApproval: "ask",
-      approvalKeyId: null,
       detail: null,
       permissions: { accessibility: "denied", screenRecording: "granted" },
       sessions: [],
@@ -1723,7 +1721,6 @@ const mockMachines: readonly MachineSummary[] = [
       // Every client watches phone tasks and owner views through live display.
       displayStreamSupported: true,
       appApproval: null,
-      approvalKeyId: null,
       detail: null,
       permissions: null,
       sessions: [mockAgentPhoneSession],
@@ -1889,11 +1886,16 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
+    "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
+    "apps.get": unsupportedMockRpc,
+    "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
     "attachment.content": async ({ attachmentId }) =>
       rpcSuccess(client.readAttachment(attachmentId)),
+    "browser.password-sign-in.get": async ({ requestId }) =>
+      rpcSuccess(client.passwordSignInCard(requestId)),
     "browser.sources.get": async () => rpcSuccess(client.chrome.state()),
     "browser.sources.inspect": async (input) => {
       try {
@@ -2086,8 +2088,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     },
     "integration.computer.policy.get": async (input) =>
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
+    "integration.computer.setup.review": async ({ setupRequestId }) =>
+      rpcSuccess(client.reviewComputerAppSetup(setupRequestId)),
     "integration.computer.setup.list": async () =>
-      rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
+      rpcSuccess(
+        hostApi["integration.computer.setup.list"].success.parse({
+          requests: client.listComputerAppSetupRequests(),
+        }),
+      ),
     "specialist.list": async (input) =>
       rpcSuccess({ specialists: client.listSpecialists(input.workspaceId) }),
     "plugin.list": async (input) =>
@@ -2745,6 +2753,38 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     // The preview never opens a session, so there is never one to stop.
     case "machine.access.session.stop":
       return rpcSuccess({ ended: false, type: command.type });
+    case "personal.remoteAccess.request": {
+      const id = globalThis.crypto.randomUUID();
+      client.remoteAdministration = {
+        ...client.remoteAdministration,
+        revision: client.remoteAdministration.revision + 1,
+        operation: {
+          id,
+          executionId: id,
+          intent: command.intent,
+          state: "pending",
+          detail: "Waiting for the Opensteer desktop app to run on this computer.",
+        },
+      };
+      for (const listener of client.remoteAdministrationListeners) listener();
+      return rpcSuccess({ type: command.type, operation: client.remoteAdministration.operation! });
+    }
+    case "personal.remoteAccess.pairing.create": {
+      if (client.remoteAdministration.access.mode !== "private")
+        throw mockConflict("Enable Private network access before creating a pairing code");
+      return rpcSuccess({
+        type: command.type,
+        pairing: {
+          code: `osp_${"m".repeat(43)}` as import("@opensteer/protocol").PersonalPairingCode,
+          expiresAt: new Date(Date.now() + 600000).toISOString(),
+          generation: client.remoteAdministration.access.generation,
+          schemaVersion: 1 as const,
+        },
+      });
+    }
+    case "personal.accountLink.approve":
+    case "personal.accountLink.complete":
+      return unsupportedMockRpc();
     case "session.revoke":
       await client.revokeSession(command.sessionId);
       return rpcSuccess({ type: command.type });
@@ -2816,11 +2856,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         connection: await client.setComputerAppConnection(command.input),
         type: command.type,
       });
-    case "integration.computer.approval-key.set":
-      return rpcSuccess({
-        approvalKeyId: client.registerComputerUseApprovalKey(command.input),
-        type: command.type,
-      });
+    case "integration.computer.setup.respond":
+      await client.respondComputerAppSetup(command.setupRequestId, command.decision);
+      return rpcSuccess({ type: command.type });
     case "integration.computer.policy.set":
       await client.setComputerUsePolicy(command.input.runnerId);
       return rpcSuccess({ appApproval: "ask", type: command.type });
@@ -2969,8 +3007,8 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ outcome: client.signInBrowserSession(command), type: command.type });
     case "browser.sign-in.respond":
       return rpcSuccess({ outcome: client.respondBrowserSignIn(command), type: command.type });
-    case "browser.password-sign-in.decline":
-      return rpcSuccess({ status: client.declinePasswordSignIn(command), type: command.type });
+    case "browser.password-sign-in.respond":
+      return rpcSuccess({ status: client.respondPasswordSignIn(command), type: command.type });
     case "browser.profile.grant":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -3458,12 +3496,12 @@ function mockBootstrap(
   };
 }
 
-/** The person's signed answer on a Mac, as its Runner stream carries it to a real Host. */
+/** An exact request the authenticated owner answers through the Host. */
 const MockMacAnswerSchema = z.discriminatedUnion("kind", [
-  SetComputerAppConnectionSchema.extend({ approval: ComputerAppApprovalSchema }),
+  SetComputerAppConnectionSchema.extend({ setupRequestId: z.string().uuid() }),
   z.strictObject({
     appApproval: z.literal("automatic"),
-    approval: ComputerAppApprovalSchema,
+    setupRequestId: z.string().uuid(),
     kind: z.literal("policy"),
     runnerId: RunnerIdSchema,
   }),
@@ -3716,6 +3754,17 @@ export class MockHostClient implements HostClient {
     body: string,
   ): void {
     this.#state.receiveAgentInput(threadId, MessageAuthorSchema.parse(author), body);
+  }
+
+  setPersonalRemoteAccessStatus(
+    access: import("@opensteer/protocol").PersonalRemoteAccessStatus,
+  ): void {
+    this.#state.remoteAdministration = {
+      ...this.#state.remoteAdministration,
+      access,
+      revision: this.#state.remoteAdministration.revision + 1,
+    };
+    for (const listener of this.#state.remoteAdministrationListeners) listener();
   }
 
   readonly getSnapshot = (): HostSnapshot => {
@@ -4144,6 +4193,14 @@ export class MockHostClient implements HostClient {
       binaryChunks(input.source, input.signal),
     );
   }
+  async viewApp(
+    _appId: string,
+    _theme: "light" | "dark",
+    _signal?: AbortSignal,
+  ): Promise<{ app: import("@opensteer/core").OpensteerApp; url: string }> {
+    throw new Error("Published apps are unavailable in this preview.");
+  }
+
   async getAttachment(attachmentId: string): Promise<Attachment> {
     return this.#state.getAttachment(attachmentId);
   }
@@ -4208,23 +4265,6 @@ export class MockHostClient implements HostClient {
   /** Scripted bridge hooks: device reports and taps never enter the production Host API. */
   mockConnectIphone(input: { enrollmentId: string; runnerId: string; name: string }): void {
     this.#state.mockConnectIphone(input);
-  }
-
-  async mockAnswerIphoneApproval(input: {
-    setupRequestId: string;
-    decision: "allow" | "deny";
-  }): Promise<void> {
-    await this.#state.mockAnswerIphoneApproval(input);
-  }
-
-  /**
-   * The person's signed answer on a Mac. A real Host takes it on that Mac's
-   * own Runner stream, never as a client command, so the mock takes it here.
-   */
-  async answerComputerAppApprovalOnMac(
-    input: z.input<typeof MockMacAnswerSchema>,
-  ): Promise<IntegrationConnectionSummary | null> {
-    return this.#state.setComputerAppConnection(MockMacAnswerSchema.parse(input));
   }
 
   activateWorkspace(workspaceId: string): void {
@@ -4357,6 +4397,11 @@ export class MockHostClient implements HostClient {
           home: { status: "window", threadId, workspaceId: snapshot.homeWorkspaceId, latest: true },
         },
       });
+  }
+
+  subscribePersonalRemoteAccess(listener: () => void): () => void {
+    this.#state.remoteAdministrationListeners.add(listener);
+    return () => this.#state.remoteAdministrationListeners.delete(listener);
   }
 
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
@@ -4985,6 +5030,25 @@ class MockHostState {
     }
   }
 
+  readonly remoteAdministrationListeners = new Set<() => void>();
+  remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
+    access: { accountLink: null, generation: 0, mode: "off", route: null, schemaVersion: 2 },
+    accountIssuer: null,
+    executorConnected: false,
+    operation: null,
+    revision: 0,
+    authorityEnvelope: {
+      document: {
+        canonicalOrigin: "http://127.0.0.1:4310",
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        hostKey: { algorithm: "Ed25519" },
+        deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      },
+      publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
+      signature: "A".repeat(86),
+    },
+  };
   readonly runPlaces = new RunPlaceStore();
   readonly searchSuggestionRequests: { readonly query: string; readonly at: number }[] = [];
   computerViews: MockComputerViews | undefined;
@@ -5585,7 +5649,7 @@ class MockHostState {
       };
     }
   >();
-  private readonly iphoneApprovalKeys = new Map<string, string>();
+
   private readonly activeRuns = new Map<string, ActiveMockRun>();
   private readonly integrations = createInitialIntegrationState(mockUserId);
   private readonly integrationAttempts = new Map<string, MockIntegrationAttempt>();
@@ -5660,7 +5724,6 @@ class MockHostState {
           form: "computer",
           id: createId("authSession"),
           lastSeenAt: "2026-09-14T00:00:00.000Z",
-          machineLocal: false,
         },
       ]),
     ];
@@ -7315,6 +7378,68 @@ class MockHostState {
     return { notice: null, revokedUpstream: false };
   }
 
+  reviewComputerAppSetup(setupRequestId: string) {
+    const request = this.computerAppSetupRequests.get(setupRequestId);
+    if (!request) throw new Error("This approval is no longer waiting.");
+    this.ownedComputer(request.runnerId);
+    return {
+      request,
+      app: request.app
+        ? {
+            identity: request.app,
+            allowed: true,
+            path: `/Applications/${request.app.displayName}.app`,
+            risk: "standard" as const,
+            reason: null,
+            running: false,
+          }
+        : null,
+    };
+  }
+  async respondComputerAppSetup(setupRequestId: string, decision: "allow" | "deny"): Promise<void> {
+    const { request } = this.reviewComputerAppSetup(setupRequestId);
+    if (decision === "deny") {
+      this.cancelComputerAppSetup(setupRequestId);
+      return;
+    }
+    if (request.kind === "server") throw new Error("This mock has no local MCP executor.");
+    if (
+      request.kind === "app" &&
+      !this.integrations.installations.some(({ servers }) =>
+        servers.some(
+          ({ connectionRequirement }) =>
+            connectionRequirement.kind === "computer" &&
+            connectionRequirement.definitionId === request.definitionId,
+        ),
+      )
+    ) {
+      if (this.snapshot.user?.instanceRole !== "administrator")
+        throw new Error("Ask an administrator to add this app.");
+      const catalog = this.integrations.catalog.find(
+        ({ definition }) => definition.id === request.definitionId,
+      );
+      if (!catalog) throw new Error("This app is not in the catalog.");
+      await this.installCatalogIntegration({
+        definitionId: request.definitionId,
+        digest: catalog.digest,
+      });
+    }
+
+    await this.setComputerAppConnection(
+      request.kind === "policy"
+        ? { kind: "policy", appApproval: "automatic", runnerId: request.runnerId, setupRequestId }
+        : {
+            kind: "app",
+            app: request.app,
+            definitionId: request.definitionId,
+            access: request.access,
+            runnerId: request.runnerId,
+            setupRequestId,
+          },
+    );
+    this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
+  }
+
   listComputerAppSetupRequests(): ComputerAppSetupRequest[] {
     return [...this.computerAppSetupRequests.values()].filter(
       (request) => Date.parse(request.expiresAt) > this.now().getTime(),
@@ -7381,6 +7506,7 @@ class MockHostState {
       workspaceName: null,
     };
     this.computerAppSetupRequests.set(request.id, request);
+    this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
     return request;
   }
 
@@ -7397,36 +7523,19 @@ class MockHostState {
     else this.computerAppSetupRequests.delete(requestId);
   }
 
-  /** Pins the desktop's approval key for one Mac, as the real Host does. */
-  registerComputerUseApprovalKey(
-    input: ParsedCommandOf<"integration.computer.approval-key.set">["input"],
-  ): string {
-    const machine = this.ownedComputer(input.runnerId);
-    if (machine?.device?.form === "phone" && machine.device?.platform === "android") {
-      throw new Error("An Android phone has no approval key.");
-    }
-    const keyId = `sha256:${input.publicKey
-      .replace(/[^A-Za-z0-9]/gu, "")
-      .slice(-43)
-      .padStart(43, "A")}`;
-    if (machine.device?.platform === "ios") this.iphoneApprovalKeys.set(input.runnerId, keyId);
-    else this.updateComputerUse(input.runnerId, (report) => ({ ...report, approvalKeyId: keyId }));
-    return keyId;
-  }
-
-  /** Applies owner-set phone access, Mac narrowing, or a signed Mac answer. */
+  /** Applies owner-set phone access, a reduction or an exact pending request. */
   async setComputerAppConnection(
     input: ParsedCommandOf<"integration.computer.setup.set">["input"] | MockMacAnswer,
   ): Promise<IntegrationConnectionSummary | null> {
     if (input.kind === "policy") {
-      const pending = this.computerAppSetupRequests.get(input.approval.requestId);
+      const pending = this.computerAppSetupRequests.get(input.setupRequestId);
       if (
         !pending ||
         pending.kind !== "policy" ||
         pending.runnerId !== input.runnerId ||
         Date.parse(pending.expiresAt) <= this.now().getTime()
       ) {
-        throw new Error("Confirm automatic approval in Opensteer on that Mac.");
+        throw new Error("Review automatic approval in Opensteer.");
       }
       this.computerAppSetupRequests.delete(pending.id);
       this.updateComputerUse(input.runnerId, (report) => ({ ...report, appApproval: "automatic" }));
@@ -7437,8 +7546,7 @@ class MockHostState {
     if (input.access === "read-write" && definition.computerApp.accessLevels.length < 2) {
       throw new Error(`${definition.name} can only be read.`);
     }
-    const machine = this.snapshot.machines.find((candidate) => candidate.id === input.runnerId);
-    if (!machine) throw new Error("That computer is not part of this deployment.");
+    const machine = this.ownedComputer(input.runnerId);
     if (machine.device?.platform === "ios") {
       this.ownedComputer(input.runnerId);
       if (!definition.computerApp.platforms.includes("ios"))
@@ -7452,7 +7560,7 @@ class MockHostState {
     if (input.definitionId === androidPhoneDefinitionId && !phone) {
       throw new Error("That is not an Android phone connection.");
     }
-    if (phone && "approval" in input) {
+    if (phone && "setupRequestId" in input) {
       throw new Error("Phone access is set by its owner in Opensteer.");
     }
     if (phone) this.ownedComputer(input.runnerId);
@@ -7473,7 +7581,7 @@ class MockHostState {
         sameMockApp(connection.computer.app, input.app) &&
         connection.status !== "revoked",
     );
-    const approval = "approval" in input ? input.approval : null;
+    const approval = "setupRequestId" in input ? input.setupRequestId : null;
     if (
       !phone &&
       (!existing ||
@@ -7481,7 +7589,7 @@ class MockHostState {
         (existing.computer.access === "read" && input.access === "read-write") ||
         approval)
     ) {
-      const pending = approval ? this.computerAppSetupRequests.get(approval.requestId) : undefined;
+      const pending = approval ? this.computerAppSetupRequests.get(approval) : undefined;
       if (
         !pending ||
         pending.kind !== "app" ||
@@ -7491,7 +7599,7 @@ class MockHostState {
         pending.access !== input.access ||
         Date.parse(pending.expiresAt) <= this.now().getTime()
       ) {
-        throw new Error("Approve this access in Opensteer on the computer that provides the app.");
+        throw new Error("Review this app access in Opensteer.");
       }
     }
     for (const request of this.computerAppSetupRequests.values()) {
@@ -7798,9 +7906,37 @@ class MockHostState {
    * Declines a saved-password sign-in from any device. The preview has no Mac
    * to race, so the decline always settles the Request.
    */
-  declinePasswordSignIn(
-    command: Extract<HostApiCommand, { readonly type: "browser.password-sign-in.decline" }>,
-  ): "declined" {
+  passwordSignInCard(requestId: string): PasswordSignInCard {
+    const request = Object.values(this.snapshot.requests)
+      .flat()
+      .find(({ id }) => id === requestId);
+    if (
+      !request ||
+      request.status !== "pending" ||
+      request.payload.kind !== "browser.password-sign-in" ||
+      request.payload.permissionVersion !== 5
+    )
+      return { stage: "gone" };
+    return {
+      stage: "approval",
+      permissionVersion: 5,
+      accounts: [
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          revision: 1,
+          username: "passwords-preview@example.test",
+          host: new URL(request.payload.site).hostname,
+          onPage: false,
+          updatedAt: request.createdAt,
+          label: null,
+        },
+      ],
+    };
+  }
+
+  respondPasswordSignIn(
+    command: Extract<HostApiCommand, { readonly type: "browser.password-sign-in.respond" }>,
+  ): "declined" | "fulfilled" {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === command.requestId);
@@ -7810,6 +7946,22 @@ class MockHostState {
       request.payload.kind !== "browser.password-sign-in"
     ) {
       throw mockConflict("This sign-in Request is no longer waiting.");
+    }
+    if (command.decision.kind === "approve") {
+      const choice = command.decision;
+      const card = this.passwordSignInCard(request.id);
+      if (
+        card.stage !== "approval" ||
+        !card.accounts.some(
+          ({ id, revision }) => id === choice.loginId && revision === choice.revision,
+        )
+      )
+        throw mockConflict("Choose a current saved account.");
+      this.settleBrowserSignIn(request, "fulfilled", {
+        outcome: "authorized",
+        account: "p•••@example.test",
+      });
+      return "fulfilled";
     }
     this.settleBrowserSignIn(request, "declined", { decision: "declined" });
     return "declined";
@@ -8209,46 +8361,6 @@ class MockHostState {
           : machine,
       ),
     });
-  }
-
-  async mockAnswerIphoneApproval(input: {
-    setupRequestId: string;
-    decision: "allow" | "deny";
-  }): Promise<void> {
-    const request = this.listComputerAppSetupRequests().find(
-      ({ id }) => id === input.setupRequestId,
-    );
-    if (
-      !request ||
-      request.kind !== "app" ||
-      this.ownedComputer(request.runnerId).device?.platform !== "ios" ||
-      !this.iphoneApprovalKeys.has(request.runnerId)
-    )
-      throw new Error("This iPhone approval is no longer waiting.");
-    if (input.decision === "deny") this.cancelComputerAppSetup(request.id);
-    else {
-      const catalog = this.integrations.catalog.find(
-        ({ definition }) => definition.id === request.definitionId,
-      );
-      if (!catalog) throw new Error("That app is not in this catalog.");
-      await this.installCatalogIntegration({
-        definitionId: request.definitionId,
-        digest: catalog.digest,
-      });
-      await this.setComputerAppConnection({
-        kind: "app",
-        app: request.app,
-        runnerId: request.runnerId,
-        definitionId: request.definitionId,
-        access: request.access,
-        approval: {
-          requestId: request.id,
-          expiresAt: new Date(this.now().getTime() + 30_000).toISOString(),
-          signature: "A".repeat(86),
-        },
-      });
-    }
-    this.update({ ...this.snapshot });
   }
 
   async createManagedRunnerEnrollment(name: string) {
@@ -12838,7 +12950,8 @@ export function mockPasswordSignInRequest(
       operationId: `0192f4a1-7777-4000-8000-${String(index).padStart(12, "0")}`,
       reason: `Download the October statement from ${domain} to finish the reconciliation.`,
       runnerId: "rnr_11111111-1111-4111-8111-111111111111",
-      sessionId: "bss_preview",
+      scope: "workspace",
+      permissionVersion: 5,
       site,
     },
     presentation: {
@@ -12847,7 +12960,7 @@ export function mockPasswordSignInRequest(
       title: `Sign in to ${domain}`,
     },
     requestedBy: mockUserId,
-    requiredActor: "workspace-owner",
+    requiredActor: "requester",
     resolvedAt: status === "pending" ? null : createdAt,
     resolvedBy: status === "pending" ? null : mockUserId,
     response:

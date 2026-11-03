@@ -264,6 +264,10 @@ export class FakePasswordsBrokerSession implements PasswordsBrokerSession {
             : (item.totp ?? ""),
     };
   }
+  async commit(_transactionId: string, _signal: AbortSignal) {
+    return { committed: true };
+  }
+
   async cancel(transactionId: string): Promise<void> {
     this.#record({ method: "cancel", transactionId });
     this.#transactions.get(transactionId)?.lifetime.abort();

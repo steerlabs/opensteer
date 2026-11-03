@@ -1,3 +1,22 @@
+import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
+import {
+  loadOrCreateHostKeys,
+  SignedTokenClaimsSchema,
+  SignedTokenService,
+  signHostDiscovery,
+} from "../identity/host-keys.js";
+import {
+  advertisedCapabilities,
+  createHostServer as createProductionHostServer,
+  RunnerChallengeAdmission,
+} from "../server.js";
+import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
+import {
+  hostServerTestDependencies,
+  type HostServerTestOverrides,
+} from "./host-server-test-harness.js";
+import { hostInternalRoutePaths } from "./internal-routes.js";
+import { injectRpcRequest } from "./test-host-api-request.js";
 import {
   createId,
   emptyExecutionPreferences,
@@ -5,6 +24,7 @@ import {
   personalRemoteAuthorizationScheme,
   rememberExecutionChoice,
   ThreadAccessModeSchema,
+  ThreadViewSchema,
   type AuthenticatedSession,
   type EnvironmentId,
   type ExecutionChoice,
@@ -38,25 +58,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
-import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import {
-  loadOrCreateHostKeys,
-  SignedTokenClaimsSchema,
-  SignedTokenService,
-  signHostDiscovery,
-} from "../identity/host-keys.js";
-import {
-  advertisedCapabilities,
-  createHostServer as createProductionHostServer,
-  RunnerChallengeAdmission,
-} from "../server.js";
-import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
-import {
-  hostServerTestDependencies,
-  type HostServerTestOverrides,
-} from "./host-server-test-harness.js";
-import { hostInternalRoutePaths } from "./internal-routes.js";
-import { injectRpcRequest } from "./test-host-api-request.js";
+import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 
 type StringDriverKind<T> = T extends { readonly driverKind: unknown }
   ? Omit<T, "driverKind"> & { readonly driverKind: string }
@@ -330,7 +332,7 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(49);
+      expect(discovery.json().apiVersion).toBe(50);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
         apiVersion: hostApiVersion,
@@ -379,6 +381,78 @@ describe("Host signing keys", () => {
     }
   });
 
+  it("delivers tunnel credentials only to the process-capability executor, never an owner session", async () => {
+    const session = testAuthenticatedSession(createId("user"));
+    const connectCredential = vi.fn(async () => ({ tunnelToken: "private-connect-token" }));
+    const capability = "process-capability".padEnd(43, "x");
+    const app = await createHostServer({
+      authenticator: {
+        authenticateSession: async () => session,
+        publicOrigin: personalDiscovery.document.canonicalOrigin,
+        identity: { nativeOpenIdConfiguration: () => undefined },
+      } as never,
+      discovery: personalDiscovery,
+      localBootstrap: {
+        service: new LocalBootstrapService({
+          publicUrl: new URL(personalDiscovery.document.canonicalOrigin),
+          requireSetupCredential: true,
+          setupToken: capability,
+          store: {} as never,
+          runners: {} as never,
+        }),
+      },
+      personalRemoteAccess: {
+        service: {
+          administration: { close: () => {}, subscribe: () => () => {} },
+          accountSessionExchangeEnabled: () => false,
+          connectCredentialForExecutor: connectCredential,
+        } as never,
+      },
+    } satisfies HostServerTestOverrides);
+    try {
+      for (const rotate of [false, true]) {
+        const path = `connect-${rotate ? "rotate" : "provision"}`;
+        const payload = {
+          operationId: `cop_${crypto.randomUUID()}`,
+          hostInstanceId: personalDiscovery.document.hostInstanceId,
+          ...(rotate ? {} : { localOrigin: personalDiscovery.document.canonicalOrigin }),
+        };
+        for (const authorization of [
+          "PersonalRemote stolen-owner-session",
+          `Bearer ${"owner-session".padEnd(43, "x")}`,
+        ]) {
+          const publicResponse = await app.inject({
+            method: "POST",
+            url: `/v1/personal-remote-access/${path}`,
+            headers: { authorization },
+            payload,
+          });
+          expect(publicResponse.statusCode, publicResponse.body).toBe(404);
+          expect(publicResponse.body).not.toContain("private-connect-token");
+          const privateResponse = await app.inject({
+            method: "POST",
+            url: `/v1/personal-remote-access/executor/${path}`,
+            headers: { authorization },
+            payload,
+          });
+          expect(privateResponse.statusCode).toBe(403);
+          expect(privateResponse.body).not.toContain("private-connect-token");
+        }
+        expect(connectCredential).toHaveBeenCalledTimes(Number(rotate));
+        const local = await app.inject({
+          method: "POST",
+          url: `/v1/personal-remote-access/executor/${path}`,
+          headers: { authorization: `Bearer ${capability}` },
+          payload,
+        });
+        expect(local.statusCode, local.body).toBe(200);
+        expect(local.json()).toEqual({ tunnelToken: "private-connect-token" });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("advertises exactly the optional features whose routes it registered", async () => {
     const app = await createHostServer({
       authenticator: {
@@ -392,7 +466,10 @@ describe("Host signing keys", () => {
       } as never,
       discovery: testDiscovery,
       personalRemoteAccess: {
-        service: { accountSessionExchangeEnabled: () => true } as never,
+        service: {
+          administration: { close: () => {}, subscribe: () => () => {} },
+          accountSessionExchangeEnabled: () => true,
+        } as never,
       },
       realtime: testRealtime(),
     } satisfies HostServerTestOverrides);
@@ -495,11 +572,11 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
-      expect(hostApiVersion).toBe(49);
+      expect(hostApiVersion).toBe(50);
       for (const legacyHostApiVersion of [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
-        50,
+        49, 51,
       ]) {
         const legacyEpoch = await injectRpcRequest(
           app,
@@ -1242,7 +1319,7 @@ describe("rpc envelope", () => {
     }
   });
 
-  it("holds session revocation to an exact-origin request whatever the credential", async () => {
+  it("allows header session revocation and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
@@ -1277,16 +1354,20 @@ describe("rpc envelope", () => {
       const bearer = await injectRpcRequest(app, "commands.dispatch", command, {
         authorization: "Bearer header.payload.signature",
       });
-      expect(bearer.statusCode).toBe(403);
-      expect(bearer.json()).toMatchObject({ error: { code: "forbidden" }, ok: false });
-      expect(revokeSession).not.toHaveBeenCalled();
+      expect(bearer.statusCode, bearer.body).toBe(200);
+      const hostile = await injectRpcRequest(app, "commands.dispatch", command, {
+        cookie: "opensteer.session=test",
+        origin: "https://hostile.example",
+      });
+      expect(hostile.statusCode).toBe(403);
+      expect(revokeSession).toHaveBeenCalledOnce();
 
       const fromBrowser = await injectRpcRequest(app, "commands.dispatch", command, {
         cookie: "opensteer.session=test",
         origin: "https://opensteer.example",
       });
       expect(fromBrowser.statusCode, fromBrowser.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, command.sessionId);
+      expect(revokeSession).toHaveBeenCalledWith(session, command.sessionId, expect.any(Function));
     } finally {
       await app.close();
     }
@@ -1331,7 +1412,7 @@ describe("rpc envelope", () => {
       );
 
       expect(own.statusCode, own.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, session.id);
+      expect(revokeSession).toHaveBeenCalledWith(session, session.id, expect.any(Function));
     } finally {
       await app.close();
     }
@@ -1366,13 +1447,13 @@ describe("rpc envelope", () => {
       );
 
       expect(own.statusCode, own.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, session.id);
+      expect(revokeSession).toHaveBeenCalledWith(session, session.id, expect.any(Function));
     } finally {
       await app.close();
     }
   });
 
-  it("still refuses a header credential ending somebody else's session", async () => {
+  it("allows a header credential to request removal of another session owned by its user", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
@@ -1410,15 +1491,14 @@ describe("rpc envelope", () => {
 
       // Signing this device out is one thing; ending another device's access
       // is the owner's move and still wants the owner's browser.
-      expect(other.statusCode).toBe(403);
-      expect(other.json()).toMatchObject({ error: { code: "forbidden" }, ok: false });
-      expect(revokeSession).not.toHaveBeenCalled();
+      expect(other.statusCode, other.body).toBe(200);
+      expect(revokeSession).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
   });
 
-  it("holds integration uninstall to an exact-origin request whatever the credential", async () => {
+  it("allows header integration uninstall and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const authenticator = new HostAuthenticator({
       identity: {
@@ -1466,9 +1546,13 @@ describe("rpc envelope", () => {
       const bearer = await injectRpcRequest(app, "commands.dispatch", command, {
         authorization: "Bearer header.payload.signature",
       });
-      expect(bearer.statusCode).toBe(403);
-      expect(bearer.json()).toMatchObject({ error: { code: "forbidden" }, ok: false });
-      expect(uninstallIntegration).not.toHaveBeenCalled();
+      expect(bearer.statusCode, bearer.body).toBe(200);
+      const hostile = await injectRpcRequest(app, "commands.dispatch", command, {
+        cookie: "opensteer.session=test",
+        origin: "https://hostile.example",
+      });
+      expect(hostile.statusCode).toBe(403);
+      expect(uninstallIntegration).toHaveBeenCalledOnce();
 
       const fromBrowser = await injectRpcRequest(app, "commands.dispatch", command, {
         cookie: "opensteer.session=test",
@@ -1490,7 +1574,7 @@ describe("rpc envelope", () => {
     }
   });
 
-  it("refuses a listed command to a Personal remote session and leaves disconnecting open to it", async () => {
+  it("allows Personal remote administration and disconnecting", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const authenticator = new HostAuthenticator({
       identity: { ...testIdentity, requireSession: async () => session } as never,
@@ -1541,8 +1625,8 @@ describe("rpc envelope", () => {
         },
         remote,
       );
-      expect(uninstall.statusCode).toBe(403);
-      expect(uninstallIntegration).not.toHaveBeenCalled();
+      expect(uninstall.statusCode, uninstall.body).toBe(200);
+      expect(uninstallIntegration).toHaveBeenCalledOnce();
 
       // Disconnecting an account only ever reduces what agents can reach, and
       // the owner has to be able to do it from wherever they are.
@@ -1615,7 +1699,11 @@ describe("Agent Phone pairing target", () => {
         ? {}
         : {
             personalRemoteAccess: {
-              service: { accessRoute, accountSessionExchangeEnabled: () => false } as never,
+              service: {
+                administration: { close: () => {}, subscribe: () => () => {} },
+                accessRoute,
+                accountSessionExchangeEnabled: () => false,
+              } as never,
             },
           }),
     } satisfies HostServerTestOverrides);
@@ -2115,19 +2203,83 @@ describe("Workspace invitation issuance", () => {
 });
 
 describe("thread event history route", () => {
+  it("projects settlement provenance in raw request list responses", async () => {
+    const request = {
+      ...pendingRequestFixture("browser.access"),
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    };
+    const app = await requestRouteServer({ ownerId: request.requestedBy, request });
+    try {
+      const response = await injectRpcRequest(app, "thread.requests.list", {
+        threadId: request.originatingThreadId,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+      expect(response.json().data.requests[0].settlementProvenance).toEqual({
+        deviceLabel: "iPhone",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("serves the durable event page and 404s when the Thread is not accessible", async () => {
     const ownerId = createId("user");
     const threadId = createId("thread");
+    const pending = pendingRequestFixture("browser.access");
+    const request = {
+      ...pending,
+      originatingThreadId: threadId,
+      status: "declined" as const,
+      resolvedAt: new Date().toISOString(),
+      resolvedBy: ownerId,
+      response: { kind: "external" as const, value: { decision: "declined" } },
+      settlementProvenance: { sessionId: "PRIVATE-SETTLEMENT-SESSION", deviceLabel: "iPhone" },
+    };
     const page = {
-      events: [],
+      thread: ThreadViewSchema.parse({
+        accessMode: "full-access",
+        capabilityProfileId: "main",
+        continuationIdentity: null,
+        createdAt: request.createdAt,
+        updatedAt: request.createdAt,
+        createdBy: ownerId,
+        environmentId: createId("environment"),
+        harnessInstanceId: createId("harnessInstance"),
+        id: threadId,
+        lineageRootThreadId: threadId,
+        inputQueuePaused: false,
+        listed: true,
+        modelSelection: { modelId: "gpt-5.6-sol", options: {}, providerId: "openai" },
+        parentThreadId: null,
+        pendingRequests: 0,
+        role: "work",
+        status: "idle",
+        title: "History",
+        workspaceId: request.originatingWorkspaceId,
+      }),
+      readState: { threadId, readSequence: null, unreadSequence: null, asOfSequence: "1" },
+      events: [
+        {
+          createdAt: request.resolvedAt,
+          data: { request },
+          environmentId: createId("environment"),
+          eventId: createId("event"),
+          runId: request.originatingRunId,
+          sequence: "1",
+          threadId,
+          type: "request.resolved" as const,
+          workspaceId: request.originatingWorkspaceId,
+        },
+      ],
       threadId,
       window: {
         byteCount: 2,
         hasMore: false,
-        itemCount: 0,
+        itemCount: 1,
         nextBefore: null,
         threadId,
-        totalItems: 0,
+        totalItems: 1,
       },
     };
     let result: typeof page | null = page;
@@ -2158,7 +2310,21 @@ describe("thread event history route", () => {
         threadId,
       });
       expect(ok.statusCode).toBe(200);
-      expect(rpcData(ok)).toEqual(page);
+      expect(ok.body).not.toContain("PRIVATE-SETTLEMENT-SESSION");
+      expect(rpcData(ok)).toEqual({
+        ...page,
+        events: [
+          {
+            ...page.events[0],
+            data: {
+              request: {
+                ...request,
+                settlementProvenance: { deviceLabel: "iPhone" },
+              },
+            },
+          },
+        ],
+      });
       expect(threadEventPageForOwner).toHaveBeenCalledWith({
         before: "17",
         maxItems: 100,

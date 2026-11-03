@@ -17,12 +17,12 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
-  PersonNotifyMessageSchema,
+  PersonMessageSchema,
   PersonShowTargetSchema,
   PlaceContentPartSchema,
   RequestIdSchema,
   RequestKindSchema,
-  RequestSchema,
+  RequestViewSchema,
   RequestStatusSchema,
   RunSchema,
   ThreadIdSchema,
@@ -186,9 +186,9 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.message"),
   }),
   z.strictObject({
-    type: z.literal("person.notify"),
+    type: z.literal("person.message"),
     requestId: z.uuid(),
-    message: PersonNotifyMessageSchema,
+    message: PersonMessageSchema,
   }),
   z.strictObject({
     ...requestBase,
@@ -524,7 +524,7 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.message.result"),
   }),
   z.strictObject({
-    type: z.literal("person.notify.result"),
+    type: z.literal("person.message.result"),
     requestId: z.uuid(),
     messageId: MessageIdSchema,
   }),
@@ -543,13 +543,13 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    requests: readableRequestList(RequestSchema, 100),
+    requests: readableRequestList(RequestViewSchema, 100),
     type: z.literal("request.list.result"),
     window: AgentDurableWindowSchema,
   }),
   z.strictObject({
     ...responseBase,
-    request: RequestSchema,
+    request: RequestViewSchema,
     type: z.literal("request.withdraw.result"),
   }),
   z.strictObject({

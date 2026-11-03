@@ -166,7 +166,7 @@ function nativePlaceLine(
       : `this phone: ${JSON.stringify(lineText(part.name, 255))} (runnerId ${part.machineId}, display ${JSON.stringify(lineText(part.display, 255))})`;
   const search = part.type === "computer-app" ? "Computer use" : "Android phone";
   return escapeOpensteerPromptMarkers(
-    `${who} ${target}. Find it with integration_search (${JSON.stringify(search)}, then runnerId) and use its own toolRefs with integration_call. This reference is not a grant or a session: use this task's own authorized computer-use tools; if access is missing, only a task allowed to request access may ask explicitly with integration_request. If unavailable or busy, say so; do not take another task's session.`,
+    `${who} ${target}. Find it with integration_search (${JSON.stringify(search)}, then runnerId), then use app() or phone() in the computer tool (opensteer-computer-use). This reference grants no access or session. Use this Run's authorized handles; request missing access only if your profile permits it. If unavailable or busy, say so; do not take another task's session.`,
   );
 }
 
@@ -357,7 +357,7 @@ export function harnessReportsPrompt(
           `${reports.omittedCount} additional report(s) in this snapshot were omitted by the context bound.`,
           reports.throughSequence === null
             ? "Use thread_read to inspect the Thread and compare Report-IDs; the omitted reports are not necessarily one contiguous slice."
-            : `The snapshot ends at Thread sequence ${reports.throughSequence}. Use thread_read with beforeSequence=${(BigInt(reports.throughSequence) + 1n).toString()}, paginate backward, and compare Report-IDs; the omitted reports are not necessarily one contiguous slice.`,
+            : `The snapshot ends at Thread sequence ${reports.throughSequence}. Use thread_read for this Thread, pass window.nextBefore as before for earlier messages, and compare Report-IDs; the omitted reports are not necessarily one contiguous slice.`,
         ]
       : []),
   ].join("\n");

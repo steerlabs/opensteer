@@ -25,3 +25,5 @@ delegate in the current Workspace instead. Reuse a suitable existing Project.
 
 Project names may change; their slugs and folders do not. Files grant no resource access:
 use the ordinary access Requests for missing connections or browser profiles.
+
+Read [setup](references/setup.md) when establishing or verifying durable work.

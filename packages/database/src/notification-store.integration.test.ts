@@ -870,6 +870,7 @@ integration("notification decision boundary", () => {
       const {
         createFixture,
         store,
+        database,
         markRunning,
         text,
         appendCompletedReply,
@@ -920,6 +921,39 @@ integration("notification decision boundary", () => {
       const task = { runId: delegated.run.id, threadId: delegated.thread.id };
       expect(delegated.run.requestedBy).toBe(fixture.ownerId);
 
+      // Model the dispatcher consuming the queued seed before completing its Run.
+      await database
+        .updateTable("threadInputs")
+        .set({ state: "claimed", runId: task.runId })
+        .where("messageId", "=", delegated.run.seedInputId)
+        .execute();
+      // A person addressing a worker joins its open Assignment too.
+      await database
+        .updateTable("runs")
+        .set({ status: "completed" })
+        .where("id", "=", task.runId)
+        .execute();
+      const bound = await store.enqueueThreadInput({
+        content: text("Check one more vendor"),
+        idempotencyKey: "person-open-assignment",
+        policy: "queue",
+        requestedBy: fixture.ownerId,
+        source: { kind: "human" },
+        threadId: task.threadId,
+      });
+      expect(bound.run?.assignmentId).toBe(delegated.assignment.id);
+      if (!bound.run) throw new Error("Expected a person-started worker Run");
+      await appendCompletedReply(fixture, text("Vendor B costs more."), {
+        runId: bound.run.id,
+        threadId: task.threadId,
+      });
+      await decideCommitted(fixture);
+      expect(await observedViews()).toEqual([]);
+      expect(await store.runAssignment(bound.run.id)).toEqual({
+        assignerThreadId: fixture.threadId,
+        open: true,
+      });
+
       // The task's reply returns to Chat's agent, and its failure is that
       // agent's to report: neither is the person's news yet.
       await appendCompletedReply(fixture, text("Vendor A is cheapest."), task);
@@ -938,6 +972,47 @@ integration("notification decision boundary", () => {
           userId: fixture.ownerId,
         }),
       ]);
+      await database
+        .updateTable("threadInputs")
+        .set({ state: "claimed", runId: bound.run.id })
+        .where("messageId", "=", bound.run.seedInputId)
+        .execute();
+      await database
+        .updateTable("runs")
+        .set({ status: "completed" })
+        .where("id", "=", bound.run.id)
+        .execute();
+      await store.cancelAssignment({
+        assignmentId: delegated.assignment.id,
+        requestedBy: fixture.ownerId,
+        idempotencyKey: "close-worker-assignment",
+      });
+      expect(await store.runAssignment(bound.run.id)).toEqual({
+        assignerThreadId: fixture.threadId,
+        open: false,
+      });
+      const unbound = await store.enqueueThreadInput({
+        content: text("A new question for you"),
+        idempotencyKey: "person-closed-assignment",
+        policy: "queue",
+        requestedBy: fixture.ownerId,
+        source: { kind: "human" },
+        threadId: task.threadId,
+      });
+      expect(unbound.run?.assignmentId).toBeNull();
+      if (!unbound.run) throw new Error("Expected an unbound person-started Run");
+      const directReply = await appendCompletedReply(fixture, text("Here is your answer."), {
+        runId: unbound.run.id,
+        threadId: task.threadId,
+      });
+      await decideCommitted(fixture);
+      expect(await observedViews()).toContainEqual(
+        expect.objectContaining({
+          kind: "reply-published",
+          messageId: directReply.id,
+          runId: unbound.run.id,
+        }),
+      );
     });
 
     it("never alerts for a report, in Chat or anywhere else", async ({ storeFixture }) => {
@@ -1898,8 +1973,8 @@ integration("notification decision boundary", () => {
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
       await makePersonalDeployment(`acct_${randomUUID()}`);
 
-      // The Workspace creator is an ordinary user here, so the link — which only
-      // a machine-local owner could have made — is not theirs to be reached by.
+      // The Workspace creator is an ordinary user here, so the owner's Account
+      // link does not make this Deployment reachable by that member.
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
     });
 

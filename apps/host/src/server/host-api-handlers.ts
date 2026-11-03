@@ -56,13 +56,17 @@ export function createHostApiHandlers(
     | "integration.platform.get"
     | "integration.computer.apps.installed"
     | "integration.computer.session.stop"
+    | "integration.computer.setup.review"
     | "integration.computer.setup.list"
     | "integration.computer.policy.get"
   >,
   integrationPlatform: IntegrationPlatformRpcOptions,
   channelHandlers: Pick<HostApiHandlers, "channel.connection.check" | "channels.get">,
   channels: ChannelService,
-  browserSourceHandlers: Pick<HostApiHandlers, "browser.sources.get" | "browser.sources.inspect">,
+  browserSourceHandlers: Pick<
+    HostApiHandlers,
+    "browser.sources.get" | "browser.sources.inspect" | "browser.password-sign-in.get"
+  >,
   browserSources: BrowserSourceRpcOptions,
   coreHandlers: Pick<
     HostApiHandlers,
@@ -77,6 +81,8 @@ export function createHostApiHandlers(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
+    | "apps.get"
+    | "apps.view"
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"
@@ -114,7 +120,7 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
-): HostApiHandlers {
+): Omit<HostApiHandlers, "personal.remoteAccess.get"> {
   return {
     "computer.app.windows": async (input, context) => {
       const owner = requireSession(context).user.id;
@@ -198,7 +204,7 @@ export function createHostApiHandlers(
       const output = await handleCoreCommand(command, context);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
     },
-  } satisfies HostApiHandlers;
+  } satisfies Omit<HostApiHandlers, "personal.remoteAccess.get">;
 }
 
 type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;
@@ -248,7 +254,7 @@ function isIntegrationPlatformCommand(
     case "integration.computer.setup.request":
     case "integration.computer.setup.cancel":
     case "integration.computer.setup.set":
-    case "integration.computer.approval-key.set":
+    case "integration.computer.setup.respond":
     case "integration.computer.policy.set":
     case "integration.computer.app.block":
     case "integration.grant.create":

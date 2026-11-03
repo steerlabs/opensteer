@@ -579,3 +579,28 @@ export async function signOutAccountInOrder(
   await revokeNotificationRegistration();
   await revokeAccountCredential();
 }
+
+export const remoteAdministrationActionLabels = {
+  off: "Turn off",
+  connect: "Enable Connect",
+  private: "Private network",
+  rotate: "Rotate Connect credential",
+  unlink: "Unlink Account",
+  recover: "Recover",
+  pair: "Create pairing code",
+  link: "Link Account",
+} as const;
+export function remoteAdministrationActions(
+  status: import("@opensteer/protocol").PersonalRemoteAdministrationStatus,
+): (keyof typeof remoteAdministrationActionLabels)[] {
+  const pending = status.operation?.state === "pending" || status.operation?.state === "running";
+  if (pending) return ["off"];
+  const actions: (keyof typeof remoteAdministrationActionLabels)[] = ["off", "private", "recover"];
+  if (status.accountIssuer) {
+    if (status.access.accountLink) actions.push("connect", "unlink");
+    else actions.push("link");
+  }
+  if (status.access.mode === "connect") actions.push("rotate");
+  if (status.access.mode === "private") actions.push("pair");
+  return actions;
+}

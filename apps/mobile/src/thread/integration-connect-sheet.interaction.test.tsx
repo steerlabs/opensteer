@@ -247,16 +247,14 @@ describe("IntegrationConnectSheet", () => {
     });
   });
 
-  // The way it could fail: a phone offered an MCP sign-in whose callback is the
-  // Mac's own loopback address, which the Host refuses to begin from here.
-  it("says an MCP server's sign-in is finished on the computer running Opensteer", async () => {
+  it("starts MCP sign-in from a remote device", async () => {
     await render(fakeClient({ remote: true, requirementKind: "mcp-oauth", sources: [] }));
-
-    expect(buttons()).not.toContain("Connect account");
-    expect(text()).toContain(
-      "This sign-in returns to the computer running Opensteer, so finish it there.",
+    await click("Connect account");
+    expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req_00000000-0000-4000-8000-000000000001",
+      }),
     );
-    expect(beginMcpIntegrationAuthorization).not.toHaveBeenCalled();
   });
 
   // The ways it could fail, as on the web card: connecting on a request for
@@ -524,6 +522,8 @@ describe("IntegrationConnectSheet", () => {
     await click("Connect account");
     expect(text()).toContain(mainConnectAllows);
     await click("Mattress Deal Finder Bot");
+    expect(text()).toContain("Existing connections keep working.");
+    expect(text()).toContain(personalSource.callbackUrl);
     await click("Continue in browser");
 
     expect(beginIntegrationAuthorization).toHaveBeenCalledWith(

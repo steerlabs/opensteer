@@ -45,7 +45,14 @@ export const SpecialistBindingSchema = z.strictObject({
 });
 export type SpecialistBinding = z.infer<typeof SpecialistBindingSchema>;
 
-export const SpecialistRegistrationSchema = z.object({
+const SpecialistAccessRequirementViewSchema = z.discriminatedUnion("type", [
+  SpecialistAccessRequirementSchema.options[0].strip(),
+  SpecialistAccessRequirementSchema.options[1].strip(),
+  SpecialistAccessRequirementSchema.options[2].strip(),
+  SpecialistAccessRequirementSchema.options[3].strip(),
+]);
+
+export const SpecialistRegistrationViewSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   pluginId: z.string().min(1),
@@ -54,17 +61,18 @@ export const SpecialistRegistrationSchema = z.object({
   plugin: z.string(),
   version: z.string(),
   status: z.enum(["pending", "ready"]),
-  models: SpecialistManifestSchema.shape.models,
+  models: z.array(SpecialistManifestSchema.shape.models.element.strip()).min(1).max(8),
   fallback: z.enum(["none", "caller"]),
   access: z.array(
     z.intersection(
-      SpecialistAccessRequirementSchema,
+      SpecialistAccessRequirementViewSchema,
       z.object({
-        binding: SpecialistBindingSchema.nullable(),
+        binding: SpecialistBindingSchema.strip().nullable(),
         state: z.enum(["bound", "choose", "needs-access"]),
         candidates: z.array(z.object({ resourceId: z.string().min(1), name: z.string() })),
       }),
     ),
   ),
 });
+export const SpecialistRegistrationSchema = SpecialistRegistrationViewSchema;
 export type SpecialistRegistration = z.infer<typeof SpecialistRegistrationSchema>;

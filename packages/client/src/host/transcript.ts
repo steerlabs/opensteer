@@ -1,3 +1,4 @@
+import { requestSettlementLabel } from "./request-settlement.js";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { passwordSignInOutcome, passwordSignInReceipt } from "./passwords.js";
@@ -58,6 +59,26 @@ export function foldTranscriptEvent(
   event: AgentEvent,
 ): TranscriptEntry[] {
   switch (event.type) {
+    case "app.published":
+      if (
+        entries.some(
+          (entry) =>
+            entry.kind === "app" &&
+            entry.appId === event.data.appId &&
+            entry.version >= event.data.version,
+        )
+      )
+        return [...entries];
+      return [
+        ...entries.filter((entry) => entry.kind !== "app" || entry.appId !== event.data.appId),
+        {
+          ...event.data,
+          id: `app:${event.data.appId}`,
+          kind: "app",
+          createdAt: event.createdAt,
+          runId: event.runId,
+        },
+      ];
     case "place.entered":
       return upsertEntry(entries, {
         ...event.data,
@@ -512,6 +533,8 @@ export function mergeTranscriptSegments(
   const merged = earlier.flatMap((entry) => {
     const next = counterpart(entry, later, laterById, earlierIds, consumed);
     if (next === undefined) return [entry];
+    // App cards live at their latest publication, including across history pages.
+    if (entry.kind === "app") return [];
     // A settled message on both pages was placed after it was sent, and the
     // later page holds the place a Run took it at. An outcome the earlier
     // page kept for a message the later page holds is older than that page's
@@ -1099,6 +1122,10 @@ function requestOutcome(request: Request): string {
   if (request.status === "withdrawn") return "Withdrawn";
   if (request.kind === "browser.sign-in") return browserSignInReceipt(request);
   if (request.kind === "browser.password-sign-in") return passwordSignInReceipt(request);
+  if (request.kind === "computer.app.access") {
+    const settlement = requestSettlementLabel(request);
+    if (settlement) return settlement;
+  }
   const prefix = request.status === "declined" ? "Declined" : "Fulfilled";
   if (request.response.kind === "choice" && request.presentation.kind === "choice") {
     const { options } = request.presentation;

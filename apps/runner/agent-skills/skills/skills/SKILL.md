@@ -66,3 +66,7 @@ default is `"none"`). Test representative inputs and check the outputs before `p
 Resolve the registration's access or binding choices, then call `thread_delegate` with
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
+
+- Read [durable context](references/durable-context.md) when preserving corrections and task state.
+- Read [skills](references/skills.md) when authoring procedures.
+- Read [verification](references/verification.md) when checking helpers and edited files.

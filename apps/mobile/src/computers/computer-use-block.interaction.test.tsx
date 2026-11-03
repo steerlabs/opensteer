@@ -9,6 +9,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
+  Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
+    visible ? <div>{children}</div> : null,
+  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  TextInput: () => <input />,
   ActivityIndicator: () => <span>Working…</span>,
   Pressable: ({
     accessibilityHint,
@@ -117,9 +121,7 @@ describe("ComputerUseBlock on the phone", () => {
       view: view({ appApproval: "automatic", apps: [row(notes)] }),
     });
     expect(radio("Allow any app automatically").getAttribute("aria-checked")).toBe("true");
-    expect(text()).toContain(
-      "Apps appear below as agents use them. Block one to keep agents out of it.",
-    );
+    expect(text()).toContain("Allow any app automatically");
 
     await click(radio("Ask for each app"));
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
@@ -132,15 +134,20 @@ describe("ComputerUseBlock on the phone", () => {
     expect(onChanged).toHaveBeenCalledOnce();
   });
 
-  it("never turns automatic approval on from the phone, and says where it is turned on", async () => {
-    const dispatch = vi.fn();
-    await mount({ dispatch, view: view({ apps: [row(notes)] }) });
-    const automatic = radio("Allow any app automatically");
-    expect(automatic.disabled).toBe(true);
-    expect(automatic.getAttribute("aria-description")).toBe("Turn this on from Studio.");
-    expect(text()).toContain("Turn this on from Studio.");
-    await click(automatic);
-    expect(dispatch).not.toHaveBeenCalled();
+  it("allows automatic approval from the phone after owner review", async () => {
+    const dispatch = vi.fn(async (command: { type: string }) => ({
+      type: command.type,
+      request: { id: "approval" },
+    }));
+    await mount({ dispatch, view: view({}) });
+    await click(radio("Allow any app automatically"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "integration.computer.setup.request" }),
+    );
+    await click(button("Allow"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "integration.computer.setup.respond", decision: "allow" }),
+    );
   });
 
   it("removes under ask and blocks under automatic, each in one tap", async () => {
@@ -165,7 +172,7 @@ describe("ComputerUseBlock on the phone", () => {
   it("shows a blocked app as blocked with where it is unblocked, and nothing to press", async () => {
     await mount({ view: view({ apps: [{ ...row(safari), blocked: true }] }) });
     expect(text()).toContain("Blocked");
-    expect(text()).toContain("Unblock on Studio");
+    expect(button("Unblock")).not.toBeNull();
     expect(maybeButton("Remove Safari")).toBeNull();
     expect(maybeButton("Block Safari")).toBeNull();
   });
@@ -204,15 +211,56 @@ describe("ComputerUseBlock on the phone", () => {
   it("names the Mac a pending app is approved on, and declines a task's ask", async () => {
     const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
     await mount({ dispatch, view: view({ pending: [pending("thr_1")] }) });
-    expect(text()).toContain("Can see · Approve on Studio");
+    expect(text()).toContain("Can see");
+    expect(button("Review")).not.toBeNull();
     expect(text()).toContain("Asked in Compare the drafts");
-    await click(button("Decline Preview"));
+    await click(button("Decline"));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: "00000000-0000-4000-8000-000000000004",
         type: "integration.computer.setup.cancel",
       }),
     );
+  });
+
+  it.each(["Review", "Decline"])(
+    "shows a failed pending %s beside that request",
+    async (action) => {
+      await mount({
+        dispatch: async () => {
+          throw new Error("This request was already answered.");
+        },
+        rpc: {
+          "integration.computer.setup.review": async () => {
+            throw new Error("Studio is offline.");
+          },
+        },
+        view: view({ pending: [pending("thr_1")] }),
+      });
+      const control = button(action);
+      await click(control);
+      expect(control.parentElement?.textContent).toContain(
+        action === "Review" ? "Studio is offline." : "This request was already answered.",
+      );
+      expect(control.disabled).toBe(false);
+    },
+  );
+
+  it("keeps Add app failures visible after closing the picker", async () => {
+    const installed = vi.fn(async () => ({ ok: true, data: { apps: [{ identity: preview }] } }));
+    await mount({
+      dispatch: async () => {
+        throw new Error("Preview's identity changed.");
+      },
+      rpc: { "integration.computer.apps.installed": installed },
+      view: view({}),
+    });
+    await click(button("Add app"));
+    await click(button("Can see"));
+    expect(maybeButton("Close")).toBeNull();
+    expect(text()).toContain("Preview's identity changed.");
+    expect(installed).toHaveBeenCalledOnce();
+    expect(button("Add app").disabled).toBe(false);
   });
 
   it("holds every control while the Host is unreachable", async () => {
@@ -253,7 +301,13 @@ async function mount(input: MountInput): Promise<void> {
       user: { id: "usr_1" },
     }),
     refresh: input.refresh ?? (async () => undefined),
-    rpc: input.rpc ?? {},
+    rpc: {
+      "integration.computer.setup.review": async () => ({
+        ok: true,
+        data: { request: { id: "approval", kind: "policy", appApproval: "automatic" }, app: null },
+      }),
+      ...input.rpc,
+    },
     subscribe: () => () => undefined,
   } as unknown as HostClient;
   await act(async () =>
@@ -273,7 +327,7 @@ async function mount(input: MountInput): Promise<void> {
 function view(overrides: Partial<ComputerUseView>): ComputerUseView {
   return {
     appApproval: "ask",
-    approvalKeyId: `sha256:${"A".repeat(43)}`,
+
     apps: [],
     definition: { id: "macos-app", name: "Computer use" } as ComputerUseView["definition"],
     pending: [],

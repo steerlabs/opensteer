@@ -1,17 +1,20 @@
+import { requestSettlementLabel } from "@opensteer/client/host";
+import { ActionNote } from "./action-rows.js";
+import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
 import type { Request } from "@opensteer/core";
 import { fullAccessOnThisMac, mutationIdempotencyKey } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
 import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
-import { ActionNote } from "./action-rows.js";
+
 import { useShell } from "./app-shell.js";
 
 /**
  * An agent asked to use an app on a Mac, or the whole screen of an Android
  * phone.
  *
- * A Mac asks locally in its desktop app. A phone's owner can allow access
- * here; Decline works for either and takes the pending setup request with it.
+ * The computer owner can review and answer from this device. Decline takes
+ * the pending setup request with it.
  */
 export function ThreadComputerAppAccessAction({
   disabled = false,
@@ -22,11 +25,19 @@ export function ThreadComputerAppAccessAction({
 }) {
   const { desktopBridge, desktopDeployment, hostClient, localExecutionStatus, snapshot } =
     useShell();
+  const approval = useComputerAppApproval(hostClient);
   const [busy, setBusy] = useState<"allow" | "decline" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (request.payload.kind !== "computer.app.access") {
     return <ActionNote alert>This app access request is invalid.</ActionNote>;
+  }
+  if (request.status !== "pending") {
+    return (
+      <ActionNote>
+        {requestSettlementLabel(request) ?? "This request is no longer waiting"}
+      </ActionNote>
+    );
   }
   const { access, definitionId, runnerId } = request.payload;
   const machine = snapshot.machines.find((candidate) => candidate.id === runnerId);
@@ -63,10 +74,15 @@ export function ThreadComputerAppAccessAction({
   }
 
   async function allow() {
-    if (busy || disabled || definitionId !== "android-phone") return;
+    if (busy || disabled) return;
     setBusy("allow");
     setError(null);
     try {
+      if (request.payload.kind !== "computer.app.access") return;
+      if (definitionId !== "android-phone") {
+        await approval.ask(request.payload.setupRequestId);
+        return;
+      }
       const result = await hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`phone-request:${request.id}`),
         input: { access, app: null, definitionId, kind: "app", runnerId },
@@ -77,16 +93,18 @@ export function ThreadComputerAppAccessAction({
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The request could not be allowed.");
+    } finally {
       setBusy(null);
     }
   }
 
   return (
     <>
+      {approval.dialog}
       <ActionNote>{`${computerUseAccessLabel[access]} · ${approveOn}`}</ActionNote>
       {error ? <ActionNote alert>{error}</ActionNote> : null}
       <div className="action-buttons">
-        {definitionId === "android-phone" ? (
+        {
           <button
             className="btn btn--primary"
             disabled={busy !== null || disabled}
@@ -95,7 +113,7 @@ export function ThreadComputerAppAccessAction({
           >
             {busy === "allow" ? "Allowing…" : "Allow"}
           </button>
-        ) : null}
+        }
         <button
           className="btn"
           disabled={busy !== null || disabled}

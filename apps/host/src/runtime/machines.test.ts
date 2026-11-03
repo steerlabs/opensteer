@@ -86,7 +86,7 @@ describe("Machines projection", () => {
       threadsByEnvironment: new Map(),
       runners: [
         runner({
-          modules: { integrations: { computerAppApprovals: true, platform: "darwin" } },
+          modules: { integrations: { platform: "darwin" } },
           readiness: new Map([["integrations", ready]]),
         }),
       ],
@@ -421,7 +421,7 @@ describe("Machines projection", () => {
     expect(machines.find((machine) => machine.id === "ren_pending")?.apps).toBeNull();
     expect(machines.find((machine) => machine.id === managed.id)?.modules.integrations).toEqual({
       checkedAt: null,
-      detail: null,
+      detail: "Update Opensteer on this computer to use app approvals and local MCP servers.",
       readiness: "unavailable",
     });
   });
@@ -454,9 +454,7 @@ describe("Machines projection", () => {
       const [machine] = projectMachines({
         access: new Map(),
         apps: apps === null ? new Map() : new Map([[phone.id, apps]]),
-        computerUsePolicies: new Map([
-          [phone.id, { appApproval: "ask", approvalKeyId: "sha256:phone" }],
-        ]),
+        computerUsePolicies: new Map([[phone.id, { appApproval: "ask" }]]),
         computerUseSessions: new Map([[phone.id, [session]]]),
         deploymentKind: "self-hosted",
         localWorkspaces: [],
@@ -513,8 +511,6 @@ describe("Machines projection", () => {
       const { computerUse, session } = projectPhone([phoneStatus("ready")]);
       expect(computerUse).toEqual({
         appApproval: null,
-        approvalKeyId: null,
-
         displayStreamSupported: false,
         detail: null,
         permissions: null,
@@ -531,7 +527,6 @@ describe("Machines projection", () => {
 
     it("says the phone app is not running rather than that a Mac needs its desktop app", () => {
       expect(projectPhone(null).computerUse).toMatchObject({
-        approvalKeyId: null,
         detail: "The Opensteer Agent Phone app is not running on this phone.",
         state: "unavailable",
       });
@@ -555,9 +550,7 @@ describe("Machines projection", () => {
         ...(session ? { computerUseSessions: new Map([[mac.id, [session]]]) } : {}),
         ...(appApproval
           ? {
-              computerUsePolicies: new Map([
-                [mac.id, { appApproval, approvalKeyId: "sha256:registered" }],
-              ]),
+              computerUsePolicies: new Map([[mac.id, { appApproval }]]),
             }
           : {}),
         deploymentKind: "personal",
@@ -581,7 +574,6 @@ describe("Machines projection", () => {
         permissions: null,
         sessions: [],
         appApproval: "automatic",
-        approvalKeyId: "sha256:registered",
         state: "unavailable",
       });
     });
@@ -593,7 +585,6 @@ describe("Machines projection", () => {
         permissions: null,
         sessions: [],
         appApproval: "ask",
-        approvalKeyId: null,
         state: "unavailable",
       });
     });
@@ -705,7 +696,6 @@ describe("Machines projection", () => {
         permissions: null,
         sessions: [],
         appApproval: "ask",
-        approvalKeyId: null,
         state: "unavailable",
       });
     });
@@ -737,7 +727,6 @@ describe("Machines projection", () => {
         permissions: { accessibility: "granted", screenRecording: "denied" },
         sessions: [],
         appApproval: "ask",
-        approvalKeyId: null,
         state: "permission-required",
       });
     });
@@ -797,7 +786,6 @@ describe("Machines projection", () => {
         permissions: { accessibility: "granted", screenRecording: "granted" },
         sessions: [session],
         appApproval: "ask",
-        approvalKeyId: null,
         state: "ready",
       });
       expect(projected.ownership).toBe("deployment");

@@ -407,6 +407,16 @@ export interface ReasoningEntry {
  * the Host cannot see when the Run stops working there. The title and site are
  * what the page showed then; navigating inside the tab does not change them.
  */
+export interface AppEntry {
+  createdAt: string;
+  id: string;
+  kind: "app";
+  appId: string;
+  version: number;
+  title: string;
+  runId: string;
+}
+
 export interface PlaceEntry {
   createdAt: string;
   id: string;
@@ -578,6 +588,7 @@ export interface NodeEntry {
 }
 
 export type TranscriptEntry =
+  | AppEntry
   | SelectionEntry
   | NodeEntry
   | AssignmentEntry
@@ -767,6 +778,7 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  readonly appVersions?: Readonly<Record<string, number>>;
   readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
   /**
@@ -1094,6 +1106,11 @@ export interface HostClient {
     readonly source: Blob;
     readonly signal?: AbortSignal;
   }): Promise<Attachment>;
+  viewApp(
+    appId: string,
+    theme: "light" | "dark",
+    signal?: AbortSignal,
+  ): Promise<{ readonly app: import("@opensteer/core").OpensteerApp; readonly url: string }>;
   getAttachment(attachmentId: string): Promise<Attachment>;
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;
@@ -1131,6 +1148,8 @@ export interface HostClient {
    * replayed: what was missed is still unread in its Thread.
    */
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
+  /** Invalidates remote administration on Host changes and stream recovery. */
+  subscribePersonalRemoteAccess(listener: () => void): () => void;
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;
   /** Sets shared Done or reopens the task. */

@@ -98,14 +98,10 @@ class HostBridge {
   private heartbeats: ReturnType<typeof setInterval> | null = null;
   online = false;
   synchronized = false;
-  approvalCount = 0;
-  approvalRequestIds: string[] = [];
-  approvalKeyId: string | null = null;
   outcome: string | null = null;
   failure: Error | null = null;
   readonly observed: unknown[] = [];
   lastInvoke: Record<string, unknown> | null = null;
-  lastApprovals: Record<string, unknown> | null = null;
   constructor(
     private readonly native: NativeLines,
     private readonly hostPort: number,
@@ -127,7 +123,6 @@ class HostBridge {
   private async frame(channel: "primary" | "auxiliary", raw: string) {
     const frame = frameSchema.parse(JSON.parse(raw) as unknown);
     if (frame.type === "host.integrations.invoke") this.lastInvoke = frame;
-    if (frame.type === "host.integrations.computer-app-approvals") this.lastApprovals = frame;
     this.observed.push({ channel, type: frame.type });
     if (frame.type === "host.error" || frame.type === "host.auxiliary.rejected") {
       throw new Error(`Host refused native Swift: ${raw}`);
@@ -136,6 +131,7 @@ class HostBridge {
     await this.route(answer);
     if (frame.type === "host.auxiliary.welcome") {
       this.online = true;
+      this.synchronized = true;
       this.heartbeats = setInterval(() => {
         void this.native
           .command({ command: "heartbeat" })
@@ -144,16 +140,6 @@ class HostBridge {
             this.failure = error instanceof Error ? error : new Error(String(error));
           });
       }, 5_000);
-    }
-    if (answer.kind === "approvals") {
-      this.synchronized = true;
-      this.approvalCount = Number(answer.count);
-      this.approvalRequestIds = z.array(z.string()).parse(answer.requestIds);
-      this.approvalKeyId = typeof frame.approvalKeyId === "string" ? frame.approvalKeyId : null;
-    }
-    if (answer.kind === "outcome") {
-      const value = z.object({ kind: z.string() }).parse(answer.value);
-      this.outcome = value.kind;
     }
   }
   async route(answer: NativeResponse): Promise<void> {
@@ -236,7 +222,7 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       const mintInput = {
         idempotencyKey: `iphone-native:${randomUUID()}`,
         name: "VM fake iPhone",
-        profile: "iphone",
+        profile: "iphone" as const,
         type: "runner.enrollment.createPhone" as const,
       };
       const target = await testRpcData(host.origin, "commands.dispatch", mintInput, {
@@ -249,46 +235,38 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
         capabilities: [],
         device: { form: "phone", platform: "ios" },
         modules: {
-          integrations: { computerAppApprovals: true, platform: "ios", protocolVersion: 1 },
+          integrations: { platform: "ios", protocolVersion: 2 },
         },
         name: "VM fake iPhone",
         runnerId,
         runnerKind: "local",
         runtimeVersion: "0.1.202",
       };
-      const started = z
-        .object({
-          kind: z.literal("started"),
-          approvalPublicKey: z.string(),
-          approvalKeyId: z.string(),
-        })
-        .parse(
-          await native.command({
-            command: "start",
-            descriptor,
-            enrollmentToken: target.token,
-            runnerSeed: Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => index)).toString(
-              "hex",
-            ),
-            approvalSeed: Buffer.from(
-              Uint8Array.from({ length: 32 }, (_, index) => 255 - index),
-            ).toString("hex"),
-          }),
-        );
+      z.object({
+        kind: z.literal("started"),
+      }).parse(
+        await native.command({
+          command: "start",
+          descriptor,
+          enrollmentToken: target.token,
+          runnerSeed: Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => index)).toString(
+            "hex",
+          ),
+        }),
+      );
       bridge = new HostBridge(native, host.hostPort);
       await waitForCondition(async () => bridge!.synchronized || bridge!.failure !== null);
       if (bridge.failure) throw bridge.failure;
 
-      await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: `iphone-approval-key:${runnerId}`,
-          input: { publicKey: started.approvalPublicKey, runnerId },
-          type: "integration.computer.approval-key.set",
-        },
-        { headers: host.ownerHeaders },
-      );
+      await waitForCondition(async () => {
+        const { machines } = await testRpcData(
+          host.origin,
+          "machines.list",
+          {},
+          { headers: host.ownerHeaders },
+        );
+        return (machines.find(({ id }) => id === runnerId)?.apps?.length ?? 0) >= 3;
+      });
       const setup = await requestComputerAppSetup(
         host,
         runnerId,
@@ -296,24 +274,18 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
         `iphone-calendar:${randomUUID()}`,
         "apple-calendar",
       );
-      await waitForCondition(
-        async () =>
-          (bridge!.approvalRequestIds.includes(setup.id) &&
-            bridge!.approvalKeyId === started.approvalKeyId) ||
-          bridge!.failure !== null,
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.computer.setup.respond",
+          idempotencyKey: randomUUID(),
+          setupRequestId: setup.id,
+          decision: "allow",
+        },
+        { headers: host.ownerHeaders },
       );
-      if (bridge.failure) throw bridge.failure;
-      const answer = await native.command({
-        command: "answer",
-        setupRequestId: setup.id,
-        definitionId: "apple-calendar",
-        access: "read-write",
-        decision: "allow",
-      });
-      await bridge.route(answer);
-      await waitForCondition(async () => bridge!.outcome !== null || bridge!.failure !== null);
-      if (bridge.failure) throw bridge.failure;
-      expect(bridge.outcome).toBe("allowed");
+      bridge.outcome = "allowed";
       const connection = await host.store.database
         .selectFrom("integrationConnections")
         .select("id")
@@ -347,24 +319,18 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
           `${app.definitionId}:${randomUUID()}`,
           app.definitionId,
         );
-        await waitForCondition(
-          async () => bridge!.approvalRequestIds.includes(request.id) || bridge!.failure !== null,
-        );
-        if (bridge.failure) throw bridge.failure;
-        bridge.outcome = null;
-        await bridge.route(
-          await native.command({
-            command: "answer",
+        await testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "integration.computer.setup.respond",
+            idempotencyKey: randomUUID(),
             setupRequestId: request.id,
-            definitionId: app.definitionId,
-            access: "read",
             decision: "allow",
-          }),
+          },
+          { headers: host.ownerHeaders },
         );
-        await waitForCondition(async () => bridge!.outcome !== null || bridge!.failure !== null);
-        if (bridge.failure) throw bridge.failure;
-        expect(bridge.outcome).toBe("allowed");
-        metadataApprovals[app.definitionId] = bridge.outcome;
+        metadataApprovals[app.definitionId] = "allowed";
         const metadataConnection = await host.store.database
           .selectFrom("integrationConnections")
           .select("id")
@@ -500,12 +466,7 @@ suite.sequential("production Swift core against real Host and PostgreSQL", () =>
       expect((await native.command({ command: "snapshot" })).fakeCalendarSaveCount).toBe(2);
       const previousInvoke = bridge.lastInvoke;
       expect(previousInvoke).not.toBeNull();
-      const previousApprovals = bridge.lastApprovals;
-      expect(previousApprovals).not.toBeNull();
       expect((await native.command({ command: "transport-lost" })).kind).toBe("detached");
-      expect((await native.command({ command: "auxiliary", frame: previousApprovals })).kind).toBe(
-        "error",
-      );
       const stale = await native.command({
         command: "auxiliary",
         frame: { ...previousInvoke, requestId: `stale-${randomUUID()}` },

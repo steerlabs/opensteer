@@ -1,4 +1,5 @@
 import { withDatabaseTransaction } from "./connection.js";
+import { requestSettlementActor } from "./request-settlement.js";
 import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -445,6 +446,7 @@ export class BrowserSourceStore {
     readonly requireGrant: boolean;
     readonly rememberSite: boolean;
     readonly requestId: RequestId | null;
+    readonly settlementSessionId?: string;
   }): Promise<BrowserSignInFence | null> {
     return withRequestWorkspaceLocks(
       this.#database,
@@ -524,6 +526,7 @@ export class BrowserSourceStore {
     readonly profileName: string | null;
     readonly actor: BrowserSignInActor;
     readonly requestId: RequestId | null;
+    readonly settlementSessionId?: string;
     /** Create the grant if it is missing; otherwise only an active grant is touched. */
     readonly rememberSite: boolean;
   }): Promise<{
@@ -557,6 +560,9 @@ export class BrowserSourceStore {
         const request = input.requestId
           ? await fulfilBrowserSignInRequestInTransaction(transaction, {
               requestId: input.requestId,
+              ...(input.settlementSessionId
+                ? { settlementSessionId: input.settlementSessionId }
+                : {}),
               ownerId: input.ownerId,
               response: {
                 outcome: "applied",
@@ -604,6 +610,7 @@ export class BrowserSourceStore {
           })
           .returning(receiptColumns)
           .executeTakeFirstOrThrow();
+        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
         return { receipt, replayed: false, events: request?.events ?? [] };
       },
     );

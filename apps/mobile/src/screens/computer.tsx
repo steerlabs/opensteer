@@ -1,3 +1,11 @@
+import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
+import { ActivityIndicator, ScrollView, View } from "react-native";
+import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
+import { IphoneAppsBlock } from "../iphone-apps/iphone-apps-block.js";
+import { RemoteIphoneAppsBlock } from "../iphone-apps/remote-iphone-apps-block.js";
+import { AppText, Notice, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import { Screen } from "../ui/screen.js";
+
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 import {
@@ -20,21 +28,21 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, View } from "react-native";
+import { StyleSheet } from "react-native";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { threadReturn } from "../navigation-state.js";
-import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
+
 import { openPhoneOwnerView } from "../computers/open-owner-view.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
-import { IphoneAppsBlock } from "../iphone-apps/iphone-apps-block.js";
+
 import { opensteerOn } from "../iphone-apps/model.js";
-import { RemoteIphoneAppsBlock } from "../iphone-apps/remote-iphone-apps-block.js";
+
 import { color, space } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Notice, SecondaryButton, StatusDot } from "../ui/primitives.js";
-import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
+
+import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 
 export type ComputerScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -257,14 +265,23 @@ function ComputerDetail(props: {
             />
           </View>
         ) : view !== null ? (
-          <ComputerUseBlock
-            canRespond={canRespond}
-            hostClient={props.hostClient}
-            machine={machine}
-            onChanged={data.reload}
-            onOpenThread={openThread}
-            view={view}
-          />
+          <>
+            <ComputerSetupApprovals
+              hostClient={props.hostClient}
+              requests={(data.data?.setupRequests ?? []).filter(
+                (request) => request.runnerId === machine.id && request.kind !== "app",
+              )}
+              onChanged={data.reload}
+            />
+            <ComputerUseBlock
+              canRespond={canRespond}
+              hostClient={props.hostClient}
+              machine={machine}
+              onChanged={data.reload}
+              onOpenThread={openThread}
+              view={view}
+            />
+          </>
         ) : data.error !== null ? (
           <Notice
             action={{

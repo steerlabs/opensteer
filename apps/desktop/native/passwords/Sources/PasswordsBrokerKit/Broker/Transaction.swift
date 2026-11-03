@@ -13,6 +13,7 @@ final class Transaction {
   enum Stage {
     case lookingUp
     case choosing([Wire.Account])
+    case prepared(login: Wire.Login, remember: Bool)
     case authorized(login: Wire.Login, remembered: Bool)
   }
 

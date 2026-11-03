@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpHostClient, queuedMessages, type HostClient } from "@opensteer/client/host";
-import { AttachmentReader } from "./attachments/message-attachments.js";
+import { TranscriptHostClientContext } from "./attachments/message-attachments.js";
 import { TranscriptMessage } from "./agent-activity.js";
 import type { ThreadInputQueue } from "@opensteer/core";
 import { QueuedMessages } from "./queued-messages.js";
@@ -115,7 +115,7 @@ describe("QueuedMessages", () => {
         threadId: "thread",
       });
       const container = mount(
-        <AttachmentReader value={client}>
+        <TranscriptHostClientContext value={client}>
           <QueuedMessages
             client={client}
             disabled={false}
@@ -125,19 +125,19 @@ describe("QueuedMessages", () => {
             viewerUserId="me"
             workspaces={[]}
           />
-        </AttachmentReader>,
+        </TranscriptHostClientContext>,
       );
       expect(rpc).toHaveBeenCalledTimes(1);
       act(() =>
         root?.render(
-          <AttachmentReader value={client}>
+          <TranscriptHostClientContext value={client}>
             <TranscriptMessage
               message={queuedMessages(queue)[0]!.entry}
               reveal={null}
               viewerUserId="me"
               workspaces={[]}
             />
-          </AttachmentReader>,
+          </TranscriptHostClientContext>,
         ),
       );
       expect(rpc).toHaveBeenCalledTimes(1);

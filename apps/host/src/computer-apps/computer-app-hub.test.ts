@@ -1,4 +1,3 @@
-import { IntegrationServerIdSchema } from "@opensteer/integration-core";
 import { createId, type RunnerId } from "@opensteer/core";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
@@ -203,7 +202,7 @@ describe("ComputerAppHub", () => {
       identity: {
         ...base.identity,
         modules: {
-          integrations: { platform: "darwin", protocolVersion: 5, loginText: 1, passwordSignIn: 1 },
+          integrations: { platform: "darwin", protocolVersion: 5, loginText: 1, passwordSignIn: 2 },
         },
       },
     } as RunnerAuxiliaryStream;
@@ -222,7 +221,7 @@ describe("ComputerAppHub", () => {
       type: "runner.integrations.status",
       apps: [],
       loginText: key,
-      passwordSignIn: 1,
+      passwordSignIn: 2,
     });
     expect(hub.loginReceiver(runnerId)).toEqual(key);
     expect(hub.passwordSignInSupported(runnerId)).toBe(true);
@@ -438,233 +437,6 @@ describe("ComputerAppHub", () => {
         expect(hub.displayStream(runnerId)).toBe("unsupported");
       },
     );
-  });
-
-  it("keeps iPhone protocol 1 data-only despite unsupported live status fields", async () => {
-    known = new Set(["apple-calendar", messages, "android-phone", "macos-app"]);
-    const initial = integrationsStream({ runnerId });
-    const stream = {
-      ...initial,
-      identity: {
-        ...initial.identity,
-        modules: {
-          integrations: {
-            platform: "ios" as const,
-            protocolVersion: 1,
-            computerAppApprovals: true as const,
-          },
-        },
-      },
-    };
-    const peer = controlPeer();
-    hub.attach(peer, stream);
-    await hub.handleMessage(peer, stream, {
-      ...statusFrame(stream, [
-        ready(messages),
-        {
-          definitionId: "apple-calendar",
-          operations: [{ operation: "list_calendars", state: "ready", detail: null, remedy: null }],
-        },
-      ]),
-      ownerViewVersion: 1,
-      displayAvailable: true,
-      passwordSignIn: 1,
-    });
-    expect(hub.status(runnerId)?.map(({ definitionId }) => definitionId)).toEqual([
-      "apple-calendar",
-    ]);
-    expect(hub.relaysComputerAppApprovals(runnerId)).toBe(true);
-    expect(hub.approvalRelayRefusal(runnerId)).toBeNull();
-    expect(hub.loginReceiver(runnerId)).toBeNull();
-    expect(hub.passwordSignInSupported(runnerId)).toBe(false);
-    expect(hub.ownerViewSupported(runnerId)).toBe(false);
-    expect(hub.displayStream(runnerId)).toBeNull();
-    await expect(
-      hub.openMcpSession({
-        runnerId,
-        launch: { type: "stdio", command: "node", args: [], cwd: "/tmp", env: {} },
-        serverId: IntegrationServerIdSchema.parse(`isv_${globalThis.crypto.randomUUID()}`),
-        signal: new AbortController().signal,
-        onclose: () => undefined,
-        onmessage: () => undefined,
-      }),
-    ).rejects.toThrow("Local servers can't run on an iPhone.");
-    const sent = await hub.sendComputerUse({
-      runnerId,
-      operation: "close",
-      app: null,
-      access: "read",
-      params: {},
-      runId: createId("run"),
-      sessionId: mintComputerUseSessionId(),
-      threadTitle: null,
-    });
-    expect(await sent.outcome).toMatchObject({ kind: "error", code: "unsupported" });
-    expect(peer.sent).toEqual([]);
-  });
-
-  describe("approval key registration", () => {
-    // A legacy/future descriptor must remain connected without receiving a
-    // schema it cannot parse, including approved MCP launches from storage.
-    it.each([undefined, 1, 3])(
-      "does not send new approval or MCP frames to protocol %s",
-      async (protocolVersion) => {
-        const peer = controlPeer();
-        const initial = integrationsStream({ runnerId });
-        const stream = {
-          ...initial,
-          identity: {
-            ...initial.identity,
-            modules: {
-              integrations: {
-                computerAppApprovals: true as const,
-                platform: "darwin" as const,
-                ...(protocolVersion === undefined ? {} : { protocolVersion }),
-              },
-            },
-          },
-        };
-        hub.attach(peer, stream);
-        expect(hub.relaysComputerAppApprovals(runnerId)).toBe(false);
-        expect(
-          await hub.sendComputerAppApprovals(runnerId, { approvalKeyId: null, approvals: [] }),
-        ).toBe(false);
-        expect(await hub.proveComputerAppApprovalKey(runnerId, challenge())).toBeNull();
-        await expect(
-          hub.openMcpSession({
-            launch: { args: [], command: "node", cwd: "/tmp", env: {}, type: "stdio" },
-            onclose: () => undefined,
-            onmessage: () => undefined,
-            runnerId,
-            serverId: IntegrationServerIdSchema.parse(`isv_${globalThis.crypto.randomUUID()}`),
-            signal: new AbortController().signal,
-          }),
-        ).rejects.toThrow("Update Opensteer");
-        expect(peer.sent).toEqual([]);
-        expect(peer.closes).toEqual([]);
-        expect(hub.attached(runnerId)).toBe(true);
-      },
-    );
-
-    it.each([
-      ["darwin", "Update Opensteer on this Mac and open its desktop app to approve access."],
-      ["android", null],
-    ] as const)(
-      "requires an approval relay only for an attached Mac (%s)",
-      (platform, sentence) => {
-        expect(hub.approvalRelayRefusal(runnerId)).toBeNull();
-        const initial = integrationsStream({ runnerId });
-        hub.attach(controlPeer(), {
-          ...initial,
-          identity: {
-            ...initial.identity,
-            modules: {
-              integrations: { computerAppApprovals: true as const, platform, protocolVersion: 1 },
-            },
-          },
-        });
-        expect(hub.approvalRelayRefusal(runnerId)).toBe(sentence);
-      },
-    );
-
-    it("refuses nothing for a computer that shows approvals", () => {
-      hub.attach(controlPeer(), approvalStream());
-      expect(hub.approvalRelayRefusal(runnerId)).toBeNull();
-    });
-
-    function approvalStream(): RunnerAuxiliaryStream {
-      const stream = integrationsStream({ runnerId });
-      return {
-        ...stream,
-        identity: {
-          ...stream.identity,
-          modules: {
-            integrations: { computerAppApprovals: true, platform: "darwin", protocolVersion: 5 },
-          },
-        } as RunnerAuxiliaryStream["identity"],
-      };
-    }
-
-    function challenge() {
-      return {
-        challengeId: globalThis.crypto.randomUUID(),
-        expiresAt: new Date(Date.now() + 10_000).toISOString(),
-        keyId: `sha256:${"k".repeat(43)}`,
-        nonce: "n".repeat(43),
-        runnerId,
-      };
-    }
-
-    it("accepts one proof from the currently fenced stream", async () => {
-      const peer = controlPeer();
-      const stream = approvalStream();
-      hub.attach(peer, stream);
-      const asked = challenge();
-      const pending = hub.proveComputerAppApprovalKey(runnerId, asked);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(peer.sent.at(-1)).toMatchObject({
-        challengeId: asked.challengeId,
-        type: "host.integrations.computer-app-approval-key-challenge",
-      });
-      await hub.handleMessage(peer, stream, {
-        ...stream.fence,
-        challengeId: asked.challengeId,
-        module: "integrations",
-        signature: "s".repeat(86),
-        type: "runner.integrations.computer-app-approval-key-proof",
-      });
-      await expect(pending).resolves.toBe("s".repeat(86));
-      // A replay cannot settle the next registration's different challenge.
-      const second = challenge();
-      const next = hub.proveComputerAppApprovalKey(runnerId, second);
-      await vi.advanceTimersByTimeAsync(0);
-      await hub.handleMessage(peer, stream, {
-        ...stream.fence,
-        challengeId: asked.challengeId,
-        module: "integrations",
-        signature: "s".repeat(86),
-        type: "runner.integrations.computer-app-approval-key-proof",
-      });
-      await vi.advanceTimersByTimeAsync(10_000);
-      await expect(next).resolves.toBeNull();
-    });
-
-    it("fails when the stream drops and refuses the old stream after replacement", async () => {
-      const firstPeer = controlPeer();
-      const firstStream = approvalStream();
-      hub.attach(firstPeer, firstStream);
-      const asked = challenge();
-      const pending = hub.proveComputerAppApprovalKey(runnerId, asked);
-      await vi.advanceTimersByTimeAsync(0);
-      const secondPeer = controlPeer();
-      const secondStream = approvalStream();
-      hub.attach(secondPeer, secondStream);
-      await expect(pending).resolves.toBeNull();
-      await expect(
-        hub.handleMessage(firstPeer, firstStream, {
-          ...firstStream.fence,
-          challengeId: asked.challengeId,
-          module: "integrations",
-          signature: "s".repeat(86),
-          type: "runner.integrations.computer-app-approval-key-proof",
-        }),
-      ).rejects.toMatchObject({ code: "forbidden" });
-    });
-
-    it("retires a stream whose approval control frame failed to send", async () => {
-      const peer = controlPeer({ fail: true });
-      const stream = approvalStream();
-      hub.attach(peer, stream);
-      const delivered = await hub.sendComputerAppApprovals(runnerId, {
-        approvalKeyId: null,
-        approvals: [],
-      });
-      expect(delivered).toBe(false);
-      expect(hub.attached(runnerId)).toBe(false);
-      expect(peer.closes).toEqual([
-        { code: 1011, reason: "integrations control frame could not be sent" },
-      ]);
-    });
   });
 
   describe("invoking", () => {

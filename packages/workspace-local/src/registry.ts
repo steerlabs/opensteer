@@ -50,7 +50,7 @@ const ProvisionFingerprintSchema = z.strictObject({
     .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
     .optional(),
   createdBy: UserIdSchema,
-  kind: z.preprocess((value) => (value === "specialized" ? "project" : value), WorkspaceKindSchema),
+  kind: z.preprocess((value) => (value === "project" ? "project" : value), WorkspaceKindSchema),
   ownerEnvironmentId: EnvironmentIdSchema,
   workspaceId: WorkspaceIdSchema,
 });

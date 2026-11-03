@@ -2,7 +2,6 @@ import {
   HostApiErrorSchema,
   hostApi,
   hostApiVersionHeader,
-  type HostApiCommand,
   type HostApiHandlers,
   type HostApiScope,
   type HostApiServerContext,
@@ -16,9 +15,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AuthenticatedHostSession, HostAuthenticator } from "../identity/auth.js";
 import { errorStatus, normalizeHostError } from "./http-errors.js";
+import { afterResponse } from "./after-response.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 const hostApiScopes = {
+  "apps.get": "session",
+  "apps.view": "mutation",
   "agentPhone.target.get": "session",
   "assignment.get": "session",
   "thread.assignments.list": "session",
@@ -27,7 +29,7 @@ const hostApiScopes = {
   "attachment.upload": "mutation",
   "attachment.content": "session",
   "auth.config": "public",
-  "auth.invitation.accept": "exact-origin-session",
+  "auth.invitation.accept": "mutation",
   "auth.invitation.exchange": "exact-origin",
   "auth.native.complete": "exact-origin",
   "auth.oidc.begin": "exact-origin",
@@ -36,7 +38,7 @@ const hostApiScopes = {
   "auth.password.signUp": "exact-origin",
   "auth.setup.claim": "exact-origin",
   "auth.setup.exchange": "exact-origin",
-  "auth.signOut": "exact-origin-session",
+  "auth.signOut": "mutation",
   "bootstrap.get": "session",
   "browser.contextCandidate.get": "session",
   "browser.tabs.get": "session",
@@ -46,6 +48,7 @@ const hostApiScopes = {
   "browser.history.get": "session",
   "browser.history.icons.get": "session",
   "browser.sources.get": "session",
+  "browser.password-sign-in.get": "mutation",
   "browser.sources.inspect": "mutation",
   "channel.connection.check": "mutation",
   "channels.get": "session",
@@ -68,6 +71,7 @@ const hostApiScopes = {
   "specialist.list": "session",
   "integration.platform.get": "session",
   "integration.computer.setup.list": "session",
+  "integration.computer.setup.review": "mutation",
   "integration.computer.policy.get": "session",
   // It reaches out to a live computer, so it is a mutation's scope rather than
   // a plain session read even though it changes nothing here.
@@ -81,6 +85,7 @@ const hostApiScopes = {
   "run.attempts.list": "session",
   "tasks.list": "session",
   "sessions.list": "session",
+  "personal.remoteAccess.get": "session",
   "thread.events.list": "session",
   "thread.messages.list": "session",
   "thread.readState.get": "session",
@@ -96,44 +101,6 @@ const hostApiScopes = {
   "workspace.members.list": "session",
   "workspace.prefetch": "mutation",
 } satisfies Record<keyof typeof hostApi, HostApiScope>;
-
-/**
- * Commands that revoke a credential are the ones a hostile page most wants to
- * fire at a signed-in browser, and the mutation scope alone does not stop a
- * bearer-token caller, which skips the origin comparison entirely. These are
- * held to an exact-origin request no matter how the caller authenticated.
- */
-// Commands here demand an exact origin for every credential kind — including
-// bearer callers, which the mutation scope's cookie-only origin check skips.
-// machine.revoke stays out deliberately: native clients revoke machines with
-// bearer tokens and no browser origin.
-// integration.uninstall belongs here too: it deletes a deployment-wide
-// installation and, for a proposed integration, the stored account credentials
-// that only its definition could use. Only the browser UI dispatches it.
-// channel.connection.status.set revokes the messaging credentials of a whole
-// provider workspace, and only the browser UI dispatches it.
-// Listing a command costs something: the comparison is against the canonical
-// origin, so a Personal remote session — whose origin is its route — is refused
-// it, and on a Personal Deployment the command then works only at the computer
-// running the Host. Commands that only reduce what agents can reach, and that an
-// owner must be able to reach from wherever they are, therefore stay out:
-// integration.disconnect (which is also how a computer app is switched off),
-// integration.mcp.disconnect, harness.authentication.logout, and
-// channel.connection.credentials.replace, which is how an owner repairs a
-// connection whose provider credentials stopped working.
-const exactOriginCommands: ReadonlySet<string> = new Set([
-  "channel.connection.status.set",
-  "integration.uninstall",
-  "plugin.remove",
-  "session.revoke",
-  "workspace.delete",
-] satisfies readonly HostApiCommand["type"][]);
-
-// Every command carries its discriminator; the full payload schema still
-// rejects anything malformed once the origin gate has run.
-const commandTypeSchema = z.object({ type: z.string() });
-// The one field the exception below reads, before the payload schema runs.
-const revokedSessionSchema = z.object({ sessionId: z.string().max(256).optional() });
 
 export function registerHostApi(
   app: FastifyInstance,
@@ -167,7 +134,6 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
             message: "Attachment upload requires application/octet-stream",
           });
         }
-        requireCommandOrigin(authenticator, name, request, authenticated);
         const context = createContext(authenticated, request, reply, binaryRequest);
         const input = rpcInput(declaration, request);
         const output = await handlers[name](input, context);
@@ -282,60 +248,13 @@ function requireNegotiatedVersion(request: FastifyRequest): void {
   });
 }
 
-function requireCommandOrigin(
-  authenticator: HostAuthenticator,
-  name: keyof typeof hostApi,
-  request: FastifyRequest,
-  authenticated: AuthenticatedHostSession | null,
-): void {
-  if (name !== "commands.dispatch") return;
-  const { type } = commandTypeSchema.parse(request.body);
-  if (!exactOriginCommands.has(type)) return;
-  if (type === "session.revoke" && endsItsOwnHeaderSession(authenticated, request.body)) return;
-  authenticator.requireExactOrigin(request.headers);
-}
-
-/**
- * The one exception to the exact-origin gate, and the narrowest one that lets a
- * phone sign out at all.
- *
- * A native client has no browser origin to send — there is no page — so holding
- * `session.revoke` to one would make "sign out of this deployment" impossible
- * from anywhere but the owner's browser, and a phone would be left dropping its
- * copy of a credential the Host still honours. A caller presenting a *header*
- * credential is therefore allowed to end the session that credential is, and
- * nothing else: ending another session still needs the owner's browser, and a
- * cookie caller — the one a hostile page can make requests as — is never
- * excused, because that is the whole reason the gate exists.
- */
-function endsItsOwnHeaderSession(
-  authenticated: AuthenticatedHostSession | null,
-  body: unknown,
-): boolean {
-  if (
-    authenticated === null ||
-    (authenticated.credentialKind !== "native-oauth" &&
-      authenticated.credentialKind !== "personal-remote-header")
-  ) {
-    return false;
-  }
-  const revoked = revokedSessionSchema.safeParse(body);
-  return revoked.success && revoked.data.sessionId === authenticated.session.id;
-}
-
-/**
- * Authenticates the caller for one scope. It runs before the command origin
- * gate because that gate now has a question only an authenticated caller can
- * answer, and authenticating changes nothing: a request refused afterwards has
- * had nothing dispatched on its behalf.
- */
 async function authenticateScope(
   authenticator: HostAuthenticator,
   scope: HostApiScope,
   request: FastifyRequest,
 ): Promise<AuthenticatedHostSession | null> {
-  if (scope.startsWith("exact-origin")) authenticator.requireExactOrigin(request.headers);
-  if (scope === "session" || scope === "exact-origin-session") {
+  if (scope === "exact-origin") authenticator.requireExactOrigin(request.headers);
+  if (scope === "session") {
     return authenticator.authenticateSessionContext(request.headers);
   }
   if (scope === "mutation") {
@@ -359,6 +278,7 @@ function createContext(
           })(),
         }
       : {}),
+    afterResponse: (effect) => afterResponse(reply, effect),
     headers: request.headers,
     requestId: request.id,
     requestUrl: request.url,

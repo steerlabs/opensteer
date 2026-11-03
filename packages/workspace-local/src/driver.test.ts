@@ -57,7 +57,7 @@ describe("LocalWorkspaceAuthority", () => {
       ...current,
       bindings: current.bindings.map((binding) => ({
         ...binding,
-        provisionFingerprint: { ...binding.provisionFingerprint, kind: "specialized" },
+        provisionFingerprint: { ...binding.provisionFingerprint, kind: "project" },
       })),
     });
     const reopened = new LocalWorkspaceAuthority(fixture.options);

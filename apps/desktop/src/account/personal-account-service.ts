@@ -46,6 +46,7 @@ export class DesktopPersonalAccountService {
     | "removeAccountLinkForUnlink"
     | "repairHostedOAuthConnectionsForUnlink"
     | "revokeAccountSessionsForUnlink"
+    | "resumeAccountLink"
     | "status"
   >;
   readonly #link: Pick<DesktopPersonalAccountLinkCoordinator, "ensureLinkedForMutation">;
@@ -72,6 +73,7 @@ export class DesktopPersonalAccountService {
       | "removeAccountLinkForUnlink"
       | "repairHostedOAuthConnectionsForUnlink"
       | "revokeAccountSessionsForUnlink"
+      | "resumeAccountLink"
       | "status"
     >;
     readonly link: Pick<DesktopPersonalAccountLinkCoordinator, "ensureLinkedForMutation">;
@@ -188,27 +190,41 @@ export class DesktopPersonalAccountService {
     });
   }
 
-  /**
-   * Finishes an activation a crash or a lost response left half-done, without
-   * making the owner discover it. Activation is resumable from the Host's row
-   * alone, so this needs nothing but a signed-in Account that matches the link
-   * being activated — a different Account has no business completing it, and a
-   * signed-out one has no bearer to try with. It returns null when there is
-   * nothing to resume. Exactly one attempt: the caller reports a failure and
-   * leaves the link where it is, because a Host that refuses once here will
-   * refuse again for the same reason, and the owner still has Link and Unlink.
-   */
+  /** The Host holds the activation credential even when this desktop is
+   * signed out or another device initiated the link. */
   async resumeActivatingLink(): Promise<DesktopPersonalAccountLinkStatus | null> {
     const runtime = await this.#runtime.current();
     if (!runtime) return null;
     const hostStatus = PersonalRemoteAccessStatusSchema.parse(await this.#host.status());
     const link = hostStatus.accountLink;
     if (link?.state !== "activating") return null;
-    const current = await this.#account.accountIdentity();
-    if (!current || current.issuer !== link.issuer || current.subject !== link.subject) return null;
-    // The mutation coordinator owns the decision from here: a cancel already
-    // queued fences this, and the link path re-reads the Host inside the lock.
-    return this.link();
+    return this.#mutations.run("link", async () => {
+      const resumed = PersonalRemoteAccessStatusSchema.parse(await this.#host.resumeAccountLink());
+      if (
+        resumed.accountLink?.state !== "active" ||
+        resumed.accountLink.generation !== link.generation ||
+        resumed.accountLink.issuer !== link.issuer ||
+        resumed.accountLink.subject !== link.subject
+      )
+        throw new Error("Personal Account activation did not complete.");
+      const reconciliation = await this.#links.reconcileForMutation(
+        runtime.discovery.deploymentId,
+        runtime,
+        resumed.accountLink,
+      );
+      if (reconciliation.status === "needs-repair" || reconciliation.journal?.unlinkOperation)
+        throw new Error("This Personal Host's Account link needs repair.");
+      if (reconciliation.journal?.operation)
+        await this.#links.clear(runtime.discovery.deploymentId);
+      return this.#publish();
+    });
+  }
+
+  async recover(): Promise<void> {
+    let status = await this.status();
+    if (status.status === "needs-repair") status = await this.resetLinkJournal();
+    if (status.status === "unlinking") await this.unlink();
+    else await this.resumeActivatingLink();
   }
 
   /**
@@ -274,11 +290,15 @@ export class DesktopPersonalAccountService {
         const operationId = state.issueOperationId ?? state.operation?.operationId;
         if (!operationId) throw new Error("Account-link journal is inconsistent.");
         await this.#account.cancelPersonalHostAccountLinkOperation(operationId);
+        await this.#host.removeAccountLinkForUnlink();
         await this.#links.clear(deploymentId);
         return this.#publish();
       }
 
-      if (!hostStatus.accountLink && !state.unlinkOperation) return this.#publish();
+      if (!hostStatus.accountLink && !state.unlinkOperation) {
+        await this.#host.removeAccountLinkForUnlink();
+        return this.#publish();
+      }
 
       const displayName = (await this.#manifest.load())?.name ?? null;
       const linkedAccount: LinkAccount | null = hostStatus.accountLink

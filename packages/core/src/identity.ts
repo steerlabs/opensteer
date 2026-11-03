@@ -89,12 +89,6 @@ export const AuthSessionSummarySchema = z.strictObject({
   form: SessionDeviceFormSchema.nullable().default(null),
   id: AuthSessionIdSchema,
   lastSeenAt: z.iso.datetime({ offset: true }),
-  /**
-   * Opened by the Opensteer app on the computer this Deployment runs on. That
-   * computer always has access, so clients show it once, as that computer,
-   * rather than as one session per launch.
-   */
-  machineLocal: z.boolean().default(false),
 });
 export type AuthSessionSummary = z.infer<typeof AuthSessionSummarySchema>;
 

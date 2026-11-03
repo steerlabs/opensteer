@@ -7,8 +7,8 @@ import type {
   PasswordsBrokerSignInReleaseResult,
   PasswordsBrokerSignInDecision,
   PasswordsBrokerSignInRequestParams,
-  PasswordsBrokerSignInRequestV5Params,
-  PasswordsBrokerSignInReleaseV5Params,
+  PasswordsBrokerSignInRequestV6Params,
+  PasswordsBrokerSignInReleaseV6Params,
 } from "@opensteer/protocol/passwords-broker";
 import type { z } from "zod";
 
@@ -51,10 +51,10 @@ export interface PasswordsBrokerSignInGrant {
 
 /** Every transaction call stays on the connection that carried request; it never reconnects. */
 export interface PasswordsBrokerSession {
-  readonly protocolVersion?: 4 | 5;
+  readonly protocolVersion?: 4 | 5 | 6;
   probe(params: PasswordsBrokerSignInProbeParams): Promise<PasswordsBrokerSignInProbeResult>;
   request(
-    params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV5Params,
+    params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
     signal: AbortSignal,
   ): Promise<PasswordsBrokerSignInGrant>;
   approve(
@@ -62,8 +62,9 @@ export interface PasswordsBrokerSession {
     signal: AbortSignal,
   ): Promise<PasswordsBrokerSignInApproveResult>;
   release(
-    params: PasswordsBrokerSignInReleaseParams | PasswordsBrokerSignInReleaseV5Params,
+    params: PasswordsBrokerSignInReleaseParams | PasswordsBrokerSignInReleaseV6Params,
     signal?: AbortSignal,
   ): Promise<PasswordsBrokerSignInReleaseResult>;
+  commit(transactionId: string, signal: AbortSignal): Promise<{ committed: boolean }>;
   cancel(transactionId: string): Promise<void>;
 }

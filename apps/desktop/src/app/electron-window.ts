@@ -1,3 +1,4 @@
+import { isAppPrefixNavigation } from "@opensteer/shared/appFrame";
 import { configureDesktopPermissions } from "./media-permissions.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import {
@@ -5,6 +6,7 @@ import {
   BrowserWindow,
   WebContentsView,
   systemPreferences,
+  shell,
   type BaseWindowConstructorOptions,
   type Event,
   type OnBeforeRequestListenerDetails,
@@ -13,6 +15,7 @@ import {
   type WebPreferences,
 } from "electron";
 import path from "node:path";
+import { isPublishedAppUrl } from "./published-app-protocol.js";
 import { desktopAppEntryUrl } from "./app-protocol.js";
 import type { DesktopConfiguration } from "../config.js";
 import type { DesktopWindowFactory } from "./desktop-main-process.js";
@@ -70,7 +73,12 @@ export function configureDesktopSession(
       urls: ["<all_urls>"],
     },
     (details: OnBeforeRequestListenerDetails, callback) => {
-      callback({ cancel: !policy.allowsNetworkRequest(details.url) });
+      callback({
+        cancel: !policy.allowsNetworkRequest(details.url, {
+          url: details.frame?.url ?? "",
+          resourceType: details.resourceType,
+        }),
+      });
     },
   );
 }
@@ -104,7 +112,18 @@ export function configureDesktopWindowNavigation(
   const guardNavigation = (event: Event, url: string) => {
     if (!policy.allowsNavigation(url)) event.preventDefault();
   };
-  webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  webContents.setWindowOpenHandler(({ url }) => {
+    // App responses suppress referrers; a clicked link's focused frame identifies its source.
+    const source = webContents.focusedFrame?.url;
+    if (source && isPublishedAppUrl(source) && /^https?:\/\//iu.test(url))
+      void shell.openExternal(url).catch(() => undefined);
+    return { action: "deny" };
+  });
+  webContents.on("will-frame-navigate", (event) => {
+    const source = event.frame?.url;
+    if (source && isPublishedAppUrl(source) && !isAppPrefixNavigation(event.url, source))
+      event.preventDefault();
+  });
   webContents.on("will-attach-webview", (event) => event.preventDefault());
   webContents.on("will-navigate", guardNavigation);
   webContents.on("will-redirect", guardNavigation);

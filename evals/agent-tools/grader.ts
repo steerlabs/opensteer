@@ -29,6 +29,8 @@ export function grade(
   expect: EvalCase["expect"],
   calls: readonly RecordedCall[],
   finalText: string,
+  assistantText: string = finalText,
+  earlierText: string = "",
 ): Check[] {
   const valid = calls.filter((call) => call.valid);
   const checks: Check[] = [];
@@ -42,6 +44,31 @@ export function grade(
     );
   for (const name of expect.notCalls)
     add(`notCalls:${name}`, !calls.some((c) => toolMatches(c.tool, name)));
+  for (const [i, forbidden] of expect.notCallsWithArgs.entries())
+    add(
+      `notCallsWithArgs[${i}]:${forbidden.tool}`,
+      !calls.some(
+        (c) => toolMatches(c.tool, forbidden.tool) && partialMatch(c.args, forbidden.args),
+      ),
+    );
+  for (const [i, match] of expect.callsArgMatch.entries()) {
+    const candidates = calls.filter((c) => toolMatches(c.tool, match.tool));
+    add(
+      `callsArgMatch[${i}]:${match.tool}`,
+      (match.first ? candidates.slice(0, 1) : candidates).some((c) => {
+        const value = match.path.reduce<unknown>(
+          (value, key) =>
+            value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined,
+          c.args,
+        );
+        return c.valid && typeof value === "string" && new RegExp(match.pattern, "u").test(value);
+      }),
+    );
+  }
+  if (expect.finalText)
+    add("finalText", expect.finalText === "empty" ? !finalText.trim() : !!finalText.trim());
+  if (expect.maxFinalTextBytes !== undefined)
+    add("maxFinalTextBytes", Buffer.byteLength(finalText, "utf8") <= expect.maxFinalTextBytes);
   let previous = -1;
   for (const [i, name] of expect.order.entries()) {
     const next = valid.findIndex((c, index) => index > previous && toolMatches(c.tool, name));
@@ -52,10 +79,13 @@ export function grade(
     add(`minCalls:${name}`, valid.filter((c) => toolMatches(c.tool, name)).length >= count);
   for (const [name, count] of Object.entries(expect.maxCalls))
     add(`maxCalls:${name}`, calls.filter((c) => toolMatches(c.tool, name)).length <= count);
+  if (expect.noAssistantText) add("noAssistantText", assistantText.length === 0);
   for (const pattern of expect.textMust)
     add(`textMust:${pattern}`, new RegExp(pattern, "u").test(finalText));
   for (const pattern of expect.textMustNot)
     add(`textMustNot:${pattern}`, !new RegExp(pattern, "u").test(finalText));
+  for (const pattern of expect.earlierTextMust)
+    add(`earlierTextMust:${pattern}`, new RegExp(pattern, "u").test(earlierText));
   add("maxInvalidCalls", calls.filter((c) => !c.valid).length <= expect.maxInvalidCalls);
   return checks;
 }

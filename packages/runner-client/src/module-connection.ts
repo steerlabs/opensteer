@@ -42,7 +42,7 @@ export interface RunnerModuleStream {
   readonly browserWireVersion?: 1;
   readonly passkeys?: 1;
   readonly loginText?: 1;
-  readonly passwordSignIn?: 1;
+  readonly passwordSignIn?: 2;
   readonly fence: RunnerAuxiliaryFrameFence;
   /** Present on a browser stream so the relay can verify attach tickets. */
   readonly browserAttachPublicKeys:
@@ -429,6 +429,10 @@ export class RunnerModuleConnection {
 
 function modulePrimaryMessageFence(message: PostAuthenticationHostMessage): RunnerConnectionFence {
   switch (message.type) {
+    case "host.app.start":
+    case "host.app.connect":
+    case "host.app.stop":
+    case "host.app.cancel":
     case "host.workspace.local.provision":
     case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":

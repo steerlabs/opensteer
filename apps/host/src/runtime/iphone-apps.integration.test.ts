@@ -1,33 +1,30 @@
+import type {
+  ComputerAppApprovalAnswer,
+  ComputerAppApprovalOutcome,
+} from "./computer-apps.test-support.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId } from "@opensteer/core";
 import { createDatabase, iphoneDeviceProfileMigration } from "@opensteer/database";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import {
   isComputerAppDefinition,
-  type ComputerAppSetupRequest,
+  type ComputerAppSetupSummary,
   type IntegrationAccess,
 } from "@opensteer/integration-core";
 import {
-  HostIntegrationsComputerAppApprovalKeyChallengeSchema,
   HostIntegrationsInvokeSchema,
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   hostApi,
-  type ComputerAppApprovalAnswer,
-  type ComputerAppApprovalKeyChallenge,
-  type ComputerAppApprovalOutcome,
-  type ComputerAppStatusEntry,
   type RunnerDescriptor,
+  type ComputerAppStatusEntry,
 } from "@opensteer/protocol";
 import {
-  computerAppApprovalKeyId,
-  createComputerAppApproval,
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
-  signComputerAppApprovalKeyChallenge,
 } from "@opensteer/runner-auth";
 import { sql } from "kysely";
-import { createPublicKey, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -311,12 +308,14 @@ integration.sequential("iPhone integrations Host contract", () => {
         },
       },
       { modules: { integrations: { platform: "android", protocolVersion: 4 } } },
-      ...["ownerViewVersion", "macWindowVideoVersion", "loginText", "passwordSignIn"].map(
-        (field) => ({
-          modules: { integrations: { ...descriptor.modules.integrations, [field]: 1 } },
-        }),
-      ),
-      { modules: { integrations: { platform: "ios", protocolVersion: 1 } } },
+      ...Object.entries({
+        ownerViewVersion: 1,
+        macWindowVideoVersion: 1,
+        loginText: 1,
+        passwordSignIn: 2,
+      }).map(([field, version]) => ({
+        modules: { integrations: { ...descriptor.modules.integrations, [field]: version } },
+      })),
       {
         modules: {
           integrations: descriptor.modules.integrations,
@@ -349,7 +348,7 @@ integration.sequential("iPhone integrations Host contract", () => {
           },
         },
       },
-      { modules: { integrations: { ...descriptor.modules.integrations, protocolVersion: 2 } } },
+      { modules: { integrations: { ...descriptor.modules.integrations, protocolVersion: 3 } } },
     ];
     // Schema-valid shell advertisement, so this tests profile admission too.
     const ssh = generateKeyPairSync("ed25519")
@@ -546,7 +545,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     keep(await connectPhone(host, minted.token));
   });
 
-  it("H4 H7 H8 H9 H13 isolates owners and enforces local signed approvals, key possession and revocation", async () => {
+  it("H4 H7 H8 H9 H13 isolates owners and enforces owner session approvals and revocation", async () => {
     await start();
     const admin = host.ownerHeaders;
     const owner = await signUpUser(host, {
@@ -571,80 +570,6 @@ integration.sequential("iPhone integrations Host contract", () => {
         ({ id }) => id === phone.runnerId,
       ),
     ).toMatchObject({ apps: null, computerUse: null });
-    for (const headers of [admin, host.ownerHeaders]) {
-      const response = await command(
-        host,
-        {
-          type: "integration.computer.approval-key.set",
-          idempotencyKey: randomUUID(),
-          input: {
-            runnerId: phone.runnerId,
-            publicKey: createPublicKey(phone.primary.privateKey)
-              .export({ format: "pem", type: "spki" })
-              .toString(),
-          },
-        },
-        headers,
-      );
-      expect(response.status).toBe(403);
-      if (headers === host.ownerHeaders)
-        expect(await response.json()).toMatchObject({
-          error: { message: "Use the approval key this iPhone created." },
-        });
-    }
-    // A different stream/key cannot answer the challenge. Phone scripts no proof for that key.
-    const wrongKey = generateKeyPairSync("ed25519");
-    expect(
-      (
-        await command(host, {
-          type: "integration.computer.approval-key.set",
-          idempotencyKey: randomUUID(),
-          input: {
-            runnerId: phone.runnerId,
-            publicKey: wrongKey.publicKey.export({ format: "pem", type: "spki" }).toString(),
-          },
-        })
-      ).status,
-    ).toBe(403);
-    const unregistered = await requestComputerAppSetup(
-      host,
-      phone.runnerId,
-      "read",
-      "unregistered-key",
-      "apple-calendar",
-    );
-    expect(
-      await phone.answer(unregistered, {
-        kind: "deny",
-        approval: createComputerAppApproval(
-          phone.approvalKey.privateKey,
-          unregistered,
-          Date.now(),
-          "deny",
-        ),
-      }),
-    ).toMatchObject({
-      kind: "refused",
-      message:
-        "This iPhone cannot approve apps yet. Open Opensteer on this iPhone to finish setup, then try again.",
-    });
-    const otherPhone = keep(
-      await connectPhone(host, (await mint(host, "other-approval-stream")).token),
-    );
-    phone.challengeProxy = (challenge) => otherPhone.prove(challenge, phone.approvalKey.privateKey);
-    await expect(phone.register()).rejects.toThrow("This iPhone did not confirm its approval key.");
-    const expiredChallenge = phone.challenges.at(-1)!;
-    expect(Date.parse(expiredChallenge.expiresAt)).toBeLessThanOrEqual(Date.now());
-    phone.prove(expiredChallenge);
-    expect(
-      await host.store.database
-        .selectFrom("computerUseApprovalKeys")
-        .select("runnerId")
-        .where("runnerId", "=", phone.runnerId)
-        .executeTakeFirst(),
-    ).toBeUndefined();
-    phone.challengeProxy = null;
-    await phone.register();
     expect(
       (
         await command(
@@ -716,28 +641,11 @@ integration.sequential("iPhone integrations Host contract", () => {
       "signed",
       "apple-calendar",
     );
-    for (const key of [wrongKey.privateKey, phone.primary.privateKey])
-      expect(
-        await phone.answer(request, {
-          kind: "allow",
-          approval: createComputerAppApproval(key, request),
-        }),
-      ).toMatchObject({ kind: "refused" });
-    expect(
-      await phone.answer(request, {
-        kind: "allow",
-        approval: createComputerAppApproval(
-          phone.approvalKey.privateKey,
-          request,
-          Date.now() - 31_000,
-        ),
-      }),
-    ).toMatchObject({ kind: "refused" });
-    const allowed = createComputerAppApproval(phone.approvalKey.privateKey, request);
-    expect(await phone.answer(request, { kind: "allow", approval: allowed })).toEqual({
+    const allowed = request.id;
+    expect(await phone.answer(request, { kind: "allow", setupRequestId: allowed })).toEqual({
       kind: "allowed",
     });
-    expect(await phone.answer(request, { kind: "allow", approval: allowed })).toMatchObject({
+    expect(await phone.answer(request, { kind: "allow", setupRequestId: allowed })).toMatchObject({
       kind: "refused",
     });
     expect(
@@ -759,12 +667,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(
       await phone.answer(denied, {
         kind: "deny",
-        approval: createComputerAppApproval(
-          phone.approvalKey.privateKey,
-          denied,
-          Date.now(),
-          "deny",
-        ),
+        setupRequestId: denied.id,
       }),
     ).toEqual({ kind: "declined" });
     const automatic = await command(host, {
@@ -887,7 +790,6 @@ integration.sequential("iPhone integrations Host contract", () => {
       ),
     );
     const phone = keep(await connectPhone(host, (await mint(host, "gateway")).token));
-    await phone.register();
     const caller = keep(
       await connectCallerMachine(host, {
         name: "Caller",
@@ -908,7 +810,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(
       await phone.answer(setup, {
         kind: "allow",
-        approval: createComputerAppApproval(phone.approvalKey.privateKey, setup),
+        setupRequestId: setup.id,
       }),
     ).toEqual({ kind: "allowed" });
     const connection = await host.store.database
@@ -988,7 +890,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(
       await phone.answer(widen, {
         kind: "allow",
-        approval: createComputerAppApproval(phone.approvalKey.privateKey, widen),
+        setupRequestId: widen.id,
       }),
     ).toEqual({ kind: "allowed" });
     // Leave a pending real Calendar request on the Mac for the older parser's manifest readers.
@@ -1048,12 +950,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       "mac-write-alternative",
       "apple-calendar",
     );
-    const macConnection = await setComputerApp(
-      host,
-      mac,
-      macSetup,
-      createComputerAppApproval(mac.approvalKey.privateKey, macSetup),
-    );
+    const macConnection = await setComputerApp(host, mac, macSetup, macSetup.id);
     const installation = (
       await testRpcData(host.origin, "integration.platform.get", {}, { headers: host.ownerHeaders })
     ).installations.find(
@@ -1179,7 +1076,7 @@ function iphoneDescriptor(): RunnerDescriptor {
     bootId: `rbt_${randomUUID()}`,
     capabilities: [],
     device: { form: "phone", platform: "ios" },
-    modules: { integrations: { computerAppApprovals: true, platform: "ios", protocolVersion: 1 } },
+    modules: { integrations: { platform: "ios", protocolVersion: 2 } },
     name: "Test iPhone",
     runnerId: createId("runner"),
     runnerKind: "local",
@@ -1206,60 +1103,28 @@ async function connectPhone(
   reportOnConnect = true,
 ) {
   const primary = await connectPrimary(host.hostPort, descriptor, { token });
-  const approvalKey = generateKeyPairSync("ed25519");
   let stream: Awaited<ReturnType<typeof openAuxiliaryStream>>;
   const invocations: z.infer<typeof HostIntegrationsInvokeSchema>[] = [];
   const phone = {
     primary,
-    approvalKey,
     descriptor,
     runnerId: descriptor.runnerId,
     invocations,
     dropWriteAnswer: false,
-    challenges: [] as ComputerAppApprovalKeyChallenge[],
-    challengeProxy: null as ((challenge: ComputerAppApprovalKeyChallenge) => void) | null,
-    prove(challenge: ComputerAppApprovalKeyChallenge, key = approvalKey.privateKey) {
-      stream.socket.send(
-        JSON.stringify({
-          ...stream.fence,
-          challengeId: challenge.challengeId,
-          signature: signComputerAppApprovalKeyChallenge(key, challenge),
-          type: "runner.integrations.computer-app-approval-key-proof",
-        }),
-      );
-    },
-    async register() {
-      return testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          type: "integration.computer.approval-key.set",
-          idempotencyKey: randomUUID(),
-          input: {
-            runnerId: descriptor.runnerId,
-            publicKey: approvalKey.publicKey.export({ format: "pem", type: "spki" }).toString(),
-          },
-        },
-        { headers: host.ownerHeaders },
-      );
-    },
     async answer(
-      request: ComputerAppSetupRequest,
+      request: ComputerAppSetupSummary,
       answer: ComputerAppApprovalAnswer,
     ): Promise<ComputerAppApprovalOutcome> {
-      const outcome = waitForMessage(
-        stream.socket,
-        (message) => message.type === "host.integrations.computer-app-approval-outcome",
-      );
-      stream.socket.send(
-        JSON.stringify({
-          ...stream.fence,
-          setupRequestId: request.id,
-          answer,
-          type: "runner.integrations.computer-app-approval-answer",
-        }),
-      );
-      return ((await outcome) as { outcome: ComputerAppApprovalOutcome }).outcome;
+      if (request.id !== answer.setupRequestId)
+        return { kind: "refused", message: "Approval changed" };
+      const response = await command(host, {
+        type: "integration.computer.setup.respond",
+        idempotencyKey: randomUUID(),
+        setupRequestId: request.id,
+        decision: answer.kind === "allow" ? "allow" : "deny",
+      });
+      if (!response.ok) return { kind: "refused", message: "The Host refused this decision." };
+      return { kind: answer.kind === "allow" ? "allowed" : "declined" };
     },
     async disconnectStream() {
       if (stream.socket.readyState === WebSocket.CLOSED) return;
@@ -1297,40 +1162,6 @@ async function connectPhone(
       stream = await openAuxiliaryStream(host.hostPort, primary, "integrations");
       stream.socket.on("message", (raw) => {
         const frame = JSON.parse(raw.toString()) as { type: string; requestId?: string };
-        if (frame.type === "host.integrations.computer-app-approval-key-challenge") {
-          const challenge = HostIntegrationsComputerAppApprovalKeyChallengeSchema.parse(frame);
-          const payload = {
-            challengeId: challenge.challengeId,
-            expiresAt: challenge.expiresAt,
-            keyId: challenge.keyId,
-            nonce: challenge.nonce,
-            runnerId: challenge.runnerId,
-          };
-          phone.challenges.push(payload);
-          if (phone.challengeProxy) {
-            phone.challengeProxy(payload);
-            return;
-          }
-          if (
-            challenge.runnerId === descriptor.runnerId &&
-            challenge.keyId === computerAppApprovalKeyId(approvalKey.publicKey)
-          ) {
-            stream.socket.send(
-              JSON.stringify({
-                ...stream.fence,
-                challengeId: challenge.challengeId,
-                signature: signComputerAppApprovalKeyChallenge(approvalKey.privateKey, {
-                  challengeId: challenge.challengeId,
-                  expiresAt: challenge.expiresAt,
-                  keyId: challenge.keyId,
-                  nonce: challenge.nonce,
-                  runnerId: challenge.runnerId,
-                }),
-                type: "runner.integrations.computer-app-approval-key-proof",
-              }),
-            );
-          }
-        }
         if (frame.type === "host.integrations.invoke") {
           const invoke = HostIntegrationsInvokeSchema.parse(frame);
           invocations.push(invoke);
@@ -1361,7 +1192,7 @@ async function connectPhone(
             apps: [...apps, "apple-messages", "macos-app", "android-phone"].map(status),
             ownerViewVersion: 1,
             displayAvailable: true,
-            passwordSignIn: 1,
+            passwordSignIn: 2,
             type: "runner.integrations.status",
           }),
         );
@@ -1382,53 +1213,59 @@ async function refusal(
 ) {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
   const frames: { type: string; [key: string]: unknown }[] = [];
-  const ended = waitForClose(socket);
-  const receive = waitForMessage(socket, (frame) => frame.type === "host.challenge");
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
-  });
-  const challenge = RunnerChallengeSchema.parse(await receive);
-  socket.on("message", (raw) => {
-    frames.push(JSON.parse(raw.toString()) as { type: string });
-  });
-  if ("token" in credentials) {
-    const keys = generateKeyPairSync("ed25519");
-    const publicKeyPem = keys.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const credential = {
-      enrollmentToken: credentials.token,
-      kind: "host-enrollment-token" as const,
-    };
-    socket.send(
-      JSON.stringify({
-        type: "runner.enroll",
-        proofFormatVersion: 2,
-        descriptor,
-        challengeId: challenge.challengeId,
-        publicKeyPem,
-        credential,
-        signature: createRunnerEnrollmentSignature(keys.privateKey, {
-          challenge,
+  const ended = waitForClose(socket, "the Host to refuse the Runner's profile");
+  void ended.catch(() => undefined);
+  try {
+    const challenge = RunnerChallengeSchema.parse(
+      await waitForMessage(socket, (frame) => frame.type === "host.challenge"),
+    );
+    socket.on("message", (raw) => {
+      frames.push(JSON.parse(raw.toString()) as { type: string });
+    });
+    if ("token" in credentials) {
+      const keys = generateKeyPairSync("ed25519");
+      const publicKeyPem = keys.publicKey.export({ format: "pem", type: "spki" }).toString();
+      const credential = {
+        enrollmentToken: credentials.token,
+        kind: "host-enrollment-token" as const,
+      };
+      socket.send(
+        JSON.stringify({
+          type: "runner.enroll",
+          proofFormatVersion: 2,
           descriptor,
-          credential,
+          challengeId: challenge.challengeId,
           publicKeyPem,
+          credential,
+          signature: createRunnerEnrollmentSignature(keys.privateKey, {
+            challenge,
+            descriptor,
+            credential,
+            publicKeyPem,
+          }),
         }),
-      }),
-    );
-  } else
-    socket.send(
-      JSON.stringify({
-        type: "runner.authenticate",
-        proofFormatVersion: 2,
-        descriptor,
-        challengeId: challenge.challengeId,
-        signature: createRunnerAuthenticationSignature(credentials.privateKey, {
-          challenge,
+      );
+    } else
+      socket.send(
+        JSON.stringify({
+          type: "runner.authenticate",
+          proofFormatVersion: 2,
           descriptor,
+          challengeId: challenge.challengeId,
+          signature: createRunnerAuthenticationSignature(credentials.privateKey, {
+            challenge,
+            descriptor,
+          }),
         }),
-      }),
-    );
-  return { frames, close: await ended };
+      );
+    return { frames, close: await ended };
+  } finally {
+    if (socket.readyState !== WebSocket.CLOSED) {
+      const closing = waitForClose(socket, "the refused Runner socket to terminate");
+      socket.terminate();
+      await closing;
+    }
+  }
 }
 async function grant(
   host: MachineAccessHost,

@@ -90,7 +90,7 @@ public enum IphoneProofs {
     [
       "bootId": bootId, "capabilities": [String](),
       "device": ["form": "phone", "platform": "ios"],
-      "modules": ["integrations": ["computerAppApprovals": true, "platform": "ios", "protocolVersion": 1] as [String: Any]],
+      "modules": ["integrations": ["platform": "ios", "protocolVersion": 2] as [String: Any]],
       "name": name, "runnerId": runnerId, "runnerKind": "local", "runtimeVersion": runtimeVersion,
     ]
   }
@@ -123,17 +123,4 @@ public enum IphoneProofs {
     ])
   }
 
-  public static func approvalTranscript(request: [String: Any], decision: String, expiresAt: String) throws -> Data {
-    try canonicalJSON(["opensteer-computer-app-approval-v4", "decision", decision,
-      "request", request, "app", request["app"] ?? NSNull(), "expiresAt", expiresAt])
-  }
-
-  public static func approval(_ key: Curve25519.Signing.PrivateKey, request: [String: Any], decision: String, expiresAt: String) throws -> String {
-    base64url(try key.signature(for: approvalTranscript(request: request, decision: decision, expiresAt: expiresAt)))
-  }
-
-  public static func keyChallenge(_ key: Curve25519.Signing.PrivateKey, challenge: [String: Any]) throws -> String {
-    guard challenge["keyId"] as? String == keyId(key) else { throw IphoneProofError.nonJSONValue }
-    return try sign(key, domain: "opensteer-computer-app-approval-key-registration-v1", payload: ["challenge", challenge])
-  }
 }

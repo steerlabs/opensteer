@@ -1,8 +1,8 @@
 # Opensteer Passwords
 
 Saved logins let agents fill websites or type into permitted Mac/Android apps
-without returning field values in tool results. The Personal Mac owns the vault
-and approvals. [Chrome sign-ins](browser-sources.md) owns cookie reuse;
+without returning field values in tool results. The Personal Mac owns the vault;
+its requester can approve sign-ins from any signed-in device. [Chrome sign-ins](browser-sources.md) owns cookie reuse;
 [browser sessions](browser-sessions.md) owns the CDP boundary; surface control
 belongs to [computer use](computer-use.md) and [Agent Phone](agent-phone.md).
 
@@ -25,7 +25,7 @@ input, sign out a browser/app, clear profile cookies or undo actions.
 
 ## Authority
 
-The broker owns keys/grants/release; desktop main owns approval, browser checks
+The broker owns keys/grants/release; desktop main owns browser checks
 and sealing; the Host owns Workspace admission and memory-only leases. Only the
 Personal bridge exposes vault authority, and only Personal's local Host can name
 its Workspace. The Host stores neither vault data nor released values.
@@ -58,7 +58,8 @@ Session belonging to another Workspace.
 
 Current **permissionVersion 5** consent covers “on websites and in apps your
 agents use” and warns that a tricked agent could expose the password.
-**Allow** remembers access after Touch ID or the Mac's password;
+**Allow** remembers access after the requester approves from an authenticated
+client; the mobile app first requires device-owner authentication;
 **Only this time** creates no grant. Both pin the selected login ID, revision
 and permission version on the broker transaction. The person's chooser shows
 the full username; the agent receives a masked account.
@@ -155,9 +156,21 @@ is involved.
 ## Requests and results
 
 Modern Workspace-scoped Requests retain their durable kind and consent version;
-only the vault Mac's desktop app can approve through its broker. Other clients may
-decline; generic request.respond refuses this kind. Names/reasons are display
-context, never authority. Settlement is durable once, retrying failed writes;
+the requester approves or declines through the same Host command from web, desktop
+or mobile. Chooser descriptors are fetched separately after first paint and never
+enter shared Request events, agent projections or persisted client caches. Generic
+request.respond refuses this kind. Names/reasons are display context, never
+authority. The durable Request settlement is the approval commit point. The broker
+first prepares the pinned choice without granting or releasing anything. Only
+after settlement succeeds does the Host commit the broker transaction and publish a
+lease. If broker commit fails or authority ends before publication, the current
+Request outcome becomes interrupted while durable history retains the consent
+decision and its original provenance. A lost commit response may leave only the
+exact pinned remembered grant, never a live Host lease. Losing/cancelled
+preparations have no grant to remove, so cleanup cannot erase a newer grant.
+Human settlements retain the winning session and stored
+device label; retries never replace this provenance. Automatic settlements have
+none. Failed settlement cancels the preparation and retries interruption;
 a continuation gets its loginRef only from the live registry, never Request data.
 Settlement does not itself end an authorized lease. After restart, lost modern
 Requests settle interrupted; historical session-bound ones settle session-closed.
@@ -166,15 +179,13 @@ See `packages/protocol/src/password-sign-in.ts` and
 
 ## Runtime and compatibility
 
-[Host API epoch 48](host-boundaries.md#compatibility) requires matching clients
-because older clients cannot read Workspace-scoped Requests or describe the
-new consent. Historical Request/result variants remain readable and never
-create a live lease.
+[Host API epoch 50](host-boundaries.md#compatibility) requires matching clients
+for the shared requester-authorized approval commands. Historical Request/result
+variants remain readable and never create a live lease.
 
-Modern authority commands (`signin.probe`, `login.authorize`, `login.seal`,
-`login.cancel`) and events use the Personal Runner's existing integrations
+Authority commands and events use the Personal Runner's existing integrations
 stream and desktop computer-use bridge, independently of browser/helper
-sessions. `modules.integrations.passwordSignIn: 1` plus live status confirms
+sessions. `modules.integrations.passwordSignIn: 2` plus live status confirms
 the vault authority; `modules.integrations.loginText: 1` plus a current receiver
 key confirms saved-text delivery. The Host opts in through the auxiliary
 welcome before either optional status extension is sent. Unknown versions or
@@ -182,8 +193,8 @@ a missing hop/key disable that feature; discovery does not start a helper.
 
 Mac helper hello requests `loginText: 1`; only a helper supporting that opt-in
 returns a receiver key. Its session pins the Run and sealed acts carry
-independent `loginContext`. Phone integrations protocol stays 4; Mac integrations
-stays 5. Browser fills retain `modules.browser.signIn: {version: 3}` and the
+independent `loginContext`. Agent Phone integrations protocol is 4; Mac
+integrations is 6. Browser fills retain `modules.browser.signIn: {version: 3}` and the
 calling agent Runner's `modules.agents.loginFill: 1` admission. Previous-release
 browser control remains an origin-only, session-bound adapter.
 The Host still serves `browser_sign_in` with its required session ID for
@@ -191,9 +202,10 @@ previous-release Runners' exact tool inventories, only to Runners without
 `browser-profile-create-v1` ([Host compatibility](host-boundaries.md#compatibility)).
 Current Runner profiles offer only `sign_in`.
 
-Desktop main negotiates broker protocol **5** for modern sessionless
+Desktop main negotiates broker protocol **6** for modern sessionless
 transactions and **4** for the legacy adapter. The broker echoes the selected
-version per connection; app release never downgrades to 4. Protocol 5 separates
+version per connection; app release never downgrades to 4. Protocol 6 preserves
+version-5 consent and separates
 `kind: "app"` release from `kind: "browser"` with an exact HTTPS origin.
 The [broker README](../apps/desktop/native/passwords/README.md#the-broker) and
 [broker wire](../packages/protocol/src/passwords-broker.ts) own those contracts.

@@ -205,19 +205,23 @@ describe("IntegrationToolsMcpService access classes", () => {
 
     const search = listed.tools.find(({ name }) => name === "integration_search");
     expect(search?.description).toContain(
-      "operations carry callable toolRefs, effect, account and connectionId; choose accounts by connectionId, not labels, and pass toolRefs unchanged. Tool summaries show aggregate readiness.",
+      "choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling.",
     );
-    expect(search?.description).toContain("read permits reads; writes require read-write");
-    expect(search?.description).toContain("pass a nonempty query or choose provider/runnerId");
+    expect(search?.description).toContain("Writes require read-write access");
+    expect(search?.description).toContain("with a nonempty query, or provider/runnerId");
     const call = listed.tools.find(({ name }) => name === "integration_call");
-    expect(call?.description).toContain("current account and access class");
-    expect(call?.description).toContain("For a new toolRef, call integration_describe first.");
+    expect(call?.description).toContain("grant, account access and schema generation at execution");
+    expect(call?.description).toContain(
+      "Describe new refs first; call already-described operations directly.",
+    );
     const request = listed.tools.find(({ name }) => name === "integration_request");
     expect(request?.description).toContain(
-      "For setup or account access, pass integration and access; for an uninstalled catalog entry, pass catalog and access.",
+      "integration, access and reason; for a catalog definition use catalog instead.",
     );
-    expect(request?.description).toContain("Existing pending requests are reused");
-    expect(request?.description).toContain("never resubmit after a decline");
+    expect(call?.description).toContain("describing is guidance, not an access grant");
+    const describe = listed.tools.find(({ name }) => name === "integration_describe");
+    expect(describe?.description).toContain("before calling a new toolRef");
+    expect(request?.description).toContain("Do not repeat pending or declined requests");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -1899,7 +1903,9 @@ describe("computer use discovery", () => {
     );
     expect(answer).toMatchObject({
       guidance: {
-        computers: expect.stringContaining("blocked: only the person can unblock it on that Mac"),
+        computers: expect.stringContaining(
+          "blocked: only the computer owner can unblock it from any Opensteer app",
+        ),
       },
       computer: { runnerId: mac.runnerId, state: "ready", appApproval: "ask" },
       total: 20,

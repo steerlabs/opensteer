@@ -39,7 +39,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createId, type MessageId } from "@opensteer/core";
 import type { ComputerUseBridgeRequest, IMessagePosition, IMessageRow } from "@opensteer/protocol";
-import { createComputerAppApproval } from "@opensteer/runner-auth";
+
 import { prepareIntegrationsModule, prepareMessagingModule } from "@opensteer/runner";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -213,12 +213,7 @@ integration("iMessage channel", () => {
         "read",
         "imessage-read",
       );
-      await setComputerApp(
-        host,
-        computer,
-        readSetup,
-        createComputerAppApproval(computer.approvalKey.privateKey, readSetup),
-      );
+      await setComputerApp(host, computer, readSetup, readSetup.id);
       await expect(create(host.ownerHeaders, "imessage-read-only")).rejects.toThrow(/HTTP 403/u);
       const writeSetup = await requestComputerAppSetup(
         host,
@@ -226,12 +221,7 @@ integration("iMessage channel", () => {
         "read-write",
         "imessage-write",
       );
-      const source = await setComputerApp(
-        host,
-        computer,
-        writeSetup,
-        createComputerAppApproval(computer.approvalKey.privateKey, writeSetup),
-      );
+      const source = await setComputerApp(host, computer, writeSetup, writeSetup.id);
       const other = await signUpUser(host, {
         email: "someone-else@example.com",
         password: "correct horse battery staple",
@@ -358,6 +348,14 @@ integration("iMessage channel", () => {
       const beforeLost = messages.sends.length;
       messages.loseNextBridgeAnswer();
       const recoveredReply = await lostRun.reply("Sent once, receipt recovered.");
+      await waitForCondition(async () => (await deliveryStatus(recoveredReply)) === "unknown");
+      // Queue tests cover retry delays; this journey checks receipt reconciliation.
+      await host.store.database
+        .updateTable("channelDeliveries")
+        .set({ nextAttemptAt: new Date(0) })
+        .where("messageId", "=", recoveredReply)
+        .where("status", "=", "unknown")
+        .execute();
       await waitForCondition(async () => (await deliveryStatus(recoveredReply)) === "sent");
       const recovered = await host.store.database
         .selectFrom("channelDeliveries")
@@ -482,12 +480,7 @@ integration("iMessage channel", () => {
         "read-write",
         "imessage-widen",
       );
-      await setComputerApp(
-        host,
-        computer,
-        widen,
-        createComputerAppApproval(computer.approvalKey.privateKey, widen),
-      );
+      await setComputerApp(host, computer, widen, widen.id);
       const restored = await converse(caller, messages, {
         from: ownerPhone,
         reply: "Back.",

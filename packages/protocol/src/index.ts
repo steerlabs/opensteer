@@ -11,7 +11,6 @@ export * from "./password-sign-in.js";
 export * from "./bootstrap.js";
 export * from "./client.js";
 export * from "./common.js";
-export * from "./computer-app-approvals.js";
 export * from "./android-phone.js";
 export * from "./computer-apps.js";
 export * from "./computer-use.js";
@@ -38,3 +37,5 @@ export * from "./mac-window-video.js";
 
 export * from "./iphone-apps.js";
 export * from "./voice.js";
+
+export * from "./apps.js";

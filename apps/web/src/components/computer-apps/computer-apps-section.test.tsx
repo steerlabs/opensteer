@@ -2,7 +2,7 @@
 
 import type { HostClient, WorkspaceSummary } from "@opensteer/client/host";
 import type {
-  ComputerAppSetupRequest,
+  ComputerAppSetupSummary,
   IntegrationConnectionSummary,
   IntegrationDefinitionSummary,
   IntegrationPlatformDashboard,
@@ -101,7 +101,7 @@ describe("ComputerAppsSection", () => {
   });
 
   it("shows and cancels a durable remote setup request", async () => {
-    const onCancelSetupRequest = vi.fn(async (_request: ComputerAppSetupRequest) => undefined);
+    const onCancelSetupRequest = vi.fn(async (_request: ComputerAppSetupSummary) => undefined);
     const request = setupRequest("read-write");
     const { container } = await mount({
       connections: [connection("read")],
@@ -303,7 +303,7 @@ describe("ComputerAppsSection", () => {
     const otherRequest = {
       ...setupRequest("read-write"),
       runnerId: "rnr_22222222-2222-4222-8222-222222222222",
-    } as ComputerAppSetupRequest;
+    } as ComputerAppSetupSummary;
     const { container } = await mount({
       connections: [connection("read")],
       localApproval: localApproval(),
@@ -558,7 +558,7 @@ describe("ComputerAppsSection on an iPhone seen from another device", () => {
   });
 
   it("waits for the iPhone's answer to a request, and can decline it", async () => {
-    const onCancelSetupRequest = vi.fn(async (_request: ComputerAppSetupRequest) => undefined);
+    const onCancelSetupRequest = vi.fn(async (_request: ComputerAppSetupSummary) => undefined);
     const request = { ...setupRequest("read"), definitionId: "apple-calendar", runnerId: iphoneId };
     const { container } = await mount({
       connections: [],
@@ -661,10 +661,10 @@ interface MountInput {
   readonly dispatch?: HostClient["dispatch"];
   readonly localApproval?: ComputerAppLocalApproval | null;
   readonly machine: MachineSummary;
-  readonly onCancelSetupRequest?: (request: ComputerAppSetupRequest) => Promise<void>;
+  readonly onCancelSetupRequest?: (request: ComputerAppSetupSummary) => Promise<void>;
   readonly onRequestSetup?: (input: ComputerAppRequestInput) => Promise<void>;
   readonly owned?: boolean;
-  readonly setupRequests?: readonly ComputerAppSetupRequest[];
+  readonly setupRequests?: readonly ComputerAppSetupSummary[];
 }
 
 async function mount(input: MountInput) {
@@ -673,6 +673,8 @@ async function mount(input: MountInput) {
   const root = createRoot(container);
   mountedRoots.push(root);
   const hostClient = {
+    getSnapshot: () => ({ user: { id: "owner" } }),
+    subscribe: () => () => undefined,
     dispatch: input.dispatch ?? (async () => ({ type: "integration.computer.setup.set" })),
     rpc: {
       "integration.grants.list": async () => ({ data: { grants: [] }, ok: true }),
@@ -827,7 +829,7 @@ function connection(access: "read" | "read-write"): IntegrationConnectionSummary
   } as unknown as IntegrationConnectionSummary;
 }
 
-function setupRequest(access: "read" | "read-write"): ComputerAppSetupRequest {
+function setupRequest(access: "read" | "read-write"): ComputerAppSetupSummary {
   return {
     access,
     createdAt: "2026-09-19T00:00:00.000Z",
@@ -838,7 +840,7 @@ function setupRequest(access: "read" | "read-write"): ComputerAppSetupRequest {
     id: "00000000-0000-4000-8000-000000000004",
     ownerUserId: "usr_00000000-0000-4000-8000-000000000001",
     runnerId: macMini,
-  } as ComputerAppSetupRequest;
+  } as ComputerAppSetupSummary;
 }
 
 function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {

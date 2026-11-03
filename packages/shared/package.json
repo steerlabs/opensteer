@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",
@@ -35,6 +36,7 @@
     "./processSecrets": "./src/processSecrets.ts",
     "./proof": "./src/proof.ts",
     "./resizeObserver": "./src/resizeObserver.ts",
+    "./responseStream": "./src/responseStream.ts",
     "./restartPolicy": "./src/restartPolicy.ts",
     "./safeMessage": "./src/safeMessage.ts",
     "./secretDigest": "./src/secretDigest.ts",
@@ -50,7 +52,8 @@
     "./test-support/loopbackPort": "./src/loopbackPort.test-support.ts",
     "./test-support/tcpServer": "./src/tcpServer.test-support.ts",
     "./agentSkills": "./src/agentSkills.ts",
-    "./test-support/agentSkills": "./src/agentSkills.test-support.ts"
+    "./test-support/agentSkills": "./src/agentSkills.test-support.ts",
+    "./appFrame": "./src/appFrame.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

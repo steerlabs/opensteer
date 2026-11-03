@@ -9,3 +9,7 @@ export * from "./use-browser-presentation-wait.js";
 export * from "./use-schedules.js";
 export * from "./use-app-icon.js";
 export * from "./use-host-read.js";
+
+export * from "./use-computer-app-approval.js";
+export * from "./use-personal-remote-access.js";
+export * from "./use-app-view.js";

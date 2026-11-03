@@ -47,7 +47,7 @@ describe("renderHarnessSkillCatalog", () => {
       ],
     });
     expect(catalog).toBe(
-      `Available Agent Skills\nUse a skill when its description matches the task. Read its SKILL.md file before following it; do not read unrelated skill files.\n- shared: Workspace winner # still description\n  SKILL.md: ${join(first, "SKILL.md")}\n- other: Second skill with folded lines\n  SKILL.md: ${join(second, "SKILL.md")}`,
+      `Available Agent Skills\nUse a skill when its description matches the task. Read its SKILL.md file before following it; do not read unrelated skill files. Resolve a Markdown link from the file that contains it, and other relative paths from the SKILL.md directory.\n- shared: Workspace winner # still description\n  SKILL.md: ${join(first, "SKILL.md")}\n- other: Second skill with folded lines\n  SKILL.md: ${join(second, "SKILL.md")}`,
     );
     expect(catalog).not.toContain("SECRET BODY");
     expect(catalog).not.toContain("OTHER BODY");

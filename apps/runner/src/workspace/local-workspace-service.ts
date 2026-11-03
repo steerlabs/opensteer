@@ -21,6 +21,7 @@ import {
   type LocalWorkspaceBindingRequest,
   type NativeWorkspaceFilesAuthority,
 } from "@opensteer/workspace-local";
+import type { AppServerManager } from "../apps/app-server-manager.js";
 
 /** What this Runner believes about itself while one connection is live. */
 export interface LocalWorkspaceIdentity {
@@ -48,6 +49,7 @@ export class LocalWorkspaceService {
     | undefined;
   readonly #removeSpecialist:
     ((id: string, remove: () => Promise<void>) => Promise<void>) | undefined;
+  readonly #appServers: Pick<AppServerManager, "stopBinding">;
   readonly #authority: LocalWorkspaceAuthority;
   readonly #filesystem: NativeWorkspaceFilesAuthority;
 
@@ -57,9 +59,11 @@ export class LocalWorkspaceService {
       move: () => Promise<void>,
     ) => Promise<void>;
     readonly removeSpecialist?: (id: string, remove: () => Promise<void>) => Promise<void>;
+    readonly appServers: Pick<AppServerManager, "stopBinding">;
     readonly authority: LocalWorkspaceAuthority;
     readonly filesystem: NativeWorkspaceFilesAuthority;
   }) {
+    this.#appServers = options.appServers;
     this.#relocate = options.relocate;
     this.#removeSpecialist = options.removeSpecialist;
     this.#authority = options.authority;
@@ -144,6 +148,7 @@ export class LocalWorkspaceService {
           return { ...echo, type: "runner.workspace.local.specialist.removed" };
         }
         case "host.workspace.local.destroy": {
+          await this.#appServers.stopBinding(request.binding);
           const receipt = await this.#authority.destroy(binding, signal);
           return {
             ...echo,
@@ -214,7 +219,7 @@ export class LocalWorkspaceService {
   }
 }
 
-function fenceMismatch(
+export function fenceMismatch(
   fence: WorkspaceStorageFence,
   identity: LocalWorkspaceIdentity,
 ): WorkspaceLocalFailure | undefined {

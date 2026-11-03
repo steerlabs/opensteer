@@ -1,3 +1,4 @@
+import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { autoUpdater } from "electron-updater";
 import { DesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
@@ -5,12 +6,10 @@ import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
 import { DesktopPasskeyRequests } from "./passkeys/passkey-requests.js";
 import { createMacosNativePasskeys } from "./passkeys/macos-native-passkeys.js";
 import { DesktopDownloads } from "./downloads/desktop-downloads.js";
-import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
+
 import { DesktopBrowserPresentationManager } from "./browser/browser-presentation.js";
 import { randomBytes } from "node:crypto";
-import { ComputerAppApprovalService } from "./computer-app-approval-service.js";
 import { ComputerAppSetupGuide, dataGrantSettingsUrls } from "./computer-app-setup-guide.js";
-import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { homedir, release } from "node:os";
 import { DictationService } from "./dictation/dictation-service.js";
 import { NativeDictationHelperClient } from "./dictation/helper-client.js";
@@ -45,6 +44,7 @@ import { passwordsBrokerLatestProtocolVersion } from "@opensteer/protocol/passwo
 import { DeploymentIdSchema } from "@opensteer/core";
 import { AccountDeploymentDirectoryService } from "@opensteer/client/connections";
 import { AccountDirectoryRefreshService } from "@opensteer/client/connections";
+import { installPublishedAppProtocol } from "./app/published-app-protocol.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "./app/app-protocol.js";
 import {
   desktopApplicationName,
@@ -119,6 +119,8 @@ import { DesktopPersonalAccountService } from "./account/personal-account-servic
 import { DesktopPersonalAccountMutationCoordinator } from "./account/personal-account-mutation.js";
 import { DesktopPersonalDirectoryProjection } from "./account/personal-directory-projection.js";
 import { DesktopPersonalHostRemoteAdapter } from "./supervisor/personal-host-remote-adapter.js";
+import { DesktopRemoteAdministrationExecutor } from "./connections/remote-administration-executor.js";
+import { ConnectOperationIdSchema } from "@opensteer/control-plane-protocol";
 import { DesktopPersonalRemoteAccessService } from "./connections/personal-remote-access.js";
 import { DesktopConnectCredentialStore } from "./secrets/connect-credential-store.js";
 import { VerifiedDesktopSecretCryptography } from "./secrets/verified-secret-cryptography.js";
@@ -134,8 +136,6 @@ import type { PersonalLocalRuntimePort } from "./supervisor/personal-local-runti
 import { probeFullDiskAccess } from "./full-disk-access/full-disk-access-probe.js";
 import { FullDiskAccessPanel } from "./full-disk-access/full-disk-access-panel.js";
 import { ComputerUseService } from "./computer-use/computer-use-service.js";
-import { ComputerUseApprovalPanel } from "./computer-use/computer-use-approval-panel.js";
-import { ComputerUseApprovalKey } from "./computer-use/approval-key.js";
 import { ComputerUsePermissionsPanel } from "./computer-use/computer-use-permissions-panel.js";
 import { ComputerAppSetupPanel } from "./computer-use/computer-app-setup-panel.js";
 import {
@@ -147,7 +147,6 @@ import { desktopComputerUseTeamId } from "./computer-use/release-identity.js";
 import { bundledPasswordsBrokerPath } from "./passwords/paths.js";
 import { PasswordsService } from "./passwords/passwords-service.js";
 import { OpensteerOwnOrigins } from "./passwords/own-origins.js";
-import { PasswordsSignInOperations } from "./passwords/sign-in-operations.js";
 import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
 
 registerDesktopAppScheme(protocol);
@@ -219,6 +218,9 @@ async function startDesktop(): Promise<void> {
   );
   app.once("will-quit", () => desktopLog?.close());
   await app.whenReady();
+  await privateFiles
+    .removeFile(path.join(loaded.config.dataDirectory, "computer-use-approval-key.v1.json"))
+    .catch(() => undefined);
   shutdown.signal.throwIfAborted();
   if (app.isPackaged && embeddedRelease.application.stage === "alpha") {
     app.setAboutPanelOptions({
@@ -368,7 +370,6 @@ async function runDesktop(
     protocolVersion: passwordsBrokerLatestProtocolVersion,
     log: (event, fields) => reportEvent(event, fields),
   });
-  const passwordsSignIns = new PasswordsSignInOperations();
   const ownOrigins = new OpensteerOwnOrigins({
     accountUrl: loaded.config.accountUrl,
     catalog: deploymentCatalog,
@@ -378,7 +379,6 @@ async function runDesktop(
       ? new PasswordsLoginAuthority({
           broker: passwords.broker(),
           legacyBroker: passwords.broker(4),
-          operations: passwordsSignIns,
           ownOrigins: ownOrigins.current,
         })
       : undefined;
@@ -450,6 +450,7 @@ async function runDesktop(
     privateFiles,
   });
   const personalRemoteHost = new NativePersonalRemoteHostControl({
+    executorAuthorization: (runtime) => personal.executorAuthorization(runtime),
     fetch: (deploymentId, input, init) => {
       shutdown.signal.throwIfAborted();
       return hostNetwork.partitionFetch(deploymentId, input, {
@@ -534,6 +535,7 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
+  const uninstallPublishedAppProtocol = installPublishedAppProtocol(protocol, hostTransport);
   const nativePasskeys = createMacosNativePasskeys();
   const browserPresentation = new DesktopBrowserPresentationManager({
     transport: hostTransport,
@@ -646,7 +648,6 @@ async function runDesktop(
       })
     : null;
   const personalRemote = new DesktopPersonalRemoteAccessService({
-    auth: nativeAuth,
     connectFactory: (runtime) => {
       const supervisor = new CloudflaredConnectorSupervisor({
         fetch: serviceNetwork.fetch.bind(serviceNetwork),
@@ -665,7 +666,12 @@ async function runDesktop(
       return {
         management: accountConnect
           ? new PersonalHostConnectOrchestrator({
-              controlPlane: accountConnect,
+              controlPlane: {
+                provision: (_deploymentId, request) =>
+                  personalRemoteHost.connectCredential(runtime, request, false),
+                rotate: (_deploymentId, request) =>
+                  personalRemoteHost.connectCredential(runtime, request, true),
+              },
               deploymentId: runtime.discovery.deploymentId,
               projection: personalHostRemote,
               routes: personalHostRemote,
@@ -682,7 +688,6 @@ async function runDesktop(
       ? null
       : "Opensteer Connect isn't available yet.",
     host: personalHostRemote,
-    link: personalAccountLink,
     mutations: personalAccountMutations,
     runtime: personal,
   });
@@ -703,9 +708,53 @@ async function runDesktop(
     remote: personalRemote,
     runtime: personal,
   });
+  const remoteAdministrationExecutor = new DesktopRemoteAdministrationExecutor({
+    authorization: (runtime) => personal.executorAuthorization(runtime),
+    network: hostNetwork,
+    runtime: personal,
+    execute: async (operation, progress) => {
+      const detachRemote = personalRemote.subscribe((status) => progress(status.phase));
+      const detachAccount = personalAccount.subscribe((status) =>
+        progress(status.unlinkStep ?? status.status),
+      );
+      try {
+        const intent = operation.intent;
+        // Recover reuses the failed action's execution ID while issuing a new operation ID.
+        if (intent.action === "recover" || operation.executionId !== operation.id)
+          await personalAccount.recover();
+        if (intent.action === "configure") {
+          if (intent.mode === "connect" && !(await personalHostRemote.status()).accountLink)
+            throw new Error("Link an Account from the device signing in before enabling Connect.");
+          await personalRemote.configure({
+            mode: intent.mode,
+            privateOrigin: intent.privateOrigin,
+          });
+        } else if (intent.action === "rotate") {
+          await personalRemote.rotate(
+            ConnectOperationIdSchema.parse(`cop_${operation.executionId}`),
+          );
+        } else if (intent.action === "unlink") {
+          await personalAccount.unlink();
+        } else {
+          await personalRemote.initialize();
+        }
+      } finally {
+        detachRemote();
+        detachAccount();
+      }
+    },
+  });
+  shutdown.add({
+    component: "remote-access-intents",
+    step: "stop",
+    order: 19,
+    timeoutMs: 1000,
+    stop: async () => remoteAdministrationExecutor.stop(),
+  });
   let personalAccountLinkResumeAttempted = false;
   const detachPersonalRemoteInitialization = personal.subscribe((status) => {
     if (shutdown.requested || status.state !== "ready") return;
+    void remoteAdministrationExecutor.connect();
     void personalRemote
       .initialize()
       .catch((error: unknown) =>
@@ -836,28 +885,11 @@ async function runDesktop(
   });
   await access.initialize();
   shutdown.signal.throwIfAborted();
-  const resumePersonalRemote = nativeAuth.subscribe((state) => {
-    if (!shutdown.requested && state.account.status === "signed-in") {
-      void personalRemote.resumeDesiredConnect().catch(() => undefined);
-    }
-  });
-  const computerUseApprovalPanel = new ComputerUseApprovalPanel({
-    screen,
-    webPreferences: panelWebPreferences,
-    windowFactory: (options) => new BrowserWindow(options),
-  });
   const computerUsePermissionsPanel = new ComputerUsePermissionsPanel({
     openExternal: (url, options) => shell.openExternal(url, options),
     screen,
     webPreferences: panelWebPreferences,
     windowFactory: (options) => new BrowserWindow(options),
-  });
-  // The person's approvals are signed with this desktop's own key, kept in
-  // the keychain, never with a Runner's.
-  const computerUseApprovalKey = new ComputerUseApprovalKey({
-    cryptography: protectedStorage,
-    dataDirectory: loaded.config.dataDirectory,
-    privateFiles,
   });
   // Every macOS step for the apps the helper serves happens in one panel on
   // this Mac: after an approval, from the computer's page, or when an agent's
@@ -882,40 +914,6 @@ async function runDesktop(
   const detachSetupOffers = computerUse.supported
     ? computerUse.attachDataPermissionOffers((input) => computerAppSetup.offerForAgent(input))
     : () => undefined;
-  const computerAppApprovals = new ComputerAppApprovalService({
-    appIcon: (bundleId) => computerUse.appIcon(bundleId),
-    approvalKey: computerUseApprovalKey,
-    catalog: deploymentCatalog,
-    confirm: (presentation, signal) => computerUseApprovalPanel.ask(presentation, signal),
-    definitions: integrationDefinitions,
-    ...(computerUse.supported
-      ? {
-          setUp: (input) =>
-            void computerAppSetup
-              .open(input)
-              .catch((error: unknown) =>
-                reportNonFatal("desktop.computer-app.setup-open-failed", error),
-              ),
-        }
-      : {}),
-    local: localRunner,
-    log: (event, fields) => reportEvent(event, fields),
-    machineName: computerName,
-    personal,
-    resolveApp: (app) => computerUse.resolveApp(app),
-    sendAnswer: (deploymentId, frame, server) =>
-      computerUse.sendApprovalAnswer(deploymentId, frame, server),
-  });
-  // Desktop main holds no Host connection and uses nobody's Host session for
-  // approvals: each Host reaches this Mac through the Runner slot it
-  // supervises, and the person's answer goes back the same way.
-  const detachApprovals = computerUse.attachApprovals({
-    disconnected: (deploymentId) => computerAppApprovals.disconnected(deploymentId),
-    list: (deploymentId, list) => computerAppApprovals.list(deploymentId, list),
-    outcome: (deploymentId, frame) => computerAppApprovals.outcome(deploymentId, frame),
-    proveKeyChallenge: (deploymentId, challenge) =>
-      computerAppApprovals.proveKeyChallenge(deploymentId, challenge),
-  });
   const fullDiskAccessPanel = new FullDiskAccessPanel({
     appName: app.getName(),
     openExternal: (url, options) => shell.openExternal(url, options),
@@ -955,6 +953,7 @@ async function runDesktop(
     },
     bridgeToken,
     cloud: accountConnect,
+    accountLinkCourier: accountDirectory,
     fullDiskAccess: {
       check: () => probeFullDiskAccess(loaded.config.localExecution.nativeFsHelperBinary),
       closePanel: async () => fullDiskAccessPanel.close(),
@@ -963,10 +962,7 @@ async function runDesktop(
       },
     },
     computerApps: {
-      approvalKey: () => computerUseApprovalKey.publicKey(),
       dragIcon: (file) => app.getFileIcon(file, { size: "normal" }),
-      review: (deploymentId, setupRequestId) =>
-        computerAppApprovals.review(deploymentId, setupRequestId),
       setup: {
         begin: (input) => computerAppSetup.begin(input),
         close: (input) => computerAppSetup.dismiss(input),
@@ -979,11 +975,11 @@ async function runDesktop(
     computerUse: {
       onActivationError: (error) => reportNonFatal("desktop.computer-use.activation-failed", error),
       checkLocalComputerViewTarget: (deploymentId, machineId) =>
-        computerAppApprovals.checkComputerUseRunnerTarget(deploymentId, machineId),
+        (personal.status.deploymentId === deploymentId
+          ? personal
+          : localRunner
+        ).checkComputerUseRunnerTarget(deploymentId, machineId),
       useComputerViewOnThisMac: (input) => computerUse.useComputerViewOnThisMac(input),
-      approvalGet: (token, sender) => computerUseApprovalPanel.presentation(token, sender),
-      approvalRespond: (token, allow, sender) =>
-        computerUseApprovalPanel.respond(token, allow, sender),
       closePermissionsPanel: async () => computerUsePermissionsPanel.close(),
       openPermissionsPanel: async () => {
         await computerUsePermissionsPanel.open();
@@ -1001,11 +997,9 @@ async function runDesktop(
     dictation,
     passwords: {
       open: () => passwords.open(),
-      signIns: passwordsSignIns,
       status: () => passwords.status(),
       subscribe: (listener) => passwords.onStatusChanged(listener),
     },
-    personalRemote,
     portal: {
       openExternal: async (url) => {
         await shell.openExternal(url, { activate: true });
@@ -1196,17 +1190,13 @@ async function runDesktop(
       browserPresentation.endAll();
       powerMonitor.off("resume", refreshOnSystemResume);
       detachPersonalRemoteInitialization();
-      resumePersonalRemote();
       detachAccountDirectoryRefresh();
       detachOpenAtLogin();
       detachReopenMenu();
-      detachApprovals();
       detachSetupOffers();
-      computerAppApprovals.close();
       computerAppSetup.close();
       fullDiskAccessPanel.close();
       computerUsePermissionsPanel.close();
-      computerUseApprovalPanel.close();
       unsubscribeOwnOrigins();
       access.dispose();
       hostSessions.dispose();
@@ -1221,6 +1211,7 @@ async function runDesktop(
       if (activeMainProcess === mainProcess) activeMainProcess = null;
       detachOAuthDeepLinks();
       nativeAuth.dispose();
+      uninstallPublishedAppProtocol();
       uninstallAppProtocol();
       localRunner.dispose();
     },

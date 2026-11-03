@@ -1087,6 +1087,7 @@ export class HttpHostClient {
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
+  readonly #personalRemoteAccessListeners = new Set<() => void>();
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
@@ -1712,6 +1713,13 @@ export class HttpHostClient {
         { body: input.source, ...(input.signal ? { signal: input.signal } : {}) },
       ),
     );
+  }
+
+  async viewApp(appId: string, theme: "light" | "dark", signal?: AbortSignal) {
+    const view = unwrapRpcResult(
+      await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
+    );
+    return { app: view.app, url: this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
@@ -2526,6 +2534,15 @@ export class HttpHostClient {
       this.#watchLiveness();
     }
     return () => this.#notificationListeners.delete(listener);
+  }
+
+  subscribePersonalRemoteAccess(listener: () => void): () => void {
+    this.#personalRemoteAccessListeners.add(listener);
+    return () => this.#personalRemoteAccessListeners.delete(listener);
+  }
+
+  #invalidatePersonalRemoteAccess(): void {
+    for (const listener of this.#personalRemoteAccessListeners) listener();
   }
 
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void {
@@ -4952,6 +4969,10 @@ export class HttpHostClient {
       this.#applyComputerPresence(message.sessions);
       return;
     }
+    if (message.type === "host.personal-remote-access-changed") {
+      this.#invalidatePersonalRemoteAccess();
+      return;
+    }
     if (message.type === "host.requests-changed") {
       this.#rereadWaitingRequests();
       return;
@@ -4991,6 +5012,7 @@ export class HttpHostClient {
     const reconnected = channel.reconnectAttempt > 0;
     channel.synchronized = true;
     channel.reconnectAttempt = 0;
+    this.#invalidatePersonalRemoteAccess();
     if (reconnected) this.#reread("reconnect");
     this.#sendAck(channel);
     this.#recomputeConnection();
@@ -6546,6 +6568,17 @@ function projectAgentEvent(
     inputQueues,
     requests,
     waitingRequests,
+    ...(event.type === "app.published"
+      ? {
+          appVersions: {
+            ...snapshot.appVersions,
+            [event.data.appId]: Math.max(
+              snapshot.appVersions?.[event.data.appId] ?? 0,
+              event.data.version,
+            ),
+          },
+        }
+      : {}),
     threads: patchThread(snapshot.threads, event.threadId, {
       updatedAt: event.createdAt,
     }),

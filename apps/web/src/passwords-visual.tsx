@@ -1,3 +1,5 @@
+import type { PasswordSignInCard } from "@opensteer/protocol";
+import type { PasswordSignInRequestClient } from "./components/thread-password-sign-in-action.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "@fontsource-variable/fraunces/wght-italic.css";
@@ -18,7 +20,6 @@ import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import type { AgentBrowserSignInResult } from "@opensteer/protocol/browser-sources";
 import {
   DesktopDeploymentSummarySchema,
-  type DesktopPasswordsSignInCardState,
   type DesktopPasswordsStatus,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
@@ -26,10 +27,7 @@ import { AgentTranscript } from "./components/agent-activity.js";
 import type { ShellContext } from "./components/app-shell.js";
 import { InputSurface } from "./components/input-surface.js";
 import { SettingsSectionRoute, SettingsShell } from "./components/settings/settings-shell.js";
-import {
-  PasswordSignInRequestBody,
-  type PasswordSignInCardBridge,
-} from "./components/thread-password-sign-in-action.js";
+import { PasswordSignInRequestBody } from "./components/thread-password-sign-in-action.js";
 import { ToastProvider } from "./components/toast.js";
 import { previewPasswordsSignInCard } from "./desktop/desktop-preview-bridge.js";
 
@@ -64,7 +62,11 @@ const client = new MockHostClient({
   latencyMs: 0,
   pendingRequests:
     view === "card"
-      ? [mockPasswordSignInRequest(cardState.stage === "approval" ? { site: cardState.site } : {})]
+      ? [
+          mockPasswordSignInRequest(
+            cardState.stage === "approval" ? { site: "https://github.com" } : {},
+          ),
+        ]
       : view === "settings" && search.has("waiting")
         ? [mockPasswordSignInRequest({ index: 1 }), mockPasswordSignInRequest({ index: 2 })]
         : [],
@@ -177,7 +179,7 @@ function CardView() {
 }
 
 /** Every stage a card can be in, each on its own fake Mac. */
-const stages: readonly (readonly [string, DesktopPasswordsSignInCardState | null])[] = [
+const stages: readonly (readonly [string, PasswordSignInCard | null])[] = [
   ["Approved account", previewPasswordsSignInCard("?card=authorized")],
   ["Elsewhere: a browser, a phone, another computer", null],
   ["On the Mac: two saved accounts", previewPasswordsSignInCard("?card=approval")],
@@ -199,10 +201,8 @@ function CardsView() {
           <section className="card card__form" key={label}>
             <span className="eyebrow eyebrow--micro">{label}</span>
             <PasswordSignInRequestBody
-              client={client}
-              computerName="Mac mini"
+              client={cardClient(state ?? { stage: "gone" })}
               disabled={false}
-              mac={state === null ? null : cardBridge(state)}
               request={mockPasswordSignInRequest({ index: index + 1 })}
               workspaceName="Main"
             />
@@ -214,30 +214,20 @@ function CardsView() {
 }
 
 /** One sign-in on a Mac that answers as Electron main would and never changes by itself. */
-function cardBridge(initial: DesktopPasswordsSignInCardState): PasswordSignInCardBridge {
-  let state = initial;
-  const listeners = new Set<(next: DesktopPasswordsSignInCardState) => void>();
-  const move = (next: DesktopPasswordsSignInCardState) => {
-    state = next;
-    for (const listener of listeners) listener(state);
-  };
+function cardClient(initial: PasswordSignInCard): PasswordSignInRequestClient {
   return {
-    onPasswordsSignInChanged: (_input, listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+    dispatch: async (command) =>
+      command.type === "browser.password-sign-in.respond"
+        ? {
+            type: command.type,
+            status: command.decision.kind === "approve" ? "fulfilled" : "declined",
+            card: { stage: "authorized" },
+          }
+        : client.dispatch(command),
+    rpc: {
+      ...client.rpc,
+      "browser.password-sign-in.get": async () => ({ ok: true, data: initial }),
     },
-    passwordsSignInApprove: async ({ loginId }) => {
-      const account =
-        state.stage === "approval" ? state.accounts.find(({ id }) => id === loginId) : undefined;
-      if (!account || search.has("cancel-auth")) {
-        return { message: "Touch ID was cancelled. Choose Allow to try again.", ok: false };
-      }
-      move({ account: account.username, stage: "authorized" });
-      return { ok: true };
-    },
-    passwordsSignInGet: async () => state,
   };
 }
 
@@ -334,9 +324,7 @@ function ResolvedView() {
             <span className="eyebrow eyebrow--micro">{label}</span>
             <PasswordSignInRequestBody
               client={client}
-              computerName="Mac mini"
               disabled={false}
-              mac={null}
               request={request}
               workspaceName="Main"
             />
@@ -383,9 +371,7 @@ function passwordsBridge(): OpensteerDesktopBridge {
   const fake: Pick<
     OpensteerDesktopBridge,
     "onPasswordsStatusChanged" | "passwordsOpen" | "passwordsStatus"
-  > &
-    PasswordSignInCardBridge = {
-    ...cardBridge(cardState),
+  > = {
     onPasswordsStatusChanged: () => () => undefined,
     passwordsOpen: async () => {
       window.alert("The Passwords window opens.");

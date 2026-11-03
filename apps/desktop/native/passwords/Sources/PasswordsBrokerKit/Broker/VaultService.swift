@@ -348,7 +348,8 @@ public final class VaultService: @unchecked Sendable {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
       let items = try unlocked.items(withinSite: site).filter { $0.password != nil }
-      if let grant = try unlocked.grant(for: key), grant.authorizes(permissionVersion: permissionVersion),
+      if let grant = try unlocked.grant(for: key),
+        grant.authorizes(permissionVersion: permissionVersion),
         let item = items.first(where: { $0.id == grant.loginId && $0.revision == grant.revision })
       {
         return .granted(item)
@@ -387,7 +388,7 @@ public final class VaultService: @unchecked Sendable {
   /// unless the answer is `approved`.
   func approve(
     withinSite site: String, loginId: String, revision: Int64, grant: GrantChange?,
-    authority: TransactionAuthority, expiresAt: Date, _ authentication: Authentication
+    authority: TransactionAuthority, expiresAt: Date
   ) async throws -> Approval? {
     try await run {
       let unlocked = try self.unlockNow()
@@ -421,7 +422,9 @@ public final class VaultService: @unchecked Sendable {
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
       guard self.agentSignInsNow() else { return .refused(.passwordsOff) }
-      guard let item = try? unlocked.item(id: login.id), item.revision == login.revision, let password = item.password else {
+      guard let item = try? unlocked.item(id: login.id), item.revision == login.revision,
+        let password = item.password
+      else {
         return .refused(.revoked)
       }
       if let key {

@@ -1,3 +1,4 @@
+import { authenticatePasswordApproval } from "./password-approval-auth.js";
 // @vitest-environment happy-dom
 
 import type { SurfaceModel } from "@opensteer/client/host";
@@ -9,6 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockTmdbProposal } from "@opensteer/client/mock";
 import { createThreadMutationGate } from "./thread-mutation-gate.js";
 
+vi.mock("./password-approval-auth.js", () => ({
+  authenticatePasswordApproval: vi.fn(async () => true),
+}));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Medium: "medium" },
   NotificationFeedbackType: { Error: "error", Success: "success" },
@@ -16,6 +20,9 @@ vi.mock("expo-haptics", () => ({
   notificationAsync: vi.fn(async () => undefined),
 }));
 vi.mock("react-native", () => ({
+  Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
+    visible ? <div>{children}</div> : null,
+  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Platform: { OS: "ios", Version: "26" },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
   ActivityIndicator: () => <span>Sending…</span>,
@@ -76,18 +83,21 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
   RowGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SectionLabel: ({ children }: { children: string }) => <h3>{children}</h3>,
   SecondaryButton: ({
+    accessibilityLabel,
     busy,
     disabled,
     label,
     onPress,
   }: {
+    accessibilityLabel?: string;
     busy?: boolean;
     disabled?: boolean;
     label: string;
     onPress: () => void;
   }) => (
-    <button disabled={disabled || busy} onClick={onPress}>
+    <button aria-label={accessibilityLabel} disabled={disabled || busy} onClick={onPress}>
       {busy ? "Sending…" : label}
     </button>
   ),
@@ -121,6 +131,54 @@ afterEach(() => {
  * - the agent's reason is shown twice, or unlabelled as if Opensteer said it;
  * - a settled sign-in reads "no longer waiting" instead of what happened.
  */
+describe("RequestCard computer owner approvals", () => {
+  it.each(["macos-app", "android-phone"] as const)(
+    "reviews %s from the phone and sends the owner command",
+    async (definitionId) => {
+      const request = computerAppRequest();
+      if (request.payload.kind !== "computer.app.access") throw new Error("Expected app request");
+      request.payload.definitionId = definitionId;
+      const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
+      const review = vi.fn(async () => ({
+        ok: true,
+        data: {
+          request: {
+            id:
+              request.payload.kind === "computer.app.access" ? request.payload.setupRequestId : "",
+            definitionId,
+            kind: "app",
+            access: "read-write",
+            app: null,
+          },
+          app: null,
+        },
+      }));
+      await render(surface(request), dispatch, { review });
+      expect(review).not.toHaveBeenCalled();
+      await click("Review request");
+      await click("Allow");
+      if (definitionId === "macos-app") {
+        expect(review).toHaveBeenCalledOnce();
+        await click("Allow");
+        expect(dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "integration.computer.setup.respond",
+            decision: "allow",
+          }),
+        );
+        expect(dispatch).not.toHaveBeenCalledWith(
+          expect.objectContaining({ type: "integration.computer.setup.set" }),
+        );
+      } else {
+        expect(review).not.toHaveBeenCalled();
+        expect(dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "integration.computer.setup.set" }),
+        );
+      }
+    },
+  );
+});
+
 describe("RequestCard saved-password sign-ins", () => {
   it("names the Mac where it waits and declines with its own command", async () => {
     let answer: ((value: unknown) => void) | undefined;
@@ -134,7 +192,7 @@ describe("RequestCard saved-password sign-ins", () => {
     expect(text()).toContain("Sign in to github.com");
 
     await click("Review request");
-    expect(text()).toContain("Waiting for you on Studio");
+    expect(text()).toContain("Sign in to github.com");
     expect(text()).toContain(
       "Opensteer fills your password into github.com for them — it never sends it to the agent, but the website page holds it once filled.",
     );
@@ -148,20 +206,116 @@ describe("RequestCard saved-password sign-ins", () => {
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({
       idempotencyKey: expect.any(String),
       requestId: passwordSignInRequest().id,
-      type: "browser.password-sign-in.decline",
+      type: "browser.password-sign-in.respond",
+      decision: { kind: "decline" },
     });
     // Its own busy state: the decline control is the one that says Sending….
     expect(button("Sending…").disabled).toBe(true);
     await act(async () =>
-      answer?.({ status: "declined", type: "browser.password-sign-in.decline" }),
+      answer?.({ status: "declined", type: "browser.password-sign-in.respond" }),
     );
   });
+
+  it("requires successful device-owner authentication before allowing the pinned account", async () => {
+    const account = {
+      id: "00000000-0000-4000-8000-000000000001",
+      revision: 7,
+      username: "person@example.com",
+      host: "github.com",
+      onPage: false,
+      updatedAt: new Date().toISOString(),
+      label: null,
+    };
+    const dispatch = vi.fn(async () => ({
+      type: "browser.password-sign-in.respond",
+      status: "fulfilled",
+    }));
+    const passwordRead = vi.fn(async () => ({
+      ok: true,
+      data: { stage: "approval", permissionVersion: 5, accounts: [account] },
+    }));
+    vi.mocked(authenticatePasswordApproval)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
+    await click("Review request");
+    expect(text()).toContain(
+      "Allow lets agents in Research sign in as person@example.com from now on.",
+    );
+    await click("Allow");
+    expect(dispatch).not.toHaveBeenCalled();
+    await click("Only this time");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        decision: {
+          kind: "approve",
+          loginId: account.id,
+          revision: 7,
+          remember: false,
+          permissionVersion: 5,
+        },
+      }),
+    );
+    expect(passwordRead).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    "keeps account host groups and page matches (onPage=%s)",
+    async (onPage) => {
+      const accounts = ["github.com", "enterprise.github.com", "login.github.com"].map(
+        (host, index) => ({
+          id: `00000000-0000-4000-8000-00000000000${index + 1}`,
+          revision: index + 1,
+          username: "same@example.com",
+          host,
+          onPage: onPage && index === 0,
+          updatedAt: new Date().toISOString(),
+          label: null,
+        }),
+      );
+      const passwordRead = vi.fn(async () => ({
+        ok: true,
+        data: { stage: "approval", permissionVersion: 5, accounts },
+      }));
+      const dispatch = vi.fn(async () => ({
+        type: "browser.password-sign-in.respond",
+        status: "fulfilled",
+      }));
+      await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
+      await click("Review request");
+      if (onPage) {
+        expect(text()).not.toContain("enterprise.github.com");
+        await click("Other accounts on github.com (2)");
+      }
+      for (const host of ["enterprise.github.com", "login.github.com"]) {
+        expect(text()).toContain(host);
+        expect(button(`Sign in as same@example.com · ${host}`)).toBeDefined();
+      }
+      await click("Sign in as same@example.com · enterprise.github.com");
+      expect(text()).toContain(
+        "Allow lets agents in Research sign in as same@example.com from now on.",
+      );
+      await click("Allow");
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decision: {
+            kind: "approve",
+            loginId: accounts[1]!.id,
+            revision: 2,
+            remember: true,
+            permissionVersion: 5,
+          },
+        }),
+      );
+      expect(passwordRead).toHaveBeenCalledOnce();
+    },
+  );
 
   it("retries a failed decline with the same idempotency key", async () => {
     const dispatch = vi
       .fn()
       .mockRejectedValueOnce(new Error("network lost"))
-      .mockResolvedValueOnce({ status: "declined", type: "browser.password-sign-in.decline" });
+      .mockResolvedValueOnce({ status: "declined", type: "browser.password-sign-in.respond" });
     await render(surface(passwordSignInRequest()), dispatch);
 
     await click("Review request");
@@ -317,10 +471,8 @@ describe("RequestCard external requests", () => {
     await render(surface(computerAppRequest()), dispatch);
 
     await click("Review request");
-    expect(text()).toContain("Approve on Studio");
-    expect(text()).toContain(
-      "Can see and control. Opensteer shows the approval on Studio by itself.",
-    );
+    expect(text()).toContain("Allow on this device");
+    expect(text()).toContain("Can see and control. You can give agents access to Studio here.");
     expect(text()).not.toContain("that Mac");
     expect(text()).not.toContain("Not now");
 
@@ -443,6 +595,8 @@ async function render(
     readonly canRespond?: boolean;
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
+    readonly passwordRead?: ReturnType<typeof vi.fn>;
+    readonly review?: ReturnType<typeof vi.fn>;
   } = {},
 ): Promise<void> {
   const container = document.createElement("div");
@@ -459,11 +613,18 @@ async function render(
         hostClient={
           {
             dispatch,
+            refresh: async () => undefined,
+            subscribe: () => () => undefined,
             getSnapshot: () => ({
               identityConfig: { deployment: { name: "Alex’s Opensteer" } },
               workspaces: [{ id: workspaceId, name: "Research" }],
             }),
-            rpc: { "browser.sources.inspect": options.inspect ?? vi.fn() },
+            rpc: {
+              "browser.sources.inspect": options.inspect ?? vi.fn(),
+              "browser.password-sign-in.get":
+                options.passwordRead ?? vi.fn(async () => ({ ok: true, data: { stage: "gone" } })),
+              "integration.computer.setup.review": options.review ?? vi.fn(),
+            },
           } as never
         }
         machines={options.machines ?? [studio]}

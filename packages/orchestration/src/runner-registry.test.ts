@@ -2810,3 +2810,106 @@ describe("Runner voice relay", () => {
     }
   });
 });
+
+it("routes correlated app requests only to the owning storage connection and cancels pending starts", async () => {
+  const registry = new RunnerRegistry({
+    hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+  });
+  const environmentId = createId("environment");
+  const identity = hello(createId("runner"), environmentId, "boot-1");
+  const authority = createId("storageAuthority");
+  const peer = new MemoryRunnerPeer("app-runner");
+  const spec = {
+    appId: `app_${crypto.randomUUID()}`,
+    version: 1,
+    folder: ".",
+    command: "node server.js",
+    binding: {
+      workspaceId: createId("workspace"),
+      bindingId: createId("workspaceBinding"),
+      generation: 1,
+      ownerEnvironmentId: environmentId,
+      storageAuthorityId: authority,
+    },
+  };
+  try {
+    await registerAttached(
+      registry,
+      {
+        ...identity,
+        modules: {
+          ...identity.modules,
+          agents: {
+            ...identity.modules.agents!,
+            localStorage: { storageAuthorityId: authority, bindings: [], truncated: false },
+          },
+        },
+      },
+      peer,
+    );
+    const requestId = crypto.randomUUID();
+    const pending = registry.requestApp(
+      environmentId,
+      { type: "host.app.start", spec, requestId },
+      AbortSignal.timeout(2_000),
+    );
+    const sent = peer.messages.findLast((message) => message.type === "host.app.start");
+    expect(sent).toMatchObject({
+      requestId,
+      spec,
+      fence: { ...fenceOf(peer), environmentId, storageAuthorityId: authority },
+    });
+    if (!sent || sent.type !== "host.app.start") throw new Error("App start never reached Runner");
+    await registry.handle(peer, {
+      type: "runner.app.result",
+      appId: spec.appId,
+      requestId,
+      fence: sent.fence,
+      ok: true,
+      port: 12345,
+    });
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    await expect(
+      registry.requestApp(
+        environmentId,
+        {
+          type: "host.app.start",
+          spec: {
+            ...spec,
+            binding: { ...spec.binding, storageAuthorityId: createId("storageAuthority") },
+          },
+          requestId: crypto.randomUUID(),
+        },
+        AbortSignal.timeout(2_000),
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const abort = new AbortController();
+    const canceledId = crypto.randomUUID();
+    const canceled = registry.requestApp(
+      environmentId,
+      { type: "host.app.start", spec, requestId: canceledId },
+      abort.signal,
+    );
+    const rejection = expect(canceled).rejects.toThrow();
+    abort.abort();
+    await rejection;
+    expect(peer.messages).toContainEqual(
+      expect.objectContaining({ type: "host.app.cancel", requestId: canceledId }),
+    );
+    const lifetime = registry.appConnectionSignal(
+      environmentId,
+      registry.identityForEnvironment(environmentId)!.connectionId,
+    );
+    const closed = registry.requestApp(
+      environmentId,
+      { type: "host.app.connect", spec, requestId: crypto.randomUUID(), ticket: "one-use" },
+      AbortSignal.timeout(2_000),
+    );
+    const failed = expect(closed).rejects.toThrow();
+    await registry.close();
+    await failed;
+    expect(lifetime.aborted).toBe(true);
+  } finally {
+    await registry.close();
+  }
+});

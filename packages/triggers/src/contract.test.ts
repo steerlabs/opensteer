@@ -10,9 +10,12 @@ import {
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
 describe("Trigger program contract", () => {
-  it("is present in the Opensteer Trigger skill and absent from tool metadata", () => {
+  it("is present in the program reference and absent from tool metadata", () => {
     const content = readFileSync(
-      resolve(repositoryRoot, "apps/runner/agent-skills/skills/triggers/SKILL.md"),
+      resolve(
+        repositoryRoot,
+        "apps/runner/agent-skills/skills/triggers/references/program-contract.md",
+      ),
       "utf8",
     );
     expect(content).toContain(triggerProgramContract);
@@ -22,7 +25,7 @@ describe("Trigger program contract", () => {
 
   it("keeps the shipped watch example async-iterable and its proof rule watch-specific", () => {
     const content = readFileSync(
-      resolve(repositoryRoot, "apps/runner/agent-skills/skills/triggers/SKILL.md"),
+      resolve(repositoryRoot, "apps/runner/agent-skills/skills/triggers/references/watches.md"),
       "utf8",
     );
     expect(content).toContain(
@@ -32,6 +35,13 @@ describe("Trigger program contract", () => {
     expect(content).toContain(
       "A watch works only when its activation is healthy and you observe its intended effect.",
     );
-    expect(content).toContain("An occurrence-based Trigger works only after");
+    const verification = readFileSync(
+      resolve(
+        repositoryRoot,
+        "apps/runner/agent-skills/skills/triggers/references/verification.md",
+      ),
+      "utf8",
+    );
+    expect(verification).toContain("An occurrence-based Trigger works only after");
   });
 });

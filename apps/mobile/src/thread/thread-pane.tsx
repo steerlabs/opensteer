@@ -85,7 +85,7 @@ import {
 import { WaitingQuestions } from "./waiting-questions.js";
 import { waitingQuestion } from "./docked-requests.js";
 import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-chips.js";
-import { AttachmentReader } from "./attachment-views.js";
+import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { LivePlace } from "./live-place.js";
 import { QueuedMessages } from "./queued-messages.js";
@@ -931,7 +931,7 @@ function ThreadPaneForUser(
       ) : (
         <>
           {/* Rows open the files messages carry through this Thread's own client. */}
-          <AttachmentReader value={hostClient}>
+          <TranscriptHostClientContext value={hostClient}>
             <TranscriptGroupRow
               activityKey={item.activityKey}
               conversation={conversational}
@@ -953,7 +953,7 @@ function ThreadPaneForUser(
               viewerUserId={viewerUserId}
               workspaces={workspaces}
             />
-          </AttachmentReader>
+          </TranscriptHostClientContext>
           {item.outcome === null ? null : (
             <TaskOutcomeLine onOpenThread={openSource} outcome={item.outcome} />
           )}
@@ -1031,7 +1031,7 @@ function ThreadPaneForUser(
   const queueFooter = useMemo(
     () =>
       thread?.role === "work" && inputQueue !== null ? (
-        <AttachmentReader value={hostClient}>
+        <TranscriptHostClientContext value={hostClient}>
           <QueuedMessages
             canRespond={queueCanRespond}
             hostClient={hostClient}
@@ -1039,7 +1039,7 @@ function ThreadPaneForUser(
             queue={inputQueue}
             viewerUserId={viewerUserId}
           />
-        </AttachmentReader>
+        </TranscriptHostClientContext>
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );

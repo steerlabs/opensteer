@@ -98,6 +98,25 @@ describe("HostAuthenticator authorization chain", () => {
     });
   });
 
+  it("rejects missing, hostile, opaque and repeated browser mutation origins", async () => {
+    for (const origin of [
+      undefined,
+      "https://hostile.example",
+      "null",
+      [publicUrl.origin, "https://hostile.example"],
+      [publicUrl.origin],
+    ]) {
+      const fixture = authenticatorFixture();
+      await expect(
+        fixture.authenticator.authenticateSessionContext(
+          { cookie: "opensteer.session=x", origin },
+          { mutation: true },
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(fixture.identity.requireSession).not.toHaveBeenCalled();
+    }
+  });
+
   it("never lets a Personal remote credential become the canonical browser cookie", async () => {
     // The identity service refuses a remote session in its canonical lookup,
     // which is what `requireSession` goes through. The chain has to surface

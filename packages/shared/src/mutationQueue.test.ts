@@ -1,3 +1,4 @@
+import { withTimeout } from "./withTimeout.js";
 import { describe, expect, it } from "vitest";
 import { MutationQueue } from "./mutationQueue.js";
 
@@ -61,4 +62,36 @@ describe("MutationQueue", () => {
     await expect(Promise.all(enqueued)).resolves.toEqual(["inner"]);
     expect(order).toEqual(["outer:start", "outer:end", "inner"]);
   });
+});
+
+it("keeps a key serialized across failures while other keys proceed and drops drained keys", async () => {
+  const { KeyedMutationQueue } = await import("./mutationQueue.js");
+  const queue = new KeyedMutationQueue();
+  const gate = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const order: string[] = [];
+  const first = queue.run("app", async () => {
+    started.resolve();
+    await gate.promise;
+    order.push("first");
+    throw new Error("Failed publication");
+  });
+  const outcome = first.catch(() => undefined);
+  const second = queue.run("app", async () => {
+    order.push("second");
+  });
+  const third = queue.run("app", async () => {
+    order.push("third");
+  });
+  await withTimeout(started.promise, 1_000, {
+    timeoutError: () => new Error("First keyed mutation never started"),
+  });
+  await queue.run("other", async () => {
+    order.push("other");
+  });
+  expect(order).toEqual(["other"]);
+  gate.resolve();
+  await Promise.all([outcome, second, third]);
+  expect(order).toEqual(["other", "first", "second", "third"]);
+  expect(queue.keys()).toEqual([]);
 });

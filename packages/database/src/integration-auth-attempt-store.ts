@@ -31,30 +31,24 @@ export class IntegrationAuthAttemptStore implements IntegrationAuthAttemptStoreP
   }
 
   async claimHostedAuthAttempt(input: {
-    readonly id: import("@opensteer/integration-core").IntegrationOAuthAttemptId;
+    readonly id: IntegrationAuthAttemptId;
+    readonly flow?: IntegrationAuthAttemptFlow;
+    readonly stateHash?: string;
     readonly now: Date;
     readonly ownerUserId: UserId;
   }): Promise<ClaimedIntegrationAuthAttempt | null> {
-    const claimed = await this.#database
+    let claim = this.#database
       .updateTable("integrationAuthAttempts")
       .set({ claimedAt: input.now, status: "claimed" })
       .where("expiresAt", ">", input.now)
-      .where("flow", "=", "provider-oauth")
+      .where("flow", "=", input.flow ?? "provider-oauth")
       .where("id", "=", input.id)
       .where("ownerUserId", "=", input.ownerUserId)
-      .where("status", "=", "launched")
-      .returning(["encryptedPayload", "encryptionKeyVersion", "id", "ownerUserId", "surface"])
-      .executeTakeFirst();
-    if (claimed) return claimed;
+      .where("status", "=", "launched");
+    if (input.stateHash) claim = claim.where("stateHash", "=", input.stateHash);
     return (
-      (await this.#database
-        .selectFrom("integrationAuthAttempts")
-        .select(["encryptedPayload", "encryptionKeyVersion", "id", "ownerUserId", "surface"])
-        .where("expiresAt", ">", input.now)
-        .where("flow", "=", "provider-oauth")
-        .where("id", "=", input.id)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("status", "=", "claimed")
+      (await claim
+        .returning(["encryptedPayload", "encryptionKeyVersion", "id", "ownerUserId", "surface"])
         .executeTakeFirst()) ?? null
     );
   }

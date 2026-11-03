@@ -25,16 +25,10 @@ import {
   ComputerUseDataInvokeParamsSchema,
   ComputerUseHelperRequestSchema,
   ComputerUseSessionIdSchema,
-  computerUseBridgeApprovalParams,
   computerUseBridgeMaxFrameBytes,
   computerUseBridgeOwnerInputHeader,
   computerUseBridgeVideoProfileHeader,
   computerUseRequestMayHaveEffect,
-  type ComputerAppApprovalAnswerFrame,
-  type ComputerAppApprovalKeyChallenge,
-  type ComputerAppApprovalKeyProof,
-  type ComputerAppApprovalList,
-  type ComputerAppApprovalOutcomeFrame,
   type ComputerUseDataAppId,
   type ComputerUseDataGrants,
   type ComputerUseErrorCode,
@@ -220,14 +214,7 @@ export interface ComputerUseBridgeServerOptions {
    * at once and acknowledged: the panels wait on a person, and the Runner is
    * owed only the acknowledgement; the answer comes back as an event.
    */
-  readonly approvals: {
-    disconnected(): void;
-    list(list: ComputerAppApprovalList): void;
-    outcome(frame: ComputerAppApprovalOutcomeFrame): void;
-    proveKeyChallenge(
-      challenge: ComputerAppApprovalKeyChallenge,
-    ): Promise<ComputerAppApprovalKeyProof>;
-  };
+
   readonly token?: string;
 }
 
@@ -288,7 +275,7 @@ export class ComputerUseBridgeServer {
   readonly #now: () => number;
   readonly #leaseNow: () => number;
   readonly #ownership: ComputerUseSessionOwnership;
-  readonly #approvals: ComputerUseBridgeServerOptions["approvals"];
+
   readonly #token: string;
   readonly #websocketServer: WebSocketServer;
   #claim: ConnectionClaim | null = null;
@@ -488,7 +475,6 @@ export class ComputerUseBridgeServer {
     this.#now = options.now ?? Date.now;
     this.#leaseNow = options.now ?? (() => performance.now());
     this.#ownership = options.ownership;
-    this.#approvals = options.approvals;
     this.#token = options.token ?? mintComputerUseBridgeToken();
     this.#httpServer = createServer((_request, response) => {
       response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
@@ -571,17 +557,6 @@ export class ComputerUseBridgeServer {
    * it to its Host. False when no Runner is connected: the answer is then
    * lost, and the request is asked again from the Runner's next list.
    */
-  sendApprovalAnswer(
-    frame: ComputerAppApprovalAnswerFrame,
-    server: { readonly launchDigest: string; readonly serverId: string } | null,
-  ): boolean {
-    const connection = [...this.#connections].find(
-      ({ socket }) => socket.readyState === socket.OPEN,
-    );
-    if (!connection) return false;
-    send(connection.socket, { event: "approval.answer", kind: "event", params: frame, server });
-    return true;
-  }
 
   /** Tells this slot's Runner to read every app's readiness again. */
   announceGrantsChanged(): void {
@@ -698,7 +673,6 @@ export class ComputerUseBridgeServer {
       for (const id of owner.passwords) void this.#passwords?.end(id).catch(() => undefined);
       owner.passwords.clear();
       this.#releaseViews(owner);
-      this.#approvals.disconnected();
       connection.detachEvents();
       this.#connections.delete(connection);
       releaseClaim();
@@ -746,7 +720,7 @@ export class ComputerUseBridgeServer {
         return;
       }
       answer({
-        authority: this.#passwords ? 1 : null,
+        authority: this.#passwords ? 2 : null,
         receiver: this.#helper.loginReceiver?.() ?? null,
       });
       return;
@@ -788,43 +762,6 @@ export class ComputerUseBridgeServer {
         "unsupported",
         "Asking for a macOS grant happens on the Mac itself, as the person there chooses to.",
       );
-      return;
-    }
-    if (method === "approvals.key-challenge") {
-      const challenge =
-        computerUseBridgeApprovalParams["approvals.key-challenge"].safeParse(params);
-      if (!challenge.success) {
-        refuse("failed", "Opensteer could not read that approval key challenge.");
-        return;
-      }
-      try {
-        answer(await this.#approvals.proveKeyChallenge(challenge.data));
-      } catch (error) {
-        refuse(
-          "failed",
-          error instanceof Error ? error.message : "This Mac could not prove its approval key.",
-        );
-      }
-      return;
-    }
-    if (method === "approvals.list" || method === "approvals.outcome") {
-      // Main's own business, never the helper's: taken now, acknowledged now.
-      if (method === "approvals.list") {
-        const list = computerUseBridgeApprovalParams["approvals.list"].safeParse(params);
-        if (!list.success) {
-          refuse("failed", "Opensteer could not read that approval list.");
-          return;
-        }
-        this.#approvals.list(list.data);
-      } else {
-        const outcome = computerUseBridgeApprovalParams["approvals.outcome"].safeParse(params);
-        if (!outcome.success) {
-          refuse("failed", "Opensteer could not read that approval outcome.");
-          return;
-        }
-        this.#approvals.outcome(outcome.data);
-      }
-      answer({});
       return;
     }
     if (method.startsWith("display.")) {

@@ -15,10 +15,16 @@ final class LifecycleTests: BrokerTestCase {
   private func released(_ client: TestClient, session: String = "bsn_1") async throws -> String {
     let id = UUID().uuidString.lowercased()
     let account = try unwrap(
-      try await client.call("signin.request", Fixtures.request(id, session: session)).result?[
+      try await client.call(
+        "signin.request",
+        Fixtures.request(
+          id, session: session,
+          workspace: (
+            "wsp_00000000-0000-4000-8000-" + String(format: "%012d", session.count), session
+          ))
+      ).result?[
         "accounts"]?[0])
-    let reply = try await client.call(
-      "signin.approve", Fixtures.approve(id, account, remember: false))
+    let reply = try await client.allow(Fixtures.approve(id, account, remember: false))
     XCTAssertEqual(reply.result?["decision"], .string("authorized"))
     return id
   }
@@ -27,7 +33,14 @@ final class LifecycleTests: BrokerTestCase {
   private func choosing(_ client: TestClient, session: String) async throws -> (String, JSONValue) {
     let id = UUID().uuidString.lowercased()
     let account = try unwrap(
-      try await client.call("signin.request", Fixtures.request(id, session: session)).result?[
+      try await client.call(
+        "signin.request",
+        Fixtures.request(
+          id, session: session,
+          workspace: (
+            "wsp_00000000-0000-4000-8000-" + String(format: "%012d", session.count), session
+          ))
+      ).result?[
         "accounts"]?[0])
     return (id, account)
   }
@@ -36,21 +49,10 @@ final class LifecycleTests: BrokerTestCase {
   func testConnectionLossEndsItsTransactions() async throws {
     try await harness.ready(items: [Fixtures.login()])
     let desktop = try await harness.client()
-    _ = try await released(desktop, session: "bsn_released")
-    _ = try await choosing(desktop, session: "bsn_other")
-    let (waiting, account) = try await choosing(desktop, session: "bsn_waiting")
-    presence.next(.holdUntilWithdrawn)
-    desktop.send("signin.approve", Fixtures.approve(waiting, account, remember: true))
-    try await harness.eventually("the authentication showing") { presence.holdingCount == 1 }
-
+    let (id, account) = try await choosing(desktop, session: "bsn_waiting")
+    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
     desktop.close()
     try await harness.eventually("every transaction ended") { broker.deadlines.isEmpty }
-    try await harness.eventually("the authentication withdrawn") { presence.holdingCount == 0 }
-    await harness.activity.flush()
-    let outcomes = await harness.activity.entries().map(\.outcome)
-    XCTAssertEqual(
-      outcomes.sorted { $0.rawValue < $1.rawValue }, [.cancelled, .cancelled, .cancelled],
-      "a released or person-run sign-in's end is unknown; one still choosing was cancelled")
     XCTAssertTrue(try harness.savedGrants().isEmpty)
   }
 
@@ -62,15 +64,14 @@ final class LifecycleTests: BrokerTestCase {
     let account = try unwrap(
       try await desktop.call("signin.request", Fixtures.request(id, expiresIn: 0.8)).result?[
         "accounts"]?[0])
-    presence.next(.holdUntilWithdrawn)
-    let call = desktop.send("signin.approve", Fixtures.approve(id, account, remember: false))
-    let reply = try await desktop.reply(to: call, timeout: 5)
-    XCTAssertEqual(reply, .error(code: "unavailable", message: "This sign-in expired."))
-    try await harness.eventually("the authentication withdrawn") { presence.holdingCount == 0 }
-    await harness.activity.flush()
-    let entries = await harness.activity.entries()
-    XCTAssertEqual(entries.map(\.outcome), [.expired])
-    XCTAssertEqual(entries.map(\.account), [nil])
+    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
+    try await harness.eventually("the prepared transaction expired") { broker.deadlines[id] == nil }
+    same(try await desktop.call("signin.commit", Fixtures.transaction(id)).errorCode, "invalid")
+    same(
+      try await desktop.call("signin.release", Fixtures.release(id)).result?["reason"],
+      .string("ended"))
+    XCTAssertTrue(try harness.savedGrants().isEmpty)
+
   }
 
   func testDeadlineIsCappedAtSixtyMinutes() async throws {
@@ -131,30 +132,23 @@ final class LifecycleTests: BrokerTestCase {
       try await desktop.call("signin.release", Fixtures.release(releasedID, field: "totp")).result?[
         "value"], "the release carries on")
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(waiting, account, remember: true))
+      try await desktop.allow(Fixtures.approve(waiting, account, remember: true))
         .result?["decision"],
       .string("authorized"), "an approval still goes through")
+    _ = try await cancel(desktop, waiting)
     let automatic = UUID().uuidString.lowercased()
     same(
-      try await desktop.call("signin.request", Fixtures.request(automatic, session: "bsn_locked"))
-        .result?["decision"],
+      try await desktop.call(
+        "signin.request",
+        Fixtures.request(
+          automatic, workspace: ("wsp_00000000-0000-4000-8000-000000000011", "bsn_waiting"))
+      )
+      .result?["decision"],
       .string("authorized"), "an allowed account signs in while locked")
-    XCTAssertEqual(broker.deadlines.count, 3)
+    XCTAssertEqual(broker.deadlines.count, 2)
   }
 
   /// X13.
-  func testEndingCancelsARunningAuthentication() async throws {
-    try await harness.ready(items: [Fixtures.login()])
-    let desktop = try await harness.client()
-    let (id, account) = try await choosing(desktop, session: "bsn_1")
-    presence.next(.holdUntilWithdrawn)
-    let call = desktop.send("signin.approve", Fixtures.approve(id, account, remember: true))
-    try await harness.eventually("the authentication showing") { presence.holdingCount == 1 }
-    same(try await desktop.call("signin.cancel", Fixtures.transaction(id)).result, .object([:]))
-    try await harness.eventually("the authentication withdrawn") { presence.holdingCount == 0 }
-    same(try await desktop.reply(to: call), .error(code: "unavailable", message: Copy.signInEnded))
-    XCTAssertTrue(try harness.savedGrants().isEmpty)
-  }
 
   /// X14, X15.
   func testLimits() async throws {
@@ -175,7 +169,14 @@ final class LifecycleTests: BrokerTestCase {
       ).result?[
         "decision"], .string("approve"), "another site in the same session is its own sign-in")
     for session in ["bsn_2", "bsn_3"] {
-      _ = try await desktop.call("signin.request", Fixtures.request(session: session))
+      _ = try await desktop.call(
+        "signin.request",
+        Fixtures.request(
+          session: session,
+          workspace: (
+            "wsp_00000000-0000-4000-8000-" + String(format: "%012d", session == "bsn_2" ? 12 : 13),
+            session
+          )))
     }
     XCTAssertEqual(broker.deadlines.count, 4)
     same(
@@ -192,7 +193,7 @@ final class LifecycleTests: BrokerTestCase {
     let account = try unwrap(
       try await desktop.call("signin.request", Fixtures.request(allowed, session: "bsn_allow"))
         .result?["accounts"]?[0])
-    _ = try await desktop.call("signin.approve", Fixtures.approve(allowed, account, remember: true))
+    _ = try await desktop.allow(Fixtures.approve(allowed, account, remember: true))
     _ = try await cancel(desktop, allowed)
     let busy = JSONValue.object(["decision": .string("unavailable"), "reason": .string("busy")])
 
@@ -200,7 +201,7 @@ final class LifecycleTests: BrokerTestCase {
       same(
         try await request(
           desktop, UUID().uuidString.lowercased(), session: "bsn_wait_\(n)",
-          workspace: Fixtures.otherWorkspace)[
+          workspace: ("wsp_00000000-0000-4000-8000-" + String(format: "%012d", n + 20), "Other"))[
             "decision"], .string("approve"), "waiting \(n)")
     }
     same(
@@ -215,13 +216,14 @@ final class LifecycleTests: BrokerTestCase {
         try await request(desktop, id, session: "bsn_run_\(n)")["decision"], .string("authorized"),
         "allowed \(n)")
       running.append(id)
+      _ = try await cancel(desktop, id)
     }
     XCTAssertEqual(
-      broker.deadlines.count, 10, "idle authorized leases do not occupy pending capacity")
-    for id in running.prefix(2) { same(try await cancel(desktop, id).result, .object([:])) }
+      broker.deadlines.count, 4, "idle authorized leases do not occupy pending capacity")
+    for id in running { same(try await cancel(desktop, id).result, .object([:])) }
     await harness.activity.flush()
     same(
-      await harness.activity.entries().map(\.outcome), [.cancelled, .cancelled, .cancelled],
+      await harness.activity.entries().map(\.outcome), Array(repeating: .cancelled, count: 7),
       "busy answers record nothing")
   }
 

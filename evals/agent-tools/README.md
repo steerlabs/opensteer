@@ -26,10 +26,19 @@ The runner is deliberately split by responsibility:
 
 Case prompts are sanitized paraphrases of mistakes documented in commit
 messages and instruction/skill changes, with paired guards and ordinary-work
-controls. Provenance does not claim to be an exact user transcript. Two pairs
-intentionally reproduce current profile gaps: model discovery points at an
-unavailable tool, and Trigger guidance points at an undelivered skill. Do not
-remove those cases merely because they lower a baseline.
+controls. Provenance does not claim to be an exact user transcript. Model discovery and Trigger skill delivery cases retain coverage of
+previous profile gaps: environment_list now exists and Triggers is delivered to
+every profile. Keep those cases as regression tests.
+
+Structured turns accept either text or production HarnessInput content (including
+included app and phone places), with production author/kind validation. Every turn
+executes a new Run in the same native session; only the last turn is graded.
+`finalText` checks trimmed presence and `maxFinalTextBytes` bounds UTF-8 bytes.
+`notCallsWithArgs` forbids partial argument matches, including invalid attempts.
+`callsArgMatch` checks a string at an argument path; `first: true` restricts it to
+the first attempt of that tool in the graded turn. The resumed computer case
+checks code shape only, not executed handle semantics. Any missing or incomplete
+required sample makes a case incomplete and prevents baseline comparison.
 
 Mocks are keyed by bare tool name and return JSON. If a test needs different
 responses to successive calls, use `{"$responses": [first, second]}`; exhaustion

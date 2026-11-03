@@ -1,3 +1,9 @@
+import Fastify from "fastify";
+import { registerControlPlaneRoutes } from "../portal/routes.js";
+import {
+  generateOAuthBrokerEphemeralKeyPair,
+  openOAuthBrokerPayload,
+} from "@opensteer/integration-auth";
 import {
   createHash,
   createPublicKey,
@@ -7,6 +13,8 @@ import {
 } from "node:crypto";
 import {
   AccountLinkGenerationSchema,
+  PersonalHostAccountLinkCompletionPayloadSchema,
+  personalHostAccountLinkCompletionContext,
   AdoptExistingDeploymentRequestSchema,
   ConsumeHostAccountAdoptionProofResponseSchema,
   ControlPlaneAccountIdSchema,
@@ -118,6 +126,34 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     await database.destroy();
   });
 
+  it.each([false, true])(
+    "refuses a courier completion key (re-signed: %s) before reserving a credential",
+    async (resigned) => {
+      const host = hostAuthority();
+      const challenge = await issueChallenge(service, ownerA, host);
+      const request = signedLinkRequest(challenge, host.privateKey);
+      request.proof.document.completionPublicKey = generateOAuthBrokerEphemeralKeyPair().publicKey;
+      if (resigned) {
+        const attacker = generateKeyPairSync("ed25519");
+        request.proof.publicKey.spki = generatePublicSpki(attacker.privateKey);
+        request.proof.signature = sign(
+          null,
+          personalHostAccountLinkProofSigningBytes(request.proof.document),
+          attacker.privateKey,
+        ).toString("base64url");
+      }
+      await expect(service.completeLink(ownerA, request)).rejects.toMatchObject({
+        code: "forbidden",
+      });
+      const row = await database
+        .selectFrom("personalHostAccountLinkChallenges")
+        .select(["state", "hostCredentialHash"])
+        .where("challengeId", "=", challenge.challengeId)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({ state: "pending", hostCredentialHash: null });
+    },
+  );
+
   it("links an existing loopback Personal Host exactly once without OIDC", async () => {
     await withLockOrderMode("enforce", async () => {
       const host = hostAuthority();
@@ -128,7 +164,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
         service.completeLink(ownerA, request),
         service.completeLink(ownerA, request),
       ]);
-      expect(replay.hostCredential).toBe(first.hostCredential);
+      expect(openCompletion(replay).hostCredential).toBe(openCompletion(first).hostCredential);
       // Completion fences the User before its Challenge, never the reverse; the
       // forward edge also proves the checker observed this completion at all.
       const edges = recordedLockOrderEdges.slice(acquisitionsStart);
@@ -141,7 +177,10 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       expect(between("users", "personal_host_account_link_challenges")).not.toEqual([]);
       expect(between("personal_host_account_link_challenges", "users")).toEqual([]);
       // Completion names no Deployment: none exists until the Host activates.
-      expect(first).not.toHaveProperty("schemaVersion");
+      expect(first).toHaveProperty("schemaVersion", 2);
+      expect(first).not.toHaveProperty("hostCredential");
+      expect(first).not.toHaveProperty("completionGrant");
+      expect(JSON.stringify(first)).not.toContain(openCompletion(first).hostCredential);
       expect(first).not.toHaveProperty("reservation");
 
       const deployment = await database
@@ -155,21 +194,53 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       });
       await expect(directory.listDeployments(ownerA)).resolves.toEqual([]);
       await expect(
-        directory.authenticateHostCredential(`Bearer ${first.hostCredential}`),
+        directory.authenticateHostCredential(`Bearer ${openCompletion(first).hostCredential}`),
       ).rejects.toMatchObject({ code: "unauthorized" });
       const activation = {
         challengeId: challenge.challengeId,
         linkGeneration: first.linkGeneration,
       };
       await expect(
-        service.activateLink(`Bearer ${first.hostCredential}`, activation),
+        service.activateLink(`Bearer ${openCompletion(first).hostCredential}`, activation),
       ).resolves.toMatchObject({
         activated: true,
         deploymentId: host.authority.deploymentId,
       });
       await expect(
-        service.activateLink(`Bearer ${first.hostCredential}`, activation),
+        service.activateLink(`Bearer ${openCompletion(first).hostCredential}`, activation),
       ).resolves.toMatchObject({ activated: true });
+      const app = Fastify();
+      app.setErrorHandler((error, _request, reply) => {
+        if (error instanceof Error && "code" in error && error.code === "unauthorized")
+          return reply.code(401).send();
+        return reply.code(500).send();
+      });
+      registerControlPlaneRoutes(app, {
+        store: directory,
+        authenticator: {} as never,
+        connectLifecycle: {} as never,
+        publicOrigin: issuer,
+        managedDeploymentDomain: "connect.personal.test.invalid",
+      });
+      try {
+        const courier = [challenge, request.proof, first, replay];
+        const visibleStrings = JSON.stringify(courier)
+          .match(/"([^"\\]*)"/gu)!
+          .map((value) => JSON.parse(value) as string);
+        for (const value of new Set(visibleStrings)) {
+          for (const path of ["/v1/host/connect/provision", "/v1/host/connect/credential/rotate"]) {
+            const response = await app.inject({
+              method: "POST",
+              url: path,
+              payload: {},
+              headers: { authorization: `Bearer ${value}` },
+            });
+            expect(response.statusCode, "Courier material authorized Connect retrieval").toBe(401);
+          }
+        }
+      } finally {
+        await app.close();
+      }
       await expect(directory.listDeployments(ownerA)).resolves.toMatchObject([
         { access: "owner", id: host.authority.deploymentId, lifecycle: "active" },
       ]);
@@ -267,7 +338,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       ownerA,
       signedLinkRequest(challenge, host.privateKey),
     );
-    await service.activateLink(`Bearer ${completion.hostCredential}`, {
+    await service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
       challengeId: challenge.challengeId,
       linkGeneration: completion.linkGeneration,
     });
@@ -300,7 +371,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     ).resolves.toHaveLength(1);
     await expect(
       service.completeLink(ownerA, signedLinkRequest(reissued, host.privateKey)),
-    ).resolves.not.toHaveProperty("schemaVersion");
+    ).resolves.toHaveProperty("schemaVersion", 2);
   });
 
   it("supersedes a reserved operation and retires the Host credential it issued", async () => {
@@ -310,15 +381,15 @@ integration("Personal remote Account PostgreSQL boundary", () => {
 
     const reissued = await issueChallenge(service, ownerA, host);
     const fresh = await service.completeLink(ownerA, signedLinkRequest(reissued, host.privateKey));
-    expect(fresh.hostCredential).not.toBe(stale.hostCredential);
+    expect(openCompletion(fresh).hostCredential).not.toBe(openCompletion(stale).hostCredential);
     await expect(
-      service.activateLink(`Bearer ${stale.hostCredential}`, {
+      service.activateLink(`Bearer ${openCompletion(stale).hostCredential}`, {
         challengeId: lost.challengeId,
         linkGeneration: stale.linkGeneration,
       }),
     ).rejects.toMatchObject({ code: "conflict", reason: "personal-account-link-cancelled" });
     await expect(
-      service.activateLink(`Bearer ${fresh.hostCredential}`, {
+      service.activateLink(`Bearer ${openCompletion(fresh).hostCredential}`, {
         challengeId: reissued.challengeId,
         linkGeneration: fresh.linkGeneration,
       }),
@@ -386,7 +457,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     );
     await fillOwnedQuota(database, ownerA, maximumAccountDeployments - 1);
     await expect(
-      service.activateLink(`Bearer ${completion.hostCredential}`, {
+      service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: challenge.challengeId,
         linkGeneration: completion.linkGeneration,
       }),
@@ -534,7 +605,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     const strangerCredential = `Bearer osc_${"z".repeat(43)}`;
     const notFound = { code: "not_found", reason: "personal-account-link-not-found" };
     await expect(
-      service.activateLink(`Bearer ${completion.hostCredential}`, {
+      service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: strangerChallengeId,
         linkGeneration: completion.linkGeneration,
       }),
@@ -552,7 +623,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       }),
     ).rejects.toMatchObject(notFound);
     await expect(
-      service.unlinkPersonalHost(`Bearer ${completion.hostCredential}`, {
+      service.unlinkPersonalHost(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: strangerChallengeId,
         linkGeneration: completion.linkGeneration,
       }),
@@ -567,7 +638,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       signedLinkRequest(challenge, host.privateKey),
     );
     await expect(
-      service.unlinkPersonalHost(`Bearer ${completion.hostCredential}`, {
+      service.unlinkPersonalHost(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: challenge.challengeId,
         linkGeneration: completion.linkGeneration,
       }),
@@ -591,11 +662,11 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       ownerA,
       signedLinkRequest(challenge, host.privateKey),
     );
-    await service.activateLink(`Bearer ${completion.hostCredential}`, {
+    await service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
       challengeId: challenge.challengeId,
       linkGeneration: completion.linkGeneration,
     });
-    await service.unlinkPersonalHost(`Bearer ${completion.hostCredential}`, {
+    await service.unlinkPersonalHost(`Bearer ${openCompletion(completion).hostCredential}`, {
       challengeId: challenge.challengeId,
       linkGeneration: completion.linkGeneration,
     });
@@ -622,8 +693,8 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       challengeId: firstChallenge.challengeId,
       linkGeneration: first.linkGeneration,
     };
-    await service.activateLink(`Bearer ${first.hostCredential}`, firstActivation);
-    await service.unlinkPersonalHost(`Bearer ${first.hostCredential}`, {
+    await service.activateLink(`Bearer ${openCompletion(first).hostCredential}`, firstActivation);
+    await service.unlinkPersonalHost(`Bearer ${openCompletion(first).hostCredential}`, {
       challengeId: firstChallenge.challengeId,
       linkGeneration: first.linkGeneration,
     });
@@ -640,7 +711,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       challengeId: secondChallenge.challengeId,
       linkGeneration: second.linkGeneration,
     };
-    await service.activateLink(`Bearer ${second.hostCredential}`, secondActivation);
+    await service.activateLink(`Bearer ${openCompletion(second).hostCredential}`, secondActivation);
     await expect(directory.listDeployments(ownerB)).resolves.toMatchObject([
       { access: "owner", id: host.authority.deploymentId, lifecycle: "active" },
     ]);
@@ -657,7 +728,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       challengeId: challenge.challengeId,
       linkGeneration: completion.linkGeneration,
     };
-    await service.activateLink(`Bearer ${completion.hostCredential}`, activation);
+    await service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, activation);
     const route = signedRoute(host, 9);
     const now = new Date();
     await database
@@ -764,19 +835,19 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       managedDeploymentDomain: "connect.personal.test.invalid",
     });
     await expect(
-      service.activateLink(`Bearer ${completion.hostCredential}`, {
+      service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: otherChallenge.challengeId,
         linkGeneration: completion.linkGeneration,
       }),
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
-      service.activateLink(`Bearer ${completion.hostCredential}`, {
+      service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: challenge.challengeId,
         linkGeneration: AccountLinkGenerationSchema.parse("x".repeat(43)),
       }),
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
-      service.unlinkPersonalHost(`Bearer ${completion.hostCredential}`, {
+      service.unlinkPersonalHost(`Bearer ${openCompletion(completion).hostCredential}`, {
         challengeId: challenge.challengeId,
         linkGeneration: AccountLinkGenerationSchema.parse("x".repeat(43)),
       }),
@@ -828,6 +899,14 @@ function signedLinkRequest(
   privateKey: KeyObject,
 ) {
   const issuedAt = new Date();
+  let completionKeys = hostCompletionKeys.get(challenge.challengeId);
+  if (!completionKeys) {
+    completionKeys = {
+      ...generateOAuthBrokerEphemeralKeyPair(),
+      authority: challenge.authorityEnvelope.document,
+    };
+    hostCompletionKeys.set(challenge.challengeId, completionKeys);
+  }
   const document = {
     account: challenge.account,
     authority: challenge.authorityEnvelope.document,
@@ -835,7 +914,8 @@ function signedLinkRequest(
       credentialSha256: hashCredential(challenge.challengeCredential),
       id: challenge.challengeId,
     },
-    documentVersion: 2,
+    documentVersion: 3,
+    completionPublicKey: completionKeys.publicKey,
     expiresAt: new Date(
       Math.min(new Date(challenge.expiresAt).getTime(), issuedAt.getTime() + 120_000),
     ).toISOString(),
@@ -951,7 +1031,7 @@ async function linkedPersonalHost(
     ownerAccountId,
     signedLinkRequest(challenge, host.privateKey),
   );
-  await service.activateLink(`Bearer ${completion.hostCredential}`, {
+  await service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
     challengeId: challenge.challengeId,
     linkGeneration: completion.linkGeneration,
   });
@@ -959,7 +1039,7 @@ async function linkedPersonalHost(
     authorityEnvelope,
     challengeId: challenge.challengeId,
     host,
-    hostCredential: completion.hostCredential,
+    hostCredential: openCompletion(completion).hostCredential,
     linkGeneration: completion.linkGeneration,
   };
 }
@@ -1029,4 +1109,27 @@ function account(id: ControlPlaneAccountId, now: Date) {
     image: null,
     updatedAt: now,
   };
+}
+
+const hostCompletionKeys = new Map<
+  string,
+  ReturnType<typeof generateOAuthBrokerEphemeralKeyPair> & {
+    authority: import("@opensteer/control-plane-protocol").PersonalHostAccessAuthority;
+  }
+>();
+function openCompletion(
+  completion: import("@opensteer/control-plane-protocol").CompletePersonalHostAccountLinkResponse,
+) {
+  const keys = hostCompletionKeys.get(completion.challengeId)!;
+  return PersonalHostAccountLinkCompletionPayloadSchema.parse(
+    openOAuthBrokerPayload(
+      completion.sealedCompletion,
+      keys.privateKey,
+      personalHostAccountLinkCompletionContext(
+        keys.authority,
+        completion.challengeId,
+        completion.linkGeneration,
+      ),
+    ),
+  );
 }

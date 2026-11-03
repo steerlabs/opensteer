@@ -4,19 +4,17 @@ import {
   OpensteerError,
   type AgentEvent,
   type RequestId,
+  type RequestSettlementProvenance,
   type RunnerId,
   type ThreadId,
   type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
-import { verifyComputerAppApproval } from "@opensteer/runner-auth";
 import {
   computerAppIdentitiesEqual,
   integrationAccessCovers,
   widerIntegrationAccess,
-  type ComputerAppApproval,
   type ComputerAppIdentity,
-  type ComputerAppSetupRequest,
   type IntegrationAccess,
   type IntegrationConnectionId,
   type IntegrationGrant,
@@ -150,80 +148,6 @@ export interface ComputerUsePolicy {
   readonly revision: number;
 }
 
-/** The approval key registered for one Mac, as its owner registered it. */
-export interface ComputerUseApprovalKey {
-  readonly keyId: string;
-  readonly ownerUserId: UserId;
-  readonly publicKeyPem: string;
-}
-
-export async function computerUseApprovalKeyInTransaction(
-  database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-): Promise<ComputerUseApprovalKey | null> {
-  const row = await database
-    .selectFrom("computerUseApprovalKeys")
-    .select(["keyId", "ownerUserId", "publicKeyPem"])
-    .where("runnerId", "=", runnerId)
-    .executeTakeFirst();
-  return row ?? null;
-}
-
-/**
- * Whether this approval is the person's answer on that Mac.
- *
- * Only the desktop's approval key, registered for this Mac by the same person
- * who owns the request, is accepted. The Runner's own key never is: any process
- * running as the person can read it, so a signature by it proves a process,
- * not a person. With no key registered nothing is accepted, and the sentence
- * says how to register one.
- */
-export async function assertComputerAppApprovalInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly approval: ComputerAppApproval;
-    readonly decision?: "allow" | "deny";
-    readonly now: Date;
-    readonly ownerUserId: UserId;
-    readonly refusal: string;
-    readonly request: ComputerAppSetupRequest | null;
-    readonly runnerId: RunnerId;
-  },
-): Promise<ComputerAppSetupRequest> {
-  const key = await computerUseApprovalKeyInTransaction(transaction, input.runnerId);
-  if (!key || key.ownerUserId !== input.ownerUserId) {
-    const runner = await transaction
-      .selectFrom("runners")
-      .select("deviceProfile")
-      .where("id", "=", input.runnerId)
-      .executeTakeFirstOrThrow();
-    throw new OpensteerError({
-      code: "forbidden",
-      message:
-        runner.deviceProfile === "iphone"
-          ? "This iPhone cannot approve apps yet. Open Opensteer on this iPhone to finish setup, then try again."
-          : computerUseApprovalKeyMissingMessage,
-    });
-  }
-
-  if (
-    !input.request ||
-    !verifyComputerAppApproval({
-      approval: input.approval,
-      ...(input.decision === undefined ? {} : { decision: input.decision }),
-      now: input.now.getTime(),
-      publicKey: key.publicKeyPem,
-      request: input.request,
-    })
-  ) {
-    throw new OpensteerError({ code: "forbidden", message: input.refusal });
-  }
-  return input.request;
-}
-
-export const computerUseApprovalKeyMissingMessage =
-  "This Mac cannot approve apps yet. Open this Mac's page in Opensteer on the Mac to finish setting up computer use, then try again.";
-
 export async function computerUsePolicyInTransaction(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
@@ -260,9 +184,8 @@ export interface ComputerAppApprovalTask {
  * replaces it under a new id — wider access, the app as the Mac now resolves
  * it, a new catalog digest, or a Thread joining an approval no Thread carries
  * — and every Request waiting on the old one moves to the new one. A new id
- * is what makes a signature taken over the old approval consume nothing,
- * which matters for a Thread joining too: the signature covers the task the
- * panel named. Nothing is declined by a replacement. Only an approval that is
+ * prevents an answer to the old request from consuming its replacement,
+ * including when a Thread joins a request that had no task context. Nothing is declined by a replacement. Only an approval that is
  * already over, because it expired or another owner asked for it, is
  * declined here.
  */
@@ -354,12 +277,20 @@ function taskFields(task: ComputerAppApprovalTask | null) {
  */
 export async function declineComputerAppAccessRequestsInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly setupRequestIds: readonly string[] },
+  input: {
+    readonly setupRequestIds: readonly string[];
+    readonly settlementActor?: RequestSettlementProvenance | null;
+  },
 ): Promise<ComputerAppAccessSettlement> {
   const requestEvents: AgentEvent[] = [];
   const requestIds: RequestId[] = [];
   for (const row of await linkedPendingRequests(transaction, input.setupRequestIds)) {
-    const resolved = await resolveComputerAppAccessRequest(transaction, row, null);
+    const resolved = await resolveComputerAppAccessRequest(
+      transaction,
+      row,
+      null,
+      input.settlementActor,
+    );
     if (!resolved) continue;
     requestEvents.push(...resolved.events);
     requestIds.push(resolved.requestId);
@@ -387,7 +318,7 @@ export interface SettledComputerConnection {
  * Every `computer.app.access` Request waiting on this app's approval whose
  * access the connection covers is fulfilled — but only when the connection is
  * the app that approval names, under the catalog it was issued under: a
- * change that kept an older identity (an unsigned same-access edit, or an
+ * change that kept an older identity (a same-access edit, or an
  * automatic grant on the connection as it is) answers nothing an approval for
  * the app as the Mac now resolves it is waiting for, and each project Workspace
  * among them gets the widest access its Requests asked for, never less than
@@ -395,7 +326,7 @@ export interface SettledComputerConnection {
  * one consumed or when the connection covers all of it; otherwise it keeps
  * waiting with the Requests it still owes an answer. `reissueWaiting` gives
  * that remaining approval a new id — for an explicit reduction, after which
- * no signature taken over the wider approval may widen the app back.
+ * an answer to the wider request cannot widen the app back.
  * `alsoGrant` is the automatic ask's own Workspace, which has no Request.
  */
 export async function settleComputerAppApprovalInTransaction(
@@ -403,6 +334,7 @@ export async function settleComputerAppApprovalInTransaction(
   input: {
     readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
     readonly additionalRequestIds: readonly RequestId[];
+    readonly settlementActor?: RequestSettlementProvenance | null;
     readonly connection: SettledComputerConnection;
     readonly consumedSetupRequestId: string | null;
     readonly reissueWaiting: boolean;
@@ -512,6 +444,7 @@ export async function settleComputerAppApprovalInTransaction(
         transaction,
         row,
         connection.connectionId,
+        input.settlementActor,
       );
       if (!resolved) continue;
       requestEvents.push(...resolved.events);
@@ -602,12 +535,14 @@ async function resolveComputerAppAccessRequest(
   transaction: Transaction<DatabaseSchema>,
   row: RequestRow,
   connectionId: IntegrationConnectionId | null,
+  settlementActor?: RequestSettlementProvenance | null,
 ): Promise<{ readonly events: readonly AgentEvent[]; readonly requestId: RequestId } | null> {
   const observed = requestFromRow(row);
   const now = new Date();
   const resolvedRow = await transaction
     .updateTable("requests")
     .set({
+      settlementProvenance: settlementActor ? jsonValue(settlementActor) : null,
       resolvedAt: now,
       resolvedBy: observed.requestedBy,
       response: jsonValue(

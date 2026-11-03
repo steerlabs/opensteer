@@ -1,3 +1,4 @@
+import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
@@ -109,11 +110,7 @@ export function AddComputerDialog({
           {personal && reachable === false ? (
             <li>
               Turn on remote access for {homeName}, so other computers can reach it.{" "}
-              {hostedOnThisComputer ? (
-                <Link to="/settings/devices">Open Remote access</Link>
-              ) : (
-                <>It’s under Settings → Remote access in the Opensteer app on {homeName}.</>
-              )}
+              <Link to="/settings/devices">Open Remote access</Link>
             </li>
           ) : null}
           <li>
@@ -144,51 +141,14 @@ export function AddComputerDialog({
   );
 }
 
-/**
- * Whether other computers can reach a Personal Opensteer right now.
- *
- * Only the app hosting it can ask. Anywhere else the answer is already known
- * in one direction — a device that reached it from elsewhere proves remote
- * access is on — and unknowable in the other, so the step is shown.
- */
+/** The Host reports reachability equally to every signed-in owner. */
 function usePersonalReachable(input: {
-  readonly hostedOnThisComputer: boolean;
   readonly personal: boolean;
+  readonly hostedOnThisComputer: boolean;
 }): boolean | null {
-  const { deploymentAccess, desktopBridge, desktopDeployment, snapshot } = useShell();
-  const reachedFromElsewhere =
-    desktopDeployment?.access === "connect" ||
-    desktopDeployment?.access === "private" ||
-    (desktopBridge === null && snapshot.sessionSurface === "personal-remote");
-  const [phase, setPhase] = useState<string | null>(null);
-  const bridge =
-    input.personal &&
-    input.hostedOnThisComputer &&
-    desktopBridge &&
-    typeof desktopBridge.getPersonalRemoteAccessStatus === "function"
-      ? desktopBridge
-      : null;
-  useEffect(() => {
-    if (!bridge) return;
-    let cancelled = false;
-    const update = (status: { readonly phase: string }) => {
-      if (!cancelled) setPhase(status.phase);
-    };
-    const unsubscribe = bridge.onPersonalRemoteAccessStatusChanged(update);
-    void bridge
-      .getPersonalRemoteAccessStatus()
-      .then(update)
-      .catch(() => {
-        if (!cancelled) setPhase("unavailable");
-      });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [bridge, deploymentAccess]);
-  if (!input.personal) return null;
-  if (reachedFromElsewhere) return true;
-  return bridge ? (phase === null ? null : phase === "ready") : false;
+  const { hostClient } = useShell();
+  const remote = usePersonalRemoteAccess(input.personal ? hostClient : null);
+  return !input.personal || !remote.status ? null : remote.status.access.mode !== "off";
 }
 
 /**

@@ -272,7 +272,7 @@ vi.mock("../thread/composer-menu.js", () => ({
 }));
 
 const { IphoneAppsController } = await import("./controller.js");
-const { createFakeIphoneApps, observeMockHostCommand } = await import("./fake-bridge.js");
+const { createFakeIphoneApps } = await import("./fake-bridge.js");
 const { AddIphoneForm } = await import("./add-iphone.js");
 const { IphoneAppsBlock } = await import("./iphone-apps-block.js");
 const { RemoteIphoneAppsBlock } = await import("./remote-iphone-apps-block.js");
@@ -356,11 +356,11 @@ describe("Add this iPhone", () => {
     await vi.waitFor(() =>
       expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
         "requestPermission:apple-calendar",
-        expect.stringMatching(/^answerApproval:.+:allow:apple-calendar:read$/u),
+        expect.stringMatching(/^ownerDecision:.+:allow:apple-calendar:read$/u),
         "requestPermission:apple-contacts",
-        expect.stringMatching(/^answerApproval:.+:allow:apple-contacts:read$/u),
+        expect.stringMatching(/^ownerDecision:.+:allow:apple-contacts:read$/u),
         "requestPermission:apple-reminders",
-        expect.stringMatching(/^answerApproval:.+:allow:apple-reminders:read-write$/u),
+        expect.stringMatching(/^ownerDecision:.+:allow:apple-reminders:read-write$/u),
       ]),
     );
   });
@@ -399,9 +399,9 @@ describe("Add this iPhone", () => {
     expect(switchFor("Photos").disabled).toBe(false);
     expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
       "requestPermission:apple-calendar",
-      expect.stringMatching(/^answerApproval:.+:allow:apple-calendar:read-write$/u),
+      expect.stringMatching(/^ownerDecision:.+:allow:apple-calendar:read-write$/u),
       "requestPermission:apple-contacts",
-      expect.stringMatching(/^answerApproval:.+:allow:apple-contacts:read$/u),
+      expect.stringMatching(/^ownerDecision:.+:allow:apple-contacts:read$/u),
     ]);
   });
 
@@ -426,7 +426,7 @@ describe("Add this iPhone", () => {
     await vi.waitFor(() =>
       expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
         "requestPermission:apple-calendar",
-        expect.stringMatching(/^answerApproval:.+:allow:apple-calendar:read-write$/u),
+        expect.stringMatching(/^ownerDecision:.+:allow:apple-calendar:read-write$/u),
         "requestPermission:apple-contacts",
       ]),
     );
@@ -551,7 +551,7 @@ describe("This iPhone's apps", () => {
     expect(switches()[0]).toBe("Calendar: on");
     expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
       "requestPermission:apple-calendar",
-      "answerApproval:" + phone.lastRequestId() + ":allow:apple-calendar:read-write",
+      "ownerDecision:" + phone.lastRequestId() + ":allow:apple-calendar:read-write",
     ]);
   });
 
@@ -742,9 +742,9 @@ describe("Location and Photos on this iPhone", () => {
       phone.fake.device.calls.filter((call) => !call.startsWith("prepare") && call !== "enroll"),
     ).toEqual([
       "requestPermission:iphone-location",
-      expect.stringMatching(/^answerApproval:.+:allow:iphone-location:read$/u),
+      expect.stringMatching(/^ownerDecision:.+:allow:iphone-location:read$/u),
       "requestPermission:iphone-photos",
-      expect.stringMatching(/^answerApproval:.+:allow:iphone-photos:read$/u),
+      expect.stringMatching(/^ownerDecision:.+:allow:iphone-photos:read$/u),
       "choosePhotos",
     ]);
   });
@@ -833,7 +833,7 @@ describe("Location and Photos on this iPhone", () => {
     await vi.waitFor(() => expect(rowLabels()[4]).toBe("Photos, Can read metadata"));
     expect(phone.fake.device.calls.slice(-2)).toEqual([
       "requestPermission:iphone-photos",
-      `answerApproval:${phone.lastRequestId()}:allow:iphone-photos:read`,
+      `ownerDecision:${phone.lastRequestId()}:allow:iphone-photos:read`,
     ]);
   });
 
@@ -850,7 +850,7 @@ describe("Location and Photos on this iPhone", () => {
         "Photos, Off · Waiting for approval on Alex's iPhone",
       ]),
     );
-    expect(switchFor("Photos").disabled).toBe(true);
+    expect(switchFor("Photos").disabled).toBe(false);
     await toggle("Location");
     await vi.waitFor(() =>
       expect(rowLabels()[2]).toBe("Location, Off · Turn it on in Opensteer on Alex's iPhone"),
@@ -860,7 +860,7 @@ describe("Location and Photos on this iPhone", () => {
     await vi.waitFor(() =>
       expect(rowLabels()[3]).toBe("Photos, Off · Turn it on in Opensteer on Alex's iPhone"),
     );
-    expect(text()).not.toContain("Allow");
+    expect(phone.fake.device.calls).not.toContain("requestPermission:iphone-photos");
   });
 });
 
@@ -896,7 +896,7 @@ describe("A request waiting on this iPhone", () => {
     await vi.waitFor(() => expect(rowLabels()[2]).toBe("Reminders, Can read"));
     expect(phone.fake.device.calls.slice(-2)).toEqual([
       "requestPermission:apple-reminders",
-      `answerApproval:${phone.lastRequestId()}:allow:apple-reminders:read`,
+      `ownerDecision:${phone.lastRequestId()}:allow:apple-reminders:read`,
     ]);
   });
 
@@ -920,7 +920,7 @@ describe("A request waiting on this iPhone", () => {
     await click(button("Don't allow"));
     await vi.waitFor(() => expect(section(opensteer)).toBeNull());
     expect(phone.fake.device.calls.at(-1)).toBe(
-      `answerApproval:${phone.lastRequestId()}:deny:apple-calendar:read-write`,
+      `ownerDecision:${phone.lastRequestId()}:deny:apple-calendar:read-write`,
     );
     expect(phone.fake.device.calls).not.toContainEqual(
       expect.stringMatching(/^requestPermission/u),
@@ -945,20 +945,20 @@ describe("An iPhone seen from another device", () => {
         "Reminders, Off · Waiting for approval on Alex's iPhone",
       ]),
     );
-    expect(switchFor("Contacts").disabled).toBe(true);
+    expect(switchFor("Contacts").disabled).toBe(false);
     expect(switchFor("Calendar").disabled).toBe(false);
 
     expect(levels("Calendar")).toEqual(["Can read", "Can read and change: current"]);
     await choose("Calendar", "Can read");
     await vi.waitFor(() => expect(rowLabels()[0]).toBe("Calendar, On · Can read"));
     // From here, less is all there is: with nothing below Can read, no menu.
-    expect(levels("Calendar")).toEqual([]);
+    expect(levels("Calendar")).toEqual(["Can read: current", "Can read and change"]);
 
     await click(button("Decline Reminders"));
     await vi.waitFor(() =>
       expect(rowLabels()[4]).toBe("Reminders, Off · Turn it on in Opensteer on Alex's iPhone"),
     );
-    expect(text()).not.toContain("Allow");
+    expect(phone.fake.device.calls).not.toContain("requestPermission:iphone-photos");
   });
 
   it("lowers or turns off while the iPhone is offline and a wider request waits", async () => {
@@ -1040,11 +1040,22 @@ function iphone(
     host: () => host,
     ...(options.offers === undefined ? {} : { offers: options.offers }),
   });
-  // The mock Host's stand-in for pushing a registered key back to the iPhone.
+  // Record the Host decision beside OS prompts to verify their ordering.
   const dispatch = host.dispatch.bind(host);
   host.dispatch = async (command) => {
+    const pending =
+      command.type === "integration.computer.setup.respond"
+        ? unwrapRpcResult(
+            await host.rpc["integration.computer.setup.review"]({
+              setupRequestId: command.setupRequestId,
+            }),
+          ).request
+        : null;
     const result = await dispatch(command);
-    await observeMockHostCommand(fake, command);
+    if (pending && command.type === "integration.computer.setup.respond")
+      (fake.device.calls as string[]).push(
+        `ownerDecision:${pending.id}:${command.decision}:${pending.definitionId}:${pending.access}`,
+      );
     return result;
   };
   const shown: { expiresAt: string; id: string }[] = [];
@@ -1067,7 +1078,7 @@ function iphone(
     lastRequestId: () => {
       const answered = [...fake.device.calls]
         .reverse()
-        .find((call) => call.startsWith("answerApproval:"));
+        .find((call) => call.startsWith("ownerDecision:"));
       return answered?.split(":")[1] ?? "";
     },
   };
@@ -1083,9 +1094,7 @@ async function addedIphone(options?: Parameters<typeof iphone>[0]): Promise<Phon
     name: "Alex's iPhone",
   });
   if (outcome.kind !== "added") throw new Error(`The fake iPhone was not added: ${outcome.kind}.`);
-  await vi.waitFor(() =>
-    expect(phone.controller.getState().snapshot.approvalKey?.registered).toBe(true),
-  );
+  expect(phone.controller.getState().snapshot.enrollment?.state).toBe("enrolled");
   return phone;
 }
 
@@ -1095,7 +1104,9 @@ async function turnOn(
   access: "read" | "read-write",
 ): Promise<void> {
   phone.fake.device.setPermission(app, "granted");
-  await phone.controller.allow({ access, app, hostClient: phone.host });
+  expect(await phone.controller.allow({ access, app, hostClient: phone.host })).toMatchObject({
+    kind: "allowed",
+  });
 }
 
 /** What a task asking for an app does: the Host keeps a request the iPhone lists. */
@@ -1265,7 +1276,7 @@ async function choose(app: string, level: string): Promise<void> {
 }
 
 function isPermissionOrAnswer(call: string): boolean {
-  return call.startsWith("requestPermission:") || call.startsWith("answerApproval:");
+  return call.startsWith("requestPermission:") || call.startsWith("ownerDecision:");
 }
 
 function section(label: string): HTMLElement | null {

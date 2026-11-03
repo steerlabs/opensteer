@@ -14,9 +14,7 @@ import {
   passwordSignInOutcome,
   passwordSignInPrivacy,
   passwordSignInReceipt,
-  passwordSignInWaitingOn,
   passwordsElsewhere,
-  passwordsHere,
   passwordsSettingsState,
   passwordsSettingsSubtitle,
   passwordsWaitingDetail,
@@ -29,13 +27,9 @@ import { foldTranscriptEvent } from "./transcript.js";
  * - a sign-in outcome has no words, or the wrong ones (every response variant,
  *   including a failure reason added later, must say what happened);
  * - the site is named by its full URL instead of its domain;
- * - a Mac other than the one in front of the reader is called "this Mac", or
- *   the one in front of them is called by name in the one place it should not;
- * - a plain browser tab on the approving Mac, or the desktop app on another
- *   computer, is treated as the approving Mac and offers its controls;
+ * - vault management offers controls for a Mac the client cannot open;
  * - the privacy line names "this website" instead of the site, or promises
  *   only "your agent" when no agent ever sees the password;
- * - the desktop app on the Mac that runs this Personal Opensteer is not;
  * - a response the client cannot read is reported as signed in;
  * - a declined Request is reported as answered rather than "Not allowed";
  * - the expiry keeps counting after it has passed, or rounds a live Request
@@ -109,6 +103,22 @@ describe("passwordSignInOutcome", () => {
     expect(passwordSignInOutcome(passwordRequest("pending", null))).toBeNull();
   });
 
+  it("shows the winning device for human approval and decline", () => {
+    const settlementProvenance = { sessionId: "session", deviceLabel: "iPhone" };
+    expect(
+      passwordSignInOutcome({
+        ...passwordRequest("declined", null),
+        settlementProvenance,
+      })?.text,
+    ).toContain("Declined on iPhone");
+    expect(
+      passwordSignInOutcome({
+        ...passwordRequest("fulfilled", { outcome: "authorized", account: "p•••" }),
+        settlementProvenance,
+      })?.text,
+    ).toContain("Allowed on iPhone");
+  });
+
   it("never reports an unreadable response as signed in", () => {
     const request = {
       ...passwordRequest("fulfilled", null),
@@ -146,9 +156,8 @@ describe("passwordSignInOutcome", () => {
   });
 });
 
-describe("where the sign-in is approved", () => {
-  it("names the Mac everywhere but on that Mac, and the site everywhere", () => {
-    expect(passwordSignInWaitingOn("Mac mini")).toBe("Waiting for you on Mac mini");
+describe("sign-in consent copy", () => {
+  it("names the site and account", () => {
     expect(passwordSignInPrivacy("https://github.com")).toBe(
       "Opensteer fills your password into github.com for them — it never sends it to the agent, but the website page holds it once filled. Sign-ins can stay saved in the browser profile.",
     );
@@ -156,32 +165,6 @@ describe("where the sign-in is approved", () => {
     expect(passwordSignInAllowRemembers("Main", "alex@company.example")).toBe(
       "Allow lets agents in Main sign in as alex@company.example from now on.",
     );
-  });
-
-  it("is here only in the desktop app on the approving Mac", () => {
-    const base = {
-      hostsDeploymentOnThisComputer: true,
-      inDesktopApp: true,
-      localRunnerId: null,
-      runnerHostsDeployment: true,
-      runnerId,
-    };
-    expect(passwordsHere(base)).toBe(true);
-    // A browser tab on that very Mac has no bridge to reach Passwords.
-    expect(passwordsHere({ ...base, inDesktopApp: false })).toBe(false);
-    // The desktop app on another computer, opening this Opensteer remotely.
-    expect(passwordsHere({ ...base, hostsDeploymentOnThisComputer: false })).toBe(false);
-    // A Request naming some other Runner.
-    expect(passwordsHere({ ...base, runnerHostsDeployment: false })).toBe(false);
-    // A desktop that lends exactly that Runner is that Mac.
-    expect(
-      passwordsHere({
-        ...base,
-        hostsDeploymentOnThisComputer: false,
-        localRunnerId: runnerId,
-        runnerHostsDeployment: false,
-      }),
-    ).toBe(true);
   });
 });
 

@@ -1,5 +1,8 @@
-import { McpOAuthAttemptIdSchema } from "@opensteer/integration-core";
-import { WorkspaceIdSchema, type DeploymentId } from "@opensteer/core";
+import {
+  ComputerAppSetupRequestViewSchema,
+  McpOAuthAttemptIdSchema,
+} from "@opensteer/integration-core";
+import { OpensteerError, WorkspaceIdSchema, type DeploymentId } from "@opensteer/core";
 import {
   hostApi,
   rpcSuccess,
@@ -34,6 +37,7 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.platform.get"
   | "integration.computer.apps.installed"
   | "integration.computer.session.stop"
+  | "integration.computer.setup.review"
   | "integration.computer.setup.list"
   | "integration.computer.policy.get"
 > {
@@ -76,13 +80,18 @@ export function createIntegrationPlatformRpcHandlers(
       });
       return rpcSuccess({});
     },
+    "integration.computer.setup.review": async (input, context) =>
+      rpcSuccess(
+        await options.platform.computerAppApprovals.reviewComputerAppSetup({
+          ...input,
+          ownerUserId: requireSession(context).user.id,
+        }),
+      ),
     "integration.computer.setup.list": async (_input, context) =>
       rpcSuccess({
-        requests: [
-          ...(await options.platform.store.listComputerAppSetupRequests(
-            requireSession(context).user.id,
-          )),
-        ],
+        requests: (
+          await options.platform.store.listComputerAppSetupRequests(requireSession(context).user.id)
+        ).map((request) => ComputerAppSetupRequestViewSchema.parse(request)),
       }),
     "integration.grants.list": async ({ workspaceId }, context) =>
       rpcSuccess(
@@ -120,7 +129,7 @@ export type IntegrationPlatformCommand = Extract<
       | "plugin.list"
       | "integration.catalog.install"
       | "integration.computer.setup.set"
-      | "integration.computer.approval-key.set"
+      | "integration.computer.setup.respond"
       | "integration.computer.policy.set"
       | "integration.computer.app.block"
       | "integration.computer.setup.request"
@@ -146,6 +155,7 @@ export async function handleIntegrationPlatformCommand(
         type: command.type,
         ...(await options.platform.computerAppApprovals.setComputerUsePolicy({
           ...command.input,
+          settlementSessionId: session.id,
           ownerUserId: session.user.id,
           requestId: context.requestId,
         })),
@@ -160,29 +170,48 @@ export async function handleIntegrationPlatformCommand(
     case "integration.computer.setup.request":
       return {
         type: command.type,
-        request: await options.platform.computerAppApprovals.requestComputerAppSetup({
-          ...command.input,
-          actorUserId: session.user.id,
-        }),
+        request: ComputerAppSetupRequestViewSchema.parse(
+          await options.platform.computerAppApprovals.requestComputerAppSetup({
+            ...command.input,
+            actorUserId: session.user.id,
+          }),
+        ),
       };
     case "integration.computer.setup.cancel":
       await options.platform.computerAppApprovals.cancelComputerAppSetup({
+        settlementSessionId: session.id,
         requestId: command.requestId,
         ownerUserId: session.user.id,
       });
       return { type: command.type };
-    case "integration.computer.approval-key.set":
-      return {
-        type: command.type,
-        ...(await options.platform.computerAppApprovals.registerComputerUseApprovalKey({
-          ...command.input,
-          ownerUserId: session.user.id,
-          requestId: context.requestId,
-        })),
-      };
+    case "integration.computer.setup.respond":
+      await options.platform.computerAppApprovals.respondComputerAppSetup({
+        settlementSessionId: session.id,
+        setupRequestId: command.setupRequestId,
+        decision: command.decision,
+        actorUserId: session.user.id,
+        isAdministrator: session.user.instanceRole === "administrator",
+        requestId: context.requestId,
+        authorize: async () => {
+          const current = await options.authenticator.authenticateSession(context.headers, {
+            mutation: true,
+          });
+          if (
+            current.id !== session.id ||
+            current.user.id !== session.user.id ||
+            current.user.instanceRole !== session.user.instanceRole
+          )
+            throw new OpensteerError({
+              code: "unauthorized",
+              message: "Your session changed. Review this approval again.",
+            });
+        },
+      });
+      return { type: command.type };
     case "integration.computer.setup.set": {
       const connection = await options.platform.computerAppApprovals.setComputerConnection({
         ...command.input,
+        settlementSessionId: session.id,
         actorUserId: session.user.id,
         isAdministrator: session.user.instanceRole === "administrator",
         requestId: context.requestId,

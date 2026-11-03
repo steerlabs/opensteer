@@ -35,11 +35,7 @@ import { useHomeComputer } from "./devices.js";
 
 type PasswordsBridge = Pick<
   OpensteerDesktopBridge,
-  | "onPasswordsStatusChanged"
-  | "passwordsOpen"
-  | "passwordsStatus"
-  | "passwordsSignInGet"
-  | "onPasswordsSignInChanged"
+  "onPasswordsStatusChanged" | "passwordsOpen" | "passwordsStatus"
 >;
 
 /**
@@ -110,47 +106,7 @@ function PasswordsOnThisMac({
         ),
     [waiting],
   );
-  const [needsPerson, setNeedsPerson] = useState<ReadonlySet<string>>(new Set());
-  useEffect(() => {
-    let active = true;
-    const changed = new Set<string>();
-    const update = (operationId: string, waiting: boolean) => {
-      if (!active) return;
-      setNeedsPerson((prior) => {
-        const next = new Set(prior);
-        if (waiting) next.add(operationId);
-        else next.delete(operationId);
-        return next;
-      });
-    };
-    const subscriptions: (() => void)[] = [];
-    for (const request of signIns) {
-      if (request.payload.kind !== "browser.password-sign-in") continue;
-      const { operationId } = request.payload;
-      subscriptions.push(
-        bridge.onPasswordsSignInChanged({ operationId }, (state) => {
-          changed.add(operationId);
-          update(operationId, state.stage === "approval");
-        }),
-      );
-      void bridge
-        .passwordsSignInGet({ operationId })
-        .then((state) => {
-          if (!changed.has(operationId)) update(operationId, state.stage === "approval");
-        })
-        .catch(() => update(operationId, false));
-    }
-    return () => {
-      active = false;
-      for (const stop of subscriptions) stop();
-    };
-  }, [bridge, signIns]);
-  const waitingSignIns = signIns.filter(
-    (request) =>
-      request.payload.kind === "browser.password-sign-in" &&
-      needsPerson.has(request.payload.operationId),
-  );
-
+  const waitingSignIns = signIns;
   const read = useCallback(async () => {
     pushed.current = false;
     try {
@@ -195,10 +151,6 @@ function PasswordsOnThisMac({
       await Promise.all(
         waitingSignIns.map(async (request) => {
           if (request.payload.kind !== "browser.password-sign-in") return;
-          const state = await bridge.passwordsSignInGet({
-            operationId: request.payload.operationId,
-          });
-          if (state.stage !== "approval") return;
           const key =
             declineKeys.current.get(request.id) ??
             mutationIdempotencyKey(`password-sign-in:${request.id}`);
@@ -206,7 +158,8 @@ function PasswordsOnThisMac({
           return client.dispatch({
             idempotencyKey: key,
             requestId: request.id,
-            type: "browser.password-sign-in.decline",
+            type: "browser.password-sign-in.respond",
+            decision: { kind: "decline" },
           });
         }),
       );

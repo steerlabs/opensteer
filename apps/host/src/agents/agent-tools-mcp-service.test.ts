@@ -26,6 +26,73 @@ afterEach(async () => {
 });
 
 describe("AgentToolsMcpService", () => {
+  it("publishes apps through the authenticated MCP tool and rejects invalid input before reading files", async () => {
+    const publish = vi.fn(async () => ({
+      appId: "app_11111111-1111-4111-8111-111111111111",
+      version: 1,
+      message: "Already shown to the person.",
+    }));
+    const list = vi.fn(async () => ({ apps: [] }));
+    const fetchApp = vi.fn(async () => ({
+      status: 409,
+      contentType: "text/plain",
+      body: "Already claimed",
+      truncated: false,
+    }));
+    const fixture = await startService({
+      agentControl: { handle: vi.fn() } as unknown as AgentControlService,
+      apps: { publish, list, fetch: fetchApp },
+      profiles: { "run-token": "workspace" },
+    });
+    const client = await connectClient(fixture.url, "run-token");
+    try {
+      const result = await client.callTool({
+        name: "app_publish",
+        arguments: { path: "apps/chart.html", title: "Budget" },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ version: 1 });
+      expect(publish).toHaveBeenCalledExactlyOnceWith("run-token", expect.any(String), {
+        path: "apps/chart.html",
+        title: "Budget",
+      });
+      expect(
+        (
+          await client.callTool({
+            name: "app_publish",
+            arguments: { path: "chart.html", title: "Budget", appId: "wrong" },
+          })
+        ).isError,
+      ).toBe(true);
+      expect(publish).toHaveBeenCalledTimes(1);
+      const serverResult = await client.callTool({
+        name: "app_publish",
+        arguments: { path: "dashboard", title: "Inventory", start: "node server.js" },
+      });
+      expect(serverResult.isError).not.toBe(true);
+      expect(publish).toHaveBeenLastCalledWith("run-token", expect.any(String), {
+        path: "dashboard",
+        title: "Inventory",
+        start: "node server.js",
+      });
+      await client.callTool({ name: "app_list", arguments: {} });
+      expect(list).toHaveBeenCalledExactlyOnceWith("run-token");
+      const fetched = await client.callTool({
+        name: "app_fetch",
+        arguments: { appId: "app_11111111-1111-4111-8111-111111111111", path: "/api/items" },
+      });
+      expect(fetched.structuredContent).toMatchObject({ status: 409, body: "Already claimed" });
+      expect(fetchApp).toHaveBeenCalledExactlyOnceWith("run-token", {
+        appId: "app_11111111-1111-4111-8111-111111111111",
+        path: "/api/items",
+        method: "GET",
+      });
+    } finally {
+      await client.close();
+      await fixture.service.close();
+    }
+  });
+
   it("bounds tool argument elements before validation and remains usable", async () => {
     const handle = vi.fn(async (_token: string, request: unknown) => ({
       requestId: (request as { requestId: string }).requestId,
@@ -333,6 +400,9 @@ describe("AgentToolsMcpService", () => {
     const listed = await client.listTools();
     expect(listed.tools.map(({ name }) => name)).toContain("browser_profile_list");
     expect(listed.tools.map(({ name }) => name)).toEqual([
+      "app_publish",
+      "app_list",
+      "app_fetch",
       "request_list",
       "request_withdraw",
       "environment_list",
@@ -343,7 +413,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
-      "person_notify",
+      "person_message",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -545,6 +615,9 @@ describe("AgentToolsMcpService", () => {
 
     const listed = await client.listTools();
     expect(listed.tools.map(({ name }) => name)).toEqual([
+      "app_publish",
+      "app_list",
+      "app_fetch",
       "request_list",
       "request_withdraw",
       "environment_list",
@@ -555,7 +628,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
-      "person_notify",
+      "person_message",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -679,6 +752,9 @@ describe("AgentToolsMcpService", () => {
 
     await expect(client.listTools()).resolves.toMatchObject({
       tools: [
+        { name: "app_publish" },
+        { name: "app_list" },
+        { name: "app_fetch" },
         { name: "request_list" },
         { name: "request_withdraw" },
         { name: "environment_list" },
@@ -687,7 +763,6 @@ describe("AgentToolsMcpService", () => {
         { name: "thread_list" },
         { name: "thread_delegate" },
         { name: "assignment_cancel" },
-        { name: "person_notify" },
         { name: "thread_message" },
         { name: "thread_write" },
         { name: "browser_profile_list" },
@@ -722,8 +797,8 @@ describe("AgentToolsMcpService", () => {
     expect(mainTool?.inputSchema.properties).toHaveProperty("workspaceId");
     expect(workspaceTool?.inputSchema.required).not.toContain("workspaceId");
     expect(workspaceTool?.inputSchema.properties).not.toHaveProperty("workspaceId");
-    expect(mainTool?.description).toContain("its exact workspaceId");
-    expect(workspaceTool?.description).toContain("the target is this Workspace");
+    expect(mainTool?.description).toContain("for a specialist's workspaceId");
+    expect(workspaceTool?.description).toContain("grant for this Workspace");
 
     await mainClient.close();
     await workspaceClient.close();
@@ -818,6 +893,9 @@ describe("AgentToolsMcpService", () => {
 
     const listed = await client.listTools();
     expect(listed.tools.map(({ name }) => name)).toEqual([
+      "app_publish",
+      "app_list",
+      "app_fetch",
       "request_list",
       "request_withdraw",
       "environment_list",
@@ -828,7 +906,7 @@ describe("AgentToolsMcpService", () => {
       "thread_list",
       "thread_delegate",
       "assignment_cancel",
-      "person_notify",
+      "person_message",
       "thread_message",
       "thread_write",
       "browser_profile_list",
@@ -977,13 +1055,13 @@ function runnerRelease(input: {
 }): readonly string[] {
   return [
     "task-done-v1",
-    ...(input.previousRelease ? [] : ["person-notify-v1"]),
     ...(input.legacyEnvironment ? [] : ["environment-list-v1"]),
     ...(input.previousRelease ? [] : ["browser-profile-create-v1"]),
   ];
 }
 
 async function startService(input: {
+  readonly apps?: ConstructorParameters<typeof AgentToolsMcpService>[0]["apps"];
   readonly agentControl: AgentControlService;
   readonly profiles: Readonly<Record<string, AgentCapabilityProfileId>>;
   readonly legacyEnvironment?: boolean;
@@ -1017,6 +1095,15 @@ async function startService(input: {
     toolContractVersion: 1,
   } as Awaited<ReturnType<TriggerControlTokenService["authenticate"]>>;
   service = new AgentToolsMcpService({
+    apps: input.apps ?? {
+      list: async () => ({ apps: [] }),
+      fetch: async () => {
+        throw new Error("Unexpected app fetch in fixture");
+      },
+      publish: async () => {
+        throw new Error("Unexpected app publication in fixture");
+      },
+    },
     agentControl: input.agentControl,
     runnerCapabilities:
       input.runnerCapabilities ??
@@ -1131,46 +1218,76 @@ function pendingBrowserRequest(
   };
 }
 
-it("pins person_notify to the calling Runner capability and returns the exact message receipt", async () => {
-  let supported = true;
-  const messageId = createId("message");
-  const handle = vi.fn(async (_token: string, value: unknown) => {
-    const request = AgentControlRequestSchema.parse(value);
-    return { type: "person.notify.result" as const, requestId: request.requestId, messageId };
-  });
+it("routes sessionless sign_in to the handler", async () => {
+  const ready = {
+    status: "ready",
+    site: "https://example.com",
+    account: "masked",
+    loginRef: "lgn_" + "1".repeat(32),
+  };
+  const handle = vi.fn(async (_token: string, request: unknown) => ({
+    requestId: (request as { requestId: string }).requestId,
+    result: ready,
+    type: "sign-in.result" as const,
+  }));
   const fixture = await startService({
     agentControl: { handle } as unknown as AgentControlService,
-    profiles: { token: "delegated" },
-    runnerCapabilities: async () => (supported ? ["person-notify-v1"] : []),
+    profiles: { token: "main" },
   });
   const client = await connectClient(fixture.url, "token");
   try {
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_notify");
     const result = await client.callTool({
-      name: "person_notify",
-      arguments: { message: "Ready for review." },
+      name: "sign_in",
+      arguments: { site: ready.site, reason: "Sign in" },
     });
-    expect(result.structuredContent).toEqual({ messageId });
-    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ messageId }) }]);
-    expect(handle).toHaveBeenCalledWith(
-      "token",
-      expect.objectContaining({
-        type: "person.notify",
-        requestId: expect.any(String),
-        message: "Ready for review.",
-      }),
-    );
-    supported = false;
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("person_notify");
-    await fixture.service.close();
-    expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain(
-      "person_notify",
-    );
+    expect(result.structuredContent).toEqual(ready);
+    expect(handle.mock.lastCall?.[1]).toMatchObject({ type: "sign-in", site: ready.site });
+    expect(handle.mock.lastCall?.[1]).not.toHaveProperty("sessionId");
   } finally {
     await client.close();
     await fixture.service.close();
   }
 });
+
+it.each(["main", "workspace", "delegated"] as const)(
+  "offers person tools only to direct %s Runs, independent of message capability",
+  async (profile) => {
+    const messageId = createId("message");
+    const handle = vi.fn(async (_token: string, value: unknown) => {
+      const request = AgentControlRequestSchema.parse(value);
+      return { type: "person.message.result" as const, requestId: request.requestId, messageId };
+    });
+    const fixture = await startService({
+      agentControl: { handle } as unknown as AgentControlService,
+      profiles: { token: profile },
+      runnerCapabilities: async () => ["person-show-v1"],
+    });
+    const client = await connectClient(fixture.url, "token");
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      for (const name of ["person_message", "person_show"]) {
+        expect(names.includes(name)).toBe(profile !== "delegated");
+        if (profile === "delegated") {
+          const result = await client.callTool({
+            name,
+            arguments:
+              name === "person_message" ? { message: "Hello" } : { target: { current: true } },
+          });
+          expect(result.isError).toBe(true);
+        }
+      }
+      if (profile === "delegated") expect(handle).not.toHaveBeenCalled();
+      else
+        expect(
+          (await client.callTool({ name: "person_message", arguments: { message: "Ready." } }))
+            .structuredContent,
+        ).toEqual({ messageId });
+    } finally {
+      await client.close();
+      await fixture.service.close();
+    }
+  },
+);
 
 it("negotiates person_show and saved-tab query with the calling Runner", async () => {
   let supported = true;

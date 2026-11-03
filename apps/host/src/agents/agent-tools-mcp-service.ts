@@ -1,3 +1,5 @@
+import { AppPublishInputSchema, AppFetchInputSchema } from "@opensteer/core";
+import type { AppService } from "../apps/app-service.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -76,6 +78,7 @@ interface AgentToolControl {
 }
 
 export class AgentToolsMcpService {
+  readonly #apps: Pick<AppService, "publish" | "list" | "fetch">;
   readonly #agentControl: Pick<AgentControlService, "handle">;
   readonly #allowedHost: string;
   readonly #allowedOrigin: string;
@@ -94,6 +97,7 @@ export class AgentToolsMcpService {
   #sessionsBeingCreated = 0;
 
   constructor(options: {
+    readonly apps: Pick<AppService, "publish" | "list" | "fetch">;
     readonly agentControl: Pick<AgentControlService, "handle">;
     readonly publicUrl: URL;
     /**
@@ -113,6 +117,7 @@ export class AgentToolsMcpService {
     readonly watchTokens?: WatchControlTokenService;
   }) {
     this.#pluginInstall = options.pluginInstall;
+    this.#apps = options.apps;
     this.#agentControl = options.agentControl;
     this.#allowedHost = options.publicUrl.host;
     this.#allowedOrigin = options.publicUrl.origin;
@@ -328,11 +333,12 @@ export class AgentToolsMcpService {
       capabilities !== null && !capabilities.includes(capability);
     const definitions = toolsForCapabilityProfile(input.profileId).filter(
       (definition) =>
+        (!["app_publish", "app_list", "app_fetch"].includes(definition.name) ||
+          input.scope === "run") &&
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
         (definition.name !== "person_show" ||
           (input.scope === "run" && !lacks("person-show-v1"))) &&
-        (definition.name !== "person_notify" ||
-          (input.scope === "run" && !lacks("person-notify-v1"))),
+        (definition.name !== "person_message" || input.scope === "run"),
     );
     const advertisedTools: Tool[] = [];
     for (const definition of definitions) {
@@ -439,6 +445,13 @@ export class AgentToolsMcpService {
         if (!this.#pluginInstall) throw new Error("Plugin installation is unavailable");
         return this.#pluginInstall(scope, z.string().parse(input.directory));
       }
+      case "app_list":
+        return this.#apps.list(token);
+      case "app_fetch":
+        return this.#apps.fetch(token, AppFetchInputSchema.parse(input));
+      case "app_publish": {
+        return this.#apps.publish(token, requestId, AppPublishInputSchema.parse(input));
+      }
       case "project_create": {
         const response = await control.handle(token, {
           ...input,
@@ -516,13 +529,13 @@ export class AgentToolsMcpService {
         if (response.type !== "thread.write.result") throw unexpectedToolResponse();
         return { thread: response.thread, doneWhenRunEnds: response.doneWhenRunEnds };
       }
-      case "person_notify": {
+      case "person_message": {
         const response = await control.handle(token, {
-          type: "person.notify",
+          type: "person.message",
           requestId,
           message: input.message,
         });
-        if (response.type !== "person.notify.result") throw unexpectedToolResponse();
+        if (response.type !== "person.message.result") throw unexpectedToolResponse();
         return { messageId: response.messageId };
       }
       case "person_show": {

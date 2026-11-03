@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 // @vitest-environment happy-dom
 
 import type { ReactNode } from "react";
@@ -70,6 +71,51 @@ afterEach(() => {
 });
 
 describe("Settings on a phone", () => {
+  it("offers Remove for the current session and other signed-in devices", async () => {
+    const onRemove = vi.fn();
+    const first = {
+      id: createId("authSession"),
+      current: true,
+      deviceLabel: "This iPhone",
+      form: "mobile" as const,
+      createdAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 60000).toISOString(),
+    };
+    const other = {
+      ...first,
+      id: createId("authSession"),
+      current: false,
+      deviceLabel: "Chrome on Mac",
+      form: "computer" as const,
+    };
+    await render({
+      administration: {
+        access: null,
+        pairing: null,
+        sessions: [first, other],
+        error: null,
+        busy: false,
+        onAction: vi.fn(),
+        onRemove,
+        onRefresh: vi.fn(),
+      },
+    });
+    const remove = [...document.querySelectorAll("button")].filter(
+      (button) => button.textContent === "Remove",
+    );
+    expect(remove).toHaveLength(2);
+    await act(async () => {
+      remove[0]!.click();
+    });
+    expect(onRemove).toHaveBeenLastCalledWith(first);
+    await act(async () => {
+      remove[1]!.click();
+    });
+    expect(onRemove).toHaveBeenLastCalledWith(other);
+  });
+
   it("opens the deployment switcher from the current deployment's row", async () => {
     const onDeploymentAction = vi.fn();
     await render({ onDeploymentAction });

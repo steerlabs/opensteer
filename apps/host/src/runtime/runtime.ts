@@ -1,6 +1,7 @@
 import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
 import { randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
+import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
   AesGcmSecretVault,
   createPublicHttpsFetch,
@@ -115,6 +116,8 @@ import {
   AttachmentService,
   RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
+import { AppStore } from "@opensteer/database";
+import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
 import { announceBrowserUsage, browserPresencePublisher } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
@@ -611,6 +614,7 @@ export async function createHostRuntime(
           keys,
         })
       : undefined;
+    await personalRemoteAccess?.purgeExpiredAccountLinkKeys();
     const tokens = new SignedTokenService(keys, {
       deploymentId: deployment.id,
       hostInstanceId: deployment.activeHostInstanceId,
@@ -647,17 +651,7 @@ export async function createHostRuntime(
         computerUse?.forgetRunner(runnerId);
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
-      // Approvals travel on the Mac's own stream in both directions, so a Mac
-      // that (re)attaches or asks is sent every approval waiting on it, and
-      // the person's answer comes back the same way.
-      onRunnerAttached: (runnerId) => {
-        integrationPlatform.computerAppApprovals.pushComputerAppApprovals(runnerId);
-        integrationPlatform.computerRunnerAttached(runnerId);
-      },
-      onComputerAppApprovalsSync: (runnerId) =>
-        integrationPlatform.computerAppApprovals.pushComputerAppApprovals(runnerId),
-      onComputerAppApprovalAnswer: (runnerId, answer) =>
-        void integrationPlatform.computerAppApprovals.answerComputerAppApproval(runnerId, answer),
+      onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
@@ -889,7 +883,7 @@ export async function createHostRuntime(
     const browserSources = new BrowserSourceService({
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
-      currentRoute: async () => (await personalRemoteAccess?.status("remote"))?.route ?? null,
+      currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
       sign: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
       store: new BrowserSourceStore(database),
       requests: store.requests,
@@ -945,6 +939,7 @@ export async function createHostRuntime(
     const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
+          kind: config.workspace.shape.kind,
           accountSubject: integrationAccountSubject,
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
@@ -1021,6 +1016,8 @@ export async function createHostRuntime(
       vault: integrationVault,
     });
     const mcpOauth = new McpOAuthService({
+      ...(hostedOAuthBroker ? { hostedOAuth: hostedOAuthBroker } : {}),
+      deploymentPosture: integrationDeploymentPosture,
       attempts: integrationAuthAttempts,
       exposure: config.exposure,
       onConnectionConnected: (input) => integrationConnectionConnected(input),
@@ -2097,6 +2094,16 @@ export async function createHostRuntime(
       store,
       tokens: watchControlTokens,
     });
+    const apps = new AppService({
+      tunnels: new AppTunnelHub(runners),
+      dataDirectory,
+      apps: new AppStore(database),
+      store,
+      files,
+      tokens: agentControlTokens,
+      publishEvent: publishWorkspaceEvent,
+    });
+    await apps.collectGarbage();
     const agentTools = new AgentToolsMcpService({
       pluginInstall: async (scope, directory) => {
         const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
@@ -2135,6 +2142,7 @@ export async function createHostRuntime(
           },
         });
       },
+      apps,
       // The Runner's stored advertisement, not its live connection: a Run's
       // engine keeps using its tools while that connection drops and returns.
       runnerCapabilities: async (scope) => {
@@ -2254,6 +2262,7 @@ export async function createHostRuntime(
           : {}),
         agentControl,
         attachments,
+        apps,
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
@@ -2504,6 +2513,7 @@ export async function createHostRuntime(
           })(),
           workspaces.reconcile().then(reportWorkspaceStorageHealth),
           workspaceDeletion.purgeDue(new Date()),
+          ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
           // What a work location can run is durable state like any other, so it
           // is reconciled rather than captured once and hoped for.
           store.listEnvironments().then(async (environments) => {

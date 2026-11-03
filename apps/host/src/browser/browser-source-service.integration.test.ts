@@ -8,6 +8,7 @@ import {
   ModelSelectionSchema,
   OpensteerError,
   ThreadAccessModeSchema,
+  type RequestId,
   type RunnerId,
   type UserId,
   type WorkspaceId,
@@ -92,6 +93,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
   readonly received: (BrowserClientMessage | PasswordSignInAuthorityCommand)[] = [];
   readonly initialPage: BrowserRuntimeConnection["initialPage"];
   readonly passwordEvents = new EventEmitter();
+  approvalResult: LoginAuthorizationOutcome | null = null;
   authorityConnected = true;
   hasPasswordAuthority = false;
   /** What the Mac answers a sign-in probe; the Passwords switch, as the runtime sees it. */
@@ -162,11 +164,21 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
         queueMicrotask(() => this.onStart(command));
         if (this.holdStartAck) return new Promise(() => undefined);
         return { type: "login.authorize.started" };
+      case "login.approve":
+        if (!this.approvalResult) return { type: "unavailable" };
+        this.replySignIn(command.operationId, this.approvalResult);
+        return { type: "login.approve.result", result: { ok: true } };
+      case "login.commit":
+        return { type: "login.committed", committed: true };
+      case "login.get":
+        return { type: "login.get.result", card: { stage: "gone" } };
       case "login.cancel":
         queueMicrotask(() => this.onCancel(command));
         return { type: "login.cancelled" };
       case "login.seal":
         return { type: "login.seal.result", status: "unavailable" };
+      default:
+        return { type: "unavailable" };
     }
   }
   disconnectAuthority(): void {
@@ -802,6 +814,61 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     return { payload: request.payload, request };
   }
 
+  async function passwordSession(ownerId: UserId) {
+    const sessionId = createId("authSession");
+    const now = new Date();
+    await database
+      .insertInto("authSessions")
+      .values({
+        id: sessionId,
+        userId: ownerId,
+        token: randomUUID(),
+        expiresAt: new Date(Date.now() + 3_600_000),
+        absoluteExpiresAt: new Date(Date.now() + 3_600_000),
+        ipAddress: null,
+        userAgent: null,
+        deviceLabel: "Test browser",
+        createdAt: now,
+        updatedAt: now,
+        lastSeenAt: now,
+      })
+      .execute();
+    return sessionId;
+  }
+
+  async function declinePasswordRequest(input: { ownerId: UserId; requestId: RequestId }) {
+    const result = await service.passwordSignInRespond({
+      ...input,
+      sessionId: await passwordSession(input.ownerId),
+      revalidate: async () => {},
+      decision: { kind: "decline" },
+    });
+    return result.status;
+  }
+
+  async function approvePasswordRequest(
+    requestId: string,
+    connection: FakeRuntimeConnection,
+    outcome: LoginAuthorizationOutcome,
+  ) {
+    const { request } = await passwordRequest(requestId);
+    const sessionId = await passwordSession(request.requestedBy);
+    connection.approvalResult = outcome;
+    return passwords.respond({
+      ownerId: request.requestedBy,
+      requestId: request.id,
+      sessionId,
+      revalidate: async () => {},
+      decision: {
+        kind: "approve",
+        loginId: "00000000-0000-4000-8000-000000000001",
+        revision: 1,
+        remember: true,
+        permissionVersion: 5,
+      },
+    });
+  }
+
   async function continuationCount(requestId: string): Promise<number> {
     const rows = await database
       .selectFrom("requestContinuations")
@@ -958,9 +1025,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       });
       expect(ready.connection.signInCancels()).toHaveLength(0);
       expect((await passwordRequest(ready.requestId)).request.status).toBe("pending");
-      ready.connection.replySignIn(ready.start.operationId, {
-        ...authorized(),
-      });
+      await approvePasswordRequest(ready.requestId, ready.connection, authorized());
       await waitFor(async () => (await continuationCount(ready.requestId)) === 1);
       expect(await passwordRequestCount(other.runId)).toBe(0);
     },
@@ -1131,7 +1196,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const input = { ...ready.agent, callId: randomUUID(), site };
     const first = await service.agentSignIn(input);
     if (first.status !== "pending") throw new Error("Expected pending");
-    await service.declinePasswordSignIn({ ownerId: ready.ownerId, requestId: first.requestId });
+    await declinePasswordRequest({ ownerId: ready.ownerId, requestId: first.requestId });
     expect(await service.agentSignIn(input)).toEqual({
       status: "declined",
       requestId: first.requestId,
@@ -1271,14 +1336,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     }
   });
 
-  it("settles a result racing the atomic lazy open exactly once", async () => {
+  it("refuses consent without a requester decision while the Request opens", async () => {
     const ready = await passwordScene();
     beforeOpen = async () => {
       const start = ready.connection.signInStarts()[0]!;
       ready.connection.replySignIn(start.operationId, {
         ...authorized(),
       });
-      await new Promise((resolve) => setTimeout(resolve, 10));
     };
     const result = await service.agentSignIn({
       ...ready.agent,
@@ -1290,7 +1354,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await continuationCount(result.requestId)).toBe(1);
     expect((await passwordRequest(result.requestId)).request.response).toEqual({
       kind: "external",
-      value: { outcome: "authorized", account: "t•••@example.test" },
+      value: { outcome: "interrupted" },
     });
   });
 
@@ -1395,7 +1459,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await passwordRequestCount(ready.agent.runId)).toBe(0);
   });
 
-  it("asks the Mac, never the Host, for a saved-password sign-in and settles once from its answer", async () => {
+  it("accepts requester consent through the Host and settles once from the vault answer", async () => {
     const { connection, payload, requestId, site, start } = await (async () => {
       const started = await startedPasswordSignIn();
       return { ...started, payload: (await passwordRequest(started.requestId)).payload };
@@ -1419,7 +1483,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     );
     expect(connection.imports()).toEqual([]);
 
-    connection.replySignIn(start.operationId, authorized());
+    await approvePasswordRequest(requestId, connection, authorized());
     await waitFor(async () => (await passwordRequest(requestId)).request.status === "fulfilled");
     const { request } = await passwordRequest(requestId);
     expect(request.response).toEqual({
@@ -1533,7 +1597,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   it("settles a decline from what the Mac reports", async () => {
     const declined = await startedPasswordSignIn("https://decline.test");
     expect(
-      await service.declinePasswordSignIn({
+      await declinePasswordRequest({
         ownerId: declined.ownerId,
         requestId: declined.requestId as Parameters<typeof store.requests.get>[0],
       }),
@@ -1548,7 +1612,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const silent = await startedPasswordSignIn("https://silent.test");
     silent.connection.onCancel = () => undefined;
     expect(
-      await service.declinePasswordSignIn({
+      await declinePasswordRequest({
         ownerId: silent.ownerId,
         requestId: silent.requestId as Parameters<typeof store.requests.get>[0],
       }),
@@ -1571,7 +1635,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect((await passwordRequest(ended.requestId)).request.status).toBe("pending");
     expect(await continuationCount(ended.requestId)).toBe(0);
     expect(ended.connection.signInCancels()).toEqual([]);
-    ended.connection.replySignIn(ended.start.operationId, {
+    await approvePasswordRequest(ended.requestId, ended.connection, {
       ...authorized(),
       loginRef: ended.start.loginRef,
       expiresAt: ended.start.expiresAt,
@@ -1586,19 +1650,18 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await continuationCount(ended.requestId)).toBe(1);
   });
 
-  it("records a sign-in the store failed to record, and keeps its session", async () => {
+  it("cancels prepared authority when settlement fails, then records interruption", async () => {
     const landed = await startedPasswordSignIn("https://store-retry.test");
     settleFaults = 1;
-    landed.connection.replySignIn(landed.start.operationId, {
-      ...authorized(),
-    });
+    await approvePasswordRequest(landed.requestId, landed.connection, authorized());
     await waitFor(
       async () => (await passwordRequest(landed.requestId)).request.status === "fulfilled",
     );
     expect((await passwordRequest(landed.requestId)).request.response).toEqual({
       kind: "external",
-      value: { outcome: "authorized", account: "t•••@example.test" },
+      value: { outcome: "interrupted" },
     });
+    expect(passwords.leaseForOperation(landed.start.operationId)).toBeNull();
     expect(landed.connection.readyState).toBe(WebSocket.OPEN);
     expect(await continuationCount(landed.requestId)).toBe(1);
   });
@@ -1652,7 +1715,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     });
     try {
       await entered.promise;
-      ready.connection.replySignIn(ready.start.operationId, {
+      await approvePasswordRequest(ready.requestId, ready.connection, {
         ...authorized(),
         expiresAt: ready.start.expiresAt,
       });

@@ -1,7 +1,9 @@
+import { isIphoneAppId } from "./model.js";
 import {
   HostClientRequestError,
   isHostRefusal,
   mutationIdempotencyKey,
+  unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
 import type { IntegrationAccess } from "@opensteer/client/integrations";
@@ -56,14 +58,15 @@ export class IphoneAppsController {
 
   #adding: { readonly deploymentId: string; readonly outcome: Promise<IphoneAddOutcome> } | null =
     null;
-  #approvalKey: IphoneAppsState["approvalKey"] = "idle";
-  /** Each transition to online is a new connection, which may register the key once. */
+  #approvals: readonly IphoneAppsApproval[] = [];
+  #detachHost: (() => void) | null = null;
+  #requestRead = 0;
+  /** Each transition to online fences connection-specific work. */
   #connection = 0;
   #disposed = false;
   #generation = 0;
   #host: IphoneAppsHost | null = null;
   #hostGeneration = 0;
-  #keyAttempt = -1;
   #lastEnrollment: IphoneAppsSnapshot["enrollment"] = null;
   #notice: IphoneAppsNotice | null = null;
   #online = false;
@@ -94,7 +97,6 @@ export class IphoneAppsController {
     this.#detachBridge = options.bridge.subscribe((snapshot) => {
       this.#observe(snapshot);
       this.#publish();
-      this.#maybeRegisterKey();
       this.#maybeRetarget();
       this.#maybeRecheck();
     });
@@ -117,7 +119,7 @@ export class IphoneAppsController {
   }
 
   /**
-   * The Deployment open on this phone, whose session can register the key and
+   * The Deployment open on this phone, whose session can answer approvals and
    * read where the Deployment is now. Opening another Deployment never stops
    * or moves the iPhone.
    */
@@ -128,7 +130,18 @@ export class IphoneAppsController {
     ) {
       return;
     }
+    this.#detachHost?.();
     this.#host = host;
+    let machines = host?.hostClient.getSnapshot().machines;
+    this.#detachHost =
+      host?.hostClient.subscribe(() => {
+        const next = host.hostClient.getSnapshot().machines;
+        if (next !== machines) {
+          machines = next;
+          this.#readApprovals();
+        }
+      }) ?? null;
+    this.#readApprovals();
     this.#hostGeneration += 1;
     // An attachment change fences the old operation, but cannot undo an answer
     // already sent. Read it back when its Host is attached again.
@@ -137,7 +150,6 @@ export class IphoneAppsController {
     }
     this.#publish();
     this.#maybeRetarget();
-    this.#maybeRegisterKey();
     this.#maybeRecheck();
   }
 
@@ -181,7 +193,7 @@ export class IphoneAppsController {
 
   /**
    * Turns on the apps chosen with Add, one at a time, so iOS asks about one
-   * app at a time and each request is signed on its own. Add listed every app
+   * app at a time and each request is approved on its own. Add listed every app
    * and level it turns on, so its tap is their review. An app that doesn't
    * turn on keeps why for its row, and the rest go on; stopping the iPhone or
    * opening another Deployment ends the run.
@@ -226,8 +238,8 @@ export class IphoneAppsController {
    * reports its permission, and the Host's catalog lists its definition (an
    * older Host doesn't). Then iOS decides: it is asked when it has not been,
    * and whatever it then says is read back. If it does not let Opensteer use
-   * the app, nothing is requested or signed. Otherwise the Host's request is
-   * signed here once it is the exact request listed, and success is only the
+   * the app, nothing is requested or approved. Otherwise the Host's request is
+   * approved here once it is the exact request listed, and success is only the
    * Host's own answer.
    *
    * A lost answer is never taken as "off", nor asked again: the Host's own
@@ -325,7 +337,7 @@ export class IphoneAppsController {
   /**
    * Reads the Host's own record for a change whose outcome is unknown, from
    * a tap. It never asks the Host for the access again; when the same request
-   * is still waiting and listed here, the reviewed approval goes on to sign it.
+   * is still waiting and listed here, the reviewed approval goes on to approve it.
    */
   async check(input: {
     readonly app: IphoneAppId;
@@ -356,11 +368,10 @@ export class IphoneAppsController {
 
   /**
    * Answers a request the iPhone currently lists, from a tap. Allowing asks
-   * iOS first when it has not been asked, and signs nothing iOS refuses: the
+   * iOS first when it has not been asked, and approves nothing iOS refuses: the
    * request then stays waiting, to allow later or decline. A Host rollback can
    * leave a request for a removed provider. Check its catalog before a new
-   * provider's first prompt when its Deployment is open; otherwise the native
-   * stream still allows answering across Deployments. The Host validates the
+   * provider's first prompt when its Deployment is open; answering requires the enrolled Deployment's authenticated session. The Host validates the
    * definition again before granting access.
    */
   async answer(input: {
@@ -368,7 +379,25 @@ export class IphoneAppsController {
     readonly setupRequestId: string;
   }): Promise<IphoneAnswerOutcome> {
     const generation = this.#generation;
-    const listed = this.#listed(input.setupRequestId);
+    const host = this.#host;
+    if (!host || host.deploymentId !== this.#bridge.getSnapshot().enrollment?.deploymentId)
+      return noLongerWaiting;
+    const record = await readHostRecord(host.hostClient).catch(() => null);
+    if (generation !== this.#generation || record === null) return noLongerWaiting;
+    const found = record.requests.find(({ id }) => id === input.setupRequestId);
+    const listed =
+      found && found.definitionId && isIphoneAppId(found.definitionId)
+        ? {
+            ...found,
+            setupRequestId: found.id,
+            definitionId: found.definitionId,
+            reason: found.reason ?? null,
+            threadTitle: found.threadTitle ?? null,
+            workspaceName: found.workspaceName ?? null,
+            createdAt: found.createdAt ?? new Date().toISOString(),
+            expiresAt: found.expiresAt ?? new Date().toISOString(),
+          }
+        : undefined;
     if (listed === undefined || this.#answering.has(input.setupRequestId)) return noLongerWaiting;
     this.#answering.add(input.setupRequestId);
     this.#markShown(listed);
@@ -406,7 +435,7 @@ export class IphoneAppsController {
       ) {
         return noLongerWaiting;
       }
-      const outcome = await this.#bridge.answerApproval({
+      const outcome = await this.#answerHost({
         decision: input.decision,
         expected: { access: listed.access, definitionId: listed.definitionId },
         setupRequestId: input.setupRequestId,
@@ -469,12 +498,6 @@ export class IphoneAppsController {
   }
 
   /** Registration failed; the person asked to try again. */
-  retryApprovalKey(): void {
-    this.#keyAttempt = -1;
-    this.#approvalKey = "idle";
-    this.#publish();
-    this.#maybeRegisterKey();
-  }
 
   /** Stops this iPhone at once, then tells the Host while this phone can. */
   async remove(input: { readonly hostClient: HostClient }): Promise<void> {
@@ -493,6 +516,8 @@ export class IphoneAppsController {
     this.#disposed = true;
     this.#generation += 1;
     this.#detachBridge();
+    this.#detachHost?.();
+    this.#requestRead += 1;
     for (const wake of this.#wakers) wake();
     this.#listeners.clear();
   }
@@ -636,22 +661,56 @@ export class IphoneAppsController {
     return iphonePermissionAllows(app, permission) ? null : permission;
   }
 
-  /** Signs the exact request the Host named, once this iPhone lists it as reviewed. */
+  /** Answers the exact request the Host named using the current owner session. */
+  async #answerHost(input: {
+    readonly decision: "allow" | "deny";
+    readonly setupRequestId: string;
+    readonly expected: { readonly access: IntegrationAccess; readonly definitionId: string };
+  }): Promise<IphoneApprovalOutcome> {
+    const host = this.#host;
+    if (!host || host.deploymentId !== this.#bridge.getSnapshot().enrollment?.deploymentId)
+      return { kind: "unavailable", message: "Open this iPhone's Deployment to answer." };
+    try {
+      const review = unwrapRpcResult(
+        await host.hostClient.rpc["integration.computer.setup.review"]({
+          setupRequestId: input.setupRequestId,
+        }),
+      );
+      if (
+        review.request.definitionId !== input.expected.definitionId ||
+        review.request.access !== input.expected.access
+      )
+        return { kind: "refused", message: "This request changed. Review it again." };
+      await host.hostClient.dispatch({
+        type: "integration.computer.setup.respond",
+        idempotencyKey: mutationIdempotencyKey(`iphone-answer:${input.setupRequestId}`),
+        decision: input.decision,
+        setupRequestId: input.setupRequestId,
+      });
+      this.#readApprovals();
+      return { kind: input.decision === "allow" ? "allowed" : "declined" };
+    } catch (error) {
+      if (isHostRefusal(error) && error instanceof Error)
+        return { kind: "refused", message: error.message };
+      return {
+        kind: "unavailable",
+        message: error instanceof Error ? error.message : "Couldn't send this answer.",
+      };
+    }
+  }
+
   async #approve(input: Step & { readonly requestId: string }): Promise<IphoneAllowOutcome> {
     this.#setChange(input.app, {
       access: input.access,
       phase: "approving",
       requestId: input.requestId,
     });
-    const listed = await this.#waitFor(
-      (snapshot) =>
-        snapshot.approvals.find(({ setupRequestId }) => setupRequestId === input.requestId),
-      this.#timing.approvalWaitMs,
-      input.fence.generation,
+    const listed = (await readHostRecord(input.hostClient)).requests.find(
+      ({ id }) => id === input.requestId,
     );
-    if (listed === "superseded" || !input.fence.current()) return superseded;
-    if (listed === "timeout") return { kind: "waiting" };
-    // Only the exact request that was reviewed is signed: a request for this
+    if (!input.fence.current()) return superseded;
+    if (!listed) return { kind: "waiting" };
+    // Only the exact request that was reviewed is approved: a request for this
     // app at another access is another decision, and stays waiting for it.
     if (listed.definitionId !== input.app || listed.access !== input.access) return requestChanged;
     // iPhone Settings may have changed while the request travelled.
@@ -659,7 +718,7 @@ export class IphoneAppsController {
     if (!input.fence.current()) return superseded;
     if (permission === "not-offered") return notOfferedHere;
     if (permission !== null) return { kind: "blocked", permission };
-    const outcome = await this.#bridge.answerApproval({
+    const outcome = await this.#answerHost({
       decision: "allow",
       expected: { access: input.access, definitionId: input.app },
       setupRequestId: input.requestId,
@@ -675,15 +734,15 @@ export class IphoneAppsController {
           message: outcome.kind === "refused" ? outcome.message : "That request was declined.",
         };
       case "unavailable":
-        // The signature may have reached the Host even though its reply did not.
+        // The decision may have reached the Host even though its reply did not.
         return this.#reconcile({ ...input, resign: false });
     }
   }
 
   /**
    * Settles a change from the Host's own requests and connections. `resign`
-   * lets a request that is still waiting go on to be signed; after a signature
-   * whose reply was lost it does not, so one tap never signs twice.
+   * lets a request that is still waiting go on to be approved; after a decision
+   * whose reply was lost it does not, so one tap never sends twice.
    */
   async #reconcile(
     input: Step & { readonly requestId: string | null; readonly resign: boolean },
@@ -726,7 +785,7 @@ export class IphoneAppsController {
   /**
    * Once per connection and attachment, reads unknown changes back from the
    * Host. It only reads: a request still waiting is left for the person to
-   * approve, so nothing is signed or asked for without a tap.
+   * approve, so nothing is approved or asked for without a tap.
    */
   #maybeRecheck(): void {
     const snapshot = this.#bridge.getSnapshot();
@@ -815,7 +874,6 @@ export class IphoneAppsController {
     this.#changes.clear();
     this.#failures.clear();
     this.#queued = [];
-    this.#approvalKey = "idle";
     const ids = this.#bridge.disconnect();
     for (const wake of this.#wakers) wake();
     this.#publish();
@@ -868,43 +926,29 @@ export class IphoneAppsController {
     this.#publish();
   }
 
-  #maybeRegisterKey(): void {
-    const snapshot = this.#bridge.getSnapshot();
-    const enrollment = snapshot.enrollment;
-    const key = snapshot.approvalKey;
+  #readApprovals(): void {
     const host = this.#host;
-    if (
-      this.#disposed ||
-      snapshot.connection !== "online" ||
-      enrollment?.state !== "enrolled" ||
-      key === null ||
-      key.registered ||
-      host === null ||
-      host.deploymentId !== enrollment.deploymentId ||
-      this.#keyAttempt === this.#connection
-    ) {
+    const enrollment = this.#bridge.getSnapshot().enrollment;
+    const generation = ++this.#requestRead;
+    if (!host || !enrollment || host.deploymentId !== enrollment.deploymentId) {
+      this.#approvals = [];
+      this.#publish();
       return;
     }
-    this.#keyAttempt = this.#connection;
-    const generation = this.#generation;
-    const connection = this.#connection;
-    this.#approvalKey = "registering";
-    this.#publish();
-    void host.hostClient
-      .dispatch({
-        idempotencyKey: mutationIdempotencyKey("iphone-approval-key"),
-        input: { publicKey: key.publicKey, runnerId: enrollment.runnerId },
-        type: "integration.computer.approval-key.set",
-      })
-      .then(
-        (result) => (result.type === "integration.computer.approval-key.set" ? "idle" : "failed"),
-        () => "failed" as const,
-      )
-      .then((status) => {
-        if (generation !== this.#generation || connection !== this.#connection) return;
-        this.#approvalKey = status;
+    void host.hostClient.rpc["integration.computer.setup.list"]({})
+      .then(unwrapRpcResult)
+      .then(({ requests }) => {
+        if (generation !== this.#requestRead || this.#disposed) return;
+        this.#approvals = requests.flatMap((request) =>
+          request.runnerId === enrollment.runnerId &&
+          request.kind === "app" &&
+          isIphoneAppId(request.definitionId)
+            ? [{ ...request, definitionId: request.definitionId, setupRequestId: request.id }]
+            : [],
+        );
         this.#publish();
-      });
+      })
+      .catch(() => undefined);
   }
 
   /** Once per attachment of the iPhone's Deployment: move it if that Deployment moved. */
@@ -960,9 +1004,7 @@ export class IphoneAppsController {
   }
 
   #listed(setupRequestId: string): IphoneAppsApproval | undefined {
-    return this.#bridge
-      .getSnapshot()
-      .approvals.find((approval) => approval.setupRequestId === setupRequestId);
+    return this.#approvals.find((approval) => approval.setupRequestId === setupRequestId);
   }
 
   #markShown(approval: IphoneAppsApproval): void {
@@ -1016,10 +1058,9 @@ export class IphoneAppsController {
     return {
       adding: this.#adding?.deploymentId ?? null,
       answering: [...this.#answering],
-      approvalKey: this.#approvalKey,
       notice: this.#notice,
       prompt: this.#shownLoaded
-        ? (snapshot.approvals
+        ? (this.#approvals
             .filter(
               ({ setupRequestId }) =>
                 !this.#shown.has(setupRequestId) && !this.#answering.has(setupRequestId),
@@ -1027,7 +1068,7 @@ export class IphoneAppsController {
             .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0] ?? null)
         : null,
       removedFrom: this.#removedFrom,
-      snapshot,
+      snapshot: { ...snapshot, approvals: this.#approvals },
       changes: Object.fromEntries(this.#changes),
       failures: Object.fromEntries(this.#failures),
       queued: this.#queued,
@@ -1061,15 +1102,13 @@ export interface IphoneAppsHost {
 export interface IphoneAppsState {
   readonly adding: string | null;
   readonly answering: readonly string[];
-  /** Whether registering the approval key with the open Deployment failed. */
-  readonly approvalKey: "failed" | "idle" | "registering";
   /** Something the person must hear about after the fact, wherever they are. */
   readonly notice: IphoneAppsNotice | null;
   /** The oldest request not yet shown on its own, while requests can be shown. */
   readonly prompt: IphoneAppsApproval | null;
   /** The Host removed this iPhone; the Deployment's row says so until the next add. */
   readonly removedFrom: { readonly deploymentId: string; readonly deploymentName: string } | null;
-  readonly snapshot: IphoneAppsSnapshot;
+  readonly snapshot: IphoneAppsSnapshot & { readonly approvals: readonly IphoneAppsApproval[] };
   /** Access being added to an app from here; the app keeps its current access meanwhile. */
   readonly changes: Readonly<Partial<Record<IphoneAppId, IphoneAppChange>>>;
   /** Why the last change from here didn't turn an app on, until the next one. */
@@ -1097,7 +1136,7 @@ export type IphoneAllowFailure = Extract<
 
 export type IphoneAllowOutcome =
   | { readonly kind: "allowed" }
-  /** iOS doesn't let Opensteer use the app; nothing was requested or signed. */
+  /** iOS doesn't let Opensteer use the app; nothing was requested or approved. */
   | { readonly kind: "blocked"; readonly permission: IphonePermission }
   /** A change for this app is already under way. */
   | { readonly kind: "busy" }
@@ -1180,6 +1219,11 @@ interface HostRecord {
     readonly id: string;
     readonly kind: string;
     readonly runnerId: string;
+    readonly reason?: string | null;
+    readonly threadTitle?: string | null;
+    readonly workspaceName?: string | null;
+    readonly createdAt?: string;
+    readonly expiresAt?: string;
   }[];
 }
 

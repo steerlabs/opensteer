@@ -201,11 +201,7 @@ export class DesktopPersonalAccountLinkCoordinator {
     let completionAlreadyConsumed = false;
     if (completion) {
       try {
-        await this.#host.consumeAccountLink(runtime, {
-          completionGrant: completion.completionGrant,
-          hostCredential: completion.hostCredential,
-          linkGeneration: completion.linkGeneration,
-        });
+        await this.#host.consumeAccountLink(runtime, completion);
         completionAlreadyConsumed = true;
       } catch (error) {
         if (!(error instanceof PersonalHostAccountLinkCompletionGrantRejectedError)) throw error;
@@ -236,7 +232,7 @@ export class DesktopPersonalAccountLinkCoordinator {
           throw completionError;
         }
         if (
-          refreshed.hostCredential !== completion.hostCredential ||
+          refreshed.challengeId !== completion.challengeId ||
           refreshed.linkGeneration !== completion.linkGeneration
         ) {
           throw new Error("Opensteer Account changed the Host link during recovery.");
@@ -265,11 +261,7 @@ export class DesktopPersonalAccountLinkCoordinator {
     if (!completionAlreadyConsumed) {
       operation = { ...operation, completion };
       state = await this.#store.save(deploymentId, { ...state, operation });
-      await this.#host.consumeAccountLink(runtime, {
-        completionGrant: completion.completionGrant,
-        hostCredential: completion.hostCredential,
-        linkGeneration: completion.linkGeneration,
-      });
+      await this.#host.consumeAccountLink(runtime, completion);
     }
     await this.#store.clear(deploymentId);
     return emptyPersonalAccountLinkJournal(runtime);

@@ -1,3 +1,4 @@
+import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
@@ -12,7 +13,6 @@ import {
   type DesktopDownloadsSnapshot,
   DeploymentAccessSnapshotSchema,
   DesktopAddDirectRouteInputSchema,
-  DesktopConfigurePersonalRemoteAccessInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
   DesktopDeploymentSelectionSchema,
   DesktopDeploymentSummarySchema,
@@ -23,14 +23,8 @@ import {
   DesktopAccountAuthStateSchema,
   DesktopOpenHostWebSocketInputSchema,
   DesktopPersonalDeploymentStatusSchema,
-  DesktopPersonalPairingCodeSchema,
-  DesktopPersonalRemoteAccessStatusSchema,
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
-  DesktopPasswordsSignInApproveInputSchema,
-  DesktopPasswordsSignInCardInputSchema,
-  type DesktopComputerUseApprovalPresentation,
-  type DesktopPasswordsSignInCardState,
   type DesktopPasswordsStatus,
   type DesktopDeploymentSelection,
   type DesktopDeploymentSummary,
@@ -39,7 +33,6 @@ import {
   type DesktopAccountAuthState,
   type DesktopPersonalDeploymentStatus,
   type DesktopPersonalAccountLinkStatus,
-  type DesktopPersonalRemoteAccessStatus,
   type OpensteerDesktopBridge,
   type DeploymentAccessSnapshot,
   type DesktopComputerAppSetup,
@@ -48,9 +41,7 @@ import {
 import { previewBootstrap, previewDate, previewWorkspace } from "./preview-bootstrap.js";
 
 const previewParameter = "desktop-preview";
-const previewConnectOrigin = "https://preview-connect.opensteer.invalid";
 const previewPersonalOrigin = "http://127.0.0.1:4310";
-const previewPairingCode = `osp_${"p".repeat(43)}`;
 
 /**
  * The rpc declaration owns the bootstrap contract, so the simulator derives its
@@ -122,7 +113,6 @@ export function desktopPreviewBridge(
     selectedDeploymentId: null,
   });
   let personal = stoppedPersonalStatus();
-  let remoteAccess = unavailableRemoteAccessStatus();
   let personalAccountLink: DesktopPersonalAccountLinkStatus = {
     account: null,
     deploymentId: null,
@@ -140,15 +130,9 @@ export function desktopPreviewBridge(
     return created;
   };
 
-  const remoteAccessListeners = new Set<(status: DesktopPersonalRemoteAccessStatus) => void>();
   const passwordsListeners = new Set<(status: DesktopPasswordsStatus) => void>();
   const passwords = previewPasswordsStatus(search);
-  const signInCardListeners = new Set<(state: DesktopPasswordsSignInCardState) => void>();
-  let signInCard = previewPasswordsSignInCard(search);
-  const moveSignInCard = (next: DesktopPasswordsSignInCardState) => {
-    signInCard = next;
-    emit(signInCardListeners, signInCard);
-  };
+
   const localExecutionListeners = new Set<(status: DesktopLocalExecutionStatus) => void>();
   const socketListeners = new Set<(event: DesktopHostWebSocketEvent) => void>();
   const accessListeners = new Set<(snapshot: DeploymentAccessSnapshot) => void>();
@@ -249,7 +233,6 @@ export function desktopPreviewBridge(
   const emitPersonal = () => {
     emitAccess();
   };
-  const emitRemoteAccess = () => emit(remoteAccessListeners, remoteAccess);
   const emitSelection = () => {
     emitAccess();
   };
@@ -300,12 +283,7 @@ export function desktopPreviewBridge(
     onWorkspaceTabCommand: () => () => undefined,
     getLocalVisibility: async () => true,
     onLocalVisibilityChanged: () => () => undefined,
-    computerUseApprovalKey: async () => ({
-      keyId: `sha256:${"p".repeat(43)}`,
-      publicKey:
-        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n-----END PUBLIC KEY-----\n",
-    }),
-    reviewComputerAppSetup: async () => ({ allowed: false }),
+
     // The preview carries no Agent Phone app and no USB phone to choose.
     readAgentPhoneArtifact: async () => null,
     onUsbDeviceChoice: () => () => undefined,
@@ -363,69 +341,6 @@ export function desktopPreviewBridge(
       });
     },
 
-    configurePersonalRemoteAccess: async (input) => {
-      const parsed = DesktopConfigurePersonalRemoteAccessInputSchema.parse(input);
-      if (personal.state !== "ready" || personal.deploymentId === null) {
-        throw new Error("Set up This Computer before configuring remote access.");
-      }
-      const generation = remoteAccess.generation + 1;
-      if (parsed.mode === "off") {
-        remoteAccess = DesktopPersonalRemoteAccessStatusSchema.parse({
-          ...remoteAccess,
-          detail: "Turning off remote access…",
-          generation,
-          mode: "off",
-          phase: "revoking",
-          retryable: false,
-          routeOrigin: null,
-        });
-        emitRemoteAccess();
-        schedule(1, () => {
-          remoteAccess = DesktopPersonalRemoteAccessStatusSchema.parse({
-            ...remoteAccess,
-            detail: null,
-            phase: "off",
-          });
-          emitRemoteAccess();
-        });
-        return remoteAccess;
-      }
-
-      const routeOrigin = parsed.mode === "connect" ? previewConnectOrigin : parsed.privateOrigin;
-      const accountLinked = parsed.mode === "connect" && accountAuth.account.status === "signed-in";
-      remoteAccess = DesktopPersonalRemoteAccessStatusSchema.parse({
-        ...remoteAccess,
-        detail: accountLinked || parsed.mode === "private" ? "Preparing access…" : "Signing in…",
-        generation,
-        mode: parsed.mode,
-        phase: accountLinked || parsed.mode === "private" ? "provisioning" : "linking-account",
-        retryable: true,
-        routeOrigin,
-      });
-      emitRemoteAccess();
-      schedule(1, () => {
-        if (remoteAccess.generation !== generation) return;
-        if (parsed.mode === "connect") updateAuthAccount("signed-in", null);
-        remoteAccess = DesktopPersonalRemoteAccessStatusSchema.parse({
-          ...remoteAccess,
-          detail: "Preparing access…",
-          phase: "provisioning",
-        });
-        emitRemoteAccess();
-      });
-      schedule(2, () => {
-        if (remoteAccess.generation !== generation) return;
-        remoteAccess = DesktopPersonalRemoteAccessStatusSchema.parse({
-          ...remoteAccess,
-          detail: null,
-          phase: "ready",
-          retryable: false,
-        });
-        emitRemoteAccess();
-      });
-      return remoteAccess;
-    },
-
     connectPrivate: async (input) => {
       emitAccess();
       const parsed = DesktopConnectPrivateDeploymentInputSchema.parse(input);
@@ -445,7 +360,6 @@ export function desktopPreviewBridge(
     getDeploymentAccessSnapshot: async () => accessSnapshot(),
     listCloudDeployments: async () => ({ available: false, deployments: [] }),
     getLocalExecutionStatus: async (input) => localExecutionFor(input),
-    getPersonalRemoteAccessStatus: async () => remoteAccess,
 
     hostRequest: async (input) => {
       const request = DesktopHostHttpRequestSchema.parse(input);
@@ -499,19 +413,6 @@ export function desktopPreviewBridge(
     },
     hostBinaryClose: async () => ({ ok: true, data: null }),
 
-    issuePersonalPairingCode: async () => {
-      if (remoteAccess.mode !== "private" || remoteAccess.phase !== "ready") {
-        throw new Error("Enable Private network access before creating a pairing code.");
-      }
-      return DesktopPersonalPairingCodeSchema.parse({
-        code: previewPairingCode,
-        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-        generation: remoteAccess.generation,
-        routeOrigin: remoteAccess.routeOrigin,
-        schemaVersion: 1,
-      });
-    },
-
     linkPersonal: async () => {
       if (personal.deploymentId === null)
         throw new Error("Set up This Computer before linking it.");
@@ -529,7 +430,6 @@ export function desktopPreviewBridge(
     onDeploymentAccessSnapshotChanged: (listener) => subscribe(accessListeners, listener),
     onHostWebSocketEvent: (listener) => subscribe(socketListeners, listener),
     onLocalExecutionStatusChanged: (listener) => subscribe(localExecutionListeners, listener),
-    onPersonalRemoteAccessStatusChanged: (listener) => subscribe(remoteAccessListeners, listener),
     onNotificationActivated: () => () => undefined,
     getNotificationSupport: async () => ({ supported: false }),
     showNotification: async () => ({ status: "unsupported" }),
@@ -560,8 +460,7 @@ export function desktopPreviewBridge(
     // picker asks it, or `&approval=task` as a task asks it, or
     // `&approval=policy` for turning automatic approval on.
     closeComputerUsePermissionsPanel: async () => undefined,
-    computerUseApprovalGet: async () => previewComputerUseApproval(search),
-    computerUseApprovalRespond: async () => undefined,
+
     computerUseOpenSystemSettings: async () => undefined,
     computerUsePermissionsGet: async () => ({
       accessibility: "denied" as const,
@@ -581,23 +480,6 @@ export function desktopPreviewBridge(
     // move it on as Electron main would.
     onPasswordsStatusChanged: (listener) => subscribe(passwordsListeners, listener),
     passwordsOpen: async () => undefined,
-    onPasswordsSignInChanged: (_input, listener) => subscribe(signInCardListeners, listener),
-    passwordsSignInApprove: async (input) => {
-      const { loginId } = DesktopPasswordsSignInApproveInputSchema.parse(input);
-      const account =
-        signInCard.stage === "approval"
-          ? signInCard.accounts.find(({ id }) => id === loginId)
-          : undefined;
-      if (!account || new URLSearchParams(search).has("cancel-auth")) {
-        return { message: "Touch ID was cancelled. Choose Allow to try again.", ok: false };
-      }
-      moveSignInCard({ account: account.username, stage: "authorized" });
-      return { ok: true };
-    },
-    passwordsSignInGet: async (input) => {
-      DesktopPasswordsSignInCardInputSchema.parse(input);
-      return signInCard;
-    },
     passwordsStatus: async () => passwords,
 
     // The onboarding preview has no file dialog to open.
@@ -804,16 +686,6 @@ export function desktopPreviewBridge(
           state: "ready",
           step: "ready",
         });
-        remoteAccess = DesktopPersonalRemoteAccessStatusSchema.parse({
-          deploymentId: created.id,
-          detail: null,
-          generation: 0,
-          mode: "off",
-          phase: "off",
-          retryable: false,
-          routeOrigin: null,
-          schemaVersion: 1,
-        });
         personalAccountLink = {
           account: null,
           deploymentId: created.id,
@@ -821,7 +693,6 @@ export function desktopPreviewBridge(
           status: "unlinked",
           unlinkStep: null,
         };
-        emitRemoteAccess();
         emitPersonal();
         selectHost(created, "signed-in");
       });
@@ -894,36 +765,6 @@ export function desktopPreviewBridge(
   }
 
   return bridge;
-}
-
-function previewComputerUseApproval(search: string): DesktopComputerUseApprovalPresentation {
-  const variant = new URLSearchParams(search).get("approval");
-  const shared = {
-    deploymentName: "Alex's Deployment",
-    machineName: "Alex's MacBook Pro",
-    token: "preview",
-  };
-  if (variant === "policy") return { ...shared, appApproval: "automatic", kind: "policy" };
-  const task = variant === "task";
-  return {
-    ...shared,
-    access: "read-write",
-    accessLabel: "Can see and control",
-    accessSummary:
-      "Agents can see the app and click, type, scroll, press keys, and open it in the background. What the app can do, agents can do through it.",
-    app: {
-      bundleId: task ? "com.apple.finder" : "com.apple.Notes",
-      displayName: task ? "Finder" : "Notes",
-      iconPng: null,
-      path: task ? "/System/Library/CoreServices/Finder.app" : "/System/Applications/Notes.app",
-      reason: null,
-      risk: task ? "elevated" : "standard",
-    },
-    kind: "app",
-    reason: task ? "Collect the signed contracts from Downloads into the deal folder." : null,
-    threadTitle: task ? "Close the Q3 deals" : null,
-    workspaceName: task ? "Sales" : null,
-  };
 }
 
 function previewPasswordsStatus(search: string): DesktopPasswordsStatus {
@@ -1056,12 +897,12 @@ const previewLongAccounts: readonly PasswordSignInAccount[] = [
  * their pages), `approval-many` (forty), `approval-duplicates`,
  * `approval-long`, `authorized` or `gone`.
  */
-export function previewPasswordsSignInCard(search: string): DesktopPasswordsSignInCardState {
+export function previewPasswordsSignInCard(search: string): PasswordSignInCard {
   const site = "https://github.com";
   const approval = (
     accounts: readonly PasswordSignInAccount[],
-    on = site,
-  ): DesktopPasswordsSignInCardState => ({ accounts: [...accounts], site: on, stage: "approval" });
+    _on = site,
+  ): PasswordSignInCard => ({ accounts: [...accounts], permissionVersion: 5, stage: "approval" });
   switch (new URLSearchParams(search).get("card")) {
     case "approval-one":
       return approval([previewSignInAccounts[0]]);
@@ -1084,7 +925,7 @@ export function previewPasswordsSignInCard(search: string): DesktopPasswordsSign
     case "approval-long":
       return approval(previewLongAccounts);
     case "authorized":
-      return { account: "t•••@example.com", stage: "authorized" };
+      return { stage: "authorized" };
     case "gone":
       return { stage: "gone" };
     default:
@@ -1143,19 +984,6 @@ function stoppedPersonalStatus(): DesktopPersonalDeploymentStatus {
     schemaVersion: 1,
     state: "stopped",
     step: null,
-  });
-}
-
-function unavailableRemoteAccessStatus(): DesktopPersonalRemoteAccessStatus {
-  return DesktopPersonalRemoteAccessStatusSchema.parse({
-    deploymentId: null,
-    detail: "Set up This Computer before configuring remote access.",
-    generation: 0,
-    mode: "off",
-    phase: "unavailable",
-    retryable: false,
-    routeOrigin: null,
-    schemaVersion: 1,
   });
 }
 

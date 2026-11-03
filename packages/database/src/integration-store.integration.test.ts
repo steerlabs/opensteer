@@ -3,6 +3,7 @@ import {
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
+import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 
 import { describe, expect, it as baseIt } from "vitest";
@@ -13,6 +14,7 @@ import {
   IntegrationStore,
   isErasedIntegrationAuthAttemptPayload,
   OpensteerStore,
+  readIntegrationAccountBinding,
 } from "./index.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -49,7 +51,7 @@ integration.sequential("PostgreSQL integration store", () => {
   it("persists provider apps, one-time OAuth claims, encrypted credentials, and reconnects", async ({
     storeFixture,
   }) => {
-    const { store, integrations, attempts } = storeFixture;
+    const { store, integrations, attempts, database } = storeFixture;
     const ownerUserId = await store.createUser("Integration owner");
     const applicationId = createIntegrationId("providerApplication");
     const application = await integrations.saveProviderApplication({
@@ -141,6 +143,14 @@ integration.sequential("PostgreSQL integration store", () => {
     await expect(
       attempts.claimHostedAuthAttempt({
         id: resumableAttemptId,
+        ownerUserId,
+        now: new Date(),
+        stateHash: "wrong-state",
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      attempts.claimHostedAuthAttempt({
+        id: resumableAttemptId,
         now: new Date(),
         ownerUserId,
       }),
@@ -151,10 +161,10 @@ integration.sequential("PostgreSQL integration store", () => {
         now: new Date(),
         ownerUserId,
       }),
-    ).resolves.toMatchObject({ id: resumableAttemptId });
+    ).resolves.toBeNull();
 
     const connectionId = createIntegrationId("connection");
-    const connection = await integrations.completeOAuthAttempt({
+    const completion = {
       attemptId,
       connection: {
         accountIdentifier: "person@example.com",
@@ -183,6 +193,101 @@ integration.sequential("PostgreSQL integration store", () => {
       credential: { envelope: Buffer.from("encrypted-user-token"), keyVersion: 1 },
       credentialProvider: "integration:google",
       ownerUserId,
+    } satisfies Parameters<IntegrationStore["completeOAuthAttempt"]>[0];
+    const now = new Date();
+    const issuer = "https://accounts.example.test";
+    const subject = `acct_${crypto.randomUUID()}`;
+    await database
+      .updateTable("users")
+      .set({ instanceRole: "administrator" })
+      .where("id", "=", ownerUserId)
+      .execute();
+    await database
+      .insertInto("personalRemoteAccountLink")
+      .values({
+        challengeId: `phc_${crypto.randomUUID()}`,
+        grantId: `phg_${crypto.randomUUID()}`,
+        hostCredential: `osc_${"c".repeat(43)}`,
+        issuer,
+        subject,
+        linkGeneration: "a".repeat(43),
+        linkedAt: now,
+        singletonKey: "opensteer-account",
+        state: "active",
+        updatedAt: now,
+      })
+      .execute();
+    const binding = (await readIntegrationAccountBinding({
+      database,
+      ownerUserId,
+      kind: "personal",
+      accountAttached: true,
+    }))!;
+    await database
+      .updateTable("personalRemoteAccountLink")
+      .set({ linkGeneration: "b".repeat(43) })
+      .where("singletonKey", "=", "opensteer-account")
+      .execute();
+    await expect(
+      integrations.completeOAuthAttempt({
+        ...completion,
+        accountBinding: { ...binding, kind: "personal" },
+      }),
+    ).rejects.toMatchObject({ reason: "account-link-mismatch" });
+    expect(await integrations.listConnections(ownerUserId)).toHaveLength(0);
+    expect(await attempts.getAuthAttempt({ id: attemptId, ownerUserId })).toMatchObject({
+      status: "claimed",
+    });
+    // The same generation fence also uses each server member's own Account row.
+    await database
+      .insertInto("accountDirectoryProvider")
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        singletonKey: "opensteer-account",
+        providerId: "account-test",
+        issuer,
+      })
+      .execute();
+    const authAccountId = createId("authAccount");
+    await database
+      .insertInto("authAccounts")
+      .values({
+        id: authAccountId,
+        userId: ownerUserId,
+        providerId: "account-test",
+        accountId: subject,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    const serverBinding = (await readIntegrationAccountBinding({
+      database,
+      ownerUserId,
+      kind: "server",
+      accountAttached: true,
+    }))!;
+    await database.deleteFrom("authAccounts").where("id", "=", authAccountId).execute();
+    await database
+      .insertInto("authAccounts")
+      .values({
+        id: createId("authAccount"),
+        userId: ownerUserId,
+        providerId: "account-test",
+        accountId: subject,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    await expect(
+      integrations.completeOAuthAttempt({
+        ...completion,
+        accountBinding: { ...serverBinding, kind: "server" },
+      }),
+    ).rejects.toMatchObject({ reason: "account-link-mismatch" });
+    const connection = await integrations.completeOAuthAttempt({
+      ...completion,
+      accountBinding: { ...binding, linkGeneration: "b".repeat(43), kind: "personal" },
     });
     expect(connection).toMatchObject({
       authorizationDigest: "a".repeat(43),

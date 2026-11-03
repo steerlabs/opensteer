@@ -24,8 +24,7 @@ final class GrantTests: BrokerTestCase {
       XCTFail("\(username) was not offered: \(decision)")
       return .null
     }
-    let reply = try await desktop.call(
-      "signin.approve", Fixtures.approve(id, account, remember: remember))
+    let reply = try await desktop.allow(Fixtures.approve(id, account, remember: remember))
     _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
     return try XCTUnwrap(reply.result?["login"], "\(reply)")
   }
@@ -109,19 +108,6 @@ final class GrantTests: BrokerTestCase {
   }
 
   /// G4: a cancelled authentication grants nothing.
-  func testCancelledAuthenticationGrantsNothing() async throws {
-    try await harness.ready(items: [Self.alex])
-    let desktop = try await harness.client()
-    let id = UUID().uuidString.lowercased()
-    let account = try unwrap(try await request(desktop, id)["accounts"]?[0])
-    let seq = try harness.headSeq()
-    presence.next(.cancel)
-    same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
-        .errorCode, "invalid")
-    XCTAssertEqual(try harness.headSeq(), seq, "no commit")
-    XCTAssertTrue(try harness.savedGrants().isEmpty)
-  }
 
   /// G5: one account per Workspace and site. Two sign-ins offered accounts
   /// before either was allowed: the later Allow replaces the earlier.
@@ -131,13 +117,14 @@ final class GrantTests: BrokerTestCase {
     let first = UUID().uuidString.lowercased()
     let second = UUID().uuidString.lowercased()
     let firstAccounts = try unwrap(try await request(desktop, first)["accounts"])
+    _ = try await desktop.allow(Fixtures.approve(first, firstAccounts[0], remember: true))
+    _ = try await desktop.call("signin.cancel", Fixtures.transaction(first))
+    let priorGrant = try unwrap(try harness.savedGrants().first)
+
+    _ = try await broker.removeGrant(priorGrant)
     let secondAccounts = try unwrap(
-      try await desktop.call("signin.request", Fixtures.request(second, session: "bsn_second"))
-        .result?["accounts"])
-    _ = try await desktop.call(
-      "signin.approve", Fixtures.approve(first, firstAccounts[0], remember: true))
-    _ = try await desktop.call(
-      "signin.approve", Fixtures.approve(second, secondAccounts[1], remember: true))
+      try await desktop.call("signin.request", Fixtures.request(second)).result?["accounts"])
+    _ = try await desktop.allow(Fixtures.approve(second, secondAccounts[1], remember: true))
     for id in [first, second] {
       _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
     }
@@ -175,20 +162,21 @@ final class GrantTests: BrokerTestCase {
     let first = UUID().uuidString.lowercased()
     let second = UUID().uuidString.lowercased()
     let firstAccounts = try unwrap(try await request(desktop, first)["accounts"])
-    let secondAccounts = try unwrap(
-      try await desktop.call("signin.request", Fixtures.request(second, session: "bsn_second"))
-        .result?["accounts"])
-    _ = try await desktop.call(
-      "signin.approve", Fixtures.approve(first, firstAccounts[0], remember: true))
+    _ = try await desktop.allow(Fixtures.approve(first, firstAccounts[0], remember: true))
+    _ = try await desktop.call("signin.cancel", Fixtures.transaction(first))
+    let priorGrant = try unwrap(try harness.savedGrants().first)
+
     let window = PasswordsWindowModel(
       broker: broker, activityLog: harness.activity,
       runner: ImportRunner(worker: URL(fileURLWithPath: "/usr/bin/false")))
     await window.showPasswords()
     let shown = try unwrap(
       window.visibleLogins.first { $0.username == "alex@example.com" }?.grants.first)
+    _ = try await broker.removeGrant(priorGrant)
+    let secondAccounts = try unwrap(
+      try await desktop.call("signin.request", Fixtures.request(second)).result?["accounts"])
     let annaID = try unwrap(secondAccounts[1]?["id"]?.string)
-    _ = try await desktop.call(
-      "signin.approve", Fixtures.approve(second, secondAccounts[1], remember: true))
+    _ = try await desktop.allow(Fixtures.approve(second, secondAccounts[1], remember: true))
     for id in [first, second] {
       _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
     }
@@ -217,7 +205,7 @@ final class GrantTests: BrokerTestCase {
           extra: ["deploymentName": .string("Per\u{1B}sonal")])
       ).result?["accounts"]?[0])
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
+      try await desktop.allow(Fixtures.approve(id, account, remember: true))
         .result?["decision"],
       .string("authorized"))
     let grant = try unwrap(try harness.savedGrants().first)

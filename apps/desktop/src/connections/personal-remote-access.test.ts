@@ -10,7 +10,6 @@ import {
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import type { PersonalHostConnectOrchestrator } from "../supervisor/personal-host-connect-orchestrator.js";
-import type { DesktopPersonalAccountLinkCoordinator } from "../account/personal-account-link.js";
 import { DesktopPersonalAccountMutationCoordinator } from "../account/personal-account-mutation.js";
 import {
   DesktopPersonalRemoteAccessService,
@@ -20,6 +19,15 @@ import { type PersonalHostRuntimeRecord } from "../supervisor/personal-host-runt
 import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-test-support.js";
 
 describe("DesktopPersonalRemoteAccessService", () => {
+  it("requires an Account link established on the signing-in device without opening desktop sign-in", async () => {
+    const fixture = remoteAccessFixture();
+    fixture.host.accountLinked = false;
+    await expect(
+      fixture.service.configure({ mode: "connect", privateOrigin: null }),
+    ).rejects.toThrow("device signing in");
+    expect(fixture.events).toEqual([]);
+  });
+
   it("commits Host Off before revoking the external Connect resource", async () => {
     const fixture = remoteAccessFixture();
     await fixture.service.configure({ mode: "connect", privateOrigin: null });
@@ -117,7 +125,6 @@ describe("DesktopPersonalRemoteAccessService", () => {
 
     expect(fixture.events).toEqual([
       "host:disable:private:2",
-      "link:ensure",
       "connect:enable:57",
       "host:connect:3",
     ]);
@@ -141,13 +148,11 @@ describe("DesktopPersonalRemoteAccessService", () => {
     await fixture.service.configure({ mode: "connect", privateOrigin: null });
 
     expect(fixture.events).toEqual([
-      "link:ensure",
       "connect:enable:57",
       "host:connect:1",
       "host:disable:connect:2",
       "connect:disable:74",
       "host:private:3",
-      "link:ensure",
       "host:disable:private:4",
       "connect:enable:91",
       "host:connect:5",
@@ -204,10 +209,6 @@ describe("DesktopPersonalRemoteAccessService", () => {
     const operationId = ConnectOperationIdSchema.parse(`cop_${crypto.randomUUID()}`);
     const revoked: string[] = [];
     const service = new DesktopPersonalRemoteAccessService({
-      auth: {
-        accountAuthorizationHeader: async () => "Bearer account",
-        beginAccountSignIn: async () => undefined as never,
-      },
       connectFactory: () => ({
         management: null,
         teardown: {
@@ -216,7 +217,7 @@ describe("DesktopPersonalRemoteAccessService", () => {
       }),
       connectUnavailableDetail: "Opensteer Connect is disabled in this source build.",
       host: fixture.host,
-      link: fixture.link as unknown as DesktopPersonalAccountLinkCoordinator,
+
       runtime: { current: async () => fixture.runtime },
     });
 
@@ -311,13 +312,9 @@ function initializationService(
   components: PersonalHostConnectComponents,
 ) {
   return new DesktopPersonalRemoteAccessService({
-    auth: {
-      accountAuthorizationHeader: async () => "Bearer account",
-      beginAccountSignIn: async () => undefined as never,
-    },
     connectFactory: () => components,
     host: fixture.host,
-    link: fixture.link as unknown as DesktopPersonalAccountLinkCoordinator,
+
     runtime: { current: async () => fixture.runtime },
   });
 }
@@ -339,46 +336,21 @@ function remoteAccessFixture(mutations?: DesktopPersonalAccountMutationCoordinat
   const runtime = personalRuntime();
   const host = new StatefulRemoteHost(runtime, events);
   const connect = new IndependentConnectLifecycle(host, events);
-  const link = new FakeAccountLink(host, events);
   const service = new DesktopPersonalRemoteAccessService({
-    auth: {
-      accountAuthorizationHeader: async () => "Bearer account",
-      beginAccountSignIn: async () => undefined as never,
-    },
     connectFactory: () => ({
       management: connect as unknown as PersonalHostConnectOrchestrator,
       teardown: connect as never,
     }),
     host,
-    link: link as unknown as DesktopPersonalAccountLinkCoordinator,
+
     ...(mutations ? { mutations } : {}),
     runtime: { current: async () => runtime },
   });
-  return { connect, events, host, link, runtime, service };
-}
-
-class FakeAccountLink {
-  readonly #events: string[];
-  readonly #host: StatefulRemoteHost;
-
-  constructor(host: StatefulRemoteHost, events: string[]) {
-    this.#events = events;
-    this.#host = host;
-  }
-
-  async ensureLinkedForMutation(): Promise<never> {
-    this.#events.push("link:ensure");
-    this.#host.accountLinked = true;
-    return undefined as never;
-  }
-
-  async state(): Promise<null> {
-    return null;
-  }
+  return { connect, events, host, runtime, service };
 }
 
 class StatefulRemoteHost {
-  accountLinked = false;
+  accountLinked = true;
   generation = 0;
   readonly routeHistory: Array<{
     readonly generation: number;

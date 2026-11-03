@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { createId } from "@opensteer/core";
+import { HarnessInputSchema } from "@opensteer/protocol";
 
 const regex = z.string().superRefine((value, ctx) => {
   try {
@@ -25,6 +27,27 @@ const call = z.strictObject({
   tool: z.string().min(1),
   args: z.record(z.string(), z.json()).default({}),
 });
+const structuredTurn = z
+  .strictObject({
+    text: z.string().min(1).optional(),
+    content: HarnessInputSchema.shape.content.optional(),
+    author: HarnessInputSchema.shape.author,
+    kind: HarnessInputSchema.shape.kind,
+  })
+  .superRefine((turn, ctx) => {
+    if ((turn.text === undefined) === (turn.content === undefined))
+      ctx.addIssue({ code: "custom", message: "Provide exactly one of text or content" });
+    const result = HarnessInputSchema.safeParse({
+      author: turn.author,
+      kind: turn.kind,
+      content: turn.content ?? [{ type: "text", text: turn.text }],
+      createdAt: new Date().toISOString(),
+      messageId: createId("message"),
+    });
+    if (!result.success)
+      for (const issue of result.error.issues)
+        ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  });
 export const CaseSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
   area: z.string().min(1),
@@ -32,21 +55,39 @@ export const CaseSchema = z.strictObject({
   source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
   profile: z.enum(["main", "workspace", "delegated"]),
   role: z.enum(["conversation", "work"]),
+  /** Runs the turns on an Assignment; delegated Threads always have one. */
+  assigned: z.boolean().optional(),
   engines: z
     .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
     .min(1)
     .optional(),
   fixtures: z.record(fixturePath, z.string()).default({}),
-  turns: z.array(z.string().min(1)).min(1),
+  turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
     calls: z.array(call).default([]),
     notCalls: z.array(z.string()).default([]),
+    notCallsWithArgs: z.array(call).default([]),
+    callsArgMatch: z
+      .array(
+        z.strictObject({
+          tool: z.string().min(1),
+          path: z.array(z.string().min(1)).min(1),
+          pattern: regex,
+          first: z.boolean().default(false),
+        }),
+      )
+      .default([]),
+    finalText: z.enum(["empty", "nonempty"]).optional(),
+    maxFinalTextBytes: z.number().int().nonnegative().optional(),
     order: z.array(z.string()).default([]),
     minCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
     maxCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
+    noAssistantText: z.boolean().default(false),
     textMust: z.array(regex).default([]),
     textMustNot: z.array(regex).default([]),
+    /** Checked against assistant text from turns before the graded last turn. */
+    earlierTextMust: z.array(regex).default([]),
     maxInvalidCalls: z.number().int().nonnegative().default(0),
   }),
 });
@@ -63,5 +104,21 @@ export function parseCases(text: string): EvalCase[] {
     } catch (cause) {
       throw new Error(`Case line ${i + 1}: ${String(cause)}`, { cause });
     }
+  });
+}
+
+export function inputForCaseTurn(turn: EvalCase["turns"][number]) {
+  return HarnessInputSchema.parse({
+    author:
+      typeof turn === "string"
+        ? { kind: "human", displayName: "Eval user", principalId: "eval" }
+        : turn.author,
+    content:
+      typeof turn === "string"
+        ? [{ type: "text", text: turn }]
+        : (turn.content ?? [{ type: "text", text: turn.text }]),
+    kind: typeof turn === "string" ? "input" : turn.kind,
+    createdAt: new Date().toISOString(),
+    messageId: createId("message"),
   });
 }

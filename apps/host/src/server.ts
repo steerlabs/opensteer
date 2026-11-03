@@ -1,3 +1,6 @@
+import { afterResponse } from "./server/after-response.js";
+import type { AppService } from "./apps/app-service.js";
+import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
 import {
@@ -41,6 +44,8 @@ import {
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
 import {
+  ProvisionConnectRequestSchema,
+  RotateConnectCredentialRequestSchema,
   RevokeConnectRequestSchema,
   RevokeConnectResponseSchema,
 } from "@opensteer/control-plane-protocol";
@@ -192,6 +197,8 @@ import { createChannelRpcHandlers } from "./channels/channel-handlers.js";
 import type { ChannelService } from "./channels/channel-service.js";
 import type { PlaceContextService } from "./computer-use/place-context-service.js";
 import { HostAuthenticator } from "./identity/auth.js";
+import { registerPersonalRemoteExecutor } from "./access/personal-remote-administration-routes.js";
+import { rejectDuplicateCredentialHeaders } from "./identity/request-credential-headers.js";
 import type { MachineFullDiskAccessService } from "./shell/machine-full-disk-access-service.js";
 
 import type {
@@ -351,6 +358,7 @@ export interface HostServerDependencies {
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
+  readonly apps: AppService;
   readonly requestResponseVault: RequestResponseVault;
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
@@ -437,6 +445,7 @@ export async function createHostServer(
     logger: options.logger ?? false,
     requestIdHeader: false,
   });
+  app.addHook("onRequest", rejectDuplicateCredentialHeaders);
   await registerResponseCompression(app);
   const harnessCatalogReconciliations = new HarnessCatalogReconciliationOwner({
     catalogs: dependencies.store,
@@ -482,6 +491,7 @@ export async function createHostServer(
   const workspaceSharingAvailable = deploymentSupportsSharing(
     dependencies.discovery.document.deploymentShape,
   );
+  registerAppRoutes(app, dependencies.apps);
   registerIdentityRoutes(app, dependencies.authenticator, {
     ...(dependencies.accountAdoption
       ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
@@ -498,6 +508,16 @@ export async function createHostServer(
     dependencies.discovery.document.canonicalOrigin,
   );
   const browserSourceRpcOptions: BrowserSourceRpcOptions = {
+    revalidateSession: async (context: HostApiServerContext) => {
+      const current = await dependencies.authenticator.authenticateSession(context.headers, {
+        mutation: true,
+      });
+      if (current.id !== context.session?.id)
+        throw new OpensteerError({
+          code: "unauthorized",
+          message: "The approving session changed.",
+        });
+    },
     service: dependencies.browserSources,
     canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
     authority: dependencies.discovery,
@@ -506,13 +526,14 @@ export async function createHostServer(
       (await dependencies.authenticator.identity.configuration()).deployment.name ?? "Opensteer",
     signInvitation: dependencies.signBrowserSourceInvitation,
     currentRoute: async () =>
-      (await dependencies.personalRemoteAccess?.service.status("remote"))?.route ?? null,
+      (await dependencies.personalRemoteAccess?.service.status())?.route ?? null,
   };
   const integrationAuthorizationRpcOptions: IntegrationAuthorizationRpcOptions = {
     attempts: dependencies.integrations.authAttempts,
     authenticator: dependencies.authenticator,
     deploymentId: dependencies.discovery.document.deploymentId,
     integrations: dependencies.integrations.service,
+    mcpOauth: dependencies.integrations.mcpOauth,
   };
   registerIntegrationAuthorizationRoutes(app, integrationAuthorizationRpcOptions);
   const integrationRpcOptions: IntegrationRpcOptions = {
@@ -557,6 +578,13 @@ export async function createHostServer(
   // repeats an availability check the router already made.
   if (dependencies.personalRemoteAccess) {
     const personalRemoteAccess = dependencies.personalRemoteAccess.service;
+    const supervisor = dependencies.localBootstrap?.service;
+    if (supervisor)
+      registerPersonalRemoteExecutor(app, supervisor, personalRemoteAccess.administration);
+    const detachAdministration = personalRemoteAccess.administration.subscribe(() =>
+      dependencies.realtime.broadcast({ type: "host.personal-remote-access-changed" }),
+    );
+    app.addHook("onClose", async () => detachAdministration());
     app.get("/.well-known/opensteer/personal-access-route", async (_request, reply) => {
       const route = await personalRemoteAccess.accessRoute();
       if (!route) {
@@ -568,15 +596,8 @@ export async function createHostServer(
       const authenticated = await dependencies.authenticator.authenticateSessionContext(
         request.headers,
       );
-      // Which Account owns this computer is the owner's business. A session
-      // that arrived over a signed access route — a pairing-code guest
-      // included — learns only whether the link is usable.
-      const caller = (await personalRemoteAccess.isMachineLocalSession(authenticated))
-        ? "machine-local"
-        : "remote";
-      return reply
-        .header("cache-control", "no-store")
-        .send(await personalRemoteAccess.status(caller));
+      requireInstanceAdministrator(authenticated.session);
+      return reply.header("cache-control", "no-store").send(await personalRemoteAccess.status());
     });
     app.put("/v1/personal-remote-access", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
@@ -588,6 +609,7 @@ export async function createHostServer(
           await personalRemoteAccess.configure(
             caller,
             ConfigurePersonalRemoteAccessRequestSchema.parse(request.body),
+            (effect) => afterResponse(reply, effect),
           ),
         );
     });
@@ -641,7 +663,9 @@ export async function createHostServer(
           request.headers,
           { mutation: true },
         );
-        await personalRemoteAccess.revokeAccountSessions(caller);
+        await personalRemoteAccess.revokeAccountSessions(caller, (effect) =>
+          afterResponse(reply, effect),
+        );
         return reply.code(204).send();
       },
     );
@@ -650,7 +674,9 @@ export async function createHostServer(
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
         mutation: true,
       });
-      await personalRemoteAccess.removeAccountLink(caller);
+      await personalRemoteAccess.removeAccountLink(caller, (effect) =>
+        afterResponse(reply, effect),
+      );
       return reply.code(204).send();
     });
     app.post(
@@ -675,6 +701,21 @@ export async function createHostServer(
       );
       return reply.status(204).send();
     });
+    if (supervisor)
+      for (const rotate of [false, true]) {
+        app.post(
+          `/v1/personal-remote-access/executor/connect-${rotate ? "rotate" : "provision"}`,
+          async (request, reply) => {
+            supervisor.requireSupervisor(request.headers.authorization);
+            const input = rotate
+              ? RotateConnectCredentialRequestSchema.parse(request.body)
+              : ProvisionConnectRequestSchema.parse(request.body);
+            return reply
+              .header("cache-control", "no-store")
+              .send(await personalRemoteAccess.connectCredentialForExecutor(input, rotate));
+          },
+        );
+      }
     app.delete("/v1/personal-remote-access/connect-resource", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
         mutation: true,
@@ -923,10 +964,7 @@ export async function createHostServer(
     >();
     const computerUseSessions = new Map<string, readonly ComputerUseSessionSummary[]>();
     const computerUseDisplayStreamSupported = new Map<string, boolean>();
-    const computerUsePolicies = new Map<
-      string,
-      { readonly appApproval: "ask" | "automatic"; readonly approvalKeyId: string | null }
-    >();
+    const computerUsePolicies = new Map<string, { readonly appApproval: "ask" | "automatic" }>();
     for (const runner of manageable) {
       if (ownership.get(runner.id)?.effectiveOwner !== ownerId) continue;
       const reported = dependencies.computerApps.status(runner.id);
@@ -946,7 +984,7 @@ export async function createHostServer(
         });
       const sessions = dependencies.computerUse?.sessionsForRunner(runner.id);
       if (sessions) computerUseSessions.set(runner.id, sessions);
-      // Only Macs use app approval policies and signing keys.
+      // Only Macs use automatic app approval policies.
       const integrationsPlatform = runner.moduleDescriptors.integrations?.platform;
       if (
         integrationsPlatform !== "darwin" &&
@@ -1059,6 +1097,7 @@ export async function createHostServer(
         hostApi["agentPhone.target.get"].success.parse(await agentPhoneHostTarget(dependencies)),
       );
     },
+    ...createAppHandlers(dependencies.apps),
     "attachment.get": async (input, context) =>
       rpcSuccess(
         await dependencies.attachments.get(input.attachmentId, requireRpcSession(context).user.id),
@@ -1279,7 +1318,7 @@ export async function createHostServer(
         threadId: input.threadId,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(page);
+      return rpcSuccess(hostApi["thread.events.list"].success.parse(page));
     },
     "thread.messages.list": async (input, context) => {
       const page = await dependencies.store.threadMessagePageForOwner({
@@ -1521,6 +1560,8 @@ export async function createHostServer(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
+    | "apps.get"
+    | "apps.view"
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"
@@ -1708,6 +1749,7 @@ export async function createHostServer(
           command.workspaceId,
           userId,
         );
+        await dependencies.apps.stopWorkspace(command.workspaceId);
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),
@@ -2122,6 +2164,7 @@ export async function createHostServer(
           const input = {
             requestId: command.requestId,
             resolvedBy: userId,
+            settlementSessionId: session.id,
             response: command.response,
           };
           await (async (): Promise<void> => {
@@ -2140,7 +2183,7 @@ export async function createHostServer(
                     pending.kind === "browser.sign-in"
                       ? "Answer a sign-in Request with browser.sign-in.respond"
                       : pending.kind === "browser.password-sign-in"
-                        ? "Approve a saved-password sign-in on its Mac, or decline it with browser.password-sign-in.decline"
+                        ? "Answer a saved-password sign-in with browser.password-sign-in.respond"
                         : "This Request can no longer be answered",
                 });
               case "browser.access": {
@@ -2159,9 +2202,8 @@ export async function createHostServer(
               case "machine.full-disk-access":
                 await dependencies.machineFullDiskAccess.decline(input);
                 return;
-              // Approving happens on the Mac itself, by consuming the setup
-              // request; from anywhere else the only answer is a decline, and
-              // it takes the pending approval back with it.
+              // Allow uses integration.computer.setup.respond to consume exact
+              // owner-reviewed setup. This generic path only declines.
               case "computer.app.access":
                 await dependencies.integrations.platform.computerAppApprovals.declineComputerAppAccess(
                   input,
@@ -2200,6 +2242,7 @@ export async function createHostServer(
             idempotencyKey: command.idempotencyKey,
             requestedBy: userId,
             requestId: command.requestId,
+            settlementSessionId: session.id,
             response: command.response,
             runId,
             sealedResponse,
@@ -2623,8 +2666,48 @@ export async function createHostServer(
         );
         return { ended, type: command.type };
       }
+      case "personal.remoteAccess.request": {
+        const administration = dependencies.personalRemoteAccess?.service.administration;
+        if (!administration)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Personal remote access is unavailable",
+          });
+        const operation = await administration.request(
+          session,
+          command.intent,
+          command.idempotencyKey,
+        );
+        context.afterResponse?.(() => administration.release(operation.id));
+        return { type: command.type, operation };
+      }
+      case "personal.remoteAccess.pairing.create":
+      case "personal.accountLink.approve":
+      case "personal.accountLink.complete": {
+        const service = dependencies.personalRemoteAccess?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Personal remote access is unavailable",
+          });
+        const caller = { session };
+        if (command.type === "personal.remoteAccess.pairing.create")
+          return { type: command.type, pairing: await service.issuePairingCode(caller) };
+        if (command.type === "personal.accountLink.approve")
+          return {
+            type: command.type,
+            proof: await service.approveAccountLink(caller, command.challenge),
+          };
+        const access = await service.consumeAccountLink(caller, command.completion);
+        service.administration.changed();
+        return { type: command.type, access };
+      }
       case "session.revoke":
-        await dependencies.authenticator.identity.revokeSession(session, command.sessionId);
+        await dependencies.authenticator.identity.revokeSession(
+          session,
+          command.sessionId,
+          context.afterResponse,
+        );
         return { type: command.type };
       case "runner.enrollment.createManaged": {
         requireInstanceAdministrator(session);
@@ -2833,10 +2916,8 @@ export async function createHostServer(
     workspaceSharingAvailable,
   });
 
-  registerHostApi(
-    app,
-    dependencies.authenticator,
-    createHostApiHandlers(
+  registerHostApi(app, dependencies.authenticator, {
+    ...createHostApiHandlers(
       {
         ...identityRpcHandlers,
         "auth.invitation.accept": async (input, context) => {
@@ -2862,7 +2943,16 @@ export async function createHostServer(
       handleCoreCommand,
       dependencies.computerViews,
     ),
-  );
+    "personal.remoteAccess.get": async (_input, context) => {
+      const service = dependencies.personalRemoteAccess?.service;
+      if (!service)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Personal remote access is unavailable",
+        });
+      return rpcSuccess(await service.administration.status(context.session!));
+    },
+  });
 
   app.get("/v1/runner/attachments", async (request, reply) => {
     const token = requireBearerToken(request);
@@ -2922,7 +3012,7 @@ export async function createHostServer(
     url: hostInternalRoutePaths.integrationMcp,
   });
 
-  app.get("/internal/v1/computer-plugin-packages/:digest", async (request, reply) =>
+  app.get(hostInternalRoutePaths.computerPluginPackages, async (request, reply) =>
     reply
       .header("cache-control", "no-store")
       .type("application/json")
@@ -2935,7 +3025,7 @@ export async function createHostServer(
       ),
   );
 
-  app.get(`${hostInternalRoutePaths.plugins}/:digest`, async (request, reply) => {
+  app.get(hostInternalRoutePaths.plugins, async (request, reply) => {
     const token = requireBearerToken(request, 16_000);
     return reply
       .header("cache-control", "no-store")

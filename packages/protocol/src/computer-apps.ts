@@ -28,14 +28,6 @@ import {
   PasswordSignInAuthorityEventSchema,
   PasswordSignInAuthorityResultSchema,
 } from "./password-sign-in.js";
-import {
-  ComputerAppApprovalAnswerFrameSchema,
-  ComputerAppApprovalListSchema,
-  ComputerAppApprovalOutcomeFrameSchema,
-  ComputerAppApprovalKeyChallengeSchema,
-  ComputerAppApprovalKeyProofSchema,
-  approvalAnswerNamesItsRequest,
-} from "./computer-app-approvals.js";
 import { androidPhoneDefinitionId } from "./android-phone.js";
 import {
   ComputerAppIdentitySchema,
@@ -122,7 +114,7 @@ export type ComputerAppStatusEntry = z.infer<typeof ComputerAppStatusEntrySchema
 export const RunnerIntegrationsStatusSchema = z.strictObject({
   ...integrationsFrameBase,
   loginText: LoginReceiverKeySchema.optional(),
-  passwordSignIn: z.literal(1).optional(),
+  passwordSignIn: z.literal(2).optional(),
   apps: z.array(ComputerAppStatusEntrySchema).max(computerAppMaxStatusEntries),
   captureSupported: z.boolean().optional(),
   displayAvailable: z.boolean().optional(),
@@ -294,41 +286,6 @@ export const HostIntegrationsCancelSchema = z.strictObject({
 export type HostIntegrationsCancel = z.infer<typeof HostIntegrationsCancelSchema>;
 
 /**
- * Every approval waiting on this Mac, with what its panel shows. The Host sends
- * it when the stream attaches, when the Runner asks, and after anything changes
- * an approval on this Mac; `ComputerAppApprovalListSchema` says why it is
- * always the whole set. Only a Runner whose `integrations` module declares
- * `computerAppApprovals` is sent one.
- */
-export const HostIntegrationsComputerAppApprovalsSchema = z.strictObject({
-  ...integrationsFrameBase,
-  ...ComputerAppApprovalListSchema.shape,
-  type: z.literal("host.integrations.computer-app-approvals"),
-});
-export type HostIntegrationsComputerAppApprovals = z.infer<
-  typeof HostIntegrationsComputerAppApprovalsSchema
->;
-
-/** What the Host did with this Mac's answer to one approval. */
-export const HostIntegrationsComputerAppApprovalOutcomeSchema = z.strictObject({
-  ...integrationsFrameBase,
-  ...ComputerAppApprovalOutcomeFrameSchema.shape,
-  type: z.literal("host.integrations.computer-app-approval-outcome"),
-});
-export type HostIntegrationsComputerAppApprovalOutcome = z.infer<
-  typeof HostIntegrationsComputerAppApprovalOutcomeSchema
->;
-
-export const HostIntegrationsComputerAppApprovalKeyChallengeSchema = z.strictObject({
-  ...integrationsFrameBase,
-  ...ComputerAppApprovalKeyChallengeSchema.shape,
-  type: z.literal("host.integrations.computer-app-approval-key-challenge"),
-});
-export type HostIntegrationsComputerAppApprovalKeyChallenge = z.infer<
-  typeof HostIntegrationsComputerAppApprovalKeyChallengeSchema
->;
-
-/**
  * One session with an MCP server this computer runs for its Deployment
  * (`docs/computers.md`, "MCP servers on a computer"). The Host is the
  * server's MCP client; the Runner starts the launch its owner approved on
@@ -373,9 +330,6 @@ export type HostIntegrationsOperation =
   | HostIntegrationsComputerUse
   | HostIntegrationsComputerUseStopRecorded
   | HostIntegrationsCancel
-  | HostIntegrationsComputerAppApprovals
-  | HostIntegrationsComputerAppApprovalOutcome
-  | HostIntegrationsComputerAppApprovalKeyChallenge
   | HostIntegrationsMcpOpen
   | HostIntegrationsMcpMessage
   | HostIntegrationsMcpClose
@@ -468,10 +422,9 @@ export const RunnerIntegrationsMcpMessageSchema = z.strictObject({
 export type RunnerIntegrationsMcpMessage = z.infer<typeof RunnerIntegrationsMcpMessageSchema>;
 
 /**
- * Why a session ended, or null when the Host asked. `unapproved` is a launch
- * this computer's owner has not approved here, so it was never started;
- * `too-large` a message this stream cannot carry, so the session was ended
- * rather than the stream.
+ * Why a session ended, or null when the Host asked. A message above the
+ * stream's bound ends its session without taking down other sessions. Android
+ * integrations protocol 4 still uses `unapproved` to refuse MCP execution.
  */
 export const McpSessionCloseCodeSchema = z.enum(["unapproved", "failed", "too-large"]);
 export type McpSessionCloseCode = z.infer<typeof McpSessionCloseCodeSchema>;
@@ -485,40 +438,6 @@ export const RunnerIntegrationsMcpClosedSchema = z.strictObject({
   type: z.literal("runner.integrations.mcp.closed"),
 });
 export type RunnerIntegrationsMcpClosed = z.infer<typeof RunnerIntegrationsMcpClosedSchema>;
-
-/** The person's answer on this Mac, signed with the desktop's approval key. */
-export const RunnerIntegrationsComputerAppApprovalAnswerSchema = z
-  .strictObject({
-    ...integrationsFrameBase,
-    ...ComputerAppApprovalAnswerFrameSchema.shape,
-    type: z.literal("runner.integrations.computer-app-approval-answer"),
-  })
-  .refine(approvalAnswerNamesItsRequest, "An approval answers the setup request it names");
-export type RunnerIntegrationsComputerAppApprovalAnswer = z.infer<
-  typeof RunnerIntegrationsComputerAppApprovalAnswerSchema
->;
-
-/**
- * Asks for the whole list again. A Runner asks whenever its bridge to the
- * desktop connects, because a desktop that started after the stream attached,
- * or was away when the list came, never saw it.
- */
-export const RunnerIntegrationsComputerAppApprovalsSyncSchema = z.strictObject({
-  ...integrationsFrameBase,
-  type: z.literal("runner.integrations.computer-app-approvals-sync"),
-});
-export type RunnerIntegrationsComputerAppApprovalsSync = z.infer<
-  typeof RunnerIntegrationsComputerAppApprovalsSyncSchema
->;
-
-export const RunnerIntegrationsComputerAppApprovalKeyProofSchema = z.strictObject({
-  ...integrationsFrameBase,
-  ...ComputerAppApprovalKeyProofSchema.shape,
-  type: z.literal("runner.integrations.computer-app-approval-key-proof"),
-});
-export type RunnerIntegrationsComputerAppApprovalKeyProof = z.infer<
-  typeof RunnerIntegrationsComputerAppApprovalKeyProofSchema
->;
 
 /** Independent owner authority, bound to this authenticated auxiliary connection; never a Run. */
 export const HostIntegrationsComputerViewSchema = z
@@ -826,9 +745,6 @@ export const HostToIntegrationsModuleMessageSchema = z
     HostIntegrationsComputerViewSchema,
     HostIntegrationsComputerUseStopRecordedSchema,
     HostIntegrationsCancelSchema,
-    HostIntegrationsComputerAppApprovalsSchema,
-    HostIntegrationsComputerAppApprovalOutcomeSchema,
-    HostIntegrationsComputerAppApprovalKeyChallengeSchema,
     HostIntegrationsMcpOpenSchema,
     HostIntegrationsMcpMessageSchema,
     HostIntegrationsMcpCloseSchema,
@@ -855,9 +771,6 @@ export const IntegrationsModuleEventSchema = z
     RunnerIntegrationsResultSchema,
     RunnerIntegrationsComputerUseResultSchema,
     RunnerIntegrationsComputerUseEventSchema,
-    RunnerIntegrationsComputerAppApprovalAnswerSchema,
-    RunnerIntegrationsComputerAppApprovalsSyncSchema,
-    RunnerIntegrationsComputerAppApprovalKeyProofSchema,
     RunnerIntegrationsMcpOpenedSchema,
     RunnerIntegrationsMcpMessageSchema,
     RunnerIntegrationsMcpClosedSchema,

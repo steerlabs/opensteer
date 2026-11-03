@@ -88,9 +88,7 @@ describe("plugin package cache", () => {
 });
 
 it("resolves an approved MCP launch entirely against this Runner's cached package and data", async () => {
-  const { LocalMcpServers, LocalMcpApprovals } =
-    await import("../computer-apps/local-mcp-servers.js");
-  const { localMcpLaunchDigest } = await import("@opensteer/integration-core/digest");
+  const { LocalMcpServers } = await import("../computer-apps/local-mcp-servers.js");
   const f = await fixture();
   const script = {
     path: "server.cjs",
@@ -116,7 +114,6 @@ it("resolves an approved MCP launch entirely against this Runner's cached packag
   };
   const mcp = new LocalMcpServers({
     stateDirectory: f.stateDirectory,
-    approvals: new LocalMcpApprovals(join(f.stateDirectory, "approvals.json")),
   });
   const frames: { type: string }[] = [];
   mcp.attach(async (frame) => {
@@ -130,10 +127,6 @@ it("resolves an approved MCP launch entirely against this Runner's cached packag
     packageSource: { url: "https://host/package", token: "test" },
   } as Parameters<typeof mcp.open>[0];
   try {
-    await mcp.open(frame);
-    expect(frames.at(-1)?.type).toBe("runner.integrations.mcp.closed");
-    expect(fetchSnapshot).not.toHaveBeenCalled();
-    mcp.allow({ serverId: frame.serverId, launchDigest: localMcpLaunchDigest(launch) });
     await mcp.open(frame);
     expect(frames.at(-1)?.type).toBe("runner.integrations.mcp.opened");
     const data = join(f.stateDirectory, "plugin-data/test");

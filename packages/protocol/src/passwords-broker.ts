@@ -1,3 +1,7 @@
+import {
+  PasswordsBrokerAccountSchema,
+  PasswordsBrokerAccountsSchema,
+} from "./password-sign-in-accounts.js";
 import { BrowserSiteSchema, WorkspaceIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -15,10 +19,14 @@ import {
  * field release revalidates the live transaction, login, grant and origin.
  */
 export const passwordsBrokerProtocolVersion = 4;
-/** New authorities explicitly opt in; existing desktop callers keep their v4 wire. */
-export const passwordsBrokerLatestProtocolVersion = 5;
-export const passwordsBrokerSupportedProtocolVersions = [5, 4] as const;
-export const PasswordsBrokerProtocolVersionSchema = z.union([z.literal(4), z.literal(5)]);
+/** Current authorities explicitly negotiate 6; legacy read/release callers retain their scope. */
+export const passwordsBrokerLatestProtocolVersion = 6;
+export const passwordsBrokerSupportedProtocolVersions = [6, 5, 4] as const;
+export const PasswordsBrokerProtocolVersionSchema = z.union([
+  z.literal(4),
+  z.literal(5),
+  z.literal(6),
+]);
 export const PasswordsPermissionVersionSchema = z.union([z.literal(4), z.literal(5)]);
 export const passwordsBrokerMaxFrameBytes = 256 * 1_024;
 
@@ -29,6 +37,7 @@ export const PasswordsBrokerMethodSchema = z.enum([
   "signin.probe",
   "signin.request",
   "signin.approve",
+  "signin.commit",
   "signin.release",
   "signin.cancel",
 ]);
@@ -141,18 +150,18 @@ export type PasswordsBrokerSignInRequestParams = z.infer<
 >;
 
 /** Scope is pinned on the transaction, including approvals that create no grant. */
-export const PasswordsBrokerSignInRequestV5ParamsSchema = z.strictObject({
+export const PasswordsBrokerSignInRequestV6ParamsSchema = z.strictObject({
   ...PasswordSignInRequesterSchema.shape,
-  protocolVersion: z.literal(5),
-  // Protocol 4 stays origin-only; every protocol-5 transaction asks for consent that covers apps.
+  protocolVersion: z.literal(6),
+  // Protocol 4 stays origin-only; every modern transaction asks for consent that covers apps.
   permissionVersion: z.literal(5),
   expiresAt: z.iso.datetime({ offset: true }),
   site: BrowserSiteSchema,
   transactionId: z.uuid(),
   workspaceId: WorkspaceIdSchema,
 });
-export type PasswordsBrokerSignInRequestV5Params = z.infer<
-  typeof PasswordsBrokerSignInRequestV5ParamsSchema
+export type PasswordsBrokerSignInRequestV6Params = z.infer<
+  typeof PasswordsBrokerSignInRequestV6ParamsSchema
 >;
 
 /** The authorized login's public descriptor. No field value is released. */
@@ -164,19 +173,11 @@ export const PasswordsBrokerLoginSchema = z.strictObject({
 });
 export type PasswordsBrokerLogin = z.infer<typeof PasswordsBrokerLoginSchema>;
 
-/** A saved login the person can choose for a site; never its password. */
-export const PasswordsBrokerAccountSchema = z.strictObject({
-  host: z.string().min(1).max(253),
-  id: z.uuid(),
-  onPage: z.boolean(),
-  updatedAt: z.iso.datetime({ offset: true }),
-  label: z.string().min(1).max(200).nullable(),
-  revision: PasswordsBrokerLoginSchema.shape.revision,
-  username: z.string().max(1_024),
-});
-export type PasswordsBrokerAccount = z.infer<typeof PasswordsBrokerAccountSchema>;
-export const PasswordsBrokerAccountsSchema = z.array(PasswordsBrokerAccountSchema).max(100);
-
+export {
+  PasswordsBrokerAccountSchema,
+  PasswordsBrokerAccountsSchema,
+  type PasswordsBrokerAccount,
+} from "./password-sign-in-accounts.js";
 const PasswordsBrokerAuthorizedDecisionSchema = z.strictObject({
   decision: z.literal("authorized"),
   login: PasswordsBrokerLoginSchema,
@@ -207,11 +208,11 @@ export const PasswordsBrokerTransactionParamsSchema = z.strictObject({ transacti
 
 /**
  * Allow (`remember`, which grants the login to this Workspace for the site) or
- * Only this time. The broker authenticates the person for exactly this login
- * at this revision; a cancelled or failed authentication is an `invalid` error
- * whose message the card shows, and the card stays.
+ * Only this time. The broker prepares the exact login revision and consent;
+ * only signin.commit after durable Host acceptance enables release and grants.
  */
 export const PasswordsBrokerSignInApproveParamsSchema = z.strictObject({
+  permissionVersion: z.literal(5),
   loginId: PasswordsBrokerAccountSchema.shape.id,
   remember: z.boolean(),
   revision: PasswordsBrokerAccountSchema.shape.revision,
@@ -249,7 +250,7 @@ export type PasswordsBrokerSignInReleaseParams = z.infer<
   typeof PasswordsBrokerSignInReleaseParamsSchema
 >;
 /** An app release is explicit; omitting origin on a v4 release never widens consent. */
-export const PasswordsBrokerSignInReleaseV5ParamsSchema = z.discriminatedUnion("kind", [
+export const PasswordsBrokerSignInReleaseV6ParamsSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     transactionId: z.uuid(),
     field: PasswordsBrokerSignInReleaseParamsSchema.shape.field,
@@ -257,8 +258,8 @@ export const PasswordsBrokerSignInReleaseV5ParamsSchema = z.discriminatedUnion("
   }),
   PasswordsBrokerSignInReleaseParamsSchema.extend({ kind: z.literal("browser") }),
 ]);
-export type PasswordsBrokerSignInReleaseV5Params = z.infer<
-  typeof PasswordsBrokerSignInReleaseV5ParamsSchema
+export type PasswordsBrokerSignInReleaseV6Params = z.infer<
+  typeof PasswordsBrokerSignInReleaseV6ParamsSchema
 >;
 export const PasswordsBrokerSignInReleaseResultSchema = z.discriminatedUnion("released", [
   z.strictObject({ released: z.literal(true), value: z.string().max(4_096) }),
@@ -275,15 +276,16 @@ export type PasswordsBrokerSignInReleaseResult = z.infer<
 export const passwordsBrokerRequests = {
   hello: PasswordsBrokerHelloParamsSchema,
   "signin.approve": PasswordsBrokerSignInApproveParamsSchema,
+  "signin.commit": PasswordsBrokerTransactionParamsSchema,
   "signin.cancel": PasswordsBrokerTransactionParamsSchema,
   "signin.probe": PasswordsBrokerSignInProbeParamsSchema,
   "signin.request": z.union([
     PasswordsBrokerSignInRequestParamsSchema,
-    PasswordsBrokerSignInRequestV5ParamsSchema,
+    PasswordsBrokerSignInRequestV6ParamsSchema,
   ]),
   "signin.release": z.union([
     PasswordsBrokerSignInReleaseParamsSchema,
-    PasswordsBrokerSignInReleaseV5ParamsSchema,
+    PasswordsBrokerSignInReleaseV6ParamsSchema,
   ]),
   status: PasswordsBrokerEmptySchema,
   "window.open": PasswordsBrokerEmptySchema,
@@ -293,6 +295,7 @@ export const passwordsBrokerRequests = {
 export const passwordsBrokerResults = {
   hello: PasswordsBrokerHelloResultSchema,
   "signin.approve": PasswordsBrokerSignInApproveResultSchema,
+  "signin.commit": z.strictObject({ committed: z.boolean() }),
   "signin.cancel": PasswordsBrokerEmptySchema,
   "signin.probe": PasswordsBrokerSignInProbeResultSchema,
   "signin.request": PasswordsBrokerSignInDecisionSchema,

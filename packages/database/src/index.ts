@@ -1,6 +1,7 @@
 export * from "./account-directory-store.js";
 export * from "./agent-control-admission.js";
 export * from "./attachment-store.js";
+export * from "./app-store.js";
 export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
@@ -24,13 +25,13 @@ export * from "./workspace-tab-store.js";
 export { BrowserHistoryStore } from "./browser-history-store.js";
 export * from "./browser-profile-storage-store.js";
 export * from "./notification-preview-key-store.js";
-export type {
-  PersonNotificationInput,
-  PersonNotificationResult,
-} from "./person-notification-store.js";
+export type { PersonMessageInput, PersonMessageResult } from "./person-message-store.js";
 
 export { withDatabaseOperationSignal, withoutDatabaseOperationSignal } from "./operation-budget.js";
 
 export * from "./resource-access.js";
 
 export * from "./specialist-store.js";
+export { readIntegrationAccountBinding } from "./integration-account-binding.js";
+
+export { requestSettlementActor } from "./request-settlement.js";

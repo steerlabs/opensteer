@@ -33,9 +33,8 @@ final class SignInTests: BrokerTestCase {
       try await desktop.call("signin.release", Fixtures.release(id)).result?["reason"],
       .string("ended"))
 
-    let reply = try await desktop.call(
-      "signin.approve", Fixtures.approve(id, accounts[0], remember: false))
-    XCTAssertEqual(presence.askCount, asked + 1)
+    let reply = try await desktop.allow(Fixtures.approve(id, accounts[0], remember: false))
+    XCTAssertEqual(presence.askCount, asked)
     let item = try XCTUnwrap(reply.result?["login"], "\(reply)")
     XCTAssertEqual(reply.result?["decision"], .string("authorized"))
     XCTAssertEqual(item["account"], .string("a•••@example.com"))
@@ -59,57 +58,8 @@ final class SignInTests: BrokerTestCase {
 
   /// X2: a cancelled, failed or impossible authentication releases nothing,
   /// says why in a sentence the card shows, and the sign-in still waits.
-  func testCancelledAuthenticationReleasesNothing() async throws {
-    try await harness.ready(items: [Fixtures.login()])
-    let desktop = try await harness.client()
-    let id = UUID().uuidString.lowercased()
-    let account = try unwrap(try choose(try await request(desktop, id)).first)
-    presence.next(.cancel, .fail, .unavailable)
-    for message in [Copy.authenticationCancelled, Copy.notConfirmed, Copy.cannotAuthenticate] {
-      same(
-        try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true)),
-        .error(code: "invalid", message: message))
-    }
-    XCTAssertTrue(try harness.savedGrants().isEmpty)
-    same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
-        .result?["decision"],
-      .string("authorized"), "the card stayed and the next try works")
-  }
 
   /// X3: every approval authenticates on its own; one showing blocks a second.
-  func testEveryApprovalAuthenticatesOnItsOwn() async throws {
-    try await harness.ready(items: [Fixtures.login()])
-    let desktop = try await harness.client()
-    let first = UUID().uuidString.lowercased()
-    let second = UUID().uuidString.lowercased()
-    let firstAccount = try unwrap(try choose(try await request(desktop, first)).first)
-    let secondAccount = try unwrap(
-      try choose(
-        try await desktop.call("signin.request", Fixtures.request(second, session: "bsn_second"))
-          .result ?? .null
-      )
-      .first)
-    let asked = presence.askCount
-    presence.next(.holdThenConfirm)
-    let held = desktop.send(
-      "signin.approve", Fixtures.approve(first, firstAccount, remember: false))
-    try await harness.eventually("the first authentication showing") { presence.holdingCount == 1 }
-    same(
-      try await desktop.call(
-        "signin.approve", Fixtures.approve(first, firstAccount, remember: false)),
-      .error(code: "invalid", message: Copy.signInMovedOn),
-      "a second answer while one authenticates")
-    same(
-      try await desktop.call(
-        "signin.approve", Fixtures.approve(second, secondAccount, remember: false)
-      ).result?["decision"],
-      .string("authorized"), "the other sign-in asks on its own")
-    presence.releaseHeld()
-    same(try await desktop.reply(to: held).result?["decision"], .string("authorized"))
-    XCTAssertEqual(presence.askCount, asked + 2, "one authentication per approval, never shared")
-    XCTAssertEqual(presence.confirmCount, asked + 2)
-  }
 
   func testReleaseIsScopedToTheSite() async throws {
     try await harness.ready(items: [
@@ -125,7 +75,7 @@ final class SignInTests: BrokerTestCase {
       accounts.map { $0["username"] }, [.string("shared")],
       "the login only for example.org is not offered")
     let item = try unwrap(
-      try await desktop.call("signin.approve", Fixtures.approve(id, accounts[0], remember: false))
+      try await desktop.allow(Fixtures.approve(id, accounts[0], remember: false))
         .result?["login"])
     XCTAssertNil(item["origins"], "authorization carries no saved destinations")
     same(
@@ -186,10 +136,10 @@ final class SignInTests: BrokerTestCase {
     let id = UUID().uuidString.lowercased()
     let account = try unwrap(try choose(try await request(owner, id)).first)
     same(
-      try await other.call("signin.approve", Fixtures.approve(id, account, remember: true)),
+      try await other.allow(Fixtures.approve(id, account, remember: true)),
       .error(code: "invalid", message: Copy.signInEnded))
     same(
-      try await owner.call("signin.approve", Fixtures.approve(id, account, remember: false))
+      try await owner.allow(Fixtures.approve(id, account, remember: false))
         .result?["decision"],
       .string("authorized"))
     same(
@@ -216,7 +166,7 @@ final class SignInTests: BrokerTestCase {
       try Data("tampered".utf8).write(to: objects.appendingPathComponent(name))
     }
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
+      try await desktop.allow(Fixtures.approve(id, account, remember: true))
         .errorCode, "internal")
     try await harness.eventually("the vault reported damaged") {
       broker.condition == .needsReset(.damaged)
@@ -242,23 +192,6 @@ final class SignInTests: BrokerTestCase {
 
   /// X26: an authentication that finishes after its sign-in ended releases
   /// and grants nothing.
-  func testLateAuthenticationIsIgnored() async throws {
-    try await harness.ready(items: [Fixtures.login()])
-    let desktop = try await harness.client()
-    let id = UUID().uuidString.lowercased()
-    let account = try unwrap(try choose(try await request(desktop, id)).first)
-    presence.next(.holdThenConfirm)
-    let approve = desktop.send("signin.approve", Fixtures.approve(id, account, remember: true))
-    try await harness.eventually("the authentication showing") { presence.holdingCount == 1 }
-    same(try await desktop.call("signin.cancel", Fixtures.transaction(id)).result, .object([:]))
-    same(
-      try await desktop.reply(to: approve), .error(code: "unavailable", message: Copy.signInEnded))
-    presence.releaseHeld()
-    try await harness.eventually("the authentication finished") { presence.holdingCount == 0 }
-    try await Task.sleep(nanoseconds: 100_000_000)
-    XCTAssertEqual(desktop.pendingFrameCount, 0, "nothing else was answered")
-    XCTAssertTrue(try harness.savedGrants().isEmpty, "nothing was granted")
-  }
 
   /// X27, M6: the approval is bound to the login's ID and
   /// revision across the authentication. A login changed or deleted while
@@ -285,32 +218,28 @@ final class SignInTests: BrokerTestCase {
         password: "synthetic-alex-new", totp: nil, label: nil))
     let asked = presence.askCount
     let changed = try unwrap(
-      try await desktop.call("signin.approve", Fixtures.approve(id, alex, remember: true)).result)
+      try await desktop.allow(Fixtures.approve(id, alex, remember: true)).result)
     XCTAssertEqual(changed["message"], .string(Copy.accountChanged))
     let fresh = try choose(changed)
     XCTAssertEqual(
       fresh.map { $0["username"] }, [.string("alex@example.com"), .string("anna@example.com")])
     XCTAssertEqual(fresh.map { $0["revision"] }, [.integer(2), .integer(1)])
-    XCTAssertEqual(presence.askCount, asked + 1, "checked again after the authentication")
+    XCTAssertEqual(presence.askCount, asked, "checked again after the authentication")
     XCTAssertTrue(try harness.savedGrants().isEmpty, "nothing was granted")
 
     // The revision first shown is no longer on offer: answered with the offer, before asking.
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, alex, remember: true)).result,
+      try await desktop.allow(Fixtures.approve(id, alex, remember: true)).result,
       .object([
         "accounts": .array(fresh), "decision": .string("approve"),
         "message": .string(Copy.accountChanged),
       ]))
-    XCTAssertEqual(presence.askCount, asked + 1)
+    XCTAssertEqual(presence.askCount, asked)
 
-    // Deleted while the authentication showed.
-    presence.next(.holdThenConfirm)
-    let held = desktop.send("signin.approve", Fixtures.approve(id, fresh[1], remember: true))
-    try await harness.eventually("the authentication showing") { presence.holdingCount == 1 }
+    // Deleted while the account chooser was visible.
     _ = try await broker.deleteLogin(id: annaID)
-    presence.releaseHeld()
     same(
-      try await desktop.reply(to: held).result,
+      try await desktop.allow(Fixtures.approve(id, fresh[1], remember: true)).result,
       .object([
         "accounts": .array([fresh[0]]), "decision": .string("approve"),
         "message": .string(Copy.accountGone),
@@ -319,7 +248,7 @@ final class SignInTests: BrokerTestCase {
 
     // What is offered now goes through, as it is now.
     let item = try unwrap(
-      try await desktop.call("signin.approve", Fixtures.approve(id, fresh[0], remember: true))
+      try await desktop.allow(Fixtures.approve(id, fresh[0], remember: true))
         .result?["login"])
     XCTAssertNil(item["password"])
     same(
@@ -339,7 +268,7 @@ final class SignInTests: BrokerTestCase {
     _ = try await broker.showLogins()
     _ = try await broker.deleteLogin(id: try unwrap(account["id"]?.string))
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
+      try await desktop.allow(Fixtures.approve(id, account, remember: false))
         .result,
       .object([
         "accounts": .array([]), "decision": .string("approve"),
@@ -359,23 +288,23 @@ final class SignInTests: BrokerTestCase {
       "id": .string(UUID().uuidString.lowercased()), "revision": .integer(1),
     ])
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, stranger, remember: false)),
+      try await desktop.allow(Fixtures.approve(id, stranger, remember: false)),
       .error(code: "invalid", message: Copy.notOffered))
     same(
-      try await desktop.call(
-        "signin.approve", Fixtures.approve(UUID().uuidString.lowercased(), account, remember: false)
+      try await desktop.allow(
+        Fixtures.approve(UUID().uuidString.lowercased(), account, remember: false)
       ),
       .error(code: "invalid", message: Copy.signInEnded))
     XCTAssertEqual(presence.askCount, asked)
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
+      try await desktop.allow(Fixtures.approve(id, account, remember: false))
         .result?["decision"],
       .string("authorized"))
     same(
-      try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false)),
+      try await desktop.allow(Fixtures.approve(id, account, remember: false)),
       .error(code: "invalid", message: Copy.signInMovedOn), "after a release")
 
-    XCTAssertEqual(presence.askCount, asked + 1)
+    XCTAssertEqual(presence.askCount, asked)
   }
 
   /// X29, P2: the probe says only whether Passwords could sign in, and never asks.
@@ -437,7 +366,7 @@ final class SignInTests: BrokerTestCase {
       [prefix + "-one", prefix + "-two", "alex@example.com"])
     XCTAssertEqual(accounts[2]["label"], .string("Work"))
     XCTAssertEqual(accounts[0]["label"], .null)
-    _ = try await desktop.call("signin.approve", Fixtures.approve(id, accounts[2], remember: false))
+    _ = try await desktop.allow(Fixtures.approve(id, accounts[2], remember: false))
     _ = try await desktop.call(
       "signin.release", Fixtures.release(id, origin: "https://login.example.com"))
     _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
@@ -449,18 +378,4 @@ final class SignInTests: BrokerTestCase {
 
   /// P3, U2: the broker writes what the prompt allows, naming the Workspace,
   /// site and whole username, cleaned of text that could reorder it.
-  func testAuthenticationNamesWhatItAllows() async throws {
-    try await harness.ready(items: [Fixtures.login(username: "alex@example.com")])
-    let desktop = try await harness.client()
-    let id = UUID().uuidString.lowercased()
-    let decision = try await request(
-      desktop, id, workspace: (Fixtures.workspace.0, "Ma\u{202E}in\u{200B}"))
-    let account = try XCTUnwrap(try choose(decision).first)
-    presence.next(.cancel)
-    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: true))
-    XCTAssertEqual(
-      presence.lastReason, "let agents in Main sign in to example.com as alex@example.com")
-    _ = try await desktop.call("signin.approve", Fixtures.approve(id, account, remember: false))
-    XCTAssertEqual(presence.lastReason, "sign in to example.com as alex@example.com once")
-  }
 }

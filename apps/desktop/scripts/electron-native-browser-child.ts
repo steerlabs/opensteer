@@ -1338,9 +1338,8 @@ function bridgeOptions(
     localVisibility: { getSnapshot: () => true, subscribe },
     agentPhone: { readArtifact: async () => null, chooseUsbDevice: unavailable },
     computerApps: {
-      approvalKey: unavailable,
       dragIcon: unavailable,
-      review: unavailable,
+
       setup: {
         begin: unavailable,
         close: unavailable,
@@ -1352,8 +1351,7 @@ function bridgeOptions(
     },
     computerUse: {
       onActivationError: unavailable,
-      approvalGet: unavailable,
-      approvalRespond: unavailable,
+
       closePermissionsPanel: unavailable,
       openPermissionsPanel: unavailable,
       verifyBundledHelper: unavailable,
@@ -1364,20 +1362,7 @@ function bridgeOptions(
     fullDiskAccess: { check: unavailable, closePanel: unavailable, request: unavailable },
     passwords: {
       open: unavailable,
-      signIns: {
-        approve: unavailable,
-        get: unavailable,
-        subscribe,
-      },
       status: unavailable,
-      subscribe,
-    },
-    personalRemote: {
-      configure: unavailable,
-      issuePairingCode: unavailable,
-      get status() {
-        return unavailable();
-      },
       subscribe,
     },
     portal: { openExternal: unavailable, pickFolder: unavailable },

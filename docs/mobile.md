@@ -6,12 +6,16 @@ The mobile app is a Deployment client; execution stays on Runners. It never inst
 or offers to install apps, including the separate [Agent Phone](agent-phone.md).
 Files and terminal remain web/desktop surfaces because each adds a protocol and UI
 to maintain. [Connections](connections.md) owns discovery and credentials;
-[Host boundaries](host-boundaries.md) owns compatibility and machine-local authority.
+[Host boundaries](host-boundaries.md) owns compatibility and session authority.
 
-A phone always resolves with a null local runtime. It cannot exercise the computer's
-owner arm. Mac app approval and saved-password approval happen on the named Mac;
-the phone may decline, narrow access or stop use, but cannot register that Mac's
-approval key. Agent Phone access follows [its owner contract](agent-phone.md#7-access-and-stop).
+A phone has no local desktop runtime and needs none. Saved-password consent uses
+the requester's Host session from any signed-in device; the native mobile app
+confirms each Allow/Only this time with OS device-owner authentication. Account
+choices stay in transient UI memory. Adding this native module or its Face ID
+usage description requires rebuilding the native client; a JavaScript update
+alone does not enable it. Computer app approvals use the computer owner's
+authenticated Host session from any device; OS grants still happen on the
+computer. Agent Phone access follows [its owner contract](agent-phone.md#7-access-and-stop).
 
 ## Attachment and identity
 
@@ -249,13 +253,13 @@ revocation follows while credentials remain; failure cannot undo the local stop.
 Every add, approval and registration is fenced across awaits. Enrollment requires
 Host support and cannot move a phone held by another Deployment.
 
-Only a person's tap may prompt or sign: an app's switch or level, a request's
+Only a person's tap may prompt or approve: an app's switch or level, a request's
 Allow, or Add. Add lists every app and level it turns on, so its tap is their
 review; it turns them on one at a time, so iOS asks about one app at once, each
-request is signed alone, and a refusal skips only that app. Switches on the add
-screen are a draft until Add. Read iOS permission back before requesting or signing. Calendar add-only is
+app is approved separately through the Host, and a refusal skips only that app. Switches on the add
+screen are a draft until Add. Read iOS permission back before requesting access. Calendar add-only is
 insufficient; limited Contacts/Photos are sufficient, and picker dismissal is not
-refusal. Sign only the exact currently listed request, app and access.
+refusal. Answer only the exact currently listed request, app and access, using the computer owner’s authenticated Host session.
 
 New setup requires both the installed permission capability and Host catalog
 definition before prompting. For an existing Location/Photos request, a known
@@ -267,13 +271,15 @@ Location and Photos are read only. Explain Allow Once expiry and approximate
 Location. PhotoKit's broader permission label does not authorize writes or image
 transfer; send photos through chat attachments.
 
-Lost approval answers are read back, never blindly signed again. Keep existing
+Lost approval answers are read back, never blindly sent again. Keep existing
 access during expansion. Unknown status stays unverified; reconnect checks without
-signing. Usability requires Host access, OS permission and a live connection.
+approving. Usability requires Host access, OS permission and a live connection.
 Narrowing/revocation needs only the Host and works while the iPhone is offline;
 it stops new use, never promises to undo returned data or completed changes.
 
 ## Native compatibility
+
+Opensteer Apps require a rebuilt binary with `react-native-webview`.
 
 Keep Expo's generated UIKit scene lifecycle as the sole startup/link owner. The
 iOS 27 SDK requires it; multiple scenes are disabled to preserve one navigation

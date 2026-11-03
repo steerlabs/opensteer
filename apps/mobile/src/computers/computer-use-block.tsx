@@ -1,50 +1,4 @@
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
-import {
-  askForEachComputerUseApp,
-  cancelComputerUseSetup,
-  computerUseApprovalKeyStep,
-  computerUseAccessLabel,
-  computerUseAddAppsOn,
-  computerUseAppApprovalDetail,
-  computerUseAppApprovalLabel,
-  computerUseAppApprovalsTitle,
-  computerUseApproveOn,
-  computerUseAutomaticFootnote,
-  computerUseFirstRun,
-  computerUseGrantLabel,
-  computerUseGrantOrder,
-  computerUseGrantPurpose,
-  computerUseInstallOn,
-  computerUseIntroduction,
-  computerUsePendingAction,
-  computerUseSessionTitle,
-  computerUseSetUpFrom,
-  computerUseSetUpFromSteps,
-  computerUseSetupQuestion,
-  computerUseStatusLine,
-  computerUseStop,
-  computerUseStops,
-  computerUseStopSentence,
-  computerUseTakeBack,
-  computerUseTone,
-  computerUseTurnOnFrom,
-  computerUseUnblockOn,
-  phoneUseIntroduction,
-  phoneUseStatusLine,
-  phoneUseTone,
-  takeBackComputerUseApp,
-  type ComputerUseAppRow,
-  type ComputerUsePendingApp,
-  type ComputerUseTone,
-  type ComputerUseView,
-  type ComputerUseViewer,
-  type PhoneUseView,
-} from "@opensteer/client/integrations";
-import { useComputerUseStop } from "@opensteer/client/react";
-import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
-import { type ReactNode } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { color, material, radius, space, touchTarget } from "../theme.js";
+import { ActivityIndicator, Modal, Pressable, ScrollView, TextInput, View } from "react-native";
 import {
   AppText,
   Notice,
@@ -55,21 +9,47 @@ import {
   StatusDot,
 } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { AppMark, MacAppIcon } from "./app-mark.js";
-import { FailureText, useBlockActions } from "./block-actions.js";
+import { MacAppIcon } from "./app-mark.js";
+import { FailureText } from "./block-actions.js";
+import { useComputerAppApproval } from "./computer-app-approval.js";
+import { unwrapRpcResult } from "@opensteer/client/host";
+import type { ComputerUseInstalledApp } from "@opensteer/protocol";
+import { useState } from "react";
 
-/**
- * Computer use on one Mac, from the phone.
- *
- * It is the web's block read from the same shared model, so the two say the
- * same thing in the same words, minus everything only the Mac can do: the
- * macOS panels, approving or adding an app, and turning automatic approval
- * on. What the phone can do is what narrows access — Stop, Remove, Block,
- * Decline, and turning automatic approval off — which is exactly what someone
- * away from the Mac needs.
- */
+import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import {
+  askForEachComputerUseApp,
+  cancelComputerUseSetup,
+  computerUseAccessLabel,
+  computerUseAppApprovalDetail,
+  computerUseAppApprovalLabel,
+  computerUseSessionTitle,
+  computerUseSetUpFromSteps,
+  computerUseStatusLine,
+  computerUseStop,
+  computerUseStops,
+  computerUseStopSentence,
+  computerUseTakeBack,
+  phoneUseIntroduction,
+  phoneUseStatusLine,
+  phoneUseTone,
+  takeBackComputerUseApp,
+  type ComputerUseAppRow,
+  type ComputerUseTone,
+  type ComputerUseView,
+  type ComputerUseViewer,
+  type PhoneUseView,
+} from "@opensteer/client/integrations";
+import { useComputerUseStop } from "@opensteer/client/react";
+import type { ComputerUseSessionSummary, MachineSummary } from "@opensteer/protocol";
+import { type ReactNode } from "react";
+import { StyleSheet } from "react-native";
+import { color, material, radius, space, touchTarget } from "../theme.js";
+
+import { useBlockActions } from "./block-actions.js";
+
+/** Owner approvals work here; macOS grants still require the target Mac. */
 export function ComputerUseBlock(props: {
-  /** False while the Host is unreachable: nothing is changed on a guess. */
   readonly canRespond: boolean;
   readonly hostClient: HostClient;
   readonly machine: MachineSummary;
@@ -78,187 +58,208 @@ export function ComputerUseBlock(props: {
   readonly view: ComputerUseView;
 }): ReactNode {
   const { hostClient, machine, view } = props;
+  const approval = useComputerAppApproval(hostClient);
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
-  // The phone is never the Mac: every place is named.
-  const viewer: ComputerUseViewer = { here: false, machineName: machine.name };
-  const state = view.state;
-  const ready = state.kind === "ready";
-  const automatic = view.appApproval === "automatic";
-  const firstRun = computerUseFirstRun(view);
-  const disabled = !props.canRespond || busy !== null;
-
+  const [apps, setApps] = useState<readonly ComputerUseInstalledApp[] | null>(null);
+  const [query, setQuery] = useState("");
+  const viewer = { here: false, machineName: machine.name };
+  const disabled = !props.canRespond || busy !== null || machine.ownership === "other";
+  async function request(
+    input:
+      | {
+          readonly kind: "app";
+          readonly app: ComputerUseAppRow["identity"];
+          readonly access: "read" | "read-write";
+        }
+      | { readonly kind: "policy"; readonly appApproval: "automatic" },
+  ) {
+    const result = await hostClient.dispatch({
+      type: "integration.computer.setup.request",
+      idempotencyKey: mutationIdempotencyKey(`computer-app:${machine.id}`),
+      input:
+        input.kind === "app"
+          ? { ...input, definitionId: view.definition.id, runnerId: machine.id }
+          : { ...input, runnerId: machine.id },
+    });
+    if (result.type !== "integration.computer.setup.request")
+      throw new Error("The approval was not requested.");
+    await approval.ask(result.request.id);
+  }
+  async function listApps(search: string) {
+    const result = unwrapRpcResult(
+      await hostClient.rpc["integration.computer.apps.installed"]({
+        runnerId: machine.id,
+        query: search,
+        limit: 100,
+        offset: 0,
+        icons: false,
+      }),
+    );
+    if (result.unavailableReason) throw new Error("The computer can't list apps right now.");
+    setApps(result.apps);
+  }
   return (
     <View style={styles.block}>
-      <View accessibilityRole="summary" style={styles.status}>
-        <ToneDot tone={computerUseTone(view)} />
-        <AppText role="secondary" style={styles.statusText} tone="soft">
-          {computerUseStatusLine(view, viewer)}
-        </AppText>
-      </View>
-
-      {state.kind === "permission-required" || firstRun ? (
-        <AppText role="secondary" tone="muted">
-          {computerUseIntroduction(viewer)}
-        </AppText>
+      {approval.dialog}
+      <AppText role="secondary">{computerUseStatusLine(view, viewer)}</AppText>
+      {view.state.kind === "permission-required" ? (
+        <Notice title="macOS permissions needed" detail={computerUseSetUpFromSteps(machine.name)} />
       ) : null}
-
-      {state.kind === "unavailable" ? (
-        <AppText role="secondary" tone="muted">
-          {computerUseInstallOn(machine.name)}
-        </AppText>
-      ) : null}
-
-      {(state.kind === "ready" || state.kind === "permission-required") &&
-      view.approvalKeyId === null ? (
-        <Notice
-          detail={computerUseApprovalKeyStep(viewer)}
-          title="App approvals need setup"
-          tone="neutral"
+      <SecondaryButton
+        label="Add app"
+        disabled={disabled || view.state.kind === "offline"}
+        onPress={() => run("list", () => listApps(""))}
+      />
+      <FailureText detail={failureFor("add-app")} />
+      {view.sessions.map((session) => (
+        <SessionRow
+          key={session.sessionId}
+          canRespond={props.canRespond}
+          hostClient={hostClient}
+          machineName={machine.name}
+          onOpenThread={props.onOpenThread}
+          session={session}
         />
-      ) : null}
-
-      {state.kind === "permission-required" ? (
-        <View style={styles.section}>
-          <RowGroup>
-            {computerUseGrantOrder.map((grant) => {
-              const done = !state.missing.includes(grant);
-              return (
-                <View
-                  accessibilityLabel={`${computerUseGrantLabel[grant]}, ${done ? "on" : "off"}`}
-                  accessible
-                  key={grant}
-                  style={styles.row}
-                >
-                  <Symbol
-                    name={done ? "checkmark.circle.fill" : "circle.dotted"}
-                    size={20}
-                    tint={done ? color.green : color.muted}
-                  />
-                  <View style={styles.rowText}>
-                    <AppText role="body" tone={done ? "muted" : "default"}>
-                      {computerUseGrantLabel[grant]}
-                    </AppText>
-                    <AppText role="secondary" tone="muted">
-                      {computerUseGrantPurpose[grant]}
-                    </AppText>
-                  </View>
-                </View>
+      ))}
+      <SectionLabel>App approvals</SectionLabel>
+      {(["ask", "automatic"] as const).map((choice) => (
+        <PolicyOption
+          key={choice}
+          busy={busy === `policy:${choice}`}
+          checked={view.appApproval === choice}
+          detail={computerUseAppApprovalDetail(choice, machine.name)}
+          disabled={disabled}
+          note={null}
+          title={computerUseAppApprovalLabel[choice]}
+          onPress={() => {
+            if (choice !== view.appApproval)
+              run(`policy:${choice}`, () =>
+                choice === "ask"
+                  ? askForEachComputerUseApp(hostClient, machine.id)
+                  : request({ kind: "policy", appApproval: "automatic" }),
               );
-            })}
-          </RowGroup>
-          <Notice
-            detail={computerUseSetUpFromSteps(machine.name)}
-            title={computerUseSetUpFrom(machine.name)}
-            tone="neutral"
+          }}
+        />
+      ))}
+      {view.apps.map((row) => (
+        <View key={row.connectionId}>
+          <AppRow
+            automatic={view.appApproval === "automatic"}
+            busy={busy === appKey(row.connectionId)}
+            disabled={disabled}
+            failure={failureFor(appKey(row.connectionId))}
+            hostClient={hostClient}
+            machineId={machine.id}
+            machineName={machine.name}
+            onTakeBack={() =>
+              run(appKey(row.connectionId), () =>
+                takeBackComputerUseApp(hostClient, {
+                  appApproval: view.appApproval,
+                  connectionId: row.connectionId,
+                }),
+              )
+            }
+            onUnblock={() =>
+              run(appKey(row.connectionId), () =>
+                request({ kind: "app", app: row.identity, access: row.access }),
+              )
+            }
+            row={row}
+            viewer={viewer}
           />
-        </View>
-      ) : null}
-
-      {view.sessions.length > 0 ? (
-        <View style={styles.section}>
-          {view.sessions.map((session) => (
-            <SessionRow
-              canRespond={props.canRespond}
-              hostClient={hostClient}
-              key={session.sessionId}
-              machineName={machine.name}
-              onOpenThread={props.onOpenThread}
-              session={session}
+          {!row.blocked ? (
+            <SecondaryButton
+              label={row.access === "read" ? "Allow control" : "Read only"}
+              disabled={disabled}
+              onPress={() =>
+                run(appKey(row.connectionId), async () => {
+                  if (row.access === "read")
+                    await request({ kind: "app", app: row.identity, access: "read-write" });
+                  else
+                    await hostClient.dispatch({
+                      type: "integration.computer.setup.set",
+                      idempotencyKey: mutationIdempotencyKey(`computer-app:${row.connectionId}`),
+                      input: {
+                        kind: "app",
+                        runnerId: machine.id,
+                        app: row.identity,
+                        definitionId: view.definition.id,
+                        access: "read",
+                      },
+                    });
+                })
+              }
             />
-          ))}
-        </View>
-      ) : null}
-
-      {ready ? (
-        <View style={styles.section}>
-          <SectionLabel>
-            {firstRun ? computerUseSetupQuestion : computerUseAppApprovalsTitle}
-          </SectionLabel>
-          <View accessibilityRole="radiogroup">
-            <RowGroup>
-              {(["ask", "automatic"] as const).map((choice) => {
-                // Automatic is confirmed in a window on the Mac it covers, so
-                // from here it can only be turned off, never on.
-                const remoteOnly = choice === "automatic" && !automatic;
-                return (
-                  <PolicyOption
-                    busy={busy === `policy:${choice}`}
-                    checked={view.appApproval === choice}
-                    detail={computerUseAppApprovalDetail(choice, machine.name)}
-                    disabled={disabled || remoteOnly}
-                    key={choice}
-                    note={remoteOnly ? computerUseTurnOnFrom(machine.name) : null}
-                    onPress={() => {
-                      if (choice !== "ask" || view.appApproval === "ask") return;
-                      run("policy:ask", () => askForEachComputerUseApp(hostClient, machine.id));
-                    }}
-                    title={computerUseAppApprovalLabel[choice]}
-                  />
-                );
-              })}
-            </RowGroup>
-          </View>
-          {automatic ? (
-            <AppText role="caption" tone="muted">
-              {computerUseAutomaticFootnote(view)}
-            </AppText>
           ) : null}
-          <FailureText detail={failureFor("policy:ask")} />
         </View>
-      ) : null}
-
-      {view.apps.length > 0 || view.pending.length > 0 ? (
-        <View style={styles.section}>
-          <SectionLabel>Apps</SectionLabel>
-          <RowGroup>
-            {[
-              ...view.apps.map((row) => (
-                <AppRow
-                  automatic={automatic}
-                  busy={busy === appKey(row.connectionId)}
-                  disabled={disabled}
-                  failure={failureFor(appKey(row.connectionId))}
-                  hostClient={hostClient}
-                  key={row.connectionId}
-                  machineId={machine.id}
-                  machineName={machine.name}
-                  onTakeBack={() =>
-                    run(appKey(row.connectionId), () =>
-                      takeBackComputerUseApp(hostClient, {
-                        appApproval: view.appApproval,
-                        connectionId: row.connectionId,
-                      }),
-                    )
-                  }
-                  row={row}
-                  viewer={viewer}
-                />
-              )),
-              ...view.pending.map((pending) => (
-                <PendingRow
-                  busy={busy === `cancel:${pending.request.id}`}
-                  disabled={disabled}
-                  failure={failureFor(`cancel:${pending.request.id}`)}
-                  key={pending.request.id}
-                  machineName={machine.name}
-                  onCancel={() =>
-                    run(`cancel:${pending.request.id}`, () =>
-                      cancelComputerUseSetup(hostClient, pending.request.id),
-                    )
-                  }
-                  onOpenThread={props.onOpenThread}
-                  pending={pending}
-                />
-              )),
-            ]}
-          </RowGroup>
+      ))}
+      {view.pending.map((pending) => (
+        <View key={pending.request.id}>
+          <AppText role="body">{pending.identity.displayName}</AppText>
+          <AppText role="secondary">{computerUseAccessLabel[pending.request.access]}</AppText>
+          {pending.request.threadTitle ? (
+            <AppText role="caption">Asked in {pending.request.threadTitle}</AppText>
+          ) : null}
+          <SecondaryButton
+            label="Review"
+            disabled={disabled}
+            onPress={() =>
+              run(pending.request.id, async () => {
+                await approval.ask(pending.request.id);
+              })
+            }
+          />
+          <SecondaryButton
+            label="Decline"
+            disabled={disabled}
+            onPress={() =>
+              run(pending.request.id, () => cancelComputerUseSetup(hostClient, pending.request.id))
+            }
+          />
+          <FailureText detail={failureFor(pending.request.id)} />
         </View>
-      ) : null}
-
-      {ready ? (
-        <AppText role="caption" tone="muted">
-          {computerUseAddAppsOn(machine.name)}
-        </AppText>
+      ))}
+      <FailureText
+        detail={failureFor("list") ?? failureFor("policy:automatic") ?? failureFor("policy:ask")}
+      />
+      {apps !== null ? (
+        <Modal visible presentationStyle="pageSheet" onRequestClose={() => setApps(null)}>
+          <View
+            style={{
+              flex: 1,
+              padding: space[24],
+              paddingTop: space[48],
+              backgroundColor: color.surface,
+            }}
+          >
+            <TextInput
+              accessibilityLabel="Search installed apps"
+              value={query}
+              onChangeText={setQuery}
+              onSubmitEditing={() => run("list", () => listApps(query))}
+            />
+            <SecondaryButton label="Search" onPress={() => run("list", () => listApps(query))} />
+            <ScrollView>
+              {apps.map((app) => (
+                <View key={app.identity.bundleId}>
+                  <AppText role="body">{app.identity.displayName}</AppText>
+                  {(["read", "read-write"] as const).map((access) => (
+                    <SecondaryButton
+                      key={access}
+                      label={computerUseAccessLabel[access]}
+                      disabled={disabled}
+                      onPress={() => {
+                        setApps(null);
+                        run("add-app", () => request({ kind: "app", app: app.identity, access }));
+                      }}
+                    />
+                  ))}
+                </View>
+              ))}
+            </ScrollView>
+            <SecondaryButton label="Close" onPress={() => setApps(null)} />
+          </View>
+        </Modal>
       ) : null}
     </View>
   );
@@ -487,6 +488,7 @@ function AppRow(props: {
   readonly machineId: string;
   readonly machineName: string;
   readonly onTakeBack: () => void;
+  readonly onUnblock: () => void;
   readonly row: ComputerUseAppRow;
   readonly viewer: ComputerUseViewer;
 }): ReactNode {
@@ -528,9 +530,7 @@ function AppRow(props: {
           </View>
         </View>
         {row.blocked ? (
-          <AppText role="caption" style={styles.where} tone="muted">
-            {computerUseUnblockOn(props.viewer)}
-          </AppText>
+          <SecondaryButton label="Unblock" disabled={props.disabled} onPress={props.onUnblock} />
         ) : (
           <SecondaryButton
             accessibilityLabel={`${takeBack.label} ${name}`}
@@ -541,58 +541,6 @@ function AppRow(props: {
             onPress={props.onTakeBack}
           />
         )}
-      </View>
-      <FailureText detail={props.failure} />
-    </View>
-  );
-}
-
-function PendingRow(props: {
-  readonly busy: boolean;
-  readonly disabled: boolean;
-  readonly failure: string | null;
-  readonly machineName: string;
-  readonly onCancel: () => void;
-  readonly onOpenThread: (threadId: string) => void;
-  readonly pending: ComputerUsePendingApp;
-}): ReactNode {
-  const { pending } = props;
-  const name = pending.identity.displayName;
-  const action = computerUsePendingAction(pending);
-  const { threadId, threadTitle } = pending.request;
-  return (
-    <View style={styles.appRow}>
-      <View style={styles.row}>
-        <AppMark blocked={false} name={name} pending />
-        <View style={styles.rowText}>
-          <AppText numberOfLines={1} role="body" tone="soft">
-            {name}
-          </AppText>
-          <AppText role="caption" tone="muted">
-            {`${computerUseAccessLabel[pending.access]} · ${computerUseApproveOn(props.machineName)}`}
-          </AppText>
-          {threadId ? (
-            <Pressable
-              accessibilityHint="Opens the thread"
-              accessibilityRole="link"
-              // A caption line is 18 points; the slop makes it a whole target.
-              hitSlop={{ bottom: 13, left: space[8], right: space[8], top: 13 }}
-              onPress={() => props.onOpenThread(threadId)}
-            >
-              <AppText numberOfLines={1} role="caption" tone="ember">
-                {`Asked in ${threadTitle ?? "Untitled thread"}`}
-              </AppText>
-            </Pressable>
-          ) : null}
-        </View>
-        <SecondaryButton
-          accessibilityLabel={`${action.label} ${name}`}
-          busy={props.busy}
-          compact
-          disabled={props.disabled}
-          label={action.label}
-          onPress={props.onCancel}
-        />
       </View>
       <FailureText detail={props.failure} />
     </View>

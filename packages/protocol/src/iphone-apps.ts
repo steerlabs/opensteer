@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { advertisedRunnerModules, type RunnerDescriptor } from "./runner.js";
 
-export const iphoneIntegrationsProtocolVersion = 1;
+export const iphoneIntegrationsProtocolVersion = 2;
 export const RunnerDeviceProfileSchema = z.enum(["iphone"]);
 export type RunnerDeviceProfile = z.infer<typeof RunnerDeviceProfileSchema>;
 export const iphoneOutdatedReason = "Update Opensteer on this iPhone to keep sharing its apps.";
@@ -31,7 +31,6 @@ export function runnerDescriptorProfileRefusal(
     modules.length !== 1 ||
     modules[0] !== "integrations" ||
     integrations?.platform !== "ios" ||
-    integrations.computerAppApprovals !== true ||
     integrations.loginText !== undefined ||
     integrations.passwordSignIn !== undefined ||
     integrations.ownerViewVersion !== undefined ||

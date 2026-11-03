@@ -216,19 +216,6 @@ interface PersonalRemoteSessionTable {
   createdAt: Timestamp;
 }
 
-/**
- * Positive proof that a session was established at this computer's keyboard.
- * Written only by the local-owner claim, which spends the process-launch
- * capability the application that started this Host holds, and cascaded away
- * with the session itself. "Machine-local" is this row plus a browser cookie,
- * never the absence of some other row: a native access token names the browser
- * session that authorized it, so the marker alone would travel with it.
- */
-interface MachineLocalSessionTable {
-  authSessionId: AuthSessionId;
-  establishedAt: Timestamp;
-}
-
 interface PersonalRemoteAccessTable {
   singletonKey: "personal";
   generation: ColumnType<string, number | string, number | string>;
@@ -237,7 +224,25 @@ interface PersonalRemoteAccessTable {
   updatedAt: Timestamp;
 }
 
+type PersonalRemoteAccountOperation = { readonly id: string } & (
+  | { readonly kind: "activate" }
+  | { readonly kind: "unlink" }
+  | {
+      readonly kind: "projection";
+      readonly projection: {
+        readonly accessRoute: import("@opensteer/protocol").PersonalHostAccessRouteEnvelope | null;
+        readonly generation: number;
+        readonly state: "disabled" | "offline" | "ready";
+      };
+    }
+  | {
+      readonly kind: "revoke";
+      readonly request: { readonly hostInstanceId: HostInstanceId; readonly operationId: string };
+    }
+);
+
 interface PersonalRemoteAccountLinkTable {
+  accountOperation: Generated<PersonalRemoteAccountOperation | null>;
   singletonKey: "opensteer-account";
   challengeId: string;
   grantId: string;
@@ -1091,6 +1096,7 @@ export interface RequestTable {
   cancellationReason: Request["cancellationReason"];
   resolvedAt: NullableTimestamp;
   resolvedBy: UserId | null;
+  settlementProvenance: Generated<NonNullable<Request["settlementProvenance"]> | null>;
   createdAt: Timestamp;
 }
 
@@ -1270,7 +1276,7 @@ export interface AgentControlRequestTable {
     | "thread.delegate"
     | "thread.list"
     | "thread.message"
-    | "person.notify"
+    | "person.message"
     | "person.show"
     | "thread.read"
     | "thread.write"
@@ -1957,21 +1963,7 @@ interface ComputerUsePolicyTable {
   ownerUserId: UserId;
   appApproval: "ask" | "automatic";
   revision: number;
-  approval: JsonColumn<{
-    request: import("@opensteer/integration-core").ComputerAppSetupRequest;
-    approval: import("@opensteer/integration-core").ComputerAppApproval;
-  } | null>;
   updatedAt: Timestamp;
-}
-
-/** The one key a Mac's desktop signs that Mac's approvals with. */
-interface ComputerUseApprovalKeyTable {
-  runnerId: RunnerId;
-  /** Who registered it, at the Mac; approvals by anybody else are refused. */
-  ownerUserId: UserId;
-  publicKeyPem: string;
-  keyId: string;
-  registeredAt: Timestamp;
 }
 
 /** A person's Stop for one Run on one Mac; it lasts as long as the Run. */
@@ -2005,9 +1997,31 @@ interface ComputerAppSetupRequestTable {
   expiresAt: Timestamp;
 }
 
+export interface AppTable {
+  id: string;
+  workspaceId: WorkspaceId;
+  threadId: ThreadId;
+  runId: RunId;
+  title: string;
+  latestVersion: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+export interface AppVersionTable {
+  appId: string;
+  version: number;
+  sha256: string | null;
+  sizeBytes: number | null;
+  server: JsonColumn<import("@opensteer/core").AppServerSpec | null>;
+  createdByRun: RunId | null;
+  publishKey: string;
+  createdAt: Timestamp;
+}
+
 export interface DatabaseSchema {
+  apps: AppTable;
+  appVersions: AppVersionTable;
   attachments: AttachmentTable;
-  computerUseApprovalKeys: ComputerUseApprovalKeyTable;
   computerUsePolicies: ComputerUsePolicyTable;
   computerUseStops: ComputerUseStopTable;
   computerAppSetupRequests: ComputerAppSetupRequestTable;
@@ -2018,8 +2032,26 @@ export interface DatabaseSchema {
   notificationPreviewKeys: NotificationPreviewKeyTable;
   personalRemoteAccess: PersonalRemoteAccessTable;
   personalRemoteAccountLink: PersonalRemoteAccountLinkTable;
+  personalAccountLinkKeys: {
+    challengeId: string;
+    publicKey: string;
+    privateKey: string;
+    expiresAt: Timestamp;
+  };
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;
-  machineLocalSessions: MachineLocalSessionTable;
+  personalRemoteAdministration: {
+    position: Generated<string>;
+    executionId: string;
+    requestedIntent: JsonColumn<import("@opensteer/protocol").PersonalRemoteAdministrationIntent>;
+    id: string;
+    requestedBy: UserId;
+    idempotencyKey: string;
+    intent: JsonColumn<import("@opensteer/protocol").PersonalRemoteAdministrationIntent>;
+    state: "pending" | "running" | "succeeded" | "failed";
+    detail: string | null;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
   personalRemoteSessions: PersonalRemoteSessionTable;
   personalRemoteSessionGrantUses: PersonalRemoteSessionGrantUseTable;
   authVerifications: AuthVerificationTable;

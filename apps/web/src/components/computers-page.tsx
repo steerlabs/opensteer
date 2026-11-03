@@ -1,10 +1,23 @@
+import { Link } from "react-router";
+import { ComputerAppsSection } from "./computer-apps/computer-apps-section.js";
+import { AddComputerDialog } from "./computers/add-computer-dialog.js";
+import { AddPhoneDialog } from "./computers/add-phone-dialog.js";
+import { PhoneSection } from "./computers/phone-section.js";
+import { ComputerUseMarks } from "./computers/computer-uses.js";
+import { HerePin } from "./computers/here-pin.js";
+import { DeviceArt } from "./computers/device-art.js";
+import { Icon } from "./icon.js";
+import { MachineAccessSection } from "./machine-access/machine-access-section.js";
+import { PageHeader, PageTopbar } from "./page-header.js";
+import { MacOsPermissionReviewDialog } from "./macos-permission-review-dialog.js";
+import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
 import {
   ComputerUseDataAppIdSchema,
   ComputerUseDataGrantSchema,
   type MachineSummary,
 } from "@opensteer/protocol";
 import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import {
   computerGlyph,
   computerRole,
@@ -34,19 +47,13 @@ import { useShell, type LocalExecutionAction } from "./app-shell.js";
 import { useDeploymentName } from "./deployment-name.js";
 import {
   computerAppAnchorId,
-  ComputerAppsSection,
   type ComputerAppApprovalInput,
   type ComputerAppRequestInput,
   useComputerAppData,
 } from "./computer-apps/computer-apps-section.js";
-import type { ComputerUseApprovalKeySetup } from "./computer-apps/computer-use-section.js";
-import type { ComputerAppSetupRequest } from "@opensteer/integration-core";
-import { AddComputerDialog } from "./computers/add-computer-dialog.js";
-import { AddPhoneDialog } from "./computers/add-phone-dialog.js";
-import { PhoneSection } from "./computers/phone-section.js";
-import { ComputerUseMarks } from "./computers/computer-uses.js";
-import { HerePin } from "./computers/here-pin.js";
-import { computerIcon, DeviceArt, type PlaceArt } from "./computers/device-art.js";
+import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@opensteer/integration-core";
+
+import { computerIcon, type PlaceArt } from "./computers/device-art.js";
 import {
   computerAppRows,
   isAndroidPhone,
@@ -55,11 +62,8 @@ import {
   phoneUseIntroduction,
   phoneUseState,
 } from "@opensteer/client/integrations";
-import { Icon } from "./icon.js";
+
 import { machineAccessSummary } from "./machine-access/machine-access-editor.js";
-import { MachineAccessSection } from "./machine-access/machine-access-section.js";
-import { PageHeader, PageTopbar } from "./page-header.js";
-import { MacOsPermissionReviewDialog } from "./macos-permission-review-dialog.js";
 
 /**
  * Folders the computer holds that no Workspace claims. Nothing is offered to
@@ -752,55 +756,6 @@ export function ComputerDetailPage() {
  * signed with that key, and the Host accepts them only once its owner has
  * registered it from here, with their own session, at the Mac.
  */
-function useRegisterComputerUseApprovalKey(
-  machine: MachineSummary,
-  onThisMac: boolean,
-): ComputerUseApprovalKeySetup {
-  const { desktopBridge, hostClient } = useShell();
-  const [error, setError] = useState<string | null>(null);
-  const [registering, setRegistering] = useState(false);
-  const [observedKeyId, setObservedKeyId] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const registeredKeyId = machine.computerUse?.approvalKeyId;
-  // An older Host sends no key at all, and has nothing to register one with.
-  const supported =
-    registeredKeyId !== undefined && machine.ownership !== "other" && machine.status === "online";
-  useEffect(() => {
-    if (!supported || !onThisMac || !desktopBridge) return;
-    let cancelled = false;
-    setRegistering(true);
-    setError(null);
-    void (async () => {
-      const key = await desktopBridge.computerUseApprovalKey();
-      if (cancelled) return;
-      setObservedKeyId(key.keyId);
-      if (key.keyId === registeredKeyId) return;
-      await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey(`computer-use-approval-key:${machine.id}`),
-        input: { publicKey: key.publicKey, runnerId: machine.id },
-        type: "integration.computer.approval-key.set",
-      });
-      await hostClient.refresh();
-    })()
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(actionErrorMessage(reason));
-      })
-      .finally(() => {
-        if (!cancelled) setRegistering(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attempt, desktopBridge, hostClient, machine.id, onThisMac, registeredKeyId, supported]);
-  return {
-    error,
-    ready:
-      !supported || !onThisMac
-        ? registeredKeyId !== null
-        : observedKeyId === registeredKeyId && !registering && error === null,
-    retry: () => setAttempt((value) => value + 1),
-  };
-}
 
 /**
  * The sentence under a computer's name: what it is to this Opensteer, in the
@@ -888,7 +843,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     inDesktopApp: desktopBridge !== null,
     lentByThisDesktop: here && !mainRunner,
   });
-  const computerUseApprovalKeySetup = useRegisterComputerUseApprovalKey(machine, onThisMac);
+  const approval = useComputerAppApproval(hostClient);
   // A phone lends only its screen: agents never work on it, it has no files or
   // commands to share, and no Mac permissions to give.
   const phone = isAndroidPhone(machine);
@@ -969,7 +924,6 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   }
 
   async function approveComputerAppAccess(input: ComputerAppApprovalInput): Promise<boolean> {
-    if (!desktopBridge) throw new Error("Opensteer Desktop is required to approve app access.");
     // The displayed request may have expired or been replaced since the page
     // loaded. The Host returns its current intent for this exact scope, pushes
     // it to this Mac, and the panel and the answer go through the Mac itself.
@@ -987,8 +941,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     if (current.type !== "integration.computer.setup.request") {
       throw new Error("The setup request did not complete.");
     }
-    return (await desktopBridge.reviewComputerAppSetup({ setupRequestId: current.request.id }))
-      .allowed;
+    return approval.ask(current.request.id);
   }
 
   /**
@@ -1184,13 +1137,10 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
         ) : apps.data ? (
           <ComputerAppsSection
             hostConnected={canRespondToRequests(snapshot)}
-            computerUseApprovalKeySetup={computerUseApprovalKeySetup}
             computerUseLocal={
               onThisMac && desktopBridge
                 ? {
                     openPermissions: () => desktopBridge.openComputerUsePermissionsPanel(),
-                    reviewSetup: async (setupRequestId) =>
-                      (await desktopBridge.reviewComputerAppSetup({ setupRequestId })).allowed,
                   }
                 : null
             }
@@ -1199,10 +1149,10 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             focusDefinitionId={focusDefinitionId}
             hostClient={hostClient}
             key={machine.id}
-            localApproval={
-              onThisMac && desktopBridge
+            localApproval={{
+              approveAccess: approveComputerAppAccess,
+              ...(onThisMac && desktopBridge
                 ? {
-                    approveAccess: approveComputerAppAccess,
                     reviewPermission: async ({ access, definitionId, remedy }) => {
                       const app = ComputerUseDataAppIdSchema.safeParse(definitionId);
                       const grant = ComputerUseDataGrantSchema.safeParse(remedy);
@@ -1213,8 +1163,8 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
                       await apps.reload();
                     },
                   }
-                : null
-            }
+                : {}),
+            }}
             machine={machine}
             onCancelSetupRequest={cancelComputerAppSetup}
             onChanged={async () => {
@@ -1360,6 +1310,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
           phoneName={machine.name}
         />
       ) : null}
+      {approval.dialog}
       {permissionReview && desktopBridge ? (
         <MacOsPermissionReviewDialog
           bridge={desktopBridge}

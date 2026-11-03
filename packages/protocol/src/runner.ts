@@ -1,3 +1,4 @@
+import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
@@ -1386,8 +1387,8 @@ export const RunnerMessagingModuleSchema = z.object({
 });
 export type RunnerMessagingModule = z.infer<typeof RunnerMessagingModuleSchema>;
 
-/** Mac protocol 5 carries the remaining startup budget. */
-export const runnerIntegrationsProtocolVersion = 5;
+/** Mac execution trusts Host owner decisions; Android keeps its independent contract. */
+export const runnerIntegrationsProtocolVersion = 6;
 export const androidIntegrationsProtocolVersion = 4;
 
 export const RunnerIntegrationsModuleSchema = z.object({
@@ -1409,16 +1410,9 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .number()
     .int()
     .positive()
-    .transform((version) => (version === 1 ? (1 as const) : undefined))
+    .transform((version) => (version === 2 ? (2 as const) : undefined))
     .optional(),
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
-  /**
-   * This Runner relays computer-app approvals between its Host and the
-   * desktop app supervising it or the iPhone's native executor
-   * (`host.integrations.computer-app-approvals` and the answer frames).
-   * Absent on an older Runner, which is never sent a frame it cannot parse.
-   */
-  computerAppApprovals: z.literal(true).optional(),
   /**
    * The person's input into exact Mac app windows, shared with the agent's
    * actions. Only version 2 is understood; the exclusive version 1 is disabled.
@@ -1756,6 +1750,7 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+  RunnerAppResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({
     ...fencedMessageBase,
@@ -1984,6 +1979,7 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   RunnerChallengeSchema,
   ...HostWorkspaceLocalRequestSchema.options,
+  ...HostAppRequestSchema.options,
   z.strictObject({
     ...fencedMessageBase,
     /**

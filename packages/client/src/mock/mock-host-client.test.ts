@@ -20,7 +20,7 @@ import { hostApi } from "@opensteer/protocol";
 import type { ThreadSummary, CreateThreadInput } from "../host/client.js";
 import { threadStopTarget } from "../host/thread-activity.js";
 import { defaultThreadPlacement, threadPlacementOptions } from "../host/thread-placement.js";
-import { MockHostClient } from "./mock-host-client.js";
+import { MockHostClient, mockPasswordSignInRequest } from "./mock-host-client.js";
 
 it("carries pending profile erasure through the mock catalog and clears completed jobs", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
@@ -989,7 +989,7 @@ it("filters the mock task catalog to active listed work before paging", async ()
   expect(ids).toEqual(expected.map(({ thread }) => thread.id));
 });
 
-it("models iPhone capability, pairing, pending enrollment, signed approval hooks and removal", async () => {
+it("models iPhone capability, pairing, pending enrollment, owner-session approvals and removal", async () => {
   const client = createClient();
   try {
     expect(client.getSnapshot().iphoneAppsAvailable).toBe(true);
@@ -1037,15 +1037,6 @@ it("models iPhone capability, pairing, pending enrollment, signed approval hooks
       "iphone-location",
       "iphone-photos",
     ]);
-    await client.dispatch({
-      type: "integration.computer.approval-key.set",
-      idempotencyKey: "iphone-key",
-      input: {
-        runnerId,
-        publicKey:
-          "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE=\n-----END PUBLIC KEY-----\n",
-      },
-    });
     expect(client.getSnapshot().machines.find(({ id }) => id === runnerId)?.computerUse).toBeNull();
     const request = await client.dispatch({
       type: "integration.computer.setup.request",
@@ -1060,7 +1051,9 @@ it("models iPhone capability, pairing, pending enrollment, signed approval hooks
         input: { kind: "app", app: null, runnerId, definitionId: "apple-calendar", access: "read" },
       }),
     ).rejects.toThrow();
-    await client.mockAnswerIphoneApproval({
+    await client.dispatch({
+      type: "integration.computer.setup.respond",
+      idempotencyKey: "iphone-allow",
       setupRequestId: request.request.id,
       decision: "allow",
     });
@@ -1357,6 +1350,39 @@ it("mock plugin member reads hide source paths and refuse collaborator changes",
         idempotencyKey: "member-toggle",
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("offers transient Passwords choices and settles the pinned shared command in mock mode", async () => {
+  const request = mockPasswordSignInRequest();
+  const client = new MockHostClient({ latencyMs: 0, pendingRequests: [request] });
+  try {
+    const card = unwrap(
+      await client.rpc["browser.password-sign-in.get"]({ requestId: request.id }),
+    );
+    expect(card.stage).toBe("approval");
+    if (card.stage !== "approval") throw new Error("Missing chooser");
+    const account = card.accounts[0]!;
+    expect(JSON.stringify(client.getSnapshot())).not.toContain(account.username);
+    const result = await client.dispatch({
+      type: "browser.password-sign-in.respond",
+      idempotencyKey: "mock-password-approval",
+      requestId: request.id,
+      decision: {
+        kind: "approve",
+        loginId: account.id,
+        revision: account.revision,
+        remember: true,
+        permissionVersion: 5,
+      },
+    });
+    expect(result).toMatchObject({ type: "browser.password-sign-in.respond", status: "fulfilled" });
+    expect(
+      unwrap(await client.rpc["browser.password-sign-in.get"]({ requestId: request.id })),
+    ).toEqual({ stage: "gone" });
+    expect(JSON.stringify(client.getSnapshot())).not.toContain(account.username);
   } finally {
     client.dispose();
   }

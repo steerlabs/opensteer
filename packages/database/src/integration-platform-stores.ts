@@ -1,4 +1,10 @@
 import { resolveResourceAccess } from "./resource-access.js";
+import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
+import {
+  checkIntegrationAccountBinding,
+  requireIntegrationAccountBinding,
+} from "./integration-account-binding.js";
+import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -7,10 +13,6 @@ import {
   withRequestWorkspaceLocks,
 } from "./request-workspace-locks.js";
 import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
-import {
-  canonicalComputerAppApprovalPublicKey,
-  computerAppApprovalKeyId,
-} from "@opensteer/runner-auth";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
@@ -27,7 +29,6 @@ import {
   type ComputerAppIdentity,
   ComputerAppIdentitySchema,
   type ComputerAppSetupRequest,
-  type ComputerAppApproval,
   IntegrationApplicationSourceSchema,
   IntegrationConnectionRequirementSchema,
   IntegrationDefinitionIdSchema,
@@ -111,8 +112,6 @@ import {
 } from "./computer-app-setup.js";
 import {
   askForComputerAppApprovalInTransaction,
-  assertComputerAppApprovalInTransaction,
-  computerUseApprovalKeyInTransaction,
   computerUsePolicyInTransaction,
   discoverComputerRequestWorkspaces,
   declineComputerAppAccessRequestsInTransaction,
@@ -202,7 +201,8 @@ export interface IntegrationDiscoveryRequester extends IntegrationRequester {
 export type MainAccess = "inherited" | "withheld";
 
 export interface SetComputerConnectionInput {
-  readonly approval?: ComputerAppApproval;
+  readonly settlementSessionId?: string | undefined;
+  readonly setupRequestId?: string;
   readonly definitionDigest: string;
   readonly access: IntegrationAccess;
   readonly actorUserId: UserId;
@@ -450,6 +450,7 @@ abstract class IntegrationPlatformStoreBase {
 
 export interface InstallIntegrationInput {
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
+  readonly settlementSessionId?: string | undefined;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
   readonly actorUserId: UserId | null;
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
@@ -1274,7 +1275,10 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       (transaction) => discoverInstallationRequestWorkspaces(transaction, input.installation),
       async (transaction) => {
         await input.beforeInstall?.(transaction);
-        return installIntegrationInTransaction(transaction, input);
+        const mutation = await installIntegrationInTransaction(transaction, input);
+        if (input.actorUserId !== null)
+          await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
+        return mutation;
       },
     );
   }
@@ -1940,10 +1944,6 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     return row?.connectionKind ?? null;
   }
 
-  /**
-   * The Mac's policy and the approval key its answers are accepted with, which
-   * is null until the owner registers this desktop's key on that Mac.
-   */
   /** Immutable enrollment facts; callers apply their resource's owner check first. */
   async computerAppRunner(runnerId: RunnerId): Promise<{
     readonly deviceProfile: "iphone" | null;
@@ -1964,7 +1964,6 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
   }): Promise<{
     readonly appApproval: "ask" | "automatic";
-    readonly approvalKeyId: string | null;
     readonly revision: number;
   }> {
     return withDatabaseTransaction(this.database, async (transaction) => {
@@ -1974,100 +1973,10 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         input.runnerId,
         input.ownerUserId,
       );
-      const key = await computerUseApprovalKeyInTransaction(transaction, input.runnerId);
       return {
         ...policy,
-        approvalKeyId: key?.ownerUserId === input.ownerUserId ? key.keyId : null,
       };
     });
-  }
-
-  /**
-   * Pins the key this Mac's desktop signs approvals with, replacing any
-   * earlier one. Only the Mac's owner may, and the computer's page calls it
-   * only on that Mac, from the desktop that holds the private half; setting up
-   * computer use again there is how a key is rotated.
-   */
-  async registerComputerUseApprovalKey(input: {
-    readonly ownerUserId: UserId;
-    readonly publicKey: string;
-    readonly requestId: string;
-    readonly runnerId: RunnerId;
-  }): Promise<{ readonly approvalKeyId: string; readonly replaced: boolean }> {
-    let publicKeyPem: string;
-    try {
-      publicKeyPem = canonicalComputerAppApprovalPublicKey(input.publicKey);
-    } catch {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "That approval key is unreadable.",
-      });
-    }
-    const keyId = computerAppApprovalKeyId(publicKeyPem);
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        const runner = await this.#lockComputerUsePolicyOwner(
-          transaction,
-          input.runnerId,
-          input.ownerUserId,
-        );
-        const device = await transaction
-          .selectFrom("runners")
-          .select(["device", "deviceProfile", "publicKeyFingerprint"])
-          .where("id", "=", runner.id)
-          .executeTakeFirstOrThrow();
-        if (device.device?.form === "phone" && device.device.platform === "android") {
-          throw new OpensteerError({
-            code: "forbidden",
-            message:
-              "Phone access is allowed from any Opensteer app; phones do not use approval keys.",
-          });
-        }
-        assertSeparateIphoneApprovalKey(device.deviceProfile, device.publicKeyFingerprint, keyId);
-        const previous = await computerUseApprovalKeyInTransaction(transaction, input.runnerId);
-        const now = new Date();
-        await transaction
-          .insertInto("computerUseApprovalKeys")
-          .values({
-            keyId,
-            ownerUserId: input.ownerUserId,
-            publicKeyPem,
-            registeredAt: now,
-            runnerId: input.runnerId,
-          })
-          .onConflict((conflict) =>
-            conflict.column("runnerId").doUpdateSet({
-              keyId,
-              ownerUserId: input.ownerUserId,
-              publicKeyPem,
-              registeredAt: now,
-            }),
-          )
-          .execute();
-        const replaced = previous !== null && previous.keyId !== keyId;
-        if (previous?.keyId !== keyId || previous.ownerUserId !== input.ownerUserId) {
-          await transaction
-            .insertInto("securityAudit")
-            .values({
-              action: "integration.computer-approval-key.registered",
-              actorSessionId: null,
-              actorUserId: input.ownerUserId,
-              id: createId("securityAudit"),
-              metadata: jsonValue({ keyId, replaced }),
-              requestId: input.requestId,
-              targetId: input.runnerId,
-              targetType: "runner",
-              workspaceId: null,
-            })
-            .execute();
-        }
-        return { approvalKeyId: keyId, replaced };
-      },
-    );
   }
 
   async #lockComputerUsePolicyOwner(
@@ -2089,6 +1998,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
 
   async setComputerUsePolicy(
     input: {
+      readonly settlementSessionId?: string | undefined;
       readonly runnerId: RunnerId;
       readonly ownerUserId: UserId;
       readonly requestId: string;
@@ -2096,7 +2006,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
       | { readonly appApproval: "ask" }
       | {
           readonly appApproval: "automatic";
-          readonly approval: ComputerAppApproval;
+          readonly setupRequestId: string;
           readonly definitionDigest: string;
         }
     ),
@@ -2107,24 +2017,18 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
       ],
       async (transaction) => {
-        const runner = await this.#lockComputerUsePolicyOwner(
-          transaction,
-          input.runnerId,
-          input.ownerUserId,
-        );
+        await this.#lockComputerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
         const now = new Date();
         const deployment = await transaction
           .selectFrom("deployments")
           .select("id")
           .where("singletonKey", "=", "primary")
           .executeTakeFirstOrThrow();
-        let envelope: { request: ComputerAppSetupRequest; approval: ComputerAppApproval } | null =
-          null;
         if (input.appApproval === "automatic") {
           const pending = await transaction
             .selectFrom("computerAppSetupRequests")
             .selectAll()
-            .where("id", "=", input.approval.requestId)
+            .where("id", "=", input.setupRequestId)
             .where("deploymentId", "=", deployment.id)
             .where("runnerId", "=", input.runnerId)
             .where("ownerUserId", "=", input.ownerUserId)
@@ -2135,15 +2039,11 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
             // FOR UPDATE: Consuming the policy approval deletes this setup request.
             .forUpdate()
             .executeTakeFirst();
-          const request = await assertComputerAppApprovalInTransaction(transaction, {
-            approval: input.approval,
-            now,
-            ownerUserId: input.ownerUserId,
-            refusal: "Approve automatic app access in Opensteer on this Mac.",
-            request: pending ? computerAppSetupRequestFromRow(pending) : null,
-            runnerId: runner.id,
-          });
-          envelope = { request, approval: input.approval };
+          if (!pending)
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "This approval changed or is no longer waiting.",
+            });
         }
         const previous = await computerUsePolicyInTransaction(
           transaction,
@@ -2159,14 +2059,12 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
             ownerUserId: input.ownerUserId,
             appApproval: input.appApproval,
             revision,
-            approval: envelope === null ? null : jsonValue(envelope),
             updatedAt: now,
           })
           .onConflict((conflict) =>
             conflict.columns(["deploymentId", "runnerId", "ownerUserId"]).doUpdateSet({
               appApproval: input.appApproval,
               revision,
-              approval: envelope === null ? null : jsonValue(envelope),
               updatedAt: now,
             }),
           )
@@ -2191,6 +2089,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
             workspaceId: null,
           })
           .execute();
+        await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
         return { appApproval: input.appApproval, revision };
       },
     );
@@ -2213,39 +2112,6 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   }
 
   /**
-   * Every approval waiting on one Mac, with the name of the Workspace each
-   * task asked from, and the approval key that Mac's answers are accepted
-   * with. It is what the Host pushes to that Mac's Runner, so it is complete
-   * rather than a page: an approval missing from it has ended.
-   */
-  async listComputerAppApprovalsForRunner(
-    runnerId: RunnerId,
-    limit: number,
-  ): Promise<{
-    readonly approvalKeyId: string | null;
-    readonly approvals: readonly {
-      readonly request: ComputerAppSetupRequest;
-    }[];
-  }> {
-    const rows = await this.database
-      .selectFrom("computerAppSetupRequests")
-      .innerJoin("runners", "runners.id", "computerAppSetupRequests.runnerId")
-      .selectAll("computerAppSetupRequests")
-      .where("computerAppSetupRequests.runnerId", "=", runnerId)
-      .where("computerAppSetupRequests.expiresAt", ">", new Date())
-      .where("runners.revokedAt", "is", null)
-      .orderBy("computerAppSetupRequests.createdAt", "asc")
-      .orderBy("computerAppSetupRequests.id", "asc")
-      .limit(limit)
-      .execute();
-    const key = await computerUseApprovalKeyInTransaction(this.database, runnerId);
-    return {
-      approvalKeyId: key?.keyId ?? null,
-      approvals: rows.map((row) => ({ request: computerAppSetupRequestFromRow(row) })),
-    };
-  }
-
-  /**
    * Whether this person administers the Deployment, for an answer that arrives
    * on a Mac's Runner stream rather than with a session that already says so.
    */
@@ -2260,14 +2126,14 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
 
   /** One waiting approval on one Mac, which that Mac is answering. */
   async getComputerAppSetupRequest(input: {
-    readonly runnerId: RunnerId;
+    readonly runnerId?: RunnerId;
     readonly setupRequestId: string;
   }): Promise<ComputerAppSetupRequest | null> {
     const row = await this.database
       .selectFrom("computerAppSetupRequests")
       .selectAll()
       .where("id", "=", input.setupRequestId)
-      .where("runnerId", "=", input.runnerId)
+      .$if(input.runnerId !== undefined, (query) => query.where("runnerId", "=", input.runnerId!))
       .where("expiresAt", ">", new Date())
       .executeTakeFirst();
     return row ? computerAppSetupRequestFromRow(row) : null;
@@ -2349,7 +2215,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           return { request: computerAppSetupRequestFromRow(row), settlement };
         }
         // The policy approval has no Requests waiting on it, so replacing it
-        // only has to mint the new id that invalidates older signatures.
+        // only has to mint the new id that invalidates older decisions.
         const scope = computerAppScopeOf(input);
         const existing = await lockComputerAppSetupRequestInTransaction(transaction, scope);
         if (
@@ -2389,6 +2255,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
 
   /** The owner taking the ask back, which declines whatever Threads were waiting on it. */
   async cancelComputerAppSetup(input: {
+    readonly settlementSessionId?: string | undefined;
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }): Promise<ComputerAppAccessSettlement & { readonly runnerId: RunnerId | null }> {
@@ -2412,67 +2279,27 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           .executeTakeFirst();
         if (!request) return { ...emptyComputerAppAccessSettlement, runnerId: null };
         // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
-        await lockComputerApprovalScopeInTransaction(transaction, { runnerId: request.runnerId });
+        await this.#lockComputerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
+        const settlementActor = await readRequestSettlementActor(
+          transaction,
+          input.ownerUserId,
+          input.settlementSessionId,
+        );
         const removed = await transaction
           .deleteFrom("computerAppSetupRequests")
           .where("id", "=", input.requestId)
           .where("ownerUserId", "=", input.ownerUserId)
           .returning("id")
           .execute();
+        const settlement = await declineComputerAppAccessRequestsInTransaction(transaction, {
+          setupRequestIds: removed.map(({ id }) => id),
+          settlementActor,
+        });
+        await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
         return {
-          ...(await declineComputerAppAccessRequestsInTransaction(transaction, {
-            setupRequestIds: removed.map(({ id }) => id),
-          })),
+          ...settlement,
           runnerId: request.runnerId,
         };
-      },
-    );
-  }
-
-  /** A denial from the Mac must have the same desktop-key authority as consent. */
-  async declineComputerAppSetupFromMac(input: {
-    readonly approval: ComputerAppApproval;
-    readonly requestId: string;
-    readonly runnerId: RunnerId;
-  }): Promise<ComputerAppAccessSettlement> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        await lockComputerApprovalScopeInTransaction(transaction, { runnerId: input.runnerId });
-        const row = await transaction
-          .selectFrom("computerAppSetupRequests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .where("runnerId", "=", input.runnerId)
-          .executeTakeFirst();
-        if (!row) {
-          throw new OpensteerError({
-            code: "not_found",
-            message: "This approval is no longer waiting.",
-          });
-        }
-        const request = computerAppSetupRequestFromRow(row);
-        await assertComputerAppApprovalInTransaction(transaction, {
-          approval: input.approval,
-          decision: "deny",
-          now: new Date(),
-          ownerUserId: request.ownerUserId,
-          refusal: "This approval was not declined by this Mac.",
-          request,
-          runnerId: input.runnerId,
-        });
-        const removed = await transaction
-          .deleteFrom("computerAppSetupRequests")
-          .where("id", "=", input.requestId)
-          .where("runnerId", "=", input.runnerId)
-          .returning("id")
-          .execute();
-        return declineComputerAppAccessRequestsInTransaction(transaction, {
-          setupRequestIds: removed.map(({ id }) => id),
-        });
       },
     );
   }
@@ -2532,7 +2359,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   /**
    * The owner's change to a computer app's connection.
    *
-   * With a signed approval it consumes that approval, which is how a
+   * With a setup request it consumes that request, which is how a
    * Mac connection is created, widened or unblocked. Without one a Mac app can
    * only keep or lower access. An owner can set phone access from any client.
    *
@@ -2576,17 +2403,17 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
             message: "This Runner is not an eligible Android phone.",
           });
         }
-        if (input.approval && (phone || descriptor.device?.platform === "android")) {
+        if (input.setupRequestId && (phone || descriptor.device?.platform === "android")) {
           throw new OpensteerError({
             code: "forbidden",
             message: "Allow phone access from any Opensteer app.",
           });
         }
         const target = await computerConnectionTargetInTransaction(transaction, input);
-        return input.approval
+        return input.setupRequestId
           ? consumeComputerAppApprovalInTransaction(transaction, {
               ...input,
-              approval: input.approval,
+              setupRequestId: input.setupRequestId,
               runner,
               target,
             })
@@ -2840,6 +2667,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   }
 
   async completeMcpOAuthAttempt(input: {
+    readonly accountBinding?: IntegrationOAuthAccountBinding;
     readonly attemptId: McpOAuthAttemptId;
     readonly connectionId: IntegrationConnectionId;
     readonly displayName: string;
@@ -2851,6 +2679,8 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<void> {
     await withDatabaseTransaction(this.database, async (transaction) => {
+      if (input.accountBinding)
+        await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
       await transaction
         .selectFrom("integrationServers")
         .select("id")
@@ -2983,6 +2813,12 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         })
         .where("id", "=", input.attemptId)
         .executeTakeFirstOrThrow();
+      if (input.accountBinding)
+        await requireIntegrationAccountBinding(
+          transaction,
+          input.ownerUserId,
+          input.accountBinding,
+        );
     });
   }
 
@@ -3873,7 +3709,7 @@ function serverFromJoinedRow(row: JoinedServerRow): IntegrationServer {
 
 export type AutomaticComputerAppApprovalInput = Omit<
   SetComputerConnectionInput,
-  "approval" | "createIfMissing"
+  "setupRequestId" | "createIfMissing"
 > & {
   readonly workspaceId: WorkspaceId;
 };
@@ -4030,15 +3866,15 @@ function storedComputerApp(
 }
 
 /**
- * Consumes one signed approval: the only way a Mac connection is created, widened
+ * Consumes one owner-approved request: the only way a Mac connection is created, widened
  * or unblocked. The approval is one row, so consuming it invalidates every
- * other signature for this app — and only for this app: consuming Notes leaves
+ * other answer for this app — and only for this app: consuming Notes leaves
  * Calendar's approval, and the Thread waiting on it, where it was.
  */
 async function consumeComputerAppApprovalInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: SetComputerConnectionInput & {
-    readonly approval: ComputerAppApproval;
+    readonly setupRequestId: string;
     readonly runner: LockedComputer;
     readonly target: ComputerConnectionTarget;
   },
@@ -4051,29 +3887,27 @@ async function consumeComputerAppApprovalInTransaction(
   const pending = await transaction
     .selectFrom("computerAppSetupRequests")
     .selectAll()
-    .where("id", "=", input.approval.requestId)
+    .where("id", "=", input.setupRequestId)
     .where("runnerId", "=", input.runnerId)
     .where("ownerUserId", "=", input.actorUserId)
     .where("definitionId", "=", input.definitionId)
     .where("kind", "=", "app")
     .where("access", "=", input.access)
     .where("definitionDigest", "=", input.definitionDigest)
-    // The signature covers the app, so a proof taken over Notes can never
-    // enable Calendar even though both name this Mac.
+    // One pending decision cannot authorize another app on the same computer.
     .where("appKey", scope.appKey === null ? "is" : "=", scope.appKey)
     .where("expiresAt", ">", now)
     // FOR UPDATE: Consuming the app approval deletes this setup request.
     .forUpdate()
     .executeTakeFirst();
   const candidate = pending ? computerAppSetupRequestFromRow(pending) : null;
-  const pendingRequest = await assertComputerAppApprovalInTransaction(transaction, {
-    approval: input.approval,
-    now,
-    ownerUserId: input.actorUserId,
-    refusal: "Approve this access in Opensteer on the computer that provides the app.",
-    request: candidate && computerAppIdentitiesEqual(candidate.app, input.app) ? candidate : null,
-    runnerId: input.runner.id,
-  });
+  if (!candidate || !computerAppIdentitiesEqual(candidate.app, input.app)) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "This approval changed or is no longer waiting.",
+    });
+  }
+  const pendingRequest = candidate;
   const row = await writeComputerConnectionInTransaction(transaction, {
     access: input.access,
     app: pendingRequest.app,
@@ -4084,6 +3918,8 @@ async function consumeComputerAppApprovalInTransaction(
   });
   const changed = await finishComputerConnectionChangeInTransaction(transaction, {
     ...input,
+    actorSessionId: input.settlementSessionId,
+    recordProvenance: true,
     connectionAccess: input.access,
     consumedSetupRequestId: pendingRequest.id,
     created: current === undefined,
@@ -4101,8 +3937,8 @@ async function consumeComputerAppApprovalInTransaction(
 
 /**
  * The owner setting a phone's access, or keeping or lowering a Mac app's access.
- * A lower access leaves a wider waiting approval under a new id, so a signature
- * taken before the reduction cannot widen the app back behind the owner's back.
+ * A lower access leaves a wider waiting approval under a new id, so an answer
+ * to the request before the reduction cannot widen the app back behind the owner's back.
  */
 async function reviseComputerConnectionInTransaction(
   transaction: Transaction<DatabaseSchema>,
@@ -4138,6 +3974,8 @@ async function reviseComputerConnectionInTransaction(
     ...input,
     connectionAccess: input.access,
     consumedSetupRequestId: null,
+    actorSessionId: input.settlementSessionId,
+    recordProvenance: !(current?.computerAccess === "read-write" && input.access === "read"),
     created: current === undefined,
     now,
     reissueWaiting: current?.computerAccess === "read-write" && input.access === "read",
@@ -4173,7 +4011,7 @@ export async function approveComputerAppAutomaticallyInTransaction(
   if (current?.computerBlockedAt) {
     throw new OpensteerError({
       code: "forbidden",
-      message: `${app.displayName} is blocked on ${input.runner.name}. The person can unblock it on that Mac.`,
+      message: `${app.displayName} is blocked on ${input.runner.name}. The owner can unblock it from any Opensteer app.`,
     });
   }
   const connectionAccess = current?.computerAccess ?? input.access;
@@ -4208,6 +4046,8 @@ export async function approveComputerAppAutomaticallyInTransaction(
   });
   const changed = await finishComputerConnectionChangeInTransaction(transaction, {
     ...input,
+    actorSessionId: undefined,
+    recordProvenance: false,
     // Main inherits the owner's authority and needs no row.
     ...(workspace.kind === "main"
       ? {}
@@ -4296,6 +4136,8 @@ async function writeComputerConnectionInTransaction(
 async function finishComputerConnectionChangeInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
+    readonly actorSessionId: string | undefined;
+    readonly recordProvenance: boolean;
     readonly access: IntegrationAccess;
     readonly actorUserId: UserId;
     readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
@@ -4314,6 +4156,12 @@ async function finishComputerConnectionChangeInTransaction(
     readonly widened: boolean;
   },
 ): Promise<Omit<SetComputerConnectionResult, "sessionReset">> {
+  const actor = await readRequestSettlementActor(
+    transaction,
+    input.actorUserId,
+    input.actorSessionId,
+  );
+  const settlementActor = input.recordProvenance ? actor : null;
   const { installed, scope } = input.target;
   const connectionId = input.row.id;
   await transaction
@@ -4334,6 +4182,7 @@ async function finishComputerConnectionChangeInTransaction(
         }).execute()
       : [];
   const settlement = await settleComputerAppApprovalInTransaction(transaction, {
+    settlementActor,
     additionalRequestIds: mainRequests.map(({ id }) => id),
     ...(input.alsoGrant ? { alsoGrant: input.alsoGrant } : {}),
     connection: {
@@ -4352,6 +4201,7 @@ async function finishComputerConnectionChangeInTransaction(
   const mainRequestEvents =
     input.created || input.widened
       ? await fulfillPendingMainIntegrationAccessRequestsInTransaction(transaction, {
+          settlementActor,
           access: input.connectionAccess,
           connectionId,
           displayName: input.row.displayName,
@@ -4390,6 +4240,7 @@ async function finishComputerConnectionChangeInTransaction(
       workspaceId: null,
     })
     .executeTakeFirstOrThrow();
+  await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
   return {
     connection: integrationConnectionFromRow(input.row),
     created: input.created,
@@ -4851,17 +4702,4 @@ export async function replaceServerToolsInTransaction(
     now: input.now,
     serverId: input.serverId,
   });
-}
-
-/** A Runner authenticates transport; its key must never also authorize iPhone consent. */
-export function assertSeparateIphoneApprovalKey(
-  profile: "iphone" | null,
-  runnerKeyId: string,
-  approvalKeyId: string,
-): void {
-  if (profile === "iphone" && runnerKeyId === approvalKeyId)
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Use the approval key this iPhone created.",
-    });
 }

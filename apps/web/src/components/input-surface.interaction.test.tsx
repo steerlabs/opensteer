@@ -101,7 +101,7 @@ describe("request surface connectivity", () => {
     root = createRoot(node);
     const approval = {
       ...request({
-        detail: "Compare the two drafts. Preview on Studio — can see. Approve on that Mac.",
+        detail: "Compare the two drafts. Preview on Studio — can see. Allow on any device.",
         kind: "external",
         subject: { id: "setup-request", kind: "computer-app-setup" },
         title: "Wants to use Preview on Studio",
@@ -137,16 +137,10 @@ describe("request surface connectivity", () => {
 
     expect(node.textContent).toContain("Wants to use Preview on Studio");
     expect(node.querySelector(".action-detail")?.textContent).toBe("Compare the two drafts.");
-    // Approving happens in the window Opensteer opens on Studio itself.
-    expect(node.textContent).toContain("Can see · Approve on Studio");
-    expect([...node.querySelectorAll("button")].map(({ textContent }) => textContent)).toEqual(
-      expect.arrayContaining(["Decline"]),
-    );
+    expect(node.textContent).toContain("Can see · Allow on this device");
     expect(
-      [...node.querySelectorAll("button")].some(({ textContent }) =>
-        textContent?.startsWith("Approve"),
-      ),
-    ).toBe(false);
+      [...node.querySelectorAll(".action-buttons button")].map(({ textContent }) => textContent),
+    ).toEqual(["Allow", "Decline"]);
 
     await act(async () => {
       [...node.querySelectorAll("button")]

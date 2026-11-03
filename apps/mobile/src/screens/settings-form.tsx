@@ -7,6 +7,8 @@ import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js"
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
   agentAccessSectionTitle,
+  remoteAdministrationActions,
+  remoteAdministrationActionLabels,
   browserProfilesSettingsRow,
   chromeSettingsRow,
   computersSettingsFooter,
@@ -49,6 +51,62 @@ export function SettingsForm(props: SettingsFormProps): ReactNode {
             ]}
           </RowGroup>
         </Section>
+
+        {props.administration ? (
+          <>
+            {props.administration.access ? (
+              <Section
+                label="Remote access"
+                footer={
+                  props.administration.access.operation?.detail ??
+                  "Changes can disconnect this device and other devices."
+                }
+              >
+                <AppText>{props.administration.access.access.mode}</AppText>
+                {props.administration.access.access.accountLink ? (
+                  <AppText>
+                    {props.administration.access.access.accountLink.issuer} ·{" "}
+                    {props.administration.access.access.accountLink.subject}
+                  </AppText>
+                ) : null}
+                {remoteAdministrationActions(props.administration.access).map((action) => (
+                  <SecondaryButton
+                    key={action}
+                    compact
+                    disabled={props.administration?.busy ?? false}
+                    label={remoteAdministrationActionLabels[action]}
+                    onPress={() => props.administration?.onAction(action)}
+                  />
+                ))}
+                {props.administration.pairing ? (
+                  <AppText>{props.administration.pairing.code}</AppText>
+                ) : null}
+              </Section>
+            ) : null}
+            <Section label="Signed-in devices">
+              {props.administration.sessions.map((session) => (
+                <View key={session.id}>
+                  <AppText>
+                    {session.deviceLabel}
+                    {session.current ? " · This device" : ""}
+                  </AppText>
+                  <SecondaryButton
+                    compact
+                    disabled={props.administration?.busy ?? false}
+                    label="Remove"
+                    onPress={() => props.administration?.onRemove(session)}
+                  />
+                </View>
+              ))}
+              <SecondaryButton
+                compact
+                label="Refresh devices"
+                onPress={props.administration.onRefresh}
+              />
+              {props.administration.error ? <AppText>{props.administration.error}</AppText> : null}
+            </Section>
+          </>
+        ) : null}
 
         {props.computers.length === 0 ? null : (
           <Section footer={computersSettingsFooter} label="Computers">

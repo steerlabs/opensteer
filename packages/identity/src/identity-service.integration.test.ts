@@ -161,7 +161,6 @@ integration("IdentityService", () => {
         deviceLabel: "Chrome on Mac",
         form: "computer",
         id: result.data.session.id,
-        machineLocal: false,
       }),
     ]);
   });
@@ -1558,16 +1557,6 @@ integration("IdentityService", () => {
     const restored = await identity.claimLocalMachineOwner(token, new Headers({ origin }));
     expect(restored.data.session.user.id).toBe(first.data.session.user.id);
     expect(restored.data.session.id).not.toBe(first.data.session.id);
-    // Machine-local is a marker the owner claim writes, not the absence of
-    // something else: both the initial claim and every later sign-in record it.
-    await expect(
-      database.selectFrom("machineLocalSessions").select("authSessionId").execute(),
-    ).resolves.toEqual(
-      expect.arrayContaining([
-        { authSessionId: first.data.session.id },
-        { authSessionId: restored.data.session.id },
-      ]),
-    );
     await expect(database.selectFrom("users").select("id").execute()).resolves.toHaveLength(1);
     await expect(
       database.selectFrom("ownerEnrollments").selectAll().executeTakeFirstOrThrow(),
@@ -1716,13 +1705,12 @@ integration("IdentityService", () => {
     // this computer is marked as this computer's rather than listed as a device.
     expect(await identity.listSessions(owner.data.session)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ current: true, machineLocal: true }),
+        expect.objectContaining({ current: true }),
         expect.objectContaining({
           current: false,
           deviceLabel: "Opensteer app on iOS",
           form: "mobile",
           id: issued.data.session.id,
-          machineLocal: false,
         }),
       ]),
     );
@@ -1762,9 +1750,34 @@ integration("IdentityService", () => {
       id: issued.data.session.id,
     });
 
-    // The ordinary session-revoke path reaches a header session like any other.
-    await identity.revokeSession(issued.data.session, issued.data.session.id);
+    // Being an administrator never permits deleting another person's session.
+    const otherIdentity = identityService({ signupPolicy: "open" });
+    const other = await otherIdentity.signUpPassword(
+      { email: "other-person@example.test", password: "another-person-password" },
+      new Headers({ origin: localOrigin }),
+    );
+    await expect(
+      identity.revokeSession(issued.data.session, other.data.session.id),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(
+      await otherIdentity.requireSession(new Headers({ cookie: cookieHeader(other.headers) })),
+    ).toMatchObject({ id: other.data.session.id });
+    const deferred: (() => void)[] = [];
+    const closingIdentity = identityService({
+      onSessionEnded: (id) =>
+        deferred.push(() => {
+          expect(id).toBe(issued.data.session.id);
+        }),
+    });
+    const afterResponse: (() => void)[] = [];
+    await closingIdentity.revokeSession(issued.data.session, issued.data.session.id, (effect) =>
+      afterResponse.push(effect),
+    );
     await expect(identity.authenticatePersonalRemoteCredential(credential)).resolves.toBeNull();
+    expect(deferred).toEqual([]);
+    expect(afterResponse).toHaveLength(1);
+    afterResponse[0]!();
+    expect(deferred).toHaveLength(1);
   });
 
   it("revokes a header-delivered session when the signed route generation moves", async () => {
