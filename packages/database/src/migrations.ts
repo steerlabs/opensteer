@@ -4697,6 +4697,7 @@ export function migrationProvider() {
         "0143_specialist_threads": specialistThreadsMigration,
         "0144_project_chats": projectChatsMigration,
         "0145_specialist_lifecycle": specialistLifecycleMigration,
+        "0146_agent_connections": agentConnectionsMigration,
       };
     },
   };
@@ -7054,6 +7055,29 @@ export const specialistLifecycleMigration: Migration = {
       ALTER TABLE specialists ADD FOREIGN KEY(plugin_id) REFERENCES plugins(id) ON DELETE RESTRICT;
       ALTER TABLE specialists DROP CONSTRAINT specialists_plugin_id_plugin_version_id_fkey;
       ALTER TABLE specialists ADD FOREIGN KEY(plugin_id, plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE RESTRICT`.execute(
+      database,
+    );
+  },
+};
+
+export const agentConnectionsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE agent_connections (
+      id text PRIMARY KEY CHECK (id ~ '^mcn_[0-9a-f-]{36}$'),
+      user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      label text NOT NULL CHECK (length(label) BETWEEN 1 AND 120),
+      client_name text NOT NULL CHECK (length(client_name) BETWEEN 1 AND 100),
+      access_mode text NOT NULL CHECK (access_mode IN ('approval-required', 'auto-accept-edits', 'auto', 'full-access')),
+      workspace_id text REFERENCES workspaces(id) ON DELETE CASCADE,
+      resource text NOT NULL,
+      token_hash text UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+      created_at timestamptz NOT NULL,
+      last_used_at timestamptz,
+      expires_at timestamptz NOT NULL,
+      revoked_at timestamptz,
+      CHECK (expires_at > created_at)
+    );
+    CREATE INDEX agent_connections_owner ON agent_connections(user_id, created_at) WHERE revoked_at IS NULL`.execute(
       database,
     );
   },
