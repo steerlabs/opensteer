@@ -200,10 +200,12 @@ independent `loginContext`. Agent Phone integrations protocol is 4; Mac
 integrations is 6. Browser fills retain `modules.browser.signIn: {version: 3}` and the
 calling agent Runner's `modules.agents.loginFill: 1` admission. Previous-release
 browser control remains an origin-only, session-bound adapter.
-The Host still serves `browser_sign_in` with its required session ID for
-previous-release Runners' exact tool inventories, only to Runners without
-`browser-profile-create-v1` ([Host compatibility](host-boundaries.md#compatibility)).
-Current Runner profiles offer only `sign_in`.
+The current MCP registry offers `sign_in` only to Runs; programs and connected
+agents must start a managed task. Historical `browser_sign_in` transcript entries
+remain readable, without restoring that removed tool or an old Runner inventory.
+A sign-in result can carry an opaque login reference for Run-bound saved-field
+delivery. That reference grants nothing alone: each browser fill or computer
+input still needs the Run's live surface authority.
 
 Desktop main negotiates broker protocol **6** for modern sessionless
 transactions and **4** for the legacy adapter. The broker echoes the selected

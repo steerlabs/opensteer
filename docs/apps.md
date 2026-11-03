@@ -13,7 +13,9 @@ roll back files. Editing the folder can affect an already running server.
 
 Starting a server requires a full-access Run. So do `app_list` and `app_fetch`;
 calling an app can execute code with the computer user's full authority. A
-Personal macOS Runner has no outer sandbox. Servers use the program launch and
+Personal macOS Runner has no outer sandbox. Connected agents and programs use a
+managed Run for app publication or calls; approval of a connection grants no
+direct app-server authority. Servers use the program launch and
 containment paths, with the program environment allowlist plus `PORT`, and
 receive no Opensteer tool credential. App versions record their owning computer;
 they don't move to another computer when someone views them.
@@ -32,6 +34,8 @@ separate scheme in its main process; mobile uses a WebView without Opensteer
 credentials. Links within the capability prefix stay in the frame; other HTTP(S)
 links open outside it. Design for phone width and the supplied light/dark theme.
 
+App tool outputs expose app identity and publication metadata, never the view
+capability or a token-bearing URL. Clients obtain viewing authority independently.
 A view capability stays valid until Host restart, with one token per app and
 person. Every request checks current Workspace membership. Logout doesn't revoke
 a copied view URL. Treat the whole URL as private; clients keep it only in memory.

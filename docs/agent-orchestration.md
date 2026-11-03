@@ -1,5 +1,49 @@
 # Agent orchestration
 
+## One MCP, live caller authority
+
+Runs, Trigger/Watch programs and connected external agents use the same
+`opensteer` MCP server. The [registry](../packages/agent-tools/src/tools/index.ts)
+selects tools by caller kind; neither conversation role nor consent reach chooses
+a separate tool inventory. Run-bound surfaces require a live Run. A connected
+agent starts a managed task when it needs those surfaces; the Host records its
+messages as that connection, never as the person who approved it.
+
+Consent reach comes from the lineage root's Main inheritance and specialist
+binding. Main-inheriting work reaches the person's Workspaces; other work stays
+in its Workspace, and specialists stay in their lineage. Delegation preserves
+that root's reach. Shared channel conversations withhold Main inheritance.
+A connection instead uses the user or Workspace reach its owner approved.
+Membership, live resource grants and the caller's access ceiling still apply.
+
+Access kinds distinguish observation (`read`), caller-owned actions (`self`),
+Thread mutations (`thread`), actionable work (`work`) and administration
+(`settings`). Thread/work admission checks every target's reach and access mode;
+settings require full access. Full access never substitutes for ownership or a
+resource grant. Domain services recheck authority when the effect commits,
+including after a wait. Agents may reduce existing access, but never grant
+access, approve consent, pair/enroll devices, manage account sign-in sessions,
+reveal credentials or raise their own power. Creating work cannot raise its access mode.
+
+Mutating calls use caller-scoped operation receipts. Reuse a stable `operationKey`
+when retrying across MCP reconnects; otherwise identity follows the MCP session,
+request ID and tool. A key reused with different input conflicts. Replay checks
+live authority before returning the stored result, so an old receipt cannot
+bypass revocation. An unfinished external effect stays unconfirmed unless its
+domain has an atomic recovery receipt; never repeat it under a fresh key merely
+because the response was lost. Watch observation IDs retain their activation-wide
+deduplication and explicit hourly observation limit. See
+[receipts](../packages/database/src/agent-control-admission-receipts.ts).
+
+Runs receive Assignment results through the Inbox. Programs and connected agents
+can wait on a Thread's current Run or messages after a known message. Each wait
+pins the observed Run, rechecks live authority on wake-up and returns within
+100 seconds with settled, running, offline or timed-out status. A later Run does
+not replace the pinned one. Disconnecting cancels only the wait, never the task;
+revoking a connection prevents further calls without cancelling work it already
+started. Stop and queue resume remain explicit operations. See
+[Thread waits](../apps/host/src/threads/thread-wait.ts).
+
 ## Inbox authority and delivery
 
 The Host owns delivery semantics in
@@ -57,8 +101,8 @@ replacing code preserves the version. V3 separates environment discovery from
 Workspace listing and requires the anchor's stored `trigger-program-v3`
 capability even offline; dispatch and Watch reconciliation recheck it. Never
 relabel v3 source as v2. See [shipped Trigger skills](../apps/runner/agent-skills/skills)
-and [tool catalog](../packages/agent-tools/src/catalog.ts) for syntax and discovery.
-Watch discovery and delegation use the intersection of program and anchor authority.
+and [tool catalog](../packages/agent-tools/src/tools/index.ts) for syntax and discovery.
+Watch discovery and delegation use the anchor’s live consent reach and resource grants.
 
 Thread state is a stored projection, not a client inference from Request events.
 Run and queue mutations project synchronously; Requests mark their originating
@@ -232,19 +276,18 @@ input or fail a Run merely because its output exceeds storage limits. See
 
 ## Run tool authority
 
-Non-file resource access uses the [resource guard](../packages/database/src/resource-access.ts):
-Main inherits the requester's resources only when the Run's lineage root acts
-as that person in their own Main. Shared or external channel conversations
-withhold this consent even in the owner's Main. Projects require explicit grants
-belonging to the requester;
-browser consent additionally requires the grant creator's active membership.
-Connection ceilings and optional specialist restrictions can only narrow access.
+Non-file resource access intersects [consent reach](#one-mcp-live-caller-authority)
+with the [resource guard](../packages/database/src/resource-access.ts). Main
+inheritance requires the lineage root to act as the requester in their own Main;
+shared or external channel conversations withhold it even there. Projects need
+explicit grants belonging to the requester; browser consent also requires the
+grant creator's active membership. Connection ceilings and specialist bindings
+can only narrow access.
+
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
-its own lineage has Main authority; start a new task instead. Delegated workers
-inherit their root's reach: Main reaches the person's
-Workspaces, other work stays in its Workspace, and specialists stay in their
-lineage. A specialist may send only reports to Threads outside its own registration, even when it shares their Main
-lineage. Reports grant no execution.
+its own lineage has Main authority; start a new task instead. A specialist may
+send only reports to Threads outside its own registration, even when it shares
+their Main lineage. Reports grant no execution.
 
 Every capability names the current attempt's grant. Tool admission needs an
 active grant, live binding, matching Runner boot and non-deleting Workspace;
@@ -331,7 +374,8 @@ list changes outside subscribed Workspaces. See
 Read positions are private; Done is shared. Done/Reopen require active membership
 and the task's creator or Workspace owner. Agent writes require consent reach; membership and ownership still apply.
 Sending actionable work additionally requires lineage-compatible reuse. Chat and active
-channel conversations cannot be Done. The agent `thread_write` tool requires a Runner advertising `task-done-v1`.
+channel conversations cannot be Done. Agent writes use the Host’s current tool contract;
+they do not select tools through per-tool Runner gates.
 
 Done atomically revalidates and stops the task's open Assignment subtree,
 withdraws actionable inputs and Requests, pauses anchored Triggers and revokes
@@ -403,7 +447,7 @@ historical evidence, not instructions or approval receipts.
 Trigger control cannot exceed the actor's access mode; definition requires full
 access within the anchor's kind/scope, except Main's reach. Trigger and Watch
 programs act as their anchor, never with implicit owner-wide authority.
-See [tool catalog](../packages/agent-tools/src/catalog.ts).
+See [tool catalog](../packages/agent-tools/src/tools/index.ts).
 
 Each Run pins the selected ProviderSession before admission. Binding, dispatch
 and recovery never substitute a subsequently selected session. Explicit
