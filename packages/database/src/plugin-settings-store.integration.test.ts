@@ -9,9 +9,107 @@ import { expect } from "vitest";
 import type { KyselyPlugin } from "kysely";
 import { PluginSettingsStore, pluginTargetKey } from "./plugin-settings-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
+import { testOpenApiAdapterContract } from "./store.integration.test-support.js";
+import { integrationDefinitionSummary } from "@opensteer/integration-core";
+import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin Settings authority", (test) => {
+  test("server roles cannot discover another person's private accounts, policy or source files", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.startRunFixture("settings-role-matrix");
+    const platform = new IntegrationPlatformStore(f.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "shared-visible",
+      actorUserId: run.userId,
+      workspaceId: run.workspace.id,
+      source: { directory: "/private/owner-skill-files" },
+      digest: "shared",
+      manifest: { name: "shared-visible", skills: [{ name: "shared-skill" }] },
+    });
+    const contract = testOpenApiAdapterContract({
+      definitionId: "private-records",
+      provider: "records",
+    });
+    const opened = await platform.requests.createIntegrationInstallRequest({
+      callId: "private-request",
+      manifest: {
+        kind: "catalog",
+        definition: integrationDefinitionSummary(contract.definition),
+        digest: integrationDefinitionDigest(contract.definition),
+      },
+      originatingRunId: run.run.id,
+      originatingThreadId: run.thread.id,
+      originatingWorkspaceId: run.workspace.id,
+      targetWorkspaceId: run.workspace.id,
+      requestedBy: run.userId,
+      reason: "Private request sentinel",
+    });
+    const ownerDetail = await platform.settings.detail(run.userId, { kind: "plugin", pluginId });
+    expect(ownerDetail.sourceFolder).toBe("/private/owner-skill-files");
+    for (const role of ["owner", "admin", "member", "non-member"] as const) {
+      const viewer = role === "owner" ? run.userId : await f.store.createUser(role);
+      if (role === "admin")
+        await f.database
+          .updateTable("users")
+          .set({ instanceRole: "administrator" })
+          .where("id", "=", viewer)
+          .execute();
+      if (role === "admin" || role === "member")
+        await f.database
+          .insertInto("workspaceMemberships")
+          .values({
+            id: createId("workspaceMembership"),
+            workspaceId: run.workspace.id,
+            userId: viewer,
+            role: "collaborator",
+            state: "active",
+            generation: 1,
+            invitedBy: run.userId,
+            joinedAt: new Date(),
+            revokedAt: null,
+            revokedBy: null,
+            updatedAt: new Date(),
+          })
+          .execute();
+      const overview = await platform.settings.overview(viewer);
+      expect(overview.rows).toHaveLength(role === "non-member" ? 0 : 1);
+      expect(JSON.stringify(overview)).not.toContain("/private/owner-skill-files");
+      const pending = await platform.requests.waitingOnUserPage({ userId: viewer, limit: 100 });
+      expect(pending.requests.some((r) => r.request.id === opened.request.id)).toBe(
+        role === "admin",
+      );
+      expect(
+        await platform.settings.affectedViewers({ requestId: opened.request.id }),
+      ).not.toContain(role === "non-member" || role === "member" ? viewer : "absent");
+      if (role !== "owner" && role !== "non-member") {
+        const detail = await platform.settings.detail(viewer, { kind: "plugin", pluginId });
+        expect(detail.sourceFolder).toBeNull();
+        expect(detail.accounts).toEqual([]);
+        expect(detail.permissions).toEqual([]);
+        await f.database
+          .updateTable("workspaceMemberships")
+          .set({ state: "revoked", revokedAt: new Date(), revokedBy: run.userId })
+          .where("workspaceId", "=", run.workspace.id)
+          .where("userId", "=", viewer)
+          .execute();
+        expect((await platform.settings.overview(viewer)).rows).toEqual([]);
+        expect(
+          (await platform.requests.waitingOnUserPage({ userId: viewer, limit: 100 })).requests,
+        ).toEqual([]);
+        expect(
+          await platform.settings.affectedViewers({ requestId: opened.request.id }),
+        ).not.toContain(viewer);
+        await expect(
+          platform.settings.detail(viewer, { kind: "plugin", pluginId }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+      }
+    }
+  });
+
   test("overview is set based, membership scoped and never exposes source paths", async ({
     storeFixture: f,
   }) => {
@@ -178,6 +276,19 @@ describeStore("plugin Settings authority", (test) => {
       threadId: run.thread.id,
       providerAuthorizations: {},
     };
+    await f.database
+      .updateTable("integrationInstallations")
+      .set({ status: "needs-attention" })
+      .where("id", "=", installationId)
+      .execute();
+    expect((await platform.settings.overview(run.userId)).rows[0]?.issues).toEqual([
+      "invalid-installation",
+    ]);
+    await f.database
+      .updateTable("integrationInstallations")
+      .set({ status: "active" })
+      .where("id", "=", installationId)
+      .execute();
     const cached = await platform.listCallableTools(scope);
     expect(cached).toHaveLength(1);
     const target = { kind: "service" as const, definitionId: "records" };
@@ -608,6 +719,44 @@ describeStore("plugin Settings authority", (test) => {
           updatedAt: new Date(),
         })
         .execute();
+    // Private accounts remain private even when an administrator shares the source Workspace.
+    await f.database
+      .updateTable("deployments")
+      .set({ deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" } })
+      .execute();
+    for (const role of ["administrator", "member"] as const) {
+      const viewer = await f.store.createUser(`private-account-${role}`);
+      if (role === "administrator")
+        await f.database
+          .updateTable("users")
+          .set({ instanceRole: role })
+          .where("id", "=", viewer)
+          .execute();
+      await f.database
+        .insertInto("workspaceMemberships")
+        .values({
+          id: createId("workspaceMembership"),
+          workspaceId: run.workspace.id,
+          userId: viewer,
+          role: "collaborator",
+          state: "active",
+          generation: 1,
+          invitedBy: run.userId,
+          joinedAt: new Date(),
+          revokedAt: null,
+          revokedBy: null,
+          updatedAt: new Date(),
+        })
+        .execute();
+      expect((await platform.settings.overview(viewer)).rows).toEqual([]);
+      await expect(
+        platform.settings.detail(viewer, { kind: "service", definitionId: "records" }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
+    await f.database
+      .updateTable("deployments")
+      .set({ deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" } })
+      .execute();
     const target = { kind: "service" as const, definitionId: "records" };
     await platform.settings.setPlacement(
       run.userId,
