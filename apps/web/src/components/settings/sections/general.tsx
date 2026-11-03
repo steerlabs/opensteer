@@ -11,15 +11,6 @@ import { settingsPlace, settingsWhatThisIs, settingsWhereItRuns } from "../copy.
 import { useHomeComputer } from "./devices.js";
 import { SectionHeader, SettingsRow, StatusChip, type SettingsView } from "../primitives.js";
 
-/**
- * This Opensteer: what it is called, where it runs, and — for a Personal
- * Opensteer on this computer — whether your Account lists it.
- *
- * The page is headed by the same name the Settings corner shows, so the chip
- * and the page it opens read as one thing. Remote access has its own place in
- * Settings and is not repeated here, and a setting that lives on another
- * computer is named there rather than drawn as a control that cannot work.
- */
 export function GeneralSection({ view }: { readonly view: SettingsView }) {
   const { snapshot } = useShell();
   const home = useHomeComputer();
@@ -47,7 +38,6 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
             publicOrigin: snapshot.identityConfig?.publicOrigin,
           })}
         />
-        <AccountListingRow view={view} />
         <NotificationsRow />
         <DesktopUpdatesRow />
         <SearchSuggestionsRow />
@@ -182,22 +172,6 @@ function NotificationsRow() {
  * snapshot's operation slot to empty and report what actually happened,
  * including the state that is neither success nor failure.
  */
-function AccountListingRow({ view }: { readonly view: SettingsView }) {
-  const { desktopBridge, deploymentAccess, snapshot } = useShell();
-  if (
-    (desktopBridge && deploymentAccess?.account.available === false) ||
-    (!desktopBridge && !snapshot.identityConfig?.portalOrigin)
-  )
-    return null;
-  return view.kind === "personal" ? (
-    <SettingsRow
-      icon="user"
-      title="Opensteer Account"
-      detail="View and change the linked Account in Devices, from any signed-in device."
-    />
-  ) : null;
-}
-
 function SearchSuggestionsRow() {
   const { hostClient, snapshot } = useShell();
   const [enabled, setEnabled] = useState(hostClient.browserPreferences.showSearchSuggestions);

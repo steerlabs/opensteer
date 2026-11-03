@@ -5,17 +5,19 @@ import {
   PluginDetailViewSchema,
   PluginsOverviewViewSchema,
   type PluginDetailView,
+  type DevicesOverviewView,
   type PluginTarget,
   type HostApiCommand,
   type HostApiCommandOutput,
 } from "@opensteer/protocol";
+import { pluginSummaries } from "../host/plugins.js";
 import { HostClientRequestError } from "../host/client.js";
 
 /** Mutable permission state for UI work before the real Host projection lands. */
 export class MockSettingsFixtures {
   readonly listeners = new Set<(message: { type: "host.plugins-changed" }) => void>();
   private details: PluginDetailView[] | null = null;
-  readonly devices = DevicesOverviewViewSchema.parse({
+  private readonly fallbackDevices = DevicesOverviewViewSchema.parse({
     devices: [
       {
         id: createId("runner"),
@@ -65,9 +67,18 @@ export class MockSettingsFixtures {
     name: string;
     kind: "main" | "project";
   }[];
-  constructor(changed: () => void, workspaces: MockSettingsFixtures["workspaces"]) {
+  private readonly readDevices: (() => DevicesOverviewView) | undefined;
+  constructor(
+    changed: () => void,
+    workspaces: MockSettingsFixtures["workspaces"],
+    readDevices?: () => DevicesOverviewView,
+  ) {
+    this.readDevices = readDevices;
     this.changed = changed;
     this.workspaces = workspaces;
+  }
+  get devices(): DevicesOverviewView {
+    return this.readDevices?.() ?? this.fallbackDevices;
   }
   private inventory(workspaceId: WorkspaceId): PluginDetailView[] {
     if (this.details) return this.details;
@@ -186,7 +197,7 @@ export class MockSettingsFixtures {
           entry.tag === "devices"
             ? this.devices.devices
                 .filter(({ name }) =>
-                  entry.title === "Calendar" ? name === "iPhone" : name === "Office Mac",
+                  entry.title === "Calendar" ? name.includes("iPhone") : name.includes("MacBook"),
                 )
                 .map(({ id, name, status }) => ({
                   runnerId: RunnerIdSchema.parse(id),
@@ -211,6 +222,79 @@ export class MockSettingsFixtures {
       }),
     );
     return this.details;
+  }
+  private packageIds = new Set<string>();
+  syncPackages(workspaceId: WorkspaceId, stored: readonly unknown[]) {
+    const packages = pluginSummaries(stored);
+    const current = this.inventory(workspaceId).filter(
+      (detail) =>
+        detail.row.target.kind !== "plugin" ||
+        !this.packageIds.has(detail.row.target.pluginId) ||
+        packages.some(
+          (plugin) =>
+            plugin.id === (detail.row.target.kind === "plugin" ? detail.row.target.pluginId : ""),
+        ),
+    );
+    for (const plugin of packages) {
+      if (
+        current.some(
+          (detail) =>
+            detail.row.target.kind === "plugin" && detail.row.target.pluginId === plugin.id,
+        )
+      )
+        continue;
+      current.push(
+        PluginDetailViewSchema.parse({
+          row: {
+            target: { kind: "plugin", pluginId: plugin.id },
+            title: plugin.name,
+            description: plugin.description,
+            source: {
+              kind: plugin.scope === "workspace" ? "workspace" : "plugin",
+              version: plugin.version,
+            },
+            tags: ["skills"],
+            placement: {
+              enabled: true,
+              mainIncluded: plugin.activeIn.includes(workspaceId),
+              projectCount: plugin.activeIn.filter((id) => id !== workspaceId).length,
+              personalEverywhere: false,
+              revision: 0,
+            },
+            accountCount: 0,
+            issues: plugin.directory ? [] : ["unknown-source-folder"],
+            contents: {
+              skills: plugin.skills,
+              tools: plugin.servers,
+              specialists: plugin.specialist ? 1 : 0,
+            },
+            permissions: {
+              canEnable: true,
+              canPlace: true,
+              canRemove: true,
+              canUpdate: plugin.directory !== null,
+            },
+          },
+          accounts: [],
+          installationIds: [],
+          grants: [],
+          registrations: [],
+          places: this.workspaces().map((place) => ({
+            ...place,
+            selected: plugin.activeIn.includes(place.workspaceId),
+            canSelect: plugin.scope !== "workspace" || place.workspaceId === plugin.workspaceId,
+            accounts: [],
+          })),
+          personalEverywhere: null,
+          devices: [],
+          permissions: [],
+          contents: [],
+          sourceFolder: plugin.directory,
+        }),
+      );
+    }
+    this.packageIds = new Set(packages.map((plugin) => plugin.id));
+    this.details = current;
   }
   overview(workspaceId: WorkspaceId) {
     return PluginsOverviewViewSchema.parse({

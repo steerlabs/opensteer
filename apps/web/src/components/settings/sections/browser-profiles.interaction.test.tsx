@@ -36,7 +36,7 @@ describe("Settings → Browser profiles", () => {
       settingsRail("personal")
         .agents.map(({ id }) => id)
         .slice(-3),
-    ).toEqual(["browser-profiles", "chrome", "passwords"]);
+    ).toEqual(["ai", "plugins", "sign-ins"]);
     const { page } = await mount();
     expect(rows(page)).toEqual(["Shopping Opensteer and Buyer", "Work Opensteer only"]);
   });

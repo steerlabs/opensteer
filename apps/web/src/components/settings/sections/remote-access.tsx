@@ -2,6 +2,7 @@ import { useState } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
 import type { PersonalRemoteAccessMode } from "@opensteer/protocol";
+import { Dialog } from "../../dialog.js";
 import { useShell } from "../../app-shell.js";
 import { SettingsError, SettingsGroup, SettingsRow, type SettingsView } from "../primitives.js";
 import { linkAccountFromWeb } from "../link-personal-account.js";
@@ -9,6 +10,7 @@ import { linkAccountFromWeb } from "../link-personal-account.js";
 export function RemoteAccessSection({ view }: { readonly view: SettingsView }) {
   const shell = useShell();
   const remote = usePersonalRemoteAccess(shell.hostClient);
+  const [choosingMode, setChoosingMode] = useState(false);
   const [draft, setDraft] = useState<PersonalRemoteAccessMode | null>(null);
   const [privateOrigin, setPrivateOrigin] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
@@ -31,55 +33,87 @@ export function RemoteAccessSection({ view }: { readonly view: SettingsView }) {
   };
   return (
     <SettingsGroup
-      heading="Remote access"
+      heading="Open Opensteer from anywhere"
       headingId="settings-remote-access-heading"
       note={remoteAccessDisconnectWarning}
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          request({
-            action: "configure",
-            mode,
-            privateOrigin: mode === "private" ? origin.trim() : null,
-          });
-        }}
-      >
-        <label>
-          Access{" "}
-          <select
-            aria-label="Remote access"
-            value={mode}
-            onChange={(event) => setDraft(event.target.value as PersonalRemoteAccessMode)}
-            disabled={busy}
-          >
-            <option value="off">Off</option>
-            {remote.status?.accountIssuer ? (
-              <option value="connect">Opensteer Connect</option>
-            ) : null}
-            <option value="private">Private network</option>
-          </select>
-        </label>
-        {mode === "private" ? (
-          <label>
-            Private HTTPS address
-            <input
-              aria-label="Private HTTPS address"
-              type="url"
-              required
-              value={origin}
-              onChange={(event) => setPrivateOrigin(event.target.value)}
-            />
-          </label>
-        ) : null}
-        <button
-          className="btn btn--small"
-          type="submit"
-          disabled={!access || busy || (pending && mode !== "off")}
+      <SettingsRow
+        icon="globe"
+        title="Open Opensteer from anywhere"
+        action={
+          <input
+            type="checkbox"
+            className="switch"
+            role="switch"
+            aria-label="Open Opensteer from anywhere"
+            checked={access !== undefined && access.mode !== "off"}
+            disabled={!access || busy || pending}
+            onChange={(event) => {
+              if (event.currentTarget.checked) {
+                setDraft(remote.status?.accountIssuer ? "connect" : "private");
+                setChoosingMode(true);
+              } else request({ action: "configure", mode: "off", privateOrigin: null });
+            }}
+          />
+        }
+      />
+      <button className="btn" type="button" onClick={() => setChoosingMode(true)}>
+        Connection options
+      </button>
+      {choosingMode ? (
+        <Dialog
+          labelledBy="remote-mode-title"
+          title="Open from anywhere"
+          onClose={() => setChoosingMode(false)}
         >
-          Apply
-        </button>
-      </form>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              setChoosingMode(false);
+              request({
+                action: "configure",
+                mode,
+                privateOrigin: mode === "private" ? origin.trim() : null,
+              });
+            }}
+          >
+            <label>
+              Access{" "}
+              <select
+                aria-label="Remote access"
+                value={mode}
+                onChange={(event) => setDraft(event.target.value as PersonalRemoteAccessMode)}
+                disabled={busy}
+              >
+                <option value="off">Off</option>
+                {remote.status?.accountIssuer ? (
+                  <option value="connect">Opensteer Connect</option>
+                ) : null}
+                <option value="private">Private network</option>
+              </select>
+            </label>
+            {mode === "private" ? (
+              <label>
+                Private HTTPS address
+                <input
+                  aria-label="Private HTTPS address"
+                  type="url"
+                  required
+                  value={origin}
+                  onChange={(event) => setPrivateOrigin(event.target.value)}
+                />
+              </label>
+            ) : null}
+            <button
+              className="btn btn--small"
+              type="submit"
+              disabled={!access || busy || (pending && mode !== "off")}
+            >
+              Apply
+            </button>
+          </form>
+        </Dialog>
+      ) : null}
       <SettingsRow
         icon="devices"
         title="Connection"

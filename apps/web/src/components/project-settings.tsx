@@ -249,13 +249,13 @@ export function accessSettingsPath(
   const workspace = `workspace=${encodeURIComponent(workspaceId)}`;
   switch (type) {
     case "integration":
-      return `/settings/apps/tools?${service ? `provider=${encodeURIComponent(service)}&` : ""}${workspace}`;
+      return `/settings/plugins?${service ? `provider=${encodeURIComponent(service)}&` : ""}${workspace}`;
     case "computer-app":
-      return `/settings/apps/tools?${workspace}`;
+      return `/settings/plugins?${workspace}`;
     case "browser-profile":
-      return "/settings/browser-profiles";
+      return "/settings/sign-ins/browsers";
     case "phone":
-      return "/settings/computers";
+      return "/settings/devices/computers";
   }
 }
 

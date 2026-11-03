@@ -2036,12 +2036,17 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
     "channels.get": async () =>
       rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
-    "plugins.overview.get": async () =>
-      rpcSuccess(
-        client.settings.overview(WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id)),
-      ),
+    "plugins.overview.get": async () => {
+      const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
+      client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId));
+      return rpcSuccess(client.settings.overview(workspaceId));
+    },
     "plugins.detail.get": async ({ target }) => {
       try {
+        client.settings.syncPackages(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          await client.listPlugins(),
+        );
         return rpcSuccess(
           client.settings.detail(
             WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
@@ -4826,6 +4831,14 @@ class MockHostState {
         name,
         kind,
       })),
+    () => ({
+      devices: this.snapshot.machines.filter(
+        (machine) =>
+          machine.device !== null ||
+          machine.allowedModules.includes("agents") ||
+          !machine.allowedModules.includes("messaging"),
+      ),
+    }),
   );
   private readonly plugins: MockPlugin[] = [];
   private readonly specialists: {

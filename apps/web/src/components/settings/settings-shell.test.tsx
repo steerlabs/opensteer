@@ -28,15 +28,15 @@ const noOp = () => undefined;
 const placeholderEmail = "owner@personal.opensteer.invalid";
 
 describe("Settings navigation", () => {
-  it("defaults to AI services and treats an unknown child as a real missing setting", () => {
-    expect(defaultSettingsSection).toBe("ai-engines");
-    expect(settingsSectionForPath("/settings")).toBe("ai-engines");
+  it("defaults to General and treats an unknown child as a real missing setting", () => {
+    expect(defaultSettingsSection).toBe("general");
+    expect(settingsSectionForPath("/settings")).toBe("general");
     expect(settingsSectionForPath("/settings/apps/tools")).toBe("apps");
     expect(settingsSectionForPath("/settings/not-a-setting")).toBeNull();
 
     const html = renderSettings(placementFixtures().browser, "/settings/not-a-setting");
     expect(html).toContain("Setting not found");
-    expect(html).toContain('href="/settings/ai-engines"');
+    expect(html).toContain('href="/settings/ai"');
     expect(html).not.toContain("AI service accounts");
   });
 });
@@ -46,31 +46,31 @@ describe("Device settings placement", () => {
     const personal = renderSettings(placementFixtures()["personal-remote"], "/settings/devices");
     const server = renderSettings(placementFixtures()["self-hosted"], "/settings/devices");
 
-    expect(personal).toContain(">Remote access<");
-    expect(server).toContain(">Signed-in devices<");
+    expect(personal).toContain(">Devices<");
+    expect(server).toContain(">Devices<");
     for (const html of [personal, server]) {
-      expect(html).toContain("What agents can use");
+      expect(html).toContain("For your agents");
       expect(html).not.toContain("Your devices");
-      expect(html).toContain('href="/settings/computers"');
+      expect(html).toContain('href="/settings/devices"');
     }
   });
 
   it("shows remote access administration on a remote Personal device", () => {
-    const html = renderSettings(placementFixtures()["personal-remote"], "/settings/devices");
+    const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
 
-    expect(html).toContain('aria-label="Remote access"');
+    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
     expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
     expect(html).toContain("Nothing on Mac mini changes");
     expect(html).toContain("Changing remote access");
-    expect(html).not.toContain("Sign out");
+    expect(html).toContain("Where you’re signed in");
   });
 
   it("gives a signed-in machine-owner browser the same remote access controls", () => {
     const context = { ...placementFixtures().browser, snapshot: machineOwnerSnapshot() };
-    const html = renderSettings(context, "/settings/devices");
+    const html = renderSettings(context, "/settings/account");
 
-    expect(html).toContain('aria-label="Remote access"');
-    expect(html).toContain('value="private"');
+    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
+    expect(html).toContain("Connection options");
     expect(html).toContain("Changing remote access");
   });
 
@@ -79,9 +79,9 @@ describe("Device settings placement", () => {
       ...placementFixtures().browser,
       snapshot: { ...machineOwnerSnapshot(), sessionSurface: "personal-remote" as const },
     };
-    const html = renderSettings(context, "/settings/devices");
+    const html = renderSettings(context, "/settings/account");
 
-    expect(html).toContain('aria-label="Remote access"');
+    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
     expect(html).toContain("Disconnecting ends this device’s access to Mac mini.");
     expect(html).not.toContain("turn on remote access in the Opensteer app");
   });
@@ -100,10 +100,10 @@ describe("Settings identity honesty", () => {
     expect(renderSettings({ ...context, deploymentAccess }, "/settings/general")).not.toContain(
       "Add to your Account",
     );
-    const html = renderSettings({ ...context, deploymentAccess }, "/settings/devices");
+    const html = renderSettings({ ...context, deploymentAccess }, "/settings/account");
     expect(html).toContain("Loading remote access");
     expect(html).not.toContain('value="connect"');
-    expect(html).toContain('value="private"');
+    expect(html).toContain("Connection options");
   });
 
   it("never renders the seeded machine-owner address in any placement", () => {

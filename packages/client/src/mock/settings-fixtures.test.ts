@@ -111,8 +111,13 @@ describe("Settings mock RPC", () => {
         ),
       ).toBe(true);
       const devices = value(await client.rpc["devices.overview.get"]({}));
-      expect(devices.devices.map(({ name }) => name)).toContain("Agent Phone");
-      expect(devices.devices.map(({ name }) => name)).toContain("iPhone");
+      expect(devices.devices.some(({ device }) => device?.platform === "android")).toBe(true);
+      expect(
+        devices.devices.every((device) =>
+          client.getSnapshot().machines.some((machine) => machine.id === device.id),
+        ),
+      ).toBe(true);
+      expect(devices.devices.some((device) => device.name === "Slack runtime")).toBe(false);
     } finally {
       client.dispose();
     }

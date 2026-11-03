@@ -74,7 +74,15 @@ interface IntegrationResult {
 }
 
 /** Routed integrations surface: catalog, accounts, and Workspace grants. */
-export function IntegrationsPage({ embedded = false }: { readonly embedded?: boolean }) {
+export function IntegrationsPage({
+  embedded = false,
+  initialDefinitionId,
+  installerOnly = false,
+}: {
+  readonly embedded?: boolean;
+  readonly initialDefinitionId?: string;
+  readonly installerOnly?: boolean;
+}) {
   const {
     deploymentAccess,
     desktopBridge,
@@ -130,7 +138,11 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
     readonly answer: PromiseWithResolvers<IntegrationDashboard | null>;
     readonly read: Promise<unknown>;
   } | null>(null);
-  const [view, setView] = useState<View>({ kind: "overview" });
+  const [view, setView] = useState<View>(
+    initialDefinitionId
+      ? { kind: "detail", definitionId: initialDefinitionId }
+      : { kind: installerOnly ? "install" : "overview" },
+  );
   const rootRef = useRef<HTMLDivElement>(null);
   const page = view.kind === "detail" ? view.definitionId : null;
   /** A section of the overview the next view change opens at, rather than its top. */
@@ -144,7 +156,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
       anchor.scrollIntoView({ block: "start" });
       return;
     }
-    const scroller = rootRef.current?.closest(".connected-apps__inner, .page");
+    const scroller = rootRef.current?.closest(".settings-content, .page");
     if (scroller) scroller.scrollTop = 0;
   }, [page]);
   const [pending, setPending] = useState(false);
@@ -689,7 +701,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
         {embedded ? null : (
           <PageHeader
             back={
-              <Link className="page__back" to="/settings/apps/tools">
+              <Link className="page__back" to="/settings/plugins">
                 <Icon name="arrow-left" />
                 Settings
               </Link>
@@ -996,4 +1008,4 @@ function integrationResultDetail(status: IntegrationResult["status"]): string {
 }
 
 /** Where a canonical browser sign-in returns to; the Host omits it for another device. */
-const authorizationReturnPath = "/settings/apps/tools";
+const authorizationReturnPath = "/settings/plugins";

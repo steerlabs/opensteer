@@ -20,10 +20,10 @@ describe("SettingsRedirect", () => {
       entry: "/computers/rnr_123?panel=folders#shared",
       from: "/computers",
       route: "/computers/*",
-      to: "/settings/computers",
+      to: "/settings/devices/computers",
     });
 
-    expect(locationOf(router)).toBe("/settings/computers/rnr_123?panel=folders#shared");
+    expect(locationOf(router)).toBe("/settings/devices/computers/rnr_123?panel=folders#shared");
   });
 
   it("keeps integration callback parameters on the canonical Agent tools route", async () => {
@@ -31,11 +31,11 @@ describe("SettingsRedirect", () => {
       entry: "/settings/integrations?integrationAttempt=attempt_123#authorization",
       from: "/settings/integrations",
       route: "/settings/integrations",
-      to: "/settings/apps/tools",
+      to: "/settings/plugins",
     });
 
     expect(locationOf(router)).toBe(
-      "/settings/apps/tools?integrationAttempt=attempt_123#authorization",
+      "/settings/plugins?integrationAttempt=attempt_123#authorization",
     );
   });
 });

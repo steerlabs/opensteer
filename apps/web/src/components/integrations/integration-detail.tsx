@@ -389,7 +389,7 @@ export function IntegrationDetail({
                   <div className="card__row-actions">
                     <Link
                       className="btn btn--small"
-                      to={`/settings/computers/${encodeURIComponent(computer.runnerId)}`}
+                      to={`/settings/devices/computers/${encodeURIComponent(computer.runnerId)}`}
                     >
                       Manage
                     </Link>
@@ -722,7 +722,7 @@ function ComputerUseMacs({
           <div className="card__empty computer-use-empty">
             <p className="computer-use-empty__title">{computerUseNoMac.title}</p>
             <p className="computer-use-empty__detail">{computerUseNoMac.detail}</p>
-            <Link className="btn btn--small" to="/settings/computers">
+            <Link className="btn btn--small" to="/settings/devices/computers">
               {computerUseNoMac.action}
             </Link>
           </div>
@@ -744,7 +744,7 @@ function ComputerUseMacs({
               <div className="card__row-actions">
                 <Link
                   className="btn btn--small"
-                  to={`/settings/computers/${encodeURIComponent(machine.id)}`}
+                  to={`/settings/devices/computers/${encodeURIComponent(machine.id)}`}
                 >
                   Open
                 </Link>
@@ -791,7 +791,7 @@ function AgentPhones({
           <div className="card__empty computer-use-empty">
             <p className="computer-use-empty__title">{phoneUseNoPhone.title}</p>
             <p className="computer-use-empty__detail">{phoneUseNoPhone.detail}</p>
-            <Link className="btn btn--small" to="/settings/computers">
+            <Link className="btn btn--small" to="/settings/devices/computers">
               {phoneUseNoPhone.action}
             </Link>
           </div>
@@ -808,7 +808,7 @@ function AgentPhones({
               <div className="card__row-actions">
                 <Link
                   className="btn btn--small"
-                  to={`/settings/computers/${encodeURIComponent(machine.id)}`}
+                  to={`/settings/devices/computers/${encodeURIComponent(machine.id)}`}
                 >
                   Open
                 </Link>

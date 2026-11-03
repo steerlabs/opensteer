@@ -245,7 +245,7 @@ function App() {
     );
   }
   return (
-    <MemoryRouter initialEntries={[view === "settings" ? "/settings/chrome" : "/visual"]}>
+    <MemoryRouter initialEntries={[view === "settings" ? "/settings/sign-ins/chrome" : "/visual"]}>
       <div className="app-shell">
         <main className="app-shell__main">
           <Routes>

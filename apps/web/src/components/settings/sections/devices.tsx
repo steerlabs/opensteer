@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { settingsSessionRows } from "@opensteer/client/settings";
 import { Link } from "react-router";
 import type { AuthSessionSummary } from "@opensteer/core";
 import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
@@ -15,7 +16,6 @@ import { HerePin } from "../../computers/here-pin.js";
 import type { IconName } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
 import { useToast } from "../../toast.js";
-import { settingsItem } from "../copy.js";
 import {
   SectionHeader,
   SettingsError,
@@ -24,6 +24,7 @@ import {
   formatWhen,
   type SettingsView,
 } from "../primitives.js";
+import { useSettingsRead } from "../use-settings-read.js";
 import { RemoteAccessSection } from "./remote-access.js";
 
 /** Every device administers the same Deployment and sees its own session inventory. */
@@ -38,16 +39,16 @@ export function DevicesSettings({ view }: { readonly view: SettingsView }) {
 
 export function DevicesHeader({
   lead,
-  view,
+  view: _view,
 }: {
   readonly lead: string;
   readonly view: SettingsView;
 }) {
-  return <SectionHeader lead={lead} title={settingsItem("devices", view.kind).label} />;
+  return <SectionHeader lead={lead} title="Where you’re signed in" />;
 }
 
 /** Every device you are signed in from, this one first. */
-function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
+export function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
   const sessions = useSessions();
   const current = sessions.list?.find((session) => session.current) ?? null;
   return (
@@ -63,7 +64,6 @@ function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
         name={view.name}
       />
       <OtherDevicesGroup sessions={sessions} />
-      <ComputersPointer />
     </>
   );
 }
@@ -84,26 +84,14 @@ export interface SessionsState {
 export function useSessions(): SessionsState {
   const { hostClient } = useShell();
   const toast = useToast();
-  const [list, setList] = useState<readonly AuthSessionSummary[] | null>(null);
+  const sessions = useSettingsRead(
+    () => hostClient.rpc["sessions.list"]({}).then(unwrapRpcResult),
+    "account-sessions",
+  );
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    hostClient.rpc["sessions.list"]({})
-      .then((result) => {
-        if (!cancelled) setList(unwrapRpcResult(result).sessions);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        setError(actionErrorMessage(reason));
-        setList([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hostClient]);
-
+  const owner = useRef(hostClient);
+  owner.current = hostClient;
   const remove = useCallback(
     (session: AuthSessionSummary) => {
       if (pending) return;
@@ -116,16 +104,26 @@ export function useSessions(): SessionsState {
           type: "session.revoke",
         })
         .then(() => {
-          setList((current) => current?.filter((item) => item.id !== session.id) ?? null);
+          if (owner.current !== hostClient) return;
+          sessions.reload();
           toast.success(`${session.deviceLabel} no longer has access.`);
         })
-        .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-        .finally(() => setPending(null));
+        .catch((reason: unknown) => {
+          if (owner.current === hostClient) setError(actionErrorMessage(reason));
+        })
+        .finally(() => {
+          if (owner.current === hostClient) setPending(null);
+        });
     },
-    [hostClient, pending, toast],
+    [hostClient, pending, toast, sessions.reload],
   );
 
-  return { error, list, pending, remove };
+  return {
+    error: error ?? (sessions.error ? actionErrorMessage(sessions.error) : null),
+    list: sessions.data ? settingsSessionRows(sessions.data.sessions) : null,
+    pending,
+    remove,
+  };
 }
 
 /** The Mac a Personal Opensteer runs on, as the Computers page draws it. */
@@ -267,7 +265,7 @@ export function ComputersPointer() {
   return (
     <p className="settings-footnote">
       Want agents to use another computer’s apps and files?{" "}
-      <Link to="/settings/computers">Add it in Computers</Link>.
+      <Link to="/settings/devices/computers">Add it in Computers</Link>.
     </p>
   );
 }

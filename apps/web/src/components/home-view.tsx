@@ -787,7 +787,7 @@ export function workspaceHealth(
   if (!readyAiEngine) {
     return {
       action: (
-        <Link className="btn" to="/settings/ai-engines">
+        <Link className="btn" to="/settings/ai">
           Open AI services
         </Link>
       ),
