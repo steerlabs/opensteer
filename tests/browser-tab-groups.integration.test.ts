@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import { createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -952,6 +952,19 @@ integration("agent organization and durable ownership", () => {
       .executeTakeFirstOrThrow();
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
     const project = await stack.createWorkspace("Special research");
+    expect(
+      (
+        await stat(
+          path.join(
+            path.dirname(stack.mountedWorkspacePath),
+            "local-workspaces",
+            "main",
+            "Projects",
+            "special-research",
+          ),
+        )
+      ).isDirectory(),
+    ).toBe(true);
     const outside = await command(stack, {
       type: "browser.session.start",
       workspaceId: project.id,
