@@ -16,8 +16,6 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -73,7 +71,6 @@ import {
 import {
   cursorAccessModeHooks,
   cursorAgentToolsServerName,
-  cursorIntegrationToolsServerName,
   cursorMcpServerIdentifier,
   cursorOpensteerMcpServerIdentifiers,
   cursorPreToolUseDecision,
@@ -543,7 +540,6 @@ class CursorHarnessSession implements HarnessSession {
         accessMode: "approval-required",
         titleOnly: true,
         agentTools: this.#context.agentTools,
-        integrationTools: this.#context.integrationTools,
         // The existing hook fails closed without a socket, denying every tool.
         hookSocketPath: "",
         hookTimeoutSeconds: this.#config.hookTimeoutSeconds,
@@ -707,7 +703,6 @@ class CursorHarnessSession implements HarnessSession {
       agentTools: this.#context.agentTools,
       hookSocketPath: socketPath,
       hookTimeoutSeconds: this.#config.hookTimeoutSeconds,
-      integrationTools: this.#context.integrationTools,
       nodeExecutable: this.#dependencies.nodeExecutable,
       threadStateDirectory: this.#context.threadStateDirectory,
     });
@@ -1412,14 +1407,11 @@ function hookCallId(payload: CursorHookPayload): string {
  * servers exist and what they hold.
  */
 function cursorToolsNotice(context: HarnessSessionContext): string {
-  const agentTools = toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-    ({ name }) => name,
-  );
+  const agentTools = context.agentTools.tools;
   return [
     "[Opensteer tools]",
     `To load Opensteer tools, call getMcpTools with the server name below, then use mcpToolCall.`,
     `Server ${cursorMcpServerIdentifier(cursorAgentToolsServerName)} holds: ${agentTools.join(", ")}.`,
-    `Server ${cursorMcpServerIdentifier(cursorIntegrationToolsServerName)} holds: ${[...integrationGatewayToolNames].join(", ")}.`,
   ].join("\n");
 }
 

@@ -26,8 +26,6 @@ import {
   type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
@@ -110,7 +108,6 @@ import {
 import {
   connectPiMcpServer,
   piAgentToolsServer,
-  piIntegrationToolsServer,
   type PiMcpConnect,
   type PiMcpConnection,
 } from "./mcp.js";
@@ -176,7 +173,6 @@ export {
 export {
   connectPiMcpServer,
   piAgentToolsServer,
-  piIntegrationToolsServer,
   piToolCallTimeoutMs,
   piToolContent,
   type PiMcpConnect,
@@ -978,14 +974,14 @@ class PiHarnessSession implements HarnessSession {
   }
 
   /**
-   * Opens both Opensteer MCP servers from inside the Runner and reads their
+   * Opens the Opensteer MCP server from inside the Runner and reads their
    * tool shapes. The connections stay here for the life of the session: the
    * extension calls back through the RPC stream rather than holding a token.
    */
   async #connectToolServers(): Promise<void> {
     const context = this.#context;
     const connect = this.#dependencies.connectMcpServer ?? connectPiMcpServer;
-    // Both waits belong to session startup, so both carry its deadline and its
+    // The waits belong to session startup, so both carry its deadline and its
     // lifetime: a Host that accepts the socket and never answers would
     // otherwise hold the Run open with nothing to cancel it.
     const connectOptions = {
@@ -996,16 +992,8 @@ class PiHarnessSession implements HarnessSession {
       {
         name: piAgentToolsServer,
         token: context.agentTools.token,
-        toolNames: toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-          ({ name }) => name,
-        ),
+        toolNames: context.agentTools.tools,
         url: context.agentTools.url,
-      },
-      {
-        name: piIntegrationToolsServer,
-        token: context.integrationTools.token,
-        toolNames: [...integrationGatewayToolNames],
-        url: context.integrationTools.url,
       },
     ];
     const definitions: PiExtensionToolDefinition[] = [];

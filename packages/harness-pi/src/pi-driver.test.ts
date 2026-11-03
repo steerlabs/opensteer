@@ -1,3 +1,5 @@
+import { integrationGatewayToolNames } from "@opensteer/integration-core";
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -705,6 +707,38 @@ describe("Pi sessions", () => {
     },
   );
 
+  it.each([false, true])(
+    "uses exactly the Host MCP plan on create and resume (%s)",
+    async (resume) => {
+      const plans: { name: string; toolNames: readonly string[] }[] = [];
+      const fixture = await setup({
+        connectMcpServer: async (plan, options) => {
+          plans.push(plan);
+          return fakeMcp(() => ({ content: [], isError: false }), ["host_only_tool"])(
+            plan,
+            options,
+          );
+        },
+      });
+      fixture.context.agentTools.tools = ["host_only_tool"];
+      let reference: string | undefined;
+      if (resume) {
+        const first = await fixture.adapter.startSession(fixture.context);
+        await first.execute(fixture.turn("First"));
+        reference = first.providerSessionReference;
+        await first.stop();
+        plans.length = 0;
+      }
+      const session = reference
+        ? await fixture.adapter.resumeSession(reference, fixture.context)
+        : await fixture.adapter.startSession(fixture.context);
+      await session.stop();
+      expect(plans).toHaveLength(1);
+      expect(plans[0]).toMatchObject({ name: "opensteer", toolNames: ["host_only_tool"] });
+      await fixture.adapter.close();
+    },
+  );
+
   it("writes the extension and the instructions into Thread state at 0600", async () => {
     const fixture = await setup();
     const session = await fixture.adapter.startSession(fixture.context);
@@ -716,7 +750,6 @@ describe("Pi sessions", () => {
     expect(extension).toContain("thread_read");
     // No credential ever reaches the file the model's own commands could read.
     expect(extension).not.toContain(fixture.context.agentTools.token);
-    expect(extension).not.toContain(fixture.context.integrationTools.token);
 
     const instructions = await readFile(
       join(fixture.context.threadStateDirectory, "opensteer-instructions.md"),
@@ -738,7 +771,6 @@ describe("Pi sessions", () => {
     )?.environment ?? {}) as Record<string, string>;
     const serialized = JSON.stringify(environment);
     expect(serialized).not.toContain(fixture.context.agentTools.token);
-    expect(serialized).not.toContain(fixture.context.integrationTools.token);
     await fixture.adapter.close();
   });
 
@@ -1373,29 +1405,18 @@ describe("Pi tool servers", () => {
     },
   );
 
-  it("refuses two tool servers that offer the same tool name", async () => {
-    const fixture = await setup({
-      // Both servers answer with `thread_read`, which would leave the driver
-      // unable to say which one a call belongs to.
-      connectMcpServer: fakeMcp(() => ({ content: [], isError: false }), ["thread_read"], true),
-    });
-    await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
-      /Two Opensteer servers offer a tool named thread_read/u,
-    );
-    await fixture.adapter.close();
-  });
-
-  it("closes a connection that was opened before a later one failed", async () => {
+  it("closes its connection if tool discovery fails", async () => {
     const closed: string[] = [];
     const fixture = await setup({
       connectMcpServer: async (plan) => {
-        if (plan.name === "opensteer_integrations") throw new Error("the Host refused");
         return {
           callTool: async () => ({ content: [], isError: false }),
           close: async () => {
             closed.push(plan.name);
           },
-          listTools: async () => [],
+          listTools: async () => {
+            throw new Error("the Host refused");
+          },
         };
       },
     });
@@ -1585,7 +1606,14 @@ describe("Pi inputs and instructions", () => {
 
   it("puts the durable-history notice in front of the model when there is earlier history", () => {
     const context = {
-      agentTools: { capabilityProfileId: "main", token: "t", url: "https://host.example/mcp" },
+      agentTools: {
+        tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: ["opensteer:threads"],
+        token: "t",
+        url: "https://host.example/mcp",
+      },
       historyWindow: { byteCount: 10, hasEarlier: true, itemCount: 3 },
       instructions: "Workspace instructions.",
       platformGuide: "Platform guide.",
@@ -1668,14 +1696,13 @@ function testDriver(
 function fakeMcp(
   call: (name: string, args: unknown) => PiToolAnswer,
   toolNames: readonly string[] = ["thread_read"],
-  onBothServers = false,
 ): PiMcpConnect {
   return async (plan) => {
     const connection: PiMcpConnection = {
       callTool: async (name, args) => call(name, args),
       close: async () => undefined,
       listTools: async () =>
-        onBothServers || plan.name === "opensteer"
+        plan.name === "opensteer"
           ? toolNames.map((name) => ({
               description: `Fake ${name}`,
               inputSchema: { properties: { query: { type: "string" } }, type: "object" },
@@ -1754,7 +1781,10 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
   const context: HarnessSessionContext = {
     accessMode: "approval-required",
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "os_secret_agent_tools_token",
       url: "https://host.example/internal/v1/mcp",
     },
@@ -1768,10 +1798,6 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
       itemCount: options.history?.length ?? 0,
     },
     instructions: "Follow the workspace instructions.",
-    integrationTools: {
-      token: "os_secret_integration_tools_token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
     machineAccessNotice: noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

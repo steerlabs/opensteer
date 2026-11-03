@@ -7,7 +7,11 @@ import {
   ModelSelectionSchema,
   type ModelSelection,
 } from "@opensteer/core";
-import { platformGuideForRun } from "@opensteer/agent-tools";
+import {
+  platformGuideForRun,
+  toolsForCapabilityProfile,
+  skillsForCapabilityProfile,
+} from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -98,7 +102,10 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(bundle, c.profile).map(async (skill) => {
+    planAgentSkills(
+      bundle,
+      skillsForCapabilityProfile(c.profile).map(({ name }) => name),
+    ).map(async (skill) => {
       const { fullName, path } = skill;
       const destination = join(p.workspace, ".eval-skills", fullName);
       await cp(path, destination, { recursive: true });
@@ -137,11 +144,13 @@ export async function runEngine(input: {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      capabilityProfileId: c.profile,
+      tools: toolsForCapabilityProfile(c.profile).map(({ name }) => name),
+      toolsRevision: "eval-tools-v1",
+      instructions: guide,
+      skills: selected.map(({ fullName }) => fullName),
       token: host.secret,
       url: new URL("/agent", host.url).href,
     },
-    integrationTools: { token: host.secret, url: new URL("/integrations", host.url).href },
     environmentId: host.scope.environmentId,
     environment: p.environment,
     harnessInstanceId: p.instanceId,
