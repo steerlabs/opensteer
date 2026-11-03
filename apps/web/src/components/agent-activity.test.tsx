@@ -125,6 +125,26 @@ describe("AgentTranscript", () => {
     expect(markup).toContain("Connected research agent");
   });
 
+  it("names connection-authored input in a conversation", () => {
+    const entry: MessageEntry = {
+      author: { kind: "connection", connectionId: "mcn_external", displayName: "Research agent" },
+      body: "External agent input",
+      createdAt: "2026-11-03T10:00:00.000Z",
+      id: "message-connection",
+      kind: "message",
+      messageKind: "input",
+      runId: null,
+    };
+    const markup = renderToStaticMarkup(
+      <MemoryRouter>
+        <AgentTranscript conversation entries={[entry]} viewerUserId="owner" />
+      </MemoryRouter>,
+    );
+    expect(markup).toContain("Research agent");
+    expect(markup).toContain('class="update-line"');
+    expect(markup).not.toContain('class="msg--user"');
+  });
+
   it("renders a collaborator's message as plain labeled input, not agent output", () => {
     const viewerUserId = createId("user");
     const entries: MessageEntry[] = [

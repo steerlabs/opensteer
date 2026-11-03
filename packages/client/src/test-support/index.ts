@@ -4,3 +4,4 @@ export * from "./memory-protected-auth-store.js";
 export * from "./session-exchange.js";
 export * from "./thread-activity-scenarios.js";
 export * from "./conversation-history.js";
+export * from "./mcp-presentation-scenarios.js";
