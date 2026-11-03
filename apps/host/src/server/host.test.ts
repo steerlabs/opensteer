@@ -3386,7 +3386,7 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("keeps all auth routes safe on a lifecycle-less managed Host", async () => {
+  it("keeps all auth routes safe on a Host with a lifecycle-less managed work location", async () => {
     const fixture = harnessCatalogServer({
       catalog: authenticationRequiredCatalog,
       connected: false,

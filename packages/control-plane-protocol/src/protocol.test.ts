@@ -16,7 +16,7 @@ import {
   PublishHostAuthorityRequestSchema,
   HostAccountAdoptionProofCredentialSchema,
   HostAccountAdoptionProofIdSchema,
-  ManagedHostProvisioningBundleSchema,
+  HostAccountAdoptionBundleSchema,
   adoptedHostProvisioningBundle,
 } from "./index.js";
 
@@ -327,7 +327,7 @@ describe("control-plane protocol", () => {
       oidcClientSecret: `ocs_${"B".repeat(43)}`,
     } as const;
     expect(
-      ManagedHostProvisioningBundleSchema.safeParse({
+      HostAccountAdoptionBundleSchema.safeParse({
         ...base,
         deployment: { ...base.deployment, reachability: "canonical" },
         initialRunnerEnrollmentToken: "runner-enrollment-token".padEnd(32, "x"),
@@ -340,14 +340,14 @@ describe("control-plane protocol", () => {
       }).success,
     ).toBe(false);
     expect(
-      ManagedHostProvisioningBundleSchema.safeParse({
+      HostAccountAdoptionBundleSchema.safeParse({
         ...base,
         deployment: { ...base.deployment, reachability: "canonical" },
         provisioningMode: "adoption",
       }).success,
     ).toBe(true);
     expect(
-      ManagedHostProvisioningBundleSchema.safeParse({
+      HostAccountAdoptionBundleSchema.safeParse({
         ...base,
         deployment: { ...base.deployment, reachability: "routed" },
         provisioningMode: "adoption",

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
+import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -35,7 +35,7 @@ afterEach(() => {
   }
 });
 
-describe("managed Account bundle file", () => {
+describe("Account adoption bundle file", () => {
   it("rechecks permissions on the descriptor after opening the path", () => {
     const canonicalOrigin = "https://deployment.connect.opensteer.test";
     const directory = mkdtempSync(join(tmpdir(), "opensteer-account-bundle-race-"));
@@ -44,7 +44,7 @@ describe("managed Account bundle file", () => {
     writeFileSync(
       path,
       JSON.stringify(
-        ManagedHostProvisioningBundleSchema.parse({
+        HostAccountAdoptionBundleSchema.parse({
           provisioningMode: "adoption",
           controlApiOrigin: "https://accounts.opensteer.test",
           deployment: {

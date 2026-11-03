@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import {
-  ManagedHostProvisioningBundleSchema,
-  type ManagedHostProvisioningBundle,
+  HostAccountAdoptionBundleSchema,
+  type HostAccountAdoptionBundle,
 } from "@opensteer/control-plane-protocol";
 
 const sealedPayloadPattern = /^aop1\.([A-Za-z0-9_-]{16})\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{22})$/u;
@@ -19,8 +19,8 @@ export class AdoptionOperationCipher {
     this.#key = key;
   }
 
-  seal(proofId: string, bundle: ManagedHostProvisioningBundle): string {
-    const parsed = ManagedHostProvisioningBundleSchema.parse(bundle);
+  seal(proofId: string, bundle: HostAccountAdoptionBundle): string {
+    const parsed = HostAccountAdoptionBundleSchema.parse(bundle);
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.#key, nonce);
     cipher.setAAD(Buffer.from(proofId, "utf8"));
@@ -31,7 +31,7 @@ export class AdoptionOperationCipher {
     return `aop1.${nonce.toString("base64url")}.${ciphertext.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}`;
   }
 
-  open(proofId: string, sealed: string): ManagedHostProvisioningBundle {
+  open(proofId: string, sealed: string): HostAccountAdoptionBundle {
     const match = sealedPayloadPattern.exec(sealed);
     if (!match) throw new Error("Stored Account adoption result is invalid");
     const [, encodedNonce, encodedCiphertext, encodedTag] = match;
@@ -46,6 +46,6 @@ export class AdoptionOperationCipher {
       decipher.update(Buffer.from(encodedCiphertext!, "base64url")),
       decipher.final(),
     ]).toString("utf8");
-    return ManagedHostProvisioningBundleSchema.parse(JSON.parse(plaintext));
+    return HostAccountAdoptionBundleSchema.parse(JSON.parse(plaintext));
   }
 }

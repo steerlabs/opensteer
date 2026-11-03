@@ -54,7 +54,7 @@ export async function loadOrCreateHostInstance(
       expectedHostInstanceId !== undefined &&
       identity.hostInstanceId !== expectedHostInstanceId
     ) {
-      throw new Error("Host instance identity does not match the managed provisioning bundle");
+      throw new Error("Host instance identity does not match the configured Host identity");
     }
     await setPrivateHandleMode(handle, 0o600);
     return { hostInstanceId: identity.hostInstanceId, path };

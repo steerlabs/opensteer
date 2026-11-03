@@ -8,7 +8,6 @@ import {
   CompletePersonalHostAccountLinkResponseSchema,
   PersonalHostAccountLinkProofEnvelopeSchema,
   personalHostAccountLinkCompletionContext,
-  DirectoryProjectionRequestSchema,
   PublishHostAuthorityRequestSchema,
   personalHostAccessRouteEnvelopeSha256,
 } from "@opensteer/control-plane-protocol";
@@ -31,11 +30,7 @@ import {
   createDatabase,
   migrateToLatest,
 } from "@opensteer/database";
-import {
-  HostDescriptorSchema,
-  hostApiVersion,
-  hostKeyFingerprint,
-} from "@opensteer/deployment-authority";
+import { HostDescriptorSchema, hostApiVersion } from "@opensteer/deployment-authority";
 import {
   HarnessInstanceCatalogSchema,
   IssuePersonalPairingCodeResponseSchema,
@@ -87,7 +82,6 @@ import {
   type RunnerReadinessSnapshot,
 } from "../agents/runner-readiness.test-support.js";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
-import { loadOrCreateHostKeys } from "../identity/host-keys.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import {
   attachLocalWorkspaceDisk,
@@ -4863,219 +4857,6 @@ integration("Host vertical slice", () => {
 
     const response = await fetch(`${config.runtimeOrigin.origin}/v1/local-bootstrap`);
     expect(response.status).toBe(404);
-  });
-
-  it("persists the exact managed owner and Main Runner bootstrap across restart", async () => {
-    dataDirectory = await realpath(await mkdtemp(join(tmpdir(), "opensteer-managed-bootstrap-")));
-    const hostPort = await freePort();
-    const base = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
-    const hostInstance = await loadOrCreateHostInstance(dataDirectory);
-    const keys = await loadOrCreateHostKeys({ dataDirectory });
-    const ownerSubject = ControlPlaneAccountIdSchema.parse(`acct_${randomUUID()}`);
-    const runnerEnrollmentToken = "managed-main-runner-token".padEnd(40, "x");
-    const config: HostConfig = {
-      ...base,
-      account: {
-        controlApiOrigin: new URL("https://accounts.opensteer.test"),
-        hostCredential: `osc_${"a".repeat(43)}`,
-        initialRunnerEnrollmentToken: runnerEnrollmentToken,
-        issuer: new URL("https://accounts.opensteer.test"),
-        oidcClientId: "opensteer-managed-host",
-        oidcClientSecret: `ocs_${"b".repeat(43)}`,
-        owner: { displayName: "Managed Owner", email: "owner@example.test", subject: ownerSubject },
-        provisioningMode: "managed",
-        reachability: "canonical",
-      },
-      bindAddress: "0.0.0.0",
-      deploymentIdentity: {
-        deploymentId: createId("deployment"),
-        hostInstanceId: hostInstance.hostInstanceId,
-        hostKeyFingerprint: hostKeyFingerprint(
-          keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
-        ),
-      },
-      exposure: "networked",
-      identity: {
-        ...base.identity,
-        initialOwnerEnrollment: undefined,
-        localPasswordEnabled: false,
-      },
-    };
-
-    const unownedAccountFetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockRejectedValue(new Error("The managed bootstrap fixture must own its Account requests"));
-    const realFetch = globalThis.fetch;
-    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      return url.origin === config.account!.controlApiOrigin.origin
-        ? unownedAccountFetch(input, init)
-        : realFetch(input, init);
-    });
-    const initialAccountFetch = vi.fn<typeof globalThis.fetch>(async (input) => {
-      expect(new URL(input.toString()).pathname).toBe("/v1/host/authority");
-      // Keep the initial membership unpublished until the restarted Account accepts authority.
-      return new Response(null, { status: 503 });
-    });
-    runtime = await createHostRuntime(config, { accountDirectoryFetch: initialAccountFetch });
-    await vi.waitFor(
-      () =>
-        expect(
-          initialAccountFetch.mock.calls.length + unownedAccountFetch.mock.calls.length,
-          "The initial Host never attempted Account authority publication",
-        ).toBe(1),
-      { timeout: 1000 },
-    );
-    expect(unownedAccountFetch).not.toHaveBeenCalled();
-    expect(initialAccountFetch).toHaveBeenCalledOnce();
-    await expect(
-      runtime.store.database
-        .selectFrom("users")
-        .innerJoin("authAccounts", "authAccounts.userId", "users.id")
-        .select([
-          "authAccounts.accountId",
-          "authAccounts.providerId",
-          "users.displayName",
-          "users.email",
-          "users.instanceRole",
-        ])
-        .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({
-      accountId: ownerSubject,
-      displayName: "Managed Owner",
-      email: "owner@example.test",
-      instanceRole: "administrator",
-    });
-    const configuredDirectoryProvider = await runtime.store.database
-      .selectFrom("accountDirectoryProvider")
-      .select(["issuer", "providerId"])
-      .where("singletonKey", "=", "opensteer-account")
-      .executeTakeFirstOrThrow();
-    expect(configuredDirectoryProvider).toEqual({
-      issuer: "https://accounts.opensteer.test",
-      providerId: expect.stringMatching(/^oidc\.opensteer-account\./u),
-    });
-    const pendingProjection = await runtime.store.database
-      .selectFrom("accountDirectoryProjections")
-      .select(["accountId", "generation", "providerId", "publishedGeneration"])
-      .where("accountId", "=", ownerSubject)
-      .executeTakeFirstOrThrow();
-    expect(pendingProjection).toEqual({
-      accountId: ownerSubject,
-      generation: "1",
-      providerId: configuredDirectoryProvider.providerId,
-      publishedGeneration: "0",
-    });
-    const enrollment = await runtime.store.database
-      .selectFrom("runnerEnrollments")
-      .select(["id", "tokenHash"])
-      .where("idempotencyKey", "=", "deployment-managed-main-runner")
-      .executeTakeFirstOrThrow();
-    expect(enrollment.tokenHash).toBe(hashRunnerEnrollmentToken(runnerEnrollmentToken));
-
-    // Give the managed owner one Account directory projection so the restart
-    // below has both a Host identity and a membership to publish.
-    const ownerBinding = await runtime.store.database
-      .selectFrom("authAccounts")
-      .select(["providerId", "userId"])
-      .where("accountId", "=", ownerSubject)
-      .executeTakeFirstOrThrow();
-    await new AccountDirectoryStore(runtime.store.database).configureProvider({
-      issuer: config.account!.issuer.origin,
-      providerId: ownerBinding.providerId,
-    });
-    await sql`
-      select opensteer_set_account_directory_projection(
-        ${ownerBinding.providerId}, ${ownerSubject}, ${ownerBinding.userId}, true
-      )
-    `.execute(runtime.store.database);
-
-    await runtime.close();
-    const accountCalls: { readonly body: unknown; readonly path: string }[] = [];
-    const managedAccountFetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-      const url = new URL(input.toString());
-      const body: unknown = JSON.parse(String(init?.body));
-      accountCalls.push({ body, path: url.pathname });
-      expect((init?.headers as Record<string, string> | undefined)?.authorization).toBe(
-        `Bearer ${config.account!.hostCredential}`,
-      );
-      if (url.pathname === "/v1/host/authority") {
-        const { authorityEnvelope } = PublishHostAuthorityRequestSchema.parse(body);
-        return Response.json({
-          deploymentId: authorityEnvelope.document.deploymentId,
-          published: true,
-        });
-      }
-      if (url.pathname === `/v1/host/directory/${ownerSubject}`) {
-        const projection = DirectoryProjectionRequestSchema.parse(body);
-        return Response.json({
-          accountId: ownerSubject,
-          generation: projection.generation,
-          present: projection.present,
-        });
-      }
-      throw new Error(`Unexpected managed Account request: ${url.href}`);
-    });
-    runtime = await createHostRuntime(config, { accountDirectoryFetch: managedAccountFetch });
-    const replay = await runtime.store.database
-      .selectFrom("runnerEnrollments")
-      .select(["id", "tokenHash"])
-      .where("idempotencyKey", "=", "deployment-managed-main-runner")
-      .executeTakeFirstOrThrow();
-    expect(replay).toEqual(enrollment);
-    await expect(
-      runtime.store.database
-        .selectFrom("accountDirectoryProvider")
-        .select(["issuer", "providerId"])
-        .where("singletonKey", "=", "opensteer-account")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual(configuredDirectoryProvider);
-    // Identity first, membership second: the directory publisher does not
-    // start until the Account has accepted the Host's signed document, and the
-    // membership projection itself carries no identity.
-    await vi.waitFor(() => {
-      expect(accountCalls.map(({ path }) => path)).toEqual([
-        "/v1/host/authority",
-        `/v1/host/directory/${ownerSubject}`,
-      ]);
-    });
-    expect(accountCalls[0]!.body).toMatchObject({
-      authorityEnvelope: { document: { deploymentId: config.deploymentIdentity!.deploymentId } },
-    });
-    expect(accountCalls[1]!.body).not.toHaveProperty("authorityEnvelope");
-    await vi.waitFor(async () => {
-      await expect(
-        runtime!.store.database
-          .selectFrom("accountDirectoryProjections")
-          .select(["generation", "publishedGeneration"])
-          .where("accountId", "=", ownerSubject)
-          .executeTakeFirstOrThrow(),
-      ).resolves.toEqual({ generation: "1", publishedGeneration: "1" });
-    });
-
-    await runtime.close();
-    runtime = undefined;
-    await expect(
-      createHostRuntime({
-        ...config,
-        account: {
-          ...config.account!,
-          controlApiOrigin: new URL("https://replacement.opensteer.test"),
-          issuer: new URL("https://replacement.opensteer.test"),
-        },
-      }),
-    ).rejects.toThrow(/provider identity does not match durable Host state/u);
-    const differentSubject = ControlPlaneAccountIdSchema.parse(`acct_${randomUUID()}`);
-    await expect(
-      createHostRuntime({
-        ...config,
-        account: {
-          ...config.account!,
-          owner: { ...config.account!.owner!, subject: differentSubject },
-        },
-      }),
-    ).rejects.toThrow(/durable Host authority/u);
-    expect(unownedAccountFetch).not.toHaveBeenCalled();
   });
 });
 

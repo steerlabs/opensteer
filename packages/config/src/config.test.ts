@@ -1,4 +1,4 @@
-import { ManagedHostProvisioningBundleSchema } from "@opensteer/control-plane-protocol";
+import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
 import {
   createId,
   opensteerHostNativeOAuthClients,
@@ -286,38 +286,6 @@ describe("configuration", () => {
     ).toEqual(opensteerHostNativeOAuthClients);
   });
 
-  it("loads managed provisioning with an exact Account owner and no public owner bootstrap", () => {
-    const canonicalOrigin = "https://managed.example.test";
-    const adoption = managedAccountBundle({ canonicalOrigin });
-    const owner = {
-      displayName: "Account Owner",
-      email: "owner@example.test",
-      subject: `acct_${crypto.randomUUID()}`,
-    };
-    const bundle = ManagedHostProvisioningBundleSchema.parse({
-      ...adoption,
-      initialRunnerEnrollmentToken: "provider-held-runner-enrollment-token",
-      owner,
-      provisioningMode: "managed",
-    });
-    const config = parseHostConfig({
-      ...hostEnvironment,
-      OPENSTEER_ACCOUNT_BUNDLE_PATH: writeManagedAccountBundle(bundle),
-      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_CANONICAL_ORIGIN: canonicalOrigin,
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-    });
-
-    expect(config.account).toMatchObject({
-      initialRunnerEnrollmentToken: "provider-held-runner-enrollment-token",
-      owner,
-      provisioningMode: "managed",
-    });
-    expect(config.identity.localPasswordEnabled).toBe(false);
-    expect(config.identity.initialOwnerEnrollment).toBeUndefined();
-  });
-
   it("rejects partial, noncanonical, and insecure production Account bundles", () => {
     expect(() =>
       parseHostConfig({
@@ -326,14 +294,14 @@ describe("configuration", () => {
         OPENSTEER_ACCOUNT_BUNDLE_PATH: "/private/account-bundle.json",
       }),
     ).toThrow(/exactly one/u);
-    const invalidPath = writeManagedAccountBundle({ invalid: true });
+    const invalidPath = writeAccountAdoptionBundle({ invalid: true });
     expect(() =>
       parseHostConfig({
         ...hostEnvironment,
         OPENSTEER_ACCOUNT_BUNDLE_PATH: invalidPath,
       }),
     ).toThrow(/provisioning bundle/iu);
-    const productionBundle = managedAccountBundle({
+    const productionBundle = accountAdoptionBundle({
       canonicalOrigin: "https://opensteer.example.com",
       controlApiOrigin: "http://127.0.0.1:4142",
     });
@@ -342,7 +310,7 @@ describe("configuration", () => {
         ...hostEnvironment,
         OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeManagedAccountBundle(productionBundle),
+        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(productionBundle),
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
         OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
@@ -739,11 +707,11 @@ describe("configuration", () => {
       }),
     ).toThrow(/Personal Deployment must be confined to loopback/u);
 
-    const accountBundle = managedAccountBundle();
+    const accountBundle = accountAdoptionBundle();
     expect(() =>
       parseHostConfig({
         ...networkedHostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeManagedAccountBundle(accountBundle),
+        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(accountBundle),
         OPENSTEER_CANONICAL_ORIGIN: accountBundle.deployment.canonicalOrigin,
         OPENSTEER_DEPLOYMENT_KIND: "personal",
       }),
@@ -896,7 +864,7 @@ describe("Runner enrollment token delivery", () => {
   });
 });
 
-function managedAccountBundle(
+function accountAdoptionBundle(
   input: {
     readonly canonicalOrigin?: string;
     readonly controlApiOrigin?: string;
@@ -904,7 +872,7 @@ function managedAccountBundle(
 ) {
   const canonicalOrigin = input.canonicalOrigin ?? "https://deployment.connect.opensteer.test";
   const controlApiOrigin = input.controlApiOrigin ?? "https://accounts.opensteer.test";
-  return ManagedHostProvisioningBundleSchema.parse({
+  return HostAccountAdoptionBundleSchema.parse({
     provisioningMode: "adoption",
     controlApiOrigin,
     deployment: {
@@ -927,7 +895,7 @@ function managedAccountBundle(
   });
 }
 
-function writeManagedAccountBundle(value: unknown): string {
+function writeAccountAdoptionBundle(value: unknown): string {
   const directory = mkdtempSync(join(tmpdir(), "opensteer-config-account-bundle-"));
   temporaryDirectories.push(directory);
   const path = join(directory, "account-bundle.json");
