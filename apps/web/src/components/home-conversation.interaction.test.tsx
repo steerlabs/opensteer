@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId, EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { HarnessModelDescriptorSchema } from "@opensteer/protocol";
 import type {
   HostSnapshot,
@@ -534,13 +534,12 @@ describe("Home conversation", () => {
     expect(node.querySelector(".voice-dock")).not.toBeNull();
   });
 
-  it("shows the ranked Chat model without reading the task execution history", async () => {
+  it("shows the ranked Chat model when no AI was ever picked", async () => {
     stubLayoutApis();
     const client = new MockHostClient({ latencyMs: 0 });
     clients.push(client);
     const base = client.getSnapshot();
     const home = base.threads.find(({ id }) => id === base.homeThreadId)!;
-    const taskChoice = home;
     const terra = HarnessModelDescriptorSchema.parse({
       displayName: "GPT-6.1-Terra",
       isDefault: false,
@@ -572,16 +571,7 @@ describe("Home conversation", () => {
             : catalog,
         ),
       })),
-      executionPreferences: {
-        ...base.executionPreferences,
-        history: [
-          {
-            environmentId: EnvironmentIdSchema.parse(taskChoice.environmentId),
-            harnessInstanceId: HarnessInstanceIdSchema.parse(taskChoice.harnessInstanceId),
-            modelSelection: taskChoice.modelSelection,
-          },
-        ],
-      },
+      executionPreferences: { ...base.executionPreferences, history: [] },
       homeThreadId: null,
       threads: base.threads.filter(({ id }) => id !== home.id),
       workspaces: base.workspaces.map((workspace) =>

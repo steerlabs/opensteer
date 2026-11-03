@@ -1133,6 +1133,9 @@ importers:
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
+      uqr:
+        specifier: 0.1.3
+        version: 0.1.3
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -8569,6 +8572,9 @@ packages:
     peerDependencies:
       browserslist: '>= 4.21.0'
 
+  uqr@0.1.3:
+    resolution: {integrity: sha512-0rjE8iEJe4YmT9TOhwsZtqCMRLc5DXZUI2UEYUUg63ikBkqqE5EYWaI0etFe/5KUcmcYwLih2RND1kq+hrUJXA==}
+
   use-latest-callback@0.2.6:
     resolution: {integrity: sha512-FvRG9i1HSo0wagmX63Vrm8SnlUU3LMM3WyZkQ76RnslpBrX694AdG4A0zQBx2B3ZifFA0yv/BaEHGBnEax5rZg==}
     peerDependencies:
@@ -15940,6 +15946,8 @@ snapshots:
       browserslist: 4.28.9
       escalade: 3.2.0
       picocolors: 1.1.1
+
+  uqr@0.1.3: {}
 
   use-latest-callback@0.2.6(react@19.3.0):
     dependencies:

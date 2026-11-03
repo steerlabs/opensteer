@@ -89,6 +89,8 @@ import { useNewTab } from "./workspace/start-page.js";
 import {
   canonicalPlaceSearch,
   isSettingsPath,
+  isSetupPath,
+  setupPath,
   placeSelection,
   rememberPlace,
   rememberedPlace,
@@ -288,6 +290,8 @@ export function AppShell({
   loadError,
   onNotificationTargetOpened,
   notificationTarget = null,
+  onSetupOpened,
+  openSetup = false,
 }: {
   deploymentAccess?: DeploymentAccessSnapshot | null;
   desktopBridge?: OpensteerDesktopBridge | null;
@@ -297,12 +301,19 @@ export function AppShell({
   onNotificationTargetOpened?: (() => void) | undefined;
   /** A clicked Desktop notification, for this Deployment, waiting to be opened. */
   notificationTarget?: DesktopNotificationTarget | null;
+  /** Told once setup has taken over the window. */
+  onSetupOpened?: (() => void) | undefined;
+  /** Open setup once, as this window first shows the app. */
+  openSetup?: boolean;
 }) {
   const snapshot = useHostSelector(hostClient, selectHostSnapshot, sameStableHostSnapshot);
   const attention = useHostSelector(hostClient, selectAttentionCount);
   const toast = useToast();
   const location = useLocation();
   const settingsMode = isSettingsPath(location.pathname);
+  // Setup, like Settings, covers the workspace: no sidebar, no place beside it.
+  const setupMode = isSetupPath(location.pathname);
+  const fullWindow = settingsMode || setupMode;
   const nav = useWorkspaceNavigation(
     { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
     snapshot.homeThreadId,
@@ -312,6 +323,17 @@ export function AppShell({
     [hostClient, nav, location.state],
   );
   const routerNavigate = useNavigate();
+  // Setup continues into the app it just started, once: a notification or
+  // link the window was opened for still wins, and leaving setup is final.
+  const setupOpened = useRef(false);
+  useEffect(() => {
+    if (!openSetup || setupOpened.current) return;
+    setupOpened.current = true;
+    if (location.pathname === "/" && notificationTarget === null) {
+      void routerNavigate(setupPath, { replace: true });
+    }
+    onSetupOpened?.();
+  }, [location.pathname, notificationTarget, onSetupOpened, openSetup, routerNavigate]);
   const { controller: dictation } = useDictation();
   const voicePlaces = useBrowserTabStrip(hostClient).ordered;
   const voice = useVoiceRuntime(
@@ -1002,14 +1024,16 @@ export function AppShell({
   );
 
   const drawerReady = useNativeBrowserOverlay(
-    !settingsMode && mobileNavigation && mobileNavigationOpen,
+    !fullWindow && mobileNavigation && mobileNavigationOpen,
     navigationDrawerElement,
   );
   const overlayOpen =
     harnessAuthentication !== null ||
     sharingWorkspace !== null ||
-    (!settingsMode && mobileNavigation && mobileNavigationOpen);
-  const shellClassName = settingsMode
+    (!fullWindow && mobileNavigation && mobileNavigationOpen);
+  const shellClassName = setupMode
+    ? "app-shell app-shell--settings app-shell--setup"
+    : fullWindow
     ? "app-shell app-shell--settings"
     : sidebarCollapsed
       ? "app-shell app-shell--sidebar-collapsed"
@@ -1078,7 +1102,7 @@ export function AppShell({
               className={shellClassName}
               style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
             >
-              {!settingsMode && mobileNavigation && mobileNavigationOpen && drawerReady ? (
+              {!fullWindow && mobileNavigation && mobileNavigationOpen && drawerReady ? (
                 <button
                   type="button"
                   className="sidebar-scrim"
@@ -1086,7 +1110,7 @@ export function AppShell({
                   onClick={closeMobileNavigation}
                 />
               ) : null}
-              {!settingsMode ? (
+              {!fullWindow ? (
                 <ShellSidebar
                   collapsed={!mobileNavigation && sidebarCollapsed}
                   deploymentAccess={deploymentAccess}
@@ -1109,7 +1133,7 @@ export function AppShell({
                   onToggleCollapsed={toggleSidebar}
                 />
               ) : null}
-              {!settingsMode && !mobileNavigation && !sidebarCollapsed ? (
+              {!fullWindow && !mobileNavigation && !sidebarCollapsed ? (
                 <PaneResizeHandle
                   ariaControls="app-sidebar"
                   ariaLabel="Resize navigation sidebar"
@@ -1145,9 +1169,9 @@ export function AppShell({
                 <VoiceIsland />
                 <SidebarChromeProvider
                   onRestore={toggleSidebar}
-                  restoreVisible={!settingsMode && !mobileNavigation && sidebarCollapsed}
+                  restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
                 >
-                  {settingsMode ? (
+                  {fullWindow ? (
                     routes
                   ) : (
                     <WorkspaceLayout
@@ -1200,7 +1224,7 @@ export function AppShell({
                 />
               ) : null}
             </div>
-            {settingsMode ? null : (
+            {fullWindow ? null : (
               <WorkspaceKeys
                 desktop={desktopWindowChrome}
                 hostClient={hostClient}

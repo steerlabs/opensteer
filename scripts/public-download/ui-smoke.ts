@@ -41,11 +41,25 @@ await wait("first window", () => {
 });
 await wait("startup choice or workspace", () => {
   const state = dump();
-  return state.includes("Start on ") || state.includes("Places and menu");
+  return state.includes("Set up this ") || state.includes("Places and menu");
 });
 const state = dump();
 writeFileSync(path.join(out, "ui-before.json"), state);
-if (state.includes("Start on ")) click("Start on ");
+if (state.includes("Set up this ")) {
+  click("Set up this ");
+  // Setup ends on Start once an AI is ready; a fresh machine without one
+  // leaves through "Set up later". Either way the workspace opens next.
+  await wait("setup finished", () => {
+    const setup = dump();
+    if (setup.includes("Set up later")) return true;
+    return (
+      setup.includes("Start") &&
+      !setup.includes("Setting up") &&
+      !setup.includes("Opening Opensteer")
+    );
+  });
+  click(dump().includes("Set up later") ? "Set up later" : "Start");
+}
 await wait("local workspace", () => /Connected\. Places and menu/u.test(dump()));
 capture("personal-ready");
 writeFileSync(

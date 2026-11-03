@@ -379,6 +379,13 @@ export function isSettingsPath(pathname: string): boolean {
   return pathname === "/settings" || pathname.startsWith("/settings/");
 }
 
+/** The setup screen: this computer, its AI and a phone, over the whole window. */
+export const setupPath = "/setup";
+
+export function isSetupPath(pathname: string): boolean {
+  return pathname === setupPath;
+}
+
 export interface WorkspaceNavigation {
   /** Where a conversation-area page is, keeping the place in the middle. */
   readonly conversationHref: (to: string) => To;
