@@ -29,18 +29,18 @@ const call = z.strictObject({
 });
 const structuredTurn = z
   .strictObject({
-    text: z.string().min(1),
-    author: HarnessInputSchema.shape.author.refine(
-      (author) => author.kind !== "human",
-      "Use a string for human turns",
-    ),
+    text: z.string().min(1).optional(),
+    content: HarnessInputSchema.shape.content.optional(),
+    author: HarnessInputSchema.shape.author,
     kind: HarnessInputSchema.shape.kind,
   })
   .superRefine((turn, ctx) => {
+    if ((turn.text === undefined) === (turn.content === undefined))
+      ctx.addIssue({ code: "custom", message: "Provide exactly one of text or content" });
     const result = HarnessInputSchema.safeParse({
       author: turn.author,
       kind: turn.kind,
-      content: [{ type: "text", text: turn.text }],
+      content: turn.content ?? [{ type: "text", text: turn.text }],
       createdAt: new Date().toISOString(),
       messageId: createId("message"),
     });
@@ -67,6 +67,19 @@ export const CaseSchema = z.strictObject({
   expect: z.strictObject({
     calls: z.array(call).default([]),
     notCalls: z.array(z.string()).default([]),
+    notCallsWithArgs: z.array(call).default([]),
+    callsArgMatch: z
+      .array(
+        z.strictObject({
+          tool: z.string().min(1),
+          path: z.array(z.string().min(1)).min(1),
+          pattern: regex,
+          first: z.boolean().default(false),
+        }),
+      )
+      .default([]),
+    finalText: z.enum(["empty", "nonempty"]).optional(),
+    maxFinalTextBytes: z.number().int().nonnegative().optional(),
     order: z.array(z.string()).default([]),
     minCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
     maxCalls: z.record(z.string(), z.number().int().nonnegative()).default({}),
@@ -100,7 +113,10 @@ export function inputForCaseTurn(turn: EvalCase["turns"][number]) {
       typeof turn === "string"
         ? { kind: "human", displayName: "Eval user", principalId: "eval" }
         : turn.author,
-    content: [{ type: "text", text: typeof turn === "string" ? turn : turn.text }],
+    content:
+      typeof turn === "string"
+        ? [{ type: "text", text: turn }]
+        : (turn.content ?? [{ type: "text", text: turn.text }]),
     kind: typeof turn === "string" ? "input" : turn.kind,
     createdAt: new Date().toISOString(),
     messageId: createId("message"),

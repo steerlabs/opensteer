@@ -17,6 +17,21 @@ export const ResultSchema = z.object({
   treatment: z.strictObject({ prompt: z.string(), schema: z.string() }),
 });
 export type ComparableRow = z.infer<typeof ResultSchema>;
+export function caseOutcome(rows: readonly ComparableRow[]): "pass" | "fail" | "incomplete" {
+  const samples = [...rows].sort((a, b) => a.sample - b.sample);
+  const policy = samples[0]?.samplePolicy ?? 1;
+  const expected = policy === "adaptive" ? (samples[0]?.pass !== samples[1]?.pass ? 3 : 2) : policy;
+  if (
+    !samples.length ||
+    samples.length !== expected ||
+    samples.some(
+      (row, index) =>
+        !row.complete || row.sample !== index + 1 || (row.samplePolicy ?? 1) !== policy,
+    )
+  )
+    return "incomplete";
+  return majority(samples.map((row) => row.pass)) ? "pass" : "fail";
+}
 export function compareBaseline(
   baseline: readonly ComparableRow[],
   current: readonly ComparableRow[],
@@ -45,6 +60,9 @@ export function compareBaseline(
     )
       throw new Error(`Baseline incomplete samples: ${id}`);
   }
+  for (const id of ids)
+    if (caseOutcome(current.filter((row) => row.caseId === id)) === "incomplete")
+      throw new Error(`Current incomplete samples: ${id}`);
   return ids.filter(
     (id) =>
       majority(baseline.filter((row) => row.caseId === id).map((row) => row.pass)) &&
@@ -63,12 +81,12 @@ export function summary(
     "",
     `Identity: \`${JSON.stringify(identity)}\``,
     "",
-    `Completed samples: ${rows.filter((row) => row.complete).length}/${rows.length}. Case majority passes: ${cases.filter((c) => majority(rows.filter((r) => r.caseId === c.id).map((r) => r.complete && r.pass))).length}/${cases.length}.`,
+    `Completed samples: ${rows.filter((row) => row.complete).length}/${rows.length}. Case majority passes: ${cases.filter((c) => caseOutcome(rows.filter((r) => r.caseId === c.id)) === "pass").length}/${cases.length}.`,
     "",
     `Regressions: ${regressions.join(", ") || "none"}.`,
     "",
-    "| Group | Samples passed | Sample rate | Baseline delta |",
-    "| --- | ---: | ---: | ---: |",
+    "| Group | Outcome | Samples passed | Sample rate | Baseline delta |",
+    "| --- | --- | ---: | ---: | ---: |",
   ];
   const groups = new Map<string, readonly string[]>([
     ...cases.map((c) => [`case:${c.id}`, [c.id]] as const),
@@ -82,12 +100,20 @@ export function summary(
   for (const [name, ids] of groups) {
     const group = rows.filter((row) => ids.includes(row.caseId));
     const old = baseline.filter((row) => ids.includes(row.caseId));
+    const incomplete = ids.some(
+      (id) => caseOutcome(rows.filter((r) => r.caseId === id)) === "incomplete",
+    );
+    const outcome = name.startsWith("case:")
+      ? caseOutcome(group)
+      : incomplete
+        ? "incomplete"
+        : "complete";
     const rate = group.length
       ? group.filter((row) => row.complete && row.pass).length / group.length
       : 0;
     const oldRate = old.length ? old.filter((row) => row.pass).length / old.length : 0;
     lines.push(
-      `| ${name} | ${group.filter((r) => r.complete && r.pass).length}/${group.length} | ${(rate * 100).toFixed(1)}% | ${old.length ? `${((rate - oldRate) * 100).toFixed(1)} pp` : "—"} |`,
+      `| ${name} | ${outcome} | ${group.filter((r) => r.complete && r.pass).length}/${group.length} | ${incomplete ? "—" : `${(rate * 100).toFixed(1)}%`} | ${old.length && !incomplete ? `${((rate - oldRate) * 100).toFixed(1)} pp` : "—"} |`,
     );
   }
   return `${lines.join("\n")}\n`;
