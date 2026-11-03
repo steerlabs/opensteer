@@ -1580,12 +1580,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         async () => {
           const names = (await client.listTools()).tools.map(({ name }) => name).sort();
           expect(names).toEqual([...expectedNames].sort());
-          if (label === "delegated Trigger") {
-            expect(names).toContain("trigger_read");
-            expect(names).toContain("trigger_write");
-            expect(names).not.toContain("project_list");
-            expect(names).not.toContain("project_create");
-          }
           return names;
         },
       );
