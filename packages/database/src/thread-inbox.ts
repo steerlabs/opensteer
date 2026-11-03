@@ -3218,6 +3218,7 @@ export async function ensureQueuedRun(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  if (seed.messageKind === "continuation") await recordPersonWaited(transaction, runId);
   const payload = { runId, threadId: thread.id, type: "run.execute" } as const;
   const command = await transaction
     .insertInto("commands")

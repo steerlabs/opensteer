@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { EvalCase } from "./cases.js";
@@ -138,6 +140,66 @@ export async function gradeWorkspaceFiles(
         name: `files[${i}]:mustNot:${pattern}`,
         pass: contents.every((text) => !new RegExp(pattern, "u").test(text)),
       });
+  }
+  return checks;
+}
+
+/** Execute submitted ESM in a bounded subprocess; agents' programs are untrusted. */
+export async function gradeWorkerPrograms(
+  expectations: EvalCase["expect"],
+  calls: readonly RecordedCall[],
+): Promise<Check[]> {
+  if (!expectations.workerPrograms) return [];
+  const creates = calls.filter(
+    (c) => c.valid && c.tool === "trigger_write" && partialMatch(c.args, { action: "create" }),
+  );
+  const checks: Check[] = [{ name: "workerPrograms:count", pass: creates.length === 2 }];
+  for (const [index, call] of creates.entries()) {
+    let pass = false;
+    try {
+      const args = call.args as {
+        anchorThreadId: string;
+        name: string;
+        source: { cron?: string };
+        program: { source: string };
+      };
+      const script = `
+        import { createContext, SourceTextModule, runInContext } from 'node:vm';
+        const { source, anchor, nightly } = JSON.parse(process.argv[1]);
+        for (const [status, inputQueuePaused] of [['idle',false],['running',false],['waiting',false],['idle',true]]) {
+          const context = createContext({}, {codeGeneration:{strings:false,wasm:false}});
+          const fixture = runInContext('(function() { const state = ' + JSON.stringify({anchor,status,inputQueuePaused}) + '; const calls = []; return { getCalls: () => JSON.stringify(calls), input: {event:{trigger:{anchorThreadId:state.anchor},source:{scheduledFor:"2026-11-03T12:00:00Z"},receivedAt:"2026-11-03T12:00:00Z"},opensteer:{callTool:async (tool,args) => { calls.push(JSON.parse(JSON.stringify({tool,args}))); if(tool === "thread_read" && args.threadId === state.anchor) return {thread:{status:state.status,inputQueuePaused:state.inputQueuePaused}}; if(tool !== "thread_message") throw Error("Unexpected tool"); return {}; }}}}; })()', context, {timeout:1000});
+          const program = new SourceTextModule(source, {context});
+          await program.link(() => { throw Error('Imports are unavailable in Trigger programs'); });
+          await program.evaluate({timeout:1000});
+          await program.namespace.default(fixture.input);
+          const wakes = JSON.parse(fixture.getCalls()).filter(c => c.tool === 'thread_message');
+          if (wakes.length !== (status === 'idle' && !inputQueuePaused ? 1 : 0)) throw Error('Wake count');
+          for (const {args} of wakes) if (args.threadId !== anchor || args.delivery !== 'queue' ||
+            typeof args.message !== 'string' || !args.message.includes('2026-11-03T12:00:00Z') ||
+            !(nightly ? /nightly/i : /light/i).test(args.message)) throw Error('Wrong wake');
+        }
+      `;
+      await promisify(execFile)(
+        process.execPath,
+        [
+          "--experimental-vm-modules",
+          "--input-type=module",
+          "-e",
+          script,
+          JSON.stringify({
+            source: args.program.source,
+            anchor: args.anchorThreadId,
+            nightly: args.source.cron === "0 3 * * *",
+          }),
+        ],
+        { timeout: 5_000, maxBuffer: 8192 },
+      );
+      pass = true;
+    } catch {
+      /* Invalid, hanging or misbehaving submitted programs fail grading. */
+    }
+    checks.push({ name: `workerPrograms[${index}]`, pass });
   }
   return checks;
 }

@@ -6,8 +6,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { ModelSelectionSchema } from "@opensteer/core";
+import { caseChain, copyWorkspace } from "./chains.js";
 import { parseCases } from "./cases.js";
-import { grade, gradeWorkspaceFiles, type Check } from "./grader.js";
+import { grade, gradeWorkerPrograms, gradeWorkspaceFiles, type Check } from "./grader.js";
 import {
   compareBaseline,
   fingerprint,
@@ -64,6 +65,11 @@ async function main() {
       (!parsed.values.area || c.area === parsed.values.area),
   );
   if (!cases.length) throw new Error("No cases selected");
+  const usedCases = [
+    ...new Map(cases.flatMap((c) => caseChain(c, corpus)).map((c) => [c.id, c])).values(),
+  ];
+  if (usedCases.some((c) => c.engines && !c.engines.includes(engine)))
+    throw new Error("A chain predecessor does not support the selected engine");
   if (parsed.values.validate) {
     console.log(`Validated ${cases.length} cases for ${engine}`);
     return;
@@ -145,7 +151,7 @@ async function main() {
       providerId: selection.providerId,
       ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}),
       effort,
-      corpus: fingerprint(cases),
+      corpus: fingerprint(usedCases),
     };
     const runFingerprint = fingerprint(identity);
     if (parsed.values.baseline) {
@@ -181,7 +187,7 @@ async function main() {
     );
     await writeFile(
       join(output, "corpus.ndjson"),
-      `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`,
+      `${usedCases.map((c) => JSON.stringify(c)).join("\n")}\n`,
     );
     initialized = true;
     let next = 0;
@@ -215,42 +221,65 @@ async function main() {
             let fileChecks: Check[] = [];
             try {
               root = await mkdtemp(join(tmpdir(), "opensteer-eval-sample-"));
-              const p = await prepareEngine(root, engine, stop.signal, inspected.models);
-              engineClose = p.close;
-              for (const [path, content] of Object.entries(c.fixtures)) {
-                const target = join(p.workspace, path);
-                await mkdir(dirname(target), { recursive: true });
-                await writeFile(target, content);
-              }
-              host = await startFakeHost(c);
-              const result = await runEngine({
-                prepared: p,
-                testCase: c,
-                host,
-                selection,
-                checkout,
-                signal: AbortSignal.any([stop.signal, AbortSignal.timeout(180_000)]),
-                onTurnStart: () => {
-                  earlierText += assistantText;
+              let previousWorkspace: string | undefined;
+              for (const [stageIndex, stage] of caseChain(c, corpus).entries()) {
+                const stageRoot = join(root, String(stageIndex));
+                await mkdir(stageRoot);
+                const p = await prepareEngine(stageRoot, engine, stop.signal, inspected.models);
+                engineClose = p.close;
+                if (previousWorkspace) await copyWorkspace(previousWorkspace, p.workspace);
+                for (const [path, content] of Object.entries(stage.fixtures)) {
+                  const target = join(p.workspace, path);
+                  await mkdir(dirname(target), { recursive: true });
+                  await writeFile(target, content);
+                }
+                host = await startFakeHost(stage);
+                const result = await runEngine({
+                  prepared: p,
+                  testCase: stage,
+                  host,
+                  selection,
+                  checkout,
+                  signal: AbortSignal.any([stop.signal, AbortSignal.timeout(180_000)]),
+                  onTurnStart: () => {
+                    earlierText += assistantText;
+                    finalText = "";
+                    assistantText = "";
+                    nativeCalls.splice(0);
+                  },
+                  onEvent: async (event) => {
+                    await transcript.write(`${JSON.stringify(event)}\n`);
+                    if (event.type === "run.usage") usage.push(event.data);
+                    if (event.type === "tool.started") nativeCalls.push(event.data);
+                    if (event.type === "assistant.message") {
+                      finalText = event.data.content
+                        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                        .join("\n");
+                      assistantText += finalText;
+                    }
+                  },
+                });
+                finalText = result.finalText;
+                treatment = result.treatment;
+                const stageChecks = [
+                  ...grade(stage.expect, host.calls, finalText, assistantText, earlierText),
+                  ...(await gradeWorkerPrograms(stage.expect, host.calls)),
+                  ...(await gradeWorkspaceFiles(stage.expect, p.workspace)),
+                ];
+                fileChecks.push(
+                  ...stageChecks.map((check) => ({ ...check, name: `${stage.id}:${check.name}` })),
+                );
+                previousWorkspace = p.workspace;
+                await host.close();
+                await engineClose();
+                engineClose = undefined;
+                if (stage.id !== c.id) {
                   finalText = "";
                   assistantText = "";
-                  nativeCalls.splice(0);
-                },
-                onEvent: async (event) => {
-                  await transcript.write(`${JSON.stringify(event)}\n`);
-                  if (event.type === "run.usage") usage.push(event.data);
-                  if (event.type === "tool.started") nativeCalls.push(event.data);
-                  if (event.type === "assistant.message") {
-                    finalText = event.data.content
-                      .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                      .join("\n");
-                    assistantText += finalText;
-                  }
-                },
-              });
-              finalText = result.finalText;
-              treatment = result.treatment;
-              fileChecks = await gradeWorkspaceFiles(c.expect, p.workspace);
+                  earlierText = "";
+                }
+              }
+
               complete = true;
             } catch (cause) {
               sampleError = String(cause);
@@ -273,6 +302,7 @@ async function main() {
             const checks = [
               ...grade(c.expect, calls, finalText, assistantText, earlierText),
               ...fileChecks,
+              ...(await gradeWorkerPrograms(c.expect, calls)),
             ];
             const row = {
               caseId: c.id,

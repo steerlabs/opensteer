@@ -50,6 +50,7 @@ const structuredTurn = z
   });
 export const CaseSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
+  after: z.string().optional(),
   area: z.string().min(1),
   kind: z.enum(["bad", "guard", "control"]),
   source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
@@ -65,6 +66,7 @@ export const CaseSchema = z.strictObject({
   turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
+    workerPrograms: z.boolean().default(false),
     files: z
       .array(
         z.strictObject({
@@ -106,7 +108,7 @@ export const CaseSchema = z.strictObject({
 export type EvalCase = z.infer<typeof CaseSchema>;
 export function parseCases(text: string): EvalCase[] {
   const ids = new Set<string>();
-  return text.split(/\r?\n/u).flatMap((line, i) => {
+  const cases = text.split(/\r?\n/u).flatMap((line, i) => {
     if (!line.trim()) return [];
     try {
       const value = CaseSchema.parse(JSON.parse(line));
@@ -117,6 +119,11 @@ export function parseCases(text: string): EvalCase[] {
       throw new Error(`Case line ${i + 1}: ${String(cause)}`, { cause });
     }
   });
+  for (const c of cases) {
+    if (c.after && !cases.slice(0, cases.indexOf(c)).some((p) => p.id === c.after))
+      throw new Error(`Case ${c.id}: after must name an earlier case`);
+  }
+  return cases;
 }
 
 export function inputForCaseTurn(turn: EvalCase["turns"][number]) {

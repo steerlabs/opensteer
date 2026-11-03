@@ -6,7 +6,7 @@ import { EnvironmentDiscoverySchema } from "@opensteer/protocol";
 import { ThreadSchema, ThreadInputSchema, MessageSchema } from "@opensteer/core";
 import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
-import { grade, gradeWorkspaceFiles } from "./grader.js";
+import { grade, gradeWorkerPrograms, gradeWorkspaceFiles } from "./grader.js";
 
 const memoryCases = async () =>
   parseCases(await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"));
@@ -74,7 +74,7 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
     (await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))).join("\n"),
   );
   const cases = corpus.filter((c) => c.area === "memory");
-  expect(cases).toHaveLength(22);
+  expect(cases).toHaveLength(23);
   for (const c of cases) for (const turn of c.turns) inputForCaseTurn(turn);
   expect(
     inputForCaseTurn(cases.find((c) => c.id === "memory-nothing-new")!.turns[0]!).author.kind,
@@ -190,12 +190,27 @@ it("requires each worker's program and rejects placeholder setup calls", async (
         'await opensteer.callTool("thread_read", {}); await opensteer.callTool("thread_message", {});';
     }
   }
-  expect(grade(setup.expect, calls, "").every((check) => check.pass)).toBe(true);
+  expect((await gradeWorkerPrograms(setup.expect, calls)).every((check) => check.pass)).toBe(false);
+  for (const call of calls.filter((call) => call.tool === "trigger_write")) {
+    const nightly = (call.args.source as { cron: string }).cron === "0 3 * * *";
+    (call.args.program as Record<string, unknown>).source =
+      `export default async ({event,opensteer}) => {
+      const {thread} = await opensteer.callTool("thread_read", {threadId:event.trigger.anchorThreadId});
+      if(thread.status !== "idle" || thread.inputQueuePaused) return;
+      await opensteer.callTool("thread_message", {threadId:event.trigger.anchorThreadId,delivery:"queue",
+        message:"${nightly ? "Nightly" : "Light"} pass due (" + event.source.scheduledFor + ")"});
+    }`;
+  }
+  expect((await gradeWorkerPrograms(setup.expect, calls)).every((check) => check.pass)).toBe(true);
   const nightly = calls.find(
     (call) =>
       call.tool === "trigger_write" &&
       call.args.anchorThreadId === "thr_00000000-0000-4000-8000-000000000012",
   )!;
+  const nightlyProgram = nightly.args.program as Record<string, unknown>;
+  const correctSource = nightlyProgram.source as string;
+  nightlyProgram.source = correctSource.replace("Nightly", "Light");
+  expect((await gradeWorkerPrograms(setup.expect, calls)).every((check) => check.pass)).toBe(false);
   (nightly.args.program as Record<string, unknown>).source = "export default async function () {}";
   expect(grade(setup.expect, calls, "").every((check) => check.pass)).toBe(false);
   expect(
