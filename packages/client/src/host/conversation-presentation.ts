@@ -85,6 +85,7 @@ export function incomingMessageAction(message: MessageEntry): string {
     case "watch":
       return "ran";
     case "agent":
+    case "connection":
       return "asked Opensteer";
     case "human":
     case "platform":

@@ -4700,6 +4700,7 @@ export function migrationProvider() {
         "0146_consent_scope": consentScopeMigration,
         "0147_agent_connections": agentConnectionsMigration,
         "0148_agent_tool_operations": agentToolOperationsMigration,
+        "0149_connection_message_authors": connectionMessageAuthorsMigration,
       };
     },
   };
@@ -7178,5 +7179,16 @@ const agentToolOperationsMigration: Migration = {
     await sql`CREATE TABLE agent_tool_operations (key text PRIMARY KEY, input_fingerprint text NOT NULL CHECK (input_fingerprint ~ '^[0-9a-f]{64}$'), result jsonb, created_at timestamptz NOT NULL DEFAULT now())`.execute(
       database,
     );
+  },
+};
+
+const connectionMessageAuthorsMigration: Migration = {
+  async up(database) {
+    await sql`alter table messages drop constraint messages_kind_author_check,
+      add constraint messages_kind_author_check check (
+        (kind = 'input' and author->>'kind' in ('human', 'agent', 'trigger', 'watch', 'connection')) or
+        (kind in ('assistant', 'run-result') and author->>'kind' = 'agent') or
+        (kind = 'continuation' and author->>'kind' = 'platform')
+      )`.execute(database);
   },
 };

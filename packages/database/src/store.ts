@@ -1474,6 +1474,7 @@ export class OpensteerStore {
   }
 
   async resumeThreadInputQueue(input: {
+    readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly threadId: ThreadId;
@@ -1564,6 +1565,7 @@ export class OpensteerStore {
   }
 
   async getThreadInputQueue(input: {
+    readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
   }): Promise<ThreadInputQueue> {

@@ -665,6 +665,11 @@ const messageAuthorVariants = [
     kind: z.literal("platform"),
     referenceId: z.string().trim().min(1).max(255).optional(),
   }),
+  z.strictObject({
+    displayName: z.string().trim().min(1).max(160),
+    kind: z.literal("connection"),
+    connectionId: z.string().min(1).max(255),
+  }),
 ] as const;
 export const MessageAuthorSchema = z.discriminatedUnion("kind", messageAuthorVariants);
 export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
@@ -673,6 +678,7 @@ export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
   z.object(messageAuthorVariants[2].shape),
   z.object(messageAuthorVariants[3].shape),
   z.object(messageAuthorVariants[4].shape),
+  z.object(messageAuthorVariants[5].shape),
 ]);
 export type MessageAuthor = z.infer<typeof MessageAuthorSchema>;
 

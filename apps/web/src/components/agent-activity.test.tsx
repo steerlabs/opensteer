@@ -97,6 +97,19 @@ describe("AgentTranscript", () => {
         messageKind: "assistant",
         runId,
       },
+      {
+        author: {
+          kind: "connection",
+          connectionId: "mcn_external",
+          displayName: "Connected research agent",
+        },
+        body: "External agent input",
+        createdAt: "2026-08-16T10:00:03.000Z",
+        id: "message-connection",
+        kind: "message",
+        messageKind: "input",
+        runId: null,
+      },
     ];
 
     const markup = renderToStaticMarkup(
@@ -109,6 +122,7 @@ describe("AgentTranscript", () => {
     expect(markup).toContain("msg--assistant");
     expect(markup).toContain("Alex");
     expect(markup).toContain("Flight research");
+    expect(markup).toContain("Connected research agent");
   });
 
   it("renders a collaborator's message as plain labeled input, not agent output", () => {

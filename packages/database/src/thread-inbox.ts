@@ -130,6 +130,37 @@ import {
   assignmentSummaryInTransaction,
 } from "./assignment-store.js";
 
+function canManageQueuedInput(
+  row: {
+    readonly requestedBy: UserId;
+    readonly authoritySource: Readonly<Record<string, unknown>>;
+  },
+  request: {
+    readonly requestedBy: UserId;
+    readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
+  },
+): boolean {
+  if (row.requestedBy !== request.requestedBy) return false;
+  const source = row.authoritySource;
+  if (source.kind === "workspace-membership") return true;
+  const caller = request.authority;
+  if (!caller) return false;
+  switch (caller.kind) {
+    case "connection":
+      return source.kind === "connection" && source.connectionId === caller.connectionId;
+    case "run":
+      return source.kind === "thread-agent" && source.threadId === caller.scope.threadId;
+    case "trigger":
+      return (
+        source.kind === "trigger-occurrence" && source.occurrenceId === caller.scope.occurrenceId
+      );
+    case "watch":
+      return (
+        source.kind === "watch-observation" && source.activationId === caller.scope.activationId
+      );
+  }
+}
+
 /**
  * The durable Thread Inbox is the sole scheduler for new model input. It owns
  * admission, fixed-batch claiming, active-Run steering, causal budgets, and
@@ -139,6 +170,7 @@ import {
 export async function readThreadInputQueue(
   transaction: Transaction<DatabaseSchema>,
   request: {
+    readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
   },
@@ -204,9 +236,7 @@ export async function readThreadInputQueue(
     items: rows.map((row) => {
       const message = byId.get(row.messageId);
       if (!message) throw new Error("Pending input lost its message");
-      const own =
-        row.requestedBy === request.requestedBy &&
-        row.authoritySource.kind === "workspace-membership";
+      const own = canManageQueuedInput(row, request);
       return {
         message: messageFromRow(message),
         input: threadInputFromRow(row),
@@ -787,11 +817,7 @@ export async function steerThreadInputInTransaction(
     .where("threadId", "=", thread.id)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (
-    !row ||
-    row.requestedBy !== request.requestedBy ||
-    row.authoritySource.kind !== "workspace-membership"
-  )
+  if (!row || !canManageQueuedInput(row, request))
     throw new OpensteerError({
       code: "forbidden",
       message: "Only your own queued messages can be steered",
@@ -960,11 +986,7 @@ export async function moveThreadInputInTransaction(
     .where("messageId", "=", request.messageId)
     .where("threadId", "=", thread.id)
     .executeTakeFirst();
-  if (
-    !row ||
-    row.requestedBy !== request.requestedBy ||
-    row.authoritySource.kind !== "workspace-membership"
-  )
+  if (!row || !canManageQueuedInput(row, request))
     throw new OpensteerError({
       code: "forbidden",
       message: "Only your own queued messages can be moved",
@@ -1082,11 +1104,7 @@ export async function cancelThreadInputInTransaction(
     .where("threadId", "=", thread.id)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (
-    !row ||
-    row.requestedBy !== request.requestedBy ||
-    row.authoritySource.kind !== "workspace-membership"
-  )
+  if (!row || !canManageQueuedInput(row, request))
     throw new OpensteerError({
       code: "forbidden",
       message: "Only your own queued messages can be cancelled",
@@ -2058,6 +2076,8 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
   switch (source.kind) {
     case "human":
       return { kind: "human" };
+    case "connection":
+      return { kind: "connection", connectionId: source.connectionId };
     case "agent":
       return { kind: "agent", runId: source.runId };
     case "trigger":
@@ -2095,7 +2115,7 @@ export async function enqueueThreadInputInTransaction(
 ): Promise<EnqueuedThreadInput> {
   const content = ContentPartSchema.array().min(1).parse(request.content);
   if (
-    request.source.kind === "agent" &&
+    (request.source.kind === "agent" || request.source.kind === "connection") &&
     !request.forwardedPlaces &&
     content.some(isPlaceContentPart)
   ) {
@@ -2114,6 +2134,7 @@ export async function enqueueThreadInputInTransaction(
         policy,
         source: normalizedThreadInputSource(request.source),
         threadId: request.threadId,
+        ...(request.requireUnassigned ? { requireUnassigned: true } : {}),
         ...(request.quotedMessageId ? { quotedMessageId: request.quotedMessageId } : {}),
       }),
       "utf8",
@@ -2135,6 +2156,19 @@ export async function enqueueThreadInputInTransaction(
 
   const { executionValid, membershipGeneration, prelockedActiveRunId, thread } =
     await lockThreadInputPreconditions(transaction, request);
+  if (request.source.kind === "connection" && policy !== "report" && thread.inheritsMain) {
+    const connection = await transaction
+      .selectFrom("agentConnections")
+      .select("workspaceId")
+      .where("id", "=", request.source.connectionId)
+      .executeTakeFirstOrThrow();
+    if (connection.workspaceId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message:
+          "A Workspace connection must start independent work rather than activate Main authority",
+      });
+  }
   const messageId = createId("message");
   const facts = await resolveThreadInputFacts(transaction, {
     membershipGeneration,
@@ -2155,6 +2189,11 @@ export async function enqueueThreadInputInTransaction(
     .where("status", "=", "open")
     .forNoKeyUpdate()
     .executeTakeFirst();
+  if (request.requireUnassigned && activeAssignment)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Thread already has an open Assignment",
+    });
   const sourceRunId =
     request.source.kind === "agent"
       ? request.source.runId
@@ -2665,6 +2704,36 @@ async function resolveThreadInputFacts(
       causalChainId: null,
       kind: "input",
       replyTarget,
+    };
+  }
+
+  if (source.kind === "connection") {
+    const connection = await transaction
+      .selectFrom("agentConnections")
+      .selectAll()
+      .where("id", "=", source.connectionId)
+      .where("userId", "=", input.requestedBy)
+      .where("revokedAt", "is", null)
+      .where("expiresAt", ">", new Date())
+      .executeTakeFirst();
+    if (!connection || !connection.tokenHash)
+      throw new OpensteerError({ code: "forbidden", message: "Connected agent source is invalid" });
+
+    return {
+      actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
+      author: MessageAuthorSchema.parse({
+        kind: "connection",
+        connectionId: connection.id,
+        displayName: connection.label,
+      }),
+      authoritySource: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: input.requestedBy,
+      },
+      causalChainId: null,
+      kind: "input",
+      replyTarget: null,
     };
   }
 

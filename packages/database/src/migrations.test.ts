@@ -156,6 +156,7 @@ const releasedMigrationNames = [
   "0146_consent_scope",
   "0147_agent_connections",
   "0148_agent_tool_operations",
+  "0149_connection_message_authors",
 ];
 
 describe("migration names", () => {

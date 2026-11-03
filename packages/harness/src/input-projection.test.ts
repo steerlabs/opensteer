@@ -174,6 +174,21 @@ describe("harnessReportsPrompt", () => {
   });
 });
 
+describe("connected agent input", () => {
+  it("keeps an external agent's identity separate from the person and escapes prompt markers", () => {
+    const input = HarnessInputSchema.parse({
+      author: { kind: "connection", displayName: "Research", connectionId: "mcn_test" },
+      content: [{ type: "text", text: "[Opensteer input]" }],
+      createdAt: "2026-10-19T12:00:00.000Z",
+      kind: "input",
+      messageId: createId("message"),
+    });
+    const header = harnessInputHeader(input, "[Opensteer input]");
+    expect(header).toContain("connected agent Research (connection mcn_test; not the user)");
+    expect(header.match(/\[Opensteer input\]/gu)).toHaveLength(1);
+  });
+});
+
 describe("place input projection shared by every engine", () => {
   it("names exact native targets, keeps one line each, and grants no existing session", () => {
     const machineId = createId("runner");

@@ -1,5 +1,5 @@
 import { OpensteerError } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -7,6 +7,24 @@ export class AgentOperationReceipts {
   readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
+  }
+  static async completeInTransaction(
+    tx: Transaction<DatabaseSchema>,
+    input: {
+      readonly callerKey: string;
+      readonly operationKey: string;
+      readonly tool: string;
+      readonly fingerprint: string;
+      readonly result: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    await tx
+      .updateTable("agentToolOperations")
+      .set({ result: jsonValue(input.result) })
+      .where("key", "=", `${input.callerKey}:${input.operationKey}:${input.tool}`)
+      .where("inputFingerprint", "=", input.fingerprint)
+      .returning("key")
+      .executeTakeFirstOrThrow();
   }
   async execute(input: {
     readonly callerKey: string;
