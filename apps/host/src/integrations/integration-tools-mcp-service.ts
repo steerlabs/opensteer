@@ -1136,34 +1136,31 @@ export class IntegrationToolsMcpService {
         ),
     );
     const matches = searched.slice(offset, offset + limit);
-    const results = matches.map(
-      ({ accounts, installation, readiness, servers, skills, tools }) => ({
-        accounts,
-        description: installation.description,
-        integration: installation.title,
-        name: installation.name,
-        installationId: installation.id,
-        servers: servers.map((server) => ({
-          readiness: searchReadiness(
-            readiness.servers.find(({ serverId }) => serverId === server.id),
-          ),
-          server: server.name,
-          serverId: server.id,
-        })),
-        skills: skills.map(({ description, name }) => ({ description, name })),
-        toolCount: tools.length,
-        tools: tools.slice(0, 50).map((tool) => ({
-          effect: integrationToolEffect(tool.annotations),
-          name: tool.name,
-          readiness: searchReadiness(
-            readiness.tools.find(({ toolId }) => toolId === tool.id)?.readiness,
-            readiness.servers,
-          ),
-          ...(tool.title !== tool.name ? { title: tool.title } : {}),
-        })),
-        ...(tools.length > 50 ? { truncated: true } : {}),
-      }),
-    );
+    const results = matches.map(({ accounts, installation, readiness, servers, tools }) => ({
+      accounts,
+      description: installation.description,
+      integration: installation.title,
+      name: installation.name,
+      installationId: installation.id,
+      servers: servers.map((server) => ({
+        readiness: searchReadiness(
+          readiness.servers.find(({ serverId }) => serverId === server.id),
+        ),
+        server: server.name,
+        serverId: server.id,
+      })),
+      toolCount: tools.length,
+      tools: tools.slice(0, 50).map((tool) => ({
+        effect: integrationToolEffect(tool.annotations),
+        name: tool.name,
+        readiness: searchReadiness(
+          readiness.tools.find(({ toolId }) => toolId === tool.id)?.readiness,
+          readiness.servers,
+        ),
+        ...(tool.title !== tool.name ? { title: tool.title } : {}),
+      })),
+      ...(tools.length > 50 ? { truncated: true } : {}),
+    }));
     const installedByDefinitionId = new Map(
       inventory.flatMap((entry) => {
         const definitionId = installationDefinitionId(entry.installation);

@@ -32,7 +32,7 @@ export async function renderHarnessSkillCatalog(
         const metadata = parseHarnessSkillMetadata(bytes!.toString("utf8"), localName);
         return `- ${name}: ${boundedDescription(metadata.description)}\n  SKILL.md: ${skillFile}${plugin ? `\n  PLUGIN_ROOT: ${resolve(path, "../..")}` : ""}`;
       } catch {
-        // Integration skills are third-party files and can also change between
+        // Plugin skills are third-party files and can also change between
         // planning and launch. Keep unrelated work usable while telling the
         // model exactly which selected file it can inspect if the skill applies.
         return `- ${name}: Metadata unavailable; inspect SKILL.md directly if this skill may apply.\n  SKILL.md: ${skillFile}${plugin ? `\n  PLUGIN_ROOT: ${resolve(path, "../..")}` : ""}`;

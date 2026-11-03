@@ -18,6 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import { createDatabase } from "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
+import { setWorkspaceProvisioningResult } from "./workspace-store.js";
 import { OpensteerStore } from "./store.js";
 import {
   projectsMigration,
@@ -7622,6 +7623,21 @@ integration("local directory conversion", () => {
         );
       }
     });
+    const runner = createStorageFixtureId("runner");
+    const environment = createStorageFixtureId("environment");
+    await sql`insert into runners(id, owner_kind, owner_user_id, name, kind, public_key_pem, public_key_fingerprint, enrollment_token_hash)
+      values (${runner}, 'user', ${owner}, 'Former computer', 'local', 'fixture', 'fixture', 'fixture')`.execute(
+      database,
+    );
+    await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
+      values (${environment}, 'Former computer', 'main', ${runner}, '[]'::jsonb)`.execute(database);
+    for (const id of [main, project]) {
+      await sql`insert into workspace_mounts(id, environment_id, runner_id, workspace_id, volume_id,
+        workspace_backing_generation, enrollment_id, authorized_by, membership_generation, status)
+        values (${randomUUID()}, ${environment}, ${runner}, ${id}, ${id}, 2, ${randomUUID()}, ${owner}, 1, 'active')`.execute(
+        database,
+      );
+    }
     await migrateToLatest(database);
     const rows = await database.selectFrom("workspaces").selectAll().orderBy("kind").execute();
     expect(rows).toHaveLength(2);
@@ -7631,11 +7647,54 @@ integration("local directory conversion", () => {
         generation: 2,
         storageAuthorityId: null,
       });
+      expect(row.relocationSource).toMatchObject({
+        backing: { kind: "portablefs", generation: 2, serviceId: "retired", volumeId: row.id },
+        mounts: [
+          expect.objectContaining({
+            environment_id: environment,
+            runner_id: runner,
+            volume_id: row.id,
+          }),
+        ],
+      });
+      expect(row.storageErrorMessage).toContain(
+        `from PortableFS service retired, volume ${row.id} to`,
+      );
       expect(row.storageErrorCode).toBe("relocation-required");
       expect(row.status).toBe("unavailable");
       expect(row.storageErrorMessage).toContain(
         row.kind === "main" ? "Main directory" : "Projects/my-project",
       );
+    }
+    for (const row of rows) {
+      const failedBacking = { ...row.backing, generation: row.backing.generation + 1 };
+      await expect(
+        setWorkspaceProvisioningResult(database, {
+          workspaceId: row.id,
+          backing: failedBacking,
+          expectedBacking: failedBacking,
+          status: "ready",
+          relocationConfirmed: true,
+        }),
+      ).rejects.toThrow();
+      expect(
+        (
+          await database
+            .selectFrom("workspaces")
+            .select("relocationSource")
+            .where("id", "=", row.id)
+            .executeTakeFirstOrThrow()
+        ).relocationSource,
+      ).toEqual(row.relocationSource);
+      const adopted = await setWorkspaceProvisioningResult(database, {
+        workspaceId: row.id,
+        backing: row.backing,
+        expectedBacking: row.backing,
+        status: "ready",
+        relocationConfirmed: true,
+      });
+      expect(adopted.relocationSource).toBeNull();
+      expect(adopted.storageIssue).toBeNull();
     }
     expect(rows[0]?.backing.ownerEnvironmentId).toBe(rows[1]?.backing.ownerEnvironmentId);
     expect(await database.selectFrom("workspaceMemberships").selectAll().execute()).toHaveLength(2);

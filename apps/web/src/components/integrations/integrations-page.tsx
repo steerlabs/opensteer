@@ -694,7 +694,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                 Settings
               </Link>
             }
-            description="Connect your accounts, install integrations, and decide exactly which tools and skills each project can use."
+            description="Connect your accounts, install integrations, and decide exactly which tools each project can use."
             eyebrow="Connections"
             title="Integrations"
           />
@@ -720,7 +720,7 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                     {result.status === "connected"
                       ? workspaceKind === "main"
                         ? "The account is ready for Opensteer and your tasks."
-                        : "The account is ready for exact tools and skills you authorize."
+                        : "The account is ready for exact tools you authorize."
                       : integrationResultDetail(result.status)}
                   </p>
                 </div>

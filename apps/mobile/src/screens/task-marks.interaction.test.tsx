@@ -280,6 +280,7 @@ async function project(
   role: "owner" | "member",
   state: "active" | "revoked" = "active",
   relocating = false,
+  source = "/source",
 ) {
   const host = await client();
   const workspace = host.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
@@ -287,7 +288,7 @@ async function project(
     workspace.status = "failed";
     workspace.storageIssue = {
       code: "relocation-required",
-      message: "Move /source to /Main/Projects/research",
+      message: `Restore files from ${source} to /Main/Projects/research, then confirm its location.`,
       occurredAt: new Date().toISOString(),
       retryable: false,
     };
@@ -733,16 +734,19 @@ function entryFor(assignment: AssignmentSummary): AssignmentEntry {
   };
 }
 
-it("shows Project relocation paths and reports an adoption refusal on mobile", async () => {
-  const { host, container, workspace } = await project("owner", "active", true);
-  expect(container.textContent).toContain("/source");
-  expect(container.textContent).toContain("/Main/Projects/research");
-  const dispatch = vi
-    .spyOn(host, "dispatch")
-    .mockRejectedValueOnce(new Error("Target directory missing"));
-  await press(container, "I moved it");
-  expect(dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "workspace.adoptRelocated", workspaceId: workspace.id }),
-  );
-  expect(container.textContent).toContain("Target directory missing");
-});
+it.each(["/source", "PortableFS service retired, volume original"])(
+  "shows Project relocation paths and reports an adoption refusal on mobile (%s)",
+  async (source) => {
+    const { host, container, workspace } = await project("owner", "active", true, source);
+    expect(container.textContent).toContain(source);
+    expect(container.textContent).toContain("/Main/Projects/research");
+    const dispatch = vi
+      .spyOn(host, "dispatch")
+      .mockRejectedValueOnce(new Error("Target directory missing"));
+    await press(container, "I moved it");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "workspace.adoptRelocated", workspaceId: workspace.id }),
+    );
+    expect(container.textContent).toContain("Target directory missing");
+  },
+);

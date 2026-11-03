@@ -203,6 +203,13 @@ export const WorkspaceSchema = z.object({
     .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
     .nullable()
     .optional(),
+  relocationSource: z
+    .object({
+      backing: z.record(z.string(), z.unknown()),
+      mounts: z.array(z.record(z.string(), z.unknown())),
+    })
+    .nullable()
+    .optional(),
   backing: WorkspaceBackingSchema,
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,

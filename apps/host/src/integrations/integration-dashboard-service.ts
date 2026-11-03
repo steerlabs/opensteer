@@ -57,7 +57,6 @@ export class IntegrationDashboardService {
         servers: (await this.#repository.listServers(installation.id)).map(
           ({ transport, ...server }) => ({ ...server, transportType: transport.type }),
         ),
-        skills: await this.#repository.listSkills(installation.id),
         tools: await this.#repository.listTools(installation.id, ownerUserId),
       })),
     );

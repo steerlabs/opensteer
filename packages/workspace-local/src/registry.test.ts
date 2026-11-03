@@ -215,3 +215,61 @@ it.each(["missing", "symlink", "unconfirmed"])("refuses Main adoption: %s", asyn
   ).rejects.toThrow();
   expect((await f.document()).bindings).toEqual([]);
 });
+
+// Released v3 shape: no slug or relocation fields, and specialized fingerprints.
+it.each([3, 2])(
+  "upgrades a released v%s registry containing Main and a specialized Workspace",
+  async (version) => {
+    const f = await fixture("single-owner");
+    const current = await f.document();
+    const bindings = [f.main, f.project].map((b) => ({
+      bindingId: b.bindingId,
+      createdBy: b.createdBy,
+      generation: b.generation,
+      idempotencyKey: b.idempotencyKey,
+      ownerEnvironmentId: b.ownerEnvironmentId,
+      provisionFingerprint: {
+        createdBy: b.createdBy,
+        kind: b === f.main ? "main" : "specialized",
+        ownerEnvironmentId: b.ownerEnvironmentId,
+        workspaceId: b.workspaceId,
+      },
+      relativeSegments: b.relativeSegments,
+      workspaceId: b.workspaceId,
+      filesystemIdentity: b.filesystemIdentity,
+      state: "ready",
+    }));
+    const released = {
+      bindings,
+      namespace: current.namespace,
+      revision: 2,
+      rootIdentity: current.rootIdentity,
+      version,
+      ...(version === 3 ? { receipts: [], storageAuthorityId: current.storageAuthorityId } : {}),
+    };
+    if (version === 2) {
+      await rename(f.options.registryFilePath, f.options.registryFilePath + ".old");
+      await writeFile(f.options.registryFilePath + ".legacy", JSON.stringify(released), {
+        mode: 0o600,
+      });
+      const upgrade = new LocalWorkspaceRegistry({
+        ...f.options,
+        legacyRegistryFilePath: f.options.registryFilePath + ".legacy",
+      });
+      await upgrade.preflight();
+    } else await writeFile(f.options.registryFilePath, JSON.stringify(released));
+    expect(
+      await f.reopen().getReadyBinding({
+        bindingId: f.main.bindingId,
+        generation: 1,
+        workspaceId: f.main.workspaceId,
+      }),
+    ).toMatchObject(f.main);
+    expect(await f.reopen().getReadyBinding(f.input)).toMatchObject(f.project);
+    await f.reopen().relocate(f.input);
+    const moved = await f.reopen().getReadyBinding(f.input);
+    expect(moved.bindingId).toBe(f.project.bindingId);
+    expect(moved.filesystemIdentity).toEqual(f.project.filesystemIdentity);
+    expect(await readFile(path.join(f.target, "keep.txt"), "utf8")).toBe("precious data");
+  },
+);

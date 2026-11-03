@@ -29,7 +29,6 @@ export class IntegrationPlatformStore {
   readonly listComputerRunnerIdsForInstallation: IntegrationInstallStore["listComputerRunnerIdsForInstallation"];
   readonly listDiscoveryInventory: IntegrationInstallStore["listDiscoveryInventory"];
   readonly listServers: IntegrationInstallStore["listServers"];
-  readonly listSkills: IntegrationInstallStore["listSkills"];
   readonly listTools: IntegrationInstallStore["listTools"];
   readonly reconcileProviderConnectionTools: IntegrationInstallStore["reconcileProviderConnectionTools"];
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
@@ -86,7 +85,6 @@ export class IntegrationPlatformStore {
       this.installations,
     );
     this.listServers = this.installations.listServers.bind(this.installations);
-    this.listSkills = this.installations.listSkills.bind(this.installations);
     this.listTools = this.installations.listTools.bind(this.installations);
     this.reconcileProviderConnectionTools =
       this.installations.reconcileProviderConnectionTools.bind(this.installations);

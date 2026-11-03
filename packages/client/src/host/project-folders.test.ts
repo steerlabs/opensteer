@@ -57,6 +57,14 @@ describe("relocationPaths", () => {
         "Move this Project from /Users/me/Old to /Users/me/Main/Projects/research, then confirm “I moved it”.",
       ),
     ).toEqual({ from: "/Users/me/Old", to: "/Users/me/Main/Projects/research" });
+    expect(
+      relocationPaths(
+        "Restore files from PortableFS service retired, volume vol-original to your Main directory/Projects/research, then confirm its location.",
+      ),
+    ).toEqual({
+      from: "PortableFS service retired, volume vol-original",
+      to: "your Main directory/Projects/research",
+    });
     expect(relocationPaths("Move /old/project to /main/Projects/research")).toEqual({
       from: "/old/project",
       to: "/main/Projects/research",

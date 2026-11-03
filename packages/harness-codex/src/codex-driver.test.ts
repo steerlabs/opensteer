@@ -1368,9 +1368,7 @@ describe("Codex app-server harness", () => {
     ).toEqual([
       {
         enabled: true,
-        path: await realpath(
-          join(fixture.context.workspacePath, "skills", "opensteer-workspaces", "SKILL.md"),
-        ),
+        path: await realpath(join(fixture.context.workspacePath, "skills", "projects", "SKILL.md")),
       },
     ]);
     expect(captured.find((message) => message.method === "config/read")).toBeDefined();
@@ -1974,7 +1972,7 @@ describe("Codex app-server harness", () => {
     expect(config?.["skills.config"]).toEqual([
       expect.objectContaining({
         enabled: true,
-        path: expect.stringContaining("opensteer-workspaces"),
+        path: expect.stringContaining("projects"),
       }),
       expect.objectContaining({ enabled: false, path: expect.stringContaining("ambient-skill") }),
     ]);
@@ -2827,9 +2825,9 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       skills: [
         {
           plugin: null,
-          localName: "opensteer-workspaces",
-          fullName: "opensteer-workspaces",
-          path: join(directory, "skills", "opensteer-workspaces"),
+          localName: "projects",
+          fullName: "projects",
+          path: join(directory, "skills", "projects"),
         },
       ],
     },
@@ -2848,7 +2846,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   await mkdir(testSkillPath, { recursive: true });
   await writeFile(
     join(testSkillPath, "SKILL.md"),
-    "---\nname: opensteer-workspaces\ndescription: Test.\n---\n\nTest skill.\n",
+    "---\nname: projects\ndescription: Test.\n---\n\nTest skill.\n",
   );
   if (scenario === "ambient-extensions") {
     const ambientSkillPath = join(directory, "ambient-skill");

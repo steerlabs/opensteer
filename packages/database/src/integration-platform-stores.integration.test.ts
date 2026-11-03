@@ -742,7 +742,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const tool = discoveredTool(createIntegrationId("tool"));
-    const skillId = createIntegrationId("skill");
     await platform.install({
       actorUserId: userId,
       adapterSnapshot: {
@@ -766,15 +765,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
           statusDetail: null,
           catalog: { definitions: {}, tools: [tool] },
           transport: { adapter: "openapi", definitionId: "records-catalog", type: "adapter" },
-        },
-      ],
-      skills: [
-        {
-          description: "Draft a record summary",
-          digest: "s".repeat(43),
-          id: skillId,
-          name: "record-summary",
-          status: "active",
         },
       ],
     });

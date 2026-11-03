@@ -579,7 +579,6 @@ function entry(
       tools: [],
     },
     servers: [],
-    skills: [],
     tools: [],
   };
 }

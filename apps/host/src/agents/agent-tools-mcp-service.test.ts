@@ -797,7 +797,7 @@ describe("AgentToolsMcpService", () => {
     expect(mainTool?.inputSchema.properties).toHaveProperty("workspaceId");
     expect(workspaceTool?.inputSchema.required).not.toContain("workspaceId");
     expect(workspaceTool?.inputSchema.properties).not.toHaveProperty("workspaceId");
-    expect(mainTool?.description).toContain("for a specialist's workspaceId");
+    expect(mainTool?.description).toContain("for the target Project's workspaceId");
     expect(workspaceTool?.description).toContain("grant for this Workspace");
 
     await mainClient.close();

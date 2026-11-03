@@ -1675,7 +1675,7 @@ integration("Browser presence and conversation usage", () => {
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed")[0]);
     const device = await reader(host);
     cleanups.push(async () => device.dispose());
-    // Its default socket follows Main, while this browser belongs to the specialist Workspace.
+    // Its default socket follows Main, while this browser belongs to the Project.
 
     // A. The page changes. Viewers are patched; nothing is reread.
     const beforeNavigation = owner.messages.length;

@@ -945,16 +945,10 @@ describe("OpenCode sessions", () => {
     expect(instructions).toContain("Opensteer platform guide.");
     expect(instructions).toContain("Follow the workspace instructions.");
     const skill = await readFile(
-      join(
-        fixture.context.threadStateDirectory,
-        "opencode",
-        "skills",
-        "opensteer-workspaces",
-        "SKILL.md",
-      ),
+      join(fixture.context.threadStateDirectory, "opencode", "skills", "projects", "SKILL.md"),
       "utf8",
     );
-    expect(skill).toContain("opensteer-workspaces");
+    expect(skill).toContain("projects");
   });
 
   it("gives two concurrent sessions of one account their own configuration and one data home", async () => {
@@ -1874,9 +1868,9 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       skills: [
         {
           plugin: null,
-          localName: "opensteer-workspaces",
-          fullName: "opensteer-workspaces",
-          path: join(directory, "skills", "opensteer-workspaces"),
+          localName: "projects",
+          fullName: "projects",
+          path: join(directory, "skills", "projects"),
         },
       ],
     },

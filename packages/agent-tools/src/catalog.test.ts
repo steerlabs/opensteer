@@ -154,6 +154,8 @@ describe("agent tool catalog", () => {
 
   it("selects the role-specific browser access request schema", () => {
     const main = tool("main", "browser_access_request");
+    expect(main.description).toContain("target Project's workspaceId");
+    expect(main.description).toContain("specialist bindings");
     const workspace = tool("workspace", "browser_access_request");
 
     expect(main.inputSchema.safeParse(browserAccessInput()).success).toBe(false);

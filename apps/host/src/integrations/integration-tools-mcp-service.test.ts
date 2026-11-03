@@ -801,7 +801,7 @@ describe("IntegrationToolsMcpService access classes", () => {
   });
 
   it("accepts installation and account ids without weakening requested read-write access", async () => {
-    const entry = inventoryEntry({ skillsOnly: true });
+    const entry = inventoryEntry({ withoutTools: true });
     const { handler, requests } = await createHarness({ inventory: [entry] });
     await handler(
       {
@@ -810,12 +810,12 @@ describe("IntegrationToolsMcpService access classes", () => {
             access: "read-write",
             account: entry.accounts[0]!.connectionId,
             integration: entry.installation.id,
-            reason: "Use the skill",
+            reason: "Use the integration",
           },
           name: "integration_request",
         },
       },
-      callExtra("skills-only"),
+      callExtra("without-tools"),
     );
     expect(requests.createIntegrationAccessRequest).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1645,7 +1645,6 @@ function computerInventory(
       installation,
       readiness: { servers: [readiness], tools: [{ readiness, toolId: tool.id }] },
       servers: [server],
-      skills: [],
       tools: [tool],
     },
   };
@@ -1660,7 +1659,7 @@ const linearToolSchemas = {
 function inventoryEntry(
   input: {
     readonly readinessCode?: "ACCESS_GRANT_REQUIRED" | "READY" | "REAUTHORIZATION_REQUIRED";
-    readonly skillsOnly?: boolean;
+    readonly withoutTools?: boolean;
     readonly toolEffect?: "read" | "write";
   } = {},
 ) {
@@ -1713,7 +1712,7 @@ function inventoryEntry(
     },
     readiness: {
       servers: [readiness],
-      tools: input.skillsOnly ? [] : [{ readiness, toolId }],
+      tools: input.withoutTools ? [] : [{ readiness, toolId }],
     },
     servers: [
       {
@@ -1737,18 +1736,7 @@ function inventoryEntry(
         updatedAt: "2026-08-13T12:00:00.000Z",
       },
     ],
-    skills: input.skillsOnly
-      ? [
-          {
-            description: "Summarize Linear issues",
-            digest: "s".repeat(43),
-            id: createIntegrationId("skill"),
-            name: "summarize-issues",
-            status: "active" as const,
-          },
-        ]
-      : [],
-    tools: input.skillsOnly ? [] : [tool],
+    tools: input.withoutTools ? [] : [tool],
   };
 }
 

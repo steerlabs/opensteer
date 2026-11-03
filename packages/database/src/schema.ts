@@ -71,6 +71,7 @@ import type {
   TriggerRevisionId,
   TriggerWatchActivationId,
   UserId,
+  Workspace,
   WorkspaceBacking,
   WorkspaceIconName,
   WorkspaceId,
@@ -88,7 +89,6 @@ import type {
   IntegrationProvider,
   IntegrationProviderApplicationId,
   IntegrationServerId,
-  IntegrationSkillId,
   IntegrationToolId,
   LocalMcpServerSetup,
 } from "@opensteer/integration-core";
@@ -676,6 +676,7 @@ export interface WorkspaceTable {
   slug: Generated<string | null>;
   color: MarkColor;
   homeThreadId: Generated<ThreadId | null>;
+  relocationSource: Generated<NonNullable<Workspace["relocationSource"]> | null>;
   backing: JsonColumn<WorkspaceBacking>;
   deletedAt: NullableTimestamp;
   deletionRequestedAt: NullableTimestamp;
@@ -1779,17 +1780,6 @@ export interface IntegrationToolDefinitionsTable {
   serverId: IntegrationServerId;
   connectionId: IntegrationConnectionId | null;
   definitions: JsonColumn<Readonly<Record<string, Readonly<Record<string, unknown>>>>>;
-  updatedAt: Timestamp;
-}
-
-export interface IntegrationSkillTable {
-  id: IntegrationSkillId;
-  installationId: IntegrationInstallationId;
-  name: string;
-  description: string;
-  digest: string;
-  status: "active" | "disabled";
-  createdAt: Timestamp;
   updatedAt: Timestamp;
 }
 

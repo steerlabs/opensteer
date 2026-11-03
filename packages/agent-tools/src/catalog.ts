@@ -508,7 +508,7 @@ const definitions = [
   {
     annotations: browserAccessRequestAnnotations,
     description:
-      "Request a browser profile grant for a specialist's workspaceId. Main already has owner profiles; use browser_profile_list or browser_profile_create there. Guest needs no grant. The owner decides which profile to grant; suggestion is advisory. Returns the Request and whether this call was replayed. Never target Main.",
+      "Request a browser profile grant for the target Project's workspaceId. Project grants provide profiles to that Project; specialist bindings separately limit which profiles a specialist may use. Main already has owner profiles; use browser_profile_list or browser_profile_create there. Guest needs no grant. The owner decides which profile to grant; suggestion is advisory. Returns the Request and whether this call was replayed. Never target Main.",
     id: "browser.access.request",
     inputSchema: z.strictObject({
       reason: z

@@ -988,6 +988,9 @@ export async function setWorkspaceProvisioningResult(
       storageErrorRetryable: false,
       updatedAt: new Date(),
     })
+    .$if(input.relocationConfirmed === true && input.status === "ready", (query) =>
+      query.set({ relocationSource: null }),
+    )
     .where("id", "=", input.workspaceId)
     .$if(input.relocationConfirmed === true, (query) =>
       query.where("storageErrorCode", "=", "relocation-required"),

@@ -8,7 +8,6 @@ const prefixes = {
   oauthAttempt: "ioa",
   providerApplication: "ipa",
   server: "isv",
-  skill: "isk",
   tool: "itl",
 } as const;
 
@@ -22,7 +21,6 @@ export type McpOAuthAttemptId = Brand<string, "McpOAuthAttemptId">;
 export type IntegrationOAuthAttemptId = Brand<string, "IntegrationOAuthAttemptId">;
 export type IntegrationProviderApplicationId = Brand<string, "IntegrationProviderApplicationId">;
 export type IntegrationServerId = Brand<string, "IntegrationServerId">;
-export type IntegrationSkillId = Brand<string, "IntegrationSkillId">;
 export type IntegrationToolId = Brand<string, "IntegrationToolId">;
 
 interface IdByKind {
@@ -33,7 +31,6 @@ interface IdByKind {
   readonly oauthAttempt: IntegrationOAuthAttemptId;
   readonly providerApplication: IntegrationProviderApplicationId;
   readonly server: IntegrationServerId;
-  readonly skill: IntegrationSkillId;
   readonly tool: IntegrationToolId;
 }
 
@@ -57,5 +54,4 @@ export const McpOAuthAttemptIdSchema = schema("mcpOauthAttempt");
 export const IntegrationOAuthAttemptIdSchema = schema("oauthAttempt");
 export const IntegrationProviderApplicationIdSchema = schema("providerApplication");
 export const IntegrationServerIdSchema = schema("server");
-export const IntegrationSkillIdSchema = schema("skill");
 export const IntegrationToolIdSchema = schema("tool");

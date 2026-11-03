@@ -55,8 +55,6 @@ import {
   type IntegrationInstallationId,
   type IntegrationProviderAuthorization,
   type IntegrationServer,
-  type IntegrationSkill,
-  type IntegrationSkillId,
   type IntegrationServerId,
   type IntegrationTool,
   type IntegrationToolId,
@@ -246,14 +244,6 @@ export interface DiscoveredIntegrationServer {
   readonly transport: IntegrationServer["transport"];
 }
 
-interface DiscoveredIntegrationSkill {
-  readonly description: string;
-  readonly digest: string;
-  readonly id: IntegrationSkillId;
-  readonly name: string;
-  readonly status: "active" | "disabled";
-}
-
 export interface CallableIntegrationTool {
   readonly grant: EffectiveIntegrationGrant;
   readonly installation: IntegrationInstallation;
@@ -270,12 +260,6 @@ export class ComputerAppNotOfferedError extends Error {
     this.name = "ComputerAppNotOfferedError";
     this.runnerName = runnerName;
   }
-}
-
-export interface GrantedIntegrationSkill {
-  readonly grant: EffectiveIntegrationGrant;
-  readonly installation: IntegrationInstallation;
-  readonly skill: IntegrationSkill;
 }
 
 export interface McpOAuthServerContext {
@@ -439,13 +423,6 @@ abstract class IntegrationPlatformStoreBase {
       .execute();
     return rows.map(installationFromRow);
   }
-
-  protected async installationSkills(
-    installationId: IntegrationInstallationId,
-  ): Promise<readonly IntegrationSkill[]> {
-    void installationId;
-    return [];
-  }
 }
 
 export interface InstallIntegrationInput {
@@ -456,7 +433,6 @@ export interface InstallIntegrationInput {
   readonly installation: Omit<IntegrationInstallation, "createdAt" | "revision" | "updatedAt">;
   readonly requestId: string;
   readonly servers: readonly DiscoveredIntegrationServer[];
-  readonly skills?: readonly DiscoveredIntegrationSkill[];
   /** Rebuilds every live computer connection atomically with rematerialization. */
   readonly computerConnectionTools?: (
     connectionId: IntegrationConnectionId,
@@ -1663,7 +1639,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         }[];
       };
       readonly servers: readonly IntegrationServer[];
-      readonly skills: readonly IntegrationSkill[];
       readonly tools: readonly IntegrationTool[];
     }[]
   > {
@@ -1720,9 +1695,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     return Promise.all(
       installations.map(async (row) => {
         const installation = installationFromRow(row);
-        const [servers, skills, tools] = await Promise.all([
+        const [servers, tools] = await Promise.all([
           this.listServers(row.id),
-          this.listSkills(row.id),
           this.listTools(row.id, input.ownerUserId),
         ]);
         const serverById = new Map(servers.map((server) => [server.id, server]));
@@ -1846,7 +1820,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             }),
           },
           servers,
-          skills,
           tools,
         };
       }),
@@ -1890,13 +1863,6 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .limit(100)
       .execute();
     return rows.map(serverFromRow);
-  }
-
-  async listSkills(
-    installationId: IntegrationInstallationId,
-  ): Promise<readonly IntegrationSkill[]> {
-    void installationId;
-    return [];
   }
 
   async listTools(
@@ -3384,7 +3350,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       inheritedMainAccess,
       installations: [...installationById.values()],
       ownerUserId: input.ownerUserId,
-      skills: [],
       storedGrants: grants,
       tools: rows.map((row) => ({
         ...toolFromRow(row),

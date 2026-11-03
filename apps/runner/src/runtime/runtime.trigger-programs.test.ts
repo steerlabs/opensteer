@@ -127,7 +127,7 @@ function runtimeFixture(input: {
       state: () => ({ definition: { runtimeRevision: 1 }, status: "available" }),
     } as never,
     plugins: async () => {
-      throw new Error("A blocked Workspace preparation must not materialize integration skills");
+      throw new Error("A blocked Workspace preparation must not materialize plugin skills");
     },
     maxConcurrentRuns: input.maxConcurrentRuns,
     maxConcurrentTriggerPrograms: input.maxConcurrentTriggerPrograms,

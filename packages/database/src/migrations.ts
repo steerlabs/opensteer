@@ -6903,6 +6903,7 @@ export const localDirectoryOnlyMigration: Migration = {
     await sql`
       alter table public.workspaces drop constraint workspaces_backing_capacity_policy_match_check;
       alter table public.workspaces drop constraint workspaces_backing_shape_check;
+      alter table public.workspaces add column relocation_source jsonb;
       create temporary table retired_workspace_destinations on commit drop as
         select w.created_by,
           coalesce(
@@ -6919,13 +6920,13 @@ export const localDirectoryOnlyMigration: Migration = {
         select environment_id, 'Main (computer required)', 'main', null, '[]'::jsonb
         from retired_workspace_destinations on conflict (id) do nothing;
       update public.workspaces w set
+        relocation_source = jsonb_build_object('backing', w.backing, 'mounts',
+          coalesce((select jsonb_agg(to_jsonb(m)) from public.workspace_mounts m where m.workspace_id = w.id), '[]'::jsonb)),
         backing = jsonb_build_object('kind', 'local-directory', 'bindingId', 'wbd_' || gen_random_uuid()::text,
           'generation', w.backing->'generation', 'ownerEnvironmentId', d.environment_id, 'storageAuthorityId', null),
         status = case when w.status in ('deleting', 'deleted') then w.status else 'unavailable' end,
         storage_error_code = 'relocation-required', storage_error_retryable = false, storage_error_at = now(),
-        storage_error_message = case when w.kind = 'main'
-          then 'Restore your files to your Main directory on the owning computer, then confirm its location.'
-          else 'Restore your files to your Main directory/Projects/' || w.slug || ' on the owning computer, then confirm its location.' end
+        storage_error_message = 'Restore files from PortableFS service ' || (w.backing->>'serviceId') || ', volume ' || (w.backing->>'volumeId') || ' to ' || case when w.kind = 'main' then 'your Main directory' else 'your Main directory/Projects/' || w.slug end || ', then confirm its location.'
         from retired_workspace_destinations d where w.created_by = d.created_by and w.backing->>'kind' = 'portablefs';
       drop table public.workspace_mounts;
       drop index public.workspaces_portablefs_backing_unique;

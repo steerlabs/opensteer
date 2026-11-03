@@ -984,13 +984,6 @@ export class IntegrationPlatformService {
         message: "The plugin name opensteer is reserved",
       });
     const installationId = createIntegrationId("installation");
-    const skills = plugin.skills.map(({ description, digest, name }) => ({
-      description,
-      digest,
-      id: createIntegrationId("skill"),
-      name,
-      status: "active" as const,
-    }));
     const servers = await Promise.all(
       plugin.servers.map((server) =>
         runnerId !== null && runsOnComputer(server)
@@ -1041,7 +1034,7 @@ export class IntegrationPlatformService {
         sourceKind: "plugin",
         // A server waiting for its computer's approval is not broken.
         status:
-          skills.length > 0 ||
+          plugin.skills.length > 0 ||
           servers.some(
             ({ authorizationRequired, status, transport }) =>
               authorizationRequired || status === "active" || transport.type === "runner",
@@ -1054,7 +1047,6 @@ export class IntegrationPlatformService {
       },
       requestId: input.requestId,
       servers,
-      skills,
     });
     const installation = this.#acceptInstallMutation(mutation);
     if (runnerId !== null) {

@@ -71,7 +71,7 @@ export interface HarnessSandboxRunPlan {
   readonly environment: Readonly<Record<string, string>>;
   /** Absent when this Run has no machine access. */
   readonly launchDirectory: string | undefined;
-  /** Absent when no integration skills were materialized for this Thread. */
+  /** Absent when no plugin skills were materialized for this Thread. */
   readonly pluginCacheDirectory: string | undefined;
   readonly providerState: HarnessProviderState;
   readonly threadStateDirectory: string;

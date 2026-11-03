@@ -26,7 +26,6 @@ import {
   McpOAuthAttemptIdSchema,
   IntegrationProviderApplicationIdSchema,
   IntegrationServerIdSchema,
-  IntegrationSkillIdSchema,
   IntegrationToolIdSchema,
 } from "./ids.js";
 
@@ -759,21 +758,6 @@ export interface IntegrationToolCatalog {
   readonly tools: readonly IntegrationToolMaterial[];
 }
 
-export const IntegrationSkillSchema = z.strictObject({
-  description: z.string().trim().min(1).max(1_024),
-  digest: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
-  id: IntegrationSkillIdSchema,
-  installationId: IntegrationInstallationIdSchema,
-  name: z
-    .string()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
-    .max(64),
-  status: z.enum(["active", "disabled"]),
-  updatedAt: IsoDateTimeSchema,
-});
-const IntegrationSkillViewSchema = z.object(IntegrationSkillSchema.shape);
-export type IntegrationSkill = z.infer<typeof IntegrationSkillSchema>;
-
 export const IntegrationGrantSchema = z.strictObject({
   access: IntegrationAccessSchema,
   alias: z.string().trim().min(1).max(80),
@@ -1255,7 +1239,6 @@ export const IntegrationPlatformDashboardSchema = z.strictObject({
       z.strictObject({
         installation: IntegrationInstallationSchema,
         servers: z.array(IntegrationServerSummarySchema).max(100),
-        skills: z.array(IntegrationSkillSchema).max(1_000),
         tools: z.array(IntegrationToolSchema).max(5_000),
       }),
     )
@@ -1273,7 +1256,6 @@ export const IntegrationPlatformDashboardViewSchema = z.object({
         ...IntegrationPlatformDashboardSchema.shape.installations.element.shape,
         installation: IntegrationInstallationViewSchema,
         servers: z.array(IntegrationServerSummaryViewSchema).max(100),
-        skills: z.array(IntegrationSkillViewSchema).max(1_000),
         tools: z.array(IntegrationToolViewSchema).max(5_000),
       }),
     )

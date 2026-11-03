@@ -188,12 +188,9 @@ export function PluginsAndMcpSection({
       {entries.length > 0 ? (
         <div className="card">
           {entries.map((entry) => {
-            const { installation, servers, skills, tools } = entry;
-            const offerings = [
-              ...skills.slice(0, 4).map(({ name }) => name),
-              ...tools.slice(0, 4).map(({ title }) => title),
-            ];
-            const extra = skills.length + tools.length - 8;
+            const { installation, servers, tools } = entry;
+            const offerings = tools.slice(0, 4).map(({ title }) => title);
+            const extra = tools.length - 4;
             const inactive = inactiveInstallation(installation.title, entry);
             return (
               <div

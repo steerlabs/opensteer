@@ -174,7 +174,6 @@
     "apps/host/src/integrations/integration-routes.test.ts": 1550,
     "apps/host/src/integrations/integration-schemas-upstream.test.ts": 1576,
     "apps/host/src/integrations/integration-service.test.ts": 1610,
-    "apps/host/src/integrations/integration-skill-bundle-service.test.ts": 1518,
     "apps/host/src/integrations/integration-tools-mcp-service.test.ts": 1579,
     "apps/host/src/integrations/mcp-call-id.test.ts": 1504,
     "apps/host/src/integrations/mcp-oauth-service.test.ts": 1532,

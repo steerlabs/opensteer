@@ -8516,7 +8516,6 @@ class MockHostState {
             providerApplicationRequired: definition.authMethods.some(
               ({ kind }) => kind === "oauth",
             ),
-            skills: [],
             tools: mockCatalogTools(definition),
           });
     entry.installationId = installation.installation.id;
@@ -8559,7 +8558,6 @@ class MockHostState {
           updatedAt: timestamp,
         },
       ],
-      skills: [],
       tools: [],
     });
     return installation;
