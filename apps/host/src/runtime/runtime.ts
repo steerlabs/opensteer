@@ -2082,6 +2082,7 @@ export async function createHostRuntime(
         runs: agentControlTokens,
         triggers: triggerControlTokens,
         watches: watchControlTokens,
+        connections: connections.authenticator,
       }),
       receipts: new AgentOperationReceipts(database),
       store,

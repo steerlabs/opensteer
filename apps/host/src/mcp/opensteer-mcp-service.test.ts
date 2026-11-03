@@ -61,6 +61,17 @@ function fixture() {
         program: { kind: "trigger" } as never,
       },
     ],
+    [
+      "connection",
+      {
+        kind: "connection",
+        key: "connection:mcn_test",
+        connectionId: "mcn_test",
+        userId,
+        accessMode: thread.accessMode,
+        reach: run.reach,
+      },
+    ],
   ]);
   const targets = new Map([[thread.id, thread]]);
   const messageId = createId("message");
@@ -354,6 +365,30 @@ describe("Opensteer MCP spine", () => {
         "expired",
       );
       expect(response.statusCode).toBe(status);
+    }
+  });
+  it("keeps connection credentials and Run credentials on their own routes", async () => {
+    const f = fixture();
+    const route = "https://connect.example";
+    for (const [token, host, connectionOrigin, status] of [
+      ["connection", "127.0.0.1", undefined, 403],
+      ["run", "connect.example", route, 403],
+      ["expired", "connect.example", route, 401],
+    ] as const) {
+      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      await f.service.handle(
+        { headers: { host }, method: "POST" } as never,
+        response as never,
+        {},
+        token,
+        connectionOrigin,
+      );
+      expect(response.statusCode).toBe(status);
+      if (status === 401)
+        expect(response.setHeader).toHaveBeenCalledWith(
+          "www-authenticate",
+          `Bearer resource_metadata="${route}/.well-known/oauth-protected-resource/internal/v1/mcp"`,
+        );
     }
   });
 });

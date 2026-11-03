@@ -1,4 +1,6 @@
 import {
+  connectionCredentialPrefix,
+  connectionRequestOrigin,
   registerConnectionRoutes,
   createConnectionRpcHandlers,
   handleConnectionCommand,
@@ -501,15 +503,17 @@ export async function createHostServer(
       : {}),
     workspaceSharingAvailable,
   });
-  if (dependencies.connections)
-    registerConnectionRoutes(app, {
-      oauth: dependencies.connections,
-      canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
-      personal: dependencies.discovery.document.deploymentShape.kind === "personal",
-      remoteOrigin: async () =>
-        (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route.origin ??
-        null,
-    });
+  const connectionRoutes = dependencies.connections
+    ? {
+        oauth: dependencies.connections,
+        canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
+        personal: dependencies.discovery.document.deploymentShape.kind === "personal",
+        remoteOrigin: async () =>
+          (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route
+            .origin ?? null,
+      }
+    : undefined;
+  if (connectionRoutes) registerConnectionRoutes(app, connectionRoutes);
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
@@ -3025,8 +3029,19 @@ export async function createHostServer(
     bodyLimit: agentToolPayloadMaxSerializedBytes + 32 * 1_024,
     handler: async (request, reply) => {
       const token = requireBearerToken(request);
+      // The connection routes already authenticated this credential for this route.
+      const connectionOrigin =
+        connectionRoutes && token.startsWith(connectionCredentialPrefix)
+          ? await connectionRequestOrigin(request, connectionRoutes)
+          : undefined;
       reply.hijack();
-      await dependencies.agentTools.handle(request.raw, reply.raw, request.body, token);
+      await dependencies.agentTools.handle(
+        request.raw,
+        reply.raw,
+        request.body,
+        token,
+        connectionOrigin,
+      );
     },
     method: ["GET", "POST", "DELETE"],
     url: hostInternalRoutePaths.mcp,

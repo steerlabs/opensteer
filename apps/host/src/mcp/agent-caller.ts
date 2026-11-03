@@ -41,7 +41,7 @@ export interface ConnectionCaller extends AgentCallerBase {
 }
 export type AgentCaller = RunCaller | ProgramCaller | ConnectionCaller;
 
-/** WS-4 plugs in MCP-only credentials here; browser and Runner credentials are never tried. */
+/** Connected agents' MCP-only credentials; browser and Runner credentials are never tried. */
 export interface ConnectionAuthenticator {
   authenticate(bearer: string): Promise<{
     readonly connectionId: string;

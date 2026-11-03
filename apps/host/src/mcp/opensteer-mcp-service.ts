@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
 import { fingerprint } from "./operations.js";
@@ -28,6 +29,7 @@ import type { AgentToolHandlers, ToolCall } from "./handlers/index.js";
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
 interface McpSession {
+  readonly origin: string;
   readonly key: string;
   readonly kind: AgentCaller["kind"];
   readonly server: McpServer;
@@ -35,8 +37,7 @@ interface McpSession {
   lastSeenAt: number;
 }
 export class OpensteerMcpService {
-  readonly #allowedHost: string;
-  readonly #allowedOrigin: string;
+  readonly #runtimeOrigin: URL;
   readonly #sessions = new Map<string, McpSession>();
   #sessionsBeingCreated = 0;
   readonly options: {
@@ -60,17 +61,23 @@ export class OpensteerMcpService {
     readonly publicUrl: URL;
   }) {
     this.options = options;
-    this.#allowedHost = options.publicUrl.host;
-    this.#allowedOrigin = options.publicUrl.origin;
+    this.#runtimeOrigin = options.publicUrl;
   }
+  /**
+   * `connectionOrigin` is the approved connection route this request arrived
+   * on, which the connection routes validated; only connected agents use it,
+   * and Runs and programs stay on the runtime origin.
+   */
   async handle(
     request: IncomingMessage,
     response: ServerResponse,
     body: unknown,
     token: string,
+    connectionOrigin?: string,
   ): Promise<void> {
+    const origin = connectionOrigin ? new URL(connectionOrigin) : this.#runtimeOrigin;
     try {
-      this.#assertRequestOrigin(request);
+      assertRequestOrigin(request, origin);
     } catch (error) {
       sendJsonRpcError(response, 403, safeMessage(error, safeMessageOptions));
       return;
@@ -79,8 +86,17 @@ export class OpensteerMcpService {
     try {
       authorization = await this.options.callers.authenticate(token);
     } catch {
-      response.setHeader("www-authenticate", 'Bearer realm="opensteer-agent-tools"');
+      response.setHeader(
+        "www-authenticate",
+        connectionOrigin
+          ? `Bearer resource_metadata="${origin.origin}${mcpResourceMetadataPath}"`
+          : 'Bearer realm="opensteer-agent-tools"',
+      );
       sendJsonRpcError(response, 401, "Agent tools authorization is invalid or expired");
+      return;
+    }
+    if ((authorization.kind === "connection") !== (connectionOrigin !== undefined)) {
+      sendJsonRpcError(response, 403, "MCP request Host is not allowed");
       return;
     }
     await this.#sweep();
@@ -96,8 +112,17 @@ export class OpensteerMcpService {
 
     if (sessionId) {
       const existing = this.#sessions.get(sessionId);
-      if (!existing || existing.key !== authorization.key || existing.kind !== authorization.kind) {
-        await this.#serveDetached(request, response, body, { ...authorization, sessionId });
+      if (
+        !existing ||
+        existing.key !== authorization.key ||
+        existing.kind !== authorization.kind ||
+        existing.origin !== origin.origin
+      ) {
+        await this.#serveDetached(request, response, body, {
+          ...authorization,
+          origin,
+          sessionId,
+        });
         return;
       }
       existing.lastSeenAt = Date.now();
@@ -113,7 +138,7 @@ export class OpensteerMcpService {
       }
       this.#sessionsBeingCreated += 1;
       try {
-        session = await this.#createSession(authorization);
+        session = await this.#createSession({ ...authorization, origin });
         createdSession = true;
       } catch (error) {
         this.#sessionsBeingCreated -= 1;
@@ -157,7 +182,7 @@ export class OpensteerMcpService {
     request: IncomingMessage,
     response: ServerResponse,
     body: unknown,
-    input: AgentCaller & { readonly sessionId: string },
+    input: AgentCaller & { readonly origin: URL; readonly sessionId: string },
   ): Promise<void> {
     if (request.method === "DELETE") {
       response.writeHead(204).end();
@@ -184,19 +209,21 @@ export class OpensteerMcpService {
    * A session the Host holds, or with `sessionId` a one-request session that
    * serves an id it no longer holds.
    */
-  async #createSession(input: AgentCaller & { readonly sessionId?: string }): Promise<McpSession> {
+  async #createSession(
+    input: AgentCaller & { readonly origin: URL; readonly sessionId?: string },
+  ): Promise<McpSession> {
     let session!: McpSession;
     const transport = new StreamableHTTPServerTransport(
       input.sessionId
         ? {
-            allowedHosts: [this.#allowedHost],
-            allowedOrigins: [this.#allowedOrigin],
+            allowedHosts: [input.origin.host],
+            allowedOrigins: [input.origin.origin],
             enableDnsRebindingProtection: true,
             enableJsonResponse: true,
           }
         : {
-            allowedHosts: [this.#allowedHost],
-            allowedOrigins: [this.#allowedOrigin],
+            allowedHosts: [input.origin.host],
+            allowedOrigins: [input.origin.origin],
             enableDnsRebindingProtection: true,
             enableJsonResponse: true,
             onsessionclosed: (closedId) => {
@@ -218,6 +245,7 @@ export class OpensteerMcpService {
       throw error;
     }
     session = {
+      origin: input.origin.origin,
       key: input.key,
       kind: input.kind,
       lastSeenAt: Date.now(),
@@ -420,15 +448,15 @@ export class OpensteerMcpService {
     for (const [id] of expired) this.#sessions.delete(id);
     await Promise.allSettled(expired.map(([, session]) => session.server.close()));
   }
+}
 
-  #assertRequestOrigin(request: IncomingMessage): void {
-    if (singleHeader(request.headers.host) !== this.#allowedHost) {
-      throw new Error("MCP request Host is not allowed");
-    }
-    const origin = singleHeader(request.headers.origin);
-    if (origin && origin !== this.#allowedOrigin) {
-      throw new Error("MCP request Origin is not allowed");
-    }
+function assertRequestOrigin(request: IncomingMessage, allowed: URL): void {
+  if (singleHeader(request.headers.host) !== allowed.host) {
+    throw new Error("MCP request Host is not allowed");
+  }
+  const origin = singleHeader(request.headers.origin);
+  if (origin && origin !== allowed.origin) {
+    throw new Error("MCP request Origin is not allowed");
   }
 }
 

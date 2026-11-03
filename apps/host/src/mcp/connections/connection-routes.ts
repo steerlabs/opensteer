@@ -78,8 +78,8 @@ export function registerConnectionRoutes(
       /^Bearer /i.test(header) &&
       header.slice(7).startsWith(connectionCredentialPrefix)
     ) {
-      // This hook also fences an already-open transport; WS-1 resolves the same
-      // bearer to a caller before each tool invocation through the exported authenticator.
+      // This hook also fences an already-open transport; the MCP service
+      // resolves the same bearer to a caller again before each tool call.
       try {
         await oauth.authenticator.authenticate(header.slice(7), origin + mcpResourcePath);
       } catch {
