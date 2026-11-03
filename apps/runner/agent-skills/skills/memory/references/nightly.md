@@ -14,7 +14,7 @@ checkpoint, earlier morning notes and your last weekly review. Only you write th
 ## Curate memory
 
 Read `memory/inbox/`, `memory/forgotten.md`, and the history since your checkpoint of Chat
-(`thread_read` with `threadId: "home"`) and the tasks in its lineage (`thread_list`, then
+(`thread_read` with `threadId: "home"`) and the tasks in its lineage (`thread_list` with `limit: 50` or less, then
 `thread_read` each with new activity); other tasks in Main reach you through the inbox. Turn what
 will still matter into notes: merge what belongs together, replace stale facts, drop what has
 expired, and keep stated facts apart from inferences, with enough date and source to settle
@@ -37,7 +37,8 @@ preferences.
 ## Prepare tomorrow
 
 Check commitments the person or their agents made against real sources such as calendar and
-mail. Prepare for tomorrow's meetings and draft replies that would help; drafts only, never sent.
+mail. Discover connected operations with `integration_search` (`limit: 20` or less), then describe
+and call the relevant operations. Prepare for tomorrow's meetings and draft replies that would help; drafts only, never sent.
 Write morning notes in `memory/passes/nightly.md` for the first light pass after the person
 wakes: what to surface and where the drafts are. Queue to Chat now only what is truly urgent.
 
@@ -63,4 +64,4 @@ person should decide through Chat.
 
 Chat hears from you only through `thread_message` with `threadId: "home"` and `delivery: "queue"`;
 send that only when Chat should tell the person something now. Always end your turn with no reply
-text: any text you end with is a reply to the person.
+text: any assistant text, even before tools, can become the reply to the person.
