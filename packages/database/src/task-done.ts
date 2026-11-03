@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import {
   createId,
   threadInReach,
-  lineageCompatibleForReuse,
   nonTerminalRunStatuses,
   OpensteerError,
   SequenceSchema,
@@ -105,7 +104,7 @@ export async function requireThreadWriteAuthority(
     .select(["inheritsMain", "specialistId", "lineageRootThreadId", "workspaceId"])
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();
-  if (threadInReach(run, target) && lineageCompatibleForReuse(run, target)) return;
+  if (threadInReach(run, target)) return;
   throw new OpensteerError({
     code: "forbidden",
     message: "This task is outside the agent's consent scope",

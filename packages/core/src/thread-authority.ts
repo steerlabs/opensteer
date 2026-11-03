@@ -19,8 +19,11 @@ export function threadReachScope(actor: ReachThread): ThreadReachScope {
   return { kind: "workspace", workspaceId: actor.workspaceId };
 }
 
-export function threadInReach(actor: ReachThread, target: ReachThread): boolean {
-  const scope = threadReachScope(actor);
+export function threadInReach(
+  actor: ReachThread | ThreadReachScope,
+  target: Pick<ReachThread, "workspaceId" | "lineageRootThreadId">,
+): boolean {
+  const scope = "kind" in actor ? actor : threadReachScope(actor);
   switch (scope.kind) {
     case "user":
       return true;

@@ -329,8 +329,8 @@ list changes outside subscribed Workspaces. See
 ### A person's task list
 
 Read positions are private; Done is shared. Done/Reopen require active membership
-and the task's creator or Workspace owner. Agent writes require the same consent reach and lineage-compatible reuse as
-actionable work; membership and ownership still apply. Chat and active
+and the task's creator or Workspace owner. Agent writes require consent reach; membership and ownership still apply.
+Sending actionable work additionally requires lineage-compatible reuse. Chat and active
 channel conversations cannot be Done. The agent `thread_write` tool requires a Runner advertising `task-done-v1`.
 
 Done atomically revalidates and stops the task's open Assignment subtree,

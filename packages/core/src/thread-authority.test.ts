@@ -5,6 +5,7 @@ import {
   threadInReach,
   threadReachScope,
   type ReachThread,
+  type ThreadReachScope,
 } from "./thread-authority.js";
 
 const main = createId("workspace");
@@ -42,6 +43,20 @@ describe("consent reach", () => {
     expect(threadInReach(specialist, thread({ lineageRootThreadId: createId("thread") }))).toBe(
       false,
     );
+  });
+
+  it("checks an explicitly approved connection scope without inventing a Thread lineage", () => {
+    const approved: ThreadReachScope = { kind: "workspace", workspaceId: project };
+    expect(threadInReach(approved, thread())).toBe(true);
+    expect(threadInReach(approved, thread({ workspaceId: otherProject }))).toBe(false);
+    expect(threadInReach({ kind: "user" }, thread({ workspaceId: otherProject }))).toBe(true);
+    expect(threadInReach({ kind: "lineage", lineageRootThreadId: root }, thread())).toBe(true);
+    expect(
+      threadInReach(
+        { kind: "lineage", lineageRootThreadId: root },
+        thread({ lineageRootThreadId: createId("thread") }),
+      ),
+    ).toBe(false);
   });
 
   it("refuses reuse that would borrow Main inheritance or escape a specialist binding", () => {

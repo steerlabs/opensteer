@@ -7,7 +7,6 @@ import {
   assignmentResultMaxBytes,
   createId,
   threadInReach,
-  lineageCompatibleForReuse,
   nonTerminalRunStatuses,
   utf8Prefix,
   type AgentEvent,
@@ -590,7 +589,7 @@ async function requireCancelScope(
     ])
     .where("delegations.id", "=", input.assignmentId)
     .executeTakeFirst();
-  if (!worker || !threadInReach(actor, worker) || !lineageCompatibleForReuse(actor, worker)) {
+  if (!worker || !threadInReach(actor, worker)) {
     throw new OpensteerError({
       code: "forbidden",
       message: "This task is outside the agent's consent scope",
