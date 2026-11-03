@@ -14,12 +14,21 @@ import type {
   BrowserFrameView,
   BrowserSessionSummary,
 } from "@opensteer/client/host";
+import { BrowserCursorStore } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
 
 const native = vi.hoisted(() => ({
   gestures: null as PanResponderCallbacks | null,
+  pointer: null as null | {
+    move?: (event: {
+      nativeEvent: { pointerType: string; buttons: number; offsetX: number; offsetY: number };
+    }) => void;
+    leave?:
+      ((event: { nativeEvent: { pointerType: string; buttons: number } }) => void) | undefined;
+    cursor?: string | undefined;
+  },
   /** The stage's frame, as its view lays out: a fold or resize changes it under a finger. */
   layout: { height: 600, width: 400, x: 0, y: 0 },
   /** The surface's arrangement, as the pane the stream is drawn in reports it. */
@@ -95,17 +104,31 @@ vi.mock("react-native", () => ({
   View: ({
     children,
     onLayout,
+    onPointerMove,
+    onPointerLeave,
+    style,
+    testID,
   }: {
+    testID?: string;
     children?: ReactNode;
+    onPointerMove?: NonNullable<typeof native.pointer>["move"];
+    onPointerLeave?: NonNullable<typeof native.pointer>["leave"];
+    style?: { cursor?: string }[];
     onLayout?: (event: {
       nativeEvent: { layout: { width: number; height: number; x: number; y: number } };
     }) => void;
   }) => {
+    if (onPointerMove)
+      native.pointer = {
+        move: onPointerMove,
+        leave: onPointerLeave,
+        cursor: style?.find((item) => item.cursor)?.cursor,
+      };
     const { height, width, x, y } = native.layout;
     useEffect(() => {
       onLayout?.({ nativeEvent: { layout: { height, width, x, y } } });
     }, [height, onLayout, width, x, y]);
-    return <div>{children}</div>;
+    return <div data-testid={testID}>{children}</div>;
   },
 }));
 
@@ -115,6 +138,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = null;
   native.gestures = null;
+  native.pointer = null;
   native.layout = { height: 600, width: 400, x: 0, y: 0 };
   native.geometry = "side:page@0";
   native.presenter = "image";
@@ -123,6 +147,7 @@ afterEach(() => {
   native.cleared = null;
   native.renders = 0;
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 const surfaceId = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000001");
@@ -162,7 +187,7 @@ function frame(): BrowserFrameView {
     },
   };
 }
-function setup(interactive = true) {
+function setup(interactive = true, cursor?: BrowserCursorStore) {
   // How far the phone has pinched the picture in, read when a drag moves.
   const zoom = { value: 1 };
   let picture: BrowserFrameView | null = null;
@@ -178,6 +203,7 @@ function setup(interactive = true) {
   const demand = { update: vi.fn(), release: vi.fn() };
   const rasterDemand = vi.fn(() => demand);
   const frames: BrowserFrameStore = {
+    ...(cursor ? { cursor } : {}),
     invalidationKey: () => invalidation,
     rasterDemand,
     claim: vi.fn(),
@@ -552,6 +578,21 @@ describe.each(["image", "picture"] as const)(
       expect(onTap).not.toHaveBeenCalled();
     });
 
+    it("discards a terminated touch without sending a remote press or release", async () => {
+      const { decode, emit, onTap, render, send } = setup();
+      render("synchronized");
+      emit();
+      await decode();
+      const { event, gesture } = touch(200, 300);
+      act(() => {
+        native.gestures?.onPanResponderGrant?.(event, gesture);
+        native.gestures?.onPanResponderTerminate?.(event, gesture);
+        native.gestures?.onPanResponderRelease?.(event, gesture);
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(onTap).not.toHaveBeenCalled();
+    });
+
     it("lets go of a press whose release the page refused", async () => {
       const { decode, dropFeed, emit, onTap, render, send } = setup();
       render("synchronized");
@@ -811,4 +852,281 @@ describe.each(["image", "picture"] as const)("passive Run preview on %s", (prese
     expect(preview.container.querySelector("img")).toBeNull();
     expect(preview.watchRelease).toHaveBeenCalledTimes(2);
   });
+});
+
+it("applies iOS link hover only for the current pointer and resets on leave and reconnect", async () => {
+  vi.useFakeTimers();
+  const cursor = new BrowserCursorStore();
+  const { emit, decode, render, send } = setup(true, cursor);
+  try {
+    render("synchronized", true, { documentId: "doc" });
+    emit();
+    await decode();
+    act(() =>
+      native.pointer!.move!({
+        nativeEvent: { pointerType: "mouse", buttons: 0, offsetX: 100, offsetY: 250 },
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    const command = send.mock.calls
+      .map((call) => call[1])
+      .findLast((command) => command.type === "input.pointer");
+    if (command?.type !== "input.pointer" || command.cursorSequence === undefined)
+      throw new Error("No hover point was sent");
+    const hint = {
+      type: "browser.cursor" as const,
+      consumerToken: "00000000-0000-4000-8000-000000000001",
+      surfaceId,
+      cursorSequence: command.cursorSequence,
+      documentId: "doc",
+      geometryRevision: 7,
+      captureRevision: 0,
+      cursor: "pointer" as const,
+    };
+    act(() => cursor.receive(sessionId, hint));
+    expect(native.pointer!.cursor).toBe("pointer");
+    act(() => native.pointer!.leave!({ nativeEvent: { pointerType: "mouse", buttons: 0 } }));
+    expect(
+      send.mock.calls
+        .map(([, command]) => command)
+        .filter((command) => command.type === "input.pointer"),
+    ).toEqual([command, { ...command, action: "leave", cursorSequence: undefined }]);
+    expect(native.pointer!.cursor).toBe("auto");
+    act(() => cursor.receive(sessionId, hint));
+    expect(native.pointer!.cursor).toBe("auto");
+    render("disconnected");
+    expect(native.pointer!.cursor).toBe("auto");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("leaves iPad hover once, discards queued moves, and preserves held buttons and touches", async () => {
+  vi.useFakeTimers();
+  const { emit, decode, render, send } = setup(true, new BrowserCursorStore());
+  render("synchronized");
+  emit();
+  await decode();
+  const move = () =>
+    native.pointer!.move!({
+      nativeEvent: { pointerType: "mouse", buttons: 0, offsetX: 100, offsetY: 250 },
+    });
+  const leave = (buttons = 0) =>
+    native.pointer!.leave!({ nativeEvent: { pointerType: "mouse", buttons } });
+  const pointers = () =>
+    send.mock.calls
+      .map(([, command]) => command)
+      .filter((command) => command.type === "input.pointer");
+  send.mockClear();
+  act(() => {
+    move();
+    leave();
+    leave();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20);
+  });
+  expect(pointers()).toEqual([
+    expect.objectContaining({ action: "leave", button: "none", surfaceId, geometryRevision: 7 }),
+  ]);
+  send.mockClear();
+  act(() => {
+    move();
+    leave(1);
+  });
+  expect(pointers()).toEqual([]);
+  act(() => {
+    move();
+    native.gestures?.onPanResponderStart?.(touch(200, 300).event, touch(200, 300).gesture);
+    leave();
+  });
+  expect(pointers()).toEqual([]);
+});
+
+describe("mobile finger gestures", () => {
+  beforeEach(() => vi.useFakeTimers());
+  const grant = () =>
+    void act(() =>
+      native.gestures?.onPanResponderGrant?.(touch(200, 300).event, touch(200, 300).gesture),
+    );
+  const move = (dy: number) =>
+    void act(() =>
+      native.gestures?.onPanResponderMove?.(
+        touch(200, 300 + dy, 0, dy).event,
+        touch(200, 300 + dy, 0, dy).gesture,
+      ),
+    );
+  const release = () =>
+    void act(() =>
+      native.gestures?.onPanResponderRelease?.(touch(200, 300).event, touch(200, 300).gesture),
+    );
+  async function ready() {
+    const view = setup();
+    view.render("synchronized");
+    view.emit();
+    await view.decode();
+    return view;
+  }
+  it("consumes a long press as secondary click, never as a tap or wheel", async () => {
+    const { send, onTap, container } = await ready();
+    grant();
+    expect(container.querySelector('[data-testid="browser-touch-contact"]')).not.toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    move(-50);
+    release();
+    expect(container.querySelector('[data-testid="browser-touch-contact"]')).toBeNull();
+    expect(send.mock.calls.map(([, command]) => command)).toEqual(
+      ["down", "up"].map((action) => ({
+        ...tapPoint,
+        action,
+        button: "right",
+        clickCount: 1,
+        type: "input.pointer",
+      })),
+    );
+    expect(onTap).not.toHaveBeenCalled();
+  });
+  it.each([
+    "new touch",
+    "pinch",
+    "navigation",
+    "geometry",
+    "background",
+    "disconnect",
+    "rejection",
+    "termination",
+    "unmount",
+  ])("ends fling on %s", async (reason) => {
+    const { send, render, dropFeed } = await ready();
+    grant();
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    move(-20);
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    move(-40);
+    release();
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(send.mock.calls.at(-1)?.[1]).toMatchObject({ type: "input.wheel" });
+    expect(send).toHaveBeenCalledTimes(3);
+    if (reason === "new touch") grant();
+    if (reason === "pinch")
+      void act(() =>
+        native.gestures?.onPanResponderStart?.(
+          { nativeEvent: { touches: [{}, {}] } } as unknown as GestureResponderEvent,
+          touch(0, 0).gesture,
+        ),
+      );
+    if (reason === "navigation") render("synchronized", true, { inputEpoch: "next-document" });
+    if (reason === "geometry") {
+      native.layout.width = 350;
+      render("synchronized");
+    }
+    if (reason === "background") render("synchronized", false);
+    if (reason === "disconnect") render("connecting");
+    if (reason === "rejection") dropFeed();
+    if (reason === "termination")
+      void act(() =>
+        native.gestures?.onPanResponderTerminate?.(touch(200, 300).event, touch(200, 300).gesture),
+      );
+    if (reason === "unmount")
+      act(() => {
+        root?.unmount();
+        root = null;
+      });
+    send.mockClear();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(send.mock.calls.filter(([, command]) => command.type === "input.wheel")).toHaveLength(
+      reason === "rejection" ? 1 : 0,
+    );
+  });
+  it("sends a one-shot Drag/select gesture and cancels a held pointer for two fingers", async () => {
+    const { render, send } = await ready();
+    const onDragEnd = vi.fn();
+    render("synchronized", true, { dragSelect: true, onDragEnd });
+    grant();
+    move(-40);
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    release();
+    expect(send.mock.calls.map(([, command]) => command)).toMatchObject([
+      { type: "input.pointer", action: "down", button: "left" },
+      { type: "input.pointer", action: "move", button: "none", y: 0.36666666666666664 },
+      { type: "input.pointer", action: "up", button: "left" },
+    ]);
+    expect(onDragEnd).toHaveBeenCalledOnce();
+    send.mockClear();
+    grant();
+    void act(() =>
+      native.gestures?.onPanResponderStart?.(
+        { nativeEvent: { touches: [{}, {}] } } as unknown as GestureResponderEvent,
+        touch(0, 0).gesture,
+      ),
+    );
+    move(-20);
+    release();
+    expect(send.mock.calls.map(([, command]) => command.type)).toEqual([
+      "input.pointer",
+      "input.cancel",
+    ]);
+  });
+});
+
+// Drag coordinates follow local zoom, while wheel distance still follows screen movement.
+it("maps precision dragging through the Expo picture's local zoom and clamps an off-picture release", async () => {
+  const { decode, emit, render, send, zoom } = setup();
+  render("synchronized", true, { dragSelect: true });
+  emit();
+  await decode();
+  zoom.value = 2;
+  act(() => {
+    native.gestures?.onPanResponderGrant?.(touch(200, 300).event, touch(200, 300).gesture);
+    native.gestures?.onPanResponderMove?.(
+      touch(200, 260, 0, -40).event,
+      touch(200, 260, 0, -40).gesture,
+    );
+    native.gestures?.onPanResponderMove?.(
+      touch(200, -1000, 0, -1300).event,
+      touch(200, -1000, 0, -1300).gesture,
+    );
+    native.gestures?.onPanResponderRelease?.(touch(200, -1000).event, touch(200, -1000).gesture);
+  });
+  expect(send.mock.calls.map(([, command]) => command)).toMatchObject([
+    { action: "down", x: 0.5, y: 0.5 },
+    { action: "move", y: 13 / 30 },
+    { action: "move", y: 0 },
+    { action: "up", y: 0 },
+  ]);
+});
+
+it("discards queued iPad hover when the stage moves without resizing", async () => {
+  vi.useFakeTimers();
+  const { emit, decode, render, send } = setup(true, new BrowserCursorStore());
+  render("synchronized", true, { documentId: "doc" });
+  emit();
+  await decode();
+  send.mockClear();
+  act(() =>
+    native.pointer!.move!({
+      nativeEvent: { pointerType: "mouse", buttons: 0, offsetX: 100, offsetY: 250 },
+    }),
+  );
+  native.layout.x = 10;
+  render("synchronized", true, { documentId: "doc" });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(20);
+  });
+  expect(send.mock.calls.map(([, command]) => command.type)).toEqual(["cursor.reset"]);
 });

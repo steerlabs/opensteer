@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { ModelSelectionSchema, harnessRuntimeExpectedVersion } from "@opensteer/core";
+import { ModelSelectionSchema } from "@opensteer/core";
 import { parseCases } from "./cases.js";
 import { grade } from "./grader.js";
 import {
@@ -15,7 +15,7 @@ import {
   summary,
   type ComparableRow,
 } from "./report.js";
-import { prepareEngine, runEngine, type Engine } from "./engine.js";
+import { engineVersion, prepareEngine, runEngine, type Engine } from "./engine.js";
 import { startFakeHost } from "./host.js";
 
 const checkout = resolve(import.meta.dirname, "../..");
@@ -131,7 +131,7 @@ async function main() {
       engine,
       accessMode: "full-access",
       runtimeBoundary: "isolated-service",
-      engineVersion: harnessRuntimeExpectedVersion(engine),
+      engineVersion: await engineVersion(engine),
       model: selection.modelId,
       providerId: selection.providerId,
       ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}),
@@ -196,6 +196,8 @@ async function main() {
             let engineClose: (() => Promise<void>) | undefined;
             let host: Awaited<ReturnType<typeof startFakeHost>> | undefined;
             let finalText = "";
+            let assistantText = "";
+            let earlierText = "";
             const usage: unknown[] = [];
             const nativeCalls: unknown[] = [];
             let treatment = { prompt: "unavailable", schema: "unavailable" };
@@ -219,17 +221,21 @@ async function main() {
                 checkout,
                 signal: AbortSignal.any([stop.signal, AbortSignal.timeout(180_000)]),
                 onTurnStart: () => {
+                  earlierText += assistantText;
                   finalText = "";
+                  assistantText = "";
                   nativeCalls.splice(0);
                 },
                 onEvent: async (event) => {
                   await transcript.write(`${JSON.stringify(event)}\n`);
                   if (event.type === "run.usage") usage.push(event.data);
                   if (event.type === "tool.started") nativeCalls.push(event.data);
-                  if (event.type === "assistant.message")
+                  if (event.type === "assistant.message") {
                     finalText = event.data.content
                       .flatMap((part) => (part.type === "text" ? [part.text] : []))
                       .join("\n");
+                    assistantText += finalText;
+                  }
                 },
               });
               finalText = result.finalText;
@@ -253,7 +259,7 @@ async function main() {
               }
             }
             const calls = host?.calls ?? [];
-            const checks = grade(c.expect, calls, finalText);
+            const checks = grade(c.expect, calls, finalText, assistantText, earlierText);
             const row = {
               caseId: c.id,
               sample,

@@ -1,4 +1,9 @@
-import { SessionCdpRouter, SessionCdpRouterError, type CdpCommand } from "@opensteer/browser-core";
+import {
+  SessionCdpRouter,
+  SessionCdpRouterError,
+  type CdpCommand,
+  type CdpChannel,
+} from "@opensteer/browser-core";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import type { InitialNavigation, InitialPageReady } from "@opensteer/protocol";
 import {
@@ -42,6 +47,7 @@ import {
   editingCommandParameters,
   editingModifiers,
 } from "./editing-commands.js";
+import { PageCursorHints } from "./cursor-hints.js";
 import { PageEditingObserver } from "./editing-observer.js";
 import type { HostSignIns } from "./host-sign-ins.js";
 import { BrowserInputLane } from "./input-lane.js";
@@ -161,6 +167,9 @@ const screenshotClip = z.object({
  * which page and point to release.
  */
 interface PointerGesture {
+  readonly cdp: CdpChannel;
+  /** Resize and departure may converge while CDP is acknowledging cleanup. */
+  cleanup: Promise<void> | null;
   readonly buttons: Set<PointerButton>;
   /** Released by anything other than the person's own pointer-up. */
   ended: boolean;
@@ -172,6 +181,32 @@ interface PointerGesture {
 }
 
 export class BrowserController {
+  private readonly cursorHints = new Map<
+    BrowserSurfaceId,
+    { hints: PageCursorHints; unsubscribe: () => void }
+  >();
+  private cursorAgentCommands = 0;
+  private cursorObserver(surfaceId: BrowserSurfaceId): PageCursorHints | null {
+    let entry = this.cursorHints.get(surfaceId);
+    if (entry) return entry.hints;
+    const binding = this.ledger.binding(surfaceId);
+    if (!binding || this.closed || this.closePromise) return null;
+    const hints = new PageCursorHints(
+      binding.cdp,
+      (hint) => {
+        if (!this.closed)
+          void this.send({ type: "browser.cursor", surfaceId, ...hint }).catch(() => undefined);
+      },
+      binding.page.cursor,
+    );
+    entry = {
+      hints,
+      unsubscribe: binding.page.capture?.subscribe(() => hints.invalidate()) ?? (() => {}),
+    };
+    this.cursorHints.set(surfaceId, entry);
+    return hints;
+  }
+
   private readonly openOperations = new Set<AbortController>();
   private readonly verifyOpenAuthority: BrowserControllerOptions["verifyOpenAuthority"];
   private readonly editing: boolean;
@@ -190,7 +225,10 @@ export class BrowserController {
       ...(message.consumerToken ? { consumerToken: message.consumerToken } : {}),
     }),
   );
-  private readonly menuConsumers = new Map<BrowserSurfaceId, { consumerToken: string }>();
+  private readonly menuConsumers = new Map<
+    BrowserSurfaceId,
+    { consumerToken: string; release: string }
+  >();
   private readonly editingCounters: Record<string, number> = {};
 
   private readonly targetedCasts = new Map<
@@ -257,6 +295,7 @@ export class BrowserController {
   private readonly keyOwners = new Map<BrowserSurfaceId, string>();
   private readonly lanes = new Map<BrowserSurfaceId, BrowserInputLane>();
   private readonly canceledGenerations = new Map<string, number>();
+  private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
   private readonly laneGeometries = new Map<BrowserSurfaceId, number>();
   /** Each actor's cursor on each page, least recently used first. */
@@ -525,6 +564,11 @@ export class BrowserController {
   }
 
   close(): Promise<void> {
+    for (const entry of this.cursorHints.values()) {
+      entry.unsubscribe();
+      entry.hints.close();
+    }
+    this.cursorHints.clear();
     for (const opening of this.openOperations)
       opening.abort(new BrowserRuntimeError("conflict", "The browser session closed."));
     this.openOperations.clear();
@@ -622,7 +666,23 @@ export class BrowserController {
         this.targetedCasts.get(message.surfaceId)?.cast.setRasterDemand(message.density) ??
         Promise.resolve()
       );
-    if (message.type === "cdp.command") this.clipboard?.invalidate();
+    if (message.type === "cursor.query" || message.type === "cursor.reset") {
+      const hints = this.cursorHints.get(message.surfaceId)?.hints;
+      if (message.producerId) {
+        if (message.type === "cursor.reset") hints?.invalidate(message.producerId);
+        else hints?.refresh(message.producerId, message.cursorSequence, message.pointSequence);
+      }
+      return Promise.resolve();
+    }
+    if (message.type.startsWith("input."))
+      for (const entry of this.cursorHints.values())
+        entry.hints.invalidateOther(inputProducer(message));
+    if (message.type === "input.cancel")
+      for (const entry of this.cursorHints.values()) entry.hints.invalidate(message.producerId);
+    if (message.type === "cdp.command") {
+      this.clipboard?.invalidate();
+      for (const entry of this.cursorHints.values()) entry.hints.invalidate();
+    }
 
     if (
       message.type === "surface.activate" ||
@@ -640,19 +700,9 @@ export class BrowserController {
     )
       return this.run(message);
     if (message.type === "cdp.command" && message.command.method === "Target.detachFromTarget") {
-      // Detach ends the router channel and releases commands still waiting in it.
-      const producer = inputProducer(message);
-      for (const [surfaceId, lane] of this.lanes) {
-        lane.cancel((entry) => inputProducer(entry) === producer);
-        void lane.enqueue({ type: "input.cancel", producerId: producer }, true);
-        if (
-          this.liveGesture(surfaceId)?.owner === producer ||
-          this.keyOwners.get(surfaceId) === producer
-        )
-          void lane.idle().catch(() => undefined);
-      }
-      return this.run(message);
+      return this.detachAgent(message);
     }
+
     if (message.type === "dialog.respond" || isDialogAnswer(message)) {
       // An open dialog stops its page from answering anything else, a size
       // write or a click included; an answer never waits behind what it frees.
@@ -705,12 +755,54 @@ export class BrowserController {
           return this.refuseInput(message, "browser-input-overload");
         this.cleanupReservations.add(reservation);
       }
+      const resumeCursor =
+        message.type === "input.wheel" || message.type === "input.key"
+          ? this.cursorHints.get(surfaceId)?.hints.pause()
+          : undefined;
       return lane.enqueue(message, cleanup).finally(() => {
+        resumeCursor?.();
         if (release && reservation) this.cleanupReservations.delete(reservation);
       });
     }
     const queue = isCdpRequest(message) ? this.agentCommands : this.viewerCommands;
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
+  }
+
+  private async detachAgent(
+    message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
+  ): Promise<void> {
+    const producer = inputProducer(message);
+    const cleanups = this.cancelProducerOperations({ type: "input.cancel", producerId: producer });
+    await Promise.all(cleanups.map(({ surfaceId, done }) => this.untilDialog(surfaceId, done)));
+    const holdsInput = () =>
+      [...this.gestures.values()].some((gesture) => gesture.owner === producer && !gesture.ended) ||
+      [...this.keyOwners.values()].includes(producer);
+    if (holdsInput()) {
+      // Keep the originating Input handler alive until cleanup finishes, then
+      // finish the requested detach without replying to the same request twice.
+      void Promise.all(cleanups.map(({ done }) => done))
+        .then(async () => {
+          if (!holdsInput())
+            await this.cdpRouter.send(this.claims.sessionId, {
+              method: message.command.method,
+              parameters: message.command.parameters ?? {},
+              ...(message.command.sessionId === undefined
+                ? {}
+                : { sessionId: message.command.sessionId }),
+            });
+        })
+        .catch(() => undefined);
+      await this.send({
+        type: "cdp.error",
+        requestId: message.requestId,
+        error: new BrowserRuntimeError(
+          "conflict",
+          "Browser input cleanup failed; the CDP session remains attached.",
+        ).toProtocolError(),
+      });
+      return;
+    }
+    await this.run(message);
   }
 
   private inputLane(surfaceId: BrowserSurfaceId): BrowserInputLane {
@@ -761,7 +853,11 @@ export class BrowserController {
       return null;
     }
     if (message.type !== "input.pointer" && message.type !== "input.key") return null;
-    if (message.type === "input.pointer" && message.action === "move") return null;
+    if (
+      message.type === "input.pointer" &&
+      (message.action === "move" || message.action === "leave")
+    )
+      return null;
     return JSON.stringify([
       surfaceId,
       inputProducer(message),
@@ -844,24 +940,28 @@ export class BrowserController {
   private async cancelProducer(
     message: Extract<BrowserClientMessage, { type: "input.cancel" }>,
   ): Promise<void> {
+    await Promise.all(this.cancelProducerOperations(message).map(({ done }) => done));
+  }
+
+  private cancelProducerOperations(
+    message: Extract<BrowserClientMessage, { type: "input.cancel" }>,
+  ): { surfaceId: BrowserSurfaceId; done: Promise<void> }[] {
     const producer = inputProducer(message);
     this.clipboardParts.cancel(message.producerId);
     this.canceledGenerations.set(producer, message.inputGeneration ?? 0);
     if (this.canceledGenerations.size > 256)
       this.canceledGenerations.delete(this.canceledGenerations.keys().next().value!);
-    await Promise.all(
-      [...this.lanes].map(async ([surfaceId, lane]) => {
-        if (message.surfaceId && message.surfaceId !== surfaceId) return;
-        const concerned =
-          lane.contains(
-            (entry) => inputProducer(entry) === producer && entry.type !== "viewport.follow",
-          ) ||
-          this.liveGesture(surfaceId)?.owner === producer ||
-          this.keyOwners.get(surfaceId) === producer;
-        lane.cancel((entry) => inputProducer(entry) === producer);
-        if (concerned) await lane.enqueue(message, true);
-      }),
-    );
+    return [...this.lanes].flatMap(([surfaceId, lane]) => {
+      if (message.surfaceId && message.surfaceId !== surfaceId) return [];
+      const concerned =
+        lane.contains(
+          (entry) => inputProducer(entry) === producer && entry.type !== "viewport.follow",
+        ) ||
+        this.liveGesture(surfaceId)?.owner === producer ||
+        this.keyOwners.get(surfaceId) === producer;
+      lane.cancel((entry) => inputProducer(entry) === producer);
+      return concerned ? [{ surfaceId, done: lane.enqueue(message, true) }] : [];
+    });
   }
 
   private enqueueFailure(error: BrowserRuntimeError): Promise<void> {
@@ -1091,13 +1191,32 @@ export class BrowserController {
     admittedSurface: BrowserSurfaceId | null,
   ): Promise<void> {
     await this.clipboard?.finish();
-    if (admittedSurface && !(message.type === "input.pointer" && message.button === "right"))
-      this.menuConsumers.delete(admittedSurface);
+    if (admittedSurface) {
+      const owner = this.menuConsumers.get(admittedSurface);
+      const release =
+        message.type === "input.pointer"
+          ? `pointer:${message.button}`
+          : message.type === "input.key"
+            ? `key:${message.code || message.key}`
+            : null;
+      if (
+        !owner ||
+        !(message.type === "input.pointer" || message.type === "input.key") ||
+        message.action !== "up" ||
+        owner.release !== release ||
+        owner.consumerToken !== message.consumerToken
+      )
+        this.menuConsumers.delete(admittedSurface);
+    }
     if (this.editing)
       this.editingCounters[message.type] = (this.editingCounters[message.type] ?? 0) + 1;
     if (message.type === "input.cancel") {
       this.clipboardParts.cancel(message.producerId);
       if (admittedSurface) await this.releaseSurface(admittedSurface, inputProducer(message));
+      return;
+    }
+    if (message.type === "input.pointer" && message.action === "leave") {
+      await this.leavePointer(message.surfaceId, inputProducer(message));
       return;
     }
     if (
@@ -1457,14 +1576,14 @@ export class BrowserController {
           ),
         );
     }
-    if (
-      this.editing &&
-      message.type === "input.pointer" &&
-      message.action === "down" &&
-      message.button === "right" &&
-      message.consumerToken
-    )
-      this.menuConsumers.set(active.surface.id, { consumerToken: message.consumerToken });
+    if (this.editing && contextMenuTrigger(message, this.platform) && message.consumerToken)
+      this.menuConsumers.set(active.surface.id, {
+        consumerToken: message.consumerToken,
+        release:
+          message.type === "input.pointer"
+            ? `pointer:${message.button}`
+            : `key:${message.code || message.key}`,
+      });
 
     if (message.type === "navigation.go") {
       this.ledger.recordHumanActivity(active.surface.id, { kind: "navigation" });
@@ -1803,6 +1922,8 @@ export class BrowserController {
     if (message.action === "up" && !(button && gesture?.buttons.has(button))) return;
     if (message.action === "down" && button) {
       gesture ??= {
+        cdp: binding.cdp,
+        cleanup: null,
         buttons: new Set(),
         ended: false,
         surfaceId: message.surfaceId,
@@ -1832,9 +1953,35 @@ export class BrowserController {
         x: point.x,
         y: point.y,
       });
+    const hints =
+      message.cursorSequence === undefined
+        ? this.cursorHints.get(message.surfaceId)?.hints
+        : this.cursorObserver(message.surfaceId);
+    const settleCursor =
+      message.producerId &&
+      message.cursorSequence !== undefined &&
+      (!binding.page.capture || message.captureRevision !== undefined) &&
+      message.geometryRevision !== undefined &&
+      binding.surface.documentId &&
+      this.cursorAgentCommands === 0
+        ? hints?.point(
+            {
+              consumerToken: message.producerId,
+              cursorSequence: message.cursorSequence,
+              documentId: binding.surface.documentId,
+              geometryRevision: message.geometryRevision,
+              captureRevision: message.captureRevision ?? 0,
+              x: point.x,
+              y: point.y,
+            },
+            true,
+          )
+        : (hints?.invalidate(), undefined);
     try {
       this.recordPasskeyInput(message, message.surfaceId);
-      await binding.cdp.send("Input.dispatchMouseEvent", {
+      const cdp = gesture?.cdp ?? binding.cdp;
+      this.hoverOwners.set(message.surfaceId, { owner: inputProducer(message), cdp });
+      await cdp.send("Input.dispatchMouseEvent", {
         button: effectiveButton,
         buttons: pressedButtonMask(held),
         modifiers: editingModifiers(message.modifiers ?? [], this.platform, !this.editing),
@@ -1848,11 +1995,13 @@ export class BrowserController {
         x: point.x,
         y: point.y,
       });
+      settleCursor?.();
       if (gesture && message.action === "up" && button) {
         gesture.buttons.delete(button);
         if (!gesture.buttons.size) this.gestures.delete(message.surfaceId);
       }
     } catch (error) {
+      hints?.invalidate();
       if (!this.ledger.binding(message.surfaceId)) this.gestures.delete(message.surfaceId);
       throw error;
     }
@@ -1966,15 +2115,29 @@ export class BrowserController {
     await this.releaseSurface(surfaceId);
   }
 
-  private async endGesture(gesture: PointerGesture): Promise<void> {
-    if (gesture.ended) return;
+  private endGesture(gesture: PointerGesture): Promise<void> {
+    if (gesture.ended) return Promise.resolve();
+    if (gesture.cleanup) return gesture.cleanup;
+    const cleanup = this.endGestureOnce(gesture);
+    gesture.cleanup = cleanup;
+    void cleanup.catch(() => {
+      if (gesture.cleanup === cleanup) gesture.cleanup = null;
+    });
+    return cleanup;
+  }
+
+  private async endGestureOnce(gesture: PointerGesture): Promise<void> {
     const binding = this.ledger.binding(gesture.surfaceId);
-    if (binding)
+    if (binding) {
+      // HTML DnD must end without a drop. This cannot undo changes a slider or
+      // canvas already made during movement; no synthetic DOM cancel is sent.
+      if (gesture.cdp.cancelDragging) await gesture.cdp.cancelDragging();
+      else await gesture.cdp.send("Input.cancelDragging");
       for (const button of gesture.buttons) {
         const remaining = new Set(gesture.buttons);
         remaining.delete(button);
         // Keep ownership fenced until a live target actually acknowledges cleanup.
-        await binding.cdp.send("Input.dispatchMouseEvent", {
+        await gesture.cdp.send("Input.dispatchMouseEvent", {
           button,
           buttons: pressedButtonMask(remaining),
           clickCount: 1,
@@ -1984,13 +2147,29 @@ export class BrowserController {
         });
         gesture.buttons.delete(button);
       }
+    }
     gesture.ended = true;
     this.gestures.delete(gesture.surfaceId);
+  }
+
+  private async leavePointer(surfaceId: BrowserSurfaceId, owner: string): Promise<void> {
+    const hover = this.hoverOwners.get(surfaceId);
+    if (!hover || hover.owner !== owner || this.liveGesture(surfaceId)) return;
+    if (this.ledger.binding(surfaceId))
+      await hover.cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        button: "none",
+        buttons: 0,
+        x: -1,
+        y: -1,
+      });
+    this.hoverOwners.delete(surfaceId);
   }
 
   private trackAgentInput(
     surfaceId: BrowserSurfaceId,
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
+    command: CdpCommand,
   ): () => void {
     const { method, parameters: p } = message.command;
     if (method === "Input.dispatchMouseEvent") {
@@ -2004,9 +2183,13 @@ export class BrowserController {
         .safeParse(p);
       if (!parsed.success) return () => undefined;
       const { type, x, y, button } = parsed.data;
+      const cdp = this.cdpRouter.inputChannel(this.claims.sessionId, command);
+      this.hoverOwners.set(surfaceId, { owner: inputProducer(message), cdp });
       let gesture = this.liveGesture(surfaceId);
       if (type === "mousePressed" && button && button !== "none") {
         gesture ??= {
+          cdp,
+          cleanup: null,
           surfaceId,
           owner: inputProducer(message),
           generation: message.inputGeneration ?? 0,
@@ -2172,6 +2355,7 @@ export class BrowserController {
       ).catch(() => undefined);
     if (this.editing && event.type === "changed" && event.change !== "closed")
       void this.editingObserver(event.surface.id).catch(() => undefined);
+    if (event.type === "geometry") this.cursorHints.get(event.surfaceId)?.hints.invalidate();
     if (event.type === "geometry") this.observers.get(event.surfaceId)?.observer.refresh();
     if (event.type === "closed" || event.type === "geometry") return;
     if (
@@ -2194,10 +2378,14 @@ export class BrowserController {
     }
     if (event.type === "changed" && event.change === "closed") {
       const surfaceId = event.surface.id;
+      this.cursorHints.get(surfaceId)?.unsubscribe();
+      this.cursorHints.get(surfaceId)?.hints.close();
+      this.cursorHints.delete(surfaceId);
       this.observers.get(surfaceId)?.unsubscribeCapture();
       void this.observers.get(surfaceId)?.observer.close();
       this.observers.delete(surfaceId);
       this.menuConsumers.delete(surfaceId);
+      this.hoverOwners.delete(surfaceId);
       const lane = this.lanes.get(surfaceId);
       lane?.cancel(() => true);
       this.laneGeometries.delete(surfaceId);
@@ -2295,11 +2483,14 @@ export class BrowserController {
   private async dispatchAgentCommand(
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
+    this.cursorAgentCommands++;
+    for (const entry of this.cursorHints.values()) entry.hints.invalidate();
     const finish = this.clipboard?.agentStarted();
     try {
       await this.dispatchAgentCommandInScope(message);
     } finally {
       finish?.();
+      this.cursorAgentCommands--;
     }
   }
 
@@ -2345,7 +2536,7 @@ export class BrowserController {
     const tabUrl = command.method === "Target.createTarget" ? this.admittedTabUrl(command) : null;
     const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
     const settleInput = pageSurfaceId
-      ? this.trackAgentInput(pageSurfaceId, message)
+      ? this.trackAgentInput(pageSurfaceId, message, command)
       : () => undefined;
     const actorToken = message.actorToken;
     if (actorToken && pageSurfaceId && pointerInputMethods.has(command.method))
@@ -3029,3 +3220,21 @@ const editingMessageKinds = new Set([
   "clipboard.paste-data",
   "clipboard.part",
 ]);
+
+function contextMenuTrigger(
+  message: BrowserClientMessage,
+  platform: NodeJS.Platform,
+): message is Extract<BrowserClientMessage, { type: "input.pointer" | "input.key" }> {
+  if (message.type === "input.pointer")
+    return (
+      message.action === "down" &&
+      (message.button === "right" ||
+        (platform === "darwin" &&
+          message.button === "left" &&
+          message.modifiers?.includes("control") === true))
+    );
+  if (message.type !== "input.key" || message.action !== "down") return false;
+  return (
+    message.key === "ContextMenu" || (message.key === "F10" && message.modifiers.includes("shift"))
+  );
+}

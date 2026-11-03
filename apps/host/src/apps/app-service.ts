@@ -490,6 +490,6 @@ function publicationResult(result: { readonly appId: string; readonly version: n
     appId: result.appId,
     version: result.version,
     message:
-      "The app is already shown inline to the person. Do not restate its contents in your reply.",
+      "The app is shown inline in this Thread. Do not restate its contents; refer to it by title or appId.",
   };
 }

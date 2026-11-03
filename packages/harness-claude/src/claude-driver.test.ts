@@ -771,7 +771,7 @@ describe("Claude Agent SDK harness", () => {
       "mcp__opensteer__thread_list",
       "mcp__opensteer__thread_delegate",
       "mcp__opensteer__assignment_cancel",
-      "mcp__opensteer__person_notify",
+      "mcp__opensteer__person_message",
       "mcp__opensteer__person_show",
       "mcp__opensteer__thread_message",
       "mcp__opensteer__thread_write",

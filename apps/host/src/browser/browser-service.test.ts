@@ -5658,6 +5658,7 @@ async function startFakeRuntime(
     readonly beforeInitialSnapshot?: readonly Record<string, unknown>[];
     readonly deferInitialSnapshot?: boolean;
     readonly initialDialog?: Record<string, unknown> | null;
+    readonly inputLanes?: boolean;
     readonly targetedStreaming?: boolean;
     readonly navigationAttribution?: boolean;
     readonly navigation?: boolean;
@@ -5734,6 +5735,7 @@ async function startFakeRuntime(
           ...(claims.navigationAttributionVersion === 1 && options.navigationAttribution !== false
             ? { navigationAttributionVersion: 1 }
             : {}),
+          ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {
@@ -6252,3 +6254,84 @@ it.each([true, false])(
     await service.close();
   },
 );
+
+it("delivers cursor hints only to their controller and refuses Watch cursor queries", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { inputLanes: true });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const service = freshService({
+    keys,
+    runtime,
+    repository: new MemoryBrowserRepository(ownerId, workspaceId),
+  });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "cursor-hints",
+    fresh: true,
+  });
+  const first = new RecordingPeer("cursor-first"),
+    second = new RecordingPeer("cursor-second"),
+    watch = new RecordingPeer("cursor-watch");
+  const controller = await service.attach(ownerId, opened.session.id, first, consumerOptions());
+  const other = await service.attach(ownerId, opened.session.id, second, consumerOptions());
+  const watching = await service.attach(ownerId, opened.session.id, watch, {
+    ...consumerOptions(),
+    mode: "watch",
+  });
+  try {
+    await controller.handle(
+      Buffer.from(
+        JSON.stringify({
+          type: "input.pointer",
+          surfaceId: "page-1",
+          action: "move",
+          button: "none",
+          x: 0.5,
+          y: 0.5,
+          viewportWidth: 1280,
+          viewportHeight: 720,
+          cursorSequence: 3,
+        }),
+      ),
+      false,
+    );
+    const command = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "browser.cursor",
+      surfaceId: "page-1",
+      consumerToken: command.producerId,
+      cursorSequence: 3,
+      documentId: "doc",
+      geometryRevision: 0,
+      captureRevision: 0,
+      cursor: "pointer",
+    });
+    await vi.waitFor(
+      () => expect(first.text().some((message) => message.type === "browser.cursor")).toBe(true),
+      { timeout: 1000 },
+    );
+    expect(second.text().some((message) => message.type === "browser.cursor")).toBe(false);
+    expect(watch.text().some((message) => message.type === "browser.cursor")).toBe(false);
+    const before = runtime.receivedCommands().length;
+    await expect(
+      watching.handle(
+        Buffer.from(
+          JSON.stringify({
+            type: "cursor.query",
+            surfaceId: "page-1",
+            cursorSequence: 3,
+            pointSequence: 3,
+          }),
+        ),
+        false,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(runtime.receivedCommands()).toHaveLength(before);
+  } finally {
+    controller.close();
+    other.close();
+    watching.close();
+  }
+});

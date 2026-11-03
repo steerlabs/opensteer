@@ -1,3 +1,4 @@
+import { BrowserCursorStore } from "../host/browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
@@ -3451,6 +3452,11 @@ export class MockHostClient implements HostClient {
   readonly listApprovedComputerApps: HostClient["listApprovedComputerApps"];
   readonly #ownerViews: MockComputerViews;
   readonly #browserPresentationScope = {};
+  readonly #browserCursor = new BrowserCursorStore();
+  readonly #cursorPoints = new Map<
+    string,
+    Extract<import("@opensteer/protocol/browser").BrowserServerMessage, { type: "browser.cursor" }>
+  >();
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly rpc: HostApiClient;
@@ -3600,7 +3606,7 @@ export class MockHostClient implements HostClient {
           listener,
         ),
     };
-    this.browserFrames = frames;
+    this.browserFrames = { ...frames, cursor: this.#browserCursor };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
     this.#tabGroups = new BrowserTabGroupClient(
@@ -4564,6 +4570,38 @@ export class MockHostClient implements HostClient {
   }
 
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void {
+    if (command.type === "cursor.reset" || command.type === "input.cancel") {
+      if (command.surfaceId)
+        this.#cursorPoints.delete(JSON.stringify([sessionId, command.surfaceId]));
+      if (command.type === "cursor.reset") return;
+    }
+    if (command.type === "cursor.query") {
+      const point = this.#cursorPoints.get(JSON.stringify([sessionId, command.surfaceId]));
+      if (point && point.cursorSequence === command.pointSequence)
+        this.#browserCursor.receive(sessionId, {
+          ...point,
+          cursorSequence: command.cursorSequence,
+        });
+      return;
+    }
+    if (command.type === "input.pointer" && command.cursorSequence !== undefined) {
+      const hint = {
+        type: "browser.cursor" as const,
+        surfaceId: command.surfaceId,
+        consumerToken: "00000000-0000-4000-8000-000000000001",
+        cursorSequence: command.cursorSequence,
+        documentId:
+          this.getSnapshot()
+            .browserSessions.find((session) => session.id === sessionId)
+            ?.tabs.find((tab) => tab.id === command.surfaceId)?.documentId ?? "mock-document",
+        geometryRevision: command.geometryRevision ?? 0,
+        captureRevision: command.captureRevision ?? 0,
+        cursor: "default" as const,
+      };
+      this.#cursorPoints.set(JSON.stringify([sessionId, command.surfaceId]), hint);
+      this.#browserCursor.receive(sessionId, hint);
+    }
+
     if (
       command.type === "navigation.reload" &&
       command.ignoreCache !== undefined &&

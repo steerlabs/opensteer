@@ -621,6 +621,7 @@ export interface WorkspaceFilePreview {
 }
 
 export interface BrowserTabSummary {
+  documentId?: string | undefined;
   active: boolean;
   /** The site's icon as a data URL, while the page names one that loads. */
   favicon?: string | undefined;
@@ -683,6 +684,7 @@ export interface BrowserRasterDemand {
 }
 
 export interface BrowserFrameStore {
+  readonly cursor?: import("./browser-cursor.js").BrowserCursorStore;
   /** Changes only when previously displayed pixels lose authorization. */
   readonly invalidationKey?: (sessionId: string, surfaceId: string) => string | number;
   readonly editing?: BrowserEditingStore;

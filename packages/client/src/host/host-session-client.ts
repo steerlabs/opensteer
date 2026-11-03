@@ -1,3 +1,4 @@
+import { BrowserCursorStore } from "./browser-cursor.js";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
@@ -644,6 +645,7 @@ export class HttpHostClient {
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
     (sessionId, message, surfaceId) => {
+      this.#browserCursor.receive(sessionId, message);
       this.browserPasskeys.receive(sessionId, surfaceId, message);
       if (message.type === "browser.snapshot")
         this.#browserEditing.negotiate(
@@ -1321,6 +1323,7 @@ export class HttpHostClient {
 
   readonly getSnapshot = (): HostSnapshot => this.#snapshot;
 
+  readonly #browserCursor = new BrowserCursorStore();
   readonly #browserEditing = new BrowserEditingStore(
     (sessionId, surfaceId, command) => {
       if (this.#targetedControl.has(sessionId, surfaceId))
@@ -1333,6 +1336,7 @@ export class HttpHostClient {
   readonly browserFrames: BrowserFrameStore = {
     invalidationKey: this.#targetedControl.invalidationKey,
     editing: this.#browserEditing,
+    cursor: this.#browserCursor,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
       if (surfaceId) this.#targetedControl.claim(sessionId, surfaceId, token);
@@ -5589,7 +5593,10 @@ export class HttpHostClient {
       this.#patchBrowserSession(sessionId, { dialog: message.dialog });
       return;
     }
-    if (channel.mode === "control") this.#browserEditing.receive(sessionId, message);
+    if (channel.mode === "control") {
+      this.#browserEditing.receive(sessionId, message);
+      this.#browserCursor.receive(sessionId, message);
+    }
     if (message.type === "browser.surfaces.changed") {
       assertBrowserDialogSurface(session.dialog, message.surfaces);
       // A new title or address is the same picture; another tab coming
@@ -6854,7 +6861,8 @@ function withNewerComputerPresence(
 function browserTabs(
   surfaces: Extract<BrowserServerMessage, { type: "browser.snapshot" }>["surfaces"],
 ): BrowserSessionSummary["tabs"] {
-  return surfaces.map(({ active, favicon, id, loading, sizedByAgent, title, url }) => ({
+  return surfaces.map(({ active, documentId, favicon, id, loading, sizedByAgent, title, url }) => ({
+    documentId,
     active,
     favicon,
     id,

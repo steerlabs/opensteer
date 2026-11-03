@@ -627,6 +627,7 @@ describe("agent CDP boundary", () => {
       ["Network.getRequestPostData", { requestId: "1" }],
       ["Network.loadNetworkResource", { options: {}, url: "https://other.example/" }],
       ["Network.setExtraHTTPHeaders", { headers: {} }],
+      ["Input.cancelDragging"],
       ["Fetch.enable", { patterns: [{ urlPattern: "*" }] }],
       ["Storage.getCookies"],
       ["Storage.getUsageAndQuota", { origin: "https://other.example" }],

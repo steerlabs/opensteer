@@ -38,6 +38,8 @@ export interface NativeEditingProxyHandle {
 /** Browser, phone and Mac viewers feed the same native event adapter. */
 export function NativeEditingProxy({
   context,
+  focused = context?.field != null,
+  softKeyboard = true,
   sendOperation,
   onDone,
   cancelCompositionOnBlur = false,
@@ -46,6 +48,8 @@ export function NativeEditingProxy({
   ref,
 }: {
   readonly context: EditingContext | null;
+  readonly focused?: boolean;
+  readonly softKeyboard?: boolean;
   readonly sendOperation: (operation: EditingOperation) => boolean;
   readonly cancelCompositionOnBlur?: boolean;
   readonly onDone: () => void;
@@ -107,7 +111,8 @@ export function NativeEditingProxy({
         <RemoteTextInput
           accessibilityLabel={label}
           context={context}
-          focused={context?.field != null}
+          focused={focused}
+          softKeyboard={softKeyboard}
           instruction={instruction}
           finishCompositionRequest={finishCompositionRequest}
           onError={() => setRefusal("Native input unavailable. Reopen the keyboard to retry.")}

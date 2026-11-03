@@ -1,4 +1,4 @@
-import type { PersonNotificationInput, PersonNotificationResult } from "@opensteer/database";
+import type { PersonMessageInput, PersonMessageResult } from "@opensteer/database";
 import { OpensteerError } from "@opensteer/core";
 import type {
   AgentEvent,
@@ -203,12 +203,12 @@ export class CommandService {
     });
   }
 
-  publishPersonNotification(input: PersonNotificationInput): Promise<PersonNotificationResult> {
+  publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return this.#admission.execute(
       [threadKey(input.admission.sourceThreadId)],
       byteSize(input),
       async () => {
-        const result = await this.#store.publishPersonNotification(input);
+        const result = await this.#store.publishPersonMessage(input);
         for (const event of result.events) this.#onWorkspaceEvent(event);
         return result;
       },

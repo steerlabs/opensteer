@@ -112,7 +112,14 @@ all of both. Erasure is ordered after already-recorded visits; a navigation that
 commits afterward is a new visit. Replayed tab opens create no visits. Device-local
 history is not imported.
 
-The private cursor observer sends element centre and page scale only, never
+Streamed page cursor shapes are ephemeral controller-only hints. The owning engine
+normalizes native events or private point queries to a bounded enum; CSS strings,
+URLs and custom images never leave the computer. Unknown hits and ambiguous native
+or agent activity fall back to default. Point sequences, document and geometry
+fence replies; stationary refreshes stay outside the mutation lane. Watch and agents
+receive no page cursor hints.
+
+The private agent cursor observer sends element centre and page scale only, never
 values, text, selectors or attributes. See
 `packages/browser-runtime-core/src/browser/script-targets.ts`.
 
@@ -204,7 +211,8 @@ Sessions without the engine clipboard retain their released copy publication, wi
 and other sensitive input values excluded.
 
 A page's uncanceled context-menu event reports editable/selection facts and an
-optional link URL only to the controller who right-clicked. A page that cancels
+optional link URL only to the controller who invoked it through right-click, macOS
+control-click, Menu or Shift+F10. A page that cancels
 the event retains its own menu. Diagnostic counters record operation kinds,
 refusal reasons and clipboard outcomes without keys, text or clipboard bytes.
 

@@ -2,7 +2,7 @@ import {
   createId,
   MessageAuthorSchema,
   OpensteerError,
-  PersonNotifyMessageSchema,
+  PersonMessageSchema,
   type AgentEvent,
   type Message,
 } from "@opensteer/core";
@@ -17,23 +17,23 @@ import { jsonValue, systemPrincipalId } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
-export interface PersonNotificationInput {
+export interface PersonMessageInput {
   readonly admission: AgentControlAdmissionInput;
   readonly message: string;
 }
-export interface PersonNotificationResult {
+export interface PersonMessageResult {
   readonly message: Message;
   readonly events: readonly AgentEvent[];
   readonly wasDuplicate: boolean;
 }
 
-export async function publishPersonNotification(
+export async function publishPersonMessage(
   database: Kysely<DatabaseSchema>,
-  input: PersonNotificationInput,
-): Promise<PersonNotificationResult> {
-  const text = PersonNotifyMessageSchema.parse(input.message);
+  input: PersonMessageInput,
+): Promise<PersonMessageResult> {
+  const text = PersonMessageSchema.parse(input.message);
   const admission = input.admission;
-  if (admission.action !== "person.notify")
+  if (admission.action !== "person.message")
     throw new OpensteerError({ code: "bad_request", message: "Invalid notification admission" });
   return withRequestWorkspaceLocks(
     database,

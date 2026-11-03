@@ -1,3 +1,5 @@
+import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
+import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import { useActionReview } from "@opensteer/client/react";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import {
@@ -138,12 +140,23 @@ export function BrowserPage(props: {
   // until they go there or put it away.
   const [addressDraft, setAddressDraft] = useState<string | null>(null);
   const proxy = useRef<NativeEditingProxyHandle>(null);
+  const menuInteraction = useRef(0);
+  useEffect(
+    () => () => {
+      menuInteraction.current++;
+    },
+    [],
+  );
   const [mayType, setMayType] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [pageFocused, setPageFocused] = useState(true);
+  const [dragSelect, setDragSelect] = useState(false);
+  const [inputEpoch, setInputEpoch] = useState(0);
   const [signingIn, setSigningIn] = useState(false);
   const openingTab = useRef(false);
   useEffect(() => () => onTyping(false), [onTyping]);
   const [aspect, setAspect] = useState(defaultPageAspect);
+  const [drawnGeometry, setDrawnGeometry] = useState<number | null>(null);
   const onPageSize = useCallback((size: { readonly height: number; readonly width: number }) => {
     if (size.width > 0 && size.height > 0) setAspect(size.width / size.height);
   }, []);
@@ -264,6 +277,10 @@ export function BrowserPage(props: {
   const refused = refusedAdmission !== null && refusedAdmission === feed.admissionId;
   const send = (command: BrowserCommand): boolean => {
     if (!ready) return false;
+    if (command.type.startsWith("navigation.")) {
+      setInputEpoch((value) => value + 1);
+      editing.dismissMenu();
+    }
     const targeted = { ...command, surfaceId };
     const taken = submitBrowserCommand(hostClient, session.id, targeted);
     if (!taken) setRefusedAdmission(feed.admissionId ?? null);
@@ -386,6 +403,71 @@ export function BrowserPage(props: {
     picture.height > 0 &&
     bandBelow > room.height * fitBand;
 
+  const navigationKey = `${inputEpoch}:${catalogTab?.documentId ?? ""}:${tab?.url ?? ""}:${loading}`;
+  useEffect(() => {
+    setDragSelect(false);
+    editing.dismissMenu();
+  }, [ready, navigationKey, editing]);
+  const pageMenu =
+    ready &&
+    editingState.menu &&
+    (editingState.menu.geometryRevision === undefined ||
+      editingState.menu.geometryRevision === drawnGeometry)
+      ? editingState.menu
+      : null;
+  const menuScope = useRef({ ready, navigationKey });
+  menuScope.current = { ready, navigationKey };
+  const pageAction = (action: BrowserPageMenuAction) => {
+    if (!pageMenu || !ready) return;
+    const interaction = ++menuInteraction.current;
+    if (action === "copy" || action === "cut") {
+      if (
+        !pageMenu.selection ||
+        editingState.context?.field?.sensitive ||
+        (action === "cut" && !pageMenu.editable)
+      )
+        return;
+      editing.send({ kind: action });
+    } else if (action === "select-all") editing.send({ kind: "command", command: "selectAll" });
+    else if (action === "paste") {
+      if (!pageMenu.editable) return;
+      const context = editingState.context?.contextId;
+      void Clipboard.getStringAsync()
+        .then((text) => {
+          if (
+            !menuScope.current.ready ||
+            menuInteraction.current !== interaction ||
+            menuScope.current.navigationKey !== navigationKey ||
+            editing.get().context?.contextId !== context
+          )
+            return;
+          const bytes = new TextEncoder().encode(text);
+          if (bytes.length > editingClipboardMaxBytes) {
+            setProblem("Clipboard too large.");
+            return;
+          }
+          if (bytes.length) editing.send({ kind: "paste", items: [{ type: "text/plain", bytes }] });
+        })
+        .catch(() => setProblem("Clipboard unavailable."));
+    } else if (action === "copy-link" && pageMenu.linkUrl) {
+      void clipboard
+        .write([{ type: "text/plain", bytes: new TextEncoder().encode(pageMenu.linkUrl) }])
+        .then((outcome) => {
+          if (outcome !== "written" && outcome !== "empty") setProblem(`Clipboard ${outcome}.`);
+        })
+        .catch(() => setProblem("Clipboard unavailable."));
+    } else if (action === "open-link" && pageMenu.linkUrl) {
+      try {
+        props.onOpenTab(
+          hostClient.beginBrowserTabOpen({ sessionId: session.id }, { url: pageMenu.linkUrl }),
+        );
+      } catch (error) {
+        setProblem(operationDetail(error, "A new tab could not be opened."));
+      }
+    }
+    editing.dismissMenu();
+  };
+
   const menu: NativeMenuSection[] = [
     [
       ...(regular
@@ -495,6 +577,13 @@ export function BrowserPage(props: {
         label={`Tabs, ${tabs.length}`}
         onPress={props.onShowTabs}
       />
+      <ToolbarButton
+        disabled={!ready}
+        label={dragSelect ? "Done selecting" : "Drag/select"}
+        selected={dragSelect}
+        symbol="cursorarrow"
+        onPress={() => setDragSelect((value) => !value)}
+      />
       <ToolbarMenu label="More" sections={menu} symbol="ellipsis" title={title} />
     </Toolbar>
   );
@@ -541,6 +630,14 @@ export function BrowserPage(props: {
       style={styles.page}
       testID="browser-page"
     >
+      {pageMenu ? (
+        <BrowserPageMenu
+          menu={pageMenu}
+          sensitive={editingState.context?.field?.sensitive === true}
+          onAction={pageAction}
+          onDismiss={editing.dismissMenu}
+        />
+      ) : null}
       <ActionReviewSheet
         review={closeReview}
         title="Close this tab?"
@@ -552,6 +649,11 @@ export function BrowserPage(props: {
         onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
       />
       {regular ? (addressOpen ? editor : bar) : null}
+      {dragSelect ? (
+        <AppText role="caption" tone="muted">
+          Drag/select · Drag once to select or move content
+        </AppText>
+      ) : null}
       <GestureDetector gesture={zoom.gesture}>
         <View onLayout={onStage} style={styles.stage}>
           <Animated.View
@@ -564,15 +666,28 @@ export function BrowserPage(props: {
             <BrowserStream
               active={props.active}
               tabId={tabId}
+              documentId={liveTab?.documentId}
               hostClient={hostClient}
               interactive
-              inputEnabled={closeReview === null && !addressOpen}
+              inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
+              inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
+              dragSelect={dragSelect}
+              onDragEnd={() => setDragSelect(false)}
               label={label}
               onPageSize={onPageSize}
-              onPointerDown={() => proxy.current?.interrupt()}
+              onPresentedGeometry={setDrawnGeometry}
+              onPointerDown={() => {
+                setPageFocused(true);
+                menuInteraction.current++;
+                editing.dismissMenu();
+                proxy.current?.interrupt();
+              }}
               zoom={zoom.scale}
               onScroll={() => setMayType(false)}
               onTap={() => {
+                setAddressOpen(false);
+                setAddressDraft(null);
+                setPageFocused(true);
                 // A page that reports its fields keeps the keyboard up from one
                 // field to the next and puts it away when nothing has focus.
                 if (!editing.get().negotiated) setTyping(false);
@@ -690,7 +805,10 @@ export function BrowserPage(props: {
                 accessibilityHint="Types into the page"
                 accessibilityLabel="Keyboard"
                 accessibilityRole="button"
-                onPress={() => setTyping(true)}
+                onPress={() => {
+                  setPageFocused(true);
+                  setTyping(true);
+                }}
                 style={({ pressed }) => pressed && styles.pressed}
               >
                 <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
@@ -701,9 +819,16 @@ export function BrowserPage(props: {
           ) : null}
         </View>
       </GestureDetector>
-      {keyboardOpen ? (
+      {ready && tab !== undefined && !addressOpen && !dialog && !signingIn ? (
         <PageTyping
           ref={proxy}
+          focused={pageFocused}
+          softKeyboard={keyboardOpen}
+          onBlur={() => {
+            setPageFocused(false);
+            setTyping(false);
+            setMayType(false);
+          }}
           onDone={() => {
             setTyping(false);
             setMayType(false);
@@ -713,11 +838,8 @@ export function BrowserPage(props: {
           legacy={!editingState.negotiated}
           sendOperation={(operation) => editing.send(operation)}
         />
-      ) : regular ? null : addressOpen ? (
-        editor
-      ) : (
-        bar
-      )}
+      ) : null}
+      {keyboardOpen || regular ? null : addressOpen ? editor : bar}
     </View>
   );
 }
@@ -980,36 +1102,51 @@ function noop(): void {}
  */
 export function PageTyping(props: {
   readonly onDone: () => void;
+  readonly focused?: boolean;
+  readonly softKeyboard?: boolean;
+  readonly onBlur?: () => void;
   readonly context: EditingContext | null;
   readonly sendOperation: (operation: EditingOperation) => boolean;
   readonly abilities?: EditingTargetAbilities;
   readonly legacy?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }): ReactNode {
+  const input =
+    props.legacy && props.softKeyboard !== false ? (
+      <LegacyInput sendOperation={props.sendOperation} onDone={props.onDone} />
+    ) : (
+      <NativeEditingProxy
+        ref={props.ref ?? null}
+        context={props.context}
+        focused={props.focused ?? true}
+        softKeyboard={props.softKeyboard ?? true}
+        sendOperation={props.sendOperation}
+        onDone={props.onBlur ?? props.onDone}
+        {...(props.abilities ? { abilities: props.abilities } : {})}
+      />
+    );
   return (
-    <Toolbar edge="bottom" testID="page-typing">
-      <ToolbarCapsule style={styles.typingField}>
-        <View style={styles.typingGlyph}>
-          <Symbol name="keyboard" size={16} tint={color.muted} />
-        </View>
-        {props.legacy ? (
-          <LegacyInput sendOperation={props.sendOperation} onDone={props.onDone} />
-        ) : (
-          <NativeEditingProxy
-            ref={props.ref ?? null}
-            context={props.context}
-            sendOperation={props.sendOperation}
-            onDone={props.onDone}
-            {...(props.abilities ? { abilities: props.abilities } : {})}
-          />
-        )}
-      </ToolbarCapsule>
-      <ToolbarButton label="Done" onPress={props.onDone} selected symbol="checkmark" />
-    </Toolbar>
+    <View
+      accessibilityElementsHidden={props.softKeyboard === false}
+      importantForAccessibility={props.softKeyboard === false ? "no-hide-descendants" : "auto"}
+      pointerEvents={props.softKeyboard === false ? "none" : "auto"}
+      style={props.softKeyboard === false ? styles.hardwareInput : undefined}
+    >
+      <Toolbar edge="bottom" {...(props.softKeyboard === false ? {} : { testID: "page-typing" })}>
+        <ToolbarCapsule style={styles.typingField}>
+          <View style={styles.typingGlyph}>
+            <Symbol name="keyboard" size={16} tint={color.muted} />
+          </View>
+          {input}
+        </ToolbarCapsule>
+        <ToolbarButton label="Done" onPress={props.onDone} selected symbol="checkmark" />
+      </Toolbar>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  hardwareInput: { position: "absolute", width: 1, height: 1, overflow: "hidden" },
   bottom: { bottom: space[12], left: space[12], position: "absolute", right: space[12] },
   card: {
     ...material.float,

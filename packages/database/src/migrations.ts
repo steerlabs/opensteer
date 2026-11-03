@@ -4676,7 +4676,8 @@ export function migrationProvider() {
         "0125_run_place_events": runPlaceEventsMigration,
         "0126_run_visibility": runVisibilityMigration,
         "0127_person_show": personShowMigration,
-        "0128_apps": appsMigration,
+        "0128_person_message": personMessageMigration,
+        "0129_apps": appsMigration,
       };
     },
   };
@@ -6617,6 +6618,31 @@ const personShowMigration: Migration = {
       await sql
         .raw(
           `alter table agent_control_requests add constraint ${name} ${definition.replace("'thread.message'::text", "'thread.message'::text, 'person.show'::text")}`,
+        )
+        .execute(database);
+    }
+  },
+};
+
+const personMessageMigration: Migration = {
+  async up(database) {
+    const constraints = await sql<{ name: string; definition: string }>`
+      select conname as name, pg_get_constraintdef(oid) as definition
+      from pg_constraint where conrelid = 'public.agent_control_requests'::regclass
+      and conname in ('agent_control_requests_action_check', 'agent_control_requests_action_mapping_check')
+    `.execute(database);
+    for (const constraint of constraints.rows) {
+      await sql`alter table agent_control_requests drop constraint ${sql.id(constraint.name)}`.execute(
+        database,
+      );
+    }
+    await sql`update agent_control_requests set action = 'person.message' where action = 'person.notify'`.execute(
+      database,
+    );
+    for (const constraint of constraints.rows) {
+      await sql
+        .raw(
+          `alter table agent_control_requests add constraint "${constraint.name}" ${constraint.definition.replaceAll("'person.notify'", "'person.message'")}`,
         )
         .execute(database);
     }

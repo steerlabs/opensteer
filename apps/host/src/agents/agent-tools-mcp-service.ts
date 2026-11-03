@@ -371,8 +371,7 @@ export class AgentToolsMcpService {
         (definition.name !== "thread_write" || !lacks("task-done-v1")) &&
         (definition.name !== "person_show" ||
           (input.scope === "run" && !lacks("person-show-v1"))) &&
-        (definition.name !== "person_notify" ||
-          (input.scope === "run" && !lacks("person-notify-v1"))),
+        (definition.name !== "person_message" || input.scope === "run"),
     );
     const advertisedTools: Tool[] = [];
     for (const definition of definitions) {
@@ -614,13 +613,13 @@ export class AgentToolsMcpService {
         if (response.type !== "thread.write.result") throw unexpectedToolResponse();
         return { thread: response.thread, doneWhenRunEnds: response.doneWhenRunEnds };
       }
-      case "person_notify": {
+      case "person_message": {
         const response = await control.handle(token, {
-          type: "person.notify",
+          type: "person.message",
           requestId,
           message: input.message,
         });
-        if (response.type !== "person.notify.result") throw unexpectedToolResponse();
+        if (response.type !== "person.message.result") throw unexpectedToolResponse();
         return { messageId: response.messageId };
       }
       case "person_show": {

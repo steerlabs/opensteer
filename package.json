@@ -52,7 +52,8 @@
     "desktop:build-release": "tsx scripts/build-desktop-macos.ts",
     "bench:mobile-network": "tsx scripts/bench-mobile-network.ts",
     "bench:phone-display": "tsx scripts/bench-phone-display.ts",
-    "bench:mac-display": "tsx scripts/bench-mac-display.ts"
+    "bench:mac-display": "tsx scripts/bench-mac-display.ts",
+    "bench:browser-stream": "tsx scripts/bench-browser-stream.ts"
   },
   "devDependencies": {
     "@opensteer/shared": "workspace:*",

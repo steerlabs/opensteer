@@ -1896,7 +1896,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["app_list", said(["Listing apps", "Listed apps"], "share")],
   ["app_fetch", said(["Calling an app", "Called an app"], "share")],
   ["app_publish", said(["Publishing an app", "Published an app"], "share")],
-  ["person_notify", said(["Sending a notification", "Sent a notification"], "share")],
+  ["person_message", said(["Sending a message", "Sent a message"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
   ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
   ["thread_message", said(["Sending a message", "Sent a message"], "share")],
