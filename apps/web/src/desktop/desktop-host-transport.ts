@@ -185,17 +185,17 @@ async function hostBridgeResult<Data>(
 export function createDesktopHostWebSocketFactory(
   bridge: OpensteerDesktopBridge,
   canonicalOrigin: string,
-): (url: string) => WebSocketClient {
+): (url: string, protocols?: string[]) => WebSocketClient {
   const registry = desktopHostSocketRegistry(bridge);
   const origin = new URL(canonicalOrigin).origin;
-  return (value) => {
+  return (value, protocols) => {
     const url = new URL(value);
     const httpEquivalent = new URL(url);
     httpEquivalent.protocol = url.protocol === "wss:" ? "https:" : "http:";
     if ((url.protocol !== "ws:" && url.protocol !== "wss:") || httpEquivalent.origin !== origin) {
       throw new Error("The bundled UI cannot open a socket to another Deployment.");
     }
-    return registry.create(`${url.pathname}${url.search}`);
+    return registry.create(`${url.pathname}${url.search}`, protocols);
   };
 }
 
@@ -231,13 +231,13 @@ class DesktopHostSocketRegistry {
     });
   }
 
-  create(path: string): DesktopHostWebSocket {
+  create(path: string, protocols?: string[]): DesktopHostWebSocket {
     const socket = new DesktopHostWebSocket(this.#bridge, (connectionId) => {
       if (this.#sockets.get(connectionId) === socket) this.#sockets.delete(connectionId);
     });
     this.#opening += 1;
     void this.#bridge
-      .openHostWebSocket({ path })
+      .openHostWebSocket({ path, ...(protocols ? { protocols } : {}) })
       .then(({ connectionId }) => {
         this.#sockets.set(connectionId, socket);
         const pending = this.#pending.get(connectionId) ?? [];

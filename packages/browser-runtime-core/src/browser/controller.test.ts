@@ -83,10 +83,6 @@ describe("BrowserController", () => {
       budget: vi.fn(async () => {}),
       keyframe: vi.fn(async () => {}),
       ack: vi.fn(async () => {}),
-      hold: vi.fn(async () => {}),
-      presented: vi.fn(async () => {}),
-      recover: vi.fn(async () => {}),
-      release: vi.fn(async () => {}),
       click: vi.fn(async () => ({ dispatched: false })),
       stop: vi.fn(async () => {}),
     };
@@ -131,6 +127,33 @@ describe("BrowserController", () => {
         vi.fn(),
       );
       expect(port.budget).toHaveBeenCalledExactlyOnceWith({ ...next.budget, maxBitrate: 300000 });
+      vi.mocked(port.budget).mockRejectedValueOnce(new Error("Rate update refused"));
+      await expect(
+        controller.video(
+          {
+            type: "browser.video.budget",
+            channelId: next.channelId,
+            target: next.target,
+            streamId: next.streamId,
+            revision: 2,
+            budget: next.budget,
+          },
+          vi.fn(),
+        ),
+      ).resolves.toBeUndefined();
+      vi.mocked(port.keyframe).mockRejectedValueOnce(new Error("Key request refused"));
+      await expect(
+        controller.video(
+          {
+            type: "browser.video.keyframe",
+            channelId: next.channelId,
+            target: next.target,
+            streamId: next.streamId,
+          },
+          vi.fn(),
+        ),
+      ).resolves.toBeUndefined();
+      expect(port.stop).toHaveBeenCalledTimes(1);
     } finally {
       old.reject(new Error("test cleanup"));
       await controller.close();

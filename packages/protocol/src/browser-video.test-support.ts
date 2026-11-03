@@ -4,6 +4,7 @@ export const browserVideoTestHeader = {
   generation: 1,
   sequence: 0,
   ptsUs: 1,
+  geometryRevision: 1,
   key: true,
   codec: "avc1.42C01F",
   width: 128,
@@ -13,18 +14,10 @@ export const browserVideoTestHeader = {
     documentGeneration: "document",
     authorityEpoch: "epoch",
     drawnRevision: "opaque-certificate",
-    appliedThrough: "0" as const,
-    frameSinkId: "1:2",
-    surfaceId: "selected-surface",
-    frameToken: "1",
-    capturedAtUs: "123",
-    sourceWidth: 128,
-    sourceHeight: 128,
-    deviceScaleFactor: 1,
+
     rootCssWidth: 100,
     rootCssHeight: 100,
-    visualViewport: { width: 100, height: 100, offsetX: 500, offsetY: 200, scale: 1 },
-    crop: { x: 0 as const, y: 0 as const, width: 100, height: 100 },
+
     rasterCrop: { x: 14, y: 14, width: 100, height: 100 },
   },
 };

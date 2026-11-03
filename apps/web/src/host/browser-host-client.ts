@@ -16,7 +16,7 @@ export interface BrowserHostClientOptions {
   readonly bufferedResponses?: boolean;
   /** The Desktop renderer states how long its hidden sockets last; a browser tab cannot. */
   readonly lifecycle?: ClientLifecycle;
-  readonly webSocketFactory?: (url: string) => WebSocketClient;
+  readonly webSocketFactory?: (url: string, protocols?: string[]) => WebSocketClient;
 }
 
 /**

@@ -27,7 +27,7 @@ private final class BrowserVideoDecoder {
   private var context: UnsafeMutableRawPointer?
   private var format: CMVideoFormatDescription?
   private var epoch = ""
-  private var keyRequired = true
+  private var reference = KeyframeFence()
   private let output: (CVPixelBuffer, FrameMetadata) -> Void
   private let lost: (FrameMetadata) -> Void
   init(output: @escaping (CVPixelBuffer, FrameMetadata) -> Void, lost: @escaping (FrameMetadata) -> Void) { self.output = output; self.lost = lost }
@@ -37,7 +37,7 @@ private final class BrowserVideoDecoder {
   func close() { queue.async { self.destroy() } }
   private func destroy() {
     if let session { VTDecompressionSessionWaitForAsynchronousFrames(session); VTDecompressionSessionInvalidate(session) }
-    session = nil; format = nil; keyRequired = true
+    session = nil; format = nil; reference.lost()
     if let context { Unmanaged<BrowserVideoOutputs>.fromOpaque(context).release() }
     context = nil
   }
@@ -47,7 +47,7 @@ private final class BrowserVideoDecoder {
             frame.width > 0, frame.height > 0, frame.width <= 3840, frame.height <= 2160,
             frame.width * frame.height <= 3840 * 2160,
             frame.pts.isFinite, frame.pts >= 0, frame.pts < Double(Int.max - 1),
-            !self.keyRequired || frame.key else { done(false); return }
+            self.reference.allows(key: frame.key) else { done(false); return }
       let accepted = data.withUnsafeBytes { self.submit($0, frame) }
       if !accepted { self.destroy() }
       done(accepted)
@@ -96,13 +96,12 @@ private final class BrowserVideoDecoder {
     guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &length, sampleBufferOut: &sample) == noErr, let sample else { _ = outputs.remove(id); return false }
     let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression], frameRefcon: UnsafeMutableRawPointer(bitPattern: id), infoFlagsOut: nil)
     guard status == noErr else { _ = outputs.remove(id); return false }
-    keyRequired = false
+    reference.enqueued(key: frame.key, lossAtAdmission: reference.captureLoss())
     return true
   }
 }
 
-/// Identity commits at the Metal drawable's presentation callback. During a
-/// transition no new touch can claim that either the old or new frame is visible.
+/// Identity advances only when Metal presents the new picture.
 final class BrowserVideoView: ExpoView, MTKViewDelegate {
   let onReady = EventDispatcher()
   let onNeedsKeyframe = EventDispatcher()
@@ -171,7 +170,7 @@ final class BrowserVideoView: ExpoView, MTKViewDelegate {
       descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
       pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
     } catch { metal = nil; view.removeFromSuperview() }
-    observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in guard let self else { return }; self.reset(self.epoch) }
+    observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in guard let self else { return }; self.reset(self.epoch, clearPicture: true) }
     #endif
   }
   @objc private func pinch(_ recognizer:UIPinchGestureRecognizer){cancelGesture();zoom=min(4,max(1,zoom*recognizer.scale));recognizer.scale=1;version+=1;committed=nil;metal?.setNeedsDisplay()}
@@ -180,9 +179,13 @@ final class BrowserVideoView: ExpoView, MTKViewDelegate {
     super.layoutSubviews()
     if metal?.frame != bounds { cancelGesture(); committed = nil; version += 1; metal?.frame = bounds; metal?.setNeedsDisplay() }
   }
-  override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { reset(epoch) } else { onNeedsKeyframe(["epoch":epoch]) } }
-  func reset(_ next: String) {
-    cancelGesture(); epoch = next; version += 1; decoderGeneration += 1; committed = nil; latest = nil; rendering = nil; metal?.isHidden = true
+  override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { reset(epoch, clearPicture: true) } else { onNeedsKeyframe(["epoch":epoch]) } }
+  func reset(_ next: String, clearPicture: Bool = false) {
+    cancelGesture(); decoderGeneration += 1
+    if next != epoch || clearPicture {
+      version += 1; committed = nil; latest = nil; rendering = nil; metal?.isHidden = true
+    }
+    epoch = next
     decoder.reset(next)
   }
   func decode(_ bytes: Data, _ frame: FrameMetadata, done: @escaping (Bool) -> Void) {
@@ -211,7 +214,7 @@ final class BrowserVideoView: ExpoView, MTKViewDelegate {
     guard CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, cache, buffer, nil, .r8Unorm, width, height, 0, &luma) == kCVReturnSuccess,
           CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, cache, buffer, nil, .rg8Unorm, width / 2, height / 2, 1, &chroma) == kCVReturnSuccess,
           let luma, let chroma, let y = CVMetalTextureGetTexture(luma), let uv = CVMetalTextureGetTexture(chroma), let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
-    let ticket = UUID(); rendering = ticket; committed = nil; let revision = version; let size = bounds.size
+    let ticket = UUID(); rendering = ticket; let revision = version; let size = bounds.size
     let scale = view.drawableSize.width / max(1, size.width)
     encoder.setViewport(MTLViewport(originX: rect.minX * scale, originY: rect.minY * scale, width: rect.width * scale, height: rect.height * scale, znear: 0, zfar: 1))
     encoder.setRenderPipelineState(pipeline); encoder.setFragmentTexture(y, index: 0); encoder.setFragmentTexture(uv, index: 1)
@@ -241,12 +244,12 @@ final class BrowserVideoView: ExpoView, MTKViewDelegate {
   }
   private func presentationLost(_ ticket: UUID) {
     guard rendering == ticket else { return }
-    rendering = nil; committed = nil; latest = nil; metal?.isHidden = true; cancelGesture()
+    rendering = nil; cancelGesture(); decoderGeneration += 1
     decoder.reset(epoch); onNeedsKeyframe(["epoch": epoch])
   }
   override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
     if gesture != nil || event?.allTouches?.count != 1 {cancelGesture();return}
-    guard touches.count == 1, rendering == nil, let frame = committed, !frame.identity.isEmpty, let touch = touches.first, let rect = frame.videoRect(in: bounds.size) else { return }
+    guard touches.count == 1, let frame = committed, !frame.identity.isEmpty, let touch = touches.first, let rect = frame.videoRect(in: bounds.size) else { return }
     let local = touch.location(in: self); guard rect.contains(local) else { return }
     let point = CGPoint(x: frame.cropX + (local.x - rect.minX) * frame.contentWidth / rect.width, y: frame.cropY + (local.y - rect.minY) * frame.contentHeight / rect.height)
     let id = UUID().uuidString.lowercased(); gesture = Gesture(frame:frame,id:id,point:point,local:local,bounds:bounds,last:local)

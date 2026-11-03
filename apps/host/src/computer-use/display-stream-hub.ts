@@ -1,8 +1,4 @@
-import {
-  DisplayMediaHub,
-  displayGopRefreshBytes,
-  displayGopCacheFrames,
-} from "../media/display-media-hub.js";
+import { DisplayMediaHub, displayGopRefreshBytes } from "../media/display-media-hub.js";
 import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
@@ -27,8 +23,6 @@ import {
   displayDemandGraceMs,
   displayRefreshCoalescingMs,
   displaySlowViewerCloseMs,
-  displayViewerCreditFrames,
-  displayViewerWindowFrames,
   type ComputerUseSessionId,
   type DisplayDataTicketClaims,
   type DisplayViewerClientMessage,
@@ -246,7 +240,8 @@ export class DisplayStreamHub {
   readonly #media = new DisplayMediaHub<Viewer, Stream>({
     now: () => this.#now(),
     live: (stream, viewer) => this.#viewerLive(stream, viewer),
-    refresh: (stream) => this.#refresh(stream),
+    refresh: (stream, congestion) =>
+      this.#refresh(stream, congestion ? displayCongestionRefreshMs : undefined),
     state: (stream, viewer, state) => this.#viewerState(stream, viewer, state),
     binary: (socket, bytes) => this.#binary(socket, bytes),
   });
@@ -997,86 +992,31 @@ export class DisplayStreamHub {
         return;
       viewer.keyframeAt = this.#now();
       viewer.keyframePending = true;
-      // Discard unsent replay work and reset decoder credit. Writes already sent
-      // precede the reset state on the socket and still receive exactly one ack.
-      if (
-        viewer.discarded.length + viewer.outstanding.size >
-        displayGopCacheFrames +
-          (viewer.displayWindow ? displayViewerWindowFrames : displayViewerCreditFrames)
-      ) {
+      try {
+        this.#media.resetCredit(viewer);
+      } catch {
         viewer.socket.close(
           displayViewerCloseCodes.tryAgain,
           "Display decoder resets did not drain",
         );
         return;
       }
-      viewer.discarded.push(...viewer.outstanding.keys());
-      viewer.outstanding.clear();
-      viewer.link?.forget();
-      viewer.bytes = 0;
-      viewer.recoverySample = null;
-      viewer.replayIndex = null;
-      viewer.replayThrough = null;
-      viewer.waiting = true;
       if (!this.#replay(stream, viewer) && stream.state.state === "live") this.#refresh(stream);
       return;
     }
     if (message.type === "display.ack") {
-      if (viewer.discarded.length > 0) {
-        if (viewer.discarded[0] === message.sequence) {
-          viewer.discarded.shift();
-          viewer.slowSince = null;
-          if (viewer.replayIndex !== null) this.#drainCache(stream, viewer);
-        }
-        return;
-      }
-      // Only actually sent, unacknowledged sequences can return credit. Replaying
-      // a GOP can legitimately output sequences older than a prior acknowledgement.
-      const acknowledged = viewer.outstanding.get(message.sequence);
-      if (!acknowledged) return;
-      const acknowledgedBytes = [...viewer.outstanding].reduce(
-        (bytes, [sequence, frame]) => (sequence <= message.sequence ? bytes + frame.bytes : bytes),
-        0,
-      );
-      if (viewer.displayWindow) {
-        const at = this.#now();
-        const delay = at - acknowledged.sentAt;
-        // A monotonic queue keeps the minimum of the recent samples without
-        // letting queued decoder/network work permanently inflate the budget.
-        while (
-          viewer.ackDelays.at(-1)?.delay !== undefined &&
-          viewer.ackDelays.at(-1)!.delay >= delay
-        )
-          viewer.ackDelays.pop();
-        viewer.ackDelays.push({ at, delay });
-        if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
-        if (viewer.link) viewer.link.ack(message.sequence, at);
-        else viewer.bitrate.ack(at, acknowledgedBytes, delay, viewer.ackDelays[0]!.delay);
+      const acknowledged = this.#media.ack(stream, viewer, message.sequence);
+      if (acknowledged && viewer.displayWindow) {
+        if (!viewer.link)
+          viewer.bitrate.ack(
+            this.#now(),
+            acknowledged.bytes,
+            acknowledged.delay,
+            viewer.ackDelays[0]!.delay,
+          );
         this.#bitrate(stream);
       }
-      // Decoder outputs in stream order: acknowledgement returns all earlier credits.
-      for (const [sequence, frame] of viewer.outstanding)
-        if (sequence <= message.sequence) {
-          viewer.outstanding.delete(sequence);
-          viewer.bytes -= frame.bytes;
-        }
-      // Any valid acknowledgement is progress, even while a byte-only replay
-      // still has more than four frames outstanding.
-      viewer.slowSince = null;
-      if (viewer.outstanding.size === 0) this.#ping(viewer);
-      if (viewer.waiting && viewer.outstanding.size === 0) {
-        const sample = viewer.recoverySample;
-        viewer.recoverySample = null;
-        const now = this.#now();
-        if (sample && now > sample.sentAt)
-          viewer.deliveryEstimate = {
-            bytesPerMs: sample.bytes / (now - sample.sentAt),
-            measuredAt: now,
-          };
-        if (!this.#replay(stream, viewer) && stream.state.state === "live")
-          this.#refresh(stream, displayCongestionRefreshMs);
-      }
-      if (viewer.replayIndex !== null) this.#drainCache(stream, viewer);
+      if (!viewer.outstanding.size) this.#ping(viewer);
       return;
     }
     if (message.type === "display.control") {
@@ -1361,17 +1301,10 @@ export class DisplayStreamHub {
   #replay(stream: Stream, viewer: Viewer): boolean {
     return this.#media.replay(stream, viewer);
   }
-  #drainCache(stream: Stream, viewer: Viewer): void {
-    return this.#media.drainCache(stream, viewer);
-  }
+
   #stall(stream: Stream, viewer: Viewer): void {
-    const now = this.#now();
-    const oldest = viewer.outstanding.values().next().value;
-    const queued = oldest
-      ? Math.max(0, now - oldest.sentAt - (viewer.ackDelays[0]?.delay ?? 400))
-      : 0;
-    if (viewer.link) viewer.link.stalled(now, oldest?.sentAt ?? now);
-    else viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
+    const { at, oldestAt, queued } = this.#media.stall(viewer);
+    if (!viewer.link) viewer.bitrate.stall(at, queued, oldestAt);
     this.#bitrate(stream);
   }
   #refresh(stream: Stream, minimumIntervalMs = displayRefreshCoalescingMs): void {

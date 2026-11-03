@@ -62,9 +62,9 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
   private var gesture: Gesture? = null
   private var codec: MediaCodec? = null
   private var codecWidth = 0; private var codecHeight = 0
-  private var keyRequired = true
+  private val reference = KeyframeFence()
   private val inputs = ArrayDeque<Int>()
-  private data class Packet(val bytes: ByteArray, val frame: FrameMetadata, val promise: Promise, val revision: Long)
+  private data class Packet(val bytes: ByteArray, val frame: FrameMetadata, val promise: Promise, val revision: Long, val arrival: Long)
   private val packets = ArrayDeque<Packet>()
   private val frames = HashMap<Long, FrameMetadata>()
   private val outputs = ArrayDeque<Pair<Int, FrameMetadata>>()
@@ -85,20 +85,26 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
     texture.layout(0,0,width,height); cover.layout(0,0,width,height)
     if(changed) { revision++; committed = null; cancelGesture() }
   }
-  fun reset(next: String) { cancelGesture(); epoch = next; revision++; decodeRevision++; committed = null; swapped = null; cover.visibility = View.VISIBLE; worker.post { release() } }
+  fun reset(next: String) { reset(next, false) }
+  private fun reset(next: String, clearPicture: Boolean) {
+    cancelGesture(); decodeRevision++; reference.lost()
+    if(next != epoch || clearPicture) { revision++; committed=null; cover.visibility=View.VISIBLE }
+    epoch=next; worker.post { release() }
+  }
   fun decode(bytes: ByteArray, frame: FrameMetadata, promise: Promise) {
     val stamp = decodeRevision
-    if(!showing || destroyed || outputSurface == null || frame.epoch != epoch || !frame.pts.isFinite() || frame.pts < 0 || frame.pts > 9_007_199_254_740_991.0 || frame.identity.length > 16_384 || bytes.isEmpty() || bytes.size > 4_194_304) { promise.resolve(false); return }
-    if(pending.incrementAndGet()>4){pending.decrementAndGet();promise.resolve(false);return}
+    val arrival = reference.arrive()
+    if(!showing || destroyed || outputSurface == null || frame.epoch != epoch || !frame.pts.isFinite() || frame.pts < 0 || frame.pts > 9_007_199_254_740_991.0 || frame.identity.length > 16_384 || bytes.isEmpty() || bytes.size > 4_194_304) { reference.lost(arrival); worker.post { release() }; promise.resolve(false); return }
+    if(pending.incrementAndGet()>4){pending.decrementAndGet();reference.lost(arrival);worker.post{release()};promise.resolve(false);return}
     worker.post {
       try {
-        require(frame.epoch==epoch && stamp==decodeRevision && showing && (!keyRequired || frame.key))
+        require(frame.epoch==epoch && stamp==decodeRevision && showing && reference.allows(frame.key))
         if(frame.key)require(H264VideoConfig.valid(bytes,frame.width,frame.height))
         if(codec!=null && (frame.width!=codecWidth || frame.height!=codecHeight)){require(frame.key);release()}
         if(codec==null){require(frame.key);configure(frame)}
-        val packet=Packet(bytes,frame,promise,stamp);packets.addLast(packet)
+        val packet=Packet(bytes,frame,promise,stamp,arrival);packets.addLast(packet)
         // A missing native input-buffer callback has one bounded admission deadline.
-        worker.postDelayed({if(packets.remove(packet)){pending.decrementAndGet();packet.promise.resolve(false);keyRequired=true;post{onNeedsKeyframe(mapOf("epoch" to frame.epoch))}}},1000)
+        worker.postDelayed({if(packets.remove(packet)){pending.decrementAndGet();packet.promise.resolve(false);reference.lost();post{onNeedsKeyframe(mapOf("epoch" to frame.epoch))}}},1000)
         admitInputs()
       }catch(_:Exception){pending.decrementAndGet();promise.resolve(false);release();post{onNeedsKeyframe(mapOf("epoch" to frame.epoch))}}
     }
@@ -108,10 +114,10 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
     while(inputs.isNotEmpty() && packets.isNotEmpty() && frames.size<8){
       val packet=packets.removeFirst();val frame=packet.frame
       try{
-        require(frame.epoch==epoch && packet.revision==decodeRevision && showing && (!keyRequired || frame.key))
+        require(frame.epoch==epoch && packet.revision==decodeRevision && showing && reference.allows(frame.key))
         val index=inputs.removeFirst();val buffer=requireNotNull(decoder.getInputBuffer(index));require(buffer.capacity()>=packet.bytes.size && !frames.containsKey(frame.pts.toLong()))
         buffer.clear();buffer.put(packet.bytes);frames[frame.pts.toLong()]=frame
-        decoder.queueInputBuffer(index,0,packet.bytes.size,frame.pts.toLong(),0);keyRequired=false;packet.promise.resolve(true)
+        decoder.queueInputBuffer(index,0,packet.bytes.size,frame.pts.toLong(),0);reference.enqueued(frame.key,packet.arrival);packet.promise.resolve(true)
       }catch(_:Exception){packet.promise.resolve(false);release();post{onNeedsKeyframe(mapOf("epoch" to frame.epoch))}}
       finally{pending.decrementAndGet()}
     }
@@ -146,7 +152,7 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
     if(latching != null || swapped != null || outputs.isEmpty())return
     val (index,frame) = outputs.removeFirst(); latching = frame
     codec?.releaseOutputBuffer(index,true)
-    worker.postDelayed({if(latching===frame){release();post{committed=null;cover.visibility=View.VISIBLE;onNeedsKeyframe(mapOf("epoch" to epoch))}}},1000)
+    worker.postDelayed({if(latching===frame){release();post{onNeedsKeyframe(mapOf("epoch" to epoch))}}},1000)
   }
   private fun latch() {
     val input = inputTexture ?: return
@@ -157,7 +163,7 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
       // No newest-frame guess: a coalesced or unmatched buffer closes input and recovers.
       require(input.timestamp == frame.pts.toLong() * 1000 && frame.epoch == epoch && showing)
       latched=frame;latching=null;renderLatched()
-    } catch(_: Exception) { committed = null; swapped = null; release(); post { cover.visibility=View.VISIBLE;onNeedsKeyframe(mapOf("epoch" to epoch)) } }
+    } catch(_: Exception) { swapped = null; release(); post { onNeedsKeyframe(mapOf("epoch" to epoch)) } }
   }
   private fun renderLatched(){
     val source=latched?:return
@@ -177,11 +183,11 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
       val vertices = ByteBuffer.allocateDirect(8*4).order(ByteOrder.nativeOrder()).asFloatBuffer().put(floatArrayOf(-1f,-1f,1f,-1f,-1f,1f,1f,1f)).apply { position(0) }
       val at = GLES20.glGetAttribLocation(program,"position"); GLES20.glEnableVertexAttribArray(at); GLES20.glVertexAttribPointer(at,2,GLES20.GL_FLOAT,false,0,vertices)
       GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4); GLES20.glDisableVertexAttribArray(at)
-      committed = null; val composition=Composition(frame,System.nanoTime(),revision);swapped = composition; latching = null
+      val composition=Composition(frame,System.nanoTime(),revision);swapped = composition; latching = null
       EGLExt.eglPresentationTimeANDROID(display,glSurface,composition.timestamp)
       require(EGL14.eglSwapBuffers(display,glSurface))
-      worker.postDelayed({if(swapped===composition){release();post{committed=null;cover.visibility=View.VISIBLE;onNeedsKeyframe(mapOf("epoch" to epoch))}}},1000)
-    }catch(_:Exception){committed=null;release();post{cover.visibility=View.VISIBLE;onNeedsKeyframe(mapOf("epoch" to epoch))}}
+      worker.postDelayed({if(swapped===composition){release();post{onNeedsKeyframe(mapOf("epoch" to epoch))}}},1000)
+    }catch(_:Exception){release();post{onNeedsKeyframe(mapOf("epoch" to epoch))}}
   }
   private fun setupGl(output: SurfaceTexture) {
     display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY); require(display != EGL14.EGL_NO_DISPLAY)
@@ -202,14 +208,14 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
     val linked=IntArray(1);GLES20.glGetProgramiv(program,GLES20.GL_LINK_STATUS,linked,0);require(linked[0]!=0)
   }
   private fun release() {
-    while(packets.isNotEmpty()){packets.removeFirst().promise.resolve(false);pending.decrementAndGet()};val old=codec;codec=null;runCatching{old?.stop()};runCatching{old?.release()};inputs.clear();frames.clear();outputs.clear();latching=null;swapped=null;latched=null;redrawPending=false;keyRequired=true
+    while(packets.isNotEmpty()){packets.removeFirst().promise.resolve(false);pending.decrementAndGet()};val old=codec;codec=null;runCatching{old?.stop()};runCatching{old?.release()};inputs.clear();frames.clear();outputs.clear();latching=null;swapped=null;latched=null;redrawPending=false;reference.lost()
     codecSurface?.release();codecSurface=null;inputTexture?.release();inputTexture=null
     if(display != EGL14.EGL_NO_DISPLAY){if(program!=0)GLES20.glDeleteProgram(program);if(textureId!=0)GLES20.glDeleteTextures(1,intArrayOf(textureId),0);EGL14.eglMakeCurrent(display,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_CONTEXT);EGL14.eglDestroySurface(display,glSurface);EGL14.eglDestroyContext(display,glContext);EGL14.eglTerminate(display)}
     display=EGL14.EGL_NO_DISPLAY;glSurface=EGL14.EGL_NO_SURFACE;glContext=EGL14.EGL_NO_CONTEXT;program=0;textureId=0
   }
   override fun onSurfaceTextureAvailable(surface: SurfaceTexture,w: Int,h: Int) { outputSurface=surface;showing=windowVisibility==View.VISIBLE;onNeedsKeyframe(mapOf("epoch" to epoch)) }
   override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture,w: Int,h: Int) { committed=null;cancelGesture();revision++;worker.post{if(swapped==null)renderLatched()else redrawPending=true} }
-  override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { showing=false;outputSurface=null;reset(epoch);return true }
+  override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean { showing=false;outputSurface=null;reset(epoch, true);return true }
   override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
     val composition=swapped ?: return;val frame=composition.frame
     if(showing && frame.epoch==epoch && composition.revision==revision && surface.timestamp==composition.timestamp) {
@@ -246,7 +252,7 @@ class BrowserVideoView(context: Context, appContext: AppContext) : ExpoView(cont
   private fun contentWidth(f:FrameMetadata)=if(f.cropWidth>0)f.cropWidth else f.width.toDouble()
   private fun contentHeight(f:FrameMetadata)=if(f.cropHeight>0)f.cropHeight else f.height.toDouble()
   private fun rect(f:FrameMetadata):DoubleArray? {val w=contentWidth(f);val h=contentHeight(f);if(w<=0 || h<=0 || f.cropX<0 || f.cropY<0 || f.cropX+w>f.width || f.cropY+h>f.height || width<=0 || height<=0)return null;val scale=minOf(width/w,height/h);val x=(width-w*scale)/2;val y=(height-h*scale)/2;return doubleArrayOf(x,y,x+w*scale,y+h*scale)}
-  override fun onWindowVisibilityChanged(visibility: Int){super.onWindowVisibilityChanged(visibility);showing=visibility==View.VISIBLE;if(!showing && initialized && !destroyed)reset(epoch)}
-  override fun onDetachedFromWindow(){showing=false;reset(epoch);super.onDetachedFromWindow()}
+  override fun onWindowVisibilityChanged(visibility: Int){super.onWindowVisibilityChanged(visibility);showing=visibility==View.VISIBLE;if(!showing && initialized && !destroyed)reset(epoch, true)}
+  override fun onDetachedFromWindow(){showing=false;reset(epoch, true);super.onDetachedFromWindow()}
   fun destroy(){if(destroyed)return;destroyed=true;showing=false;reset("");worker.post{release();thread.quitSafely()}}
 }

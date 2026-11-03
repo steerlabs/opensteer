@@ -37,7 +37,6 @@ const maxBrowserRelayChannels = 32;
 
 const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),
-  videoVersion: z.literal(1).optional().catch(undefined),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
@@ -186,7 +185,6 @@ export class LocalBrowserRuntimeBridge {
     const health = await this.#readHealth();
     return {
       wireVersion: health.wireVersion,
-      ...(health.videoVersion ? { videoVersion: health.videoVersion } : {}),
       ...(health.localProfileStorage
         ? {
             localProfileStorage: health.localProfileStorage,

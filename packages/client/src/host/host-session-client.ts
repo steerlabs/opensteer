@@ -553,7 +553,7 @@ export interface HttpHostClientOptions {
    * elsewhere an unopened Home would be held outside the Workspace's Thread page.
    */
   readonly prefetchHome?: boolean;
-  readonly webSocketFactory?: (url: string) => WebSocketClient;
+  readonly webSocketFactory?: (url: string, protocols?: string[]) => WebSocketClient;
 }
 
 // Keep thumbnails across remounts without retaining unbounded file bytes on phones.
@@ -676,7 +676,10 @@ export class HttpHostClient {
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
     {
       selected: () => this.#browserPresentation === "h264",
-      connect: () => this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video")),
+      connect: (token) =>
+        this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video"), [
+          `opensteer-video.${token}`,
+        ]),
     },
   );
   readonly #targetedWatch = new BrowserWatchStore(
@@ -693,7 +696,10 @@ export class HttpHostClient {
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
     {
       selected: () => this.#browserPresentation === "h264",
-      connect: () => this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video")),
+      connect: (token) =>
+        this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video"), [
+          `opensteer-video.${token}`,
+        ]),
     },
   );
   #targetedBrowserSocket(
@@ -1155,7 +1161,7 @@ export class HttpHostClient {
   readonly #reconnectMaxDelayMs: number;
   readonly #refreshIntervalMs: number;
   readonly #prefetchHome: boolean;
-  readonly #webSocketFactory: (url: string) => WebSocketClient;
+  readonly #webSocketFactory: (url: string, protocols?: string[]) => WebSocketClient;
   readonly #lifecycleDisposers: (() => void)[] = [];
   readonly #socketTrustWindowMs: number;
   #network: ClientNetworkState;
@@ -1266,7 +1272,8 @@ export class HttpHostClient {
     );
     this.#refreshIntervalMs = Math.max(0, options.refreshIntervalMs ?? defaultRefreshIntervalMs);
     this.#prefetchHome = options.prefetchHome === true;
-    this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
+    this.#webSocketFactory =
+      options.webSocketFactory ?? ((url, protocols) => new globalThis.WebSocket(url, protocols));
     this.#socketTrustWindowMs = options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs;
     const lifecycle = options.lifecycle?.getSnapshot();
     this.#network = lifecycle?.network ?? "unknown";

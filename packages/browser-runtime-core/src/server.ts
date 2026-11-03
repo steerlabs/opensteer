@@ -114,8 +114,7 @@ export class BrowserRuntimeServer {
           !safeTokenEqual(token, this.relayBridge.token) ||
           !channel?.attachment ||
           !id.success ||
-          channel.media.has(id.data) ||
-          channel.media.size >= 2
+          channel.media.has(id.data)
         ) {
           refuseConnection(socket, 403, "Forbidden");
           return;
@@ -131,7 +130,7 @@ export class BrowserRuntimeServer {
               );
               if (ack.streamId !== streamId) throw new Error("Wrong browser stream");
               void channel
-                .attachment!.videoAck(streamId, ack.sequence, ack.retainFor)
+                .attachment!.videoAck(streamId, ack.sequence)
                 .catch(() => media.close(4002, "Invalid source admission"));
             } catch {
               media.close(4002, "Invalid source admission");
@@ -353,7 +352,10 @@ export class BrowserRuntimeServer {
                 if (error) media.close(1011, "Browser media write failed");
               });
             })
-            .catch(() => media.close(1011, "Browser producer failed"));
+            .catch(() => {
+              if (operation.type === "browser.video.start")
+                media.close(1011, "Browser producer failed");
+            });
           return;
         }
       }

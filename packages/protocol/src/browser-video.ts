@@ -44,40 +44,15 @@ const rect = z.strictObject({
   width: rasterSize,
   height: rasterSize,
 });
-export const BrowserPresentedFrameSchema = z
-  .strictObject({
-    producerStreamId: z.uuid(),
-    documentGeneration: token,
-    authorityEpoch: token,
-    drawnRevision: token,
-    appliedThrough: z.literal("0"),
-    frameSinkId: token,
-    surfaceId: token,
-    frameToken: BrowserVideoU64Schema,
-    capturedAtUs: BrowserVideoU64Schema,
-    sourceWidth: z.number().int().positive().max(16384),
-    sourceHeight: z.number().int().positive().max(16384),
-    deviceScaleFactor: z.number().finite().positive().max(16),
-    rootCssWidth: css,
-    rootCssHeight: css,
-    visualViewport: z.strictObject({
-      width: css,
-      height: css,
-      offsetX: z.number().finite().min(-1000000).max(1000000),
-      offsetY: z.number().finite().min(-1000000).max(1000000),
-      scale: z.number().finite().positive().max(16),
-    }),
-    crop: z.strictObject({ x: z.literal(0), y: z.literal(0), width: css, height: css }),
-    rasterCrop: rect,
-  })
-  .refine(
-    (p) =>
-      p.crop.width === p.rootCssWidth &&
-      p.crop.height === p.rootCssHeight &&
-      p.visualViewport.width === p.rootCssWidth &&
-      p.visualViewport.height === p.rootCssHeight,
-    "Certificate viewport and crop disagree",
-  );
+export const BrowserPresentedFrameSchema = z.object({
+  producerStreamId: z.uuid(),
+  documentGeneration: token,
+  authorityEpoch: token,
+  drawnRevision: token,
+  rootCssWidth: css,
+  rootCssHeight: css,
+  rasterCrop: rect,
+});
 export type BrowserPresentedFrame = z.infer<typeof BrowserPresentedFrameSchema>;
 export const BrowserVideoFrameHeaderSchema = z
   .strictObject({
@@ -86,6 +61,7 @@ export const BrowserVideoFrameHeaderSchema = z
     width: dimension,
     height: dimension,
     presentation: BrowserPresentedFrameSchema,
+    geometryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   })
   .refine(displayKeyHasCodec, "Only keyframes carry a required avc1 codec")
   .refine(
@@ -182,18 +158,18 @@ export const BrowserVideoStateSchema = z.strictObject({
       "transport",
     ])
     .optional(),
-  uplinkBitrate: z.number().int().min(50000).max(20000000).optional(),
   budget: BrowserVideoBudgetSchema.optional(),
   capacity: BrowserVideoCapacitySchema.optional(),
   replayThrough: DisplaySequenceSchema.optional(),
 });
 export type BrowserVideoState = z.infer<typeof BrowserVideoStateSchema>;
+export const BrowserVideoReplaySchema = z.strictObject({ replayThrough: DisplaySequenceSchema });
 export const BrowserVideoClickResultSchema = z.strictObject({
   type: z.literal("browser.guarded-click.result"),
   surfaceId: BrowserSurfaceIdSchema,
   streamId: DisplayStreamIdSchema,
   gestureId: z.uuid(),
-  producerId: z.uuid().optional(),
+  viewerSlot: z.uuid().optional(),
   outcome: z.enum(["dispatched", "refused", "uncertain"]),
 });
 export const BrowserVideoAttachmentSchema = z.strictObject({
@@ -206,10 +182,10 @@ export const BrowserVideoAttachmentSchema = z.strictObject({
 export const BrowserVideoClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...browserBase,
-    type: z.literal("video.recover"),
+    type: z.literal("video.presented"),
     surfaceId: BrowserSurfaceIdSchema,
     streamId: DisplayStreamIdSchema,
-    through: DisplaySequenceSchema,
+    reference: BrowserPresentationRefSchema,
   }),
   z.strictObject({
     ...browserBase,
@@ -236,19 +212,13 @@ export const BrowserVideoClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...browserBase,
-    type: z.literal("video.presented"),
-    surfaceId: BrowserSurfaceIdSchema,
-    streamId: DisplayStreamIdSchema,
-    reference: BrowserPresentationRefSchema,
-  }),
-  z.strictObject({
-    ...browserBase,
     type: z.literal("video.unsubscribe"),
     surfaceId: BrowserSurfaceIdSchema,
   }),
   z.strictObject({
     ...browserBase,
     type: z.literal("input.guarded-click"),
+    viewerSlot: z.uuid().optional(),
     gestureId: z.uuid(),
     surfaceId: BrowserSurfaceIdSchema,
     streamId: DisplayStreamIdSchema,
@@ -270,10 +240,7 @@ export const BrowserVideoMediaClientMessageSchema = z.discriminatedUnion("type",
   BrowserVideoAckSchema,
   z.strictObject({ type: z.literal("video.keyframe"), streamId: DisplayStreamIdSchema }),
 ]);
-export const BrowserVideoViewerSlotSchema = z.string().uuid();
-export const BrowserVideoSourceAckSchema = BrowserVideoAckSchema.extend({
-  retainFor: z.array(BrowserVideoViewerSlotSchema).max(8),
-});
+export const BrowserVideoSourceAckSchema = BrowserVideoAckSchema;
 
 export function encodeBrowserVideoFrame(
   header: BrowserVideoFrameHeader,
@@ -290,9 +257,7 @@ export function decodeBrowserVideoFrame(bytes: Uint8Array): {
 }
 export function immutableBrowserVideoHeader(header: unknown): BrowserVideoFrameHeader {
   const parsed = BrowserVideoFrameHeaderSchema.parse(header);
-  Object.freeze(parsed.presentation.crop);
   Object.freeze(parsed.presentation.rasterCrop);
-  Object.freeze(parsed.presentation.visualViewport);
   Object.freeze(parsed.presentation);
   Object.freeze(parsed);
   return parsed;

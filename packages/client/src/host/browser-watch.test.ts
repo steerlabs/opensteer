@@ -503,3 +503,119 @@ it.each([false, true])(
     }
   },
 );
+
+describe("H.264 browser lifecycle", () => {
+  it("uses the measured budget, resumes paused video, retries stopped video and ends picture demand", () => {
+    vi.useFakeTimers();
+    const socket = new TargetSocket(),
+      media = new TargetSocket();
+    const connect = vi.fn(() => media);
+    const store = new BrowserWatchStore(
+      () => socket,
+      "control",
+      undefined,
+      () => 100,
+      () => false,
+      undefined,
+      () => false,
+      () => false,
+      { selected: () => true, connect },
+    );
+    try {
+      const control = store.retain(sessionId, surfaceId, { picture: false });
+      let picture = store.retain(sessionId, surfaceId);
+      store.video.budget(sessionId, surfaceId, 640, 480);
+      socket.open();
+      socket.receive({
+        type: "browser.snapshot",
+        sessionId,
+        state: "ready",
+        access: "read-write",
+        targetedStreamingVersion: 1,
+        videoVersion: 1,
+        dialog: null,
+        surfaces: [{ id: surfaceId, active: true, title: "", url: "about:blank" }],
+      });
+      const sent = () => socket.sent.map((s) => JSON.parse(s));
+      expect(sent().find((m) => m.type === "video.subscribe").budget).toMatchObject({
+        maxWidth: 640,
+        maxHeight: 480,
+      });
+      const streamId = "dsp_00000000-0000-4000-8000-000000000002";
+      picture();
+      expect(sent().at(-2)).toMatchObject({ type: "video.unsubscribe" });
+      socket.receive({
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "z".repeat(43),
+      });
+      expect(connect).not.toHaveBeenCalled();
+      picture = store.retain(sessionId, surfaceId);
+
+      socket.receive({
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "x".repeat(43),
+      });
+      expect(connect).toHaveBeenCalledWith("x".repeat(43));
+      media.open();
+      socket.receive({
+        type: "browser.video.state",
+        surfaceId,
+        streamId,
+        state: "paused",
+        reason: "budget",
+      });
+      vi.advanceTimersByTime(100);
+      expect(sent().at(-1)).toMatchObject({ type: "video.budget", streamId });
+      socket.receive({
+        type: "browser.video.state",
+        surfaceId,
+        streamId,
+        state: "stopped",
+        reason: "source-ended",
+      });
+      vi.advanceTimersByTime(100);
+      expect(sent().filter((m) => m.type === "video.subscribe")).toHaveLength(3);
+      socket.receive({
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "y".repeat(43),
+      });
+      picture();
+      expect(sent().some((m) => m.type === "video.unsubscribe")).toBe(true);
+      expect(store.video.state(sessionId, surfaceId)?.state).toBe("stopped");
+      expect(socket.closes).toHaveLength(0);
+      control();
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("keeps unsupported producers visible without disconnecting the control socket", () => {
+    const socket = new TargetSocket();
+    const store = new BrowserWatchStore(
+      () => socket,
+      "control",
+      undefined,
+      () => 100,
+      () => false,
+      undefined,
+      () => false,
+      () => false,
+      { selected: () => true, connect: () => new TargetSocket() },
+    );
+    try {
+      store.retain(sessionId, surfaceId);
+      socket.open();
+      socket.admit();
+      expect(store.get(sessionId, surfaceId).error).toContain("Update the browser computer");
+      expect(socket.closes).toHaveLength(0);
+    } finally {
+      store.dispose();
+    }
+  });
+});

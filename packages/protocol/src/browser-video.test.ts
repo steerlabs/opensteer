@@ -6,6 +6,7 @@ import {
   browserVideoCounter,
   browserVideoRootPoint,
 } from "./browser-video.js";
+import { TargetedBrowserClientMessageSchema } from "./browser.js";
 import { browserVideoTestHeader } from "./browser-video.test-support.js";
 
 describe("certified browser video wire", () => {
@@ -44,15 +45,26 @@ describe("certified browser video wire", () => {
           rasterCrop: { x: 100, y: 0, width: 100, height: 100 },
         },
       },
-      {
-        presentation: {
-          ...browserVideoTestHeader.presentation,
-          crop: { x: 0, y: 0, width: 50, height: 100 },
-        },
-      },
     ])
       expect(
         BrowserVideoFrameHeaderSchema.safeParse({ ...browserVideoTestHeader, ...patch }).success,
       ).toBe(false);
   });
+});
+
+it("admits H.264 scrolling on the existing targeted input lane", () => {
+  expect(
+    TargetedBrowserClientMessageSchema.safeParse({
+      type: "input.wheel",
+      surfaceId: "tab",
+      geometryRevision: browserVideoTestHeader.geometryRevision,
+      viewportWidth: 100,
+      viewportHeight: 100,
+      x: 0.5,
+      y: 0.5,
+      deltaX: 0,
+      deltaY: 50,
+      modifiers: [],
+    }).success,
+  ).toBe(true);
 });

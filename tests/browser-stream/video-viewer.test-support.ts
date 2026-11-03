@@ -90,11 +90,9 @@ export function start(options: {
     () => false,
     {
       selected: () => true,
-      connect: () => {
-        const socket = new WebSocket(options.media);
-        socket.addEventListener("message", ({ data }) => {
-          if (typeof data === "string") admitted.resolve();
-        });
+      connect: (token) => {
+        const socket = new WebSocket(options.media, [`opensteer-video.${token}`]);
+        socket.addEventListener("open", () => admitted.resolve());
         return socket;
       },
     },

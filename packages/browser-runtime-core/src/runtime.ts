@@ -82,7 +82,6 @@ export interface BrowserOpenTiming {
 
 export interface BrowserRuntimeHealth {
   wireVersion: 1;
-  videoVersion?: 1;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
   runtimeId: string;
@@ -181,9 +180,8 @@ export class BrowserAttachment {
   videoAck(
     streamId: import("@opensteer/protocol").DisplayStreamId,
     sequence: number,
-    retainFor: readonly string[],
   ): Promise<void> {
-    return this.controller.videoAck(streamId, sequence, retainFor);
+    return this.controller.videoAck(streamId, sequence);
   }
   stopVideo(streamId: import("@opensteer/protocol").DisplayStreamId): Promise<void> {
     return this.controller.stopVideo(streamId);
@@ -308,9 +306,6 @@ export class BrowserRuntime implements NativePresentationSource {
   health(): BrowserRuntimeHealth {
     return {
       wireVersion: 1,
-      ...(this.launcher.presentationVersion
-        ? { videoVersion: this.launcher.presentationVersion }
-        : {}),
       ...(this.localProfileStorage
         ? {
             localProfileStorage: this.localProfileStorage,

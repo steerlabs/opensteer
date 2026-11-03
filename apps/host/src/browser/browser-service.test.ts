@@ -46,6 +46,7 @@ import {
 } from "./browser-local-profiles.js";
 import {
   BrowserService,
+  type BrowserRuntimeConnection,
   type ActiveBrowserProfileGrant,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
@@ -56,6 +57,9 @@ import {
   type BrowserUsageCredit,
   type BrowserUsePage,
 } from "./browser-service.js";
+import { browserVideoFixture } from "./browser-video.test-support.js";
+import { once } from "node:events";
+import { browserPresentationRef } from "@opensteer/protocol";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 const editingEvidenceRoot =
@@ -77,6 +81,7 @@ function runnerTarget(options: {
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
+  readonly video?: BrowserRuntimeConnection["video"];
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly workspaceTabRestoreVersion?: boolean;
@@ -123,6 +128,7 @@ function runnerTarget(options: {
                   },
                 });
               }
+              if (options.video) Object.assign(socket, { video: options.video });
               installWebSocketLiveness(socket);
               return socket;
             },
@@ -137,6 +143,7 @@ function runnerTarget(options: {
             clipboard: options.clipboard,
             targetControl: options.targetControl ?? false,
             rasterDemand: options.rasterDemand ?? false,
+            ...(options.video ? { video: options.video } : {}),
             placementKey: `runner:${runnerId}:${runtimeId}`,
             runtimeId,
           }
@@ -189,6 +196,130 @@ afterEach(async () => {
 });
 
 describe("BrowserService", () => {
+  it("keeps browser control connected through stale video messages, double taps, generation changes and capacity refusals", async () => {
+    const f = await browserVideoFixture();
+    cleanups.push(f.close);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+      inputLanes: true,
+      video: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Video" });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      video: { hub: f.hub, binding: f.binding },
+    });
+    const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+    const peer = new RecordingPeer("video-control");
+    const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
+    const send = (message: Record<string, unknown>) =>
+      attachment.handle(Buffer.from(JSON.stringify(message)), false);
+    const messages = () => peer.textFrames.map((s) => JSON.parse(s));
+    await send({
+      type: "video.subscribe",
+      surfaceId: "page-1",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 },
+    });
+    const attached = messages().find((m) => m.type === "browser.video.attached");
+    const media = new WebSocket(`${f.origin}/v1/browser/video`, [
+      `opensteer-video.${attached.mediaToken}`,
+    ]);
+    cleanups.push(async () => {
+      media.terminate();
+    });
+    await once(media, "open", { signal: AbortSignal.timeout(2000) });
+    const source = await f.source();
+    source.send(1);
+    await vi.waitFor(() => expect(source.acks, "picture admitted by Host").toHaveLength(1), {
+      timeout: 2000,
+    });
+    const reference = browserPresentationRef(f.header(1));
+    const click = {
+      type: "input.guarded-click",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+      gestureId: randomUUID(),
+      point: { x: 64, y: 32 },
+      button: "left",
+      modifiers: 0,
+      inputSequence: 1,
+      inputGeneration: 1,
+    };
+    await send(click);
+    await vi.waitFor(
+      () =>
+        expect(
+          runtime.receivedCommands().some((m) => m.type === "input.guarded-click"),
+          "advanced input generation accepted",
+        ).toBe(true),
+      { timeout: 2000 },
+    );
+    await send({ ...click, inputSequence: 2 });
+    expect(messages().at(-1)).toMatchObject({
+      type: "browser.guarded-click.result",
+      outcome: "refused",
+    });
+    await send({
+      type: "video.budget",
+      surfaceId: "page-1",
+      streamId: "dsp_00000000-0000-4000-8000-000000000009",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 },
+    });
+    await send({
+      type: "video.gesture",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+      gestureId: randomUUID(),
+      phase: "begin",
+    });
+    await send({
+      type: "video.gesture",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+      gestureId: randomUUID(),
+      phase: "begin",
+    });
+    f.hub.retireTarget(f.binding, "page-1");
+    await send({
+      type: "video.presented",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+    });
+    await send({ ...click, inputSequence: 3, gestureId: randomUUID() });
+    expect(messages().at(-1)).toMatchObject({
+      type: "browser.guarded-click.result",
+      outcome: "refused",
+    });
+    const full = vi.spyOn(f.hub, "add").mockImplementationOnce(async (_binding, viewer) => {
+      await viewer.send({
+        type: "browser.video.state",
+        surfaceId: viewer.target.surfaceId,
+        streamId: attached.streamId,
+        state: "failed",
+        reason: "capacity",
+      });
+    });
+    await send({
+      type: "video.subscribe",
+      surfaceId: "page-1",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 },
+    });
+    expect(messages().at(-1)).toMatchObject({ state: "failed", reason: "capacity" });
+    expect(peer.closed).toBeNull();
+    full.mockRestore();
+    attachment.close();
+  });
+
   it("bounds queued database admission and fences it when the owner retries after timeout", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
@@ -4813,6 +4944,7 @@ function freshService(options: {
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
+  readonly video?: BrowserRuntimeConnection["video"];
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly actorMetadataTimeoutMs?: number;
@@ -4842,6 +4974,7 @@ function freshService(options: {
     }),
     targetResolver: runnerTarget({
       url: options.runtime.url,
+      ...(options.video ? { video: options.video } : {}),
       navigationAttributionVersion: options.navigationAttribution ?? options.history !== undefined,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
@@ -5683,6 +5816,7 @@ async function startFakeRuntime(
     readonly deferInitialSnapshot?: boolean;
     readonly initialDialog?: Record<string, unknown> | null;
     readonly inputLanes?: boolean;
+    readonly video?: boolean;
     readonly targetedStreaming?: boolean;
     readonly navigationAttribution?: boolean;
     readonly navigation?: boolean;
@@ -5760,6 +5894,7 @@ async function startFakeRuntime(
             ? { navigationAttributionVersion: 1 }
             : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
+          ...(options.video ? { videoVersion: 1 } : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {

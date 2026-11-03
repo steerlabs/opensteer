@@ -355,7 +355,6 @@ export class MacWindowVideoRelay {
     });
     entry.data = data;
     entry.forwarding = new MediaForwarder({
-      maxFrames: 8,
       maxBytes: 8 * displayMaxEnvelopeBytes,
       writable: (bytes) =>
         data.readyState === WebSocket.OPEN &&

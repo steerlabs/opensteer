@@ -97,19 +97,11 @@ JPEG after an H.264 failure. Ordinary agent CDP never acquires this private owne
 
 Stock npm Electron does not contain the producer. After the producer owner has
 linked and qualified the custom build, development Electron must use
-`ELECTRON_OVERRIDE_DIST_PATH=/Users/timjang/Developer/electron-build/electron/src/out/Testing`.
+`ELECTRON_OVERRIDE_DIST_PATH` pointing to the directory containing that local
+Electron distribution.
 Run Electron inside the disposable VM, with that distribution staged at the
 configured path inside the guest. Do not launch Electron or drive the shared host
 screen. Do not modify the external Electron build from this checkout.
-
-The adapter in `apps/desktop/src/browser/electron-browser-presentation.ts` is the
-only place that translates native video commands/certificates. Its retention
-operations require publication-to-offer transfer on ACK, a current picture per
-viewer, temporary gesture holds, offered-only recovery and release. Rate updates
-must preserve the stream. The supplied original producer queue has neither these
-retention operations nor in-place `OpensteerVideo.update`; qualify the revised
-native API against this adapter before using interactive H.264. Do not translate a
-missing operation into a repeated start, ordinary input or a different codec.
 
 Run the focused transport, owner and presenter checks:
 
@@ -120,27 +112,15 @@ swift test --package-path apps/mobile/modules/phone-display/ios
 pnpm bench:browser-stream --producer fixture-h264 --profile all --source-profile weak-cell --devices 2 --out /tmp/browser-h264-fixture.json
 ```
 
-Certified browser canvas viewing selects software WebCodecs up front. In the
-current Chromium viewer, the fixture's lone initial key produced no hardware
-output despite `optimizeForLatency`; software presented both initial and final
-stills. `--decoder prefer-hardware` keeps that qualification visible. Do not add
-fake wake-up frames or flush/re-key every image to hide buffering.
-
-The fixture benchmark uses real pre-encoded lime/blue AUs, synthetic certificates,
-the real Host media hub and production WatchStore/WebCodecs/canvas path. It includes
-attach, source-uplink shaping and independent devices. It proves neither native
-input nor an encoder's rate/CPU/idle behavior. The unchanged JPEG benchmark owns
-real-page scroll, typing and click workloads. Custom producer kinds require an
-explicit qualified executable and the VM/private-owner or Runner-pipe workflow;
-no stock producer is substituted. `--viewer ios`/`android` require native device
-qualification rather than a canvas substitute.
+For weak-cell fixture runs, inspect attach time, motion, key requests and each
+device's independent recovery. Repeat with hardware and software backends against
+the custom producer before qualification. Fixture AUs do not qualify encoder rate,
+CPU, idle behavior or native input. Use reserved devices for `--viewer ios` and
+`--viewer android`.
 
 In the VM or reserved native job, use the existing PhoneDisplay fixture entry
 under `apps/mobile/modules/phone-display/tests/native`. Exercise the
 `PhoneDisplayVideo` view with the same AUs and full per-input identity metadata.
-The existing native journey now checks that view's lone key, final delta, per-output
-certificate, replay suppression and reset with real screenshot pixels; its touch
-events record the sampled certificate for the reserved-device input run.
 Check same-sized alternating colours, delayed/skipped output, a lone initial key,
 a final delta, replay suppression, resize while touching and background/reset.
 The iOS Simulator SDK has no Metal drawable presentation receipt and advertises
@@ -148,8 +128,7 @@ this capability as unsupported; use an owned physical iPhone for that acceptance
 An iOS drawable presentation or Android owned texture commit must identify the
 visible colour; decoder admission and frame-rendered callbacks alone do not pass.
 Check that native touch-start retains the old certificate through a later picture,
-and refuses while the presentation identity is ambiguous. Keep real Connect,
+including touch-down while a newer frame is being submitted. Keep real Connect,
 hardware/software encoders, text readability, popup exclusions, multi-device
 handover and native disposal/cleanup as explicit unqualified boundaries until the
-corresponding binary/device run passes. A standalone Runner implements only the
-typed `BrowserPage.presentation` port here; its private launch pipe is separate.
+corresponding binary/device run passes.

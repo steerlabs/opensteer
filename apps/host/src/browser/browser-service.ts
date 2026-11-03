@@ -4689,17 +4689,7 @@ class HostedBrowserBroker {
       const wasSubscribed = outlet.subscription !== null;
       this.#consumers.delete(peer.id);
       const video = this.#socket.video;
-      if (video) {
-        const slot =
-          outlet.videoStream && video.hub.slot(outlet.clipboardToken, outlet.videoStream);
-        if (slot && outlet.surfaceId)
-          void this.#sendCommand({
-            type: "video.unsubscribe",
-            surfaceId: BrowserSurfaceIdSchema.parse(outlet.surfaceId),
-            producerId: slot,
-          }).catch(() => undefined);
-        video.hub.remove(outlet.clipboardToken);
-      }
+      video?.hub.remove(outlet.clipboardToken);
       this.#passkeys?.refresh();
       if (
         outlet.mode === "control" &&
@@ -5038,15 +5028,11 @@ class HostedBrowserBroker {
     }
     const message = BrowserServerMessageSchema.parse(decoded);
     if (message.type === "browser.guarded-click.result") {
-      if (!message.producerId) return false;
-      const id = this.#socket.video?.hub.completeGesture(
-        message.streamId,
-        message.producerId,
-        message.gestureId,
-      );
+      if (!message.viewerSlot) return false;
+      const id = this.#socket.video?.hub.outlet(message.streamId, message.viewerSlot);
       const consumer = id && [...this.#consumers.values()].find((c) => c.clipboardToken === id);
       if (consumer && (await consumer.authorized())) {
-        const { producerId: _producer, ...result } = message;
+        const { viewerSlot: _slot, ...result } = message;
         await consumer.sendText(JSON.stringify(result));
       }
       return false;
@@ -5518,36 +5504,59 @@ class HostedBrowserBroker {
           message: "The engine clipboard was not negotiated.",
         }),
       );
-    if (
-      message.type === "input.guarded-click" ||
-      (message.type === "video.gesture" && message.phase === "begin")
-    ) {
+    // Receipts already in flight can outlive their stream; no producer holds depend on them.
+    if (message.type === "video.presented" || message.type === "video.gesture") return;
+    const refuseClick = async () => {
+      if (message.type !== "input.guarded-click") return;
+      await outlet.sendText(
+        JSON.stringify({
+          type: "browser.guarded-click.result",
+          surfaceId: message.surfaceId,
+          streamId: message.streamId,
+          gestureId: message.gestureId,
+          outcome: "refused",
+        }),
+      );
+    };
+    if (message.type === "input.guarded-click") {
+      if (message.inputGeneration === outlet.inputGeneration + 1) outlet.inputGeneration++;
       if (
         message.inputSequence === undefined ||
         message.inputSequence <= outlet.guardedClientSequence ||
         message.inputGeneration !== outlet.inputGeneration
-      )
-        throw new Error("Stale browser gesture sequence.");
+      ) {
+        await refuseClick();
+        return;
+      }
       outlet.guardedClientSequence = message.inputSequence;
     }
     if (
       message.type === "video.subscribe" ||
       message.type === "video.budget" ||
-      message.type === "video.presented" ||
-      message.type === "video.unsubscribe" ||
-      message.type === "video.gesture"
+      message.type === "video.unsubscribe"
     ) {
       const video = this.#socket.video;
-      if (!video || this.#snapshot?.videoVersion !== 1)
-        throw new Error("Update the browser computer for H.264 presentation.");
-      const videoSurface = message.surfaceId;
+      if (!video || this.#snapshot?.videoVersion !== 1) {
+        if (message.type === "video.subscribe")
+          await outlet.sendText(
+            JSON.stringify({
+              type: "browser.video.state",
+              surfaceId: message.surfaceId,
+              streamId: `dsp_${randomUUID()}`,
+              state: "failed",
+              reason: "unsupported",
+            }),
+          );
+        return;
+      }
       if (
-        !this.#snapshot.surfaces.some((s) => s.id === videoSurface) ||
         (outlet.surfaceId && outlet.surfaceId !== message.surfaceId) ||
         !(await outlet.authorized())
       )
         throw new Error("Browser video target is not authorized.");
       if (message.type === "video.subscribe") {
+        const videoSurface = message.surfaceId;
+        if (!this.#snapshot.surfaces.some((s) => s.id === videoSurface)) return;
         outlet.surfaceId = message.surfaceId;
         outlet.subscription = "control";
         await this.#reconcileStreaming();
@@ -5557,66 +5566,30 @@ class HostedBrowserBroker {
           target: { kind: "browser-tab", sessionId: this.#sessionId, surfaceId: message.surfaceId },
           budget: message.budget,
           authorized: () => outlet.authorized(),
-          release: (slot) =>
-            this.#sendCommand({
-              type: "video.unsubscribe",
-              surfaceId: videoSurface,
-              producerId: slot,
-            }),
-          recover: (slot, streamId, through) =>
-            this.#sendCommand({
-              type: "video.recover",
-              surfaceId: videoSurface,
-              streamId,
-              through,
-              producerId: slot,
-            }),
           send: async (response) => {
             if (response.type === "browser.video.attached") outlet.videoStream = response.streamId;
+            if (
+              response.type === "browser.video.state" &&
+              (response.state === "stopped" || response.state === "failed") &&
+              outlet.videoStream === response.streamId
+            )
+              outlet.videoStream = null;
             await outlet.sendText(JSON.stringify(response));
           },
         });
-        return;
-      }
-      if (message.type === "video.unsubscribe") {
-        const slot =
-          outlet.videoStream && video.hub.slot(outlet.clipboardToken, outlet.videoStream);
-        if (slot) await this.#sendCommand({ ...message, producerId: slot });
+      } else if (message.type === "video.unsubscribe") {
         video.hub.remove(outlet.clipboardToken);
         outlet.videoStream = null;
         outlet.subscription = null;
         await this.#reconcileStreaming();
-        return;
-      }
-      if (outlet.videoStream !== message.streamId)
-        throw new Error("Browser video stream was replaced.");
-      if (message.type === "video.budget") {
+      } else if (outlet.videoStream === message.streamId) {
         video.hub.update(
           outlet.clipboardToken,
           message.streamId,
           message.budget,
           message.focus === true,
         );
-        return;
       }
-      if (message.type === "video.gesture") {
-        await video.hub.gesture(
-          outlet.clipboardToken,
-          message.streamId,
-          message.gestureId,
-          message.reference,
-          message.phase,
-        );
-        outlet.videoGesture = message.phase === "begin" ? message.gestureId : null;
-        const slot = video.hub.slot(outlet.clipboardToken, message.streamId);
-        if (!slot) throw new Error("Browser viewer ended.");
-        await this.#sendCommand({ ...message, producerId: slot });
-        return;
-      }
-      await video.hub.presented(outlet.clipboardToken, message.streamId, message.reference);
-      const slot = video.hub.slot(outlet.clipboardToken, message.streamId);
-      if (!slot) throw new Error("Browser video viewer ended.");
-      await this.#sendCommand({ ...message, producerId: slot });
       return;
     }
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
@@ -5856,20 +5829,25 @@ class HostedBrowserBroker {
         !video ||
         outlet.videoStream !== message.streamId ||
         outlet.surfaceId !== message.surfaceId ||
-        !(await video.hub.allowsClick(outlet.clipboardToken, message.streamId, message.reference))
-      )
-        throw new Error("Browser gesture does not name this viewer's retained picture.");
-      const slot = video.hub.slot(outlet.clipboardToken, message.streamId);
-      if (!slot) throw new Error("Browser viewer ended.");
-      if (
-        outlet.videoGesture !== message.gestureId ||
-        !video.hub.consumeGesture(outlet.clipboardToken, message.streamId, message.gestureId)
-      )
-        throw new Error("Browser gesture is stale.");
-      outlet.videoGesture = null;
+        !(await video.hub.allowsClick(
+          outlet.clipboardToken,
+          message.streamId,
+          message.reference,
+        )) ||
+        !video.hub.consumeClick(outlet.clipboardToken, message.streamId, message.gestureId)
+      ) {
+        await refuseClick();
+        return;
+      }
+      const viewerSlot = video.hub.slot(outlet.clipboardToken, message.streamId);
+      if (!viewerSlot) {
+        await refuseClick();
+        return;
+      }
       return this.#sendCommand({
         ...message,
-        producerId: slot,
+        producerId: outlet.clipboardToken,
+        viewerSlot,
         inputGeneration: outlet.inputGeneration,
         inputSequence: ++outlet.inputSequence,
         inputSequenceStart: undefined,
@@ -5889,27 +5867,6 @@ class HostedBrowserBroker {
       inputSequence: ++outlet.inputSequence,
       inputSequenceStart: undefined,
     };
-    if (message.type === "input.cancel" && outlet.videoStream && this.#socket.video) {
-      const slot = this.#socket.video.hub.slot(outlet.clipboardToken, outlet.videoStream);
-      if (slot) {
-        const pending = this.#socket.video.hub.cancelGesture(
-          outlet.clipboardToken,
-          outlet.videoStream,
-        );
-        if (pending && outlet.surfaceId) {
-          outlet.videoGesture = null;
-          await this.#sendCommand({
-            type: "video.gesture",
-            surfaceId: BrowserSurfaceIdSchema.parse(outlet.surfaceId),
-            streamId: outlet.videoStream,
-            producerId: slot,
-            phase: "cancel",
-            ...pending,
-          });
-        }
-        message = { ...message, producerId: slot };
-      }
-    }
     if (message.type === "input.cancel") outlet.inputGeneration++;
     if (message.type === "clipboard.paste-data") {
       if (outlet.clipboardOperations.size >= 32)
@@ -6335,7 +6292,6 @@ const browserFrameRateEstimateMs = 10_000;
  */
 export class BrowserConsumerOutlet {
   guardedClientSequence = -1;
-  videoGesture: string | null = null;
   videoStream: import("@opensteer/protocol").DisplayStreamId | null = null;
   frameWindow = false;
   #window = 1;

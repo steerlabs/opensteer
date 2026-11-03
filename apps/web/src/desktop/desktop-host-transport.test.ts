@@ -258,10 +258,12 @@ describe("Desktop Host renderer adapter", () => {
     expect(onHostWebSocketEvent).toHaveBeenCalledTimes(1);
     expect(() => firstFactory("wss://attacker.test/v1/realtime")).toThrow("another Deployment");
 
-    const socket = firstFactory("wss://home.connect.opensteer.test/v1/realtime");
+    const protocols = [`opensteer-video.${"x".repeat(43)}`];
+    const socket = firstFactory("wss://home.connect.opensteer.test/v1/browser/video", protocols);
     const opened = vi.fn();
     socket.addEventListener("open", opened);
     await vi.waitFor(() => expect(bridge.openHostWebSocket).toHaveBeenCalled());
+    expect(bridge.openHostWebSocket).toHaveBeenCalledWith({ path: "/v1/browser/video", protocols });
     receive!({ connectionId, type: "open" });
     expect(opened).toHaveBeenCalledTimes(1);
     socket.send("subscribe");

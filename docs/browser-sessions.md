@@ -348,25 +348,15 @@ Sources: `packages/browser-runtime-core/src/browser/surface-ledger.ts`,
 
 ### Certified video qualification
 
-H.264 browser viewing shares the display media envelope, link estimator and
-fan-out/recovery mechanics with Mac windows. BrowserService retains browser,
-profile, login and exact-tab authority. A dedicated media admission belongs to an
-already admitted control/watch outlet and cannot acquire control. Media never
-occupies its control connection. One rendition follows an explicit visible
-controller; slow spectators spend independent credit and can pause without
-resetting a healthy controller. With no controller, visible watchers choose the
-shared budget deterministically.
+H.264 media uses a separate connection from browser control. A certificate names
+pixels, not permission: the existing browser, profile, login and exact-tab checks
+still authorize each action. A tap samples the visible picture at contact start;
+Chromium refuses evicted certificates. Input is dispatched at most once and is
+never replayed after a refusal or uncertain result.
 
-A browser certificate identifies the copied pixels and their root CSS transform;
-it grants no input permission. Publication, offered frames, the current picture
-and pending gestures have separate bounded holds. Decoder admission returns
-credit; presentation advances a viewer's retained picture. Static silence never
-expires it. A new tap samples the presentation owner's certificate and local
-transform at contact start and retains it through the gesture. It never substitutes
-a newer frame or retries uncertain native input. Only the private native owner
-can perform the guarded left click; other input keeps its existing ordered lane.
-JPEG remains an explicit qualification selection until custom producers and every
-viewer are qualified. See the [qualification workflow](../.agents/skills/verify-browser-sessions/SKILL.md#certified-h264-browser-qualification).
+JPEG remains an explicit qualification selection. Browser v1 deliberately uses
+Baseline H.264 on both encoder backends; Constrained High needs producer and
+native-decoder qualification. See the [qualification workflow](../.agents/skills/verify-browser-sessions/SKILL.md#certified-h264-browser-qualification).
 
 ## Site icons
 

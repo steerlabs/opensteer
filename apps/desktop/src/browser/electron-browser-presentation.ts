@@ -4,7 +4,6 @@ import {
   BrowserPresentedFrameSchema,
   BrowserVideoU64Schema,
   type BrowserVideoBudget,
-  type BrowserPresentationRef,
 } from "@opensteer/protocol";
 import type {
   BrowserPresentationPort,
@@ -25,18 +24,16 @@ const enabledSchema = z.object({
 const startSchema = z.object({
   streamId: z.uuid(),
   backend: z.enum(["hardware", "software"]),
-  capacity: z.number().int().min(1).max(8),
+  capacity: z.number().int().min(1).max(8).optional(),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
-  maxFps: z.number().int().min(1).max(60),
+  maxFps: z.number().int().min(1).max(60).optional(),
 });
 const chunkSchema = z.object({
   streamId: z.uuid(),
-  generation: BrowserVideoU64Schema,
   sequence: BrowserVideoU64Schema,
-  ptsUs: BrowserVideoU64Schema,
-  key: z.boolean(),
-  codec: z.string().optional(),
+  timestampUs: BrowserVideoU64Schema,
+  keyframe: z.boolean(),
   width: z.number(),
   height: z.number(),
 });
@@ -97,24 +94,26 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
         if (!Buffer.isBuffer(bytes) || !authority || !raw || typeof raw !== "object")
           throw new Error("Invalid native browser video resource.");
         const metadata = chunkSchema.parse(raw);
-        if ("documentGeneration" in raw && raw.documentGeneration !== authority.documentGeneration)
-          throw new Error("Native browser document changed.");
         if (this.#stream !== null && metadata.streamId !== this.#stream)
           throw new Error("Native browser stream changed without replacement.");
         this.#stream = metadata.streamId;
         const presentation = BrowserPresentedFrameSchema.strip().parse({
-          ...raw,
+          ...("certificate" in raw && typeof raw.certificate === "object" ? raw.certificate : {}),
+          rasterCrop: "rasterCrop" in raw ? raw.rasterCrop : undefined,
           producerStreamId: metadata.streamId,
-          documentGeneration: authority.documentGeneration,
-          authorityEpoch: authority.authorityEpoch,
         });
+        if (
+          presentation.documentGeneration !== authority.documentGeneration ||
+          presentation.authorityEpoch !== authority.authorityEpoch
+        )
+          throw new Error("Native browser authority changed.");
         // Native metadata includes diagnostics; none becomes input authority or an expiry policy.
         const frame: BrowserProducerFrame = {
-          generation: metadata.generation,
+          generation: "1",
           sequence: metadata.sequence,
-          ptsUs: metadata.ptsUs,
-          key: metadata.key,
-          ...(metadata.codec ? { codec: metadata.codec } : {}),
+          ptsUs: metadata.timestampUs,
+          key: metadata.keyframe,
+          ...(metadata.keyframe ? { codec: browserCodec(bytes) } : {}),
           width: metadata.width,
           height: metadata.height,
           presentation,
@@ -155,10 +154,18 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
       this.#stream = result.streamId;
       return {
         producerStreamId: result.streamId,
-        capacity: { backend: result.backend, maxSessions: result.capacity, maxFps: result.maxFps },
+        ...(result.capacity
+          ? {
+              capacity: {
+                backend: result.backend,
+                maxSessions: result.capacity,
+                maxFps: result.maxFps ?? options.budget.maxFps,
+              },
+            }
+          : {}),
       };
     } catch (error) {
-      await this.stop();
+      if (this.#owner === owner && this.#epoch === epoch) await this.stop();
       throw error;
     }
   }
@@ -168,9 +175,9 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
     const epoch = this.#epoch;
     const updating = (async () => {
       while (this.#desiredBudget && this.#epoch === epoch) {
-        const { maxBitrate, ...next } = this.#desiredBudget;
+        const { maxBitrate, maxFps } = this.#desiredBudget;
         this.#desiredBudget = null;
-        await this.#command("OpensteerVideo.update", { ...next, bitrate: maxBitrate });
+        await this.#command("OpensteerVideo.update", { maxFps, bitrate: maxBitrate });
       }
     })().finally(() => {
       if (this.#updating === updating) this.#updating = null;
@@ -181,23 +188,8 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
   async keyframe(): Promise<void> {
     await this.#command("OpensteerVideo.requestKeyframe");
   }
-  async ack(sequence: string, retainFor: readonly string[]): Promise<void> {
-    await this.#command("OpensteerVideo.ack", { sequence, retainFor });
-  }
-  async hold(slot: string, reference: BrowserPresentationRef): Promise<void> {
-    await this.#command("OpensteerVideo.retain", { slot, drawnRevision: reference.drawnRevision });
-  }
-  async presented(slot: string, reference: BrowserPresentationRef): Promise<void> {
-    await this.#command("OpensteerVideo.presented", {
-      slot,
-      drawnRevision: reference.drawnRevision,
-    });
-  }
-  async recover(slot: string, through: number): Promise<void> {
-    await this.#command("OpensteerVideo.release", { slot, offeredThrough: String(through) });
-  }
-  async release(slot: string): Promise<void> {
-    await this.#command("OpensteerVideo.release", { slot });
+  async ack(sequence: string): Promise<void> {
+    await this.#command("OpensteerVideo.ack", { sequence });
   }
   async click(
     input: Parameters<BrowserPresentationPort["click"]>[0],
@@ -245,4 +237,16 @@ export class ElectronBrowserPresentation implements BrowserPresentationPort {
       return Promise.reject(new Error("Browser presentation ended."));
     return this.#owner.sendCommand(method, { streamId: this.#stream, ...params });
   }
+}
+
+// Codec configuration is part of translating Annex B to the shared envelope;
+// the Host validates the complete access unit before sending it to a viewer.
+function browserCodec(bytes: Uint8Array): string {
+  for (let i = 0; i + 7 < bytes.length; i++) {
+    if (bytes[i] !== 0 || bytes[i + 1] !== 0) continue;
+    const length = bytes[i + 2] === 1 ? 3 : bytes[i + 2] === 0 && bytes[i + 3] === 1 ? 4 : 0;
+    if (length && (bytes[i + length]! & 31) === 7)
+      return `avc1.${[...bytes.subarray(i + length + 1, i + length + 4)].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+  }
+  throw new Error("Browser keyframe has no codec configuration.");
 }

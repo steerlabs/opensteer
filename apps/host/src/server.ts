@@ -3158,7 +3158,10 @@ export async function createHostServer(
   );
 
   registerShellRoutes(app, { shell: dependencies.shellControl });
-  if (dependencies.browserVideo) registerBrowserVideoRoutes(app, dependencies.browserVideo);
+  if (dependencies.browserVideo)
+    registerBrowserVideoRoutes(app, dependencies.browserVideo, (request) =>
+      dependencies.authenticator.authenticateSession(request.headers, { mutation: true }),
+    );
   if (dependencies.displayStreams)
     registerComputerUseDisplayRoutes(app, {
       hub: dependencies.displayStreams,
@@ -3306,7 +3309,6 @@ export function advertisedCapabilities(
     "ownerViewWindows",
     "browser-target-control-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
-    "browser-h264-v1",
     "browser-frame-window-v1",
     "browser-raster-demand-v1",
     "browser-capture-region-v1",

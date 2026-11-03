@@ -1,6 +1,5 @@
 import { WebSocket } from "ws";
 import {
-  BrowserVideoBudgetSchema,
   BrowserVideoSourceAckSchema,
   decodeBrowserVideoFrame,
   displayMaxEnvelopeBytes,
@@ -26,11 +25,7 @@ interface Entry {
   budget: RateUpdate | null;
   revision: number;
   keyframe: boolean;
-  effective: string;
-  state: BrowserVideoState | null;
   updating: Promise<void> | null;
-  reportedCap: number;
-  ping: { at: number; payload: string } | null;
 }
 /** Dedicated media sockets; no encoded bytes use the auxiliary/control queue. */
 export class BrowserVideoRelay {
@@ -60,11 +55,7 @@ export class BrowserVideoRelay {
         budget: null,
         revision: 0,
         keyframe: false,
-        effective: JSON.stringify(operation.budget),
-        state: null,
         updating: null,
-        reportedCap: 1000000,
-        ping: null,
       };
       this.#entries.set(operation.streamId, entry);
       void this.#start(entry).catch(() => this.#fail(entry));
@@ -84,7 +75,8 @@ export class BrowserVideoRelay {
       return;
     }
     if (operation.type === "browser.video.budget") {
-      if (entry.budget && operation.revision <= entry.budget.revision) return;
+      if (operation.revision <= entry.revision) return;
+      entry.revision = operation.revision;
       entry.budget = operation;
       this.#budget(entry);
       return;
@@ -93,7 +85,7 @@ export class BrowserVideoRelay {
       entry.keyframe = true;
       return;
     }
-    void this.bridge.sendVideo(operation).catch(() => this.#fail(entry));
+    void this.bridge.sendVideo(operation).catch(() => undefined);
   }
   state(channelId: string, state: BrowserVideoState): Start | undefined {
     const e = this.#entries.get(state.streamId);
@@ -104,7 +96,6 @@ export class BrowserVideoRelay {
       e.start.target.surfaceId !== state.surfaceId
     )
       return;
-    e.state = state;
     if (state.state === "stopped" || state.state === "failed") this.#close(e);
     return e.start;
   }
@@ -148,7 +139,6 @@ export class BrowserVideoRelay {
     e.forwarding = new MediaForwarder({
       maxFrames: e.start.creditWindow,
       maxBytes: e.start.creditWindow * displayMaxEnvelopeBytes,
-      rate: { initialBitrate: 1_000_000, minimumBitrate: 50_000, maximumBitrate: 20_000_000 },
       writable: (bytes) =>
         data.readyState === WebSocket.OPEN &&
         data.bufferedAmount + bytes <= displayMaxEnvelopeBytes,
@@ -170,19 +160,8 @@ export class BrowserVideoRelay {
         );
         if (ack.streamId !== e.start.streamId) throw new Error("Wrong browser stream");
         e.forwarding!.ack(ack);
-        this.#budget(e);
-        if (!e.ping) {
-          e.ping = { at: Date.now(), payload: `media-rtt:${ack.sequence}` };
-          data.ping(e.ping.payload);
-        }
       } catch {
         this.#fail(e);
-      }
-    });
-    data.on("pong", (payload) => {
-      if (e.ping && payload.toString() === e.ping.payload) {
-        e.forwarding?.link?.roundTrip(Date.now() - e.ping.at, Date.now());
-        e.ping = null;
       }
     });
     media.on("message", (raw, binary) => {
@@ -207,34 +186,15 @@ export class BrowserVideoRelay {
   }
   #budget(e: Entry): void {
     if (!e.active || e.closed) return;
-    const requested = e.budget?.budget ?? e.start.budget;
-    const cap = e.forwarding?.link?.cap ?? 20000000;
-    const budget = { ...requested, maxBitrate: Math.min(requested.maxBitrate, cap) };
-    if (e.state && e.reportedCap !== cap) {
-      e.reportedCap = cap;
-      this.emit(e.start, { ...e.state, uplinkBitrate: cap, budget });
-    }
-    const encoded = JSON.stringify(budget);
-    if (encoded === e.effective) return;
-    e.effective = encoded;
-    if (e.state) this.emit(e.start, { ...e.state, uplinkBitrate: cap, budget });
-    if (e.updating) return;
-    e.updating = (async () => {
-      let sent = "";
-      while (!e.closed && sent !== e.effective) {
-        sent = e.effective;
-        const budget = BrowserVideoBudgetSchema.parse(JSON.parse(sent));
-        await this.bridge.sendVideo({
-          ...videoBinding(e.start),
-          type: "browser.video.budget",
-          revision: ++e.revision,
-          budget,
-        });
-      }
-    })()
-      .catch(() => this.#fail(e))
+    const operation = e.budget;
+    if (!operation || e.updating) return;
+    e.budget = null;
+    e.updating = this.bridge
+      .sendVideo(operation)
+      .catch(() => undefined)
       .finally(() => {
         e.updating = null;
+        this.#budget(e);
       });
   }
   #fail(e: Entry): void {

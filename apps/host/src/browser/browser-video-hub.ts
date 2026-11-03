@@ -49,8 +49,6 @@ export interface BrowserVideoViewer {
   /** The existing admitted outlet checks login and current browser/profile authority. */
   authorized(): Promise<boolean>;
   send(message: BrowserServerMessage): Promise<void>;
-  release(slot: string): Promise<void>;
-  recover(slot: string, streamId: DisplayStreamId, through: number): Promise<void>;
 }
 interface Viewer extends DisplayMediaViewer {
   readonly owner: BrowserVideoViewer;
@@ -64,8 +62,8 @@ interface Viewer extends DisplayMediaViewer {
   attached: boolean;
   paused: boolean;
   recoveries: number;
-  presented: BrowserPresentationRef | null;
-  gesture: { id: string; reference: BrowserPresentationRef; submitted: boolean } | null;
+  readonly clicks: Set<string>;
+  ping: { at: number; payload: string } | null;
   readonly offered: Map<number, BrowserPresentationRef>;
 }
 interface Stream extends DisplayMediaStream<Viewer> {
@@ -89,7 +87,6 @@ interface Stream extends DisplayMediaStream<Viewer> {
   budget: BrowserVideoBudget;
   revision: number;
   budgetAt: number;
-  uplinkBitrate: number;
   videoState: BrowserVideoState;
 }
 /** BrowserService owns watch/input authority. This hub only spends that admitted demand. */
@@ -112,20 +109,15 @@ export class BrowserVideoHub {
       s.viewers.has(v) &&
       v.socket?.readyState === WebSocket.OPEN,
     refresh: (s) => this.#refresh(s),
-    state: (s, v, state) => {
-      if (v.socket?.readyState === WebSocket.OPEN)
-        v.socket.send(
-          JSON.stringify({
-            ...s.videoState,
-            ...(state.replayThrough === undefined ? {} : { replayThrough: state.replayThrough }),
-          }),
-        );
-      void v.owner
-        .send({
-          ...s.videoState,
-          ...(state.replayThrough === undefined ? {} : { replayThrough: state.replayThrough }),
-        })
-        .catch(() => this.remove(v.owner.id));
+    state: (_s, v, state) => {
+      if (state.replayThrough !== undefined && v.socket?.readyState === WebSocket.OPEN)
+        v.socket.send(JSON.stringify({ replayThrough: state.replayThrough }));
+    },
+    sent: (viewer, frame) => {
+      if (!viewer.owner.input) return;
+      const { header } = decodeBrowserVideoFrame(frame.bytes);
+      viewer.offered.set(header.sequence, browserPresentationRef(header));
+      if (viewer.offered.size > 128) viewer.offered.delete(viewer.offered.keys().next().value!);
     },
     binary: (socket, bytes) => {
       if (
@@ -166,8 +158,19 @@ export class BrowserVideoHub {
       const siblings = [...this.#streams.values()].filter(
         (s) => s.binding.fence().runnerId === binding.fence().runnerId,
       );
-      const capacity = Math.min(2, ...siblings.map((s) => s.videoState.capacity?.maxSessions ?? 2));
-      if (siblings.length >= capacity) throw new Error("Browser video capacity is full.");
+      const capacity = Math.min(
+        ...siblings.map((s) => s.videoState.capacity?.maxSessions ?? Infinity),
+      );
+      if (siblings.length >= capacity) {
+        await owner.send({
+          type: "browser.video.state",
+          surfaceId: owner.target.surfaceId,
+          streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+          state: "failed",
+          reason: "capacity",
+        });
+        return;
+      }
       const id = DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`);
       const { claims, ticket } = this.#auth.issueBrowserVideoDataTicket({
         fence: binding.fence(),
@@ -203,7 +206,6 @@ export class BrowserVideoHub {
         budget: { ...owner.budget, maxBitrate: Math.min(owner.budget.maxBitrate, 1_000_000) },
         revision: 0,
         budgetAt: this.#now(),
-        uplinkBitrate: 1_000_000,
         videoState,
         state: { type: "display.state", state: "starting", generation: 0, width: 0, height: 0 },
         cache: [],
@@ -229,7 +231,10 @@ export class BrowserVideoHub {
         })
         .catch(() => this.#end(current, "transport"));
     }
-    if (stream.viewers.size >= 8) throw new Error("Too many browser video viewers.");
+    if (stream.viewers.size >= 8) {
+      await owner.send({ ...stream.videoState, state: "failed", reason: "capacity" });
+      return;
+    }
     if (
       this.#closed ||
       !binding.current() ||
@@ -272,8 +277,8 @@ export class BrowserVideoHub {
       deliveryEstimate: null,
       paused: false,
       recoveries: 0,
-      presented: null,
-      gesture: null,
+      clicks: new Set(),
+      ping: null,
       offered: new Map(),
     };
     stream.viewers.add(viewer);
@@ -288,50 +293,6 @@ export class BrowserVideoHub {
     await owner.send(stream.videoState);
     this.#budget(stream);
   }
-  /** Called on the already authorized outlet; the media token never grants this ability. */
-  async presented(
-    id: string,
-    streamId: DisplayStreamId,
-    reference: BrowserPresentationRef,
-  ): Promise<void> {
-    const found = this.#viewer(id, streamId);
-    if (!found) throw new Error("Browser video outlet ended.");
-    const { stream, viewer } = found;
-    if (
-      !viewer.owner.input ||
-      !sameBrowserPresentation(
-        viewer.offered.get(reference.sequence) ?? { ...reference, sequence: -1 },
-        reference,
-      )
-    )
-      throw new Error("Browser picture was not offered to this viewer.");
-    if (!(await viewer.owner.authorized()) || stream.closed || !stream.viewers.has(viewer))
-      throw new Error("Browser video authority ended.");
-    viewer.presented = reference;
-    for (const seq of viewer.offered.keys())
-      if (seq < reference.sequence) viewer.offered.delete(seq);
-    // Producer identity comes from the outlet, never from a client-selected slot.
-  }
-  async gesture(
-    id: string,
-    streamId: DisplayStreamId,
-    gestureId: string,
-    reference: BrowserPresentationRef,
-    phase: "begin" | "cancel",
-  ): Promise<void> {
-    const found = this.#viewer(id, streamId);
-    if (!found) throw new Error("Browser viewer ended.");
-    const v = found.viewer;
-    if (phase === "cancel") {
-      if (v.gesture?.id === gestureId && !v.gesture.submitted) v.gesture = null;
-      return;
-    }
-    if (v.gesture || !(await this.allowsClick(id, streamId, reference)))
-      throw new Error("Browser gesture pin is unavailable.");
-    v.gesture = { id: gestureId, reference, submitted: false };
-    found.stream.leader = v;
-    this.#budget(found.stream);
-  }
   async allowsClick(
     id: string,
     streamId: DisplayStreamId,
@@ -340,41 +301,26 @@ export class BrowserVideoHub {
     const found = this.#viewer(id, streamId);
     if (!found) return false;
     const { stream, viewer } = found;
-    const held =
-      viewer.gesture?.reference.sequence === ref.sequence
-        ? viewer.gesture.reference
-        : viewer.offered.get(ref.sequence);
+    const sent = viewer.offered.get(ref.sequence);
     return (
       viewer.owner.input &&
-      held !== undefined &&
-      sameBrowserPresentation(held, ref) &&
+      sent !== undefined &&
+      sameBrowserPresentation(sent, ref) &&
       (await viewer.owner.authorized()) &&
       !stream.closed &&
       stream.binding.current() &&
       stream.viewers.has(viewer)
     );
   }
-  consumeGesture(id: string, streamId: DisplayStreamId, gestureId: string): boolean {
-    const found = this.#viewer(id, streamId);
-    if (!found || found.viewer.gesture?.id !== gestureId || found.viewer.gesture.submitted)
-      return false;
-    found.viewer.gesture.submitted = true;
+  consumeClick(id: string, streamId: DisplayStreamId, gestureId: string): boolean {
+    const v = this.#viewer(id, streamId)?.viewer;
+    if (!v || v.clicks.has(gestureId)) return false;
+    v.clicks.add(gestureId);
+    if (v.clicks.size > 128) v.clicks.delete(v.clicks.values().next().value!);
     return true;
   }
-  cancelGesture(id: string, streamId: DisplayStreamId) {
-    const found = this.#viewer(id, streamId);
-    const gesture = found?.viewer.gesture;
-    if (!found || !gesture || gesture.submitted) return null;
-    found.viewer.gesture = null;
-    return { gestureId: gesture.id, reference: gesture.reference };
-  }
-  completeGesture(streamId: DisplayStreamId, slot: string, gestureId: string): string | null {
-    const stream = this.#streams.get(streamId);
-    const viewer = stream && [...stream.viewers].find((v) => v.slot === slot);
-    if (!stream || !viewer || viewer.gesture?.id !== gestureId) return null;
-    viewer.gesture = null;
-    this.#budget(stream);
-    return viewer.owner.id;
+  outlet(streamId: DisplayStreamId, slot: string): string | undefined {
+    return [...(this.#streams.get(streamId)?.viewers ?? [])].find((v) => v.slot === slot)?.owner.id;
   }
   slot(id: string, streamId: DisplayStreamId): string | undefined {
     return this.#viewer(id, streamId)?.viewer.slot;
@@ -387,6 +333,9 @@ export class BrowserVideoHub {
     if (found.viewer.paused) {
       found.viewer.paused = false;
       found.viewer.recoveries = 0;
+      void found.viewer.owner
+        .send({ ...found.stream.videoState, state: "live" })
+        .catch(() => this.remove(id));
       this.#refresh(found.stream);
     }
     this.#budget(found.stream);
@@ -397,7 +346,6 @@ export class BrowserVideoHub {
         if (viewer.owner.id === id) {
           stream.viewers.delete(viewer);
           this.#tokens.delete(viewer.token);
-          void viewer.owner.release(viewer.slot).catch(() => this.#end(stream, "transport"));
           if (viewer.attached) viewer.socket?.close(1000, "Browser outlet ended");
           if (stream.leader === viewer)
             stream.leader = [...stream.viewers].find((v) => v.owner.input) ?? null;
@@ -427,7 +375,12 @@ export class BrowserVideoHub {
     viewer.socket = socket;
     viewer.attached = true;
     installWebSocketLiveness(socket);
-    socket.send(JSON.stringify(stream.videoState));
+    socket.on("pong", (payload) => {
+      if (viewer.ping?.payload === payload.toString()) {
+        viewer.link!.roundTrip(this.#now() - viewer.ping.at, this.#now());
+        viewer.ping = null;
+      }
+    });
     socket.on("message", (raw, binary) => {
       if (stream.closed || !stream.viewers.has(viewer)) return;
       try {
@@ -440,21 +393,11 @@ export class BrowserVideoHub {
           this.#recover(stream, viewer);
           return;
         }
-        const first = viewer.outstanding.keys().next().value;
-        if (viewer.discarded.length) {
-          if (viewer.discarded[0] !== message.sequence) throw new Error("Invalid reset credit.");
-          viewer.discarded.shift();
-          return;
+        this.#media.ack(stream, viewer, message.sequence);
+        if (!viewer.outstanding.size && !viewer.ping) {
+          viewer.ping = { at: this.#now(), payload: `browser-rtt:${message.sequence}` };
+          socket.ping(viewer.ping.payload);
         }
-        if (first !== message.sequence) throw new Error("Out of order media credit.");
-        const entry = viewer.outstanding.get(message.sequence)!;
-        viewer.link!.ack(message.sequence, this.#now());
-        viewer.outstanding.delete(message.sequence);
-        viewer.bytes -= entry.bytes;
-        viewer.slowSince = null;
-        if (viewer.replayIndex !== null) this.#media.drainCache(stream, viewer);
-        if (viewer.waiting && viewer.outstanding.size === 0 && !viewer.paused)
-          this.#recover(stream, viewer);
         this.#budget(stream);
       } catch {
         socket.close(4002, "Invalid browser media credit");
@@ -464,8 +407,7 @@ export class BrowserVideoHub {
       if (stream.viewers.has(viewer)) this.remove(viewer.owner.id);
     });
     socket.on("error", () => this.remove(viewer.owner.id));
-    // Controllers require a fresh publication hold. Spectators may decode a complete cached chain.
-    if (viewer.owner.input || !this.#media.replay(stream, viewer)) this.#refresh(stream);
+    if (!this.#media.replay(stream, viewer)) this.#refresh(stream);
   }
   claimSource(ticket: string): BrowserVideoDataTicketClaims {
     const claims = this.#auth.verifyBrowserVideoDataTicket(ticket);
@@ -527,10 +469,6 @@ export class BrowserVideoHub {
         )
           throw new Error("Browser source binding or reference chain changed.");
         validateBrowserH264(payload, header);
-        if (header.key && bytes.byteLength > Math.max(64 * 1024, stream.budget.maxBitrate / 4)) {
-          this.#end(stream, "budget");
-          return;
-        }
         stream.ptsUs = header.ptsUs;
         stream.sequence = header.sequence;
         stream.producer = p.producerStreamId;
@@ -548,45 +486,35 @@ export class BrowserVideoHub {
           width: header.width,
           height: header.height,
         };
+        const starting = stream.videoState.state !== "live";
         stream.videoState = {
           ...stream.videoState,
           state: "live",
           producerStreamId: p.producerStreamId,
         };
+        if (starting)
+          for (const v of stream.viewers)
+            void v.owner.send(stream.videoState).catch(() => this.remove(v.owner.id));
         this.#media.cacheFrame(stream, { sequence: header.sequence, bytes }, header.key);
-        const retainFor: string[] = [];
         for (const viewer of stream.viewers) {
           if (!viewer.attached || viewer.paused) continue;
-          if (viewer.owner.input && viewer.offered.size >= 4) {
-            this.#media.skip(stream, viewer);
-            this.#pause(stream, viewer);
-            continue;
-          }
           const offered = this.#media.offer(
             stream,
             viewer,
             { sequence: header.sequence, bytes },
             header.key,
-            () => {
-              if (viewer.owner.input) {
-                viewer.offered.set(header.sequence, browserPresentationRef(header));
-                retainFor.push(viewer.slot);
-              }
-            },
           );
           if (offered === "stalled") {
-            const oldest = viewer.outstanding.values().next().value;
-            if (oldest) viewer.link!.stalled(this.#now(), oldest.sentAt);
+            this.#media.stall(viewer);
             if (viewer !== stream.leader && ++viewer.recoveries >= 2) this.#pause(stream, viewer);
           }
         }
-        // Admission and hold transfer are independent of every viewer's decode/presentation.
+        // Source credit is independent of viewer presentation.
         socket.send(
           JSON.stringify({
             type: "video.ack",
             streamId: stream.id,
             sequence: header.sequence,
-            retainFor,
           }),
         );
         this.#budget(stream);
@@ -617,7 +545,6 @@ export class BrowserVideoHub {
       this.#end(s, state.reason ?? "source-ended");
       return;
     }
-    if (state.uplinkBitrate) s.uplinkBitrate = state.uplinkBitrate;
     s.videoState = state;
     for (const v of s.viewers) void v.owner.send(state).catch(() => this.remove(v.owner.id));
   }
@@ -662,12 +589,6 @@ export class BrowserVideoHub {
               v.checking = false;
             });
         }
-        const oldest = v.outstanding.values().next().value;
-        if (oldest && now - oldest.sentAt > v.link!.baseRtt(now) + 250) {
-          v.link!.stalled(now, oldest.sentAt);
-          this.#media.skip(s, v);
-          if (v !== s.leader) this.#pause(s, v);
-        }
       }
       this.#budget(s);
     }
@@ -701,35 +622,12 @@ export class BrowserVideoHub {
         streamId: s.id,
         type: "browser.video.keyframe",
       })
-      .catch(() => this.#end(s, "transport"));
+      .catch(() => undefined);
   }
   #recover(s: Stream, v: Viewer): void {
     if (v.paused) return;
-    const through = Math.max(0, ...v.offered.keys());
-    for (const [seq, reference] of v.offered)
-      if (
-        seq <= through &&
-        !sameBrowserPresentation(reference, v.presented ?? { ...reference, sequence: -1 }) &&
-        !sameBrowserPresentation(reference, v.gesture?.reference ?? { ...reference, sequence: -1 })
-      )
-        v.offered.delete(seq);
-    void v.owner.recover(v.slot, s.id, through).catch(() => this.#end(s, "transport"));
-    if (v.discarded.length + v.outstanding.size > 64) {
-      this.#pause(s, v);
-      return;
-    }
-    v.discarded.push(...v.outstanding.keys());
-    v.outstanding.clear();
-    v.link!.forget();
-    v.bytes = 0;
-    v.waiting = true;
-    v.replayIndex = null;
-    v.replayThrough = null;
-    if (v !== s.leader && ++v.recoveries > 1) {
-      this.#pause(s, v);
-      return;
-    }
-    if (v.owner.input || !this.#media.replay(s, v)) this.#refresh(s);
+    this.#media.resetCredit(v);
+    if (!this.#media.replay(s, v)) this.#refresh(s);
   }
   #pause(s: Stream, v: Viewer): void {
     if (v.paused) return;
@@ -742,52 +640,21 @@ export class BrowserVideoHub {
   #budget(s: Stream): void {
     if (s.closed) return;
     const viewers = [...s.viewers].filter((v) => !v.paused);
-    if (!viewers.length) {
-      if (s.viewers.size && ![...s.viewers].some((v) => v.gesture?.submitted))
-        this.#end(s, "budget");
-      return;
-    }
+    if (!viewers.length) return;
     const leaders = s.leader && viewers.includes(s.leader) ? [s.leader] : viewers;
-    const raster = leaders[0]!.budget;
     const cap = Math.min(
-      s.uplinkBitrate,
       ...leaders.map((v) => Math.min(v.budget.maxBitrate, v.link!.cap ?? 20_000_000)),
     );
     const budget = {
-      maxWidth: Math.min(...leaders.map((v) => v.budget.maxWidth)),
-      maxHeight: Math.min(...leaders.map((v) => v.budget.maxHeight)),
-      // A controller has three pending-presentation slots besides its current picture.
-      // Keep that return path affordable before reducing readable raster density.
-      maxFps: Math.min(
-        ...leaders.map((v) =>
-          Math.min(
-            v.budget.maxFps,
-            v.owner.input
-              ? Math.max(1, Math.floor(3000 / (v.link!.baseRtt(this.#now()) + 100)))
-              : 60,
-          ),
-        ),
-        s.videoState.capacity?.maxFps ?? 60,
-      ),
+      maxWidth: s.budget.maxWidth,
+      maxHeight: s.budget.maxHeight,
+      maxFps: Math.min(...leaders.map((v) => v.budget.maxFps), s.videoState.capacity?.maxFps ?? 60),
       maxBitrate: Math.max(50000, cap),
     };
-    void raster;
     const old = s.budget;
     if (JSON.stringify(old) === JSON.stringify(budget)) return;
     const reduction = budget.maxBitrate < old.maxBitrate || budget.maxFps < old.maxFps;
     if (!reduction && this.#now() - s.budgetAt < 1000) return;
-    // Raster changes replace an incarnation; v1 keeps the admitted readable raster during rate probes.
-    if (budget.maxWidth !== old.maxWidth || budget.maxHeight !== old.maxHeight) {
-      if (this.#now() - s.budgetAt < 1000 || [...s.viewers].some((v) => v.gesture !== null)) return;
-      const owners = [...s.viewers]
-        .sort((a, b) => (a === s.leader ? -1 : b === s.leader ? 1 : 0))
-        .map((v) => ({ ...v.owner, budget: v.budget }));
-      this.#end(s, "replaced");
-      void (async () => {
-        for (const owner of owners) await this.add(s.binding, owner);
-      })().catch(() => undefined);
-      return;
-    }
     s.budget = budget;
     s.budgetAt = this.#now();
     void s.binding
@@ -802,7 +669,7 @@ export class BrowserVideoHub {
         revision: ++s.revision,
         budget,
       })
-      .catch(() => this.#end(s, "transport"));
+      .catch(() => undefined);
   }
   #end(s: Stream, reason: NonNullable<BrowserVideoState["reason"]>): void {
     if (s.closed) return;

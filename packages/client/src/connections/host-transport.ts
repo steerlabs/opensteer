@@ -70,7 +70,7 @@ export interface HostNetworkSocketEvents {
 
 export interface HostNetwork {
   openWebSocket(
-    input: Omit<HostNetworkRequest, "request" | "signal">,
+    input: Omit<HostNetworkRequest, "request" | "signal"> & { readonly protocols?: string[] },
     events: HostNetworkSocketEvents,
   ): HostNetworkSocket;
   request(input: HostNetworkRequest): Promise<Response>;
@@ -226,7 +226,7 @@ export class HostTransport {
    * to be able to close the thing that failed.
    */
   async openSocket(
-    input: { readonly path: string },
+    input: { readonly path: string; readonly protocols?: string[] },
     events: (socket: HostNetworkSocket) => HostNetworkSocketEvents,
   ): Promise<HostNetworkSocket> {
     if (this.#sockets.size >= maximumOpenSockets) {
@@ -267,6 +267,7 @@ export class HostTransport {
         requestOrigin: resolved.origin,
         deploymentId: resolved.deploymentId,
         url: target.toString(),
+        ...(input.protocols ? { protocols: input.protocols } : {}),
       },
       {
         close: (code, reason) => {

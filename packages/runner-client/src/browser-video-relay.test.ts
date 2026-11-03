@@ -125,7 +125,6 @@ describe("independent browser media relay", () => {
           type: "video.ack",
           streamId: operation.streamId,
           sequence: 0,
-          retainFor: [],
         }),
       );
       await vi.waitFor(

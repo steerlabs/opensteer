@@ -9,7 +9,13 @@ import type { BrowserFrameView } from "./client.js";
 export type BrowserVideoFrame = MediaFrame<BrowserVideoFrameHeader>;
 export interface BrowserVideoStore {
   selected(): boolean;
-  budget(sessionId: string, surfaceId: string, width: number, height: number): void;
+  budget(
+    sessionId: string,
+    surfaceId: string,
+    width: number,
+    height: number,
+    focus?: boolean,
+  ): void;
   onFrame(
     sessionId: string,
     surfaceId: string,
@@ -21,14 +27,6 @@ export interface BrowserVideoStore {
   failed(sessionId: string, surfaceId: string, reason: "unsupported" | "decoder"): void;
   retry(sessionId: string, surfaceId: string): void;
   keyframe(sessionId: string, surfaceId: string): void;
-  gesture(
-    sessionId: string,
-    surfaceId: string,
-    streamId: BrowserVideoFrameHeader["streamId"],
-    reference: BrowserPresentationRef,
-    gestureId: string,
-    phase: "begin" | "cancel",
-  ): void;
   click(
     sessionId: string,
     surfaceId: string,
@@ -52,6 +50,7 @@ export function browserVideoFrameView(
       encoding: "h264",
       surfaceId: surfaceId as BrowserSurfaceId,
       frameId: video.sequence,
+      geometryRevision: video.geometryRevision,
       rasterWidth: p.rasterCrop.width,
       rasterHeight: p.rasterCrop.height,
       viewportWidth: p.rootCssWidth,

@@ -114,7 +114,6 @@ export function electronBrowserPartition(partitionKey: BrowserPartitionKey): str
 
 /** Electron-native BrowserEngine used only by the connected desktop composition root. */
 export class ElectronBrowserLauncher implements BrowserLauncher {
-  readonly presentationVersion = 1 as const;
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: Pick<DesktopDownloads, "accept">;
@@ -872,7 +871,7 @@ class ElectronBrowserContext implements BrowserContext {
 }
 
 class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
-  readonly presentation: import("@opensteer/browser-runtime-core").BrowserPresentationPort;
+  readonly presentation?: import("@opensteer/browser-runtime-core").BrowserPresentationPort;
   #cursor: import("@opensteer/protocol/browser").BrowserCursor = "default";
   readonly #cursorListeners = new Set<
     (cursor: import("@opensteer/protocol/browser").BrowserCursor | null) => void
@@ -961,7 +960,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     timing?: PageOpenTiming,
   ) {
     this.view = view;
-    this.presentation = electronBrowserPresentation(view.webContents);
+    if (
+      "_createOpensteerInputOwner" in view.webContents &&
+      typeof view.webContents._createOpensteerInputOwner === "function"
+    )
+      this.presentation = electronBrowserPresentation(view.webContents);
     this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;

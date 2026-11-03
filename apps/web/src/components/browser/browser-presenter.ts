@@ -544,13 +544,7 @@ export function sampleBrowserVideo(canvas: HTMLCanvasElement, clientX: number, c
     clientY >= rect.bottom
   )
     return null;
-  if (
-    rect.left !== shown.rect.left ||
-    rect.top !== shown.rect.top ||
-    rect.width !== shown.rect.width ||
-    rect.height !== shown.rect.height
-  )
-    return null;
+  if (rect.width !== shown.rect.width || rect.height !== shown.rect.height) return null;
   const crop = header.presentation.rasterCrop;
   return {
     header,

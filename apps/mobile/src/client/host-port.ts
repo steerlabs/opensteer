@@ -76,6 +76,7 @@ export function createNetworkHostPort(options: {
   readonly openWebSocket: (
     url: string,
     headers: Readonly<Record<string, string>>,
+    protocols?: string[],
   ) => WebSocketClient;
 }): MobileHostPortFactory {
   return ({ oauth, sessions }) => ({

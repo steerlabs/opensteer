@@ -2,13 +2,15 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { WebSocketServer } from "ws";
-import { z } from "zod";
 import { displayMaxEnvelopeBytes } from "@opensteer/protocol";
 import { refuseConnection } from "@opensteer/shared/httpServer";
-import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import type { BrowserVideoHub } from "./browser-video-hub.js";
 
-export function registerBrowserVideoRoutes(app: FastifyInstance, hub: BrowserVideoHub): void {
+export function registerBrowserVideoRoutes(
+  app: FastifyInstance,
+  hub: BrowserVideoHub,
+  authenticate: (request: IncomingMessage) => Promise<unknown>,
+): void {
   const source = new WebSocketServer({
     noServer: true,
     maxPayload: displayMaxEnvelopeBytes,
@@ -41,36 +43,16 @@ export function registerBrowserVideoRoutes(app: FastifyInstance, hub: BrowserVid
         refuseConnection(socket, 503, "Unavailable");
         return;
       }
-      viewer.handleUpgrade(request, socket, head, (client) => {
-        const deadline = setTimeout(() => client.close(4003, "Media admission timed out"), 4000);
-        deadline.unref();
-        client.once("close", () => clearTimeout(deadline));
-        client.on("error", () => client.close(1011, "Media transport ended"));
-        client.once("message", (raw, binary) => {
-          try {
-            if (binary) throw new Error("Media admission required");
-            const message = z
-              .strictObject({
-                type: z.literal("video.attach"),
-                token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-              })
-              .parse(JSON.parse(rawDataBuffer(raw).toString("utf8")));
-            // Stop processing additional commands until exact outlet authority is checked.
-            client.pause();
-            void hub.claimViewer(message.token).then(
-              (admitted) => {
-                clearTimeout(deadline);
-                if (client.readyState !== client.OPEN) return;
-                hub.attachViewer(admitted, client);
-                client.resume();
-              },
-              () => client.close(4003, "Browser media admission ended"),
-            );
-          } catch {
-            client.close(4003, "Invalid browser media admission");
-          }
-        });
-      });
+      void (async () => {
+        await authenticate(request);
+        const match = /^opensteer-video\.([A-Za-z0-9_-]{43})$/.exec(
+          request.headers["sec-websocket-protocol"] ?? "",
+        );
+        if (!match?.[1]) throw new Error("Browser media admission required");
+        const admitted = await hub.claimViewer(match[1]);
+        if (socket.destroyed || !socket.writable) return;
+        viewer.handleUpgrade(request, socket, head, (client) => hub.attachViewer(admitted, client));
+      })().catch(() => refuseConnection(socket, 403, "Forbidden"));
       return;
     }
     let claims: ReturnType<BrowserVideoHub["claimSource"]> | undefined;

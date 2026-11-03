@@ -45,12 +45,79 @@ export class DisplayMediaHub<V extends DisplayMediaViewer, S extends DisplayMedi
   readonly options: {
     now(): number;
     live(stream: S, viewer: V): boolean;
-    refresh(stream: S): void;
+    refresh(stream: S, congestion?: boolean): void;
     state(stream: S, viewer: V, state: DisplayViewerState): void;
     binary(socket: WebSocket, bytes: Uint8Array): void;
+    sent?(viewer: V, frame: CachedMediaFrame): void;
   };
   constructor(options: DisplayMediaHub<V, S>["options"]) {
     this.options = options;
+  }
+  stall(viewer: V): { at: number; oldestAt: number; queued: number } {
+    const at = this.options.now();
+    const oldest = viewer.outstanding.values().next().value;
+    const oldestAt = oldest?.sentAt ?? at;
+    viewer.link?.stalled(at, oldestAt);
+    return {
+      at,
+      oldestAt,
+      queued: oldest ? Math.max(0, at - oldestAt - (viewer.ackDelays[0]?.delay ?? 400)) : 0,
+    };
+  }
+  resetCredit(viewer: V): void {
+    if (
+      viewer.discarded.length + viewer.outstanding.size >
+      displayGopCacheFrames + displayViewerWindowFrames
+    )
+      throw new Error("Media decoder resets did not drain.");
+    viewer.discarded.push(...viewer.outstanding.keys());
+    viewer.outstanding.clear();
+    viewer.link?.forget();
+    viewer.bytes = 0;
+    viewer.recoverySample = null;
+    viewer.replayIndex = null;
+    viewer.replayThrough = null;
+    viewer.waiting = true;
+  }
+  ack(stream: S, viewer: V, sequence: number): { bytes: number; delay: number } | null {
+    if (viewer.discarded.length) {
+      if (viewer.discarded[0] === sequence) {
+        viewer.discarded.shift();
+        viewer.slowSince = null;
+        if (viewer.replayIndex !== null) this.drainCache(stream, viewer);
+      }
+      return null;
+    }
+    const entry = viewer.outstanding.get(sequence);
+    if (!entry) return null;
+    const at = this.options.now();
+    const delay = at - entry.sentAt;
+    while (viewer.ackDelays.at(-1) && viewer.ackDelays.at(-1)!.delay >= delay)
+      viewer.ackDelays.pop();
+    viewer.ackDelays.push({ at, delay });
+    if (viewer.ackDelays.length > displayGopCacheFrames) viewer.ackDelays.shift();
+    viewer.link?.ack(sequence, at);
+    let bytes = 0;
+    for (const [seq, frame] of viewer.outstanding)
+      if (seq <= sequence) {
+        viewer.outstanding.delete(seq);
+        viewer.bytes -= frame.bytes;
+        bytes += frame.bytes;
+      }
+    viewer.slowSince = null;
+    if (viewer.waiting && !viewer.outstanding.size) {
+      const sample = viewer.recoverySample;
+      viewer.recoverySample = null;
+      if (sample && at > sample.sentAt)
+        viewer.deliveryEstimate = {
+          bytesPerMs: sample.bytes / (at - sample.sentAt),
+          measuredAt: at,
+        };
+      if (!this.replay(stream, viewer) && stream.state.state === "live")
+        this.options.refresh(stream, true);
+    }
+    if (viewer.replayIndex !== null) this.drainCache(stream, viewer);
+    return { bytes, delay };
   }
   cacheFrame(stream: S, frame: CachedMediaFrame, key: boolean): void {
     if (key) this.clearCache(stream);
@@ -130,7 +197,11 @@ export class DisplayMediaHub<V extends DisplayMediaViewer, S extends DisplayMedi
     const oldest = viewer.outstanding.values().next().value;
     // A measured link knows its round trip net of a slow first key's transfer.
     const base = viewer.link ? viewer.link.baseRtt(now) : (viewer.ackDelays[0]?.delay ?? 400);
-    return !oldest || now - oldest.sentAt <= Math.min(1_500, base + 250);
+    return (
+      !oldest ||
+      now - oldest.sentAt <=
+        base + 250 + (viewer.link ? (viewer.bytes * 8000) / (viewer.link.cap ?? 1_000_000) : 0)
+    );
   }
   sendFrame(viewer: V, frame: CachedMediaFrame): void {
     viewer.outstanding.set(frame.sequence, {
@@ -139,6 +210,7 @@ export class DisplayMediaHub<V extends DisplayMediaViewer, S extends DisplayMedi
     });
     viewer.link?.sent(frame.sequence, frame.bytes.byteLength, this.options.now());
     viewer.bytes += frame.bytes.byteLength;
+    this.options.sent?.(viewer, frame);
     if (viewer.socket) this.options.binary(viewer.socket, frame.bytes);
   }
   skip(stream: S, viewer: V): void {

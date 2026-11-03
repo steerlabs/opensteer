@@ -1,7 +1,6 @@
 import {
-  BrowserVideoStateSchema,
+  BrowserVideoReplaySchema,
   decodeBrowserVideoFrame,
-  browserPresentationRef,
   type BrowserVideoFrameHeader,
   type BrowserVideoState,
 } from "@opensteer/protocol";
@@ -80,9 +79,8 @@ export class BrowserWatchStore {
   readonly #videoBudgets = new Map<string, string>();
   readonly video: BrowserVideoStore = {
     selected: () => this.videoOptions?.selected() === true,
-    budget: (sessionId, surfaceId, width, height) => {
+    budget: (sessionId, surfaceId, width, height, focus = false) => {
       const target = this.#targets.get(this.#key(sessionId, surfaceId));
-      if (!target?.synchronized || !target.video || target.socket?.readyState !== 1) return;
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
       const budget = {
         maxWidth: Math.min(3840, Math.max(2, Math.ceil(width / 2) * 2)),
@@ -92,11 +90,13 @@ export class BrowserWatchStore {
       };
       const key = this.#key(sessionId, surfaceId);
       const value = JSON.stringify(budget);
-      if (this.#videoBudgets.get(key) === value) return;
+      if (!focus && this.#videoBudgets.get(key) === value) return;
       this.#videoBudgets.set(key, value);
+      if (!target?.synchronized || !target.video || target.socket?.readyState !== 1) return;
       target.socket.send(
         JSON.stringify({
           type: "video.budget",
+          ...(focus ? { focus: true } : {}),
           surfaceId,
           streamId: target.video.streamId,
           budget,
@@ -110,6 +110,7 @@ export class BrowserWatchStore {
       set.add(listener);
       return () => {
         set.delete(listener);
+        this.#targets.get(key)?.video?.receiver.release(listener);
         if (!set.size) this.#videoListeners.delete(key);
       };
     },
@@ -119,20 +120,16 @@ export class BrowserWatchStore {
       const target = this.#targets.get(this.#key(sessionId, surfaceId));
       if (!target?.video || target.video.streamId !== header.streamId || !target.synchronized)
         return;
-      this.#set(target, {
-        ...target.state,
-        frame: browserVideoFrameView(surfaceId, header),
-        status: "live",
-      });
-      if (this.mode === "control")
-        target.socket?.send(
-          JSON.stringify({
-            type: "video.presented",
-            surfaceId,
-            streamId: header.streamId,
-            reference: browserPresentationRef(header),
-          }),
-        );
+      const frame = browserVideoFrameView(surfaceId, header);
+      const before = target.state.frame?.header;
+      if (
+        target.state.status !== "live" ||
+        target.state.error !== null ||
+        before?.geometryRevision !== frame.header.geometryRevision ||
+        before?.viewportWidth !== frame.header.viewportWidth ||
+        before?.viewportHeight !== frame.header.viewportHeight
+      )
+        this.#set(target, { ...target.state, frame, status: "live", error: null });
     },
     failed: (sessionId, surfaceId, reason) => {
       const target = this.#targets.get(this.#key(sessionId, surfaceId));
@@ -159,15 +156,6 @@ export class BrowserWatchStore {
           JSON.stringify({ type: "video.keyframe", streamId: target.video.streamId }),
         );
     },
-    gesture: (sessionId, surfaceId, streamId, reference, gestureId, phase) =>
-      this.send(sessionId, surfaceId, {
-        type: "video.gesture",
-        surfaceId: surfaceId as import("@opensteer/core").BrowserSurfaceId,
-        streamId,
-        reference,
-        gestureId,
-        phase,
-      }),
     click: (sessionId, surfaceId, streamId, reference, gestureId, point, modifiers) =>
       this.send(sessionId, surfaceId, {
         type: "input.guarded-click",
@@ -212,7 +200,8 @@ export class BrowserWatchStore {
       if (!listeners.size) this.#statusListeners.delete(key);
     };
   };
-  readonly videoOptions: { selected(): boolean; connect(): WebSocketClient } | undefined;
+  readonly videoOptions:
+    { selected(): boolean; connect(token: string): WebSocketClient } | undefined;
   readonly connect: (sessionId: string, surfaceId: string) => WebSocketClient;
   readonly mode: "watch" | "control";
   readonly retryDelay: (attempt: number) => number;
@@ -232,7 +221,7 @@ export class BrowserWatchStore {
     onDisconnect?: (sessionId: string, surfaceId: string) => void,
     frameWindows: () => boolean = () => false,
     rasterDemands: () => boolean = () => false,
-    videoOptions?: { selected(): boolean; connect(): WebSocketClient },
+    videoOptions?: { selected(): boolean; connect(token: string): WebSocketClient },
   ) {
     this.videoOptions = videoOptions;
     this.rasterDemands = rasterDemands;
@@ -585,7 +574,6 @@ export class BrowserWatchStore {
       return;
     }
     target.socket = socket;
-    this.#videoBudgets.delete(this.#key(target.sessionId, target.surfaceId));
     const admissionId = crypto.randomUUID();
     target.sequence = 0;
     target.generation = 0;
@@ -631,6 +619,12 @@ export class BrowserWatchStore {
           if (message.type === "browser.video.attached") {
             if (!synchronized || !this.video.selected() || message.surfaceId !== target.surfaceId)
               throw new Error("Unexpected browser video admission.");
+            if (!target.pictureHolds || target.terminal) {
+              target.socket?.send(
+                JSON.stringify({ type: "video.unsubscribe", surfaceId: target.surfaceId }),
+              );
+              return;
+            }
             this.#openVideo(target, message);
             return;
           }
@@ -649,7 +643,13 @@ export class BrowserWatchStore {
                 status: "unavailable",
                 error: `Browser video ${message.reason ?? message.state}.`,
               });
+              if (
+                message.state === "stopped" &&
+                !["revoked", "capacity", "unsupported", "protocol"].includes(message.reason ?? "")
+              )
+                this.#retryVideo(target);
             } else if (message.state === "paused") {
+              this.#retryVideo(target, true);
               this.#set(target, {
                 ...target.state,
                 status: "unavailable",
@@ -671,8 +671,15 @@ export class BrowserWatchStore {
               message.targetedStreamingVersion !== 1
             )
               throw new Error("Update the Host and Browser Runtime for targeted viewing.");
-            if (this.video.selected() && target.pictureHolds > 0 && message.videoVersion !== 1)
-              throw new Error("Update the browser computer for H.264 presentation.");
+            if (this.video.selected() && target.pictureHolds > 0 && message.videoVersion !== 1) {
+              synchronized = true;
+              target.synchronized = true;
+              this.#set(target, {
+                ...empty,
+                error: "Update the browser computer for H.264 presentation.",
+              });
+              return;
+            }
             synchronized = true;
             target.synchronized = true;
             target.documentId =
@@ -690,6 +697,9 @@ export class BrowserWatchStore {
             const surface = message.surfaces.find((s) => s.id === target.surfaceId);
             const documentId = surface?.documentId ?? null;
             if (!surface) {
+              target.terminal = true;
+              if (target.timer) clearTimeout(target.timer);
+              target.timer = null;
               this.#closeVideo(target);
               this.#set(target, {
                 ...target.state,
@@ -830,7 +840,7 @@ export class BrowserWatchStore {
     message: Extract<BrowserServerMessage, { type: "browser.video.attached" }>,
   ): void {
     this.#closeVideo(target);
-    const socket = this.videoOptions!.connect();
+    const socket = this.videoOptions!.connect(message.mediaToken);
     socket.binaryType = "arraybuffer";
     const receiver = new MediaReceiver<BrowserVideoFrameHeader>((sequence) => {
       if (target.video?.socket === socket && socket.readyState === 1)
@@ -849,16 +859,11 @@ export class BrowserWatchStore {
       connection: ++this.#videoConnection,
     };
     target.video = connection;
-    socket.addEventListener("open", () => {
-      if (target.video === connection)
-        socket.send(JSON.stringify({ type: "video.attach", token: message.mediaToken }));
-    });
     socket.addEventListener("message", ({ data }) => {
       if (target.video !== connection) return;
       try {
         if (typeof data === "string") {
-          const state = BrowserVideoStateSchema.parse(JSON.parse(data));
-          if (state.streamId !== message.streamId) throw new Error("Browser media stream changed.");
+          const state = BrowserVideoReplaySchema.parse(JSON.parse(data));
           if (state.replayThrough !== undefined) {
             connection.order.replayRestarts = true;
             connection.order.replayThrough = state.replayThrough;
@@ -897,7 +902,34 @@ export class BrowserWatchStore {
         status: "unavailable",
         error: "Browser media connection ended.",
       });
+      this.#retryVideo(target);
     });
+  }
+  #retryVideo(target: Watch, budgetOnly = false): void {
+    if (target.timer || target.terminal || !target.pictureHolds || !target.synchronized) return;
+    target.timer = setTimeout(() => {
+      target.timer = null;
+      if (
+        target.terminal ||
+        !target.pictureHolds ||
+        !target.synchronized ||
+        target.socket?.readyState !== 1
+      )
+        return;
+      if (budgetOnly && target.video)
+        target.socket.send(
+          JSON.stringify({
+            type: "video.budget",
+            surfaceId: target.surfaceId,
+            streamId: target.video.streamId,
+            budget: JSON.parse(
+              this.#videoBudgets.get(this.#key(target.sessionId, target.surfaceId)) ??
+                '{"maxWidth":1280,"maxHeight":800,"maxFps":30,"maxBitrate":2500000}',
+            ),
+          }),
+        );
+      else this.#subscribeTarget(target);
+    }, this.retryDelay(target.attempt++));
   }
   #closeVideo(target: Watch): void {
     const video = target.video;
@@ -917,10 +949,19 @@ export class BrowserWatchStore {
         JSON.stringify({
           type: "video.subscribe",
           surfaceId: target.surfaceId,
-          budget: { maxWidth: 1280, maxHeight: 800, maxFps: 30, maxBitrate: 2500000 },
+          budget: JSON.parse(
+            this.#videoBudgets.get(this.#key(target.sessionId, target.surfaceId)) ??
+              '{"maxWidth":1280,"maxHeight":800,"maxFps":30,"maxBitrate":2500000}',
+          ),
         }),
       );
       return;
+    }
+    if (this.video.selected()) {
+      target.socket?.send(
+        JSON.stringify({ type: "video.unsubscribe", surfaceId: target.surfaceId }),
+      );
+      this.#closeVideo(target);
     }
     for (const token of target.awaiting.keys())
       this.accept(target.sessionId, target.surfaceId, token);

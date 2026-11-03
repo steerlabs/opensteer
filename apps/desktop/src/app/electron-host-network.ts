@@ -45,10 +45,11 @@ export class ElectronHostNetwork implements HostNetwork {
   }
 
   openWebSocket(
-    input: Omit<HostNetworkRequest, "request" | "signal">,
+    input: Omit<HostNetworkRequest, "request" | "signal"> & { readonly protocols?: string[] },
     events: HostNetworkSocketEvents,
   ): HostNetworkSocket {
     const socket = new net.WebSocket(input.url, {
+      ...(input.protocols ? { protocols: input.protocols } : {}),
       headers: input.authorization ? { authorization: input.authorization } : {},
       origin: input.requestOrigin,
       session: this.#session(input.deploymentId),

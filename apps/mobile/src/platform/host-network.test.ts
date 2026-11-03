@@ -12,7 +12,11 @@ const origin = "https://host.example.com";
 
 const network = (tokens: (string | null)[], answer?: () => Response) => {
   const requests: { init: RequestInit | undefined; input: unknown }[] = [];
-  const sockets: { headers: Readonly<Record<string, string>>; url: string }[] = [];
+  const sockets: {
+    headers: Readonly<Record<string, string>>;
+    url: string;
+    protocols?: string[];
+  }[] = [];
   const fetch: HostFetch = async (input, init) => {
     requests.push({ init, input });
     return answer?.() ?? new Response("{}");
@@ -23,8 +27,8 @@ const network = (tokens: (string | null)[], answer?: () => Response) => {
     host: createHostNetwork({
       authorization,
       fetch,
-      openWebSocket: (url, headers) => {
-        sockets.push({ headers, url });
+      openWebSocket: (url, headers, protocols) => {
+        sockets.push({ headers, url, ...(protocols ? { protocols } : {}) });
         return socket;
       },
       origin,
@@ -77,6 +81,13 @@ describe("createHostNetwork", () => {
     ]);
   });
 
+  it("preserves the browser media subprotocol with the selected Host credential", async () => {
+    const { host, sockets } = network(["Bearer selected"]);
+    await host.fetch(`${origin}/v1/rpc/auth.session`);
+    const protocols = [`opensteer-video.${"x".repeat(43)}`];
+    host.webSocketFactory("wss://host.example.com/v1/browser/video", protocols);
+    expect(sockets[0]).toMatchObject({ headers: { Authorization: "Bearer selected" }, protocols });
+  });
   it("opens an unauthenticated socket rather than inventing a header", () => {
     const { host, sockets } = network([]);
 

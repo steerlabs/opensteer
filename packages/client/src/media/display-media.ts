@@ -27,7 +27,11 @@ export function acceptMediaOrder(state: MediaOrder, header: DisplayViewerFrameHe
 }
 /** Each subscriber releases its own bounded work; ACKs leave in receive order. */
 export class MediaReceiver<H extends DisplayViewerFrameHeader> {
-  readonly #pending: { sequence: number; bytes: number; holders: number }[] = [];
+  readonly #pending: {
+    sequence: number;
+    bytes: number;
+    holders: Set<(frame: MediaFrame<H>) => void>;
+  }[] = [];
   readonly #ack: (sequence: number) => void;
   #bytes = 0;
   #closed = false;
@@ -47,7 +51,7 @@ export class MediaReceiver<H extends DisplayViewerFrameHeader> {
     const credit = {
       sequence: header.sequence,
       bytes: payload.byteLength,
-      holders: listeners.length,
+      holders: new Set(listeners),
     };
     this.#pending.push(credit);
     this.#bytes += payload.byteLength;
@@ -61,11 +65,15 @@ export class MediaReceiver<H extends DisplayViewerFrameHeader> {
         done: () => {
           if (released) return;
           released = true;
-          credit.holders--;
+          credit.holders.delete(listener);
           this.#drain();
         },
       });
     }
+    this.#drain();
+  }
+  release(listener: (frame: MediaFrame<H>) => void): void {
+    for (const credit of this.#pending) credit.holders.delete(listener);
     this.#drain();
   }
   close(): void {
@@ -75,7 +83,7 @@ export class MediaReceiver<H extends DisplayViewerFrameHeader> {
   }
   #drain(): void {
     if (this.#closed) return;
-    while (this.#pending[0]?.holders === 0) {
+    while (this.#pending[0]?.holders.size === 0) {
       const c = this.#pending.shift()!;
       this.#bytes -= c.bytes;
       this.#ack(c.sequence);

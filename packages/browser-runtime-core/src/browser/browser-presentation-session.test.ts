@@ -29,10 +29,6 @@ function fixture() {
     budget: vi.fn(async () => undefined),
     keyframe: vi.fn(async () => undefined),
     ack: vi.fn(async () => undefined),
-    hold: vi.fn(async () => undefined),
-    presented: vi.fn(async () => undefined),
-    recover: vi.fn(async () => undefined),
-    release: vi.fn(async () => undefined),
     click: vi.fn(async () => ({ dispatched: true })),
     stop: vi.fn(async () => undefined),
   };
@@ -53,18 +49,10 @@ function fixture() {
       documentGeneration: "document",
       authorityEpoch: "epoch",
       drawnRevision: `certificate-${sequence}`,
-      appliedThrough: "0",
-      frameSinkId: "1:2",
-      surfaceId: "selected",
-      frameToken: String(sequence),
-      capturedAtUs: String(sequence),
-      sourceWidth: 128,
-      sourceHeight: 128,
-      deviceScaleFactor: 1,
+
       rootCssWidth: 128,
       rootCssHeight: 128,
-      visualViewport: { width: 128, height: 128, offsetX: 1000, offsetY: 2000, scale: 1 },
-      crop: { x: 0, y: 0, width: 128, height: 128 },
+
       rasterCrop: { x: 0, y: 0, width: 128, height: 128 },
     },
   });
@@ -85,92 +73,55 @@ function fixture() {
   };
 }
 describe("native browser presentation ownership", () => {
-  it("claims a gesture before an asynchronous native click and keeps its pin through cancellation", async () => {
+  it("claims each gesture once before asynchronous native dispatch", async () => {
     const f = fixture();
     await f.start();
     f.emit(1);
-    await f.session.ack(1, ["viewer"]);
+    await f.session.ack(1);
     const reference = browserPresentationRef(f.frames[0]!);
-    await f.session.gesture("viewer", "pending", reference, "begin");
     const dispatched = Promise.withResolvers<{ dispatched: boolean }>();
     vi.mocked(f.port.click).mockReturnValueOnce(dispatched.promise);
-    const first = f.session.click("viewer", "pending", reference, { x: 64, y: 32 }, 0);
-    await vi.waitFor(() => expect(f.port.click, "native click started").toHaveBeenCalledOnce(), {
-      timeout: 1000,
-    });
+    const first = f.session.click("viewer", "gesture", reference, { x: 64, y: 32 }, 0);
     await expect(
-      f.session.click("viewer", "pending", reference, { x: 64, y: 32 }, 0),
-    ).rejects.toThrow();
-    await f.session.gesture("viewer", "pending", reference, "cancel");
-    expect(f.port.release).not.toHaveBeenCalled();
-    dispatched.resolve({ dispatched: true });
-    await first;
-    expect(f.port.release).toHaveBeenCalledExactlyOnceWith("viewer:gesture:pending");
-    await f.session.stop();
-  });
-  it("retains an idle presented certificate and samples its crop for exactly one native call", async () => {
-    const f = fixture();
-    await f.start();
-    f.emit(1);
-    await f.session.ack(1, ["viewer"]);
-    const reference = browserPresentationRef(f.frames[0]!);
-    await f.session.presented("viewer", reference);
-    await f.session.gesture("viewer", "gesture", reference, "begin");
-    f.emit(2);
-    await f.session.ack(2, ["viewer"]);
-    await f.session.presented("viewer", browserPresentationRef(f.frames[1]!));
-    expect(await f.session.click("viewer", "gesture", reference, { x: 64, y: 32 }, 0)).toEqual({
-      dispatched: true,
-    });
+      f.session.click("viewer", "gesture", reference, { x: 64, y: 32 }, 0),
+    ).resolves.toEqual({ dispatched: false });
     expect(f.port.click).toHaveBeenCalledExactlyOnceWith({
       reference,
       seq: "1",
       rootCssPoint: { x: 64, y: 32 },
       modifiers: 0,
     });
-    await expect(
-      f.session.click("viewer", "gesture", reference, { x: 64, y: 32 }, 0),
-    ).rejects.toThrow();
+    dispatched.resolve({ dispatched: true });
+    await first;
     await f.session.stop();
   });
-  it("waits for native offer transfer when presentation crosses the source ACK", async () => {
+  it("returns ordinary refusals before dispatch for unavailable certificates and outside points", async () => {
     const f = fixture();
     await f.start();
     f.emit(1);
+    await f.session.ack(1);
     const reference = browserPresentationRef(f.frames[0]!);
-    const presented = f.session.presented("viewer", reference);
-    const ack = Promise.withResolvers<void>();
-    vi.mocked(f.port.ack).mockReturnValueOnce(ack.promise);
-    const admitted = f.session.ack(1, ["viewer"]);
-    expect(f.port.presented).not.toHaveBeenCalled();
-    ack.resolve();
-    await admitted;
-    await presented;
-    expect(f.port.presented).toHaveBeenCalledOnce();
-    await f.session.stop();
-  });
-  it("releases a disconnected viewer's offered, current and pending gesture holds", async () => {
-    const f = fixture();
-    await f.start();
-    f.emit(1);
-    await f.session.ack(1, ["viewer"]);
-    const ref = browserPresentationRef(f.frames[0]!);
-    await f.session.gesture("viewer", "pending", ref, "begin");
-    await f.session.release("viewer");
-    expect(f.port.release).toHaveBeenCalledWith("viewer:gesture:pending");
-    await expect(f.session.click("viewer", "pending", ref, { x: 1, y: 1 }, 0)).rejects.toThrow();
-    await f.session.stop();
-  });
-  it("fences late media and rejects a missing reference without native input", async () => {
-    const f = fixture();
-    await f.start();
-    f.emit(1);
-    await f.session.ack(1, []);
-    const ref = browserPresentationRef(f.frames[0]!);
-    await expect(f.session.gesture("other", "gesture", ref, "begin")).rejects.toThrow();
+    await expect(
+      f.session.click("viewer", "outside", reference, { x: 128, y: 0 }, 0),
+    ).resolves.toEqual({ dispatched: false });
+    await expect(
+      f.session.click("viewer", "missing", { ...reference, sequence: 100 }, { x: 1, y: 1 }, 0),
+    ).resolves.toEqual({ dispatched: false });
     expect(f.port.click).not.toHaveBeenCalled();
     await f.session.stop();
     f.emit(2);
     expect(f.frames).toHaveLength(1);
+  });
+  it("keeps source credit independent of viewer presentation and resolves non-click input geometry", async () => {
+    const f = fixture();
+    await f.start();
+    for (let n = 1; n <= 10; n++) {
+      f.emit(n);
+      await f.session.ack(n);
+    }
+    expect(f.port.ack).toHaveBeenCalledTimes(10);
+    expect(f.session.resolvePoint(0.5, 0.25, 128, 128, 0)).toEqual({ x: 64, y: 32 });
+    expect(f.session.resolvePoint(0.5, 0.25, 128, 128, 1)).toBeNull();
+    await f.session.stop();
   });
 });

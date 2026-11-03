@@ -31,7 +31,7 @@ export function createHostAuthorization(load: () => Promise<string | null>): Hos
 
 export interface HostNetwork {
   readonly fetch: HostFetch;
-  readonly webSocketFactory: (url: string) => WebSocketClient;
+  readonly webSocketFactory: (url: string, protocols?: string[]) => WebSocketClient;
 }
 
 /**
@@ -60,6 +60,7 @@ export function createHostNetwork(options: {
   readonly openWebSocket: (
     url: string,
     headers: Readonly<Record<string, string>>,
+    protocols?: string[],
   ) => WebSocketClient;
 }): HostNetwork {
   const fence = (destination: string): void => {
@@ -89,12 +90,13 @@ export function createHostNetwork(options: {
       return response;
     },
 
-    webSocketFactory: (url) => {
+    webSocketFactory: (url, protocols) => {
       fence(url);
       const authorization = options.authorization.cached();
       return options.openWebSocket(
         url,
         authorization === null ? {} : { Authorization: authorization },
+        protocols,
       );
     },
   };

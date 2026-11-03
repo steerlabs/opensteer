@@ -35,7 +35,11 @@ export const browserDeltaFixture = readFileSync(
     import.meta.url,
   ),
 );
-export async function browserVideoFixture(realTime = false) {
+export async function browserVideoFixture(
+  realTime = false,
+  authenticate: (request: import("node:http").IncomingMessage) => Promise<unknown> = async () =>
+    undefined,
+) {
   let now = 100000;
   let live = true;
   const clock = realTime ? Date.now : () => now;
@@ -47,7 +51,7 @@ export async function browserVideoFixture(realTime = false) {
   const hub = new BrowserVideoHub(authenticator, clock);
   const app = Fastify();
   await app.register(websocket);
-  registerBrowserVideoRoutes(app, hub);
+  registerBrowserVideoRoutes(app, hub, authenticate);
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();
   if (!address || typeof address === "string") throw new Error("No browser media test listener");
@@ -77,8 +81,8 @@ export async function browserVideoFixture(realTime = false) {
       operations.push(operation);
     },
   };
-  const connect = async (path: string, ticket?: string) => {
-    const socket = new WebSocket(`${origin}${path}`, {
+  const connect = async (path: string, ticket?: string, token?: string) => {
+    const socket = new WebSocket(`${origin}${path}`, token ? [`opensteer-video.${token}`] : [], {
       headers: ticket ? { authorization: `Bearer ${ticket}` } : {},
       perMessageDeflate: false,
     });
@@ -89,8 +93,7 @@ export async function browserVideoFixture(realTime = false) {
   const target = {
     kind: "browser-tab" as const,
     sessionId: createBrowserSessionId(),
-    surfaceId: "tab" as BrowserVideoFrameHeader["presentation"]["surfaceId"] &
-      import("@opensteer/core").BrowserSurfaceId,
+    surfaceId: "tab" as import("@opensteer/core").BrowserSurfaceId,
   };
   const admit = async (
     input: boolean,
@@ -108,10 +111,6 @@ export async function browserVideoFixture(realTime = false) {
       send: async (m) => {
         messages.push(m);
       },
-      release: async (slot) => {
-        releases.push(slot);
-      },
-      recover: async () => undefined,
     };
     await hub.add(binding, owner);
     const attach = messages.find((m) => m.type === "browser.video.attached");
@@ -129,14 +128,13 @@ export async function browserVideoFixture(realTime = false) {
   const add = async (input: boolean, budget?: BrowserVideoBudget) => {
     const admitted = await admit(input, budget);
     const { owner, messages, releases, attach } = admitted;
-    const socket = await connect("/v1/browser/video");
+    const socket = await connect("/v1/browser/video", undefined, attach.mediaToken);
     const media: { header: BrowserVideoFrameHeader; payload: Uint8Array }[] = [];
-    const states: unknown[] = [];
+    const states: unknown[] = messages.filter((m) => m.type === "browser.video.state");
     socket.on("message", (raw, binary) => {
       if (binary) media.push(decodeBrowserVideoFrame(Buffer.from(raw as Buffer)));
       else states.push(JSON.parse(String(raw)));
     });
-    socket.send(JSON.stringify({ type: "video.attach", token: attach.mediaToken }));
     return {
       owner,
       messages,
@@ -165,6 +163,7 @@ export async function browserVideoFixture(realTime = false) {
     generation: 1,
     sequence,
     ptsUs: sequence,
+    geometryRevision: 1,
     key,
     ...(key ? { codec: "avc1.420015" } : {}),
     width: 128,
@@ -174,18 +173,10 @@ export async function browserVideoFixture(realTime = false) {
       documentGeneration: "document",
       authorityEpoch: "epoch",
       drawnRevision: `certificate-${sequence}`,
-      appliedThrough: "0",
-      frameSinkId: "1:2",
-      surfaceId: "selected",
-      frameToken: String(sequence),
-      capturedAtUs: String(sequence),
-      sourceWidth: 128,
-      sourceHeight: 128,
-      deviceScaleFactor: 1,
+
       rootCssWidth: 128,
       rootCssHeight: 128,
-      visualViewport: { width: 128, height: 128, offsetX: 0, offsetY: 0, scale: 1 },
-      crop: { x: 0, y: 0, width: 128, height: 128 },
+
       rasterCrop: { x: 0, y: 0, width: 128, height: 128 },
     },
   });

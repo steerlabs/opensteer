@@ -1,4 +1,3 @@
-import { validateBrowserH264 } from "@opensteer/protocol";
 import { computerDisplayTargetKey } from "@opensteer/client/integrations";
 import { displayViewerCloseCodes, type DisplayViewerFrameHeader } from "@opensteer/protocol";
 import type {
@@ -99,16 +98,6 @@ export class PhoneDisplayDecoder<Frame extends DisplayFrame = DisplayFrame> {
 
   push(frame: Frame): void {
     const { header } = frame;
-    if ("presentation" in header) {
-      try {
-        validateBrowserH264(frame.payload, header);
-      } catch {
-        frame.done();
-        this.reset();
-        this.#onLost();
-        return;
-      }
-    }
     // A new socket may be a new stream: its numbering owes nothing to the last.
     if (frame.connection !== this.#connection) {
       this.reset();

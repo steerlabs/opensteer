@@ -440,7 +440,7 @@ keys only on demand, because a periodic key on a scarce budget costs seconds of 
 frames; recovery therefore stays explicit (viewer key requests, Host refresh, bounded replay).
 The helper keeps the first encoder configuration the hardware fully supports, since a virtual
 machine's encoder lacks some. The Host measures each viewer's link
-(`apps/host/src/computer-use/display-link-rate.ts`) and caps the shared encoder by the viewer
+(`packages/shared/src/displayLinkRate.ts`) and caps the shared encoder by the viewer
 driving the window, else the slowest visible one; a viewer too old to report its link holds
 the legacy rate. The capture shrinks with the cap, since a full-size window cannot meet a low
 budget and the queue it builds costs more than the pixels.

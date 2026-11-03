@@ -480,8 +480,7 @@ function Journey() {
             ...browserVideoTestHeader.presentation,
             rootCssWidth: 128,
             rootCssHeight: 128,
-            visualViewport: { width: 128, height: 128, offsetX: 0, offsetY: 0, scale: 1 },
-            crop: { x: 0, y: 0, width: 128, height: 128 },
+
             rasterCrop: { x: 0, y: 0, width: 128, height: 128 },
             drawnRevision: `native-marker-${sequence}`,
           },
@@ -512,6 +511,22 @@ function Journey() {
       );
       await deltaOutput;
       await check("certified-final-delta", pixels([0, 0, 255]));
+      await native.reset("certified");
+      await expect(
+        "delta after a dropped reference is refused",
+        !(await native.decodeBytes(offsetBytes(delta), metadata("certified", 2, false))),
+      );
+      await check("certified-loss-keeps-last-good-picture", pixels([0, 0, 255]));
+      const repaired = certifiedOutputs.next(
+        (v) => v.epoch === "certified" && JSON.parse(v.identity).sequence === 3,
+        "key repairs dropped delta",
+      );
+      await expect(
+        "resync key admitted",
+        await native.decodeBytes(offsetBytes(key), metadata("certified", 3, true)),
+      );
+      await repaired;
+      await check("certified-key-repairs-loss", pixels([0, 255, 0]));
       await native.reset("certified-replay");
       const beforeReplay = certifiedOutputs.seen.length;
       await expect(

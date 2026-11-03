@@ -193,7 +193,6 @@ export interface LocalProfileEngine {
 }
 
 export interface BrowserLauncher {
-  readonly presentationVersion?: 1;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

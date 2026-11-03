@@ -1,7 +1,15 @@
 import { expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-const electron = vi.hoisted(() => ({ fromPartition: vi.fn() }));
-vi.mock("electron", () => ({ session: { fromPartition: electron.fromPartition }, net: {} }));
+const electron = vi.hoisted(() => ({
+  fromPartition: vi.fn(),
+  WebSocket: vi.fn(function () {
+    return { binaryType: "blob", addEventListener: vi.fn(), close: vi.fn(), send: vi.fn() };
+  }),
+}));
+vi.mock("electron", () => ({
+  session: { fromPartition: electron.fromPartition },
+  net: { WebSocket: electron.WebSocket },
+}));
 import { ElectronHostNetwork } from "./electron-host-network.js";
 
 it("forwards a capability app upload as a stream with its Accept header, omitted credentials and manual redirects", async () => {
@@ -53,4 +61,31 @@ it("forwards a capability app upload as a stream with its Accept header, omitted
   );
   expect(fetch.mock.calls[0]![1]).not.toHaveProperty("headers.authorization");
   expect(await response.text()).toBe("event");
+});
+
+it("passes browser media subprotocols to the deployment's native socket", () => {
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    on: vi.fn(),
+  };
+  electron.fromPartition.mockReturnValue(session);
+  const network = new ElectronHostNetwork();
+  const protocols = [`opensteer-video.${"x".repeat(43)}`];
+  network.openWebSocket(
+    {
+      authorization: "Bearer selected",
+      canonicalOrigin: "https://host",
+      requestOrigin: "https://route",
+      deploymentId: createId("deployment"),
+      url: "wss://route/v1/browser/video",
+      protocols,
+    },
+    { open: vi.fn(), close: vi.fn(), error: vi.fn(), message: vi.fn() },
+  );
+  expect(electron.WebSocket).toHaveBeenLastCalledWith(
+    "wss://route/v1/browser/video",
+    expect.objectContaining({ protocols, session, headers: { authorization: "Bearer selected" } }),
+  );
 });

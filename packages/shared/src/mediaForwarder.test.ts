@@ -5,7 +5,7 @@ describe("bounded media forwarding", () => {
     const admit = vi.fn();
     const failed = vi.fn();
     const send = vi.fn();
-    const relay = new MediaForwarder<{ sequence: number; retainFor: string[] }>({
+    const relay = new MediaForwarder<{ sequence: number }>({
       maxFrames: 2,
       maxBytes: 20,
       writable: () => true,
@@ -16,10 +16,10 @@ describe("bounded media forwarding", () => {
     relay.forward(1, new Uint8Array(5));
     expect(send).toHaveBeenCalledOnce();
     expect(admit).not.toHaveBeenCalled();
-    relay.ack({ sequence: 1, retainFor: ["viewer"] });
-    expect(admit).toHaveBeenCalledExactlyOnceWith({ sequence: 1, retainFor: ["viewer"] });
+    relay.ack({ sequence: 1 });
+    expect(admit).toHaveBeenCalledExactlyOnceWith({ sequence: 1 });
     relay.close();
-    relay.ack({ sequence: 1, retainFor: [] });
+    relay.ack({ sequence: 1 });
     expect(admit).toHaveBeenCalledOnce();
   });
   it("fences late frames after a byte/credit overflow or stale ACK", () => {

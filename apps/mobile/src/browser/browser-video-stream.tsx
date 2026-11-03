@@ -1,12 +1,7 @@
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { useEffect, useRef, useState, useSyncExternalStore, useCallback } from "react";
-import { PixelRatio, Pressable, Text, View } from "react-native";
-import {
-  BrowserVideoFrameHeaderSchema,
-  browserPresentationRef,
-  validateBrowserH264,
-  type BrowserVideoFrameHeader,
-} from "@opensteer/protocol";
+import { AppState, PixelRatio, Pressable, Text, View } from "react-native";
+import { browserPresentationRef, type BrowserVideoFrameHeader } from "@opensteer/protocol";
 import { useBrowserPresentationWait } from "@opensteer/client/react";
 import type { BrowserVideoFrame } from "@opensteer/client/host";
 import {
@@ -25,13 +20,18 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
   const current = useRef(props);
   current.current = props;
   const epoch = useRef("");
+  const identities = useRef(new Map<string, BrowserVideoFrameHeader>());
+  const lastGood = useRef<{ id: string; header: BrowserVideoFrameHeader } | null>(null);
   const recovery = useRef({ requested: false, attempts: 0 });
+  const appActive = useRef(
+    AppState.currentState !== "background" && AppState.currentState !== "inactive",
+  );
 
   const visible = active && session.state === "ready";
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestKeyframe = useCallback(() => {
-    if (recovery.current.requested) return;
+    if (!appActive.current || recovery.current.requested) return;
     recovery.current.requested = true;
     if (++recovery.current.attempts >= 3) {
       setReady(false);
@@ -61,11 +61,10 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
   );
   const identity = (event: { epoch: string; identity: string }): BrowserVideoFrameHeader | null => {
     if (event.epoch !== epoch.current || !current.current.active) return null;
-    try {
-      return BrowserVideoFrameHeaderSchema.parse(JSON.parse(event.identity));
-    } catch {
-      return null;
-    }
+    return (
+      identities.current.get(event.identity) ??
+      (lastGood.current?.id === event.identity ? lastGood.current.header : null)
+    );
   };
   useEffect(() => {
     if (!visible || !NativeVideo) return;
@@ -77,33 +76,64 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
     let closed = false;
     let pending = 0;
     let tail = Promise.resolve();
+    let revision = 0;
+    let keyRequired = true;
+    let sequence = -1;
+    const resync = () => {
+      revision++;
+      keyRequired = true;
+      void view.current?.reset(epoch.current);
+      requestKeyframe();
+    };
+    const lifecycle = AppState.addEventListener("change", (state) => {
+      appActive.current = state === "active";
+      recovery.current = { requested: false, attempts: 0 };
+      if (appActive.current) resync();
+    });
     const clear = () => {
       epoch.current = `clear:${crypto.randomUUID()}`;
       setReady(false);
+      identities.current.clear();
+      lastGood.current = null;
       recovery.current = { requested: false, attempts: 0 };
       void view.current?.reset(epoch.current);
     };
     clear();
-    if (!visible || !NativeVideo) return clear;
+    if (!visible || !NativeVideo)
+      return () => {
+        lifecycle.remove();
+        clear();
+      };
     const unframe = video.onFrame(session.id, tabId, (frame: BrowserVideoFrame) => {
       if (closed) {
         frame.done();
         return;
       }
-      if (pending >= 4) {
+      if (!appActive.current) {
         frame.done();
-        requestKeyframe();
+        keyRequired = true;
         return;
       }
+      if (pending >= 4) {
+        frame.done();
+        resync();
+        return;
+      }
+      const admittedRevision = revision;
       pending++;
       tail = tail
         .then(async () => {
-          if (closed) return;
+          if (closed || admittedRevision !== revision || !appActive.current) return;
           const decoder = view.current;
           if (!decoder) throw new Error("Update the Opensteer app for native browser video.");
           const { header } = frame;
+          if (sequence >= 0 && header.sequence !== sequence + 1 && !header.key) {
+            resync();
+            return;
+          }
+          if (keyRequired && !header.key) return;
+          sequence = header.sequence;
           if (header.key) recovery.current.requested = false;
-          validateBrowserH264(frame.payload, header);
           const next = `${frame.connection}:${header.streamId}:${header.generation}`;
           if (epoch.current !== next) {
             epoch.current = next;
@@ -111,6 +141,10 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             await decoder.reset(next);
           }
           if (closed) return;
+          const identity = `${frame.connection}:${header.sequence}`;
+          identities.current.set(identity, header);
+          if (identities.current.size > 128)
+            identities.current.delete(identities.current.keys().next().value!);
           const crop = header.presentation.rasterCrop;
           const admitted = await decoder.decodeBytes(frame.payload, {
             epoch: next,
@@ -119,18 +153,18 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             pts: header.ptsUs,
             key: header.key,
             replayed: frame.replayed,
-            identity: JSON.stringify(header),
+            identity,
             cropX: crop.x,
             cropY: crop.y,
             cropWidth: crop.width,
             cropHeight: crop.height,
           });
-          if (!admitted) requestKeyframe();
+          if (!admitted) resync();
+          else if (admittedRevision === revision && header.key) keyRequired = false;
         })
         .catch(() => {
           if (!closed) {
-            setError("Browser video decoding failed.");
-            requestKeyframe();
+            resync();
           }
         })
         .finally(() => {
@@ -149,6 +183,7 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
     // Shape changes are handled by native layout; its touch owner cancels any pending local transform.
     return () => {
       closed = true;
+      lifecycle.remove();
       unframe();
       unstate();
       clear();
@@ -184,6 +219,7 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             tabId,
             layout.width * PixelRatio.get(),
             layout.height * PixelRatio.get(),
+            interactive && visible,
           );
         }}
         onNeedsKeyframe={({ nativeEvent }) => {
@@ -193,6 +229,8 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
           const header = identity(event);
           if (!header) return;
           recovery.current = { requested: false, attempts: 0 };
+          setError(null);
+          lastGood.current = { id: event.identity, header };
           video.presented(session.id, tabId, header);
           video.budget(
             session.id,
@@ -217,14 +255,6 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             (event.phase === "begin" && current.current.inputEnabled === false)
           )
             return;
-          video.gesture(
-            session.id,
-            tabId,
-            header.streamId,
-            browserPresentationRef(header),
-            event.gestureId,
-            event.phase,
-          );
           if (event.phase === "begin") current.current.onPointerDown?.();
         }}
         onVideoScroll={({ nativeEvent: event }) => {
@@ -236,6 +266,7 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
             surfaceId: BrowserSurfaceIdSchema.parse(tabId),
             x: (event.x - header.presentation.rasterCrop.x) / header.presentation.rasterCrop.width,
             y: (event.y - header.presentation.rasterCrop.y) / header.presentation.rasterCrop.height,
+            geometryRevision: header.geometryRevision,
             viewportWidth: header.presentation.rootCssWidth,
             viewportHeight: header.presentation.rootCssHeight,
             deltaX:
@@ -263,6 +294,7 @@ export function BrowserVideoStream(props: BrowserStreamProps) {
           current.current.onTap?.();
         }}
       />
+      {feed.inputError ? <Text accessibilityRole="alert">{feed.inputError}</Text> : null}
       {!ready || feed.status === "unavailable" || error || wait.error ? (
         <View
           style={{ position: "absolute", inset: 0, justifyContent: "center", alignItems: "center" }}

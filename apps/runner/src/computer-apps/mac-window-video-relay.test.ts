@@ -45,6 +45,7 @@ const bindingId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const attachmentToken = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 it.each([
+  "unacked-burst",
   "unconfirmed-profile",
   "previous-desktop",
   "previous-helper",
@@ -231,6 +232,7 @@ it.each([
         socket.on("message", (raw, binary) => {
           expect(binary).toBe(true);
           received.push(Buffer.from(raw as Buffer));
+          if (peer === "unacked-burst") return;
           socket.send(
             JSON.stringify({
               type: "display.ack",
@@ -300,6 +302,23 @@ it.each([
       );
       await expect.poll(() => received.length).toBe(1);
       expect(received[0]?.equals(Buffer.from(media))).toBe(true);
+      if (peer === "unacked-burst") {
+        for (let n = 1; n <= 12; n++) sendMedia(n);
+        await vi.waitFor(
+          () =>
+            expect(
+              received,
+              "Mac relay must accept more than eight outstanding frames",
+            ).toHaveLength(13),
+          { timeout: 2000 },
+        );
+        expect(
+          events.some(
+            (event) =>
+              event.type === "runner.integrations.display.state" && event.state === "failed",
+          ),
+        ).toBe(false);
+      }
       const started = requests.find((r) => r.method === "display.start");
       expect(started?.params).toMatchObject({ maxFps: peer === "current" ? 60 : 30 });
       if (peer === "current") expect(started?.params).toHaveProperty("maxBitrate", null);
@@ -326,7 +345,8 @@ it.each([
         if (peer === "current") expect(params).toHaveProperty("maxBitrate", maxBitrate);
         else expect(params).not.toHaveProperty("maxBitrate");
       }
-      await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
+      if (peer !== "unacked-burst")
+        await expect.poll(() => credits).toEqual([{ type: "display.ack", sequence: 0 }]);
       if (peer.startsWith("uncached-")) expect(handler.ownerViewVersion()).toBeUndefined();
       if (peer === "current") {
         const otherSource = DisplaySourceSchema.parse({

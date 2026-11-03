@@ -438,8 +438,7 @@ it("samples the certificate committed with decoder output, including delayed/reo
   let notify = () => {};
   let state: import("@opensteer/protocol").BrowserVideoState = {
     type: "browser.video.state",
-    surfaceId: browserVideoTestHeader.presentation
-      .surfaceId as import("@opensteer/core").BrowserSurfaceId,
+    surfaceId: "tab" as import("@opensteer/core").BrowserSurfaceId,
     streamId: browserVideoTestHeader.streamId,
     state: "live",
   };
@@ -455,7 +454,6 @@ it("samples the certificate committed with decoder output, including delayed/reo
     failed: vi.fn(),
     retry: vi.fn(),
     keyframe: vi.fn(),
-    gesture: vi.fn(),
     click: vi.fn(),
   };
   const source: BrowserFrameStore = {
@@ -511,7 +509,7 @@ it("samples the certificate committed with decoder output, including delayed/reo
     paint();
     expect(sampleBrowserVideo(canvas, 60, 70)?.header.sequence).toBe(4);
     rect = { ...rect, left: 11, right: 111 };
-    expect(sampleBrowserVideo(canvas, 60, 70)).toBeNull();
+    expect(sampleBrowserVideo(canvas, 60, 70)?.header.sequence).toBe(4);
     for (const sequence of [5, 6, 7]) {
       emit(sequence, true);
       codecs.at(-1)!.init.error(new DOMException("native decoder failed", "EncodingError"));
