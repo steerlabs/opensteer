@@ -42,7 +42,7 @@ describeStore("MCP operation receipts", (it) => {
       sourceThreadId: source.thread.id,
       workspaceId: source.workspace.id,
     };
-    await expect(store.admitAgentControlRequest(input)).rejects.toMatchObject({
+    await expect(store.admitRunToolCall(input)).rejects.toMatchObject({
       code: "forbidden",
     });
     await database
@@ -50,7 +50,7 @@ describeStore("MCP operation receipts", (it) => {
       .set({ accessMode: "auto" })
       .where("id", "=", target.id)
       .execute();
-    await expect(store.admitAgentControlRequest(input)).resolves.toMatchObject({
+    await expect(store.admitRunToolCall(input)).resolves.toMatchObject({
       wasDuplicate: false,
     });
     await database
@@ -58,7 +58,7 @@ describeStore("MCP operation receipts", (it) => {
       .set({ accessMode: "approval-required" })
       .where("id", "=", source.thread.id)
       .execute();
-    await expect(store.admitAgentControlRequest(input)).rejects.toMatchObject({
+    await expect(store.admitRunToolCall(input)).rejects.toMatchObject({
       code: "forbidden",
     });
   });

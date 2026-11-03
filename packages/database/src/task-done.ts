@@ -42,10 +42,7 @@ import {
 } from "./thread-row-mappers.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { projectThreadState } from "./thread-status.js";
-import {
-  admitAgentControlRequestInTransaction,
-  type AgentControlAdmissionInput,
-} from "./agent-control-admission.js";
+import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 
 export interface ThreadWriteActor {
   readonly requestedBy: UserId;
@@ -115,7 +112,7 @@ export interface SetThreadDoneInput extends ThreadWriteActor {
   readonly done: boolean;
   readonly idempotencyKey: string;
   readonly threadId: ThreadId;
-  readonly admission?: AgentControlAdmissionInput;
+  readonly admission?: RunToolAdmissionInput;
 }
 
 /** The open Assignments a task serves or handed out, and every open one beneath them. */
@@ -570,7 +567,7 @@ export async function appendDoneState(
 
 export async function admitThreadWrite(
   transaction: Transaction<DatabaseSchema>,
-  input: ThreadWriteActor & { readonly admission?: AgentControlAdmissionInput },
+  input: ThreadWriteActor & { readonly admission?: RunToolAdmissionInput },
 ): Promise<void> {
   if (!input.admission) return;
   if (
@@ -583,5 +580,5 @@ export async function admitThreadWrite(
       message: "Thread write admission disagrees with Run",
     });
   }
-  await admitAgentControlRequestInTransaction(transaction, input.admission);
+  await admitRunToolCallInTransaction(transaction, input.admission);
 }

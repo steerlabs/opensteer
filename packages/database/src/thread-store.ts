@@ -66,18 +66,18 @@ import { type CommandRow, type ThreadRow, type DatabaseSchema } from "./schema.j
 import { type RevokedRunGrant } from "./run-grants.js";
 import type { BrowserUsageCredit } from "./browser-session-store.js";
 import {
-  type AgentControlAdmissionInput,
+  type RunToolAdmissionInput,
   type TriggerControlAdmissionInput,
   type WatchControlAdmissionInput,
-  type AgentControlAdmissionResult,
-  admitAgentControlRequest as persistAgentControlAdmission,
+  type RunToolAdmissionResult,
+  admitRunToolCall as persistRunToolAdmission,
   type TriggerControlAdmissionResult,
   admitTriggerControlRequest as persistTriggerControlAdmission,
-  admitAgentControlRequestInTransaction,
+  admitRunToolCallInTransaction,
   admitTriggerControlRequestInTransaction,
   admitWatchControlRequestInTransaction,
   type AdmissionMode,
-} from "./agent-control-admission.js";
+} from "./run-tool-admission.js";
 import { type DurableWindow } from "@opensteer/protocol";
 import { type Transaction, type Kysely, sql } from "kysely";
 import {
@@ -289,7 +289,7 @@ export interface MovedThreadInput {
 
 export interface DelegateThreadRequest {
   readonly specialistId?: string;
-  readonly callerIntent?: Pick<AgentControlAdmissionInput, "requestId" | "requestFingerprint">;
+  readonly callerIntent?: Pick<RunToolAdmissionInput, "requestId" | "requestFingerprint">;
   readonly accessMode: ThreadAccessMode;
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
@@ -336,7 +336,7 @@ export interface DelegatedThreadResult {
 }
 
 export type ThreadMutationAdmission =
-  | { readonly kind: "agent"; readonly request: AgentControlAdmissionInput }
+  | { readonly kind: "agent"; readonly request: RunToolAdmissionInput }
   | { readonly kind: "trigger"; readonly request: TriggerControlAdmissionInput }
   | { readonly kind: "watch"; readonly request: WatchControlAdmissionInput };
 
@@ -936,12 +936,12 @@ export async function getThreadForOwner(
   return row ? threadFromRow(row) : null;
 }
 
-export function admitAgentControlRequest(
+export function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
-  input: AgentControlAdmissionInput,
+  input: RunToolAdmissionInput,
   executionNow: () => number = Date.now,
-): Promise<AgentControlAdmissionResult> {
-  return persistAgentControlAdmission(database, input, executionNow);
+): Promise<RunToolAdmissionResult> {
+  return persistRunToolAdmission(database, input, executionNow);
 }
 
 export function admitTriggerControlRequest(
@@ -1246,7 +1246,7 @@ async function admitThreadMutation(
   executionNow: () => number = Date.now,
 ): Promise<void> {
   if (admission.kind === "agent") {
-    await admitAgentControlRequestInTransaction(transaction, admission.request, mode, executionNow);
+    await admitRunToolCallInTransaction(transaction, admission.request, mode, executionNow);
   } else if (admission.kind === "trigger") {
     await admitTriggerControlRequestInTransaction(transaction, admission.request, mode);
   } else {
@@ -1257,7 +1257,7 @@ async function admitThreadMutation(
 export async function cancelAssignment(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
-  input: CancelAssignmentInput & { readonly admission?: AgentControlAdmissionInput },
+  input: CancelAssignmentInput & { readonly admission?: RunToolAdmissionInput },
   executionNow: () => number = Date.now,
 ): Promise<CancelAssignmentResult> {
   if (
@@ -1277,22 +1277,12 @@ export async function cancelAssignment(
     () =>
       database.transaction().execute(async (transaction) => {
         if (input.admission) {
-          await admitAgentControlRequestInTransaction(
-            transaction,
-            input.admission,
-            "check",
-            executionNow,
-          );
+          await admitRunToolCallInTransaction(transaction, input.admission, "check", executionNow);
         }
         await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
         const result = await cancelAssignmentInTransaction(transaction, input, links);
         if (input.admission) {
-          await admitAgentControlRequestInTransaction(
-            transaction,
-            input.admission,
-            "admit",
-            executionNow,
-          );
+          await admitRunToolCallInTransaction(transaction, input.admission, "admit", executionNow);
         }
         return result;
       }),
@@ -1704,7 +1694,7 @@ export async function renameThread(
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly actorRunId?: RunId;
-    readonly admission?: AgentControlAdmissionInput;
+    readonly admission?: RunToolAdmissionInput;
     readonly threadId: ThreadId;
     readonly title: string;
   },
@@ -1827,7 +1817,7 @@ export async function setThreadIcon(
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly actorRunId?: RunId;
-    readonly admission?: AgentControlAdmissionInput;
+    readonly admission?: RunToolAdmissionInput;
     readonly threadId: ThreadId;
     readonly icon: WorkspaceIconName | null;
   },

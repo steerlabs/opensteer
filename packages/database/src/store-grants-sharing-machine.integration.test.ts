@@ -23,11 +23,7 @@ import { Pool } from "pg";
 import type { DatabaseSchema } from "./schema.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 import { describe, expect } from "vitest";
-import {
-  agentControlMaxDelegationDepth,
-  IntegrationPlatformStore,
-  OpensteerStore,
-} from "./index.js";
+import { runToolMaxDelegationDepth, IntegrationPlatformStore, OpensteerStore } from "./index.js";
 import {
   describeStore,
   testModelSelection,
@@ -125,7 +121,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     for (let index = 1; index < 40; index += 1) {
-      await store.admitAgentControlRequest({
+      await store.admitRunToolCall({
         ...admission,
         action: "thread.message",
         requestId: randomUUID(),
@@ -178,18 +174,18 @@ describeStore("PostgreSQL store", (it) => {
     };
 
     const exactRetries = await Promise.all(
-      Array.from({ length: 8 }, async () => store.admitAgentControlRequest(exactInput)),
+      Array.from({ length: 8 }, async () => store.admitRunToolCall(exactInput)),
     );
     expect(exactRetries.filter(({ wasDuplicate }) => !wasDuplicate)).toHaveLength(1);
     expect(exactRetries.filter(({ wasDuplicate }) => wasDuplicate)).toHaveLength(7);
 
     const restartedStore = new OpensteerStore(database);
-    await expect(restartedStore.admitAgentControlRequest(exactInput)).resolves.toMatchObject({
+    await expect(restartedStore.admitRunToolCall(exactInput)).resolves.toMatchObject({
       actionClass: "thread.message",
       wasDuplicate: true,
     });
     await expect(
-      restartedStore.admitAgentControlRequest({
+      restartedStore.admitRunToolCall({
         ...exactInput,
         requestFingerprint: createHash("sha256").update("changed-message").digest("hex"),
       }),
@@ -198,7 +194,7 @@ describeStore("PostgreSQL store", (it) => {
     const remaining = 40;
     await Promise.all(
       Array.from({ length: remaining }, async (_, index) =>
-        store.admitAgentControlRequest({
+        store.admitRunToolCall({
           ...agentControlBinding,
           action: "thread.message",
           requestFingerprint: createHash("sha256").update(`message-${index}`).digest("hex"),
@@ -209,7 +205,7 @@ describeStore("PostgreSQL store", (it) => {
       ),
     );
     await expect(
-      restartedStore.admitAgentControlRequest({
+      restartedStore.admitRunToolCall({
         ...agentControlBinding,
         action: "thread.message",
         requestFingerprint: createHash("sha256").update("over-limit").digest("hex"),
@@ -228,7 +224,7 @@ describeStore("PostgreSQL store", (it) => {
 
     await Promise.all(
       Array.from({ length: 65 }, async (_, index) =>
-        store.admitAgentControlRequest({
+        store.admitRunToolCall({
           ...agentControlBinding,
           action: "thread.list",
           requestFingerprint: createHash("sha256").update(`list-${index}`).digest("hex"),
@@ -239,7 +235,7 @@ describeStore("PostgreSQL store", (it) => {
       ),
     );
     await expect(
-      store.admitAgentControlRequest({
+      store.admitRunToolCall({
         ...agentControlBinding,
         action: "thread.list",
         requestFingerprint: createHash("sha256").update("list-over-limit").digest("hex"),
@@ -249,7 +245,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toMatchObject({ wasDuplicate: false });
     await expect(
-      store.admitAgentControlRequest({
+      store.admitRunToolCall({
         ...agentControlBinding,
         action: "thread.read",
         requestFingerprint: createHash("sha256").update("read-after-list").digest("hex"),
@@ -432,7 +428,7 @@ describeStore("PostgreSQL store", (it) => {
    *   working until the Runner reports the Run terminal;
    * - a Workspace being deleted still authorizes its Runs' tools;
    * - a Runner revoked or a binding replaced leaves the old grant usable;
-   * - a Run-originated Request or agent-control call slips in after Stop;
+   * - a Run-originated Request or tool call slips in after Stop;
    * - revoking tool authority also refuses the Runner's own reporting, so a
    *   stopped Run could never record how it ended.
    */
@@ -649,7 +645,7 @@ describeStore("PostgreSQL store", (it) => {
       expect(grants[0]!.attemptId).toBe(grants[1]!.attemptId);
     });
 
-    it("refuses a stopped Run's Requests and agent-control calls", async ({ storeFixture }) => {
+    it("refuses a stopped Run's Requests and tool calls", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;
       const started = await startRunFixture("grant-stopped-mutations");
       await store.enqueueRunnerControl({
@@ -660,7 +656,7 @@ describeStore("PostgreSQL store", (it) => {
         type: "run.interrupt",
       });
       await expect(
-        store.admitAgentControlRequest({
+        store.admitRunToolCall({
           ...capability(started),
           action: "thread.read",
           requestFingerprint: createHash("sha256").update("after-stop").digest("hex"),
@@ -738,7 +734,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({
       code: "forbidden",
-      message: "Agent-control Run is no longer active",
+      message: "The calling Run is no longer active",
     });
     await expect(
       store.enqueueAdmittedThreadInput({
@@ -754,13 +750,11 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({
       code: "forbidden",
-      message: "Agent-control Run is no longer active",
+      message: "The calling Run is no longer active",
     });
   });
 
-  it("rejects every agent-control request after its execution terminates", async ({
-    storeFixture,
-  }) => {
+  it("rejects every tool call after its execution terminates", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
     const fixture = await createRunFixture("agent-admission-authority-fence");
@@ -788,14 +782,14 @@ describeStore("PostgreSQL store", (it) => {
       sourceThreadId: fixture.thread.id,
     };
 
-    await expect(store.admitAgentControlRequest(admitted)).rejects.toMatchObject({
+    await expect(store.admitRunToolCall(admitted)).rejects.toMatchObject({
       code: "forbidden",
     });
     await store.claimCommand(turn.command.id, "agent-admission-authority-fence-dispatcher");
     expect(
       await bindAgentControlRun(fixture, turn.run.id, "agent-admission-authority-fence"),
     ).toEqual(expectedBinding);
-    await expect(store.admitAgentControlRequest(admitted)).resolves.toMatchObject({
+    await expect(store.admitRunToolCall(admitted)).resolves.toMatchObject({
       wasDuplicate: false,
     });
     await database
@@ -804,11 +798,11 @@ describeStore("PostgreSQL store", (it) => {
       .where("id", "=", turn.run.id)
       .executeTakeFirstOrThrow();
 
-    await expect(store.admitAgentControlRequest(admitted)).rejects.toMatchObject({
+    await expect(store.admitRunToolCall(admitted)).rejects.toMatchObject({
       code: "forbidden",
     });
     await expect(
-      store.admitAgentControlRequest({
+      store.admitRunToolCall({
         ...admitted,
         requestFingerprint: createHash("sha256").update("new-after-terminal").digest("hex"),
         requestId: randomUUID(),
@@ -821,7 +815,7 @@ describeStore("PostgreSQL store", (it) => {
     const fixture = await createRunFixture("agent-admission-depth");
     let parent = fixture.thread;
     const lineage = [fixture.thread];
-    for (let depth = 1; depth <= agentControlMaxDelegationDepth; depth += 1) {
+    for (let depth = 1; depth <= runToolMaxDelegationDepth; depth += 1) {
       const created = await store.createThread({
         createdBy: fixture.userId,
         environmentId: fixture.environmentId,
@@ -835,8 +829,8 @@ describeStore("PostgreSQL store", (it) => {
       parent = created.thread;
       lineage.push(parent);
     }
-    const allowedSource = lineage[agentControlMaxDelegationDepth - 1];
-    const blockedSource = lineage[agentControlMaxDelegationDepth];
+    const allowedSource = lineage[runToolMaxDelegationDepth - 1];
+    const blockedSource = lineage[runToolMaxDelegationDepth];
     if (!allowedSource || !blockedSource) throw new Error("Depth fixture is incomplete");
     const allowedTurn = await enqueueHumanTrigger({
       content: [{ text: "Delegate to depth four", type: "text" }],
@@ -899,7 +893,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({
       code: "conflict",
-      details: { maxDelegationDepth: agentControlMaxDelegationDepth },
+      details: { maxDelegationDepth: runToolMaxDelegationDepth },
     });
   });
 

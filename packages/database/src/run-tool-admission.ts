@@ -21,9 +21,9 @@ import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
-export const agentControlMaxDelegationDepth = agentDelegationMaxDepth;
+export const runToolMaxDelegationDepth = agentDelegationMaxDepth;
 
-export type AgentControlAction =
+export type RunToolAction =
   | "assignment.cancel"
   | "machine.full-disk-access.request"
   | "browser.access.request"
@@ -50,16 +50,16 @@ export type AgentControlAction =
   | "environment.list"
   | "project.list";
 
-export type AgentControlActionClass = Exclude<AgentControlAction, "person.message">;
+export type RunToolActionClass = Exclude<RunToolAction, "person.message">;
 
-type TriggerControlAction = AgentControlAction;
+type TriggerControlAction = RunToolAction;
 
-export type TriggerControlActionClass = AgentControlActionClass;
+export type TriggerControlActionClass = RunToolActionClass;
 
-export interface AgentControlAdmissionInput {
+export interface RunToolAdmissionInput {
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
-  readonly action: AgentControlAction;
+  readonly action: RunToolAction;
   readonly bindingGeneration: number;
   readonly environmentId: EnvironmentId;
   readonly membershipGeneration: number;
@@ -73,8 +73,8 @@ export interface AgentControlAdmissionInput {
   readonly workspaceId: WorkspaceId;
 }
 
-export interface AgentControlAdmissionResult {
-  readonly actionClass: AgentControlActionClass;
+export interface RunToolAdmissionResult {
+  readonly actionClass: RunToolActionClass;
   readonly wasDuplicate: boolean;
 }
 
@@ -121,7 +121,7 @@ export interface WatchControlAdmissionResult {
   readonly wasDuplicate: boolean;
 }
 
-const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass>> = {
+const actionClasses: Readonly<Record<RunToolAction, RunToolActionClass>> = {
   "assignment.cancel": "assignment.cancel",
   "machine.full-disk-access.request": "machine.full-disk-access.request",
   "browser.access.request": "browser.access.request",
@@ -149,13 +149,13 @@ const actionClasses: Readonly<Record<AgentControlAction, AgentControlActionClass
   "environment.list": "environment.list",
 };
 
-export async function admitAgentControlRequest(
+export async function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
-  input: AgentControlAdmissionInput,
+  input: RunToolAdmissionInput,
   executionNow: () => number = Date.now,
-): Promise<AgentControlAdmissionResult> {
+): Promise<RunToolAdmissionResult> {
   return withDatabaseTransaction(database, (transaction) =>
-    admitAgentControlRequestInTransaction(transaction, input, "admit", executionNow),
+    admitRunToolCallInTransaction(transaction, input, "admit", executionNow),
   );
 }
 
@@ -166,14 +166,14 @@ export async function admitAgentControlRequest(
  */
 export type AdmissionMode = "admit" | "check";
 
-export async function admitAgentControlRequestInTransaction(
+export async function admitRunToolCallInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  input: AgentControlAdmissionInput,
+  input: RunToolAdmissionInput,
   mode: AdmissionMode = "admit",
   executionNow: () => number = Date.now,
-): Promise<AgentControlAdmissionResult> {
+): Promise<RunToolAdmissionResult> {
   if (!/^[0-9a-f]{64}$/.test(input.requestFingerprint)) {
-    throw new TypeError("Agent-control request fingerprint must be a SHA-256 hex digest");
+    throw new TypeError("Tool request fingerprint must be a SHA-256 hex digest");
   }
   const actionClass = actionClasses[input.action];
   {
@@ -184,12 +184,12 @@ export async function admitAgentControlRequestInTransaction(
       .$if(mode === "admit", (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     if (!run) {
-      throw new OpensteerError({ code: "not_found", message: "Agent-control Run not found" });
+      throw new OpensteerError({ code: "not_found", message: "The calling Run was not found" });
     }
     if (run.threadId !== input.sourceThreadId) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Agent-control Run does not belong to the claimed source Thread",
+        message: "The calling Run does not belong to the claimed source Thread",
       });
     }
     // The ledger is an active-execution idempotency receipt, not a
@@ -198,10 +198,10 @@ export async function admitAgentControlRequestInTransaction(
     if (run.status !== "starting" && run.status !== "running" && run.status !== "waiting") {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Agent-control Run is no longer active",
+        message: "The calling Run is no longer active",
       });
     }
-    // Agent-control is tool use: a stopped Run's calls are refused even while
+    // A tool call is the Run acting: a stopped Run's calls are refused even while
     // its Runner still reports how the Run ends.
     await assertActiveGrant(
       transaction,
@@ -426,7 +426,7 @@ function requestIdConflict(requestId: string): OpensteerError {
   return new OpensteerError({
     code: "conflict",
     details: { requestId },
-    message: "Agent-control request ID was already used with different input",
+    message: "Tool request ID was already used with different input",
   });
 }
 

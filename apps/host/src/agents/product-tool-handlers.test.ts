@@ -205,7 +205,7 @@ describe("Product tool handlers", () => {
         reason: "no-saved-login",
       } as const;
       const agentSignIn = vi.fn(async () => result);
-      const { service, admitAgentControlRequest } = makeService({
+      const { service, admitRunToolCall } = makeService({
         browserSources: { agentSignIn },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
@@ -225,7 +225,7 @@ describe("Product tool handlers", () => {
       expect(agentSignIn).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, site: result.site }),
       );
-      expect(admitAgentControlRequest).not.toHaveBeenCalled();
+      expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
 
@@ -1226,7 +1226,7 @@ describe("Product tool handlers", () => {
         requestId: createId("request"),
         status: "pending" as const,
       }));
-      const { claims, service, admitAgentControlRequest } = makeService({
+      const { claims, service, admitRunToolCall } = makeService({
         machineFullDiskAccess: { request },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
@@ -1252,7 +1252,7 @@ describe("Product tool handlers", () => {
         reason: "Read Mail",
         claims,
       });
-      expect(admitAgentControlRequest).not.toHaveBeenCalled();
+      expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
 
@@ -1330,7 +1330,7 @@ describe("Product tool handlers", () => {
       run: targetRun,
       wasDuplicate: true,
     }));
-    const { admitAgentControlRequest, claims, service } = makeService({
+    const { admitRunToolCall, claims, service } = makeService({
       commands: { delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
       threads: [current, target],
@@ -1347,8 +1347,8 @@ describe("Product tool handlers", () => {
     await service.handle("first-token", request);
     await service.handle("replacement-token", request);
 
-    expect(admitAgentControlRequest).toHaveBeenCalledTimes(1);
-    expect(admitAgentControlRequest).toHaveBeenCalledWith(
+    expect(admitRunToolCall).toHaveBeenCalledTimes(1);
+    expect(admitRunToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "thread.message",
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -1369,14 +1369,14 @@ describe("Product tool handlers", () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
     const target = thread(targetThreadId, codexHarnessId, "Research");
     const enqueueThreadInput = vi.fn();
-    const admitAgentControlRequest = vi.fn(async () => {
+    const admitRunToolCall = vi.fn(async () => {
       throw new OpensteerError({
         code: "conflict",
         message: "Agent-control thread.message request limit reached",
       });
     });
     const { service } = makeService({
-      admitAgentControlRequest,
+      admitRunToolCall,
       commands: { delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
       threads: [current, target],
@@ -1399,7 +1399,7 @@ describe("Product tool handlers", () => {
       inheritsMain: true,
     });
     const manage = vi.fn(async () => ({ triggers: [] }));
-    const { admitAgentControlRequest, service } = makeService({
+    const { admitRunToolCall, service } = makeService({
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [current],
@@ -1426,7 +1426,7 @@ describe("Product tool handlers", () => {
         ([, input]) => input.operation,
       ),
     ).toEqual(["list", "run"]);
-    expect(admitAgentControlRequest).not.toHaveBeenCalled();
+    expect(admitRunToolCall).not.toHaveBeenCalled();
   });
 
   it("derives the Trigger create idempotency key from the Run and request", async () => {
@@ -1500,7 +1500,7 @@ function makeService(options: {
   machineFullDiskAccess?: ConstructorParameters<
     typeof ProductToolsTestClient
   >[0]["machineFullDiskAccess"];
-  admitAgentControlRequest?: ReturnType<typeof vi.fn>;
+  admitRunToolCall?: ReturnType<typeof vi.fn>;
   browser?: Partial<
     Pick<
       BrowserService,
@@ -1588,8 +1588,8 @@ function makeService(options: {
     threads: options.threads,
     workspace: {},
   }));
-  const admitAgentControlRequest =
-    options.admitAgentControlRequest ??
+  const admitRunToolCall =
+    options.admitRunToolCall ??
     vi.fn(async () => ({
       actionClass: "thread.message" as const,
       delegationDepth: null,
@@ -1677,7 +1677,7 @@ function makeService(options: {
       assignments: [],
       window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
     }),
-    admitAgentControlRequest,
+    admitRunToolCall,
     runAssignment: vi.fn(async () => options.runAssignment ?? null),
     agentThreadLineage: vi.fn(async (threadId: Thread["id"]) => lineageIds(threadId)),
     agentThreadPageForOwner,
@@ -1869,9 +1869,7 @@ function makeService(options: {
     delegateAdmittedThread: async (
       operation: Parameters<CommandService["delegateAdmittedThread"]>[0],
     ) => {
-      await (admitAgentControlRequest as (input: unknown) => Promise<unknown>)(
-        operation.admission.request,
-      );
+      await (admitRunToolCall as (input: unknown) => Promise<unknown>)(operation.admission.request);
       return (options.commands.delegateThread as (input: unknown) => Promise<unknown>)(
         operation.input,
       ) as ReturnType<CommandService["delegateAdmittedThread"]>;
@@ -1879,16 +1877,14 @@ function makeService(options: {
     enqueueAdmittedThreadInput: async (
       operation: Parameters<CommandService["enqueueAdmittedThreadInput"]>[0],
     ) => {
-      await (admitAgentControlRequest as (input: unknown) => Promise<unknown>)(
-        operation.admission.request,
-      );
+      await (admitRunToolCall as (input: unknown) => Promise<unknown>)(operation.admission.request);
       return (options.commands.enqueueThreadInput as (input: unknown) => Promise<unknown>)(
         operation.input,
       ) as ReturnType<CommandService["enqueueAdmittedThreadInput"]>;
     },
   } as unknown as CommandService;
   return {
-    admitAgentControlRequest,
+    admitRunToolCall,
     agentThreadPageForOwner,
     authenticate,
     claims,
@@ -2241,7 +2237,7 @@ it.each([
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(publishPersonMessage).not.toHaveBeenCalled();
     expect(personShow).not.toHaveBeenCalled();
-    expect(fixture.admitAgentControlRequest).not.toHaveBeenCalled();
+    expect(fixture.admitRunToolCall).not.toHaveBeenCalled();
   },
 );
 

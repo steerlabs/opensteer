@@ -256,7 +256,7 @@ export class ProductToolHandlers {
     const requestId = operationId(caller, operationKey, "person_show");
     const target = await this.preparePersonShow(call);
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
-    const admission = await this.#store.admitAgentControlRequest(
+    const admission = await this.#store.admitRunToolCall(
       runAdmission(caller, "person_show", input, requestId),
     );
     const connectedDevices = admission.wasDuplicate

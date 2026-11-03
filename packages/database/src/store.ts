@@ -71,11 +71,11 @@ import {
 import type { Clock } from "@opensteer/shared/clock";
 import { type Kysely } from "kysely";
 import {
-  type AgentControlAdmissionInput,
-  type AgentControlAdmissionResult,
+  type RunToolAdmissionInput,
+  type RunToolAdmissionResult,
   type TriggerControlAdmissionInput,
   type TriggerControlAdmissionResult,
-} from "./agent-control-admission.js";
+} from "./run-tool-admission.js";
 import {
   assignmentTreeThreadIds,
   type CancelAssignmentInput,
@@ -1393,10 +1393,8 @@ export class OpensteerStore {
     };
   }
 
-  admitAgentControlRequest(
-    input: AgentControlAdmissionInput,
-  ): Promise<AgentControlAdmissionResult> {
-    return threadStore.admitAgentControlRequest(this.#database, input, this.#executionNow);
+  admitRunToolCall(input: RunToolAdmissionInput): Promise<RunToolAdmissionResult> {
+    return threadStore.admitRunToolCall(this.#database, input, this.#executionNow);
   }
 
   admitTriggerControlRequest(
@@ -1442,7 +1440,7 @@ export class OpensteerStore {
   }
 
   async cancelAssignment(
-    input: CancelAssignmentInput & { readonly admission?: AgentControlAdmissionInput },
+    input: CancelAssignmentInput & { readonly admission?: RunToolAdmissionInput },
   ): Promise<CancelAssignmentResult> {
     return this.#announceRevokedGrants(
       await threadStore.cancelAssignment(this.#database, this.#links, input, this.#executionNow),

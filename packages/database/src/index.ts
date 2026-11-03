@@ -1,5 +1,5 @@
 export * from "./account-directory-store.js";
-export * from "./agent-control-admission.js";
+export * from "./run-tool-admission.js";
 export * from "./attachment-store.js";
 export * from "./app-store.js";
 export * from "./automation-failure-store.js";

@@ -2,7 +2,7 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { createHash } from "node:crypto";
 import { OpensteerError, type Thread } from "@opensteer/core";
 import type {
-  AgentControlAdmissionInput,
+  RunToolAdmissionInput,
   AgentThreadListScope,
   ThreadMutationAdmission,
   ThreadCallerAuthority,
@@ -57,7 +57,7 @@ export function runAdmission(
   input: unknown,
   requestId: string,
   targetThreadIds: readonly Thread["id"][] = [],
-): AgentControlAdmissionInput {
+): RunToolAdmissionInput {
   const claims = requireRun(caller).claims;
   return {
     bindingGeneration: claims.bindingGeneration,
