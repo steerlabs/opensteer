@@ -2804,3 +2804,147 @@ it("refreshes previews when Account sign-in returns on a retained manual Host", 
     client.dispose();
   }
 });
+
+describe("pending computer destination", () => {
+  it("suppresses startup singleton selection and asks for Account sign-in", async () => {
+    const { client } = open(testPort({ held: false }).factory);
+    await client.catalog.upsert(asInput(testDeploymentConnection({})));
+    client.openComputer(serverId);
+    await client.initialize();
+    expect(client.getSnapshot().selection.deploymentId).toBeNull();
+    expect(client.getSnapshot().pendingComputer).toEqual({
+      deploymentId: serverId,
+      status: "needs-sign-in",
+    });
+    client.cancelOpenComputer();
+    expect(client.getSnapshot().pendingComputer).toBeNull();
+    client.dispose();
+  });
+
+  it("opens the exact Account entry after sign-in without waiting for a Host", async () => {
+    const verification = deferred<HostEpochAgreement>();
+    const port = testPort({ held: false });
+    const { client, opened } = open(
+      (options) => ({ ...port.factory(options), verifyEpoch: () => verification.promise }),
+      undefined,
+      {
+        accountOrigin,
+        fetch: accountFetch(),
+      },
+    );
+    client.openComputer(serverId);
+    vi.spyOn(client.accountDirectory, "sync").mockImplementation(async () => {
+      await client.catalog.upsert(
+        asInput(
+          testDeploymentConnection({
+            source: { kind: "account", issuer: accountOrigin, subject: accountSubject },
+          }),
+        ),
+      );
+      return { syncedDeploymentIds: [DeploymentIdSchema.parse(serverId)], unavailable: [] };
+    });
+    await client.initialize();
+    await signInTestAccount(client, opened);
+    await vi.waitFor(() => expect(client.getSnapshot().selection.deploymentId).toBe(serverId), {
+      timeout: 2000,
+    });
+    expect(client.getSnapshot().pendingComputer).toBeNull();
+    verification.resolve("unreachable");
+    client.dispose();
+  });
+
+  it.each(["not-listed", "offline"] as const)(
+    "shows %s without selecting a manual entry",
+    async (status) => {
+      const { client, opened } = open(testPort({ held: false }).factory, undefined, {
+        accountOrigin,
+        fetch: accountFetch(),
+      });
+      client.openComputer(serverId);
+      vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+        syncedDeploymentIds: [DeploymentIdSchema.parse(serverId)],
+        unavailable:
+          status === "offline"
+            ? [
+                {
+                  deploymentId: DeploymentIdSchema.parse(serverId),
+                  name: "Mac",
+                  accountAccess: "owner",
+                  reason: "host-unavailable",
+                },
+              ]
+            : [],
+      });
+      await client.initialize();
+      await client.catalog.upsert(asInput(testDeploymentConnection({})));
+      await signInTestAccount(client, opened);
+      await vi.waitFor(() => expect(client.getSnapshot().pendingComputer?.status).toBe(status), {
+        timeout: 2000,
+      });
+      expect(client.getSnapshot().selection.deploymentId).toBeNull();
+      client.dispose();
+    },
+  );
+});
+
+describe("pending computer fencing", () => {
+  it.each(["sign-out", "newer-link", "cancel"] as const)(
+    "discards directory completion after %s",
+    async (action) => {
+      const { client, opened } = open(testPort({ held: false }).factory, undefined, {
+        accountOrigin,
+        fetch: accountFetch(),
+      });
+      vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+        syncedDeploymentIds: [],
+        unavailable: [],
+      });
+      await client.initialize();
+      await signInTestAccount(client, opened);
+      await client.refreshDirectory();
+      const refresh = deferred<void>();
+      vi.spyOn(client.directoryRefresh, "refreshNow").mockReturnValue(refresh.promise);
+      client.openComputer(serverId);
+      const completion = client.retryOpenComputer();
+      if (action === "sign-out") {
+        const signingOut = client.signOutAccount();
+        expect(client.getSnapshot().pendingComputer).toBeNull();
+        await signingOut;
+      } else if (action === "newer-link") {
+        client.openComputer(otherId);
+      } else client.cancelOpenComputer();
+      refresh.resolve();
+      await completion;
+      expect(client.getSnapshot().selection.deploymentId).toBeNull();
+      if (action === "newer-link") {
+        await vi.waitFor(
+          () =>
+            expect(client.getSnapshot().pendingComputer).toEqual({
+              deploymentId: otherId,
+              status: "not-listed",
+            }),
+          { timeout: 2000 },
+        );
+      } else expect(client.getSnapshot().pendingComputer).toBeNull();
+      client.dispose();
+    },
+  );
+});
+
+it("retains a cold computer intent above the remembered selection", async () => {
+  const files = new MemoryPrivateFilesystem();
+  await files.writeFileAtomic(
+    "/private/selection.json",
+    JSON.stringify({ schemaVersion: 1, selectedDeploymentId: serverId }),
+  );
+  const { client } = open(testPort({ held: false }).factory, files);
+  await client.catalog.upsert(asInput(testDeploymentConnection({})));
+  client.openComputer(otherId);
+  await client.initialize();
+  expect(client.getSnapshot().pendingComputer).toEqual({
+    deploymentId: otherId,
+    status: "needs-sign-in",
+  });
+  expect(client.getSnapshot().selection.deploymentId).toBe(serverId);
+  client.dispose();
+});
