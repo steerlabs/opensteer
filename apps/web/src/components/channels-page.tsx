@@ -1364,7 +1364,7 @@ export function AccessPolicyEditor({
           <span className="field__hint">Choose where people can mention the bot.</span>
         </div>
         <label className="field">
-          <span className="sr-only">Channel reach</span>
+          <span className="visually-hidden">Channel reach</span>
           <select
             aria-label="Channel reach"
             className="select-input"
@@ -1430,7 +1430,7 @@ export function AccessPolicyEditor({
           <span className="field__hint">Kept separate from shared channel access.</span>
         </div>
         <label className="field">
-          <span className="sr-only">Who can send direct messages</span>
+          <span className="visually-hidden">Who can send direct messages</span>
           <select
             aria-label="Who can send direct messages"
             className="select-input"

@@ -212,6 +212,14 @@
   box-shadow: var(--edge-plate);
 }
 
+/* A card that holds a form or prose rather than rows. */
+.card--padded {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  padding: var(--space-16);
+}
+
 .card__row {
   display: flex;
   align-items: center;

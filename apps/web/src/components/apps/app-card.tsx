@@ -158,7 +158,7 @@ function AppFrame({
     return (
       <p role="alert">
         Could not load this app.{" "}
-        <button type="button" onClick={retry}>
+        <button className="btn btn--small" type="button" onClick={retry}>
           Retry
         </button>
       </p>
