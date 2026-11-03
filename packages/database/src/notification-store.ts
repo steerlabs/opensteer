@@ -29,7 +29,7 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
-import { type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import { runWasStopped } from "./run-grants.js";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -339,13 +339,7 @@ async function requestCandidates(
   }));
 }
 
-/**
- * A reply alerts the person a Run answers: not inside a task, whose reply
- * returns to the agent that assigned it and is relayed from there, and not in
- * a channel conversation, whose reply goes to Slack or iMessage instead.
- * Whoever or whatever started the Run — the person, a reminder, a task
- * result, an answered Request — the reply is Opensteer messaging them.
- */
+/** A reply alerts only the person the Run answers directly. */
 async function replyCandidates(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
@@ -443,8 +437,8 @@ async function interruptionCandidates(
 
 /**
  * The person a Run answers, if it answers one directly and they can still
- * open its Thread: none for a task's Run, whose reply is the task's result for
- * its assigner, and none for a channel Run, which answers where it was asked.
+ * open its Thread: Chat or work a person started or joined. Assigned results
+ * return to the assigner; channel Runs answer where they were asked.
  */
 async function personAnswered(
   transaction: Transaction<DatabaseSchema>,
@@ -455,6 +449,7 @@ async function personAnswered(
   const run = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
+    .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
     .innerJoin("workspaceMemberships", (join) =>
       join
         .onRef("workspaceMemberships.workspaceId", "=", "threads.workspaceId")
@@ -467,11 +462,18 @@ async function personAnswered(
         .onRef("agentNotificationMutes.userId", "=", "runs.requestedBy"),
     )
     .select([
+      "workspaces.homeThreadId",
+      "runs.personWaited",
       "runs.assignmentId",
       "runs.replyTarget",
       "runs.requestedBy",
       "agentNotificationMutes.muted",
     ])
+    .select(
+      sql<boolean>`exists (select 1 from messages input where
+      (input.id = runs.seed_input_id or (input.run_id = runs.id and input.kind = 'input'))
+      and input.author->>'kind' = 'human')`.as("personInput"),
+    )
     .where("runs.id", "=", event.runId)
     .where("runs.threadId", "=", event.threadId)
     .where("threads.workspaceId", "=", event.workspaceId)
@@ -480,6 +482,7 @@ async function personAnswered(
     .executeTakeFirst();
   if (
     !run ||
+    (run.homeThreadId !== event.threadId && !run.personWaited && !run.personInput) ||
     (addressedToUserId
       ? run.requestedBy !== addressedToUserId
       : run.assignmentId !== null || run.replyTarget !== null)

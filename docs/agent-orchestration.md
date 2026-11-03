@@ -438,9 +438,9 @@ others write only what the person explicitly asks for or raw inbox scraps.
 
 Background passes are task Threads woken by worker-anchored Triggers and set
 up by Chat without asking. They reach the person only by queueing to Chat,
-which decides what is worth saying. A wake is a message, not an Assignment, so
-a worker's own reply text would reach the person from a Thread they don't
-watch; the passes end without reply text, and that silence is prompt-only.
+which decides what is worth saying. Unassigned work Runs notify for replies and
+failures only when a person started or joined them; automatic Chat Runs still
+notify. Requests retain their own notification rules.
 Here each queued wake becomes its own Run on the worker, so the programs skip a
 worker whose Thread is running or waiting. Archiving a Trigger leaves started
 work running, so turning the passes off marks both workers Done first, which

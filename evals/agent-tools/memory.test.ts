@@ -84,12 +84,39 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
   ).toBe("agent");
 });
 
-it("requires quiet turns and queued home delivery rather than report-only or invalid attempts", async () => {
+it("uses the production wake text for worker evals and keeps Chat silence strict", async () => {
+  const setup = await readFile(
+    new URL("../../apps/runner/agent-skills/skills/memory/references/setup.md", import.meta.url),
+    "utf8",
+  );
+  const template = setup.match(/message: `([^`]+)`/u)![1]!;
+  for (const c of await memoryCases()) {
+    for (const turn of c.turns) {
+      if (typeof turn === "string" || !turn.text || turn.author?.kind !== "trigger") continue;
+      const timestamp = turn.text.match(/due \(([^)]+)\)/u)?.[1];
+      if (!timestamp) continue;
+      const nightly = turn.text.startsWith("Nightly");
+      const expected = template.replace(
+        "${event.source.scheduledFor ?? event.receivedAt}",
+        timestamp,
+      );
+      expect(turn.text).toBe(
+        nightly
+          ? expected.replace("Light", "Nightly").replace("light-pass", "nightly-pass")
+          : expected,
+      );
+    }
+  }
+  const chat = (await memoryCases()).find((c) => c.id === "memory-trivial-chat-wake")!;
+  expect(grade(chat.expect, [], "", "Done.").every((c) => c.pass)).toBe(false);
+});
+
+it("requires quiet home delivery and queued important items rather than report-only or invalid attempts", async () => {
   const cases = await memoryCases();
   const quiet = cases.find((c) => c.id === "memory-nothing-new")!.expect;
   const mail = { tool: "integration_call", args: quiet.calls[0]!.args, valid: true };
   expect(grade(quiet, [mail], "", "").every((c) => c.pass)).toBe(true);
-  expect(grade(quiet, [mail], "", "Done.").every((c) => c.pass)).toBe(false);
+  expect(grade(quiet, [mail], "", "Done.").every((c) => c.pass)).toBe(true);
   expect(
     grade(quiet, [mail, { tool: "thread_message", args: {}, valid: false }], "").every(
       (c) => c.pass,

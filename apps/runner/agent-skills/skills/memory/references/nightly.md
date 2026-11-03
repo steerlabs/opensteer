@@ -6,7 +6,7 @@ Use judgment: the goal is that tomorrow every Run in Main knows what matters abo
 the person starts the day prepared, without hearing from you at night.
 
 If the `## Memory` section of `AGENTS.md` says memory is off, or its `Background passes:` line
-doesn't say `set up`, end at once with no reply text and write nothing.
+doesn't say `set up`, end at once and write nothing.
 
 Read `memory/passes/setup.md` for the IDs, and your own file `memory/passes/nightly.md` for your
 checkpoint, earlier morning notes and your last weekly review. Only you write that file.
@@ -63,5 +63,4 @@ person should decide through Chat.
 ## Ending
 
 Chat hears from you only through `thread_message` with `threadId: "home"` and `delivery: "queue"`;
-send that only when Chat should tell the person something now. Always end your turn with no reply
-text: any assistant text, even before tools, can become the reply to the person.
+send that only when Chat should tell the person something now.

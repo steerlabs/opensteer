@@ -7,7 +7,7 @@ description: Remember, correct or forget what matters about the person in Main, 
 
 Memory lives in Main only; Projects never see it. Give a Project task the facts it needs.
 
-In Chat, when memory is on and no `Background passes:` line exists, complete [setup](references/setup.md) quietly before replying, even on a brief greeting or when `## Memory` already exists. A background pass emits no assistant text, including progress or skill announcements; use tools silently.
+In Chat, when memory is on and no `Background passes:` line exists, complete [setup](references/setup.md) quietly before replying, even on a brief greeting or when `## Memory` already exists.
 
 - **Summary:** the `## Memory` section of Main's `AGENTS.md`, which every Run in Main receives: who the person is, what matters now, links to notes, and the `Background passes:` line. Under 4 KB; edit only that section.
 - **Notes:** `memory/`, organized however best serves future Runs, each reachable by links from the summary.

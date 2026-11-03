@@ -49,8 +49,7 @@ Creating a Trigger needs full access; without it, leave setup for a later Run th
    ID in `memory/passes/setup.md` as soon as it returns:
    - title `Light memory pass`, `model` set to the light model (omit it when using your own), task:
      "You are the person's light memory pass. A schedule wakes you with a queued message; each time,
-     load opensteer:memory and follow its light-pass reference. Nothing to do now: end this turn
-     with no reply text."
+     load opensteer:memory and follow its light-pass reference. Nothing to do now."
    - title `Nightly memory pass`, no `model`, the same task naming the nightly-pass reference.
 6. Create one schedule per worker with `trigger_write` action `create`, recording each Trigger ID
    as soon as it returns: `name` matching its title, `anchorThreadId` the worker's Thread ID,
@@ -80,14 +79,13 @@ export default async function ({ event, opensteer }) {
   }
   await opensteer.callTool("thread_message", {
     delivery: "queue",
-    message: `Light pass due (${event.source.scheduledFor ?? event.receivedAt}). Load opensteer:memory and follow its light-pass reference. Write no text at any point in this Run; reach Chat only with a queued thread_message.`,
+    message: `Light pass due (${event.source.scheduledFor ?? event.receivedAt}). Load opensteer:memory and follow its light-pass reference.`,
     threadId,
   });
 }
 ```
 
-For the nightly pass, say `Nightly pass due` and name the nightly-pass reference. Keep the last
-sentence: an engine can announce a step before the skill loads, and any text is a reply.
+For the nightly pass, say `Nightly pass due` and name the nightly-pass reference.
 
 ## Light-pass template
 

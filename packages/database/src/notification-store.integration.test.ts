@@ -620,6 +620,11 @@ integration("notification decision boundary", () => {
                   }
                 : { cause: "request-answered", kind },
       );
+      await database
+        .updateTable("runs")
+        .set({ personWaited: kind === "human" })
+        .where("id", "=", fixture.runId)
+        .execute();
       const seed = await database
         .selectFrom("runs")
         .select("seedInputId")
@@ -863,6 +868,56 @@ integration("notification decision boundary", () => {
         ]);
       },
     );
+
+    it.for(["trigger", "watch", "agent", "human"] as const)(
+      "notifies for a work reply only when the person asked (%s)",
+      async (seed, { storeFixture }) => {
+        const { createFixture, setRunSeedAuthor, appendCompletedReply, text, decideCommitted } =
+          storeFixture;
+        const fixture = await createFixture(`worker-${seed}`);
+        await setRunSeedAuthor(fixture, seed);
+        await appendCompletedReply(fixture, text("Done."));
+        expect((await decideCommitted(fixture)).decided).toHaveLength(seed === "human" ? 1 : 0);
+      },
+    );
+
+    it("notifies when a person's input joins an automatic worker Run", async ({ storeFixture }) => {
+      const {
+        createFixture,
+        setRunSeedAuthor,
+        appendReply,
+        appendCompletedReply,
+        text,
+        decideCommitted,
+        database,
+      } = storeFixture;
+      const fixture = await createFixture("worker-human-join");
+      await setRunSeedAuthor(fixture, "trigger");
+      const joined = await appendReply(fixture, text("Please check this too."));
+      await database
+        .updateTable("messages")
+        .set({
+          kind: "input",
+          author: jsonValue({
+            kind: "human",
+            displayName: "Owner",
+            principalId: "test-principal",
+            userId: fixture.ownerId,
+          }),
+        })
+        .where("id", "=", joined.id)
+        .execute();
+      await appendCompletedReply(fixture, text("Checked."));
+      expect((await decideCommitted(fixture)).decided).toHaveLength(1);
+    });
+
+    it("does not notify for a failed Trigger-woken worker", async ({ storeFixture }) => {
+      const { createFixture, setRunSeedAuthor, appendRunFailed, decideCommitted } = storeFixture;
+      const fixture = await createFixture("worker-failed");
+      await setRunSeedAuthor(fixture, "trigger");
+      await appendRunFailed(fixture, "Something failed.");
+      expect((await decideCommitted(fixture)).decided).toEqual([]);
+    });
 
     it("alerts only for the Chat relay of delegated work, never the task's own reply or failure", async ({
       storeFixture,
