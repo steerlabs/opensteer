@@ -13,9 +13,9 @@ import {
   mockSlackMcp,
   mockVapi,
 } from "@opensteer/client/mock";
-import { ConnectedAppsLayout } from "../settings/connected-apps.js";
+import { Outlet } from "react-router";
 import { installationRowId } from "./catalog-section.js";
-import { IntegrationsPage } from "./integrations-page.js";
+import { IntegrationControllerFixture as IntegrationsPage } from "./integration-controller.test-fixture.js";
 import { ToastProvider } from "../toast.js";
 
 const shellState = vi.hoisted(() => ({ current: null as unknown }));
@@ -1448,8 +1448,8 @@ describe("Settings opens each integration's page at its top", () => {
   it("starts the page and the overview it returns to at the top", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
     const container = await mountSettings(client, { layout: true });
-    const scroller = container.querySelector<HTMLElement>(".connected-apps__inner");
-    if (!scroller) throw new Error("Connected apps has one scroll owner.");
+    const scroller = container.querySelector<HTMLElement>(".settings-content");
+    if (!scroller) throw new Error("Settings has one scroll owner.");
 
     scroller.scrollTop = 1_200;
     await click(card(container, "Vapi API"));
@@ -1488,7 +1488,14 @@ async function mountSettings(
         {options.layout ? (
           <MemoryRouter initialEntries={["/settings/apps/tools"]}>
             <Routes>
-              <Route element={<ConnectedAppsLayout />} path="/settings/apps">
+              <Route
+                element={
+                  <div className="settings-content">
+                    <Outlet />
+                  </div>
+                }
+                path="/settings/apps"
+              >
                 <Route element={<IntegrationsPage embedded />} path="tools" />
               </Route>
             </Routes>

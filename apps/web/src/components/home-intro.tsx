@@ -249,8 +249,8 @@ export function HomeIntro({
           <h1 className="hero__title">What can I help you with?</h1>
           {runnable.length === 0 ? (
             <p className="hero__subtitle">
-              <Link to="/settings/ai-engines">Connect an AI account</Link> to start. Whatever you
-              write here is kept while you do.
+              <Link to="/settings/ai">Connect an AI account</Link> to start. Whatever you write here
+              is kept while you do.
             </p>
           ) : null}
           <VoiceDock />

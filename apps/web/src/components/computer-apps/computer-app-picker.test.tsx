@@ -67,7 +67,7 @@ describe("ComputerAppPicker", () => {
     expect(container.textContent).toContain("Review setup");
     expect(
       container.querySelector(
-        `a[href="/settings/computers/${macBook}#computer-app-apple-messages"]`,
+        `a[href="/settings/devices/computers/${macBook}#computer-app-apple-messages"]`,
       ),
     ).not.toBeNull();
     expect(radio(container, "Read only").getAttribute("aria-checked")).toBe("true");

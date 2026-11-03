@@ -1,3 +1,7 @@
+import { useDesktopUpdate } from "../../../desktop/update-store.js";
+import { Dialog } from "../../dialog.js";
+import { useDesktopPlaces } from "../../../desktop/places-context.js";
+import { PlaceMenuPlaces } from "../../places/place-menu.js";
 import { DesktopUpdatesRow } from "./desktop-updates.js";
 import { useEffect, useState } from "react";
 import {
@@ -7,20 +11,20 @@ import {
 } from "../../../desktop/notifications.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
-import { settingsPlace, settingsWhatThisIs, settingsWhereItRuns } from "../copy.js";
+import { settingsPlace } from "../copy.js";
 import { useHomeComputer } from "./devices.js";
-import { SectionHeader, SettingsRow, StatusChip, type SettingsView } from "../primitives.js";
+import {
+  SectionHeader,
+  SettingsRow,
+  SettingsSwitch,
+  StatusChip,
+  type SettingsView,
+} from "../primitives.js";
 
-/**
- * This Opensteer: what it is called, where it runs, and — for a Personal
- * Opensteer on this computer — whether your Account lists it.
- *
- * The page is headed by the same name the Settings corner shows, so the chip
- * and the page it opens read as one thing. Remote access has its own place in
- * Settings and is not repeated here, and a setting that lives on another
- * computer is named there rather than drawn as a control that cannot work.
- */
 export function GeneralSection({ view }: { readonly view: SettingsView }) {
+  const places = useDesktopPlaces();
+  const update = useDesktopUpdate();
+  const [switching, setSwitching] = useState(false);
   const { snapshot } = useShell();
   const home = useHomeComputer();
   const place = settingsPlace({
@@ -31,27 +35,56 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
   });
   return (
     <>
-      <SectionHeader
-        lead="This Opensteer holds your agents, workspaces and conversations."
-        title={view.name}
-      />
+      <SectionHeader title="General" />
+      <h2>This Opensteer</h2>
       <div className="card">
         <SettingsRow
           action={<StatusChip info={view.statusInfo} />}
-          detail={settingsWhatThisIs({ facts: view.facts, kind: view.kind, name: view.name })}
+          detail={view.deployment?.onThisComputer ? "Running here" : place.detail}
           icon={place.icon}
-          title={settingsWhereItRuns({
-            facts: view.facts,
-            kind: view.kind,
-            name: view.name,
-            publicOrigin: snapshot.identityConfig?.publicOrigin,
-          })}
+          title={view.name}
         />
-        <AccountListingRow view={view} />
+        {places ? (
+          <SettingsRow
+            icon="globe"
+            title="Switch Opensteer"
+            action={
+              <button className="btn" type="button" onClick={() => setSwitching(true)}>
+                Switch
+              </button>
+            }
+          />
+        ) : null}
         <NotificationsRow />
         <DesktopUpdatesRow />
         <SearchSuggestionsRow />
       </div>
+      <h2>About</h2>
+      <div className="card">
+        <SettingsRow
+          icon="puzzle"
+          title={update ? `Opensteer ${update.currentVersion}` : "Opensteer"}
+          action={
+            <a
+              className="btn"
+              href="https://github.com/steerlabs/opensteer"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Website
+            </a>
+          }
+        />
+      </div>
+      {switching && places ? (
+        <Dialog
+          labelledBy="switch-opensteer"
+          title="Switch Opensteer"
+          onClose={() => setSwitching(false)}
+        >
+          <PlaceMenuPlaces places={places} onClose={() => setSwitching(false)} />
+        </Dialog>
+      ) : null}
     </>
   );
 }
@@ -59,9 +92,6 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
 /* ------------------------------------------------------------------------- *
  * Notifications
  * ------------------------------------------------------------------------- */
-
-const notificationsPurpose =
-  "Get a notification when Opensteer replies, needs your approval, or can't finish something.";
 
 /**
  * The browser's notification permission, asked for here and nowhere else.
@@ -103,7 +133,7 @@ function NotificationsRow() {
   if (availability === "desktop") {
     return (
       <SettingsRow
-        detail={`${notificationsPurpose} Turn them off for Opensteer in your system settings.`}
+        detail="Managed in system settings"
         icon="activity"
         title={
           <>
@@ -117,7 +147,7 @@ function NotificationsRow() {
   if (availability === "unsupported") {
     return (
       <SettingsRow
-        detail="This app can't show notifications here. Replies still wait, unread, in their conversations."
+        detail=""
         icon="activity"
         title={
           <>
@@ -149,10 +179,10 @@ function NotificationsRow() {
       }
       detail={
         availability === "granted"
-          ? "While Opensteer is open in this browser, you get a notification when it replies, needs your approval, or can't finish something, unless you are already reading that conversation."
+          ? ""
           : availability === "denied"
-            ? "This browser is blocking notifications for Opensteer. Allow them in your browser's site settings to turn them back on."
-            : notificationsPurpose
+            ? "Allow in browser site settings"
+            : "Replies and requests for you"
       }
       icon="activity"
       title={
@@ -182,22 +212,6 @@ function NotificationsRow() {
  * snapshot's operation slot to empty and report what actually happened,
  * including the state that is neither success nor failure.
  */
-function AccountListingRow({ view }: { readonly view: SettingsView }) {
-  const { desktopBridge, deploymentAccess, snapshot } = useShell();
-  if (
-    (desktopBridge && deploymentAccess?.account.available === false) ||
-    (!desktopBridge && !snapshot.identityConfig?.portalOrigin)
-  )
-    return null;
-  return view.kind === "personal" ? (
-    <SettingsRow
-      icon="user"
-      title="Opensteer Account"
-      detail="View and change the linked Account in Devices, from any signed-in device."
-    />
-  ) : null;
-}
-
 function SearchSuggestionsRow() {
   const { hostClient, snapshot } = useShell();
   const [enabled, setEnabled] = useState(hostClient.browserPreferences.showSearchSuggestions);
@@ -206,21 +220,16 @@ function SearchSuggestionsRow() {
     <SettingsRow
       icon="search"
       title="Show search suggestions"
-      detail="Suggest searches as you type. Sends search words to Google. Saved for you on this device."
+      detail="Uses Google"
       action={
-        <button
-          aria-label="Show search suggestions"
-          aria-checked={enabled}
-          role="switch"
-          className="btn btn--small"
-          type="button"
-          onClick={() => {
-            hostClient.browserPreferences.showSearchSuggestions = !enabled;
-            setEnabled(!enabled);
+        <SettingsSwitch
+          label="Show search suggestions"
+          checked={enabled}
+          onChange={(next) => {
+            hostClient.browserPreferences.showSearchSuggestions = next;
+            setEnabled(next);
           }}
-        >
-          {enabled ? "On" : "Off"}
-        </button>
+        />
       }
     />
   );

@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { Dialog } from "../dialog.js";
+import { SurfaceMenu } from "../surface-menu.js";
+import { useState, type ReactNode } from "react";
 import type { DeploymentDisplayKind } from "@opensteer/core";
 import {
   deploymentStatusLabel,
@@ -89,14 +91,19 @@ export function StatusChip({ info }: { readonly info: DeploymentStatusInfo }) {
 export function SectionHeader({
   lead,
   title,
+  action,
 }: {
-  readonly lead: ReactNode;
+  readonly lead?: ReactNode;
+  readonly action?: ReactNode;
   readonly title: string;
 }) {
   return (
     <header className="settings-section__header">
-      <h1 className="settings-section__title">{title}</h1>
-      <p className="settings-section__lead">{lead}</p>
+      <div className="settings-section__title-row">
+        <h1 className="settings-section__title">{title}</h1>
+        {action}
+      </div>
+      {lead ? <p className="settings-section__lead">{lead}</p> : null}
     </header>
   );
 }
@@ -175,5 +182,75 @@ export function SettingsError({ message }: { readonly message: string | null }) 
 export function formatWhen(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
     new Date(value),
+  );
+}
+
+/** Shared, labelled on/off control with a generous hit area. */
+export function SettingsSwitch({
+  label,
+  checked,
+  disabled,
+  onChange,
+}: {
+  readonly label: string;
+  readonly checked: boolean;
+  readonly disabled?: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="settings-switch-target">
+      <input
+        className="switch"
+        type="checkbox"
+        role="switch"
+        aria-label={label}
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
+    </label>
+  );
+}
+
+/** Destructive row actions explain their effect at the point of confirmation. */
+export function SettingsSignOut({
+  label,
+  warning,
+  pending,
+  onConfirm,
+}: {
+  readonly label: string;
+  readonly warning: string;
+  readonly pending: boolean;
+  readonly onConfirm: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <>
+      <SurfaceMenu
+        label={label}
+        items={[
+          {
+            icon: "user",
+            label: "Sign out",
+            danger: true,
+            disabled: pending,
+            onSelect: () => setConfirming(true),
+          },
+        ]}
+      />
+      {confirming ? (
+        <Dialog
+          title="Sign out this device?"
+          labelledBy="sign-out-device-title"
+          onClose={() => setConfirming(false)}
+        >
+          <p>{warning}</p>
+          <button className="btn btn--danger" type="button" disabled={pending} onClick={onConfirm}>
+            {pending ? "Signing out…" : "Sign out"}
+          </button>
+        </Dialog>
+      ) : null}
+    </>
   );
 }

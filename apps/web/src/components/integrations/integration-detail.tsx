@@ -1,3 +1,4 @@
+import { SurfaceMenu } from "../surface-menu.js";
 import { useState, type ReactNode } from "react";
 import { requestAgentProposedDetail } from "@opensteer/core";
 import type {
@@ -52,6 +53,8 @@ import { IntegrationIcon } from "./integration-icon.js";
  */
 export function IntegrationDetail({
   dashboard,
+  headerAction,
+  showWorkspaceAccess = true,
   error,
   hostConnected,
   hostName,
@@ -74,6 +77,8 @@ export function IntegrationDetail({
   platform,
   reconnectConnectionId,
 }: {
+  readonly headerAction?: ReactNode;
+  readonly showWorkspaceAccess?: boolean;
   readonly dashboard: IntegrationDashboard;
   readonly error: string | null;
   readonly hostConnected: boolean;
@@ -145,17 +150,21 @@ export function IntegrationDetail({
   const accounts = accountsFor(dashboard, definition);
   const mcpAccounts = entry ? mcpAccountsFor(platform, entry) : [];
   const disconnectButton = (connectionId: string, disconnect: (connectionId: string) => void) => (
-    <button
-      className={`btn btn--small ${confirming === connectionId ? "btn--danger" : "btn--ghost"}`}
-      disabled={pending}
-      onClick={() => {
-        if (confirming === connectionId) disconnect(connectionId);
-        else setConfirming(connectionId);
-      }}
-      type="button"
-    >
-      {confirming === connectionId ? "Confirm disconnect" : "Disconnect"}
-    </button>
+    <SurfaceMenu
+      label="Account actions"
+      items={[
+        {
+          icon: "trash",
+          label: confirming === connectionId ? "Confirm disconnect" : "Disconnect",
+          danger: true,
+          disabled: pending,
+          onSelect: () => {
+            if (confirming === connectionId) disconnect(connectionId);
+            else setConfirming(connectionId);
+          },
+        },
+      ]}
+    />
   );
   const reconnecting =
     reconnectConnectionId === null
@@ -190,7 +199,7 @@ export function IntegrationDetail({
   return (
     <>
       <button className="page__back" disabled={pending} onClick={onBack} type="button">
-        <Icon name="arrow-left" /> All integrations
+        <Icon name="arrow-left" /> All plugins
       </button>
 
       <header className="intg-hero">
@@ -215,6 +224,7 @@ export function IntegrationDetail({
             </>
           ) : null}
         </div>
+        {headerAction}
       </header>
 
       {error ? (
@@ -389,7 +399,7 @@ export function IntegrationDetail({
                   <div className="card__row-actions">
                     <Link
                       className="btn btn--small"
-                      to={`/settings/computers/${encodeURIComponent(computer.runnerId)}`}
+                      to={`/settings/devices/computers/${encodeURIComponent(computer.runnerId)}`}
                     >
                       Manage
                     </Link>
@@ -584,18 +594,20 @@ export function IntegrationDetail({
         </section>
       ) : null}
 
-      {active ? (
+      {active && (showWorkspaceAccess || signInChoices) ? (
         <section className="section">
           <div className="card">
-            <button className="card__row intg-link" onClick={onWorkspaceAccess} type="button">
-              <span className="card__row-body">
-                <span className="card__row-title">Workspace access</span>
-                <span className="card__row-detail">
-                  {`Choose which Workspaces’ agents can use ${definition.name}.`}
+            {showWorkspaceAccess ? (
+              <button className="card__row intg-link" onClick={onWorkspaceAccess} type="button">
+                <span className="card__row-body">
+                  <span className="card__row-title">Workspace access</span>
+                  <span className="card__row-detail">
+                    {`Choose which Workspaces’ agents can use ${definition.name}.`}
+                  </span>
                 </span>
-              </span>
-              <Icon name="chevron-right" />
-            </button>
+                <Icon name="chevron-right" />
+              </button>
+            ) : null}
             {signInChoices ? (
               <button
                 className="card__row intg-link"
@@ -722,7 +734,7 @@ function ComputerUseMacs({
           <div className="card__empty computer-use-empty">
             <p className="computer-use-empty__title">{computerUseNoMac.title}</p>
             <p className="computer-use-empty__detail">{computerUseNoMac.detail}</p>
-            <Link className="btn btn--small" to="/settings/computers">
+            <Link className="btn btn--small" to="/settings/devices/computers">
               {computerUseNoMac.action}
             </Link>
           </div>
@@ -744,7 +756,7 @@ function ComputerUseMacs({
               <div className="card__row-actions">
                 <Link
                   className="btn btn--small"
-                  to={`/settings/computers/${encodeURIComponent(machine.id)}`}
+                  to={`/settings/devices/computers/${encodeURIComponent(machine.id)}`}
                 >
                   Open
                 </Link>
@@ -791,7 +803,7 @@ function AgentPhones({
           <div className="card__empty computer-use-empty">
             <p className="computer-use-empty__title">{phoneUseNoPhone.title}</p>
             <p className="computer-use-empty__detail">{phoneUseNoPhone.detail}</p>
-            <Link className="btn btn--small" to="/settings/computers">
+            <Link className="btn btn--small" to="/settings/devices/computers">
               {phoneUseNoPhone.action}
             </Link>
           </div>
@@ -808,7 +820,7 @@ function AgentPhones({
               <div className="card__row-actions">
                 <Link
                   className="btn btn--small"
-                  to={`/settings/computers/${encodeURIComponent(machine.id)}`}
+                  to={`/settings/devices/computers/${encodeURIComponent(machine.id)}`}
                 >
                   Open
                 </Link>

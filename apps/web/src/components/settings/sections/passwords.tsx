@@ -11,7 +11,6 @@ import {
   passwordsOpenAction,
   passwordsSavedDetail,
   passwordsSavedLabel,
-  passwordsSettingsDescription,
   passwordsSettingsState,
   passwordsSetUpAction,
   passwordsDeclineAllAction,
@@ -30,7 +29,7 @@ import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { Icon, type IconName } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
-import { SectionHeader, SettingsError, SettingsRow, type SettingsView } from "../primitives.js";
+import { SettingsError, SettingsRow, type SettingsView } from "../primitives.js";
 import { useHomeComputer } from "./devices.js";
 
 type PasswordsBridge = Pick<
@@ -51,7 +50,7 @@ export function PasswordsSection({ view }: { readonly view: SettingsView }) {
   const onThisMac = desktopBridge !== null && personal && view.facts.onThisComputer;
   return (
     <>
-      <SectionHeader lead={`${passwordsSettingsDescription}.`} title="Passwords" />
+      <h2 className="settings-group__title">Passwords</h2>
       {onThisMac ? (
         <PasswordsOnThisMac
           bridge={desktopBridge}

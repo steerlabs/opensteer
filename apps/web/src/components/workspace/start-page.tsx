@@ -200,7 +200,7 @@ const appsShown = { first: 5, other: 3 } as const;
 
 /** A computer's own page: its apps, and the steps when it needs its owner. */
 function computerPage(machineId: string): string {
-  return `/settings/computers/${encodeURIComponent(machineId)}`;
+  return `/settings/devices/computers/${encodeURIComponent(machineId)}`;
 }
 
 /**
@@ -503,7 +503,7 @@ export const StartPage = memo(function StartPage({
   const firstRun = snapshot.browserProfiles.length === 0;
   const manageProfiles = (adding: boolean) => {
     setPickerOpen(false);
-    void navigate(`/settings/browser-profiles${adding ? "?new" : ""}`);
+    void navigate(`/settings/sign-ins/browsers${adding ? "?new" : ""}`);
   };
   const browsing = snapshot.browserAvailable && snapshot.browserPlacements.length > 0;
   const occupants = useMemo(() => {
@@ -589,7 +589,7 @@ export const StartPage = memo(function StartPage({
                 </span>
                 <button
                   className="start-page__link"
-                  onClick={() => void navigate("/settings/chrome")}
+                  onClick={() => void navigate("/settings/sign-ins/chrome")}
                   type="button"
                 >
                   Use Chrome sign-ins
@@ -643,7 +643,7 @@ export const StartPage = memo(function StartPage({
                   No computer can browse right now.{" "}
                   <button
                     className="start-page__link"
-                    onClick={() => void navigate("/settings/computers")}
+                    onClick={() => void navigate("/settings/devices/computers")}
                     type="button"
                   >
                     Computers

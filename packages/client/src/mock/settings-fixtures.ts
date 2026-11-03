@@ -1,3 +1,7 @@
+import type {
+  IntegrationPlatformDashboardView,
+  IntegrationConnectionSummary,
+} from "@opensteer/integration-core";
 import { createId, RunnerIdSchema, type WorkspaceId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
@@ -5,17 +9,19 @@ import {
   PluginDetailViewSchema,
   PluginsOverviewViewSchema,
   type PluginDetailView,
+  type DevicesOverviewView,
   type PluginTarget,
   type HostApiCommand,
   type HostApiCommandOutput,
 } from "@opensteer/protocol";
+import { pluginSummaries } from "../host/plugins.js";
 import { HostClientRequestError } from "../host/client.js";
 
 /** Mutable permission state for UI work before the real Host projection lands. */
 export class MockSettingsFixtures {
   readonly listeners = new Set<(message: { type: "host.plugins-changed" }) => void>();
   private details: PluginDetailView[] | null = null;
-  readonly devices = DevicesOverviewViewSchema.parse({
+  private readonly fallbackDevices = DevicesOverviewViewSchema.parse({
     devices: [
       {
         id: createId("runner"),
@@ -65,9 +71,22 @@ export class MockSettingsFixtures {
     name: string;
     kind: "main" | "project";
   }[];
-  constructor(changed: () => void, workspaces: MockSettingsFixtures["workspaces"]) {
+  private readonly serviceAccounts:
+    ((definitionId: string) => readonly IntegrationConnectionSummary[]) | undefined;
+  private readonly readDevices: (() => DevicesOverviewView) | undefined;
+  constructor(
+    changed: () => void,
+    workspaces: MockSettingsFixtures["workspaces"],
+    readDevices?: () => DevicesOverviewView,
+    serviceAccounts?: (definitionId: string) => readonly IntegrationConnectionSummary[],
+  ) {
+    this.readDevices = readDevices;
+    this.serviceAccounts = serviceAccounts;
     this.changed = changed;
     this.workspaces = workspaces;
+  }
+  get devices(): DevicesOverviewView {
+    return this.readDevices?.() ?? this.fallbackDevices;
   }
   private inventory(workspaceId: WorkspaceId): PluginDetailView[] {
     if (this.details) return this.details;
@@ -186,7 +205,7 @@ export class MockSettingsFixtures {
           entry.tag === "devices"
             ? this.devices.devices
                 .filter(({ name }) =>
-                  entry.title === "Calendar" ? name === "iPhone" : name === "Office Mac",
+                  entry.title === "Calendar" ? name.includes("iPhone") : name.includes("MacBook"),
                 )
                 .map(({ id, name, status }) => ({
                   runnerId: RunnerIdSchema.parse(id),
@@ -212,12 +231,169 @@ export class MockSettingsFixtures {
     );
     return this.details;
   }
+  private packageIds = new Set<string>();
+  syncPackages(workspaceId: WorkspaceId, stored: readonly unknown[]) {
+    const packages = pluginSummaries(stored);
+    const current = this.inventory(workspaceId).filter(
+      (detail) =>
+        detail.row.target.kind !== "plugin" ||
+        !this.packageIds.has(detail.row.target.pluginId) ||
+        packages.some(
+          (plugin) =>
+            plugin.id === (detail.row.target.kind === "plugin" ? detail.row.target.pluginId : ""),
+        ),
+    );
+    for (const plugin of packages) {
+      if (
+        current.some(
+          (detail) =>
+            detail.row.target.kind === "plugin" && detail.row.target.pluginId === plugin.id,
+        )
+      )
+        continue;
+      current.push(
+        PluginDetailViewSchema.parse({
+          row: {
+            target: { kind: "plugin", pluginId: plugin.id },
+            title: plugin.name,
+            description: plugin.description,
+            source: {
+              kind: plugin.scope === "workspace" ? "workspace" : "plugin",
+              version: plugin.version,
+            },
+            tags: ["skills"],
+            placement: {
+              enabled: true,
+              mainIncluded: plugin.activeIn.includes(workspaceId),
+              projectCount: plugin.activeIn.filter((id) => id !== workspaceId).length,
+              personalEverywhere: false,
+              revision: 0,
+            },
+            accountCount: 0,
+            issues: plugin.directory ? [] : ["unknown-source-folder"],
+            contents: {
+              skills: plugin.skills,
+              tools: plugin.servers,
+              specialists: plugin.specialist ? 1 : 0,
+            },
+            permissions: {
+              canEnable: true,
+              canPlace: true,
+              canRemove: true,
+              canUpdate: plugin.directory !== null,
+            },
+          },
+          accounts: [],
+          installationIds: [],
+          grants: [],
+          registrations: [],
+          places: this.workspaces().map((place) => ({
+            ...place,
+            selected: plugin.activeIn.includes(place.workspaceId),
+            canSelect: plugin.scope !== "workspace" || place.workspaceId === plugin.workspaceId,
+            accounts: [],
+          })),
+          personalEverywhere: null,
+          devices: [],
+          permissions: [],
+          contents: [],
+          sourceFolder: plugin.directory,
+        }),
+      );
+    }
+    this.packageIds = new Set(packages.map((plugin) => plugin.id));
+    this.details = current;
+  }
+  private readonly serviceIds = new Set<string>();
+  syncServices(workspaceId: WorkspaceId, platform: IntegrationPlatformDashboardView) {
+    const current = this.inventory(workspaceId).filter(
+      (detail) =>
+        (detail.row.target.kind !== "service" && detail.row.target.kind !== "device-app") ||
+        !this.serviceIds.has(detail.row.target.definitionId) ||
+        platform.catalog.some(
+          (item) =>
+            item.definition.id ===
+              (detail.row.target.kind === "service" || detail.row.target.kind === "device-app"
+                ? detail.row.target.definitionId
+                : "") && item.installationId !== null,
+        ),
+    );
+    this.details = current;
+    for (const item of platform.catalog)
+      if (item.installationId) this.serviceIds.add(item.definition.id);
+    const template = current[0];
+    if (!template) return;
+    for (const item of platform.catalog) {
+      if (
+        !item.installationId ||
+        current.some(
+          (detail) =>
+            (detail.row.target.kind === "service" || detail.row.target.kind === "device-app") &&
+            detail.row.target.definitionId === item.definition.id,
+        )
+      )
+        continue;
+      const installation = platform.installations.find(
+        (entry) => entry.installation.id === item.installationId,
+      );
+      const detail = structuredClone(template);
+      detail.row.target = {
+        kind: item.definition.computerApp ? "device-app" : "service",
+        definitionId: item.definition.id,
+      };
+      detail.row.title = item.definition.name;
+      detail.row.description = item.definition.description;
+      detail.row.tags = [item.definition.computerApp ? "devices" : "accounts"];
+      detail.row.issues =
+        installation?.installation.status === "active" ? [] : ["invalid-installation"];
+      detail.row.placement = {
+        enabled: true,
+        mainIncluded: true,
+        projectCount: 0,
+        personalEverywhere: false,
+        revision: 0,
+      };
+      detail.places = this.workspaces().map((place) => ({
+        ...place,
+        selected: place.kind === "main",
+        canSelect: true,
+        accounts: [],
+      }));
+      detail.personalEverywhere = null;
+      detail.row.accountCount = 0;
+      detail.accounts = [];
+      detail.installationIds = [item.installationId];
+      detail.permissions = [];
+      detail.contents = (installation?.tools ?? []).map((tool) => ({
+        kind: "tool",
+        name: tool.title,
+      }));
+      detail.row.contents = { skills: 0, specialists: 0, tools: detail.contents.length };
+      current.push(PluginDetailViewSchema.parse(detail));
+    }
+  }
+  private syncAccounts(workspaceId: WorkspaceId) {
+    for (const detail of this.inventory(workspaceId)) {
+      if (detail.row.target.kind !== "service" || !this.serviceAccounts) continue;
+      detail.accounts = this.serviceAccounts(detail.row.target.definitionId).map((account) => ({
+        connectionId: account.id,
+        displayName: account.displayName,
+        status: account.status,
+        statusReason: account.statusReason,
+        access: account.computer?.access ?? "read",
+        runnerId: account.computer?.runnerId ?? null,
+      }));
+      detail.row.accountCount = detail.accounts.length;
+    }
+  }
   overview(workspaceId: WorkspaceId) {
+    this.syncAccounts(workspaceId);
     return PluginsOverviewViewSchema.parse({
       rows: this.inventory(workspaceId).map(({ row }) => row),
     });
   }
   detail(workspaceId: WorkspaceId, target: PluginTarget) {
+    this.syncAccounts(workspaceId);
     const detail = this.inventory(workspaceId).find(
       ({ row }) => JSON.stringify(row.target) === JSON.stringify(target),
     );

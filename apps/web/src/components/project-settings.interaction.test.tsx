@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { mutationIdempotencyKey, type HostSnapshot } from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
 import {
   BrowserProfileIdSchema,
   WorkspaceIdSchema,
@@ -12,7 +12,6 @@ import {
   client,
   element,
   goTo,
-  history,
   mount,
   settle,
   typeInto,
@@ -168,7 +167,7 @@ describe("a Project's settings", () => {
     expect(profile!.className).toContain("specialist-access--choose");
     // What it may not use yet goes to the one place that allows it, for this Project.
     expect(button("Allow access", github!).getAttribute("href")).toContain(
-      `/settings/apps/tools?provider=github&workspace=${encodeURIComponent(project.id)}`,
+      `/settings/plugins?provider=github&workspace=${encodeURIComponent(project.id)}`,
     );
 
     await click(button("Use", profile!));
@@ -213,35 +212,44 @@ describe("a Project's settings", () => {
 
 describe("Settings → Plugins", () => {
   it("installs from a folder, turns a plugin on in Main, and removes it after confirming", async () => {
-    await mount("/settings/plugins", { mock: { specialistPlugins: plugins } });
+    await mount("/settings/plugins/add", { mock: { specialistPlugins: plugins } });
     await settle();
-    const installed = () => section("Installed");
-    expect(installed().textContent).toContain("researcher");
-    expect(installed().textContent).toContain("Version 1.0.0");
-    expect(installed().textContent).toContain("Off everywhere");
-
     await typeInto(
       element<HTMLInputElement>('input[placeholder="/Users/you/plugins/tinycrm"]'),
       "/Users/me/plugins/notes",
     );
     await click(button("Install plugin"));
     await settle();
-    expect(installed().textContent).toContain("notes");
-
-    const notes = [...installed().querySelectorAll<HTMLElement>(".plugin-row")].find((row) =>
-      row.textContent?.includes("notes"),
-    )!;
-    expect(element(".plugin-row__where", notes).textContent).toContain("Off everywhere");
-    await click(element(".plugin-row__where", notes));
-    await click(element<HTMLInputElement>('input[aria-label="notes on in Main"]', notes));
+    await act(async () => {
+      await goTo!("/settings/plugins");
+    });
     await settle();
-    expect(installed().textContent).toContain("On in Main");
-
-    await click(button("Remove", notes));
-    expect(element('[role="dialog"]').textContent).toContain("It turns off in Main.");
+    const notesLink = [...document.querySelectorAll<HTMLAnchorElement>("a.card__row-body")].find(
+      (link) => link.querySelector(".card__row-title")?.textContent === "notes",
+    )!;
+    expect(notesLink).toBeTruthy();
+    await click(notesLink);
+    await settle();
+    const main = [...document.querySelectorAll<HTMLLabelElement>("label.card__row")].find(
+      (label) => label.textContent === "Main",
+    )!;
+    await click(element<HTMLInputElement>("input", main));
+    await settle();
+    expect(element<HTMLInputElement>("input", main).checked).toBe(true);
+    await click(button("Remove"));
+    await settle();
+    expect(element('[role="dialog"]').textContent).toContain("Remove notes?");
+    expect(
+      unwrapRpcResult(await client.rpc["plugin.list"]({})).plugins.some(
+        (plugin) => plugin.name === "notes",
+      ),
+    ).toBe(true);
     await click(button("Remove plugin"));
     await settle();
-    expect(installed().textContent).not.toContain("notes");
-    expect(history.at(-1)!.path).toBe("/settings/plugins");
+    expect(
+      unwrapRpcResult(await client.rpc["plugin.list"]({})).plugins.some(
+        (plugin) => plugin.name === "notes",
+      ),
+    ).toBe(false);
   });
 });

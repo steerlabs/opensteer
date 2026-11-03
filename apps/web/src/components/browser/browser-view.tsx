@@ -471,7 +471,7 @@ export function PlaceBrowserView({
         : browserTargetViewport(rect ?? null, compact);
     if (size) send({ ...size, surfaceId: tabId, type: "viewport.set" });
   };
-  const manageProfiles = () => void navigate("/settings/browser-profiles");
+  const manageProfiles = () => void navigate("/settings/sign-ins/browsers");
 
   const hasBrowser = session !== null || dormant;
   const menu: SurfaceMenuItem[] = hasBrowser

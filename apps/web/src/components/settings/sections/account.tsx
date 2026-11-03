@@ -11,9 +11,6 @@ import { Icon } from "../../icon.js";
 import { SignOutDialog } from "../../places/place-account.js";
 import { SectionHeader, SettingsError, SettingsRow } from "../primitives.js";
 
-const accountCaption =
-  "Opensteer works fully without an account. An account lets you open your other computers and servers from any device.";
-
 /**
  * The Opensteer Account: the one thing in the product anybody signs in to.
  * "Sign out" always means leaving that Account, here and in the place menu;
@@ -28,20 +25,12 @@ export function AccountSection() {
   });
   return (
     <>
-      <SectionHeader
-        lead="Your Opensteer sign-in. Switch between your computers and servers from the sidebar."
-        title="Your account"
-      />
+      <SectionHeader title="Account" />
       {desktopBridge ? (
         <AccountSessionCard account={deploymentAccess?.account ?? null} />
       ) : (
         <BrowserAccountCard portalHref={portalHref} />
       )}
-      <p className="settings-footnote">
-        {desktopBridge && deploymentAccess?.account.available === false
-          ? "Opensteer Account sign-in isn’t available yet. You can use this computer and connect to other computers over a private network with a pairing code."
-          : accountCaption}
-      </p>
     </>
   );
 }
@@ -91,7 +80,11 @@ function AccountSessionCard({
           action={
             action ? (
               <button
-                className={action === "sign-out" ? "btn btn--danger btn--small" : "btn btn--small"}
+                className={
+                  action === "sign-out"
+                    ? "btn btn--ghost btn--small"
+                    : "btn btn--primary btn--small"
+                }
                 disabled={pending || blockedReason !== null}
                 onClick={act}
                 type="button"
@@ -140,18 +133,22 @@ function AccountSessionCard({
  */
 function BrowserAccountCard({ portalHref }: { readonly portalHref: string | null }) {
   if (!portalHref) {
-    return <p className="settings-footnote">This place isn’t part of an Opensteer account.</p>;
+    return (
+      <div className="card">
+        <SettingsRow icon="user" title="Opensteer Account" detail="Account sign-in unavailable" />
+      </div>
+    );
   }
   return (
     <div className="card">
       <SettingsRow
         action={
           <a className="btn btn--small" href={portalHref} rel="noreferrer">
-            Open portal
+            Sign in
             <Icon name="external-link" />
           </a>
         }
-        detail="Manage your computers, servers and members in your Opensteer account."
+        detail="Open your Opensteer from any device"
         icon="user"
         title="Opensteer Account"
       />
@@ -180,13 +177,12 @@ const accountStateCopy: Readonly<Record<DesktopAccountAuthStatus | "unknown", Ac
   },
   "signed-in": {
     chip: "chip--ok",
-    detail:
-      "Signing out hides your other computers and servers in this app. They keep running, and nothing is deleted.",
+    detail: "Opensteer Account",
     label: "Signed in",
   },
   "signed-out": {
     chip: "",
-    detail: "Sign in to open your other computers and servers from this app.",
+    detail: "Open your Opensteer from any device",
     label: "Signed out",
   },
   unknown: { chip: "", detail: "Checking your account…", label: "Checking…" },
