@@ -1,7 +1,7 @@
 interface:
   display_name: "Opensteer Triggers"
   short_description: "Create, inspect, and repair Trigger workflows"
-  default_prompt: "Use $opensteer-triggers to create a durable recurring schedule."
+  default_prompt: "Use $opensteer-triggers to manage this schedule, webhook or watch."
 dependencies:
   tools:
     - type: "mcp"

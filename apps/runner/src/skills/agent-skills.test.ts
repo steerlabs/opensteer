@@ -88,8 +88,11 @@ describe("Runner Agent Skills", () => {
       const catalog = await renderHarnessSkillCatalog(plan!);
       expect(catalog).toContain(`SKILL.md: ${join(skill!.path, "SKILL.md")}`);
       expect(await readFile(join(skill!.path, "SKILL.md"), "utf8")).toContain(
-        "Trigger programs execute as Node.js ESM modules",
+        "[program contract](references/program-contract.md)",
       );
+      expect(
+        await readFile(join(skill!.path, "references", "program-contract.md"), "utf8"),
+      ).toContain("Trigger programs execute as Node.js ESM modules");
     }
   });
 
@@ -187,11 +190,14 @@ describe("Runner Agent Skills", () => {
   it("teaches that a reply, never a report, is what reaches the person", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const threads = await readFile(join(bundle.paths["opensteer-threads"], "SKILL.md"), "utf8");
-    const triggers = await readFile(join(bundle.paths["opensteer-triggers"], "SKILL.md"), "utf8");
+    const triggers = await readFile(
+      join(bundle.paths["opensteer-triggers"], "references", "reminders.md"),
+      "utf8",
+    );
 
     expect(threads).toContain("A report never alerts the person");
     expect(threads).not.toMatch(/publish an\s+update there/u);
-    expect(triggers).toContain("## Reminders and updates for the person");
+    expect(triggers).toContain("# Reminders and updates for the person");
     // The reminder recipe wakes Chat's agent, whose reply is the notification.
     expect(triggers).toMatch(
       /opensteer\.callTool\("thread_message", \{\s+delivery: "queue",\s+message: `Reminder: /u,
