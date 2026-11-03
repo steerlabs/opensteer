@@ -1,3 +1,4 @@
+import { connectionInstructions } from "@opensteer/agent-tools";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -128,7 +129,13 @@ async function httpFixture() {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       const text = Buffer.concat(chunks).toString();
       const token = request.headers.authorization?.slice(7) ?? "";
-      await service.handle(request, response, text ? JSON.parse(text) : undefined, token);
+      await service.handle(
+        request,
+        response,
+        text ? JSON.parse(text) : undefined,
+        token,
+        token === "connection" ? service.options.publicUrl.origin : undefined,
+      );
     })().catch((error: unknown) =>
       response.destroy(error instanceof Error ? error : new Error("MCP test failed")),
     );
@@ -165,9 +172,11 @@ describe("Opensteer MCP spine", () => {
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toHaveLength(46);
+      expect(names).not.toContain("thread_wait");
       expect(names).toContain("integration_call");
       expect(names).toContain("thread_delegate");
       expect(client.getServerVersion()?.name).toBe("opensteer");
+      expect(client.getInstructions()).toBeUndefined();
     } finally {
       await client.close();
       await f.service.close();
@@ -205,12 +214,31 @@ describe("Opensteer MCP spine", () => {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toContain("thread_delegate");
       expect(names).toContain("integration_search");
+      expect(names).toContain("thread_wait");
+      expect(client.getInstructions()).toBeUndefined();
       expect(names).not.toContain("computer");
       expect(names).not.toContain("person_show");
       await expect(
         f.service.callTool("program", "person_message", { message: "hi" }, { operationKey: "p" }),
       ).rejects.toThrow("unavailable to this caller");
       expect(f.personMessage).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
+  it("orients only connections on initialize and omits Run-only tools", async () => {
+    const f = await httpFixture();
+    const client = await connect(f.url, "connection");
+    try {
+      expect(client.getInstructions()).toBe(connectionInstructions);
+      const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
+      expect(names).toContain("thread_delegate");
+      expect(names).toContain("thread_wait");
+      expect(names).toContain("browser_profile_write");
+      expect(names).not.toContain("computer");
+      expect(names).not.toContain("sign_in");
+      expect(names).not.toContain("person_message");
     } finally {
       await client.close();
       await f.service.close();

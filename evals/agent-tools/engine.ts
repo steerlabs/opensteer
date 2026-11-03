@@ -27,7 +27,7 @@ import {
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../../apps/runner/src/skills/workspace-skills.js";
-import { inputForCaseTurn, type EvalCase } from "./cases.js";
+import { inputForCaseTurn, caseReach, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
 import { fingerprint } from "./report.js";
@@ -98,12 +98,14 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(bundle, opensteerAgentSkillNames).map(async (skill) => {
-      const { fullName, path } = skill;
-      const destination = join(p.workspace, ".eval-skills", fullName);
-      await cp(path, destination, { recursive: true });
-      return { ...skill, path: destination };
-    }),
+    planAgentSkills(bundle, c.caller === "run" ? opensteerAgentSkillNames : []).map(
+      async (skill) => {
+        const { fullName, path } = skill;
+        const destination = join(p.workspace, ".eval-skills", fullName);
+        await cp(path, destination, { recursive: true });
+        return { ...skill, path: destination };
+      },
+    ),
   );
   const workspaceSkills = await discoverWorkspaceSkills(p.workspace);
   const skills = resolveSkillPlan({
@@ -112,11 +114,8 @@ export async function runEngine(input: {
     workspace: workspaceSkills.skills,
   });
   const instructions = c.fixtures["AGENTS.md"];
-  // A delegated case's root is a Project task, which reaches its Workspace.
-  const guide = platformGuideForRun({
-    role: c.role,
-    reach: c.profile === "main" ? "user" : "workspace",
-  });
+  const guide =
+    c.caller === "run" ? platformGuideForRun({ role: c.role, reach: caseReach(c) }) : "";
   const treatment = {
     prompt: fingerprint({
       guide,
@@ -141,7 +140,7 @@ export async function runEngine(input: {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+      tools: agentTools.filter((tool) => tool.callers.includes(c.caller)).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
       skills: selected.map(({ fullName }) => fullName),
@@ -218,7 +217,7 @@ export async function runEngine(input: {
       await session.execute({
         context: {
           assignment:
-            (c.assigned ?? c.profile === "delegated")
+            c.caller === "run" && (c.assigned ?? c.profile === "delegated")
               ? {
                   id: assignmentId,
                   objective: inputForCaseTurn(c.turns[0]!)

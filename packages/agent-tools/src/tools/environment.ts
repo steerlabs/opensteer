@@ -30,9 +30,9 @@ export const EnvironmentListInputSchema = z
 export type EnvironmentListInput = z.output<typeof EnvironmentListInputSchema>;
 export const environment_list = defineAgentTool({
   name: "environment_list",
-  title: "List Environments",
+  title: "Find engines and models",
   description:
-    "Find environments, engine accounts, models and options. query filters offered models by every word across model/provider IDs, names, engines and drivers; blank lists all. Copy selectors; report unavailable catalogs. Page with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For more models, keep query, focus harnessInstanceId and pass modelsNextCursor as cursor.",
+    "Find computers, engine accounts, models/options before choosing execution settings. Copy selectors; report unavailable catalogs without substitution. query matches all words across IDs/names/engines. Page directories with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For model pages, keep query/harnessInstanceId; pass modelsNextCursor as cursor.",
   input: EnvironmentListInputSchema,
   output: EnvironmentDiscoverySchema,
   access: "read",

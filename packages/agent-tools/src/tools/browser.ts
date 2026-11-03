@@ -27,9 +27,9 @@ import {
 } from "./outputs.js";
 export const browser_profile_list = defineAgentTool({
   name: "browser_profile_list",
-  title: "List Browser Profiles",
+  title: "List browser profiles",
   description:
-    "List profiles: Main inherits owner profiles; Projects see grants. Named profiles keep browser data on their owning computer. The list provides identity and grants; verify website sign-ins on the website.",
+    "Find usable browser identities and grants. Main inheritance exposes owner profiles; Projects need grants, narrowed by specialist bindings. Named data stays on its computer. Names/data never prove a website login; verify there.",
   input: z.strictObject({}),
   output: BrowserProfileListOutputSchema,
   access: "read",
@@ -38,14 +38,21 @@ export const browser_profile_list = defineAgentTool({
 
 export const sign_in = defineAgentTool({
   name: "sign_in",
-  title: "Sign In",
+  title: "Request sign-in",
   description:
-    "Authorize a saved login or reuse Chrome sign-in. For a website, open its sign-in page and pass sessionId and site; for its genuine Mac or phone app, omit sessionId. On ready, use loginRef with Browser Harness fillLogin or device typing by field reference (username, password or code); never read or reveal saved fields. On pending, do independent work then end your turn for approval. Verify the intended account after signing in.",
+    "Request saved-login or Chrome sign-in authorization from the person. Run-only. Returns ready/applied/pending/refusal; on pending, do other work then end your turn for continuation. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
   input: z
     .strictObject({
-      reason: z.string().trim().min(1).max(500),
-      sessionId: BrowserSessionIdInputSchema.optional(),
-      site: z.string().trim().min(1).max(2_048),
+      reason: z.string().trim().min(1).max(500).describe("Why this task needs the account."),
+      sessionId: BrowserSessionIdInputSchema.optional().describe(
+        "Website session on its sign-in page; omit for a genuine app.",
+      ),
+      site: z
+        .string()
+        .trim()
+        .min(1)
+        .max(2_048)
+        .describe("Site whose login is needed, such as github.com."),
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: SignInOutputSchema,
@@ -55,20 +62,15 @@ export const sign_in = defineAgentTool({
 
 export const browser_access_request = defineAgentTool({
   name: "browser_access_request",
-  title: "Request Browser Access",
+  title: "Request browser access",
   description:
-    "Request a browser profile grant for the target Project's workspaceId. Project grants provide profiles to that Project; specialist bindings separately limit which profiles a specialist may use. Main already has owner profiles; use browser_profile_list or browser_profile_create there. Guest needs no grant. The owner decides which profile to grant; suggestion is advisory. Returns the Request and whether this call was replayed. Never target Main.",
+    "Ask the person to grant a browser profile to a reachable Project. Run-only. Main already inherits owner profiles; never target it. Omit workspaceId for this Project. Only the person chooses the grant. Returns requestId/status/replayed; pending grants no access. End your turn for continuation. Guest needs no grant.",
   input: z
     .strictObject({
-      reason: z
-        .string()
-        .trim()
-        .min(1)
-        .max(500)
-        .describe("Why the Project needs browser profile access."),
+      reason: z.string().trim().min(1).max(500).describe("Why this Project needs the profile."),
       suggestion: BrowserAccessSuggestionInputSchema,
       workspaceId: WorkspaceIdSchema.optional().describe(
-        "Project receiving the grant; never Main.",
+        "Target Project; omit for this Project, never Main.",
       ),
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
@@ -79,9 +81,9 @@ export const browser_access_request = defineAgentTool({
 
 export const browser_tab_read = defineAgentTool({
   name: "browser_tab_read",
-  title: "Read saved tabs",
+  title: "Find saved tabs",
   description:
-    "Find saved tabs, open or asleep, and their groups. tabId is Browser Harness surfaceId. Every page includes reachable groups and tabCount. profileId is null for Guest. Groups grant no access.",
+    "Find open/asleep saved tabs and groups. Returns tabs, reachable groups/tabCount and nextCursor; keep query when paging. tabId is Browser Harness surfaceId; null profileId means Guest. Groups grant no access.",
   input: BrowserTabReadInputSchema,
   output: BrowserTabReadOutputSchema,
   access: "read",
@@ -92,7 +94,7 @@ export const browser_tab_write = defineAgentTool({
   name: "browser_tab_write",
   title: "Organize saved tabs",
   description:
-    "Organize saved tabs and groups. tabId equals Browser Harness surfaceId. Use group, ungroup, move, update_group, close or restore. For move, omit toGroupId for root and before for the end. For restore, pass up to eight tabIds; returned sessionIds are attached to this execution. Groups change organization, not access.",
+    "Organize saved tabs/groups; tabId is Browser Harness surfaceId. move: omit toGroupId for root, before for end. restore: up to eight tabIds, attaching their sessions here. Returns changed groups or closed/failed/restored tab/session IDs. Groups grant no access.",
   input: BrowserTabWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserTabWriteOutputSchema,
   access: "self",
@@ -101,9 +103,9 @@ export const browser_tab_write = defineAgentTool({
 
 export const browser_session_list = defineAgentTool({
   name: "browser_session_list",
-  title: "List Browser Sessions",
+  title: "List browser sessions",
   description:
-    "To find persistent sessions, use browser_session_list. attached marks sessions open in this execution. Main also sees the owner's sessions from Projects.",
+    "Find accessible persistent browser sessions, with identity, placement and attached (open here). Main inheritance includes the owner’s Project sessions. Attach with browser_session_open before driving one.",
   input: z.strictObject({}),
   output: BrowserSessionListOutputSchema,
   access: "read",
@@ -112,17 +114,24 @@ export const browser_session_list = defineAgentTool({
 
 export const browser_session_open = defineAgentTool({
   name: "browser_session_open",
-  title: "Open Browser Session",
+  title: "Open a browser session",
   description:
-    "Attach with sessionId, or start a session with profileId or fresh: true for Guest. Choose exactly one. Guest needs no grant and loses its data on close. Sessions outlive Runs; a Run can use several. Use Browser Harness to drive them. Session identity and a placed profile's computer cannot change. If an update is required, report it; do not bypass it with another profile, computer or Guest.",
+    "Attach by sessionId, or create with profileId or fresh: true (Guest); choose one. Returns session/placement and wasExisting. Drive with Browser Harness. Sessions outlive Runs; Guest data is lost on close. Identity/placed computer stay fixed. Report update/access refusals; never bypass with Guest, another profile or computer.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe(
-        "A placed profile uses its fixed computer. Otherwise defaults to this execution's machine, else the only connected browser; never chooses identity.",
+        "Computer for an unplaced profile/Guest; defaults to this execution or the only browser. Cannot move a placed profile.",
       ),
-      fresh: z.literal(true).optional(),
-      profileId: BrowserProfileIdSchema.optional(),
-      sessionId: BrowserSessionIdInputSchema.optional(),
+      fresh: z
+        .literal(true)
+        .optional()
+        .describe("New Guest session; no saved identity or persistent data."),
+      profileId: BrowserProfileIdSchema.optional().describe(
+        "Accessible named profile for a new session.",
+      ),
+      sessionId: BrowserSessionIdInputSchema.optional().describe(
+        "Existing session to attach with its original identity.",
+      ),
     })
     .refine(
       (input) => [input.fresh, input.profileId, input.sessionId].filter(Boolean).length === 1,
@@ -136,17 +145,12 @@ export const browser_session_open = defineAgentTool({
 
 export const browser_profile_create = defineAgentTool({
   name: "browser_profile_create",
-  title: "Create Browser Profile",
+  title: "Create a browser profile",
   description:
-    "For a requested new or missing profile, list first, then create with name. Names may repeat and never prove login. Creation opens nothing; placement may wait until first open. Open profile.id with browser_session_open, then sign in. Report update refusals; never create replacements.",
+    "Create an empty named identity where Main inheritance permits. List first to avoid duplicates. Returns profile.id; opens nothing and grants no Project access. Open with browser_session_open, then request sign-in. Names prove no login. Never create replacements to bypass update refusals.",
   input: z
     .strictObject({
-      name: z
-        .string()
-        .trim()
-        .min(1)
-        .max(120)
-        .describe("One or two words, such as Work or Shopping."),
+      name: z.string().trim().min(1).max(120).describe("Short profile label, such as Work."),
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: BrowserProfileCreateOutputSchema,
@@ -156,9 +160,9 @@ export const browser_profile_create = defineAgentTool({
 
 export const browser_session_close = defineAgentTool({
   name: "browser_session_close",
-  title: "Close Browser Session",
+  title: "Close a browser session",
   description:
-    "To close a persistent session for every attached Run and viewer, pass its exact sessionId.",
+    "Close exact sessionId for every attached execution/viewer. Returns closed/sessionId. Guest data is lost; named profile data remains.",
   input: z
     .strictObject({ sessionId: BrowserSessionIdInputSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

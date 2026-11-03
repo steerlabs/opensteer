@@ -7,9 +7,9 @@ import { OperationKeySchema } from "./inputs.js";
 import { AppPublishOutputSchema, AppListOutputSchema, AppFetchOutputSchema } from "./outputs.js";
 export const app_publish = defineAgentTool({
   name: "app_publish",
-  title: "Publish App",
+  title: "Publish an app",
   description:
-    "Publish an app inline in this Thread and full-screen on every device. Pass a Workspace-relative self-contained UTF-8 HTML file, or a folder plus start (a shell command) for an app with data, APIs or several files. A server app requires a full-access Run and a local-directory Workspace on this computer; it listens on 127.0.0.1:$PORT, serves its UI at / and uses relative URLs. Publishing starts and verifies the server before saving; files run in place. Pass appId to update every card; publishing HTML instead stops the server. Read opensteer:threads, references/apps.md for layout, themes, logs and app APIs. Success already shows the app: do not repeat its contents in prose.",
+    "Show a Workspace HTML file or server app inline and full-screen. Run-only. path names self-contained UTF-8 HTML, or a folder with start. Servers need full-access/local storage, listen on 127.0.0.1:$PORT and use relative URLs. Returns appId/version after verification. appId updates cards; HTML replaces/stops a server. Read opensteer:threads references/apps.md. Do not repeat the app in prose.",
   input: AppPublishInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: AppPublishOutputSchema,
   access: "self",
@@ -18,9 +18,9 @@ export const app_publish = defineAgentTool({
 
 export const app_list = defineAgentTool({
   name: "app_list",
-  title: "List Apps",
+  title: "List apps",
   description:
-    "List published apps in this Run's reach and active Workspace memberships, including server folders and start commands. Requires a full-access Run. Read a server app's README for its API, then call app_fetch.",
+    "Find published apps within reach and Workspace membership. Full-access Run only. Returns IDs and server folders/start commands; read the server README before app_fetch.",
   input: z.strictObject({}),
   output: AppListOutputSchema,
   access: "read",
@@ -29,9 +29,9 @@ export const app_list = defineAgentTool({
 
 export const app_fetch = defineAgentTool({
   name: "app_fetch",
-  title: "Call App",
+  title: "Call an app",
   description:
-    "Call a published server app's HTTP API using its appId and a relative HTTP path beginning with /. Requires a full-access Run with reach to the app's origin Thread and active Workspace membership. Returns status, content type and text, including non-2xx responses; bounded to 30 seconds and 256 KiB. Read the app folder's README for its API. Calling an app may change its data; app servers have the publishing computer user's authority.",
+    "Call a server app by appId and relative path starting with /. Full-access Run within reach and Workspace membership. May change data. Returns HTTP status/content type/text, including non-2xx, within 30 seconds/256 KiB. Read the app README for its API.",
   input: AppFetchInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: AppFetchOutputSchema,
   access: "work",

@@ -2,7 +2,7 @@
 
 Outside an Assignment, if `person_show` is available, use it when the person asks to see a place. On
 assigned work, send the exact target and context to your assigner instead; the Host refuses
-`person_show` and `person_message` on an Assignment, and the delegated profile lacks both.
+`person_show` and `person_message` on an Assignment even when both are listed.
 
 For a Thread, find its exact ID with `thread_list` (search and follow its cursor before saying it is
 missing), then call `person_show({target: {threadId}})`. For a saved page, search `browser_tab_read`

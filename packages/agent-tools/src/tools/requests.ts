@@ -7,9 +7,9 @@ import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import { RequestListOutputSchema, RequestWithdrawOutputSchema } from "./outputs.js";
 export const request_list = defineAgentTool({
   name: "request_list",
-  title: "List Requests",
+  title: "Inspect Requests",
   description:
-    "To inspect this Thread's outgoing or this Workspace's incoming Requests, use request_list. Includes pending and terminal states, newest first; follow the cursor.",
+    "Inspect outgoing Thread/incoming Workspace Requests, including pending/terminal status, newest first with a paging window. Never poll for approval; pending is not permission.",
   input: z.strictObject({
     before: CursorSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
@@ -21,9 +21,9 @@ export const request_list = defineAgentTool({
 
 export const request_withdraw = defineAgentTool({
   name: "request_withdraw",
-  title: "Withdraw Request",
+  title: "Withdraw a Request",
   description:
-    "When this Thread no longer needs a pending Request it originated, withdraw it with requestId. Terminal and foreign Requests are rejected.",
+    "Withdraw a pending Request this Thread originated and no longer needs. Run-only; terminal/foreign Requests refused. Returns the withdrawn Request.",
   input: z
     .strictObject({ requestId: RequestIdSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

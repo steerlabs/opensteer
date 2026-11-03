@@ -1,11 +1,11 @@
 ---
 name: computer-use
-description: Operate Mac apps and Agent Phones through the computer tool when the task needs their interfaces.
+description: Observe and operate Mac apps/Agent Phones within a Run through computer.
 ---
 
 # Opensteer Computer Use
 
-Prefer a purpose-built integration, API or browser when it fits. Use `computer` for app interfaces, mobile-only apps and messages from a phone's own number. Discover and request access through integrations; interact through `computer`, never with `integration_call`. Computer use needs a running task; Trigger programs cannot use it directly.
+Prefer a purpose-built integration, API or browser when it fits. Use `computer` for app interfaces, mobile-only apps and messages from a phone's own number. Discover and request access through integrations; interact through `computer`, never with `integration_call`. computer is Run-only; programs and connections can delegate a task to use it.
 
 To operate an interface, never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic events for that purpose. Use the computer included in the person's message or the one they name. Preserve credential boundaries and do not bypass blocked access.
 

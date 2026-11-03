@@ -267,6 +267,8 @@ async function main() {
               kind: c.kind,
               area: c.area,
               profile: c.profile,
+              caller: c.caller,
+              reach: c.reach,
               role: c.role,
               fingerprint: runFingerprint,
               identity,
