@@ -743,6 +743,31 @@ describe("AgentToolsMcpService", () => {
     await fixture.service.close();
   });
 
+  it("delivers a specialist delegation's selector to the Host", async () => {
+    const handle = vi.fn(async (_token: string, request: unknown) => ({
+      requestId: (request as { readonly requestId: string }).requestId,
+      result: {},
+      type: "thread.delegate.result" as const,
+    }));
+    const fixture = await startService({
+      agentControl: { handle } as unknown as AgentControlService,
+      profiles: { "main-token": "main" },
+    });
+    const client = await connectClient(fixture.url, "main-token");
+
+    const result = await client.callTool({
+      arguments: { specialist: "reviewer", task: "Review the draft" },
+      name: "thread_delegate",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(handle).toHaveBeenCalledWith(
+      "main-token",
+      expect.objectContaining({ specialist: "reviewer", type: "thread.delegate" }),
+    );
+    await client.close();
+    await fixture.service.close();
+  });
+
   it("registers only the bounded delegated profile", async () => {
     const fixture = await startService({
       agentControl: { handle: vi.fn() } as unknown as AgentControlService,

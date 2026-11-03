@@ -504,6 +504,7 @@ export class AgentToolsMcpService {
           ...(input.places ? { places: input.places } : {}),
           ...(input.title ? { title: input.title } : {}),
           ...(input.icon ? { icon: input.icon } : {}),
+          ...(input.specialist ? { specialist: input.specialist } : {}),
           type: "thread.delegate",
           ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
           ...(input.threadId ? { threadId: input.threadId } : {}),
