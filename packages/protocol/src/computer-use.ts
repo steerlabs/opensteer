@@ -704,18 +704,24 @@ export const ComputerUseDataGrantsSchema = z.strictObject({
 export type ComputerUseDataGrants = z.infer<typeof ComputerUseDataGrantsSchema>;
 
 /**
- * The apps the helper serves, each with the grant its reads need and the one
- * its changes need. The Runner offers exactly these as helper-backed computer
+ * The apps the helper serves, each with the grants its reads and
+ * changes need. The Runner offers exactly these as helper-backed computer
  * apps, and the helper's contract table is generated from exactly these
  * catalog definitions, so the two cannot disagree about which apps exist.
  */
 export const computerUseDataApps = {
-  "apple-calendar": { read: "calendars", write: "calendars" },
-  "apple-contacts": { read: "contacts", write: "contacts" },
-  "apple-messages": { read: "full-disk-access", write: "automation" },
-  "apple-reminders": { read: "reminders", write: "reminders" },
+  "apple-calendar": { read: ["calendars"], write: ["calendars"] },
+  "apple-contacts": { read: ["contacts"], write: ["contacts"] },
+  "apple-messages": { read: ["full-disk-access", "contacts"], write: ["automation"] },
+  "apple-reminders": { read: ["reminders"], write: ["reminders"] },
 } as const satisfies Readonly<
-  Record<string, { readonly read: ComputerUseDataGrant; readonly write: ComputerUseDataGrant }>
+  Record<
+    string,
+    {
+      readonly read: readonly [ComputerUseDataGrant, ...ComputerUseDataGrant[]];
+      readonly write: readonly [ComputerUseDataGrant, ...ComputerUseDataGrant[]];
+    }
+  >
 >;
 export type ComputerUseDataAppId = keyof typeof computerUseDataApps;
 /** Additional native data providers; these do not use Mac helper grants. */

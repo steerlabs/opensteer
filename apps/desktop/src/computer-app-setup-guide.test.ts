@@ -5,6 +5,7 @@ import {
   computerAppSetupAgentQuietMs,
   dataGrantSettingsUrls,
   type ComputerAppSetupGuideOptions,
+  missingSteps,
 } from "./computer-app-setup-guide.js";
 
 /**
@@ -117,25 +118,50 @@ function harness(start: Partial<ComputerUseDataGrants> = {}) {
 }
 
 describe("the steps", () => {
+  it("walks Messages reads through Full Disk Access then Contacts", async () => {
+    expect(missingSteps("apple-messages", "read", missing)).toEqual([
+      { grant: "full-disk-access", kind: "settings" },
+      { grant: "contacts", kind: "ask" },
+    ]);
+    const h = harness();
+    await h.guide.open({ access: "read", definitionId: "apple-messages" });
+    h.give("full-disk-access", "granted");
+    expect((await h.poll())?.steps.map(({ state }) => state)).toEqual(["done", "current"]);
+    expect(h.options.requestDataGrant.mock.calls).toEqual([["contacts"]]);
+    h.give("contacts", "granted");
+    expect((await h.poll())?.phase).toBe("done");
+    expect(missingSteps("apple-calendar", "read-write", missing)).toEqual([
+      { grant: "calendars", kind: "ask" },
+    ]);
+  });
+
   it("reads first, then changes, skipping what macOS already gives", async () => {
     const both = harness();
     await both.guide.open({ access: "read-write", definitionId: "apple-messages" });
     expect((await both.poll())?.steps.map(({ grant, kind }) => [grant, kind])).toEqual([
       ["full-disk-access", "settings"],
+      ["contacts", "ask"],
       ["automation", "ask"],
     ]);
 
-    const sendingOnly = harness({ "full-disk-access": "granted" });
+    const sendingOnly = harness({ contacts: "granted", "full-disk-access": "granted" });
     await sendingOnly.guide.open({ access: "read-write", definitionId: "apple-messages" });
     expect((await sendingOnly.poll())?.steps.map(({ grant }) => grant)).toEqual(["automation"]);
 
     const readOnly = harness();
     await readOnly.guide.open({ access: "read", definitionId: "apple-messages" });
-    expect((await readOnly.poll())?.steps.map(({ grant }) => grant)).toEqual(["full-disk-access"]);
+    expect((await readOnly.poll())?.steps.map(({ grant }) => grant)).toEqual([
+      "full-disk-access",
+      "contacts",
+    ]);
   });
 
   it("opens nothing when macOS already gives everything", async () => {
-    const h = harness({ automation: "granted", "full-disk-access": "granted" });
+    const h = harness({
+      contacts: "granted",
+      automation: "granted",
+      "full-disk-access": "granted",
+    });
     expect(await h.guide.open({ access: "read-write", definitionId: "apple-messages" })).toEqual({
       opened: false,
     });
@@ -144,7 +170,7 @@ describe("the steps", () => {
   });
 
   it("opens a step's System Settings pane once, and again only when the person asks", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
     for (let poll = 0; poll < 5; poll += 1) await h.poll();
     expect(h.options.openSettings.mock.calls).toEqual([["full-disk-access"]]);
@@ -154,7 +180,7 @@ describe("the steps", () => {
   });
 
   it("moves on when the grant arrives, and asks macOS the next question once", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     await h.poll();
     h.give("full-disk-access", "granted");
@@ -166,7 +192,7 @@ describe("the steps", () => {
 
   /** The incident: the person answered 35 s after the old flow gave up. */
   it("keeps waiting when macOS's question outlives the helper's deadline", async () => {
-    const h = harness({ "full-disk-access": "granted" });
+    const h = harness({ contacts: "granted", "full-disk-access": "granted" });
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     await h.poll();
     h.pendingRequests[0]?.reject(
@@ -182,7 +208,7 @@ describe("the steps", () => {
   });
 
   it("turns a refused question into its System Settings switch", async () => {
-    const h = harness({ "full-disk-access": "granted" });
+    const h = harness({ contacts: "granted", "full-disk-access": "granted" });
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     await h.poll();
     h.give("automation", "denied");
@@ -203,7 +229,7 @@ describe("the steps", () => {
    * step stays, and the person's retry asks again.
    */
   it("keeps an unsettled answer as the step, and asks again when the person retries", async () => {
-    const h = harness({ "full-disk-access": "granted" });
+    const h = harness({ contacts: "granted", "full-disk-access": "granted" });
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     await h.poll();
     h.give("automation", "unknown");
@@ -227,7 +253,7 @@ describe("the steps", () => {
    * look again with a fresh process while the person is on this step.
    */
   it("asks the helper to look again with a fresh process every 10 s while Full Disk Access is the step", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
     await h.poll();
     expect(h.options.requestDataGrant).not.toHaveBeenCalled();
@@ -248,7 +274,7 @@ describe("the steps", () => {
 
   /** A restarting helper is gone for a moment; only a longer gap is shown. */
   it("rides out a moment without the helper, says so after 3 s, and carries on when it is back", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
     await h.poll();
     h.setReachable(false);
@@ -268,7 +294,7 @@ describe("the steps", () => {
   });
 
   it("shows the target app's own icon, asked of the helper once", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
     await h.poll();
     const setup = await h.poll();
@@ -279,7 +305,7 @@ describe("the steps", () => {
 
 describe("the wrong app", () => {
   it("reports whether this app itself has Full Disk Access, checked at most every 3 s", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
     expect((await h.poll())?.thisAppHasFullDiskAccess).toBe(false);
     h.setOwnFullDiskAccess(true);
@@ -313,6 +339,7 @@ describe("one panel, one app at a time", () => {
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     expect((await h.poll())?.steps.map(({ grant }) => grant)).toEqual([
       "full-disk-access",
+      "contacts",
       "automation",
     ]);
 
@@ -325,7 +352,11 @@ describe("one panel, one app at a time", () => {
     const next = await queued.poll();
     expect(next?.definitionId).toBe("apple-messages");
     expect(next?.phase).toBe("steps");
-    expect(next?.steps.map(({ grant }) => grant)).toEqual(["full-disk-access", "automation"]);
+    expect(next?.steps.map(({ grant }) => grant)).toEqual([
+      "full-disk-access",
+      "contacts",
+      "automation",
+    ]);
   });
 
   it("skips a queued app whose grants were given meanwhile", async () => {
@@ -352,7 +383,7 @@ describe("one panel, one app at a time", () => {
 
 describe("when an agent finds a grant missing", () => {
   it("offers setup once; Set up starts the steps", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     h.guide.offerForAgent({ access: "read-write", definitionId: "apple-messages" });
     h.guide.offerForAgent({ access: "read-write", definitionId: "apple-messages" });
     await vi.waitFor(() => expect(h.options.panel.open).toHaveBeenCalledOnce());
@@ -383,7 +414,7 @@ describe("when an agent finds a grant missing", () => {
   });
 
   it("starts the steps when the person asks for the app the offer is already showing", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     h.guide.offerForAgent({ access: "read", definitionId: "apple-messages" });
     await vi.waitFor(() => expect(h.options.panel.open).toHaveBeenCalledOnce());
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
@@ -397,7 +428,7 @@ describe("when an agent finds a grant missing", () => {
  */
 describe("races", () => {
   it("asks nothing for a setup dismissed while its grants were being read", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     h.guide.offerForAgent({ access: "read", definitionId: "apple-messages" });
     await vi.waitFor(() => expect(h.options.panel.open).toHaveBeenCalledOnce());
     const release = h.holdGrants();
@@ -445,7 +476,7 @@ describe("races", () => {
   });
 
   it("starts one setup when two callers open the same app at once", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     const release = h.holdGrants();
     const first = h.guide.open({ access: "read", definitionId: "apple-messages" });
     const second = h.guide.open({ access: "read", definitionId: "apple-messages" });
@@ -456,7 +487,7 @@ describe("races", () => {
   });
 
   it("widens the showing setup when an agent needs more of it", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     await h.guide.open({ access: "read", definitionId: "apple-messages" });
     h.guide.offerForAgent({ access: "read-write", definitionId: "apple-messages" });
     await vi.waitFor(async () =>
@@ -468,7 +499,7 @@ describe("races", () => {
   });
 
   it("gives the person the steps when they ask for the app an offer is still starting", async () => {
-    const h = harness();
+    const h = harness({ contacts: "granted" });
     const release = h.holdGrants();
     h.guide.offerForAgent({ access: "read", definitionId: "apple-messages" });
     const opening = h.guide.open({ access: "read-write", definitionId: "apple-messages" });
@@ -489,6 +520,7 @@ describe("races", () => {
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     expect((await h.poll())?.steps.map(({ grant }) => grant)).toEqual([
       "full-disk-access",
+      "contacts",
       "automation",
     ]);
   });
@@ -509,7 +541,7 @@ describe("races", () => {
 
 describe("dragging the helper into the list", () => {
   it("drags the installed helper, only while the Full Disk Access switch is the step", async () => {
-    const h = harness({ "full-disk-access": "granted" });
+    const h = harness({ contacts: "granted", "full-disk-access": "granted" });
     await h.guide.open({ access: "read-write", definitionId: "apple-messages" });
     await h.poll();
     expect(h.guide.dragItem()).toBeNull();

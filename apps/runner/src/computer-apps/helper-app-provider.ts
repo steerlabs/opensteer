@@ -53,6 +53,10 @@ export function createHelperAppProvider(
   if (!definition) throw new Error(`The catalog has no ${definitionId}`);
   const operations = parseComputerAppConfig(definition).operations;
   const grants = computerUseDataApps[definitionId];
+  const sentence = (grant: ComputerUseDataGrant): string =>
+    definitionId === "apple-messages" && grant === "contacts"
+      ? "Reading Messages needs macOS access to Contacts for Opensteer Computer Use."
+      : grantSentences[grant];
   const desktopMissing = `${definition.name} needs the Opensteer desktop app.`;
   const every = (
     inspection: Omit<ComputerAppOperationInspection, "operation">,
@@ -79,8 +83,10 @@ export function createHelperAppProvider(
         });
       }
       return operations.map(({ effect, name }) => {
-        const grant = grants[effect];
-        return states[grant] === "granted" || states[grant] === "unknown"
+        const grant = grants[effect].find(
+          (grant) => states[grant] !== "granted" && states[grant] !== "unknown",
+        );
+        return grant === undefined
           ? {
               detail: effect === "read" ? "Ready to read" : "Ready",
               operation: name,
@@ -88,7 +94,7 @@ export function createHelperAppProvider(
               state: "ready" as const,
             }
           : {
-              detail: grantSentences[grant],
+              detail: sentence(grant),
               operation: name,
               remedy: grant,
               state: "permission-required" as const,
@@ -115,9 +121,13 @@ export function createHelperAppProvider(
       } catch (error) {
         if (!(error instanceof ComputerUseBridgeError)) throw error;
         if (error.code === "permission-required") {
+          const states = await helper.dataGrants().catch(() => null);
+          const missing = grants[invocation.effect].find(
+            (grant) => states && states[grant] !== "granted" && states[grant] !== "unknown",
+          );
           throw new ComputerAppError(
             "permission-required",
-            grantSentences[grants[invocation.effect]],
+            sentence(missing ?? grants[invocation.effect][0]),
           );
         }
         throw new ComputerAppError(computerAppCode(error.code), error.message);

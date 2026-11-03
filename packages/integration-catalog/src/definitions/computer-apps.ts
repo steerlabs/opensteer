@@ -8,7 +8,22 @@ const conversationSchema = {
     displayName: { type: ["string", "null"] },
     isGroup: { type: "boolean" },
     lastMessageAt: { type: ["string", "null"] },
-    participants: { items: { type: "string" }, type: "array" },
+    participants: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          handle: { type: "string" },
+          name: {
+            description:
+              "The person's name from this Mac's Contacts; null when no single contact matches.",
+            type: ["string", "null"],
+          },
+        },
+        required: ["handle", "name"],
+        type: "object",
+      },
+      type: "array",
+    },
     service: { type: "string" },
   },
   required: [
@@ -33,6 +48,11 @@ const messageSchema = {
       description: 'The literal "me" for outgoing messages, otherwise the sender handle.',
       type: "string",
     },
+    senderName: {
+      description:
+        "The sender's name from this Mac's Contacts; null for messages from me or with no matching contact.",
+      type: ["string", "null"],
+    },
     sentAt: { type: "string" },
     service: { type: "string" },
     text: { type: ["string", "null"] },
@@ -49,6 +69,7 @@ const messageSchema = {
     "id",
     "conversationId",
     "sender",
+    "senderName",
     "isFromMe",
     "text",
     "truncated",
@@ -549,16 +570,16 @@ export const computerAppIntegrations = [
     config: {
       accessLabels: { read: "Read only", readWrite: "Read and send" },
       accessSummaries: {
-        read: "Allows searching and reading conversations. Sending is off.",
+        read: "Allows searching and reading conversations with names from Contacts; reading also needs Contacts access. Sending is off.",
         // Readiness is established for reading; macOS decides a send when it
         // happens, so the summary says so rather than implying it is settled.
         readWrite:
-          "Allows searching and reading conversations, and sending messages as you. Sending may ask for macOS Automation permission on this Mac.",
+          "Allows searching and reading conversations with names from Contacts, and sending messages as you. Reading also needs Contacts access. Sending may ask for macOS Automation permission on this Mac.",
       },
       operations: [
         {
           description:
-            "List Messages conversations, most recently active first. query matches the conversation's name and its participants' handles (phone numbers, emails), never message text. To search message text use read_messages. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments.",
+            "List Messages conversations, most recently active first. query matches conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. For message text use read_messages. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments.",
           effect: "read",
           inputSchema: {
             additionalProperties: false,
@@ -571,7 +592,8 @@ export const computerAppIntegrations = [
                 type: "integer",
               },
               query: {
-                description: "Text to find in the conversation name or a participant handle.",
+                description:
+                  "Match conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. Never message text (use read_messages).",
                 type: "string",
               },
             },
