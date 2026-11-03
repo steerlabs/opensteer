@@ -72,7 +72,7 @@ describe("Device settings placement", () => {
 
     expect(html).toContain('href="/settings/account/remote-access"');
     expect(html).toContain("This device");
-    expect(html).toContain("Session actions");
+    expect(html).toContain("Loading this device");
     expect(
       renderSettings(placementFixtures()["personal-remote"], "/settings/account/remote-access"),
     ).toContain("Connection options");

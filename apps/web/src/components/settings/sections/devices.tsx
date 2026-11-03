@@ -20,6 +20,7 @@ import {
   SettingsError,
   SettingsGroup,
   SettingsRow,
+  SettingsSignOut,
   formatWhen,
   type SettingsView,
 } from "../primitives.js";
@@ -167,7 +168,7 @@ function ThisDeviceGroup({
   current,
   detail,
   loading,
-  name: _name,
+  name,
 }: {
   readonly current: AuthSessionSummary | null;
   readonly detail: string | null;
@@ -196,17 +197,12 @@ function ThisDeviceGroup({
       {current ? (
         <SettingsRow
           action={
-            <details className="settings-row-menu">
-              <summary aria-label="Session actions">•••</summary>
-              <button
-                className="btn btn--ghost btn--small"
-                disabled={pending}
-                onClick={disconnect}
-                type="button"
-              >
-                {pending ? "Signing out…" : "Sign out"}
-              </button>
-            </details>
+            <SettingsSignOut
+              label="Session actions"
+              warning={`Disconnecting ends this device’s access to ${name}. Nothing on ${name} changes, and you can connect again anytime.`}
+              pending={pending}
+              onConfirm={disconnect}
+            />
           }
           detail={detail}
           icon={sessionIcon(current)}
@@ -243,18 +239,12 @@ export function OtherDevicesGroup({
       {others.map((session) => (
         <SettingsRow
           action={
-            <details className="settings-row-menu">
-              <summary aria-label={`Actions for ${session.deviceLabel}`}>•••</summary>
-              <button
-                aria-label={`Remove ${session.deviceLabel}`}
-                className="btn btn--small"
-                disabled={sessions.pending !== null}
-                onClick={() => sessions.remove(session)}
-                type="button"
-              >
-                {sessions.pending === session.id ? "Signing out…" : "Sign out"}
-              </button>
-            </details>
+            <SettingsSignOut
+              label={`Actions for ${session.deviceLabel}`}
+              warning={`Sign out ${session.deviceLabel}? Its access ends. Your agents, files and conversations stay on this Opensteer.`}
+              pending={sessions.pending !== null}
+              onConfirm={() => sessions.remove(session)}
+            />
           }
           detail={sessionActivity(session.lastSeenAt)}
           icon={sessionIcon(session)}

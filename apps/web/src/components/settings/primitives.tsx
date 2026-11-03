@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { Dialog } from "../dialog.js";
+import { SurfaceMenu } from "../surface-menu.js";
+import { useState, type ReactNode } from "react";
 import type { DeploymentDisplayKind } from "@opensteer/core";
 import {
   deploymentStatusLabel,
@@ -207,5 +209,48 @@ export function SettingsSwitch({
         onChange={(event) => onChange(event.currentTarget.checked)}
       />
     </label>
+  );
+}
+
+/** Destructive row actions explain their effect at the point of confirmation. */
+export function SettingsSignOut({
+  label,
+  warning,
+  pending,
+  onConfirm,
+}: {
+  readonly label: string;
+  readonly warning: string;
+  readonly pending: boolean;
+  readonly onConfirm: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <>
+      <SurfaceMenu
+        label={label}
+        items={[
+          {
+            icon: "user",
+            label: "Sign out",
+            danger: true,
+            disabled: pending,
+            onSelect: () => setConfirming(true),
+          },
+        ]}
+      />
+      {confirming ? (
+        <Dialog
+          title="Sign out this device?"
+          labelledBy="sign-out-device-title"
+          onClose={() => setConfirming(false)}
+        >
+          <p>{warning}</p>
+          <button className="btn btn--danger" type="button" disabled={pending} onClick={onConfirm}>
+            {pending ? "Signing out…" : "Sign out"}
+          </button>
+        </Dialog>
+      ) : null}
+    </>
   );
 }

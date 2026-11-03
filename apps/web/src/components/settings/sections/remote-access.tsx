@@ -146,120 +146,125 @@ export function RemoteAccessSection({
           </form>
         </Dialog>
       ) : null}
-      <SettingsRow
-        icon="devices"
-        title="Connection"
-        detail={
-          access
-            ? `${access.mode}${access.route ? ` · ${access.route.document.route.origin}` : ""}`
-            : "Loading remote access…"
-        }
-      />
-      {operation ? (
-        <SettingsRow icon="devices" title={operation.state} detail={operation.detail} />
-      ) : null}
-      {access?.mode === "connect" ? (
-        <SettingsRow
-          icon="devices"
-          title="Connect credential"
-          action={
-            <button
-              className="btn btn--small"
-              type="button"
-              disabled={busy || pending}
-              onClick={() => request({ action: "rotate" })}
-            >
-              Rotate
-            </button>
-          }
-        />
-      ) : null}
-      <SettingsRow
-        icon="devices"
-        title="Recovery"
-        action={
-          <button
-            className="btn btn--small"
-            type="button"
-            disabled={busy || pending}
-            onClick={() => request({ action: "recover" })}
-          >
-            Recover
-          </button>
-        }
-      />
-      {remote.status?.accountIssuer ? (
-        <SettingsRow
-          icon="devices"
-          title="Opensteer Account"
-          detail={
-            access?.accountLink
-              ? `${access.accountLink.issuer} · ${access.accountLink.subject} · ${access.accountLink.state}`
-              : "No Account linked"
-          }
-          action={
-            access?.accountLink ? (
+      {compact ? null : (
+        <>
+          {" "}
+          <SettingsRow
+            icon="devices"
+            title="Connection"
+            detail={
+              access
+                ? `${access.mode}${access.route ? ` · ${access.route.document.route.origin}` : ""}`
+                : "Loading remote access…"
+            }
+          />
+          {operation ? (
+            <SettingsRow icon="devices" title={operation.state} detail={operation.detail} />
+          ) : null}
+          {access?.mode === "connect" ? (
+            <SettingsRow
+              icon="devices"
+              title="Connect credential"
+              action={
+                <button
+                  className="btn btn--small"
+                  type="button"
+                  disabled={busy || pending}
+                  onClick={() => request({ action: "rotate" })}
+                >
+                  Rotate
+                </button>
+              }
+            />
+          ) : null}
+          <SettingsRow
+            icon="devices"
+            title="Recovery"
+            action={
               <button
                 className="btn btn--small"
-                disabled={busy || pending}
                 type="button"
-                onClick={() => request({ action: "unlink" })}
-              >
-                Unlink
-              </button>
-            ) : (
-              <button
-                className="btn btn--small"
                 disabled={busy || pending}
-                type="button"
-                onClick={() => {
-                  if (!remote.status) return;
-                  setLinking(true);
-                  setLinkError(null);
-                  void linkAccountFromWeb(shell, remote.status, view.name)
-                    .catch((error: unknown) =>
-                      setLinkError(
-                        error instanceof Error ? error.message : "Account linking failed",
-                      ),
-                    )
-                    .finally(() => setLinking(false));
-                }}
+                onClick={() => request({ action: "recover" })}
               >
-                {linking ? "Linking…" : "Link Account"}
+                Recover
               </button>
-            )
-          }
-        />
-      ) : null}
-      {access?.mode === "private" ? (
-        <SettingsRow
-          icon="devices"
-          title="Add another device"
-          detail="Pairing codes expire after ten minutes and can be used once."
-          action={
-            <button
-              className="btn btn--small"
-              disabled={busy || pending}
-              type="button"
-              onClick={() => void remote.pair?.()}
-            >
-              Create pairing code
-            </button>
-          }
-        />
-      ) : null}
-      {remote.pairing ? (
-        <SettingsRow
-          icon="devices"
-          title="Pairing code"
-          detail={
-            <>
-              <code>{remote.pairing.code}</code>
-              <p>Expires {new Date(remote.pairing.expiresAt).toLocaleTimeString()}</p>
-            </>
-          }
-        />
-      ) : null}
+            }
+          />
+          {remote.status?.accountIssuer ? (
+            <SettingsRow
+              icon="devices"
+              title="Opensteer Account"
+              detail={
+                access?.accountLink
+                  ? `${access.accountLink.issuer} · ${access.accountLink.subject} · ${access.accountLink.state}`
+                  : "No Account linked"
+              }
+              action={
+                access?.accountLink ? (
+                  <button
+                    className="btn btn--small"
+                    disabled={busy || pending}
+                    type="button"
+                    onClick={() => request({ action: "unlink" })}
+                  >
+                    Unlink
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn--small"
+                    disabled={busy || pending}
+                    type="button"
+                    onClick={() => {
+                      if (!remote.status) return;
+                      setLinking(true);
+                      setLinkError(null);
+                      void linkAccountFromWeb(shell, remote.status, view.name)
+                        .catch((error: unknown) =>
+                          setLinkError(
+                            error instanceof Error ? error.message : "Account linking failed",
+                          ),
+                        )
+                        .finally(() => setLinking(false));
+                    }}
+                  >
+                    {linking ? "Linking…" : "Link Account"}
+                  </button>
+                )
+              }
+            />
+          ) : null}
+          {access?.mode === "private" ? (
+            <SettingsRow
+              icon="devices"
+              title="Add another device"
+              detail="Pairing codes expire after ten minutes and can be used once."
+              action={
+                <button
+                  className="btn btn--small"
+                  disabled={busy || pending}
+                  type="button"
+                  onClick={() => void remote.pair?.()}
+                >
+                  Create pairing code
+                </button>
+              }
+            />
+          ) : null}
+          {remote.pairing ? (
+            <SettingsRow
+              icon="devices"
+              title="Pairing code"
+              detail={
+                <>
+                  <code>{remote.pairing.code}</code>
+                  <p>Expires {new Date(remote.pairing.expiresAt).toLocaleTimeString()}</p>
+                </>
+              }
+            />
+          ) : null}
+        </>
+      )}
       <SettingsError message={linkError ?? remote.error} />
     </SettingsGroup>
   );

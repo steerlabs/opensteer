@@ -6,6 +6,7 @@ import { AgentDevicesSection } from "./agent-devices.js";
 import { describe, expect, it, vi } from "vitest";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
+import { SettingsSignOut } from "../primitives.js";
 import { revokeCurrentSession } from "./devices.js";
 
 describe("device disconnection", () => {
@@ -15,7 +16,39 @@ describe("device disconnection", () => {
     const current = before.sessions.find((session) => session.current);
     const dispatch = vi.spyOn(client, "dispatch");
 
-    await revokeCurrentSession(client);
+    const node = document.createElement("div");
+    document.body.append(node);
+    const root = createRoot(node);
+    let completed: Promise<void> | null = null;
+    try {
+      await act(async () =>
+        root.render(
+          createElement(SettingsSignOut, {
+            label: "Session actions",
+            warning: "This device loses access. Your work stays here.",
+            pending: false,
+            onConfirm: () => {
+              completed = revokeCurrentSession(client);
+            },
+          }),
+        ),
+      );
+      await act(async () => node.querySelector<HTMLButtonElement>("button")!.click());
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click(),
+      );
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+        "Your work stays here",
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>('[role="dialog"] .btn--danger')!.click(),
+      );
+      await completed;
+    } finally {
+      act(() => root.unmount());
+      node.remove();
+    }
 
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: current?.id, type: "session.revoke" }),
