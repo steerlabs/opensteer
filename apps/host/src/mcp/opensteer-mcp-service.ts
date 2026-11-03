@@ -347,7 +347,7 @@ export class OpensteerMcpService {
       !("operationKey" in input && input.operationKey)
     )
       key = `observation:${input.observationId}`;
-    const invoke = async () => {
+    const invoke = async (recover = false) => {
       const live = await check();
       if (live.key !== caller.key)
         throw new OpensteerError({ code: "forbidden", message: "MCP caller changed" });
@@ -359,13 +359,13 @@ export class OpensteerMcpService {
       };
       // A registry key fixes both schemas and the handler. Parsing above supplies
       // the corresponding member of the input union to the exhaustive map.
-      const handler = this.options.handlers[tool.name] as (
-        call: ToolCall<typeof tool.name>,
-      ) => Promise<unknown>;
+      const handler = (
+        recover ? this.options.handlers[tool.name].recover : this.options.handlers[tool.name]
+      ) as (call: ToolCall<typeof tool.name>) => Promise<unknown>;
       return tool.output.parse(await handler(call)) as Record<string, unknown>;
     };
     if (tool.access === "read") return invoke();
-    return this.options.receipts.execute({
+    const result = await this.options.receipts.execute({
       callerKey: caller.key,
       operationKey: key,
       tool: tool.name,
@@ -373,8 +373,10 @@ export class OpensteerMcpService {
       check: async () => {
         await check();
       },
-      invoke,
+      invoke: () => invoke(),
+      ...(this.options.handlers[tool.name].recover ? { recover: () => invoke(true) } : {}),
     });
+    return tool.output.parse(result) as Record<string, unknown>;
   }
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];

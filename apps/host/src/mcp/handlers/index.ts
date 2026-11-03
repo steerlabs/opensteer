@@ -20,6 +20,7 @@ export type ToolCall<Name extends AgentTool["name"]> = {
 export type AgentToolHandlers = {
   [T in AgentTool as T["name"]]: ((call: ToolCall<T["name"]>) => Promise<z.input<T["output"]>>) & {
     readonly authorize?: (call: ToolCall<T["name"]>) => Promise<void>;
+    readonly recover?: (call: ToolCall<T["name"]>) => Promise<z.input<T["output"]>>;
   };
 };
 export function agentToolHandlers(options: {
@@ -35,7 +36,7 @@ export function agentToolHandlers(options: {
   const p = options.product,
     i = options.integrations,
     t = options.triggers;
-  return {
+  const handlers: AgentToolHandlers = {
     app_publish: async (c) =>
       specs.app_publish.output.parse(
         await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
@@ -118,4 +119,17 @@ export function agentToolHandlers(options: {
     integration_propose: async (c) =>
       specs.integration_propose.output.parse(await i.integration_propose(c)),
   };
+  // These domains commit an idempotency receipt with their effect, so a lost
+  // outer result can be recovered by replaying the same domain operation.
+  for (const handler of [
+    handlers.person_message,
+    handlers.thread_delegate,
+    handlers.thread_message,
+    handlers.thread_write,
+    handlers.assignment_cancel,
+    handlers.project_create,
+  ]) {
+    Object.assign(handler, { recover: handler });
+  }
+  return handlers;
 }

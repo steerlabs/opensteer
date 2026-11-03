@@ -1,3 +1,4 @@
+import { TriggerOutputSchema } from "@opensteer/agent-tools/outputs";
 import { type AgentControlResponse } from "../mcp/control.test-support.js";
 import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
 import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
@@ -288,9 +289,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const f = await fixture();
     const created = await personCreate(f, f.chat);
     await check("A1 list Chat Trigger", f.child.id, "trigger_read list", "visible", async () => {
-      const result = hostApi["triggers.list"].success.parse(
-        await agentTrigger(f.childToken, { operation: "list", limit: 100 }),
-      );
+      const result = hostApi["triggers.list"].success
+        .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
+        .parse(await agentTrigger(f.childToken, { operation: "list", limit: 100 }));
       expect(result.triggers.map(({ id }) => id)).toEqual([created.trigger.id]);
       return result;
     });
@@ -487,9 +488,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "list",
       "only project Workspace",
       async () => {
-        const result = hostApi["triggers.list"].success.parse(
-          await agentTrigger(f.specialistToken, { operation: "list", limit: 100 }),
-        );
+        const result = hostApi["triggers.list"].success
+          .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
+          .parse(await agentTrigger(f.specialistToken, { operation: "list", limit: 100 }));
         expect(result.triggers.length).toBeGreaterThan(0);
         expect(result.triggers.every(({ workspaceId }) => workspaceId === f.project.id)).toBe(true);
         expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(false);
@@ -497,9 +498,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
     await check("F12 delegated list", f.child.id, "list", "only lineage", async () => {
-      const result = hostApi["triggers.list"].success.parse(
-        await agentTrigger(f.childToken, { operation: "list", limit: 100 }),
-      );
+      const result = hostApi["triggers.list"].success
+        .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
+        .parse(await agentTrigger(f.childToken, { operation: "list", limit: 100 }));
       expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(true);
       expect(
         result.triggers.some(

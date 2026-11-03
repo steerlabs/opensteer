@@ -508,7 +508,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     return world.fakePhone;
   }
 
-  it("computer REPL gates tools/list and tools/call against each request", async () => {
+  it("keeps the Run inventory fixed and checks computer execution availability per call", async () => {
     const world = await createWorld(database);
     try {
       const run = await world.startRun("Capability gating");
@@ -518,7 +518,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       });
       world.executionCapability.on = false;
       const listed = (await gateway.list()) as { tools: { name: string }[] };
-      expect(listed.tools.map((row) => row.name)).not.toContain("computer");
+      expect(listed.tools.map((row) => row.name)).toContain("computer");
       expect((await gateway.call("computer", { code: "return 1" })).isError).toBe(true);
       world.executionCapability.on = true;
       const trigger = await world.gateway(run, true);

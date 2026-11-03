@@ -52,11 +52,6 @@ export type AgentControlAction =
 
 export type AgentControlActionClass = Exclude<AgentControlAction, "person.message">;
 
-/**
- * The Trigger control path reaches the same actions the Run path does, so it is
- * bounded by the same class ledger: a Trigger program that could delegate or
- * message Threads without an admission class would be unbounded.
- */
 type TriggerControlAction = AgentControlAction;
 
 export type TriggerControlActionClass = AgentControlActionClass;

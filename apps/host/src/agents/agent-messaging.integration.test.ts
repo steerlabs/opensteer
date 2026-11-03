@@ -875,7 +875,7 @@ integration("agent-to-agent messaging round trip", () => {
         task: "New task",
         icon: "hotel",
       }),
-    ).rejects.toThrow("icon");
+    ).rejects.toThrow("An existing Thread keeps its symbol");
     const reused = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),

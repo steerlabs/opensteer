@@ -62,6 +62,57 @@ describeStore("MCP operation receipts", (it) => {
       code: "forbidden",
     });
   });
+  it("recovers the committed person_message result after losing the outer receipt response", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("mcp-person-result-recovery");
+    const receipts = new AgentOperationReceipts(storeFixture.database);
+    const admission = {
+      action: "person.message" as const,
+      bindingGeneration: f.bindingGeneration,
+      environmentId: f.environmentId,
+      membershipGeneration: 1,
+      requestedBy: f.userId,
+      requestFingerprint: digest("recover-message"),
+      requestId: crypto.randomUUID(),
+      runId: f.run.id,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      sourceThreadId: f.thread.id,
+      workspaceId: f.workspace.id,
+    };
+    const publish = async () => ({
+      messageId: (
+        await storeFixture.store.publishPersonMessage({ admission, message: "Saved result" })
+      ).message.id,
+    });
+    const recover = vi.fn(publish);
+    const input = {
+      callerKey: `run:${f.run.id}`,
+      operationKey: "recover-message",
+      tool: "person_message",
+      fingerprint: digest("recover-message"),
+      check: async () => {},
+      invoke: vi.fn(async () => {
+        await publish();
+        throw new Error("Outer receipt response was lost");
+      }),
+      recover,
+    };
+    await expect(receipts.execute(input)).rejects.toThrow("Outer receipt response was lost");
+    const stored = await publish();
+    await expect(receipts.execute(input)).resolves.toEqual(stored);
+    await expect(receipts.execute(input)).resolves.toEqual(stored);
+    expect(input.invoke).toHaveBeenCalledTimes(1);
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(
+      await storeFixture.database
+        .selectFrom("messages")
+        .select("id")
+        .where("addressedToUserId", "=", f.userId)
+        .execute(),
+    ).toHaveLength(1);
+  });
   it("persists an exact result across store recreation, rejects conflicting input and rechecks replay authority", async ({
     storeFixture,
   }) => {

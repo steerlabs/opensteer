@@ -15,9 +15,18 @@ export class AgentOperationReceipts {
     readonly fingerprint: string;
     readonly check: () => Promise<void>;
     readonly invoke: () => Promise<Record<string, unknown>>;
+    readonly recover?: () => Promise<Record<string, unknown>>;
   }): Promise<Record<string, unknown>> {
     await input.check();
     const key = `${input.callerKey}:${input.operationKey}:${input.tool}`;
+    const complete = async (result: Record<string, unknown>) => {
+      await this.database
+        .updateTable("agentToolOperations")
+        .set({ result: jsonValue(result) })
+        .where("key", "=", key)
+        .executeTakeFirstOrThrow();
+      return result;
+    };
     const claimed = await this.database
       .insertInto("agentToolOperations")
       .values({ key, inputFingerprint: input.fingerprint, result: null })
@@ -37,6 +46,9 @@ export class AgentOperationReceipts {
         });
       await input.check();
       if (receipt.result !== null) return receipt.result;
+      // Only a domain with its own atomic idempotency receipt can recover an
+      // unfinished outer receipt. Provider effects without one stay uncertain.
+      if (input.recover) return complete(await input.recover());
       throw new OpensteerError({
         code: "conflict",
         message:
@@ -46,12 +58,6 @@ export class AgentOperationReceipts {
     }
     // Reservation commits before an effect. A crash or an uncertain provider
     // failure cannot turn a retry into a second external write.
-    const result = await input.invoke();
-    await this.database
-      .updateTable("agentToolOperations")
-      .set({ result: jsonValue(result) })
-      .where("key", "=", key)
-      .executeTakeFirstOrThrow();
-    return result;
+    return complete(await input.invoke());
   }
 }
