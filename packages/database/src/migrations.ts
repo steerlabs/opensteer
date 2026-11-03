@@ -7146,6 +7146,9 @@ export const consentScopeMigration: Migration = {
       create trigger threads_immutable_consent before insert or update on public.threads
         for each row execute function public.opensteer_enforce_thread_consent();
     `.execute(database);
+  },
+};
+
 export const agentConnectionsMigration: Migration = {
   async up(database) {
     await sql`CREATE TABLE agent_connections (
