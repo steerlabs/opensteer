@@ -59,6 +59,12 @@ When repeated work needs skills, scripts or MCP servers together, package it as 
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
+A program server that needs a password, key or token declares it in `plugin.json`, never in
+`mcp.json`, files or chat: `"extensions": {"com.opensteer": {"secrets": {"<server>": [{"name":
+"CAMERA_PASSWORD", "title": "Camera password", "description": "Where to find it"}]}}}`. The computer's
+owner enters each value when approving the server, and the program reads it from that environment
+variable. The owner changes values in Settings, Plugins.
+
 ## Turn repeated work into a specialist
 
 For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` to the plugin.

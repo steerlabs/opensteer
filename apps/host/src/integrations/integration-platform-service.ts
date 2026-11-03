@@ -145,6 +145,7 @@ import {
 } from "./mcp-oauth-service.js";
 import { ComputerMcpSessionError, type ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
+import { LocalMcpSecrets } from "./local-mcp-secrets.js";
 import {
   ComputerUseError,
   computerUseDefinitionId,
@@ -312,6 +313,7 @@ export class IntegrationPlatformService {
   readonly #definitions: readonly IntegrationDefinition[];
   readonly #publicFetch: typeof fetch;
   readonly #store: IntegrationPlatformStore;
+  readonly #localSecrets: LocalMcpSecrets;
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
@@ -380,9 +382,12 @@ export class IntegrationPlatformService {
      * public HTTPS only, unless a test points it at an upstream of its own.
      */
     readonly publicFetch?: typeof fetch;
+    /** Seals what computer owners enter for their MCP servers' secrets. */
+    readonly secretVault: ConstructorParameters<typeof LocalMcpSecrets>[0];
     readonly store: IntegrationPlatformStore;
   }) {
     this.#publicFetch = options.publicFetch ?? createPublicHttpsFetch();
+    this.#localSecrets = new LocalMcpSecrets(options.secretVault);
     this.#authorizationSource = options.authorizationSource;
     this.#listConnections = options.listConnections;
     this.#computerApps = options.computerApps;
@@ -425,6 +430,7 @@ export class IntegrationPlatformService {
       installCatalogDefinition: (input) => this.installCatalogDefinition(input),
       listCallableTools: (scope) => this.listCallableTools(scope),
       listConnections: this.#listConnections,
+      localMcpSecrets: this.#localSecrets,
       onConnectionsChanged: this.#onConnectionsChanged,
       ...(options.onInputAccessWithdrawn
         ? { onInputAccessWithdrawn: options.onInputAccessWithdrawn }
@@ -1080,6 +1086,33 @@ export class IntegrationPlatformService {
         message: "Local servers can't run on an iPhone.",
       });
     return chosen;
+  }
+
+  /**
+   * The owner of the computer that runs an approved server gave some of its
+   * secrets new values. Its sessions end, so the next one starts with them,
+   * and it lists its tools again.
+   */
+  async setServerSecrets(input: {
+    readonly actorUserId: UserId;
+    readonly secrets: Readonly<Record<string, string>>;
+    readonly serverId: IntegrationServerId;
+  }): Promise<void> {
+    const server = await this.#store.localMcp.get(input.serverId);
+    if (!server)
+      throw new OpensteerError({ code: "not_found", message: "That server isn't installed." });
+    await this.#store.localMcp.setSecrets({
+      actorUserId: input.actorUserId,
+      launchDigest: server.launchDigest,
+      secrets: this.#localSecrets.update(server.id, server.launch, input.secrets),
+      serverId: server.id,
+    });
+    for (const [key, open] of this.#clients) {
+      if (key.startsWith(`${server.id}:`)) this.#letGo(key, open);
+    }
+    void this.#discoverComputerServer(server.id).catch((error: unknown) =>
+      console.warn("An MCP server could not be started with its new secrets", error),
+    );
   }
 
   /**
@@ -3275,6 +3308,12 @@ export class IntegrationPlatformService {
         launch: transport.launch,
         runnerId: transport.runnerId,
       });
+      // Read after that check: changing them ends every session this opens.
+      const secrets = await this.#localSecrets.values(
+        server.id,
+        transport.launch,
+        await this.#store.localMcp.secrets(server.id, transport.runnerId),
+      );
       signal?.throwIfAborted();
       computer = new ComputerMcpTransport(this.#computerApps, {
         authorize: () =>
@@ -3284,6 +3323,7 @@ export class IntegrationPlatformService {
           }),
         launch: transport.launch,
         runnerId: transport.runnerId,
+        secrets,
         serverId: server.id,
       });
       sdkTransport = computer;
@@ -3403,6 +3443,7 @@ function computerLaunch(server: LoadedAgentPluginServer): LocalMcpLaunch {
         command: server.command,
         cwd: server.cwd,
         env: { ...server.env },
+        ...(server.secrets ? { secrets: server.secrets.map((secret) => ({ ...secret })) } : {}),
         type: "stdio",
       }
     : { headers: { ...server.headers }, type: "streamable-http", url: server.url };

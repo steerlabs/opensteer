@@ -8,7 +8,7 @@ import {
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { DeploymentIdSchema } from "@opensteer/core";
+import { DeploymentIdSchema, opensteerMobileClient } from "@opensteer/core";
 import { sessionExchangePath } from "@opensteer/protocol";
 import {
   deploymentKindLabel,
@@ -34,6 +34,7 @@ import { ControlPlaneError } from "../server/errors.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import {
   browserPagePolicyWithScript,
+  openPhoneBody,
   personalHandoffBody,
   personalLinkBody,
   placeRow,
@@ -93,6 +94,8 @@ interface PortalDependencies {
   readonly auth: ControlPlaneAuth;
   /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
+  readonly iosAppUrl?: string;
+  readonly androidAppUrl?: string;
   /** The app's typefaces, when this process serves them. */
   readonly fonts?: BrowserPageFonts;
   readonly portalOrigin: URL;
@@ -196,7 +199,13 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     options: { readonly ended?: boolean } = {},
   ): string {
     return sendBrowserPage(reply, {
-      body: signedOutBody({ ended: options.ended === true, signInHref: portalSignInPath }),
+      body: signedOutBody({
+        ended: options.ended === true,
+        signInHref: portalSignInPath,
+        ...(dependencies.desktopDownloadUrl
+          ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
+          : {}),
+      }),
       fonts,
       layout: "card",
       preconnect: publicOrigin.origin,
@@ -284,6 +293,28 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           throw new ControlPlaneError("not_found", "Route was not found");
         }
       };
+
+      app.get("/mac", async (request, reply) => {
+        guard(request);
+        return reply.redirect(dependencies.desktopDownloadUrl ?? "/", 302);
+      });
+
+      app.get("/open", async (request, reply) => {
+        guard(request);
+        const nonce = randomBytes(18).toString("base64url");
+        return sendBrowserPage(reply, {
+          body: openPhoneBody({
+            nonce,
+            scheme: opensteerMobileClient.applicationId,
+            ...(dependencies.iosAppUrl ? { iosAppUrl: dependencies.iosAppUrl } : {}),
+            ...(dependencies.androidAppUrl ? { androidAppUrl: dependencies.androidAppUrl } : {}),
+          }),
+          fonts,
+          layout: "card",
+          policy: browserPagePolicyWithScript(nonce),
+          title: "Open Opensteer on this phone",
+        });
+      });
 
       app.get("/personal-host-link", async (request, reply) => {
         guard(request);

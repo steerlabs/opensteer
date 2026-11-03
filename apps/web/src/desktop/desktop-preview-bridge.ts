@@ -622,15 +622,18 @@ export function desktopPreviewBridge(
         });
         emitPersonal();
       });
+      // The same order the supervisor runs them: the owner and browser come
+      // up before the local agents, and Main is created last.
       schedule(3, () => {
         if (generation !== personalGeneration) return;
         personal = DesktopPersonalDeploymentStatusSchema.parse({
           ...personal,
           components: {
             ...personal.components,
+            browser: { state: "starting", version: null },
             host: { state: "ready", version: "preview" },
           },
-          step: "creating-main",
+          step: "connecting-computer",
         });
         emitPersonal();
       });
@@ -653,10 +656,9 @@ export function desktopPreviewBridge(
           ...personal,
           components: {
             ...personal.components,
-            browser: { state: "starting", version: null },
             runner: { state: "ready", version: "preview" },
           },
-          step: "connecting-computer",
+          step: "creating-main",
         });
         emitPersonal();
       });

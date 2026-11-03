@@ -55,6 +55,7 @@ describe("Desktop setup state surfaces", () => {
     const retryable = renderToStaticMarkup(
       <DesktopPersonalSetup
         actionError={null}
+        computerName="Studio Mac"
         onBack={vi.fn()}
         onRetry={vi.fn()}
         status={personalStatus({
@@ -73,6 +74,7 @@ describe("Desktop setup state surfaces", () => {
     const updateRequired = renderToStaticMarkup(
       <DesktopPersonalSetup
         actionError={null}
+        computerName="Studio Mac"
         onBack={vi.fn()}
         onRetry={vi.fn()}
         status={personalStatus({

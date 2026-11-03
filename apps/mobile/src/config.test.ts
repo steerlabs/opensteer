@@ -112,3 +112,19 @@ describe("readMobileConfiguration", () => {
     ).toThrow();
   });
 });
+
+it("only offers Mac sharing when a portal origin is configured", () => {
+  expect(readMobileConfiguration({}, distribution).portalOrigin).toBeNull();
+  expect(
+    readMobileConfiguration(
+      { EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN: "https://app.example.com" },
+      distribution,
+    ).portalOrigin,
+  ).toBe("https://app.example.com");
+  expect(() =>
+    readMobileConfiguration(
+      { EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN: "https://app.example.com/path" },
+      distribution,
+    ),
+  ).toThrow();
+});

@@ -1,3 +1,4 @@
+import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import {
@@ -1145,6 +1146,10 @@ export async function installIntegrationInTransaction(
             toolGeneration: existing.toolGeneration + 1,
             transport: jsonValue(discovered.transport),
             updatedAt: now,
+            // Consent belongs to the computer that gave it; another one is asked.
+            ...(runnerOf(existing.transport) === runnerOf(discovered.transport)
+              ? {}
+              : { approvedLaunchDigest: null }),
           })
           .where("id", "=", existing.id)
           .returningAll()
@@ -4570,6 +4575,15 @@ function toolIdentity(tool: {
   return `${tool.connectionId ?? "deployment"}\0${
     tool.target ? `target\0${canonicalJson(tool.target)}` : `name\0${tool.name}`
   }`;
+}
+
+/** The computer that runs a server, or null for one the Host reaches itself. */
+function runnerOf(transport: unknown): string | null {
+  return isRecord(transport) &&
+    transport.type === "runner" &&
+    typeof transport.runnerId === "string"
+    ? transport.runnerId
+    : null;
 }
 
 function forbidden(message: string): OpensteerError {

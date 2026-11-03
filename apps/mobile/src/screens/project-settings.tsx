@@ -236,6 +236,7 @@ function ProjectSettings(props: {
           destinations={destinations}
           grants={grants}
           hostClient={hostClient}
+          snapshot={snapshot}
           userId={userId}
           workspace={project}
         />
@@ -696,16 +697,22 @@ function SpecialistsSection(props: {
   readonly destinations: Destinations;
   readonly grants: HostRead<readonly ProjectGrant[]>;
   readonly hostClient: HostClient;
+  readonly snapshot: Pick<HostSnapshot, "browserProfileGrants" | "browserProfiles">;
   readonly userId: string | null;
   readonly workspace: WorkspaceSummary;
 }): ReactNode {
-  const { hostClient, workspace } = props;
+  const { hostClient, snapshot, workspace } = props;
+  // A binding's state follows the browser access it uses, which can change elsewhere.
+  const browserAccess = JSON.stringify([
+    snapshot.browserProfileGrants.filter((grant) => grant.workspaceId === workspace.id),
+    snapshot.browserProfiles,
+  ]);
   const specialists = useHostRead(
     () =>
       hostClient.rpc["specialist.list"]({ workspaceId: WorkspaceIdSchema.parse(workspace.id) })
         .then(unwrapRpcResult)
         .then(({ specialists }) => specialists),
-    `specialists:${workspace.id}`,
+    `specialists:${workspace.id}:${browserAccess}`,
   );
   // A bind answers with the specialist as it now stands; that is shown at
   // once, and replaced by the next full read.

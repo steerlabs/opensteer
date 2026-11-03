@@ -3,7 +3,7 @@ import type { IntegrationPlatformStore } from "@opensteer/database";
 import type { RunnerId, UserId } from "@opensteer/core";
 import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
-import type { ComputerAppSetupRequest } from "@opensteer/integration-core";
+import { createIntegrationId, type ComputerAppSetupRequest } from "@opensteer/integration-core";
 import {
   ComputerAppApprovalService,
   type ComputerUseApprovalGateway,
@@ -32,6 +32,18 @@ const request: ComputerAppSetupRequest = {
   workspaceName: null,
   createdAt: new Date().toISOString(),
   expiresAt: new Date(Date.now() + 60_000).toISOString(),
+};
+const serverRequest: ComputerAppSetupRequest = {
+  ...request,
+  access: "read-write",
+  app: null,
+  kind: "server",
+  server: {
+    installationTitle: "Notes plugin",
+    launch: { args: [], command: "node", cwd: "/plugin", env: {}, type: "stdio" },
+    name: "notes",
+    serverId: createIntegrationId("server"),
+  },
 };
 function fixture(pending = request, compatibilityReason: string | null = null) {
   const store = {
@@ -77,6 +89,7 @@ function fixture(pending = request, compatibilityReason: string | null = null) {
     installCatalogDefinition: install,
     listCallableTools: vi.fn(async () => []),
     listConnections: vi.fn(async () => []),
+    localMcpSecrets: { saved: vi.fn(async () => []), update: vi.fn(() => async () => null) },
     onConnectionsChanged: changed,
     onLocalServerApproved: vi.fn(),
     publishRequestEvents: vi.fn(),
@@ -134,7 +147,7 @@ describe("owner-session computer app approvals", () => {
   it.each(["allow", "deny"] as const)(
     "passes the owner session into an MCP %s transaction",
     async (decision) => {
-      const { service, store } = fixture({ ...request, kind: "server", app: null });
+      const { service, store } = fixture(serverRequest);
       await service.respondComputerAppSetup({
         ...answer,
         decision,
@@ -240,11 +253,7 @@ describe("owner-session computer app approvals", () => {
     expect(store.setComputerConnection).not.toHaveBeenCalled();
   });
   it("revalidates the approving session after waiting in admission and grants nothing when it was revoked", async () => {
-    const { service, store, admission, changed } = fixture({
-      ...request,
-      kind: "server",
-      app: null,
-    });
+    const { service, store, admission, changed } = fixture(serverRequest);
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;

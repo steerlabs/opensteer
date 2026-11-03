@@ -24,7 +24,7 @@ describe("accountDoorPresentation", () => {
     ).toEqual({
       description: "Credential storage is locked.",
       disabled: true,
-      title: "Sign in with Opensteer",
+      title: "Sign in",
     });
   });
 
@@ -35,8 +35,17 @@ describe("accountDoorPresentation", () => {
       description:
         "This app cannot access this device’s secure credential storage. Sign-in is unavailable.",
       disabled: true,
-      title: "Sign in with Opensteer",
+      title: "Sign in",
     });
+  });
+
+  it("offers a retry after a sign-in that failed", () => {
+    expect(
+      accountDoorPresentation(
+        account({ detail: "The browser was closed.", status: "error" }),
+        false,
+      ).title,
+    ).toBe("Try signing in again");
   });
 
   it("shows browser authorization as pending", () => {

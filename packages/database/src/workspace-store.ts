@@ -919,6 +919,7 @@ export async function admitWorkspaceFiles(
     throw new OpensteerError({
       code: "workspace_unavailable",
       message: "Workspace is awaiting deletion",
+      reason: "workspace-deleting",
     });
   }
   return {

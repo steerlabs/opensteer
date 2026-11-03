@@ -9,6 +9,7 @@ import {
   createId,
 } from "@opensteer/core";
 import {
+  HostAppRequestSchema,
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
@@ -31,6 +32,66 @@ import {
 } from "./index.js";
 
 describe("Runner connection registry", () => {
+  it("settles specialist folder removal when its owning Runner replies", async () => {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+    });
+    const environmentId = createId("environment");
+    const identity = hello(createId("runner"), environmentId, "boot-1");
+    const authority = createId("storageAuthority");
+    const peer = new MemoryRunnerPeer("specialist-storage");
+    await registerAttached(
+      registry,
+      {
+        ...identity,
+        modules: {
+          ...identity.modules,
+          agents: {
+            ...identity.modules.agents!,
+            localStorage: {
+              storageAuthorityId: authority,
+              bindings: [],
+              truncated: false,
+            },
+          },
+        },
+      },
+      peer,
+    );
+    const request = {
+      type: "host.workspace.local.specialist.remove" as const,
+      requestId: crypto.randomUUID(),
+      operationId: "specialist-removal-test",
+      specialistId: crypto.randomUUID(),
+      binding: {
+        workspaceId: createId("workspace"),
+        bindingId: createId("workspaceBinding"),
+        generation: 1,
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: authority,
+      },
+    };
+    const pending = registry.requestWorkspaceLocal(
+      environmentId,
+      request,
+      AbortSignal.timeout(1000),
+    );
+    const settled = expect(pending).resolves.toMatchObject({
+      type: "runner.workspace.local.specialist.removed",
+    });
+    const sent = peer.messages.findLast((message) => message.type === request.type);
+    if (!sent || sent.type !== request.type)
+      throw new Error("Specialist removal never reached Runner");
+    await registry.handle(peer, {
+      type: "runner.workspace.local.specialist.removed",
+      requestId: request.requestId,
+      operationId: request.operationId,
+      binding: request.binding,
+      fence: sent.fence,
+    });
+    await settled;
+  });
+
   it("updates the macOS shell fact without changing the connection fence", async () => {
     const hook = vi.fn(async () => undefined);
     const registry = new RunnerRegistry({
@@ -2816,7 +2877,7 @@ it("routes correlated app requests only to the owning storage connection and can
     hooks: { authorize: async () => undefined, onEvent: async () => undefined },
   });
   const environmentId = createId("environment");
-  const identity = hello(createId("runner"), environmentId, "boot-1");
+  const identity = hello(createId("runner"), environmentId, `rbt_${crypto.randomUUID()}`);
   const authority = createId("storageAuthority");
   const peer = new MemoryRunnerPeer("app-runner");
   const spec = {
@@ -2887,7 +2948,7 @@ it("routes correlated app requests only to the owning storage connection and can
     const canceledId = crypto.randomUUID();
     const canceled = registry.requestApp(
       environmentId,
-      { type: "host.app.start", spec, requestId: canceledId },
+      { type: "host.app.connect", spec, requestId: canceledId, ticket: "one-use" },
       abort.signal,
     );
     const rejection = expect(canceled).rejects.toThrow();
@@ -2896,6 +2957,8 @@ it("routes correlated app requests only to the owning storage connection and can
     expect(peer.messages).toContainEqual(
       expect.objectContaining({ type: "host.app.cancel", requestId: canceledId }),
     );
+    const cancelMessage = peer.messages.findLast((message) => message.type === "host.app.cancel");
+    expect(HostAppRequestSchema.parse(cancelMessage).type).toBe("host.app.cancel");
     const lifetime = registry.appConnectionSignal(
       environmentId,
       registry.identityForEnvironment(environmentId)!.connectionId,

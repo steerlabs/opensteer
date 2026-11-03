@@ -1288,6 +1288,7 @@ export async function createHostRuntime(
     await passwordSignIns.sweepAfterRestart();
     const integrationPlatform = new IntegrationPlatformService({
       adapters: integrationAdapters,
+      secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
       authorizationSource: integrations,
       computerApps,

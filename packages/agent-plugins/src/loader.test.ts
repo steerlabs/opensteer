@@ -85,6 +85,74 @@ describe("Agent Plugins 1.0 loader", () => {
     }
   });
 
+  it("declares secrets only for program servers, and only in its own namespace", async () => {
+    const { data, root } = await fixture();
+    const secret = { name: "CAMERA_PASSWORD", title: "Camera password" };
+    const manifest = (secrets: unknown) =>
+      writeFile(
+        join(root, "plugin.json"),
+        JSON.stringify({
+          $schema: agentPluginManifestSchemaUrl,
+          extensions: { "com.example.other": { anything: 1 }, "com.opensteer": { secrets } },
+          name: "example-tools",
+        }),
+      );
+    await manifest({
+      camera: [secret],
+      clash: [{ name: "CAMERA_HOST", title: "Camera address" }],
+      missing: [secret],
+      remote: [secret],
+    });
+    await writeFile(
+      join(root, "mcp.json"),
+      JSON.stringify({
+        $schema: agentPluginMcpSchemaUrl,
+        mcpServers: {
+          camera: { command: "node", type: "stdio" },
+          clash: { command: "node", env: { CAMERA_HOST: "192.168.1.42" }, type: "stdio" },
+          plain: { command: "node", env: { API_KEY: "plaintext" }, type: "stdio" },
+          remote: { type: "streamable-http", url: "https://example.com/mcp" },
+        },
+      }),
+    );
+    const load = () =>
+      loadAgentPlugin({ pluginId: "test-plugin-id", dataDirectory: data, directory: root });
+    const plugin = await load();
+    expect(plugin.servers.map(({ name }) => name)).toEqual(["camera"]);
+    expect(plugin.servers[0]).toMatchObject({ secrets: [secret], type: "stdio" });
+    expect(plugin.servers[0]).not.toHaveProperty("env.CAMERA_PASSWORD");
+    expect(plugin.issues).toEqual(
+      expect.arrayContaining([
+        {
+          component: "manifest",
+          entry: null,
+          message: "Ignored secrets for missing: mcp.json declares no server by that name",
+        },
+        {
+          component: "mcp",
+          entry: "clash",
+          message: "Secret CAMERA_HOST is also set in env; declare it only as a secret",
+        },
+        expect.objectContaining({
+          entry: "plain",
+          message: expect.stringContaining('declare it in extensions["com.opensteer"].secrets'),
+        }),
+        {
+          component: "mcp",
+          entry: "remote",
+          message: "Only a server that starts a program can take secrets",
+        },
+      ]),
+    );
+
+    for (const name of ["PLUGIN_ROOT", "constructor", "__proto__"]) {
+      await manifest({ camera: [{ name, title: "Reserved" }] });
+      await expect(load()).rejects.toThrow('Invalid extensions["com.opensteer"]');
+    }
+    await manifest({ camera: [secret, secret] });
+    await expect(load()).rejects.toThrow("Each secret needs its own name");
+  });
+
   it("rejects a symlinked manifest outside the package boundary", async () => {
     const { base, data, root } = await fixture();
     const external = join(base, "external.json");

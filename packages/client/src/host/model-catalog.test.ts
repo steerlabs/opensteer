@@ -6,6 +6,7 @@ import {
   type HarnessModelDescriptor,
 } from "@opensteer/protocol";
 import {
+  chatExecutionDecision,
   chatExecutionSelection,
   composerExecutionSelection,
   executionEngines,
@@ -482,6 +483,39 @@ describe("Chat execution selection", () => {
       chatExecutionSelection({ chosen: null, existing: null, placements: [claude, gateway] })
         ?.harnessInstanceId,
     ).toBe("hin-gateway");
+  });
+
+  it("takes the AI last picked after explicit and saved choices, and blocks it when it cannot run", () => {
+    const remembered = {
+      environmentId: claude.environmentId,
+      harnessInstanceId: claude.harnessInstanceId,
+      modelSelection: selectionForModel(sonnet),
+    };
+    const explicit = {
+      environmentId: gateway.environmentId,
+      harnessInstanceId: gateway.harnessInstanceId,
+      modelSelection: selectionForModel(terraOnGateway),
+    };
+    expect(
+      chatExecutionSelection({
+        chosen: null,
+        existing: null,
+        placements: [claude, gateway],
+        remembered,
+      })?.harnessInstanceId,
+    ).toBe("hin-claude-55");
+    expect(
+      chatExecutionSelection({
+        chosen: explicit,
+        existing: null,
+        placements: [claude, gateway],
+        remembered,
+      })?.harnessInstanceId,
+    ).toBe("hin-gateway");
+    expect(
+      chatExecutionSelection({ chosen: null, existing: null, placements: [gateway], remembered }),
+    ).toBeNull();
+    expect(chatExecutionDecision({ chosen: null, existing: null, remembered })).toBe(remembered);
   });
 
   it("leaves an unavailable saved Chat choice blocked", () => {

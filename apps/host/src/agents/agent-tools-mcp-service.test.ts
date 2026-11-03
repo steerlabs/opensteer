@@ -32,6 +32,41 @@ afterEach(async () => {
 });
 
 describe("AgentToolsMcpService", () => {
+  it("preserves specialist selection so control applies its binding checks", async () => {
+    const handle = vi.fn(async () => {
+      throw new Error("Specialist is pending: browser-profile: needs-access");
+    });
+    const fixture = await startService({
+      agentControl: { handle } as unknown as AgentControlService,
+      profiles: { "run-token": "workspace" },
+    });
+    const client = await connectClient(fixture.url, "run-token");
+    try {
+      for (const workspaceId of [undefined, createId("workspace")]) {
+        const result = await client.callTool({
+          name: "thread_delegate",
+          arguments: {
+            specialist: "lab-specialist",
+            task: "Report cwd only",
+            ...(workspaceId ? { workspaceId } : {}),
+          },
+        });
+        expect(handle).toHaveBeenLastCalledWith(
+          "run-token",
+          expect.objectContaining({
+            type: "thread.delegate",
+            specialist: "lab-specialist",
+            ...(workspaceId ? { workspaceId } : {}),
+          }),
+        );
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain("Specialist is pending");
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
   it("publishes apps through the authenticated MCP tool and rejects invalid input before reading files", async () => {
     const publish = vi.fn(async () => ({
       appId: "app_11111111-1111-4111-8111-111111111111",

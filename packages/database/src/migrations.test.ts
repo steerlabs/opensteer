@@ -155,7 +155,8 @@ const releasedMigrationNames = [
   "0145_specialist_lifecycle",
   "0146_every_turn_shows",
   "0147_quiet_assignment_results",
-  "0148_managed_memory_passes",
+  "0148_local_mcp_server_secrets",
+  "0149_managed_memory_passes",
 ];
 
 describe("migration names", () => {

@@ -2,6 +2,7 @@ import { bareServiceOrigin } from "@opensteer/core";
 import { z } from "zod";
 
 const MobileEnvironmentSchema = z.object({
+  EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN: z.string().min(1).max(2_048).optional(),
   EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: z.string().min(1).max(2_048).optional(),
   EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: z.enum(["development", "preview", "production"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
@@ -9,6 +10,7 @@ const MobileEnvironmentSchema = z.object({
 });
 
 export interface MobileConfiguration {
+  readonly portalOrigin: string | null;
   /**
    * The Opensteer Account service this build signs in to, or null when it was
    * built without one. Null is a real state, not a missing value: a source
@@ -71,6 +73,10 @@ export function readMobileConfiguration(
   const mockEnabled = mockRequested && mockAllowed;
   const emptyHomeRequested = parsed.EXPO_PUBLIC_OPENSTEER_MOCK_HOME === "absent";
   return {
+    portalOrigin:
+      parsed.EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN === undefined
+        ? null
+        : bareServiceOrigin(parsed.EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN, "Opensteer portal origin"),
     accountOrigin:
       accountOrigin === undefined
         ? null

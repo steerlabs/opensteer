@@ -44,7 +44,7 @@ export async function verifyServerDeployment(options: {
   });
   if (isPersonalHost(verified.discovery)) {
     throw new Error(
-      "That address belongs to a personal computer. Use “Connect to a computer” and its pairing code.",
+      "That address belongs to a personal computer. Use “Pair a computer” and its pairing code.",
     );
   }
   return verified;

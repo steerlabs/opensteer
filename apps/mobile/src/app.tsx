@@ -36,10 +36,11 @@ import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-cont
 import type { MockHostClient } from "@opensteer/client/mock";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
+import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
 import { mockDeploymentConnections } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
-import { resolveThreadLink } from "./links.js";
+import { resolveThreadLink, routeComputerLink } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
 import { navigationRef, resetToThread } from "./navigation-ref.js";
 import {
@@ -96,6 +97,7 @@ import { AppText, Notice } from "./ui/primitives.js";
 // literal and is what says a development bundle from a shipped one.
 const configuration = readMobileConfiguration(
   {
+    EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN: process.env.EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN,
     EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: process.env.EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN,
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
@@ -215,6 +217,7 @@ function mobileClient(): MobileRoot {
     notificationPreviews: previews,
     lifecycle,
     ...(!configuration.mock ? { savedViewStore: createExpoSavedViews(storeName) } : {}),
+    portalOrigin: configuration.portalOrigin,
     accountOrigin: configuration.accountOrigin,
     catalogFilePath: `${root}${storeName}/deployments.json`,
     doneShelfFilePath: `${root}${storeName}/done-shelf.json`,
@@ -381,7 +384,23 @@ export function App(): ReactNode {
      * Thread link naming a Deployment this phone already holds. Anything else
      * is dropped, because a link is a destination, never an authority.
      */
+    let applicationLinkGeneration = 0;
+    const openComputer = (id: string): void => {
+      waitingUrl.current = null;
+      waiting.current = null;
+      linkedDeployment.current = null;
+      linkedSelectionAttempt.current += 1;
+      deferredRootSelection.current = undefined;
+      observedRootSelection.current = undefined;
+      setLinkFailure(null);
+      client.openComputer(id);
+    };
     const openApplicationLink = async (url: string): Promise<void> => {
+      const generation = applicationLinkGeneration;
+      if (routeComputerLink(url, openComputer)) {
+        setLinkFailure(null);
+        return;
+      }
       if (parseNativeIntegrationAuthorizationCallback(url) !== null) {
         setIntegrationNotice(null);
         const result = await client.handleIntegrationAuthorizationCallback(url);
@@ -404,6 +423,7 @@ export function App(): ReactNode {
         return;
       }
       const catalog = await client.catalog.load();
+      if (generation !== applicationLinkGeneration) return;
       const outcome = resolveThreadLink(
         url,
         catalog.deployments.map(({ authority }) => authority.document.deploymentId),
@@ -454,11 +474,17 @@ export function App(): ReactNode {
       else waiting.current = destination;
     };
 
+    let waitingNeedsBroker = false;
     const accept = (url: string): void => {
+      waitingNeedsBroker = false;
+      applicationLinkGeneration += 1;
       // OAuth must be delivered immediately even while the catalog is loading.
       // Thread routing waits because an unloaded catalog cannot say whether the
       // link names a Deployment this phone holds.
       broker.accept(url);
+      if (routeComputerLink(url, openComputer)) {
+        return;
+      }
       if (!initialized.current) {
         waitingUrl.current = url;
         return;
@@ -470,7 +496,9 @@ export function App(): ReactNode {
       });
     };
 
+    let receivedUrl = false;
     const subscription = Linking.addEventListener("url", ({ url }) => {
+      receivedUrl = true;
       accept(url);
     });
 
@@ -481,23 +509,26 @@ export function App(): ReactNode {
      * instruction to act on a Request.
      */
     const detachOpened = notifications.onOpened((destination) => {
+      receivedUrl = true;
       accept(destination.deepLink);
     });
 
-    void client
-      .initialize()
-      .then(async () => {
+    void Linking.getInitialURL()
+      .then(async (initialUrl) => {
+        // Register intent before startup can take its singleton shortcut.
+        if (!receivedUrl && initialUrl !== null) {
+          if (!routeComputerLink(initialUrl, openComputer)) {
+            waitingUrl.current = initialUrl;
+            waitingNeedsBroker = true;
+          }
+        }
+        await client.initialize();
         initialized.current = true;
-        // A cold start is read only after the catalog is in memory, so a link
-        // is never refused for a Deployment this phone has simply not loaded.
-        const initialUrl = await Linking.getInitialURL();
-        const queuedUrl = waitingUrl.current;
-        const url = queuedUrl ?? initialUrl;
+        // Thread routing needs the hydrated catalog; computer intent was registered above.
+        const url = waitingUrl.current;
         waitingUrl.current = null;
         if (url !== null) {
-          // An event was accepted by the broker when it arrived. A cold-start
-          // URL has not crossed that reader yet.
-          if (queuedUrl === null) broker.accept(url);
+          if (waitingNeedsBroker) broker.accept(url);
           await openApplicationLink(url);
         }
 
@@ -632,6 +663,7 @@ export function App(): ReactNode {
                     ref={navigationRef}
                     theme={navigationTheme}
                   />
+                  <OpenComputer />
                   <VoiceOverlay />
                   <IphoneAppsPrompt controller={iphone} />
                 </SafeAreaProvider>

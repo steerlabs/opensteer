@@ -87,7 +87,13 @@ export interface MobileSelection {
   readonly status: "loading" | "ready";
 }
 
+export interface PendingComputer {
+  readonly deploymentId: DeploymentId;
+  readonly status: "needs-sign-in" | "finding" | "not-listed" | "offline" | "error";
+}
+
 export interface MobileClientState {
+  readonly pendingComputer: PendingComputer | null;
   readonly account: DesktopAccountAuthState;
   readonly catalog: DeploymentCatalog;
   readonly directory: MobileDirectoryState;
@@ -109,6 +115,7 @@ export interface MobileClientOptions {
   readonly lifecycle?: ClientLifecycle;
   readonly savedViewStore?: SavedViewStore;
   readonly accountOrigin: string | null;
+  readonly portalOrigin?: string | null;
   readonly catalogFilePath: string;
   readonly doneShelfFilePath: string;
   readonly draftsFilePath: string;
@@ -158,6 +165,12 @@ export interface MobileClientOptions {
  * afterwards means the route did not move while the operation was in flight.
  */
 export class MobileClient {
+  readonly portalOrigin: string | null;
+  #pendingComputer: PendingComputer | null = null;
+  #pendingGeneration = 0;
+  #pendingAccount: string | null = null;
+  #directoryIds: readonly DeploymentId[] = [];
+
   readonly #notificationPreviews: NotificationPreviews | null;
   readonly savedViews: SavedViewPresentation;
   readonly #lifecycle: ClientLifecycle | undefined;
@@ -232,6 +245,7 @@ export class MobileClient {
   #hostClientDetach: (() => void) | null = null;
   #storageFailure: string | null = null;
   #state: MobileClientState = {
+    pendingComputer: null,
     account: signedOutAccountState(),
     catalog: emptyDeploymentCatalog(),
     directory: idleDirectoryState(),
@@ -242,6 +256,7 @@ export class MobileClient {
   };
 
   constructor(options: MobileClientOptions) {
+    this.portalOrigin = options.portalOrigin ?? null;
     this.#notificationPreviews = options.notificationPreviews ?? null;
     this.#savedViewCache = new SavedViewCache({
       store: options.savedViewStore ?? createMemorySavedViews(),
@@ -387,6 +402,10 @@ export class MobileClient {
         void this.#reconcileAttachment();
       }),
       this.oauth.subscribe((state) => {
+        const identity = this.oauth.accountIdentity();
+        const key = identity === null ? null : `${identity.issuer}/${identity.subject}`;
+        if (this.#pendingAccount !== null && this.#pendingAccount !== key)
+          this.cancelOpenComputer();
         const id = this.#attachedDeploymentId;
         if (
           id !== null &&
@@ -400,6 +419,13 @@ export class MobileClient {
           void this.#replaceCredentialAttachment(id);
         }
         void this.#republish();
+        if (
+          this.#selectionReady &&
+          this.#pendingComputer?.status === "needs-sign-in" &&
+          state.account.status === "signed-in"
+        ) {
+          void this.retryOpenComputer();
+        }
       }),
       this.oauth.subscribeHostCredentials((state) => {
         void this.#hostCredentialChanged(state);
@@ -416,6 +442,114 @@ export class MobileClient {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
+
+  openComputer(deploymentId: DeploymentId | string): void {
+    const id = DeploymentIdSchema.parse(deploymentId);
+    this.#pendingGeneration += 1;
+    this.#pendingAccount = null;
+    this.#pendingComputer = {
+      deploymentId: id,
+      status: "needs-sign-in",
+    };
+    this.#publishPending();
+    if (this.#selectionReady) void this.retryOpenComputer();
+  }
+
+  cancelOpenComputer(): void {
+    this.#pendingGeneration += 1;
+    this.#pendingAccount = null;
+    this.#pendingComputer = null;
+    this.#publishPending();
+  }
+
+  #publishPending(): void {
+    this.#state = { ...this.#state, pendingComputer: this.#pendingComputer };
+    for (const listener of this.#listeners) listener();
+  }
+
+  async retryOpenComputer(): Promise<void> {
+    const pending = this.#pendingComputer;
+    if (pending === null || this.#disposed) return;
+    const generation = ++this.#pendingGeneration;
+    const epoch = this.#authorizationEpoch;
+    const identity = this.oauth.accountIdentity();
+    this.#pendingAccount = identity === null ? null : `${identity.issuer}/${identity.subject}`;
+    const selection = this.#attachedDeploymentId;
+    // The link, the Account and the authorization it was resolved under.
+    const sameIntent = (): boolean =>
+      !this.#disposed &&
+      generation === this.#pendingGeneration &&
+      epoch === this.#authorizationEpoch &&
+      identity?.issuer === this.oauth.accountIdentity()?.issuer &&
+      identity?.subject === this.oauth.accountIdentity()?.subject;
+    const current = (): boolean => sameIntent() && this.#attachedDeploymentId === selection;
+    // A selection that lands mid-lookup was started before this link, so the
+    // link starts over from it instead of waiting on a lookup nobody will finish.
+    const restart = (): Promise<void> | undefined =>
+      sameIntent() ? this.retryOpenComputer() : undefined;
+    const status = (value: PendingComputer["status"]): void => {
+      if (!sameIntent()) return;
+      this.#pendingComputer = { ...pending, status: value };
+      this.#publishPending();
+    };
+    if (identity === null) {
+      status("needs-sign-in");
+      return;
+    }
+    status("finding");
+    try {
+      await this.directoryRefresh.refreshNow("renderer");
+      if (!current()) return await restart();
+      const catalog = await this.catalog.load();
+      if (!current()) return await restart();
+      if (this.#directoryState.status !== "ready") {
+        status("error");
+        return;
+      }
+      const unavailable = this.#directoryState.unavailable.find(
+        (entry) => entry.deploymentId === pending.deploymentId,
+      );
+      if (unavailable) {
+        status(unavailable.reason === "host-unavailable" ? "offline" : "error");
+        return;
+      }
+      const entry = catalog.deployments.find(
+        (connection) =>
+          connection.authority.document.deploymentId === pending.deploymentId &&
+          connection.source.kind === "account" &&
+          connection.source.issuer === identity.issuer &&
+          connection.source.subject === identity.subject,
+      );
+      if (!entry || !this.#directoryIds.includes(pending.deploymentId)) {
+        status("not-listed");
+        return;
+      }
+      if (entry.reachability === "routed" && entry.personalAccessRoute === null) {
+        status("offline");
+        return;
+      }
+      let moved = false;
+      await this.#operations.run(async () => {
+        if (!current()) {
+          moved = true;
+          return;
+        }
+        const attempt = await this.#selectLocallyNow(pending.deploymentId, false, current);
+        if (!sameIntent()) return;
+        if (this.#attachedDeploymentId !== pending.deploymentId) {
+          moved = true;
+          return;
+        }
+        this.#pendingComputer = null;
+        this.#pendingAccount = null;
+        this.#publishPending();
+        if (attempt !== null) void this.#attachSelection(pending.deploymentId, attempt).catch(noop);
+      });
+      if (moved) await restart();
+    } catch {
+      status("error");
+    }
+  }
 
   /** Loads what is on the device and attaches to the Deployment last used. */
   async initialize(): Promise<void> {
@@ -446,13 +580,14 @@ export class MobileClient {
       } else {
         await this.deselect();
       }
-    } else if (remembered === undefined) {
+    } else if (remembered === undefined && this.#pendingComputer === null) {
       await this.#operations.run(async () => {
         const catalog = await this.catalog.load();
-        if (catalog.deployments.length === 1) {
+        if (this.#pendingComputer === null && catalog.deployments.length === 1) {
           await this.#activateSelectionLocally(
             catalog.deployments[0]!.authority.document.deploymentId,
             true,
+            () => this.#pendingComputer === null,
           );
         } else if (catalog.deployments.length > 1) {
           await this.#selectionFile.write(null);
@@ -463,10 +598,11 @@ export class MobileClient {
     this.#selectionReady = true;
     await this.#republish();
     const selected = this.#attachedDeploymentId;
-    if (selected !== null) void this.select(selected).catch(noop);
+    if (selected !== null) void this.#startSelection(selected, false).catch(noop);
     // Startup waits only for local hydration. An Account directory or Host that
     // is offline is represented in the snapshot; it never holds the splash.
     void this.directoryRefresh.request("account-state");
+    if (this.#pendingComputer !== null) void this.retryOpenComputer();
   }
 
   /**
@@ -475,6 +611,7 @@ export class MobileClient {
    */
   async select(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
+    this.cancelOpenComputer();
     await this.#startSelection(id, false);
   }
 
@@ -488,6 +625,7 @@ export class MobileClient {
    */
   async openDeployment(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
+    this.cancelOpenComputer();
     const connection = this.#requireConnection(id);
     const row = this.#state.rows.find((candidate) => candidate.deploymentId === id);
     await this.#clearSignOutSuppression(id);
@@ -582,6 +720,7 @@ export class MobileClient {
   signOut(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    this.cancelOpenComputer();
     const previewCleanup = this.#notificationPreviews?.clear(id);
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
@@ -797,11 +936,13 @@ export class MobileClient {
   /** Account UI unregisters push while its credential is held; saved pixels/keys leave first. */
   clearAccountSavedViews(): Promise<void> {
     this.#authorizationEpoch += 1;
+    this.cancelOpenComputer();
     return this.#invalidateAccountSavedViews();
   }
 
   signOutAccount(): Promise<void> {
     this.#authorizationEpoch += 1;
+    this.cancelOpenComputer();
     const previewCleanup = this.#notificationPreviews?.clear(null);
     const invalidation = this.#invalidateAccountSavedViews();
     // Decided before anything awaits: only a Deployment the Account lists
@@ -840,6 +981,7 @@ export class MobileClient {
   remove(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.#authorizationEpoch += 1;
+    this.cancelOpenComputer();
     const previewCleanup = this.#notificationPreviews?.clear(id);
     const invalidation = this.#invalidateSavedView(id);
     const iphone = this.#stopIphoneApps(id);
@@ -873,6 +1015,7 @@ export class MobileClient {
   dispose(): void {
     if (this.#disposed) return;
     this.#authorizationEpoch += 1;
+    this.cancelOpenComputer();
     this.#disposed = true;
     this.savedViews.dispose();
     this.#releaseAttachment();
@@ -898,8 +1041,13 @@ export class MobileClient {
    * Live discovery deliberately happens afterwards: a Host that takes ten
    * seconds to time out must not keep a later explicit switch out of storage.
    */
-  async #selectLocallyNow(id: DeploymentId, force: boolean): Promise<number | null> {
+  async #selectLocallyNow(
+    id: DeploymentId,
+    force: boolean,
+    current: () => boolean = () => true,
+  ): Promise<number | null> {
     let catalog = await this.catalog.load();
+    if (!current()) return null;
     if (!catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)) {
       throw new Error("That deployment is no longer in this app's list.");
     }
@@ -917,11 +1065,21 @@ export class MobileClient {
     // write failure therefore leaves both the catalog and working client alone.
     const previousPreference = this.#selectionPreference;
     await this.#selectionFile.write(id);
+    if (!current()) {
+      await this.#selectionFile.write(previousPreference ?? null);
+      return null;
+    }
     try {
       if (catalog.selectedDeploymentId !== id) await this.catalog.select(id);
     } catch (error) {
       await this.#selectionFile.write(previousPreference ?? null).catch(noop);
       throw error;
+    }
+    if (!current()) {
+      await this.#selectionFile.write(previousPreference ?? null);
+      if (catalog.selectedDeploymentId !== null)
+        await this.catalog.select(catalog.selectedDeploymentId);
+      return null;
     }
     this.#selectionPreference = id;
     this.#selectionFileLoaded = true;
@@ -1165,13 +1323,23 @@ export class MobileClient {
   }
 
   /** Restores the local choice without waiting for discovery or a Host. */
-  async #activateSelectionLocally(id: DeploymentId, persist: boolean): Promise<void> {
+  async #activateSelectionLocally(
+    id: DeploymentId,
+    persist: boolean,
+    current: () => boolean = () => true,
+  ): Promise<void> {
     const catalog = await this.catalog.load();
+    if (!current()) return;
     if (!catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)) {
       throw new Error("That deployment is no longer in this app's list.");
     }
     if (catalog.selectedDeploymentId !== id) await this.catalog.select(id);
+    if (!current()) return;
     if (persist) await this.#selectionFile.write(id);
+    if (!current()) {
+      if (persist) await this.#selectionFile.write(this.#selectionPreference ?? null);
+      return;
+    }
     this.#selectionPreference = id;
     this.#selectionFileLoaded = true;
     this.#releaseAttachment();
@@ -1251,6 +1419,7 @@ export class MobileClient {
   #maybeSelectFreshSingleton(): Promise<void> {
     return this.#operations.run(async () => {
       if (
+        this.#pendingComputer !== null ||
         !this.#selectionFileLoaded ||
         this.#selectionPreference !== undefined ||
         this.#attachedDeploymentId !== null
@@ -1258,9 +1427,14 @@ export class MobileClient {
         return;
       }
       const catalog = await this.catalog.load();
+      if (this.#pendingComputer !== null) return;
       if (catalog.deployments.length === 1) {
         const id = catalog.deployments[0]!.authority.document.deploymentId;
-        const attempt = await this.#selectLocallyNow(id, false);
+        const attempt = await this.#selectLocallyNow(
+          id,
+          false,
+          () => this.#pendingComputer === null,
+        );
         if (attempt !== null) void this.#attachSelection(id, attempt).catch(noop);
       } else if (catalog.deployments.length > 1) {
         await this.#selectionFile.write(null);
@@ -1873,6 +2047,7 @@ export class MobileClient {
       "unknown";
     this.savedViews.connection(network, this.#attachmentState === "offline");
     this.#state = {
+      pendingComputer: this.#pendingComputer,
       account,
       catalog,
       directory: this.#directoryState,
@@ -1917,6 +2092,7 @@ export class MobileClient {
         return;
       }
       if (this.#disposed || generation !== this.#directoryGeneration) return;
+      this.#directoryIds = result.syncedDeploymentIds;
       this.#directoryState = {
         detail: null,
         status: "ready",
@@ -1949,6 +2125,7 @@ export class MobileClient {
 
   #setDirectoryIdentity(subject: string | null): void {
     this.#accountSubject = subject;
+    this.#directoryIds = [];
     this.#directoryGeneration += 1;
     this.#directoryState = idleDirectoryState();
   }
