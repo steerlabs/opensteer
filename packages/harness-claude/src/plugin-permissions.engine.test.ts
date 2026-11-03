@@ -6,12 +6,14 @@ import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createId, ModelSelectionSchema } from "@opensteer/core";
 import {
+  meetsMinimumVersion,
   nativeUserHarnessRuntimeBoundary,
   type HarnessEvent,
   type HarnessSessionContext,
 } from "@opensteer/harness";
 import { expect, it } from "vitest";
 import { ClaudeHarnessDriver } from "./claude-driver.js";
+import { MINIMUM_CLAUDE_CODE_VERSION } from "./config.js";
 import { resolveClaudeExecutable } from "./executable.js";
 
 it.each([
@@ -26,7 +28,11 @@ it.each([
     const executable = resolveClaudeExecutable(process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude");
     if (!executable) throw new Error("Claude is not installed");
     const version = execFileSync(executable, ["--version"], { encoding: "utf8" }).trim();
-    expect(version).toContain("2.1.317");
+    const release = /^(\d+\.\d+\.\d+)(?:\s|$)/u.exec(version)?.[1];
+    expect(
+      release !== undefined && meetsMinimumVersion(release, MINIMUM_CLAUDE_CODE_VERSION),
+      `Claude ${version} is older than ${MINIMUM_CLAUDE_CODE_VERSION}`,
+    ).toBe(true);
     const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-permissions-"));
     const plugin = join(directory, "fixture");
     const reason = "Opensteer fixture plugin asks before harmless marker creation";
