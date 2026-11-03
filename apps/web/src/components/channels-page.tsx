@@ -1,4 +1,5 @@
-import { SettingsSwitch } from "./settings/primitives.js";
+import { SurfaceMenu } from "./surface-menu.js";
+import { SectionHeader, SettingsSwitch } from "./settings/primitives.js";
 import { IntegrationIcon } from "./integrations/integration-icon.js";
 import { Link, useLocation } from "react-router";
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
@@ -423,11 +424,32 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
         ) : null}
 
         {connectionId ? <Link to="/settings/messaging">All connections</Link> : null}
-        <PageHeader
-          description={view === "overview" ? undefined : subheading(view, step, provider?.label)}
-          eyebrow="Messaging"
-          title={heading(view, step, provider?.label)}
-        />
+        {view === "overview" ? (
+          <SectionHeader
+            title="Messaging"
+            action={
+              <button
+                className="btn btn--primary"
+                disabled={
+                  !dashboard?.providers.some(({ availability }) => availability === "available")
+                }
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setView("providers");
+                }}
+              >
+                Add
+              </button>
+            }
+          />
+        ) : (
+          <PageHeader
+            description={subheading(view, step, provider?.label)}
+            eyebrow="Messaging"
+            title={heading(view, step, provider?.label)}
+          />
+        )}
 
         {view === "overview" ? (
           <ChannelOverview
@@ -699,14 +721,6 @@ export function ChannelOverview({
           <div>
             <h2 className="section__title">Messaging identities</h2>
           </div>
-          <button
-            className="btn btn--primary btn--small"
-            disabled={!providerReady}
-            onClick={onAdd}
-            type="button"
-          >
-            <Icon name="plus" /> Add
-          </button>
         </div>
         <div className="card">
           {dashboard?.connections.length ? (
@@ -724,7 +738,7 @@ export function ChannelOverview({
                 connection.status === "needs-attention" && connection.transportKind !== "computer";
               return (
                 <Fragment key={connection.id}>
-                  <div className="card__row">
+                  <div className="card__row settings-messaging-row">
                     <IntegrationIcon
                       id={
                         connection.provider === "apple-messages"
@@ -756,15 +770,6 @@ export function ChannelOverview({
                       ) : null}
                     </div>
                     <div className="card__row-actions">
-                      <button
-                        aria-label={`Check ${connection.displayName}`}
-                        className="icon-btn"
-                        disabled={pending}
-                        onClick={() => onCheck(connection.id, connection.displayName)}
-                        type="button"
-                      >
-                        <Icon name="reload" />
-                      </button>
                       {repairable ? (
                         <button
                           className="btn btn--small"
@@ -790,15 +795,24 @@ export function ChannelOverview({
                       >
                         <Icon name="chevron-right" />
                       </Link>
-                      <button
-                        aria-label={`Revoke ${connection.displayName}`}
-                        className="icon-btn"
-                        disabled={pending}
-                        onClick={() => onRevoke(connection.id)}
-                        type="button"
-                      >
-                        <Icon name="trash" />
-                      </button>
+                      <SurfaceMenu
+                        label={`Actions for ${connection.displayName}`}
+                        items={[
+                          {
+                            icon: "reload",
+                            label: "Check connection",
+                            disabled: pending,
+                            onSelect: () => onCheck(connection.id, connection.displayName),
+                          },
+                          {
+                            icon: "trash",
+                            label: "Remove connection",
+                            danger: true,
+                            disabled: pending,
+                            onSelect: () => onRevoke(connection.id),
+                          },
+                        ]}
+                      />
                     </div>
                   </div>
                   {accounts.map((account) => (
