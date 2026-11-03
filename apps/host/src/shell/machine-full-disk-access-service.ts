@@ -8,7 +8,7 @@ import {
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { allocateMachineAliases, type RequestCreationResult } from "@opensteer/protocol";
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ContinuationService } from "../agents/continuation-service.js";
 
 type FullAccessStore = Pick<OpensteerStore, "listReachableMachines"> & {
@@ -37,7 +37,7 @@ export class MachineFullDiskAccessService {
     readonly callId: string;
     readonly computer: string;
     readonly reason: string;
-    readonly claims: AgentControlRunScope;
+    readonly claims: RunToolScope;
   }): Promise<RequestCreationResult & { kind: "machine.full-disk-access" }> {
     const { claims } = input;
     const machines = await this.#store.listReachableMachines(claims.requestedBy, claims.runnerId);

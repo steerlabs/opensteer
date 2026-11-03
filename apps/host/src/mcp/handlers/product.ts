@@ -24,6 +24,7 @@ import {
   type HarnessId,
   type Message,
   type Thread,
+  type Workspace,
   type WorkspaceBackingKind,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
@@ -44,11 +45,8 @@ import {
 import { delegationPlacement } from "../../agents/delegation-placement.js";
 import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
-import type {
-  AgentControlRunScope,
-  AgentWorkspaceMountService,
-  AgentWorkspaceCreator,
-} from "../../agents/agent-control-service.js";
+import type { RunToolScope } from "../../agents/run-tool-tokens.js";
+import type { AgentWorkspaceMountService } from "../../agents/agent-workspace-mount-service.js";
 import { callerThread, type AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./index.js";
 import {
@@ -68,15 +66,25 @@ import {
   threadCallerAuthority,
 } from "../operations.js";
 
+interface AgentWorkspaceCreator {
+  projectPath(workspace: Workspace): Promise<string>;
+  create(input: {
+    readonly createdBy: RunToolScope["requestedBy"];
+    readonly idempotencyKey: string;
+    readonly kind: "project";
+    readonly name: string;
+  }): Promise<Workspace>;
+}
+
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe">;
   readonly #computerUse:
     Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay"> | undefined;
   readonly #personShow:
-    | ((userId: AgentControlRunScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
+    | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
-  readonly #supportsLoginFill: (scope: AgentControlRunScope) => boolean;
+  readonly #supportsLoginFill: (scope: RunToolScope) => boolean;
   readonly #browserSources: Pick<BrowserSourceService, "agentSignIn">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
   readonly #browser: Pick<
@@ -109,10 +117,10 @@ export class ProductToolHandlers {
     readonly realtime: Pick<RealtimeHub, "observe">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
     readonly personShow?: (
-      userId: AgentControlRunScope["requestedBy"],
+      userId: RunToolScope["requestedBy"],
       message: PersonShowMessage,
     ) => Promise<number>;
-    readonly supportsLoginFill?: (scope: AgentControlRunScope) => boolean;
+    readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentSignIn">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
     readonly browser: Pick<
@@ -1301,7 +1309,7 @@ export class ProductToolHandlers {
       signal: call.signal ? AbortSignal.any([call.signal, revoked.signal]) : revoked.signal,
     });
   }
-  async #writtenThreadSummary(thread: Thread, requestedBy: AgentControlRunScope["requestedBy"]) {
+  async #writtenThreadSummary(thread: Thread, requestedBy: RunToolScope["requestedBy"]) {
     const workspace = await this.#store.getWorkspaceForOwner(thread.workspaceId, requestedBy);
     if (!workspace) throw forbidden("Workspace is unavailable to this user");
     return {

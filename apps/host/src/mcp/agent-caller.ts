@@ -7,10 +7,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import type {
-  AgentControlRunScope,
-  AgentControlTokenService,
-} from "../agents/agent-control-service.js";
+import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type {
   TriggerControlScope,
   TriggerControlTokenService,
@@ -26,7 +23,7 @@ export interface AgentCallerBase {
 export interface RunCaller extends AgentCallerBase {
   readonly kind: "run";
   readonly thread: Thread;
-  readonly claims: AgentControlRunScope;
+  readonly claims: RunToolScope;
 }
 export interface ProgramCaller extends AgentCallerBase {
   readonly kind: "program";
@@ -54,14 +51,14 @@ export interface ConnectionAuthenticator {
 export class AgentCallerResolver {
   readonly options: {
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "workspaceMembershipForUser">;
-    readonly runs: Pick<AgentControlTokenService, "authenticate">;
+    readonly runs: Pick<RunToolTokenService, "authenticate">;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
     readonly watches?: Pick<WatchControlTokenService, "authenticate">;
     readonly connections?: ConnectionAuthenticator;
   };
   constructor(options: {
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "workspaceMembershipForUser">;
-    readonly runs: Pick<AgentControlTokenService, "authenticate">;
+    readonly runs: Pick<RunToolTokenService, "authenticate">;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
     readonly watches?: Pick<WatchControlTokenService, "authenticate">;
     readonly connections?: ConnectionAuthenticator;

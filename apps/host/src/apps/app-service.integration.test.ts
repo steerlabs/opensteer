@@ -12,7 +12,7 @@ import {
 import { AppStore } from "@opensteer/database";
 import { expect, vi } from "vitest";
 import { describeStore } from "@opensteer/database/test-support/store";
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
@@ -28,7 +28,7 @@ describeStore("published app HTML", (it) => {
       workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as AgentControlRunScope;
+    } as RunToolScope;
     const directory = await mkdtemp(join(tmpdir(), "opensteer-apps-test-"));
     const events: AgentEvent[] = [];
     let bytes = Buffer.from(html);
@@ -293,7 +293,7 @@ describeStore("published app HTML", (it) => {
       workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as AgentControlRunScope;
+    } as RunToolScope;
     const directory = await mkdtemp(join(tmpdir(), "opensteer-app-refusals-"));
     let bytes = Buffer.from(html);
     const entries = [
@@ -385,7 +385,7 @@ describeStore("published app HTML", (it) => {
       workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as AgentControlRunScope;
+    } as RunToolScope;
     const start = vi.fn(async () => undefined);
     const stop = vi.fn(async () => undefined);
     const connect =

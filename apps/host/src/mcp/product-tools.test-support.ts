@@ -1,3 +1,4 @@
+import type { AgentTriggerManager } from "./handlers/triggers.js";
 import { ThreadService } from "../threads/thread-service.js";
 import {
   OpensteerError,
@@ -77,7 +78,7 @@ const AgentWorkspaceViewSchema = z.strictObject({
   storageIssue: z.strictObject(WorkspaceViewSchema.shape.storageIssue.unwrap().shape).nullable(),
 });
 
-export function agentWorkspaceView(workspace: Workspace): z.infer<typeof AgentWorkspaceViewSchema> {
+function agentWorkspaceView(workspace: Workspace): z.infer<typeof AgentWorkspaceViewSchema> {
   // A plain object schema drops the key the agent view does not carry.
   return WorkspaceViewSchema.omit(agentOmittedWorkspaceFields).parse(
     workspaceViewFromWorkspace(workspace),
@@ -91,7 +92,7 @@ const AgentBrowserSessionSummaryStrictSchema = z.strictObject({
 const requestBase = {
   requestId: z.uuid(),
 } as const;
-export const EnvironmentListInputSchema = z
+const EnvironmentListInputSchema = z
   .strictObject({
     query: z
       .string()
@@ -113,9 +114,8 @@ export const EnvironmentListInputSchema = z
         message: "Focus cannot be combined with directory cursors",
       });
   });
-export type EnvironmentListInput = z.infer<typeof EnvironmentListInputSchema>;
 
-const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
+const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   EnvironmentListInputSchema.safeExtend({
     ...requestBase,
     type: z.literal("environment.list"),
@@ -289,7 +289,7 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("trigger.control"),
   }),
 ]);
-export const AgentControlRequestSchema = AgentControlRequestUnionSchema.refine(
+export const ProductToolRequestSchema = ProductToolRequestUnionSchema.refine(
   (request) =>
     request.type !== "browser.session.open" ||
     [request.fresh, request.profileId, request.sessionId].filter(Boolean).length === 1,
@@ -314,7 +314,6 @@ export const AgentControlRequestSchema = AgentControlRequestUnionSchema.refine(
       agentToolPayloadMaxSerializedBytes,
     `Agent control request must not exceed ${agentToolPayloadMaxSerializedBytes} serialized bytes`,
   );
-export type AgentControlRequest = z.infer<typeof AgentControlRequestSchema>;
 
 const responseBase = {
   requestId: z.uuid(),
@@ -324,14 +323,12 @@ const responseBase = {
  * How many of an engine profile's models an agent is shown to choose among,
  * and how many across one inspection, so the largest reply stays bounded.
  */
-export const agentHarnessModelsShown = 20;
-export const agentInspectionModelsShown = 100;
+const agentHarnessModelsShown = 20;
 
 const AgentModelSummarySchema = z.strictObject({
   modelId: ModelIdSchema,
   providerId: ModelProviderIdSchema,
 });
-export type AgentModelSummary = z.infer<typeof AgentModelSummarySchema>;
 
 const HarnessSummarySchema = z.strictObject({
   driverKind: HarnessIdSchema,
@@ -344,7 +341,6 @@ const HarnessSummarySchema = z.strictObject({
   modelsNextCursor: z.string().min(1).max(2_048).optional(),
   name: z.string().min(1).max(120),
 });
-export type AgentHarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
 const EnvironmentSummarySchema = z.strictObject({
   compatibleHarnessInstanceIds: z.array(HarnessInstanceIdSchema).max(64),
@@ -369,7 +365,7 @@ const EnvironmentModelOptionSchema = z.union([
     default: z.boolean().optional(),
   }),
 ]);
-export const EnvironmentHarnessSummarySchema = HarnessSummarySchema.extend({
+const EnvironmentHarnessSummarySchema = HarnessSummarySchema.extend({
   models: z
     .array(
       AgentModelSummarySchema.extend({
@@ -390,7 +386,6 @@ export const EnvironmentHarnessSummarySchema = HarnessSummarySchema.extend({
   ]),
   detail: z.string().min(1).max(500).optional(),
 });
-export type EnvironmentHarnessSummary = z.infer<typeof EnvironmentHarnessSummarySchema>;
 const DelegationDefaultSchema = z.strictObject({
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
@@ -400,7 +395,7 @@ const DelegationDefaultSchema = z.strictObject({
     providerId: ModelProviderIdSchema,
   }),
 });
-export const EnvironmentDiscoverySchema = z.strictObject({
+const EnvironmentDiscoverySchema = z.strictObject({
   delegationDefault: DelegationDefaultSchema,
   environments: z.array(EnvironmentSummarySchema).max(64),
   environmentsNextCursor: EnvironmentIdSchema.optional(),
@@ -410,7 +405,6 @@ export const EnvironmentDiscoverySchema = z.strictObject({
     .refine((rows) => rows.reduce((count, row) => count + row.models.length, 0) <= 40),
   harnessesNextCursor: HarnessInstanceIdSchema.optional(),
 });
-export type EnvironmentDiscovery = z.infer<typeof EnvironmentDiscoverySchema>;
 
 const WorkspaceSummarySchema = z.strictObject({
   id: WorkspaceIdSchema,
@@ -441,7 +435,7 @@ const DeliveredThreadInputResultSchema = AcceptedThreadInputResultSchema.extend(
   disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
 });
 
-export const AgentThreadSummarySchema = z.strictObject({
+const AgentThreadSummarySchema = z.strictObject({
   doneAt: ThreadSchema.shape.doneAt.optional(),
   environmentConnected: z.boolean(),
   environmentId: ThreadSchema.shape.environmentId,
@@ -462,15 +456,14 @@ const GrantedBrowserProfileSchema = z.strictObject({
   name: z.string().min(1).max(120),
 });
 
-export const RequestCreationResultSchema = z.strictObject({
+const RequestCreationResultSchema = z.strictObject({
   kind: RequestKindSchema,
   replayed: z.boolean(),
   requestId: RequestIdSchema,
   status: RequestStatusSchema,
 });
-export type RequestCreationResult = z.infer<typeof RequestCreationResultSchema>;
 
-const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
+const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   EnvironmentDiscoverySchema.extend({
     ...responseBase,
     type: z.literal("environment.list.result"),
@@ -610,24 +603,21 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("trigger.control.result"),
   }),
 ]);
-export const agentControlResponseMaxSerializedBytes = agentToolPayloadMaxSerializedBytes;
-export const AgentControlResponseSchema = AgentControlResponseUnionSchema.refine(
+const productToolResultMaxSerializedBytes = agentToolPayloadMaxSerializedBytes;
+export const ProductToolResultSchema = ProductToolResultUnionSchema.refine(
   (response) =>
     new TextEncoder().encode(JSON.stringify(response)).byteLength <=
-    agentControlResponseMaxSerializedBytes,
-  `Agent control response must not exceed ${agentControlResponseMaxSerializedBytes} serialized bytes`,
+    productToolResultMaxSerializedBytes,
+  `Product tool result must not exceed ${productToolResultMaxSerializedBytes} serialized bytes`,
 );
-export type AgentControlResponse = z.infer<typeof AgentControlResponseSchema>;
+export type ProductToolResult = z.infer<typeof ProductToolResultSchema>;
 
 import { ProductToolHandlers } from "./handlers/product.js";
 import { TriggerToolHandlers } from "./handlers/triggers.js";
 import { agentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { AgentCallerResolver } from "./agent-caller.js";
-import type {
-  AgentControlTokenService,
-  AgentTriggerManager,
-} from "../agents/agent-control-service.js";
+import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
 import { MemoryOperationReceipts } from "./receipts.test-support.js";
@@ -635,7 +625,7 @@ type ProductOptions = ConstructorParameters<typeof ProductToolHandlers>[0];
 type TestOptions = Partial<Omit<ProductOptions, "workspaces">> & {
   readonly store: ProductOptions["store"];
   readonly tokens:
-    | Pick<AgentControlTokenService, "authenticate">
+    | Pick<RunToolTokenService, "authenticate">
     | Pick<TriggerControlTokenService, "authenticate">
     | Pick<WatchControlTokenService, "authenticate">;
   readonly triggers?: AgentTriggerManager;
@@ -739,7 +729,7 @@ export class ProductToolsTestClient {
         store: options.store,
         runs:
           kind === "run"
-            ? (options.tokens as AgentControlTokenService)
+            ? (options.tokens as RunToolTokenService)
             : {
                 authenticate: async () => {
                   throw new Error("Not a Run");
@@ -753,8 +743,8 @@ export class ProductToolsTestClient {
       publicUrl: new URL("https://host.test"),
     });
   }
-  async handle(token: string, value: unknown): Promise<AgentControlResponse> {
-    const request = AgentControlRequestSchema.parse(value);
+  async handle(token: string, value: unknown): Promise<ProductToolResult> {
+    const request = ProductToolRequestSchema.parse(value);
     if (request.type === "browser.sign-in")
       throw new Error("This agent operation has been removed");
     let name: string = request.type.replaceAll(".", "_").replaceAll("-", "_");
@@ -816,7 +806,7 @@ export class ProductToolsTestClient {
         workspace: agentWorkspaceView(this.createdWorkspaces.get(String(result.id))!),
       };
     if (request.type === "browser.session.close") fields = { sessionId: result.sessionId };
-    return { ...fields, type: `${request.type}.result`, requestId } as AgentControlResponse;
+    return { ...fields, type: `${request.type}.result`, requestId } as ProductToolResult;
   }
 }
 export class TriggerToolsTestClient extends ProductToolsTestClient {

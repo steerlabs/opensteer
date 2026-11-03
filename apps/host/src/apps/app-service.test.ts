@@ -1,4 +1,4 @@
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { connect } from "node:net";
@@ -75,7 +75,7 @@ function fixture(
     app,
     userId,
     options,
-    scope: scope as AgentControlRunScope,
+    scope: scope as RunToolScope,
   };
 }
 

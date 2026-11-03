@@ -1,4 +1,4 @@
-import { ProductToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -40,10 +40,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
-import {
-  type AgentControlRunScope,
-  type AgentControlTokenService,
-} from "./agent-control-service.js";
+import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { AgentOperationReceipts } from "@opensteer/database";
@@ -76,7 +73,7 @@ integration("agent-to-agent messaging round trip", () => {
     } as unknown as BrowserService,
     publish: vi.fn(),
   });
-  const claimsByToken = new Map<string, AgentControlRunScope>();
+  const claimsByToken = new Map<string, RunToolScope>();
   const admission = new KeyedAdmissionQueue({
     maxInFlight: 4,
     maxQueuedBytes: 4_000_000,
@@ -132,7 +129,7 @@ integration("agent-to-agent messaging round trip", () => {
         if (!claims) throw new Error(`No test claims for ${token}`);
         return claims;
       },
-    } as unknown as AgentControlTokenService,
+    } as unknown as RunToolTokenService,
     defaultWorkspaceBacking: "local-directory",
     environmentWorkspaceBackings: () => ["local-directory"],
     workspaceMounts: {
@@ -1234,7 +1231,7 @@ integration("agent-to-agent messaging round trip", () => {
       receipts: new AgentOperationReceipts(store.database),
       callers: new AgentCallerResolver({
         store: store,
-        runs: { authenticate: async () => claims } as unknown as AgentControlTokenService,
+        runs: { authenticate: async () => claims } as unknown as RunToolTokenService,
       }),
     });
     const inventories: string[][] = [];
@@ -1552,7 +1549,7 @@ function testClaims(input: {
   readonly runnerId: ReturnType<typeof createId<"runner">>;
   readonly threadId: Thread["id"];
   readonly workspaceId: Thread["workspaceId"];
-}): AgentControlRunScope {
+}): RunToolScope {
   return {
     aud: "opensteer-agent-control",
     bindingGeneration: 1,

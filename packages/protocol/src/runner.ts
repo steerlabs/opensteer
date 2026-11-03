@@ -60,11 +60,11 @@ import { WorkspaceExecutionAccessPlanSchema } from "@opensteer/workspace";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
-  RunAgentControlPlanSchema,
+  RunToolTokenPlanSchema,
   RunAgentToolsPlanSchema,
   RunBrowserCdpPlanSchema,
   RunPluginsPlanSchema,
-} from "./agent-control.js";
+} from "./run-plans.js";
 import { RunAttachmentPlanSchema } from "./attachments.js";
 import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
@@ -198,7 +198,7 @@ const capabilityTokenSchema = z.string().min(1).max(4_096);
 export const RunExecutionContextSchema = z.strictObject({
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
-  agentControl: RunAgentControlPlanSchema,
+  agentControl: RunToolTokenPlanSchema,
   /** Scoped to files already admitted to this provider session and this frozen Run. */
   attachments: RunAttachmentPlanSchema.optional(),
   agentTools: RunAgentToolsPlanSchema,

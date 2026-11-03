@@ -52,7 +52,7 @@ async function serveMcp(
   store: OpensteerStore,
   options: {
     readonly connected?: () => boolean;
-    readonly runScope?: import("../agents/agent-control-service.js").AgentControlRunScope;
+    readonly runScope?: import("../agents/run-tool-tokens.js").RunToolScope;
     readonly subscribed?: () => void;
     readonly unsubscribed?: () => void;
     readonly publish?: { current?: (event: import("@opensteer/core").AgentEvent) => void };

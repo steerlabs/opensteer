@@ -1,4 +1,4 @@
-import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
+import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { NotificationStore } from "@opensteer/database";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -488,7 +488,7 @@ integration.sequential("Run recovery acceptance", () => {
           },
         });
         expect(result.isError).not.toBe(true);
-        return AgentControlResponseSchema.parse({
+        return ProductToolResultSchema.parse({
           type: "thread.delegate.result",
           requestId: randomUUID(),
           result: result.structuredContent,

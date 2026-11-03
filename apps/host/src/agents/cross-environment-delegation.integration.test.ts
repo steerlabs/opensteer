@@ -1,6 +1,6 @@
 import { EnvironmentDiscoverySchema } from "@opensteer/agent-tools/outputs";
-import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
-import { ProductToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
+import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -44,10 +44,7 @@ import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  type AgentControlRunScope,
-  type AgentControlTokenService,
-} from "./agent-control-service.js";
+import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { AgentOperationReceipts } from "@opensteer/database";
@@ -84,7 +81,7 @@ integration("cross-environment delegation reaches the Runner", () => {
   });
   const store = new OpensteerStore(database);
   const acceptanceEvidence: Record<string, unknown>[] = [];
-  const claimsByToken = new Map<string, AgentControlRunScope>();
+  const claimsByToken = new Map<string, RunToolScope>();
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
       maxInFlight: 4,
@@ -128,7 +125,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         if (!claims) throw new Error(`No test claims for ${token}`);
         return claims;
       },
-    } as unknown as AgentControlTokenService,
+    } as unknown as RunToolTokenService,
     defaultWorkspaceBacking: "local-directory",
     environmentWorkspaceBackings: () => ["local-directory"],
     workspaceMounts: { mount: unexpected },
@@ -650,7 +647,7 @@ integration("cross-environment delegation reaches the Runner", () => {
           },
         });
         expect(delegated.isError, JSON.stringify(delegated.structuredContent)).not.toBe(true);
-        const result = AgentControlResponseSchema.parse({
+        const result = ProductToolResultSchema.parse({
           requestId: randomUUID(),
           type: "thread.delegate.result",
           result: delegated.structuredContent,
@@ -2698,7 +2695,7 @@ integration("cross-environment delegation reaches the Runner", () => {
             if (!claims || presented !== token) throw new Error("Invalid MCP token");
             return claims;
           },
-        } as AgentControlTokenService,
+        } as RunToolTokenService,
       }),
     });
     const client = new Client({ name: "model-discovery-e2e", version: "1.0.0" });

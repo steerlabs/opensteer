@@ -1,4 +1,4 @@
-import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
+import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
@@ -52,7 +52,7 @@ import {
   type TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
 import type { WatchControlScope } from "../triggers/watch-capability.js";
-import { WatchToolsTestClient } from "../mcp/control.test-support.js";
+import { WatchToolsTestClient } from "../mcp/product-tools.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;

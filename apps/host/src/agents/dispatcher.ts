@@ -53,7 +53,7 @@ import type { TriggerControlTokenService } from "../triggers/trigger-control-ser
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import type { WorkspaceService } from "../workspace/workspace-service.js";
-import type { AgentControlTokenService } from "./agent-control-service.js";
+import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
   inspectAndRecordHarnessCatalogs,
@@ -107,9 +107,8 @@ const supportedCommandTypes = new Set([
 export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
   readonly #attachments: Pick<AttachmentStore, "listForRun">;
-  readonly #agentControlTokens: AgentControlTokenService;
+  readonly #agentControlTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
-  readonly #agentControlUrl: string;
   readonly #agentToolsUrl: string;
   readonly #agentBrowserCdpUrl: string;
   readonly #pluginVersions: (
@@ -135,7 +134,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
     readonly requestResponseVault: RequestResponseVault;
-    readonly agentControlTokens: AgentControlTokenService;
+    readonly agentControlTokens: RunToolTokenService;
     readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
@@ -158,7 +157,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
     this.#agentControlTokens = options.agentControlTokens;
-    this.#agentControlUrl = new URL("/internal/v1/agent-control", options.publicUrl).toString();
     this.#agentToolsUrl = new URL("/internal/v1/mcp", options.publicUrl).toString();
     this.#agentBrowserCdpUrl = new URL("/internal/v1/browser-cdp", options.publicUrl).toString();
     this.#pluginVersions = options.pluginVersions;
@@ -550,7 +548,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         ...(attachmentPlan ? { attachments: attachmentPlan } : {}),
         agentControl: {
           token: agentControlToken,
-          url: this.#agentControlUrl,
+          url: this.#agentToolsUrl,
         },
         agentTools: agentToolsPlanForRun({
           token: agentControlToken,
