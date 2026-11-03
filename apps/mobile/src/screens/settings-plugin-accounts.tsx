@@ -11,6 +11,7 @@ import {
   integrationAccountTitle,
   integrationAuthorizationError,
   type IntegrationOAuthApplicationSource,
+  type IntegrationPlatformDashboardView,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { useIsFocused } from "@react-navigation/native";
@@ -88,6 +89,15 @@ function ConnectedApps(props: {
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
   const online = useHostSelector(hostClient, canRespondToRequests);
+  const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
+  const [keyValues, setKeyValues] = useState<Record<string, string>>({});
+  const keyAttempt = useRef<{
+    command: Extract<
+      import("@opensteer/protocol").HostApiCommandInput,
+      { type: "integration.apiKey.connect" }
+    >;
+    known: Set<string>;
+  } | null>(null);
   const [apps, setApps] = useState<readonly ConnectedAppModel[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -107,6 +117,7 @@ function ConnectedApps(props: {
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
       if (!current()) return null;
+      setPlatform(platform);
       setApps(connectedAppsModel({ dashboard, hostName, platform }));
       setLoadError(null);
       return dashboard;
@@ -296,6 +307,68 @@ function ConnectedApps(props: {
           ),
         ],
       });
+    const definition = platform?.catalog.find(
+      (entry) => entry.definition.id === props.definitionId,
+    )?.definition;
+    for (const method of definition?.authMethods ?? []) {
+      if (method.kind !== "api-key") continue;
+      sections.push({
+        key: `key:${method.id}`,
+        title: method.label,
+        rows: [
+          ...method.inputs.map((input): NativeSettingsRow => ({
+            key: input.variable,
+            kind: "input",
+            label: input.label,
+            secure: input.secret,
+            value: keyValues[input.variable] ?? "",
+            onChange: (value) => setKeyValues((prior) => ({ ...prior, [input.variable]: value })),
+          })),
+          button(
+            `connect-key:${method.id}`,
+            keyAttempt.current ? "Retry connection" : "Connect account",
+            () =>
+              void run("api-key", async () => {
+                if (!keyAttempt.current) {
+                  const before = await load();
+                  if (!before || !current()) throw new Error("Reconnect before adding an account.");
+                  keyAttempt.current = {
+                    known: new Set(before.connections.map((connection) => connection.id)),
+                    command: {
+                      type: "integration.apiKey.connect",
+                      idempotencyKey: mutationIdempotencyKey("plugin-api-key"),
+                      input: {
+                        definitionId: definition!.id,
+                        authMethodId: method.id,
+                        values: { ...keyValues },
+                      },
+                    },
+                  };
+                }
+                const attempt = keyAttempt.current;
+                await hostClient.dispatch(attempt.command);
+                const after = await load();
+                if (!after || !current()) return null;
+                const matches = after.connections.filter(
+                  (connection) =>
+                    connection.definitionId === definition!.id && !attempt.known.has(connection.id),
+                );
+                if (matches.length !== 1)
+                  throw new Error(
+                    "The connected account could not be identified. Review it in Plugins.",
+                  );
+                const connection = matches[0]!;
+                setKeyValues({});
+                setPendingConnection(connection.id);
+                keyAttempt.current = null;
+                await props.onConnected?.(connection.id);
+                setPendingConnection(null);
+                return "Connected and turned on in your chosen places.";
+              }),
+          ),
+        ],
+      });
+    }
     for (const app of apps ?? []) {
       if (props.definitionId && app.definitionId !== props.definitionId) continue;
       const rows: NativeSettingsRow[] = [];

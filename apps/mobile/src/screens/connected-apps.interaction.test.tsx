@@ -248,3 +248,63 @@ function phoneSignIn(client: MockHostClient) {
     );
   };
 }
+
+it("continues a new API-key account and retries placement without connecting twice", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  state.hostClient = client;
+  const platform = unwrapRpcResult(await client.rpc["integration.platform.get"]({}));
+  const entry = platform.catalog.find(({ definition }) => definition.id === "resend")!;
+  await client.dispatch({
+    type: "integration.catalog.install",
+    input: { definitionId: "resend", digest: entry.digest },
+    idempotencyKey: "install-resend",
+  });
+  let sections: import("./native-settings-page.types.js").NativeSettingsSection[] = [];
+  const connected = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("Placement response lost"))
+    .mockResolvedValue(undefined);
+  const root = createRoot(document.createElement("div"));
+  roots.push(root);
+  try {
+    await act(async () =>
+      root.render(
+        <PluginAccounts
+          hostClient={client}
+          hostName="Acceptance"
+          definitionId="resend"
+          onConnected={connected}
+          render={(value) => {
+            sections = value;
+            return null;
+          }}
+        />,
+      ),
+    );
+    const all = () => sections.flatMap((section) => section.rows);
+    await vi.waitFor(() => expect(all().some(({ label }) => label === "API key")).toBe(true));
+    const field = all().find(({ label }) => label === "API key")!;
+    if (field.kind !== "input") throw new Error("Missing key field");
+    expect(field.secure).toBe(true);
+    await act(async () => field.onChange("acceptance-key"));
+    const dispatch = vi.spyOn(client, "dispatch");
+    const press = async (label: string) => {
+      const row = all().find((row) => row.label === label);
+      if (row?.kind !== "button") throw new Error(`Missing ${label}`);
+      await act(async () => row.onPress());
+    };
+    await press("Connect account");
+    await vi.waitFor(() =>
+      expect(all().some(({ label }) => label === "Retry placement")).toBe(true),
+    );
+    await press("Retry placement");
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledTimes(2));
+    expect(connected.mock.calls[1]).toEqual(connected.mock.calls[0]);
+    expect(
+      dispatch.mock.calls.filter(([command]) => command.type === "integration.apiKey.connect"),
+    ).toHaveLength(1);
+  } finally {
+    client.dispose();
+  }
+});
