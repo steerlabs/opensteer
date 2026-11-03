@@ -38,6 +38,12 @@ Authentication refusal stays latched until a replacement attachment uses the new
 credential. Non-interactive selection never opens OAuth; a row tap can do so only
 after verification of that exact selection and attachment.
 
+An open link (`com.opensteer.mobile:/open?d=<DeploymentId>`, from a desktop's
+setup code) names a destination only. `MobileClient` holds it pending across
+Account sign-in, suppresses every singleton auto-selection meanwhile, and selects
+only the exact entry in the signed-in Account's directory; wrong Account, not
+listed and offline stay visible and retryable.
+
 Sign-out, removal, Account sign-out and disposal synchronously advance the
 authorization epoch before awaiting revocation or storage. A late grant exchange
 cannot restore credentials. Persisted sign-out suppression loads before selection
