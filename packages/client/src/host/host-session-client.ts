@@ -3161,7 +3161,9 @@ export class HttpHostClient {
     if (input.home)
       this.#update({
         ...this.#snapshot,
-        homeThreadId: thread.id,
+        ...(thread.workspaceId === this.#snapshot.homeWorkspaceId
+          ? { homeThreadId: thread.id }
+          : {}),
         workspaces: this.#snapshot.workspaces.map((item) =>
           item.id === thread.workspaceId ? { ...item, homeThreadId: thread.id } : item,
         ),
@@ -6393,7 +6395,9 @@ function projectAgentEvent(
       const thread = toThreadSummary(event.data.thread, snapshot.environments, snapshot.harnesses);
       return {
         ...snapshot,
-        ...(event.data.home ? { homeThreadId: thread.id } : {}),
+        ...(event.data.home && event.workspaceId === snapshot.homeWorkspaceId
+          ? { homeThreadId: thread.id }
+          : {}),
         requests: snapshot.requests[thread.id]
           ? snapshot.requests
           : { ...snapshot.requests, [thread.id]: [] },
@@ -6418,7 +6422,11 @@ function projectAgentEvent(
           : { ...snapshot.transcripts, [thread.id]: [] },
         workspaces: snapshot.workspaces.map((workspace) =>
           workspace.id === event.workspaceId
-            ? { ...workspace, updatedAt: event.createdAt }
+            ? {
+                ...workspace,
+                updatedAt: event.createdAt,
+                ...(event.data.home ? { homeThreadId: thread.id } : {}),
+              }
             : workspace,
         ),
       };

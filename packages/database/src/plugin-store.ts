@@ -47,6 +47,52 @@ export class PluginStore {
     );
   }
 
+  async listForUser(actorUserId: UserId, workspaceId?: WorkspaceId) {
+    const actor = await this.database
+      .selectFrom("users")
+      .select("instanceRole")
+      .where("id", "=", actorUserId)
+      .executeTakeFirst();
+    if (actor?.instanceRole === "administrator") return this.list(workspaceId);
+    const member = workspaceId
+      ? await this.database
+          .selectFrom("workspaceMemberships")
+          .select("state")
+          .where("workspaceId", "=", workspaceId)
+          .where("userId", "=", actorUserId)
+          .executeTakeFirst()
+      : null;
+    if (member?.state !== "active")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Active Workspace membership is required",
+      });
+    return (await this.list(workspaceId)).map((plugin) => ({
+      id: plugin.id,
+      name: plugin.name,
+      scope: plugin.scope,
+      workspaceId: plugin.workspaceId,
+      currentVersionId: plugin.currentVersionId,
+      updatedAt: plugin.updatedAt,
+      versions: plugin.versions.map((version) => ({
+        id: version.id,
+        digest: version.digest,
+        manifest: {
+          description: version.manifest.description,
+          version: version.manifest.version,
+          skills: Array.isArray(version.manifest.skills)
+            ? version.manifest.skills.map(() => ({}))
+            : [],
+        },
+        specialistManifest: version.specialistManifest ? {} : null,
+      })),
+      activations: plugin.activations
+        .filter((a) => a.workspaceId === workspaceId)
+        .map((a) => ({ workspaceId: a.workspaceId })),
+      servers: plugin.servers.map((server) => ({ id: server.id })),
+    }));
+  }
+
   async current(workspaceId: WorkspaceId) {
     return this.database
       .selectFrom("pluginActivations")

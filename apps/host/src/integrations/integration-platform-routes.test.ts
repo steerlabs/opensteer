@@ -4,6 +4,7 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostAuthenticator } from "../identity/auth.js";
 import {
+  createIntegrationPlatformRpcHandlers,
   handleIntegrationPlatformCommand,
   registerIntegrationPlatformRoutes,
 } from "./integration-platform-routes.js";
@@ -17,6 +18,30 @@ afterEach(async () => {
 });
 
 describe("integration platform OAuth routes", () => {
+  it("routes member plugin reads through the scoped projection on both entry points", async () => {
+    const userId = createId("user"),
+      workspaceId = createId("workspace");
+    const listForUser = vi.fn(async () => [{ id: "plugin" }]);
+    const options = {
+      authenticator: {} as HostAuthenticator,
+      dashboard: {} as never,
+      mcpOauth: {} as McpOAuthService,
+      platform: { store: { plugins: { listForUser } } } as never,
+    };
+    const context = testHostApiContext(userId);
+    expect(
+      await createIntegrationPlatformRpcHandlers(options)["plugin.list"]({ workspaceId }, context),
+    ).toMatchObject({ ok: true, data: { plugins: [{ id: "plugin" }] } });
+    expect(
+      await handleIntegrationPlatformCommand(
+        options,
+        { type: "plugin.list", workspaceId, idempotencyKey: "list" },
+        context,
+      ),
+    ).toEqual({ type: "plugin.list", plugins: [{ id: "plugin" }] });
+    expect(listForUser).toHaveBeenNthCalledWith(1, userId, workspaceId);
+    expect(listForUser).toHaveBeenNthCalledWith(2, userId, workspaceId);
+  });
   it("routes computer app changes with the caller's administrator posture", async () => {
     const userId = createId("user");
     const runnerId = createId("runner");

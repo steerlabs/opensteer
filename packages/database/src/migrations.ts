@@ -4689,6 +4689,7 @@ export function migrationProvider() {
         "0134_plugins": pluginsMigration,
         "0135_specialists": specialistsMigration,
         "0136_specialist_threads": specialistThreadsMigration,
+        "0137_project_chats": projectChatsMigration,
       };
     },
   };
@@ -6904,5 +6905,13 @@ export const specialistThreadsMigration: Migration = {
     END $$;
     CREATE TRIGGER threads_specialist_binding BEFORE INSERT OR UPDATE ON threads
       FOR EACH ROW EXECUTE FUNCTION opensteer_enforce_specialist_binding()`.execute(database);
+  },
+};
+
+export const projectChatsMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE workspaces DROP CONSTRAINT workspaces_home_main_only_check`.execute(
+      database,
+    );
   },
 };

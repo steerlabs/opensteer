@@ -184,6 +184,7 @@ import {
   type WorkspaceMembershipChangeListener,
   type WorkspaceMembershipRecord,
 } from "./workspace-membership-store.js";
+import { ensureProjectChat } from "./project-chat.js";
 import * as workspaceStore from "./workspace-store.js";
 import { type CreateWorkspaceInput, type WorkspaceFilesAdmission } from "./workspace-store.js";
 
@@ -1163,7 +1164,10 @@ export class OpensteerStore {
   }
 
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
-    return workspaceStore.createWorkspace(this.#database, input);
+    return ensureProjectChat(
+      this.#database,
+      await workspaceStore.createWorkspace(this.#database, input),
+    );
   }
 
   async setWorkspaceIcon(input: {
@@ -1212,7 +1216,11 @@ export class OpensteerStore {
   }
 
   async listWorkspaces(): Promise<readonly Workspace[]> {
-    return workspaceStore.listWorkspaces(this.#database);
+    const workspaces = await workspaceStore.listWorkspaces(this.#database);
+    const result: Workspace[] = [];
+    for (const workspace of workspaces)
+      result.push(await ensureProjectChat(this.#database, workspace));
+    return result;
   }
 
   async findMainWorkspaceForOwner(ownerId: UserId): Promise<Workspace | undefined> {
@@ -1266,7 +1274,10 @@ export class OpensteerStore {
     readonly status: Workspace["status"];
     readonly workspaceId: WorkspaceId;
   }): Promise<Workspace> {
-    return workspaceStore.setWorkspaceProvisioningResult(this.#database, input);
+    return ensureProjectChat(
+      this.#database,
+      await workspaceStore.setWorkspaceProvisioningResult(this.#database, input),
+    );
   }
 
   async countLiveThreadsByEnvironment(

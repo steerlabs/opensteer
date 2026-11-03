@@ -5,6 +5,7 @@ import {
 } from "@opensteer/integration-core";
 
 import {
+  WorkspaceIdSchema,
   SpecialistManifestSchema,
   AgentEventSchema,
   BrowserSessionIdSchema,
@@ -1292,6 +1293,70 @@ it("mock specialists reevaluate missing, ambiguous, chosen and revoked access", 
     });
     await send({ type: "specialist.remove", workspaceId, specialistId, idempotencyKey: "remove" });
     expect(await list()).toMatchObject({ data: { specialists: [] } });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("mock Project creation gets a chat without replacing Main chat", async () => {
+  const client = createClient();
+  try {
+    await client.load();
+    const mainChat = client.getSnapshot().homeThreadId;
+    const result = await client.dispatch({
+      type: "workspace.create",
+      name: "Chat Project",
+      idempotencyKey: "project-chat-test",
+    });
+    if (result.type !== "workspace.create") throw new Error("Unexpected command");
+    const project = result.workspace;
+    expect(project.homeThreadId).toBeTruthy();
+    expect(client.getSnapshot().threads.find((t) => t.id === project.homeThreadId)).toMatchObject({
+      role: "conversation",
+      workspaceId: project.id,
+      title: "Chat",
+    });
+    expect(client.getSnapshot().homeThreadId).toBe(mainChat);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("mock plugin member reads hide source paths and refuse collaborator changes", async () => {
+  const client = createClient();
+  try {
+    await client.load();
+    await client.dispatch({
+      type: "plugin.install",
+      input: { directory: "/private/source" },
+      idempotencyKey: "install-member-test",
+    });
+    const snapshot = client.getSnapshot();
+    const workspaceId = WorkspaceIdSchema.parse(
+      snapshot.workspaces.find((w) => w.kind === "project")!.id,
+    );
+    if (!snapshot.user) throw new Error("User missing");
+    snapshot.user.instanceRole = "user";
+    await client.dispatch({
+      type: "workspace.member.update",
+      workspaceId,
+      userId: snapshot.user.id,
+      role: "collaborator",
+      idempotencyKey: "member-role",
+    });
+    const listed = await client.rpc["plugin.list"]({ workspaceId });
+    expect(JSON.stringify(listed)).not.toContain("/private/source");
+    expect(listed).toMatchObject({ ok: true });
+    const plugin = unwrap(listed).plugins[0]!;
+    await expect(
+      client.dispatch({
+        type: "plugin.activation.set",
+        workspaceId,
+        pluginId: String(plugin.id),
+        active: true,
+        idempotencyKey: "member-toggle",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
   } finally {
     client.dispose();
   }

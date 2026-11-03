@@ -1826,10 +1826,10 @@ export async function createHostServer(
           throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
         }
         if (command.home) {
-          if (workspace.kind !== "main" || workspace.createdBy !== userId || command.parentThreadId)
+          if (workspace.createdBy !== userId || command.parentThreadId)
             throw new OpensteerError({
               code: "bad_request",
-              message: "Chat belongs to your Main Workspace",
+              message: "Chat must be an owner’s root conversation",
             });
           if (workspace.homeThreadId) {
             const existingHome = await dependencies.commands.createThread(input);

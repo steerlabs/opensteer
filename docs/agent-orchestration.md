@@ -385,7 +385,8 @@ See [Browser sessions](browser-sessions.md) and [Computer use](computer-use.md).
 
 ## Chat and native AI sessions
 
-Chat is the Main Workspace's durable `homeThreadId`. The `home` alias resolves
+Main and each Project have their own conversation at `homeThreadId`. Project chats
+use the `workspace` capability profile. The `home` alias resolves
 only the caller's Chat and preserves authorship. Cross-Workspace reports may
 reach it, but actionable work needs ordinary reach; the alias grants no read
 or execution authority. Reports never alert. Quotes are authorized published

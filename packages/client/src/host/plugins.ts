@@ -6,8 +6,8 @@ import {
 } from "@opensteer/core";
 
 /**
- * `plugin.list` answers with the Host's stored rows, untyped on the wire. This
- * reads only what a person is shown, so a row with more (or fewer optional)
+ * `plugin.list` returns stored rows for administrators and a safe projection for
+ * Workspace members. This reads only what a person is shown, so rows with optional
  * fields than this client knows still lists.
  */
 const timestamp = z

@@ -2090,7 +2090,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
     "specialist.list": async (input) =>
       rpcSuccess({ specialists: client.listSpecialists(input.workspaceId) }),
-    "plugin.list": async (input) => rpcSuccess({ plugins: client.listPlugins(input.workspaceId) }),
+    "plugin.list": async (input) =>
+      rpcSuccess({ plugins: await client.listPlugins(input.workspaceId) }),
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
@@ -2330,9 +2331,11 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       });
     },
     "workspace.invitations.list": async (input) =>
-      rpcSuccess({
-        invitations: (await client.loadWorkspaceSharing(input.workspaceId)).invitations,
-      }),
+      rpcSuccess(
+        hostApi["workspace.invitations.list"].success.parse({
+          invitations: (await client.loadWorkspaceSharing(input.workspaceId)).invitations,
+        }),
+      ),
     "workspace.members.list": async (input) =>
       rpcSuccess(
         hostApi["workspace.members.list"].success.parse({
@@ -2859,11 +2862,14 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       client.removeSpecialist(command.workspaceId, command.specialistId);
       return rpcSuccess({ type: command.type });
     case "plugin.list":
-      return rpcSuccess({ type: command.type, plugins: client.listPlugins(command.workspaceId) });
+      return rpcSuccess({
+        type: command.type,
+        plugins: await client.listPlugins(command.workspaceId),
+      });
     case "plugin.update":
     case "plugin.remove":
     case "plugin.activation.set":
-      client.mutatePlugin(command);
+      await client.mutatePlugin(command);
       return rpcSuccess({ type: command.type });
     case "plugin.install": {
       const result = await client.installAgentPlugin(command.input.directory);
@@ -4266,7 +4272,7 @@ export class MockHostClient implements HostClient {
       ...(input.generateTitle && this.getSnapshot().threadRenameAvailable
         ? { generateTitle: true }
         : {}),
-      title: input.title?.trim() || "Untitled thread",
+      title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
       type: "thread.create",
       workspaceId: input.workspaceId,
     });
@@ -4867,17 +4873,77 @@ class MockHostState {
     if (index >= 0) this.specialists.splice(index, 1);
   }
   /** The Host's rows: every Deployment plugin, and a Workspace's own when one is named. */
-  listPlugins(workspaceId?: string): Record<string, unknown>[] {
+  async listPlugins(workspaceId?: string): Promise<Record<string, unknown>[]> {
+    const administrator = this.snapshot.user?.instanceRole === "administrator";
+    if (!administrator) {
+      const sharing =
+        workspaceId && this.snapshot.workspaces.some((w) => w.id === workspaceId)
+          ? await this.loadWorkspaceSharing(workspaceId)
+          : null;
+      if (
+        !sharing?.members.some((m) => m.userId === this.snapshot.user?.id && m.state === "active")
+      )
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "Active Workspace membership is required",
+          status: 403,
+        });
+    }
     return this.plugins
       .filter((p) => !workspaceId || p.scope === "deployment" || p.workspaceId === workspaceId)
-      .map((p) => ({ ...p, servers: [] }));
+      .map((p) =>
+        administrator
+          ? { ...p, servers: [] }
+          : {
+              id: p.id,
+              name: p.name,
+              scope: p.scope,
+              workspaceId: p.workspaceId,
+              currentVersionId: p.currentVersionId,
+              updatedAt: p.updatedAt,
+              versions: p.versions.map((v) => ({
+                id: v.id,
+                digest: v.digest,
+                manifest: {
+                  description: v.manifest.description,
+                  version: v.manifest.version,
+                  skills: Array.isArray(v.manifest.skills) ? v.manifest.skills.map(() => ({})) : [],
+                },
+                specialistManifest: v.specialistManifest ? {} : null,
+              })),
+              activations: p.activations.filter((a) => a.workspaceId === workspaceId),
+              servers: [],
+            },
+      );
   }
-  mutatePlugin(
+  async mutatePlugin(
     command: Extract<
       HostApiCommand,
       { type: "plugin.update" | "plugin.remove" | "plugin.activation.set" }
     >,
   ) {
+    const administrator = this.snapshot.user?.instanceRole === "administrator";
+    if (command.type === "plugin.activation.set") {
+      const sharing = await this.loadWorkspaceSharing(command.workspaceId);
+      if (
+        !sharing.members.some(
+          (m) =>
+            m.userId === this.snapshot.user?.id &&
+            m.state === "active" &&
+            (m.role === "owner" || administrator),
+        )
+      )
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "Only the Workspace owner or administrator can change plugins",
+          status: 403,
+        });
+    } else if (!administrator)
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "Administrator access required",
+        status: 403,
+      });
     const index = this.plugins.findIndex((p) => p.id === command.pluginId);
     const plugin = this.plugins[index];
     if (!plugin) throw new Error("Plugin not found");
@@ -4898,6 +4964,12 @@ class MockHostState {
       plugin.source = { directory: command.input.directory };
       plugin.updatedAt = this.now().toISOString();
     } else {
+      if (plugin.scope === "workspace" && plugin.workspaceId !== command.workspaceId)
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "This plugin belongs to another Workspace",
+          status: 403,
+        });
       if (
         command.active &&
         this.plugins.some(
@@ -7038,8 +7110,14 @@ class MockHostState {
     this.sessions = this.sessions.filter((session) => session.id !== sessionId);
   }
 
+  private readonly workspaceSharing = new Map<
+    string,
+    import("../host/client.js").WorkspaceSharingSnapshot
+  >();
   async loadWorkspaceSharing(workspaceId: string) {
-    return {
+    const existing = this.workspaceSharing.get(workspaceId);
+    if (existing) return existing;
+    const sharing: import("../host/client.js").WorkspaceSharingSnapshot = {
       invitations: [],
       members: [
         {
@@ -7057,6 +7135,8 @@ class MockHostState {
         },
       ],
     };
+    this.workspaceSharing.set(workspaceId, sharing);
+    return sharing;
   }
 
   async listWorkspaceFiles(workspaceId: string, input: { readonly parentKey: string }) {
@@ -7157,7 +7237,7 @@ class MockHostState {
     userId: string;
     workspaceId: string;
   }) {
-    return {
+    const membership = {
       displayName: "Alex",
       email: "alex@example.com",
       emailVerified: true,
@@ -7170,6 +7250,9 @@ class MockHostState {
       userId: input.userId,
       workspaceId: input.workspaceId,
     };
+    const sharing = await this.loadWorkspaceSharing(input.workspaceId);
+    sharing.members = [...sharing.members.filter((m) => m.userId !== input.userId), membership];
+    return membership;
   }
 
   async exchangeSetupToken(_token: string): Promise<void> {}
@@ -9028,6 +9111,21 @@ class MockHostState {
       },
       workspaces: [workspace, ...this.snapshot.workspaces],
     });
+    const template =
+      this.snapshot.threads.find((t) => t.id === this.snapshot.homeThreadId) ??
+      this.snapshot.threads[0];
+    if (template) {
+      const chat = await this.createThread({
+        workspaceId: workspace.id,
+        home: true,
+        title: "Chat",
+        environmentId: template.environmentId,
+        harnessInstanceId: template.harnessInstanceId,
+        modelSelection: template.modelSelection,
+        accessMode: template.accessMode,
+      });
+      return { ...workspace, homeThreadId: chat.id };
+    }
     return workspace;
   }
 
@@ -9154,7 +9252,6 @@ class MockHostState {
     const workspace = this.snapshot.workspaces.find((item) => item.id === input.workspaceId);
     if (!workspace) throw new Error("Workspace not found.");
     if (input.home) {
-      if (workspace.kind !== "main") throw new Error("Chat belongs to the Main Workspace.");
       const existing =
         workspace.homeThreadId &&
         this.snapshot.threads.find((thread) => thread.id === workspace.homeThreadId);
@@ -9201,7 +9298,7 @@ class MockHostState {
       runnerLabel: placement.whereLabel,
       doneAt: null,
       status: "idle",
-      title: input.title?.trim() || "Untitled thread",
+      title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
       icon: null,
       color: this.allocateMarkColor("thread"),
       unread: false,
@@ -9220,7 +9317,9 @@ class MockHostState {
             item.id === workspace.id ? { ...item, homeThreadId: thread.id } : item,
           )
         : this.snapshot.workspaces,
-      ...(input.home ? { homeThreadId: thread.id } : {}),
+      ...(input.home && workspace.id === this.snapshot.homeWorkspaceId
+        ? { homeThreadId: thread.id }
+        : {}),
       transcriptWindows: {
         ...this.snapshot.transcriptWindows,
         [thread.id]: {

@@ -46,8 +46,12 @@ export function createIntegrationPlatformRpcHandlers(
         ),
       }),
     "plugin.list": async (input, context) => {
-      requireAdministrator(context);
-      return rpcSuccess({ plugins: await options.platform.store.plugins.list(input.workspaceId) });
+      return rpcSuccess({
+        plugins: await options.platform.store.plugins.listForUser(
+          requireSession(context).user.id,
+          input.workspaceId,
+        ),
+      });
     },
     "integration.computer.policy.get": async (input, context) => {
       const { appApproval } = await options.platform.computerAppApprovals.computerUsePolicy({
@@ -233,10 +237,12 @@ export async function handleIntegrationPlatformCommand(
         ),
       };
     case "plugin.list":
-      requireAdministrator(context);
       return {
         type: command.type,
-        plugins: await options.platform.store.plugins.list(command.workspaceId),
+        plugins: await options.platform.store.plugins.listForUser(
+          session.user.id,
+          command.workspaceId,
+        ),
       };
     case "plugin.activation.set":
       await options.platform.store.plugins.setActivation({

@@ -144,6 +144,7 @@ const releasedMigrationNames = [
   "0134_plugins",
   "0135_specialists",
   "0136_specialist_threads",
+  "0137_project_chats",
 ];
 
 describe("migration names", () => {

@@ -346,9 +346,7 @@ function AccessSection({ workspace }: { readonly workspace: WorkspaceSummary }) 
 
 /* ---- Plugins ---- */
 
-type PluginsRead =
-  | { readonly kind: "listed"; readonly plugins: readonly PluginSummary[] }
-  | { readonly kind: "administrator-only" };
+type PluginsRead = { readonly kind: "listed"; readonly plugins: readonly PluginSummary[] };
 
 function PluginsSection({
   administrator,
@@ -365,9 +363,6 @@ function PluginsSection({
     () =>
       hostClient.rpc["plugin.list"]({ workspaceId: WorkspaceIdSchema.parse(workspace.id) }).then(
         (result) => {
-          // The Host lists plugins to administrators; anyone else is told so, not shown nothing.
-          if (!result.ok && result.error.code === "forbidden")
-            return { kind: "administrator-only" } as const;
           return {
             kind: "listed",
             plugins: pluginSummaries(unwrapRpcResult(result).plugins).filter((plugin) =>
@@ -424,8 +419,6 @@ function PluginsSection({
           ) : (
             <LoadingRows label="Loading plugins" rows={2} />
           )
-        ) : read.kind === "administrator-only" ? (
-          <div className="card__empty">An administrator of this Opensteer manages plugins.</div>
         ) : read.plugins.length === 0 ? (
           <div className="card__empty">
             No plugins are installed.

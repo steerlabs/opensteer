@@ -1017,14 +1017,11 @@ export async function createThread(
     }
     if (
       input.home &&
-      (workspace.kind !== "main" ||
-        membership.role !== "owner" ||
-        input.parentThreadId ||
-        input.role === "work")
+      (membership.role !== "owner" || input.parentThreadId || input.role === "work")
     ) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "Home must be an owner's root Thread in the Main Workspace",
+        message: "Home must be an owner's root conversation Thread",
       });
     }
     if (input.home && workspace.homeThreadId) {

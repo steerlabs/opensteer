@@ -277,6 +277,9 @@ function ProjectDetail(props: {
                 />
               </View>
             ) : null}
+            {workspace.homeThreadId ? (
+              <SecondaryButton label="Chat" onPress={() => openTask(workspace.homeThreadId!)} />
+            ) : null}
             {/* A task is written before it is made, so only a Workspace that
                 cannot hold one stops it; the line above already says why. */}
             <PrimaryButton

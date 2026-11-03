@@ -1654,6 +1654,7 @@ export const hostApi = defineRpc({
     z.strictObject({ workspaceId: WorkspaceIdSchema }),
     z.object({ specialists: z.array(SpecialistRegistrationSchema) }),
   ),
+  // Without workspaceId this is administrator-only; members receive a safe Workspace projection.
   "plugin.list": declaration(
     "GET",
     z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
