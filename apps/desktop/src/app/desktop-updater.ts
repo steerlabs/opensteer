@@ -238,18 +238,8 @@ export class DesktopUpdater {
           failed: null,
         });
       }
-    } catch (error) {
-      const missing = z
-        .object({ code: z.literal("ERR_UPDATER_LATEST_VERSION_NOT_FOUND") })
-        .safeParse(error).success;
-      if (missing && this.#state.channel === "stable") {
-        this.#set({
-          status: "no-stable-release",
-          availableVersion: null,
-          latestVersion: null,
-          failed: null,
-        });
-      } else if (manual) {
+    } catch {
+      if (manual) {
         // A background failure keeps what the person last saw.
         this.#set({
           status: "error",

@@ -1055,24 +1055,22 @@ async function runDesktop(
             message: `${state.channel === "stable" ? "Stable" : "Beta"} selected`,
             detail: `You’re on ${state.currentVersion}; latest is ${state.latestVersion}. Updates resume after it passes your version.`,
           }
-        : state.status === "no-stable-release"
-          ? { message: "No Stable release yet", detail: "Stable is selected. Check again later." }
-          : state.status === "up-to-date"
+        : state.status === "up-to-date"
+          ? {
+              message: "You're up to date",
+              detail: `${name} ${state.currentVersion} is the newest version.`,
+            }
+          : state.status === "error"
             ? {
-                message: "You're up to date",
-                detail: `${name} ${state.currentVersion} is the newest version.`,
+                message: "Couldn't check for updates",
+                detail: "Check your internet connection, then try again.",
               }
-            : state.status === "error"
+            : state.status === "unavailable"
               ? {
-                  message: "Couldn't check for updates",
-                  detail: "Check your internet connection, then try again.",
+                  message: "Updates unavailable",
+                  detail: `Move ${name} to your Applications folder to get updates.`,
                 }
-              : state.status === "unavailable"
-                ? {
-                    message: "Updates unavailable",
-                    detail: `Move ${name} to your Applications folder to get updates.`,
-                  }
-                : null;
+              : null;
     if (result)
       await dialog.showMessageBox({
         type: state.status === "error" ? "warning" : "info",

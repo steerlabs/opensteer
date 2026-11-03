@@ -93,8 +93,6 @@ it("offers the download, its progress and the restart, and confirms a download f
     selector().dispatchEvent(new Event("change", { bubbles: true }));
   });
   expect(bridge.setChannel).toHaveBeenCalledWith("beta");
-  show({ status: "no-stable-release", availableVersion: null });
-  expect(container.textContent).toContain("No Stable release yet");
   show({ status: "error", failed: "check", availableVersion: null });
   expect(container.textContent).toContain("Couldn't check for updates");
   show({ status: "downloading" });

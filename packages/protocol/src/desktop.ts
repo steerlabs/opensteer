@@ -489,7 +489,6 @@ export const DesktopUpdateStateSchema = z.strictObject({
     "checking",
     "up-to-date",
     "ahead",
-    "no-stable-release",
     "available",
     "downloading",
     "downloaded",

@@ -74,8 +74,6 @@ export function desktopUpdateMessage(state: DesktopUpdateState): string {
   switch (state.status) {
     case "ahead":
       return `${channel} selected — you're on ${state.currentVersion}; latest is ${state.latestVersion}. Updates resume after ${channel} passes it.`;
-    case "no-stable-release":
-      return "No Stable release yet.";
     case "error":
       return state.failed === "download"
         ? "Download failed. Try again."

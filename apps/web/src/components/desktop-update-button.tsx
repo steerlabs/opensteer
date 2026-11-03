@@ -46,7 +46,6 @@ export function desktopUpdateButton(state: DesktopUpdateState): {
         progress: null,
       };
     case "ahead":
-    case "no-stable-release":
       return {
         label: desktopUpdateMessage(state),
         action: null,

@@ -266,13 +266,13 @@ const DesktopOAuthIdentitySchema = z
 
 const PackagedDesktopReleaseSchema = z
   .strictObject({
-    accountUrl: z.url(),
+    accountUrl: z.url().optional(),
     application: z.strictObject({
       id: z.literal("com.opensteer.opensteer"),
       name: z.literal("Opensteer"),
     }),
     oauth: DesktopOAuthIdentitySchema,
-    portalUrl: z.url(),
+    portalUrl: z.url().optional(),
     updates: DesktopUpdatesSchema.optional(),
     schemaVersion: z.literal(7),
   })

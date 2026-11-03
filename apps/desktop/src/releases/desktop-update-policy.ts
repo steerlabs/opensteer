@@ -10,6 +10,11 @@ export function stageDesktopUpdatePolicy(
   hostOverride: string | undefined,
 ): Release {
   const { updates, ...withoutUpdates } = release;
+  if (operatingSystem === "development") {
+    // Non-release packages never update themselves or reach production services.
+    const { accountUrl: _account, portalUrl: _portal, ...development } = withoutUpdates;
+    return development;
+  }
   if (!updates || operatingSystem !== "darwin" || architecture !== "arm64") return withoutUpdates;
   const host = hostOverride?.trim();
   if (host && !/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u.test(host))

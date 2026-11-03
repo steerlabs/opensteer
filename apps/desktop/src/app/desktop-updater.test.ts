@@ -320,14 +320,18 @@ it("reports an older channel only after success, treats equal promotion as curre
   });
 });
 
-it("reports zero Stable releases without trying Beta; the same error on Beta is a failed check", async () => {
+it("reports a failed Stable check as an error without trying Beta", async () => {
   const updater = new DesktopUpdater({ updates: insider, log: vi.fn() });
   mocks.updater.checkForUpdates.mockRejectedValue(
-    Object.assign(new Error("private URL"), { code: "ERR_UPDATER_LATEST_VERSION_NOT_FOUND" }),
+    Object.assign(new Error("private URL"), { code: "ERR_UPDATER_INVALID_RELEASE_FEED" }),
   );
-  expect(await updater.check()).toMatchObject({ status: "no-stable-release", channel: "stable" });
+  expect(await updater.check()).toMatchObject({
+    status: "error",
+    failed: "check",
+    channel: "stable",
+  });
   expect(mocks.updater.checkForUpdates).toHaveBeenCalledOnce();
-  expect(await updater.setChannel("beta")).toMatchObject({ status: "error", channel: "beta" });
+  expect(mocks.updater).toMatchObject({ channel: "latest", allowPrerelease: false });
 });
 
 it("refuses switching during download and after staging even if staging later errors", async () => {

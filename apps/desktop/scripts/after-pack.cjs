@@ -202,19 +202,21 @@ function verifyPackagedRuntimeImports(archivePath) {
 
 function readPackagedDesktopPolicy(archivePath) {
   const desktopManifest = asarFile(archivePath, "dist/desktop-release.json");
+  // Release builds name the production Account and portal; other packages,
+  // such as contributor builds, must not reach production services.
+  const services = isDesktopRelease() ? ["accountUrl", "portalUrl"] : [];
   const desktop = exactObject(
     desktopManifest,
-    ["accountUrl", "portalUrl", "application", "oauth", "schemaVersion"],
+    [...services, "application", "oauth", "schemaVersion"],
     // Only Mac arm64 release builds carry updates.
     ["updates"],
   );
   if (
     desktop.schemaVersion !== 7 ||
-    typeof desktop.accountUrl !== "string" ||
+    !services.every((key) => typeof desktop[key] === "string") ||
     !bareHttpsOriginOrAbsent(desktop.accountUrl) ||
     !exactApplication(desktop.application) ||
     !exactOAuthIdentity(desktop.oauth) ||
-    typeof desktop.portalUrl !== "string" ||
     !bareHttpsOriginOrAbsent(desktop.portalUrl) ||
     !updateFeedOrAbsent(desktop.updates)
   ) {

@@ -9,7 +9,7 @@ import { chmod, mkdtemp, mkdir, readlink, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { finished } from "node:stream/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPackage } from "@electron/asar";
 
 const require = createRequire(import.meta.url);
@@ -176,14 +176,41 @@ describe("Desktop release policy", () => {
     ["desktop-release.json", "darwin", "arm64"],
     ["desktop-release.json", "darwin", "x64"],
   ] as const)("packages the committed %s staged for %s/%s", async (file, os, arch) => {
-    const staged = stageDesktopUpdatePolicy(
-      readEmbeddedDesktopRelease(path.join(import.meta.dirname, file)),
-      os,
-      arch,
-      undefined,
-    );
-    const fixture = await archivedManifest(staged);
-    expect(readPackagedDesktopPolicy(fixture.archive)).toEqual(staged);
+    vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "1");
+    try {
+      const staged = stageDesktopUpdatePolicy(
+        readEmbeddedDesktopRelease(path.join(import.meta.dirname, file)),
+        os,
+        arch,
+        undefined,
+      );
+      const fixture = await archivedManifest(staged);
+      expect(readPackagedDesktopPolicy(fixture.archive)).toEqual(staged);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // A contributor package launches as a packaged app, so its embedded policy
+  // alone decides whether it reaches the production Account.
+  it("stages non-release packages without updates or production services", async () => {
+    vi.stubEnv("OPENSTEER_DESKTOP_RELEASE", "0");
+    try {
+      const committed = readEmbeddedDesktopRelease(
+        path.join(import.meta.dirname, "desktop-release.json"),
+      );
+      const staged = stageDesktopUpdatePolicy(committed, "development", "arm64", undefined);
+      expect(staged).not.toHaveProperty("updates");
+      expect(staged).not.toHaveProperty("accountUrl");
+      expect(staged).not.toHaveProperty("portalUrl");
+      const fixture = await archivedManifest(staged);
+      expect(readPackagedDesktopPolicy(fixture.archive)).toEqual(staged);
+      await expect(
+        archivedManifest(committed).then(({ archive }) => readPackagedDesktopPolicy(archive)),
+      ).rejects.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it.each([
