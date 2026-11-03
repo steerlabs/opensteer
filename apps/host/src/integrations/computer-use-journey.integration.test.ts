@@ -2956,9 +2956,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       refusal("A session on a computer belongs to a running task, so only a task can ask for one."),
     );
     expect(await trigger.call("computer", { code: "return 1" })).toEqual(
-      refusal(
-        "The computer tool is not available to this execution. Update this task's Runner to use it.",
-      ),
+      refusal("Tool is unavailable"),
     );
     await world.close();
   });
