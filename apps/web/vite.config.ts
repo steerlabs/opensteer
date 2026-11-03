@@ -76,6 +76,8 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
     },
     server: {
+      // The Host authorizes app capabilities and supplies their opaque-origin CORS response.
+      cors: { preflightContinue: true },
       host: localWebBindAddress,
       port,
       proxy: localHostProxyRoutes,
