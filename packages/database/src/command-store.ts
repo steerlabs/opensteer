@@ -1,4 +1,4 @@
-import { requestSettlementActor } from "./request-settlement.js";
+import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -1020,7 +1020,7 @@ export async function enqueueRunnerControl(
           ? {
               ...controlPayload,
               response: reservedRequest.response,
-              settlementProvenance: await requestSettlementActor(
+              settlementProvenance: await readRequestSettlementActor(
                 transaction,
                 input.requestedBy,
                 input.type === "request.respond" ? input.settlementSessionId : undefined,
@@ -1083,6 +1083,12 @@ export async function enqueueRunnerControl(
       input.type === "run.interrupt"
         ? await revokeRunGrants(transaction, [input.runId], "stopped")
         : [];
+    if (reservedRequest)
+      await requestSettlementActor(
+        transaction,
+        input.requestedBy,
+        input.type === "request.respond" ? input.settlementSessionId : undefined,
+      );
     return { command, events: controlEvents, revokedGrants, wasDuplicate: false };
   });
 }

@@ -171,8 +171,9 @@ final class CopyParityTests: XCTestCase {
     }
     XCTAssertTrue(Copy.setUpLead.contains("never sends your password to the agent"))
     XCTAssertTrue(Copy.setUpLead.contains("website or app, which can read it"))
-    XCTAssertTrue(
-      Copy.setUpLead.contains("You allow an account with Touch ID or your Mac password"))
+    XCTAssertEqual(
+      Copy.setUpLead.components(separatedBy: ". ").last,
+      "You allow an account from any device signed in to this Opensteer.")
     XCTAssertEqual(
       Copy.startFreshConfirm,
       "This permanently deletes the passwords saved on this Mac. Ones you added or changed here can’t be recovered unless you also keep them somewhere else."

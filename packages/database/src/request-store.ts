@@ -1,4 +1,4 @@
-import { requestSettlementActor, requestSettlementProvenance } from "./request-settlement.js";
+import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
@@ -485,7 +485,7 @@ export class RequestStore {
             .set({
               resolvedAt: now,
               resolvedBy: input.resolvedBy,
-              settlementProvenance: await requestSettlementProvenance(
+              settlementProvenance: await readRequestSettlementProvenance(
                 transaction,
                 input.resolvedBy,
                 input.settlementSessionId,
@@ -499,6 +499,7 @@ export class RequestStore {
             .executeTakeFirstOrThrow();
           const declined = requestFromRow(declinedRow);
           await enqueueContinuation(transaction, declined, now);
+          await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
           return {
             events: await terminalEvents(transaction, declined),
             grant: null,
@@ -653,7 +654,7 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
-            settlementProvenance: await requestSettlementProvenance(
+            settlementProvenance: await readRequestSettlementProvenance(
               transaction,
               input.resolvedBy,
               input.settlementSessionId,
@@ -720,6 +721,7 @@ export class RequestStore {
             coveredEvents.push(...(await terminalEvents(transaction, coveredRequest)));
           }
         }
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return {
           events: [...coveredEvents, ...(await terminalEvents(transaction, resolved))],
           grant,
@@ -853,7 +855,7 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
-            settlementProvenance: await requestSettlementProvenance(
+            settlementProvenance: await readRequestSettlementProvenance(
               transaction,
               input.resolvedBy,
               input.settlementSessionId,
@@ -867,6 +869,7 @@ export class RequestStore {
           .executeTakeFirstOrThrow();
         const request = requestFromRow(resolvedRow);
         await enqueueContinuation(transaction, request, now);
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return {
           events: await terminalEvents(transaction, request),
           installation: installationMutation?.installation ?? null,
@@ -1940,7 +1943,7 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.actorUserId,
-            settlementProvenance: await requestSettlementProvenance(
+            settlementProvenance: await readRequestSettlementProvenance(
               transaction,
               input.actorUserId,
               input.settlementSessionId,
@@ -1961,6 +1964,7 @@ export class RequestStore {
         }
         const request = requestFromRow(row);
         await enqueueContinuation(transaction, request, now);
+        await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
         return { events: await terminalEvents(transaction, request), request };
       },
     );
@@ -2011,7 +2015,7 @@ export class RequestStore {
             status: "declined",
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
-            settlementProvenance: await requestSettlementProvenance(
+            settlementProvenance: await readRequestSettlementProvenance(
               transaction,
               input.resolvedBy,
               input.settlementSessionId,
@@ -2029,6 +2033,7 @@ export class RequestStore {
           });
         const request = requestFromRow(row);
         await enqueueContinuation(transaction, request, now);
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return { events: await terminalEvents(transaction, request), request };
       },
     );
@@ -2210,7 +2215,7 @@ export class RequestStore {
           .set({
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
-            settlementProvenance: await requestSettlementProvenance(
+            settlementProvenance: await readRequestSettlementProvenance(
               transaction,
               input.resolvedBy,
               input.settlementSessionId,
@@ -2224,6 +2229,7 @@ export class RequestStore {
           .executeTakeFirstOrThrow();
         const resolved = requestFromRow(resolvedRow);
         await enqueueContinuation(transaction, resolved, now);
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return {
           events: await terminalEvents(transaction, resolved),
           grant,
@@ -2276,7 +2282,7 @@ export class RequestStore {
             status: "declined",
             resolvedAt: now,
             resolvedBy: input.resolvedBy,
-            settlementProvenance: await requestSettlementProvenance(
+            settlementProvenance: await readRequestSettlementProvenance(
               transaction,
               input.resolvedBy,
               input.settlementSessionId,
@@ -2295,6 +2301,7 @@ export class RequestStore {
         }
         const resolved = requestFromRow(resolvedRow);
         await enqueueContinuation(transaction, resolved, now);
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return {
           events: await terminalEvents(transaction, resolved),
           replayed: false,
@@ -2308,12 +2315,17 @@ export class RequestStore {
   async fulfilBrowserSignInRequest(input: {
     readonly requestId: RequestId;
     readonly ownerId: UserId;
+    readonly settlementSessionId?: string;
     readonly response: BrowserSignInRequestResponse;
   }): Promise<{ readonly events: readonly AgentEvent[]; readonly request: Request } | null> {
     return withRequestWorkspaceLocks(
       this.#database,
       (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      (transaction) => fulfilBrowserSignInRequestInTransaction(transaction, input),
+      async (transaction) => {
+        const result = await fulfilBrowserSignInRequestInTransaction(transaction, input);
+        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
+        return result;
+      },
     );
   }
 
@@ -2630,7 +2642,7 @@ export class RequestStore {
               ? {
                   resolvedAt: now,
                   resolvedBy: input.ownerId,
-                  settlementProvenance: await requestSettlementProvenance(
+                  settlementProvenance: await readRequestSettlementProvenance(
                     transaction,
                     input.ownerId,
                     input.settlementSessionId,
@@ -2645,6 +2657,7 @@ export class RequestStore {
           .executeTakeFirstOrThrow();
         const resolved = requestFromRow(resolvedRow);
         await enqueueContinuation(transaction, resolved, now);
+        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
         return { events: await terminalEvents(transaction, resolved), request: resolved };
       },
     );
@@ -3880,6 +3893,7 @@ export async function browserSignInRequestDeliverableInTransaction(
  * the receipt of a delivered sign-in and the Request it answers commit together.
  * Returns null when the Request is no longer pending for exactly this scope:
  * the sign-in already happened, so the caller still records it.
+ * The caller fences the accepting session after its remaining domain writes.
  */
 export async function fulfilBrowserSignInRequestInTransaction(
   transaction: Transaction<DatabaseSchema>,
@@ -3912,7 +3926,7 @@ export async function fulfilBrowserSignInRequestInTransaction(
       status: "fulfilled",
       resolvedAt: now,
       resolvedBy: input.ownerId,
-      settlementProvenance: await requestSettlementProvenance(
+      settlementProvenance: await readRequestSettlementProvenance(
         transaction,
         input.ownerId,
         input.settlementSessionId,

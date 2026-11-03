@@ -4,14 +4,32 @@ import type { Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
-/** Lock the accepting session through settlement, so revocation cannot race acceptance. */
-export async function requestSettlementActor(
+/** Read provenance before domain writes; the caller must fence the session before commit. */
+export function readRequestSettlementActor(
   transaction: Transaction<DatabaseSchema>,
   userId: UserId,
   sessionId: string | undefined,
 ) {
+  return settlementActor(transaction, userId, sessionId, false);
+}
+
+/** Fence after domain locks, so revocation rolls back the entire settlement. */
+export function requestSettlementActor(
+  transaction: Transaction<DatabaseSchema>,
+  userId: UserId,
+  sessionId: string | undefined,
+) {
+  return settlementActor(transaction, userId, sessionId, true);
+}
+
+async function settlementActor(
+  transaction: Transaction<DatabaseSchema>,
+  userId: UserId,
+  sessionId: string | undefined,
+  lock: boolean,
+) {
   if (!sessionId) return null;
-  const row = await transaction
+  let query = transaction
     .selectFrom("authSessions")
     .innerJoin("users", "users.id", "authSessions.userId")
     .select(["authSessions.id", "authSessions.deviceLabel", "authSessions.userAgent"])
@@ -19,9 +37,9 @@ export async function requestSettlementActor(
     .where("authSessions.userId", "=", userId)
     .where("authSessions.expiresAt", ">", new Date())
     .where("authSessions.absoluteExpiresAt", ">", new Date())
-    .where("users.disabledAt", "is", null)
-    .forShare("authSessions")
-    .executeTakeFirst();
+    .where("users.disabledAt", "is", null);
+  if (lock) query = query.forShare("authSessions");
+  const row = await query.executeTakeFirst();
   if (!row)
     throw new OpensteerError({
       code: "unauthorized",
@@ -34,11 +52,12 @@ export async function requestSettlementActor(
   };
 }
 
-export async function requestSettlementProvenance(
+/** The committing caller must also fence with requestSettlementActor after its domain writes. */
+export async function readRequestSettlementProvenance(
   transaction: Transaction<DatabaseSchema>,
   userId: UserId,
   sessionId: string | undefined,
 ) {
-  const actor = await requestSettlementActor(transaction, userId, sessionId);
+  const actor = await readRequestSettlementActor(transaction, userId, sessionId);
   return actor ? jsonValue(actor) : null;
 }

@@ -205,6 +205,7 @@ export class LocalMcpServerStore {
         })
         .where("id", "=", server.id)
         .execute();
+      await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
       return { launchDigest: server.launchDigest, serverId: server.id };
     });
   }
@@ -225,6 +226,7 @@ export class LocalMcpServerStore {
         .where("id", "=", request.id)
         .execute();
       await setStatus(transaction, server.id, "disabled", declinedSentence, now);
+      await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
     });
   }
 
@@ -409,7 +411,6 @@ async function answeredRequest(
       message: "This server changed since the computer was asked about it; it will be asked again.",
     });
   }
-  await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
   return { request, server };
 }
 

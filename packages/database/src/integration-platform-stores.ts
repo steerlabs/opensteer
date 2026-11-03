@@ -1,5 +1,8 @@
-import { requestSettlementActor } from "./request-settlement.js";
-import { requireIntegrationAccountBinding } from "./integration-account-binding.js";
+import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
+import {
+  checkIntegrationAccountBinding,
+  requireIntegrationAccountBinding,
+} from "./integration-account-binding.js";
 import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
 import { withDatabaseTransaction } from "./connection.js";
@@ -2315,7 +2318,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         if (!request) return { ...emptyComputerAppAccessSettlement, runnerId: null };
         // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
         await this.#lockComputerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
-        const settlementActor = await requestSettlementActor(
+        const settlementActor = await readRequestSettlementActor(
           transaction,
           input.ownerUserId,
           input.settlementSessionId,
@@ -2326,11 +2329,13 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           .where("ownerUserId", "=", input.ownerUserId)
           .returning("id")
           .execute();
+        const settlement = await declineComputerAppAccessRequestsInTransaction(transaction, {
+          setupRequestIds: removed.map(({ id }) => id),
+          settlementActor,
+        });
+        await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
         return {
-          ...(await declineComputerAppAccessRequestsInTransaction(transaction, {
-            setupRequestIds: removed.map(({ id }) => id),
-            settlementActor,
-          })),
+          ...settlement,
           runnerId: request.runnerId,
         };
       },
@@ -2713,11 +2718,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   }): Promise<void> {
     await withDatabaseTransaction(this.database, async (transaction) => {
       if (input.accountBinding)
-        await requireIntegrationAccountBinding(
-          transaction,
-          input.ownerUserId,
-          input.accountBinding,
-        );
+        await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
       await transaction
         .selectFrom("integrationServers")
         .select("id")
@@ -2850,6 +2851,12 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         })
         .where("id", "=", input.attemptId)
         .executeTakeFirstOrThrow();
+      if (input.accountBinding)
+        await requireIntegrationAccountBinding(
+          transaction,
+          input.ownerUserId,
+          input.accountBinding,
+        );
     });
   }
 
@@ -4204,7 +4211,11 @@ async function finishComputerConnectionChangeInTransaction(
     readonly widened: boolean;
   },
 ): Promise<Omit<SetComputerConnectionResult, "sessionReset">> {
-  const actor = await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
+  const actor = await readRequestSettlementActor(
+    transaction,
+    input.actorUserId,
+    input.actorSessionId,
+  );
   const settlementActor = input.recordProvenance ? actor : null;
   const { installed, scope } = input.target;
   const connectionId = input.row.id;
@@ -4284,6 +4295,7 @@ async function finishComputerConnectionChangeInTransaction(
       workspaceId: null,
     })
     .executeTakeFirstOrThrow();
+  await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
   return {
     connection: integrationConnectionFromRow(input.row),
     created: input.created,

@@ -1,4 +1,7 @@
-import { requireIntegrationAccountBinding } from "./integration-account-binding.js";
+import {
+  checkIntegrationAccountBinding,
+  requireIntegrationAccountBinding,
+} from "./integration-account-binding.js";
 import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { withDatabaseTransaction } from "./connection.js";
 import { jsonValue } from "./store-primitives.js";
@@ -634,11 +637,7 @@ export class IntegrationStore {
   }): Promise<IntegrationConnectionSummary> {
     return withDatabaseTransaction(this.#database, async (transaction) => {
       if (input.accountBinding)
-        await requireIntegrationAccountBinding(
-          transaction,
-          input.ownerUserId,
-          input.accountBinding,
-        );
+        await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
       const attempt = await transaction
         .selectFrom("integrationAuthAttempts")
         .select(["id", "ownerUserId", "status"])
@@ -809,6 +808,12 @@ export class IntegrationStore {
           workspaceId: null,
         })
         .executeTakeFirstOrThrow();
+      if (input.accountBinding)
+        await requireIntegrationAccountBinding(
+          transaction,
+          input.ownerUserId,
+          input.accountBinding,
+        );
       return integrationConnectionFromRow(connectionRow);
     });
   }

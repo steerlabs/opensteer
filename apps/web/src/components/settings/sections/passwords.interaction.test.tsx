@@ -62,7 +62,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     const fake = fakeBridge(available("not-set-up"));
     const page = await mount({ bridge: fake.bridge });
     expect(text(page)).toContain(
-      "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any signed-in device.",
+      "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.",
     );
     expect(text(page)).toContain("Import from Chrome, Safari, Firefox, 1Password or Bitwarden.");
     expect(text(page)).toContain(
@@ -83,7 +83,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     expect(page.querySelector(".chip")?.textContent).toBe("On");
     expect(text(page)).not.toContain("Waiting for you");
     expect(text(page)).toContain(
-      "You allow an account once per Workspace from any signed-in device. After that, agents there sign in with it on their own.",
+      "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
     );
     expect(text(page)).toContain("Take that access away any time in the Passwords window.");
     expect(text(page)).toContain("Sign-ins can stay saved in the browser profile.");

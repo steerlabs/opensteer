@@ -1,4 +1,5 @@
 import { withDatabaseTransaction } from "./connection.js";
+import { requestSettlementActor } from "./request-settlement.js";
 import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -609,6 +610,7 @@ export class BrowserSourceStore {
           })
           .returning(receiptColumns)
           .executeTakeFirstOrThrow();
+        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
         return { receipt, replayed: false, events: request?.events ?? [] };
       },
     );

@@ -56,6 +56,14 @@ export async function readIntegrationAccountBinding(input: {
     };
   }
   if (input.kind !== "personal") return null;
+  let linkQuery = database
+    .selectFrom("personalRemoteAccountLink")
+    .select(["issuer", "linkGeneration", "subject"])
+    .where("singletonKey", "=", "opensteer-account")
+    .where("state", "=", "active");
+  if (input.lock) linkQuery = linkQuery.forShare();
+  const link = await linkQuery.executeTakeFirst();
+  if (!link) return null;
   let ownerQuery = database
     .selectFrom("users")
     .select("id")
@@ -65,28 +73,39 @@ export async function readIntegrationAccountBinding(input: {
   if (input.lock) ownerQuery = ownerQuery.forShare();
   const owner = await ownerQuery.executeTakeFirst();
   if (!owner) return null;
-  let linkQuery = database
-    .selectFrom("personalRemoteAccountLink")
-    .select(["issuer", "linkGeneration", "subject"])
-    .where("singletonKey", "=", "opensteer-account")
-    .where("state", "=", "active");
-  if (input.lock) linkQuery = linkQuery.forShare();
-  const link = await linkQuery.executeTakeFirst();
-  return link ?? null;
+  return link;
 }
 
-/** Hold the binding through commit so unlink/relink cannot race credential creation. */
-export async function requireIntegrationAccountBinding(
+/** Refuse a changed binding before doing credential work, without taking identity locks. */
+export function checkIntegrationAccountBinding(
   transaction: Transaction<DatabaseSchema>,
   ownerUserId: UserId,
   expected: IntegrationOAuthAccountBinding,
+): Promise<void> {
+  return validateIntegrationAccountBinding(transaction, ownerUserId, expected, false);
+}
+
+/** Hold the binding through commit so unlink/relink cannot race credential creation. */
+export function requireIntegrationAccountBinding(
+  transaction: Transaction<DatabaseSchema>,
+  ownerUserId: UserId,
+  expected: IntegrationOAuthAccountBinding,
+): Promise<void> {
+  return validateIntegrationAccountBinding(transaction, ownerUserId, expected, true);
+}
+
+async function validateIntegrationAccountBinding(
+  transaction: Transaction<DatabaseSchema>,
+  ownerUserId: UserId,
+  expected: IntegrationOAuthAccountBinding,
+  lock: boolean,
 ): Promise<void> {
   const current = await readIntegrationAccountBinding({
     database: transaction,
     ownerUserId,
     kind: expected.kind,
     accountAttached: true,
-    lock: true,
+    lock,
   });
   if (
     !current ||

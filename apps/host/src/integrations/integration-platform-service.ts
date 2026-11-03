@@ -2231,6 +2231,7 @@ export class IntegrationPlatformService {
           server.runnerName,
           this.#isRunnerConnected(server.runnerId),
         );
+      case "unapproved":
       case "failed":
       case "too-large":
         return `${title} did not start on ${server.runnerName}: ${error.message}`;

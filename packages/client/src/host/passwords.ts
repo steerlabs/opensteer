@@ -432,7 +432,7 @@ const unsupportedMessages = {
 } as const;
 
 export const passwordsSetUpLead =
-  "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any signed-in device.";
+  "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.";
 export const passwordsSetUpFacts = [
   "Import from Chrome, Safari, Firefox, 1Password or Bitwarden.",
   "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
@@ -460,7 +460,7 @@ export function passwordsWaitingDetail(count: number): string {
     : `${count} sign-ins to answer in their conversations`;
 }
 export const passwordsHowItWorks = [
-  "You allow an account once per Workspace from any signed-in device. After that, agents there sign in with it on their own.",
+  "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
   "Take that access away any time in the Passwords window.",
   "Sign-ins can stay saved in the browser profile.",
   "Sites you allowed from Chrome keep using Chrome.",

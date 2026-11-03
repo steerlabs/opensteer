@@ -46,7 +46,7 @@ const sdk = vi.hoisted(() => {
         issuer: "https://accounts.example.test/",
       });
       await provider.saveCodeVerifier("v".repeat(43));
-      provider.redirectToAuthorization(
+      await provider.redirectToAuthorization(
         new URL(`https://accounts.example.test/authorize?state=${await provider.state!()}`),
       );
       throw new Error("authorization required");

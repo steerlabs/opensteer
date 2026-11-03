@@ -422,9 +422,10 @@ export type RunnerIntegrationsMcpMessage = z.infer<typeof RunnerIntegrationsMcpM
 
 /**
  * Why a session ended, or null when the Host asked. A message above the
- * stream's bound ends its session without taking down other sessions.
+ * stream's bound ends its session without taking down other sessions. Android
+ * integrations protocol 4 still uses `unapproved` to refuse MCP execution.
  */
-export const McpSessionCloseCodeSchema = z.enum(["failed", "too-large"]);
+export const McpSessionCloseCodeSchema = z.enum(["unapproved", "failed", "too-large"]);
 export type McpSessionCloseCode = z.infer<typeof McpSessionCloseCodeSchema>;
 
 export const RunnerIntegrationsMcpClosedSchema = z.strictObject({
@@ -436,14 +437,6 @@ export const RunnerIntegrationsMcpClosedSchema = z.strictObject({
   type: z.literal("runner.integrations.mcp.closed"),
 });
 export type RunnerIntegrationsMcpClosed = z.infer<typeof RunnerIntegrationsMcpClosedSchema>;
-
-/** The person's answer on this Mac, signed with the desktop's approval key. */
-
-/**
- * Asks for the whole list again. A Runner asks whenever its bridge to the
- * desktop connects, because a desktop that started after the stream attached,
- * or was away when the list came, never saw it.
- */
 
 /** Independent owner authority, bound to this authenticated auxiliary connection; never a Run. */
 export const HostIntegrationsComputerViewSchema = z

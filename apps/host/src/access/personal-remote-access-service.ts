@@ -585,6 +585,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
             .selectFrom("personalAccountLinkKeys")
             .selectAll()
             .orderBy("challengeId", "asc")
+            // FOR UPDATE: reserve every pending key before deleting them on completion.
             .forUpdate()
             .execute();
       await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
@@ -684,6 +685,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .selectFrom("personalAccountLinkKeys")
         .select("challengeId")
         .orderBy("challengeId", "asc")
+        // FOR UPDATE: reserve pending keys before deleting them on unlink.
         .forUpdate()
         .execute();
       const stored = await transaction
@@ -1187,12 +1189,15 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         const status = await this.#readStatus(transaction);
         staleProjection = status.generation !== operation.projection.generation;
       }
-      const current = await transaction
+      const currentQuery = transaction
         .selectFrom("personalRemoteAccountLink")
         .selectAll()
-        .where("singletonKey", "=", "opensteer-account")
-        .forUpdate()
-        .executeTakeFirst();
+        .where("singletonKey", "=", "opensteer-account");
+      const current = await (
+        operation.kind === "unlink"
+          ? currentQuery.forUpdate() // FOR UPDATE: unlink deletes the Account link.
+          : currentQuery.forNoKeyUpdate()
+      ).executeTakeFirst();
       if (!current && operation.kind === "unlink") return;
       if (
         !current ||

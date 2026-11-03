@@ -348,6 +348,14 @@ integration("iMessage channel", () => {
       const beforeLost = messages.sends.length;
       messages.loseNextBridgeAnswer();
       const recoveredReply = await lostRun.reply("Sent once, receipt recovered.");
+      await waitForCondition(async () => (await deliveryStatus(recoveredReply)) === "unknown");
+      // Queue tests cover retry delays; this journey checks receipt reconciliation.
+      await host.store.database
+        .updateTable("channelDeliveries")
+        .set({ nextAttemptAt: new Date(0) })
+        .where("messageId", "=", recoveredReply)
+        .where("status", "=", "unknown")
+        .execute();
       await waitForCondition(async () => (await deliveryStatus(recoveredReply)) === "sent");
       const recovered = await host.store.database
         .selectFrom("channelDeliveries")

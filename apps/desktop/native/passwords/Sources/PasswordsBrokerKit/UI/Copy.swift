@@ -10,7 +10,7 @@ public enum Copy {
   public static let appName = "Opensteer Passwords"
   public static let agentSignIns = "Agents can sign in with your passwords"
   public static let setUpLead =
-    "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any signed-in device."
+    "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer."
   public static let setUpFacts = [
     "Import from Chrome, Safari, Firefox, 1Password or Bitwarden.",
     "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
