@@ -1381,7 +1381,11 @@ async function createForeignPlacement(stack: VerticalStack, foreignUserId: UserI
             ],
           },
         ],
-        localStorage: null,
+        localStorage: {
+          bindings: [],
+          storageAuthorityId: createId("storageAuthority"),
+          truncated: false,
+        },
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],

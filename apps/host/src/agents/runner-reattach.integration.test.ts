@@ -786,7 +786,7 @@ integration("Runs that outlive their connection", () => {
       refusals.push({ type: mutation.type, response: refusal });
     }
 
-    // A Runner lost while dispatch loads its context is waited for, not refused.
+    // A Runner lost after disk inspection, before dispatch reads it, is waited for.
     const gate = observation.holdDispatch(command.id);
     const preparationReleasedAt = Date.now();
     let readyDispatchDelayMs: number;

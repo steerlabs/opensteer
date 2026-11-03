@@ -639,7 +639,11 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],

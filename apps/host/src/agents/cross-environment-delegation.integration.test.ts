@@ -3207,7 +3207,11 @@ integration("cross-environment delegation reaches the Runner", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 4,
           // A lent computer is single-user, so it may offer the person's own CLI.
           providerStateModes: input.runnerKind === "local" ? ["ambient", "isolated"] : ["isolated"],

@@ -1408,7 +1408,7 @@ integration.sequential("Run recovery acceptance", () => {
       type: "thread.create",
       idempotencyKey: randomUUID(),
       title: "Healthy companion task",
-      workspaceId: current.active.mainWorkspaceId,
+      workspaceId: companion.workspaceId,
       environmentId: companion.environmentId,
       harnessInstanceId: companion.harnessInstanceId,
       modelSelection: selection,

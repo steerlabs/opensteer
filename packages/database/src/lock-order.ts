@@ -68,6 +68,10 @@ export const databaseLockOrder = [
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
   "advisory:integration-catalog-definition",
+  // Plugin updates reconcile their MCP installation while holding the package row.
+  "plugins",
+  "plugin_versions",
+  "plugin_activations",
   "advisory:integration-installation",
   // Enrollment and Runner ownership precede integration and execution authority.
   "runner_enrollments",
@@ -146,6 +150,8 @@ export const databaseLockOrder = [
   "requests",
   "advisory:browser-profile",
   "advisory:browser-grants",
+  // Specialist binding guards follow parent/Request fences before creating Assignments.
+  "specialists",
   // Assignment projections precede Commands, Inputs, Messages and their derived state.
   "delegations",
   "commands",

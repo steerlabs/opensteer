@@ -775,8 +775,12 @@ export async function connectTargetMachine(
   let prepared: PreparedShellModule = initial;
   const runnerId = createId("runner");
   const environmentId = input.environmentId ?? createId("environment");
-  // The one descriptor this machine ever sends, minus the module set, which is
-  // the only thing a restart changes.
+  const localStorage = {
+    bindings: [],
+    storageAuthorityId: createId("storageAuthority"),
+    truncated: false,
+  };
+  // Reconnect retains the disk authority while changing the advertised modules.
   const descriptorFor = (
     runsAgents: boolean,
     environment: EnvironmentId,
@@ -791,7 +795,7 @@ export async function connectTargetMachine(
               agents: {
                 environmentIds: [environment],
                 harnessDrivers: [],
-                localStorage: null,
+                localStorage,
                 maxConcurrentRuns: 2,
                 providerStateModes: ["isolated"],
                 workspaceBackings: ["local-directory"],
@@ -816,7 +820,15 @@ export async function connectTargetMachine(
     logger: silentLogger,
     transport: { controlCaPath: undefined, hostUrl: new URL(host.origin), mode: "development" },
   });
-  let primary = await connectPrimary(host.hostPort, descriptor, { token: input.token });
+  const connect = (
+    descriptor: RunnerDescriptor,
+    credentials: Parameters<typeof connectPrimary>[2],
+  ) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
+    attachLocalWorkspaceDisk(socket, { inventory: localStorage });
+    return connectPrimary(host.hostPort, descriptor, credentials, socket);
+  };
+  let primary = await connect(descriptor, { token: input.token });
   acknowledgeCommands(primary, () => true);
   let auxiliary = await attachShellStream(host.hostPort, primary, handler, reported);
   reportShellReadiness(primary);
@@ -832,7 +844,7 @@ export async function connectTargetMachine(
       options.environmentId ?? environmentId,
       options.fullDiskAccess ?? input.fullDiskAccess,
     );
-    primary = await connectPrimary(host.hostPort, booted, { privateKey: primary.privateKey });
+    primary = await connect(booted, { privateKey: primary.privateKey });
     acknowledgeCommands(primary, () => true);
     auxiliary = await attachShellStream(host.hostPort, primary, handler, reported);
     reportShellReadiness(primary);

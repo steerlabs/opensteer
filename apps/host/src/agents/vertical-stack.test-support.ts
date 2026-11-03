@@ -1,3 +1,5 @@
+import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
+import { workspaceLocalOperationId } from "@opensteer/protocol";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import type { HostConfig, RunnerConfig } from "@opensteer/config";
 import {
@@ -207,6 +209,7 @@ export interface VerticalStack {
   readonly crashRunner: (beforeRestart?: () => Promise<void>) => Promise<void>;
   readonly startAdditionalRunner: () => Promise<{
     readonly environmentId: EnvironmentId;
+    readonly workspaceId: WorkspaceId;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly close: () => Promise<void>;
   }>;
@@ -664,7 +667,7 @@ async function startWithin(
     binary: nativeFsHelperBinary,
     rootPolicy: "managed-local",
   });
-  const localAuthority = new LocalWorkspaceAuthority({
+  const primaryLocalAuthority = new LocalWorkspaceAuthority({
     filesystemAuthority: filesystem,
     namespace: { kind: "single-owner", ownerEnvironmentId: environmentId },
     registryFilePath: join(runnerDataDirectory, "local-workspaces.json"),
@@ -687,6 +690,7 @@ async function startWithin(
   const bootRunner = async (
     bootId: ReturnType<typeof RunnerBootIdSchema.parse>,
     companion?: {
+      readonly authority: LocalWorkspaceAuthority;
       readonly environment: EnvironmentId;
       readonly id: typeof runnerId;
       readonly directory: string;
@@ -696,6 +700,7 @@ async function startWithin(
     requireReady = true,
   ) => {
     shutdown.throwIfAborted();
+    const localAuthority = companion?.authority ?? primaryLocalAuthority;
     const executionEnvironmentId = companion?.environment ?? environmentId;
     const executionRunnerId = companion?.id ?? runnerId;
     const executionDataDirectory = companion?.directory ?? runnerDataDirectory;
@@ -765,7 +770,7 @@ async function startWithin(
 
       name: "Vertical local runner",
       runnerId: executionRunnerId,
-      runnerKind: options.personal ? "main" : "local",
+      runnerKind: options.personal ? "main" : companion ? "managed" : "local",
       workspaceBackings,
       workspaceNamespace: "owner-scoped",
       localWorkspaceRegistryPath: undefined,
@@ -1012,6 +1017,7 @@ async function startWithin(
       void ready.catch(() => undefined);
       void failed.promise.catch(() => undefined);
       child.send({
+        nativeFsHelperBinary,
         bootId,
         config: { ...runnerConfig, hostUrl: partition.url.toString() },
         harnessInstance: options.harnessInstance,
@@ -1229,7 +1235,7 @@ async function startWithin(
       const extraRunner = createId("runner");
       await host.store.createEnvironment({
         id: extraEnvironment,
-        kind: "local",
+        kind: "managed",
         name: "Healthy companion",
       });
       const account = await host.store.createHarnessInstance({
@@ -1244,23 +1250,99 @@ async function startWithin(
         hostOrigin,
         "commands.dispatch",
         {
-          type: "runner.enrollment.createLocal",
+          type: "runner.enrollment.createManaged",
           idempotencyKey: key,
           allowedModules: ["agents"],
           name: "Healthy companion",
         },
         signedIn(key),
       );
-      if (enrollment.type !== "runner.enrollment.createLocal")
+      if (enrollment.type !== "runner.enrollment.createManaged")
         throw new Error("Companion enrollment failed");
+      const authority = new LocalWorkspaceAuthority({
+        filesystemAuthority: filesystem,
+        namespace: { kind: "single-owner", ownerEnvironmentId: extraEnvironment },
+        registryFilePath: join(temporaryRoot, "companion", "local-workspaces.json"),
+        visibleRootPath: join(temporaryRoot, "companion", "workspaces"),
+      });
       const extra = await startRunner(RunnerBootIdSchema.parse(`rbt_${randomUUID()}`), {
+        authority,
         environment: extraEnvironment,
         id: extraRunner,
         directory: join(temporaryRoot, "companion"),
         enrollmentToken: enrollment.token,
         harnessInstanceId: account.id,
       });
-      return { environmentId: extraEnvironment, harnessInstanceId: account.id, close: extra.close };
+      const owner = await host.store.firstUser();
+      if (!owner) throw new Error("Companion has no Workspace owner");
+      const companionOwner = await host.store.createUser("Companion owner");
+      const storageAuthorityId = (await authority.inventory()).storageAuthorityId;
+      const seedWorkspace = async (kind: "main" | "project", name: string) => {
+        const id = createId("workspace");
+        const operationId = workspaceLocalOperationId({
+          generation: 1,
+          operation: "provision",
+          workspaceId: id,
+        });
+        const backing = {
+          kind: "local-directory" as const,
+          bindingId: localWorkspaceBindingId({
+            createdBy: companionOwner,
+            idempotencyKey: operationId,
+            kind,
+            ownerEnvironmentId: extraEnvironment,
+            workspaceId: id,
+          }),
+          generation: 1,
+          ownerEnvironmentId: extraEnvironment,
+          storageAuthorityId,
+        };
+        const workspace = await host.store.createWorkspace({
+          id,
+          backing,
+          createdBy: companionOwner,
+          idempotencyKey: operationId,
+          kind,
+          name,
+          status: "ready",
+        });
+        await authority.provision({
+          binding: { ...backing, workspaceId: id },
+          fingerprint: {
+            createdBy: companionOwner,
+            workspaceKind: kind,
+            ...(workspace.slug ? { slug: workspace.slug } : {}),
+          },
+          idempotencyKey: operationId,
+        });
+        return workspace;
+      };
+      // Independent people keep Main and Projects on their own computers. Share
+      // the companion's Project so the test's authenticated person can run there.
+      await seedWorkspace("main", "Companion Main");
+      const workspace = await seedWorkspace("project", "Healthy companion Project");
+      await host.store.database
+        .insertInto("workspaceMemberships")
+        .values({
+          id: createId("workspaceMembership"),
+          workspaceId: workspace.id,
+          userId: owner.id,
+          role: "collaborator",
+          generation: 1,
+          invitedBy: companionOwner,
+          state: "active",
+          revokedAt: null,
+          revokedBy: null,
+          joinedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .execute();
+      return {
+        environmentId: extraEnvironment,
+        workspaceId: workspace.id,
+        harnessInstanceId: account.id,
+        close: extra.close,
+      };
     },
     crashRunner: async (beforeRestart) => {
       await runnerProcess.crash();

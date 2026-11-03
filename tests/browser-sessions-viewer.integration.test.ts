@@ -524,7 +524,7 @@ run("Browser Sessions through a whole deployment", () => {
       await expect(
         stack.host.browser.attachCdpForAgent(
           {
-            agentBindingId: "trigger:closed-session",
+            agentBindingId: `trigger:${createId("triggerOccurrence")}`,
             ownerId: owner.id,
             sessionId,
             workspaceId: stack.mainWorkspaceId,
@@ -593,7 +593,7 @@ run("Browser Sessions through a whole deployment", () => {
       await expect(
         stack.host.browser.attachCdpForAgent(
           {
-            agentBindingId: "trigger:delayed-closing",
+            agentBindingId: `trigger:${createId("triggerOccurrence")}`,
             ownerId: owner.id,
             sessionId,
             workspaceId: stack.mainWorkspaceId,
@@ -623,7 +623,7 @@ run("Browser Sessions through a whole deployment", () => {
       const owner = await stack.host.store.firstUser();
       if (!owner) throw new Error("The deployment has no owner");
       const agent = {
-        agentBindingId: "trigger:failed-terminal-write",
+        agentBindingId: `trigger:${createId("triggerOccurrence")}`,
         ownerId: owner.id,
         sessionId,
         workspaceId: stack.mainWorkspaceId,

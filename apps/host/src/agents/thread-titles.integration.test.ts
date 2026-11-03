@@ -162,7 +162,11 @@ integration.sequential("Thread title lifecycle", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],

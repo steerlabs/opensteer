@@ -1515,7 +1515,11 @@ integration("agent-to-agent messaging round trip", () => {
               ],
             },
           ],
-          localStorage: null,
+          localStorage: {
+            bindings: [],
+            storageAuthorityId: createId("storageAuthority"),
+            truncated: false,
+          },
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
