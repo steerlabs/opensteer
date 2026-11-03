@@ -5,13 +5,16 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tools": "./src/tools/index.ts",
+    "./integrations": "./src/tools/integrations.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@opensteer/integration-core": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/triggers": "workspace:*",
     "zod": "catalog:"
