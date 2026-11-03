@@ -1,3 +1,5 @@
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { join, relative } from "node:path";
 import type { EvalCase } from "./cases.js";
 export interface RecordedCall {
   readonly tool: string;
@@ -91,4 +93,49 @@ export function grade(
 }
 export function majority(passes: readonly boolean[]): boolean {
   return passes.filter(Boolean).length > passes.length / 2;
+}
+
+/** Missing files fail positive matches; prohibitions cover every file in a subtree.
+ * Never follow agent-created symlinks out of the disposable Workspace. */
+export async function gradeWorkspaceFiles(
+  expect: EvalCase["expect"],
+  workspace: string,
+): Promise<Check[]> {
+  const checks: Check[] = [];
+  const physicalWorkspace = await realpath(workspace);
+  for (const [i, rule] of expect.files.entries()) {
+    const contents: string[] = [];
+    async function visit(path: string): Promise<void> {
+      if (rule.exclude.some((excluded) => join(workspace, excluded) === path)) return;
+      let stat;
+      try {
+        stat = await lstat(path);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+        throw error;
+      }
+      if (
+        stat.isSymbolicLink() ||
+        relative(physicalWorkspace, await realpath(path)) !== relative(workspace, path)
+      )
+        throw new Error(`Cannot grade symlink: ${path}`);
+      if (stat.isFile()) contents.push(await readFile(path, "utf8"));
+      else if (stat.isDirectory() && rule.recursive)
+        for (const name of (await readdir(path)).sort())
+          if (!name.startsWith(".eval-")) await visit(join(path, name));
+    }
+    for (const path of typeof rule.path === "string" ? [rule.path] : rule.path)
+      await visit(join(workspace, path));
+    for (const pattern of rule.textMust)
+      checks.push({
+        name: `files[${i}]:must:${pattern}`,
+        pass: contents.some((text) => new RegExp(pattern, "u").test(text)),
+      });
+    for (const pattern of rule.textMustNot)
+      checks.push({
+        name: `files[${i}]:mustNot:${pattern}`,
+        pass: contents.every((text) => !new RegExp(pattern, "u").test(text)),
+      });
+  }
+  return checks;
 }

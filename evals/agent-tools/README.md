@@ -54,3 +54,15 @@ failed cases. Infrastructure or authentication failures are incomplete samples,
 never behavioral failures or passes. A baseline comparison refuses incompatible
 engine/model/effort/corpus identities, permits prompt/schema treatment changes,
 and fails the command for strict-majority regressions beyond the given budget.
+
+Use `--area memory --samples N` to repeat the personal memory/background-pass
+cases, or `--area memory --validate` to validate selection without inspecting or
+running an engine. Fixtures seed the disposable Workspace before skill discovery;
+`AGENTS.md` is also delivered as Workspace instructions. File expectations run
+before cleanup. `expect.files` matches a file or, with `recursive: true`, a subtree
+(`path: "."` means the Workspace; an array of paths searches their union). Each `textMust` pattern must match at least one
+file; each `textMustNot` must match none. `exclude` omits relative subtrees; the
+harness's reserved `.eval-*` directories are always omitted. Missing paths fail
+positive matches and pass prohibitions; symlinks make the sample incomplete.
+Memory cases use synthetic fixtures in Main; the cold-read pair tests two plain
+Markdown styles on both engines, not a live cross-engine write/read handoff.

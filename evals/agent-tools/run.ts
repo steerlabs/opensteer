@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { ModelSelectionSchema } from "@opensteer/core";
 import { parseCases } from "./cases.js";
-import { grade } from "./grader.js";
+import { grade, gradeWorkspaceFiles, type Check } from "./grader.js";
 import {
   compareBaseline,
   fingerprint,
@@ -25,6 +25,8 @@ const parsed = parseArgs({
     engine: { type: "string", default: "claude" },
     model: { type: "string" },
     effort: { type: "string" },
+    area: { type: "string" },
+    validate: { type: "boolean", default: false },
     case: { type: "string", multiple: true },
     samples: { type: "string" },
     concurrency: { type: "string", default: "2" },
@@ -36,7 +38,7 @@ const parsed = parseArgs({
 });
 if (parsed.values.help) {
   console.log(
-    "pnpm eval:agent-tools --engine claude|codex [--model ID] [--effort VALUE] [--case ID] [--samples N] [--concurrency N] [--baseline results.jsonl] [--out DIR] [--regression-budget N]",
+    "pnpm eval:agent-tools --engine claude|codex [--model ID] [--effort VALUE] [--area AREA] [--validate] [--case ID] [--samples N] [--concurrency N] [--baseline results.jsonl] [--out DIR] [--regression-budget N]",
   );
 } else {
   await main();
@@ -56,9 +58,16 @@ async function main() {
   if (filters?.some((id) => !corpus.some((c) => c.id === id)))
     throw new Error("Unknown case filter");
   const cases = corpus.filter(
-    (c) => (!c.engines || c.engines.includes(engine)) && (!filters || filters.includes(c.id)),
+    (c) =>
+      (!c.engines || c.engines.includes(engine)) &&
+      (!filters || filters.includes(c.id)) &&
+      (!parsed.values.area || c.area === parsed.values.area),
   );
   if (!cases.length) throw new Error("No cases selected");
+  if (parsed.values.validate) {
+    console.log(`Validated ${cases.length} cases for ${engine}`);
+    return;
+  }
   let output = resolve(
     parsed.values.out ??
       join(
@@ -203,6 +212,7 @@ async function main() {
             let treatment = { prompt: "unavailable", schema: "unavailable" };
             let sampleError: string | undefined;
             let complete = false;
+            let fileChecks: Check[] = [];
             try {
               root = await mkdtemp(join(tmpdir(), "opensteer-eval-sample-"));
               const p = await prepareEngine(root, engine, stop.signal, inspected.models);
@@ -240,6 +250,7 @@ async function main() {
               });
               finalText = result.finalText;
               treatment = result.treatment;
+              fileChecks = await gradeWorkspaceFiles(c.expect, p.workspace);
               complete = true;
             } catch (cause) {
               sampleError = String(cause);
@@ -259,7 +270,10 @@ async function main() {
               }
             }
             const calls = host?.calls ?? [];
-            const checks = grade(c.expect, calls, finalText, assistantText, earlierText);
+            const checks = [
+              ...grade(c.expect, calls, finalText, assistantText, earlierText),
+              ...fileChecks,
+            ];
             const row = {
               caseId: c.id,
               sample,
