@@ -57,6 +57,7 @@ integration.sequential("previous public release client journeys", () => {
     cleanups.push(released.close);
     const plan = agentToolsPlanForRun({
       role: "work",
+      reach: "workspace",
       token: "run-token",
       url: "https://host.test/internal/v1/mcp",
     });

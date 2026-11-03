@@ -3,8 +3,9 @@
 ## Find and read Threads
 
 Call `thread_list` with no arguments to see reachable Threads, most recently updated first. Scope
-follows this Thread's capability profile: a Main Thread sees its user's Workspaces, a Workspace
-Thread sees its own Workspace, and a delegated Thread sees its delegation lineage. Narrow with
+follows this Thread's reach: work that acts for the person in their Main sees their Workspaces,
+a specialist sees its delegation lineage, and any other Thread sees its own Workspace. A delegated
+task reaches what its root reaches. Narrow with
 `workspaceId` or `query` only when needed. Follow the returned page cursor when the first page is
 insufficient. Use `thread_read` for one Thread's durable history and the tasks assigned to it, and
 `project_list` when the target Workspace is unclear and that tool is available.

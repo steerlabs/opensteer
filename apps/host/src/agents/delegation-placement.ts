@@ -72,7 +72,7 @@ const offeredModelsShown = 40;
  * order never becomes hidden product policy.
  *
  * Agents, Triggers and watches share this rule: the answer does not depend on
- * which capability profile asked.
+ * which caller asked.
  */
 export async function delegationPlacement(
   store: PlacementStore,

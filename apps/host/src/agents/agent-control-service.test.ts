@@ -109,51 +109,48 @@ describe("AgentControlService", () => {
     }
   });
 
-  it.each(["main", "workspace", "delegated"] as const)(
-    "lists the Requests visible to the %s Thread",
-    async (capabilityProfileId) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-        capabilityProfileId,
-      });
-      const pending = pendingRequest();
-      const visiblePage = vi.fn(async () => ({
-        requests: [pending],
-        window: {
-          byteCount: 1,
-          hasMore: true,
-          itemCount: 1,
-          nextBefore: "next_request_page",
-          totalItems: 2,
-        },
-      }));
-      const { service, claims } = makeService({
-        commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-        messages: [],
-        capabilityProfileId,
-        requests: { visiblePage },
-        threads: [current],
-      });
+  it.each([
+    ["Main", true],
+    ["Project", false],
+  ] as const)("lists the Requests visible to a %s Thread", async (_place, inheritsMain) => {
+    const current = thread(currentThreadId, nativeHarnessId, "Main", null, { inheritsMain });
+    const pending = pendingRequest();
+    const visiblePage = vi.fn(async () => ({
+      requests: [pending],
+      window: {
+        byteCount: 1,
+        hasMore: true,
+        itemCount: 1,
+        nextBefore: "next_request_page",
+        totalItems: 2,
+      },
+    }));
+    const { service, claims } = makeService({
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      requests: { visiblePage },
+      threads: [current],
+    });
 
-      await expect(
-        service.handle("run-token", {
-          before: "current_request_page",
-          limit: 1,
-          requestId: crypto.randomUUID(),
-          type: "request.list",
-        }),
-      ).resolves.toMatchObject({
-        requests: [{ id: pending.id, status: "pending" }],
-        type: "request.list.result",
-        window: { hasMore: true, nextBefore: "next_request_page" },
-      });
-      expect(visiblePage).toHaveBeenCalledWith({
+    await expect(
+      service.handle("run-token", {
         before: "current_request_page",
         limit: 1,
-        originatingThreadId: claims.threadId,
-        targetWorkspaceId: claims.workspaceId,
-      });
-    },
-  );
+        requestId: crypto.randomUUID(),
+        type: "request.list",
+      }),
+    ).resolves.toMatchObject({
+      requests: [{ id: pending.id, status: "pending" }],
+      type: "request.list.result",
+      window: { hasMore: true, nextBefore: "next_request_page" },
+    });
+    expect(visiblePage).toHaveBeenCalledWith({
+      before: "current_request_page",
+      limit: 1,
+      originatingThreadId: claims.threadId,
+      targetWorkspaceId: claims.workspaceId,
+    });
+  });
 
   it("keeps settlement sessions out of the Requests it lists", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
@@ -203,9 +200,7 @@ describe("AgentControlService", () => {
   it.each(["sign-in"] as const)(
     "keeps %s Browser Session requests admitted through the single sign-in permission",
     async (type) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Worker", null, {
-        capabilityProfileId: "delegated",
-      });
+      const current = thread(currentThreadId, nativeHarnessId, "Worker");
       const result = {
         status: "unavailable",
         site: "https://example.com",
@@ -213,7 +208,6 @@ describe("AgentControlService", () => {
       } as const;
       const agentSignIn = vi.fn(async () => result);
       const { service, admitAgentControlRequest } = makeService({
-        capabilityProfileId: "delegated",
         browserSources: { agentSignIn },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
@@ -513,17 +507,17 @@ describe("AgentControlService", () => {
     expect(listHarnessInstances).toHaveBeenCalledWith({ environmentIds: [environmentId] });
   });
 
-  it("scopes thread_list by capability profile and passes its filters through", async () => {
+  it("scopes thread_list by reach and passes its filters through", async () => {
     const parentThreadId = createId("thread");
     const parent = thread(parentThreadId, nativeHarnessId, "Parent");
     const child = thread(currentThreadId, nativeHarnessId, "Child", parentThreadId, {
-      capabilityProfileId: "delegated",
+      specialistId: "invoices",
     });
     const sibling = thread(createId("thread"), nativeHarnessId, "Sibling", parentThreadId, {
-      capabilityProfileId: "delegated",
+      specialistId: "invoices",
     });
     const unrelated = thread(targetThreadId, codexHarnessId, "Unrelated research", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
       workspaceId: targetWorkspaceId,
     });
     const threads = [parent, child, sibling, unrelated];
@@ -533,12 +527,11 @@ describe("AgentControlService", () => {
     ];
 
     const main = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [
         thread(currentThreadId, nativeHarnessId, "Main", null, {
-          capabilityProfileId: "main",
+          inheritsMain: true,
         }),
         unrelated,
       ],
@@ -583,12 +576,11 @@ describe("AgentControlService", () => {
     );
 
     const scoped = makeService({
-      capabilityProfileId: "workspace",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [
         thread(currentThreadId, nativeHarnessId, "Workspace", null, {
-          capabilityProfileId: "workspace",
+          inheritsMain: false,
         }),
         unrelated,
       ],
@@ -609,7 +601,6 @@ describe("AgentControlService", () => {
     ).rejects.toThrow("can list Threads only in its Workspace");
 
     const delegated = makeService({
-      capabilityProfileId: "delegated",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads,
@@ -628,7 +619,7 @@ describe("AgentControlService", () => {
     );
   });
 
-  it("keeps delegated reads and messages inside its lineage", async () => {
+  it("keeps specialist reads and messages inside its lineage", async () => {
     const parentThreadId = createId("thread");
     const parent = thread(parentThreadId, nativeHarnessId, "Parent");
     const unrelated = thread(targetThreadId, codexHarnessId, "Unrelated", null, {
@@ -647,10 +638,9 @@ describe("AgentControlService", () => {
       wasDuplicate: false,
     }));
     const child = thread(currentThreadId, nativeHarnessId, "Child", parentThreadId, {
-      capabilityProfileId: "delegated",
+      specialistId: "invoices",
     });
     const { service } = makeService({
-      capabilityProfileId: "delegated",
       commands: { delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
       threads: [parent, child, unrelated],
@@ -694,11 +684,10 @@ describe("AgentControlService", () => {
       workspaceId: foreignWorkspaceId,
     });
     const { service: crossUser } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [
-        thread(currentThreadId, nativeHarnessId, "Main", null, { capabilityProfileId: "main" }),
+        thread(currentThreadId, nativeHarnessId, "Main", null, { inheritsMain: true }),
         foreign,
       ],
       workspaces: [
@@ -719,7 +708,7 @@ describe("AgentControlService", () => {
 
   it("validates a chosen delegation environment instead of substituting one", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const child = thread(createId("thread"), nativeHarnessId, "Child", current.id, {
       environmentId: targetEnvironmentId,
@@ -746,7 +735,6 @@ describe("AgentControlService", () => {
       },
     };
     const { service } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread, enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       messages: [],
@@ -782,7 +770,6 @@ describe("AgentControlService", () => {
     ).rejects.toThrow("does not exist");
 
     const { service: local } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       messages: [],
@@ -800,7 +787,6 @@ describe("AgentControlService", () => {
     ).rejects.toThrow("can run only in its owning environment");
 
     const { service: offline } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread, enqueueThreadInput: vi.fn() },
       disconnectedEnvironmentId: targetEnvironmentId,
       environments: [environmentId, targetEnvironmentId],
@@ -823,7 +809,6 @@ describe("AgentControlService", () => {
     ).resolves.toMatchObject({ result: { thread: child } });
 
     const { service: unavailable } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       foreignEnvironmentId: targetEnvironmentId,
@@ -850,7 +835,7 @@ describe("AgentControlService", () => {
     // another, so the inherited environment is the wrong machine. Nothing about
     // the fence depends on the environment having been named.
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const delegateThread = vi.fn();
     const localWorkspace = {
@@ -864,7 +849,6 @@ describe("AgentControlService", () => {
       },
     };
     const { service } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread, enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       messages: [],
@@ -888,11 +872,10 @@ describe("AgentControlService", () => {
 
   it("refuses by name when the target machine's engine does not offer the delegating model", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const delegateThread = vi.fn();
     const { service } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread, enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       harnessCatalog: readyCatalog([
@@ -925,11 +908,10 @@ describe("AgentControlService", () => {
 
   it("names the machine and driver when a cross-environment delegation has nowhere to run", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const delegateThread = vi.fn();
     const base = {
-      capabilityProfileId: "main" as const,
       commands: { delegateThread, enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       messages: [],
@@ -1162,7 +1144,7 @@ describe("AgentControlService", () => {
 
   it("carries a chosen browser machine through and refuses one this user cannot reach", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const freshSummary = {
       access: "read-write" as const,
@@ -1182,7 +1164,6 @@ describe("AgentControlService", () => {
     const openAgentSession = vi.fn(async () => ({ session: freshSummary, wasExisting: false }));
     const { service } = makeService({
       browser: { openAgentSession },
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       messages: [],
@@ -1218,7 +1199,6 @@ describe("AgentControlService", () => {
 
     const { service: unreachable } = makeService({
       browser: { openAgentSession: vi.fn() },
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       environments: [environmentId, targetEnvironmentId],
       foreignEnvironmentId: targetEnvironmentId,
@@ -1235,12 +1215,13 @@ describe("AgentControlService", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it.each(["main", "workspace"] as const)(
+  it.each([
+    ["Main", true],
+    ["Project", false],
+  ] as const)(
     "admits full access requests from %s before calling the service",
-    async (capabilityProfileId) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Client", null, {
-        capabilityProfileId,
-      });
+    async (_place, inheritsMain) => {
+      const current = thread(currentThreadId, nativeHarnessId, "Client", null, { inheritsMain });
       const request = vi.fn(async () => ({
         kind: "machine.full-disk-access" as const,
         replayed: false,
@@ -1248,7 +1229,6 @@ describe("AgentControlService", () => {
         status: "pending" as const,
       }));
       const { claims, service, admitAgentControlRequest } = makeService({
-        capabilityProfileId,
         machineFullDiskAccess: { request },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
@@ -1280,7 +1260,7 @@ describe("AgentControlService", () => {
 
   it("scopes browser access requests to the claimed Workspace outside Main", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Client", null, {
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
     });
     const durableRequestId = createId("request");
     const requestAccess = vi.fn(async () => ({
@@ -1291,7 +1271,6 @@ describe("AgentControlService", () => {
     }));
     const { claims, service } = makeService({
       browser: { requestAccess },
-      capabilityProfileId: "workspace",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [current],
@@ -1419,11 +1398,10 @@ describe("AgentControlService", () => {
 
   it("admits each split Trigger tool under its own action class", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const manage = vi.fn(async () => ({ triggers: [] }));
     const { admitAgentControlRequest, service } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [current],
@@ -1455,11 +1433,10 @@ describe("AgentControlService", () => {
 
   it("derives the Trigger create idempotency key from the Run and request", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-      capabilityProfileId: "main",
+      inheritsMain: true,
     });
     const manage = vi.fn(async () => ({}));
     const { claims, service } = makeService({
-      capabilityProfileId: "main",
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
       threads: [current],
@@ -1494,32 +1471,29 @@ describe("AgentControlService", () => {
     );
   });
 
-  it.each(["workspace", "delegated"] as const)(
-    "allows Trigger tools for the %s capability profile",
-    async (capabilityProfileId) => {
-      const current = thread(currentThreadId, nativeHarnessId, "Main", null, {
-        capabilityProfileId,
-      });
-      const manage = vi.fn(async () => ({}));
-      const { service } = makeService({
-        capabilityProfileId,
-        commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-        messages: [],
-        threads: [current],
-        triggers: { manage },
-      });
+  it.each([
+    ["Project", { inheritsMain: false }],
+    ["specialist", { inheritsMain: false, specialistId: "invoices" }],
+  ] as const)("allows Trigger tools for a %s Thread", async (_place, consent) => {
+    const current = thread(currentThreadId, nativeHarnessId, "Main", null, consent);
+    const manage = vi.fn(async () => ({}));
+    const { service } = makeService({
+      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+      messages: [],
+      threads: [current],
+      triggers: { manage },
+    });
 
-      await expect(
-        service.handle("run-token", {
-          input: { limit: 10, operation: "list" },
-          requestId: crypto.randomUUID(),
-          tool: "trigger.read",
-          type: "trigger.control",
-        }),
-      ).resolves.toMatchObject({ type: "trigger.control.result" });
-      expect(manage).toHaveBeenCalledWith(ownerId, { limit: 10, operation: "list" }, current.id);
-    },
-  );
+    await expect(
+      service.handle("run-token", {
+        input: { limit: 10, operation: "list" },
+        requestId: crypto.randomUUID(),
+        tool: "trigger.read",
+        type: "trigger.control",
+      }),
+    ).resolves.toMatchObject({ type: "trigger.control.result" });
+    expect(manage).toHaveBeenCalledWith(ownerId, { limit: 10, operation: "list" }, current.id);
+  });
 });
 
 function makeService(options: {
@@ -1540,7 +1514,6 @@ function makeService(options: {
       | "requestAccess"
     >
   >;
-  capabilityProfileId?: Thread["capabilityProfileId"];
   runAssignment?: { readonly assignerThreadId: Thread["id"]; readonly open: boolean };
   runnerCapabilities?: readonly string[];
   commands: {
@@ -1592,7 +1565,6 @@ function makeService(options: {
   const claims = {
     aud: "opensteer-agent-control" as const,
     bindingGeneration: 1,
-    capabilityProfileId: options.capabilityProfileId ?? ("main" as const),
     environmentId,
     exp: Math.floor(Date.now() / 1_000) + 60,
     iat: Math.floor(Date.now() / 1_000),
@@ -2063,13 +2035,13 @@ function thread(
   overrides: Partial<
     Pick<
       Thread,
-      "accessMode" | "capabilityProfileId" | "createdBy" | "environmentId" | "workspaceId"
+      "accessMode" | "createdBy" | "environmentId" | "inheritsMain" | "specialistId" | "workspaceId"
     >
   > = {},
 ): Thread {
   return {
     accessMode: "full-access",
-    capabilityProfileId: parentThreadId ? "delegated" : "main",
+    inheritsMain: true,
     continuationIdentity: null,
     doneAt: null,
     icon: null,
@@ -2186,9 +2158,12 @@ function inboxInput(
   };
 }
 
-it.each(["main", "workspace"] as const)(
+it.each([
+  ["Main", true],
+  ["Project", false],
+] as const)(
   "uses authenticated admission for a %s person message without waking work",
-  async (capabilityProfileId) => {
+  async (_place, inheritsMain) => {
     const messageId = createId("message");
     const publishPersonMessage = vi.fn(async () => ({
       message: { id: messageId },
@@ -2197,10 +2172,9 @@ it.each(["main", "workspace"] as const)(
     }));
     const enqueueThreadInput = vi.fn();
     const fixture = makeService({
-      capabilityProfileId,
       commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
-      threads: [thread(currentThreadId, nativeHarnessId, "Main", null, { capabilityProfileId })],
+      threads: [thread(currentThreadId, nativeHarnessId, "Main", null, { inheritsMain })],
     });
     const requestId = crypto.randomUUID();
     await expect(
@@ -2246,20 +2220,19 @@ it("omits client-only addressing from agent thread history", async () => {
 
 it.each([
   // A Thread the person started, reused as a task, answers its assigner.
-  ["person.message", "workspace", { assignerThreadId: targetThreadId, open: true }],
-  ["person.show", "main", { assignerThreadId: targetThreadId, open: true }],
+  ["person.message", false, { assignerThreadId: targetThreadId, open: true }],
+  ["person.show", true, { assignerThreadId: targetThreadId, open: true }],
 ] as const)(
-  "refuses %s from a %s Run with assignment %o before side effects",
-  async (type, capabilityProfileId, runAssignment) => {
+  "refuses %s from a Run inheriting Main %s with assignment %o before side effects",
+  async (type, inheritsMain, runAssignment) => {
     const publishPersonMessage = vi.fn();
     const personShow = vi.fn(async () => 1);
     const fixture = makeService({
-      capabilityProfileId,
       personShow,
       ...(runAssignment ? { runAssignment } : {}),
       commands: { publishPersonMessage, delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
       messages: [],
-      threads: [thread(currentThreadId, nativeHarnessId, "Worker", null, { capabilityProfileId })],
+      threads: [thread(currentThreadId, nativeHarnessId, "Worker", null, { inheritsMain })],
     });
     await expect(
       fixture.service.handle("run-token", {
@@ -2279,8 +2252,9 @@ it.each(["report", "queue", "steer"] as const)(
   async (delivery) => {
     const parent = thread(createId("thread"), nativeHarnessId, "Original parent");
     const assigner = thread(targetThreadId, nativeHarnessId, "Current assigner");
+    // A specialist's reach is its lineage, so a reusing assigner outside it stays unreachable.
     const child = thread(currentThreadId, nativeHarnessId, "Worker", parent.id, {
-      capabilityProfileId: "delegated",
+      specialistId: "invoices",
     });
     const forwarded = message(assigner.id, null, "Update");
     const enqueueThreadInput = vi.fn(async () => ({
@@ -2291,7 +2265,6 @@ it.each(["report", "queue", "steer"] as const)(
       wasDuplicate: false,
     }));
     const fixture = makeService({
-      capabilityProfileId: "delegated",
       runAssignment: { assignerThreadId: assigner.id, open: true },
       commands: { delegateThread: vi.fn(), enqueueThreadInput },
       messages: [],
@@ -2310,31 +2283,30 @@ it.each(["report", "queue", "steer"] as const)(
   },
 );
 
-it.each(["main", "workspace"] as const)(
-  "allows %s to show its Thread to the person",
-  async (capabilityProfileId) => {
-    const personShow = vi.fn(async () => 1);
-    const fixture = makeService({
-      capabilityProfileId,
-      personShow,
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [thread(currentThreadId, nativeHarnessId, "Current", null, { capabilityProfileId })],
-    });
-    await expect(
-      fixture.service.handle("run-token", {
-        type: "person.show",
-        requestId: crypto.randomUUID(),
-        target: { threadId: currentThreadId },
-      }),
-    ).resolves.toMatchObject({
-      type: "person.show.result",
-      status: "sent-unconfirmed",
-      connectedDevices: 1,
-    });
-    expect(personShow).toHaveBeenCalledWith(
-      ownerId,
-      expect.objectContaining({ target: { threadId: currentThreadId } }),
-    );
-  },
-);
+it.each([
+  ["Main", true],
+  ["Project", false],
+] as const)("allows %s to show its Thread to the person", async (_place, inheritsMain) => {
+  const personShow = vi.fn(async () => 1);
+  const fixture = makeService({
+    personShow,
+    commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    messages: [],
+    threads: [thread(currentThreadId, nativeHarnessId, "Current", null, { inheritsMain })],
+  });
+  await expect(
+    fixture.service.handle("run-token", {
+      type: "person.show",
+      requestId: crypto.randomUUID(),
+      target: { threadId: currentThreadId },
+    }),
+  ).resolves.toMatchObject({
+    type: "person.show.result",
+    status: "sent-unconfirmed",
+    connectedDevices: 1,
+  });
+  expect(personShow).toHaveBeenCalledWith(
+    ownerId,
+    expect.objectContaining({ target: { threadId: currentThreadId } }),
+  );
+});

@@ -1,5 +1,4 @@
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
-import { agentToolDefinitions } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -1607,7 +1606,7 @@ describe("Pi inputs and instructions", () => {
   it("puts the durable-history notice in front of the model when there is earlier history", () => {
     const context = {
       agentTools: {
-        tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+        tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
         toolsRevision: "test-tools-v1",
         instructions: "Host Opensteer instructions",
         skills: ["opensteer:threads"],
@@ -1781,7 +1780,7 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
   const context: HarnessSessionContext = {
     accessMode: "approval-required",
     agentTools: {
-      tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+      tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
       skills: ["opensteer:threads"],

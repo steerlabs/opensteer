@@ -1,5 +1,4 @@
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
-import { agentToolDefinitions } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readdir, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1261,8 +1260,7 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     agentTools: {
       tools: [
         "host_only_tool",
-        ...agentToolDefinitions.map(({ name }) => name),
-        ...integrationGatewayToolNames,
+        ...agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       ],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",

@@ -7,11 +7,7 @@ import {
   ModelSelectionSchema,
   type ModelSelection,
 } from "@opensteer/core";
-import {
-  platformGuideForRun,
-  toolsForCapabilityProfile,
-  skillsForCapabilityProfile,
-} from "@opensteer/agent-tools";
+import { agentTools, opensteerAgentSkillNames, platformGuideForRun } from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -102,10 +98,7 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(
-      bundle,
-      skillsForCapabilityProfile(c.profile).map(({ name }) => name),
-    ).map(async (skill) => {
+    planAgentSkills(bundle, opensteerAgentSkillNames).map(async (skill) => {
       const { fullName, path } = skill;
       const destination = join(p.workspace, ".eval-skills", fullName);
       await cp(path, destination, { recursive: true });
@@ -119,7 +112,11 @@ export async function runEngine(input: {
     workspace: workspaceSkills.skills,
   });
   const instructions = c.fixtures["AGENTS.md"];
-  const guide = platformGuideForRun({ role: c.role });
+  // A delegated case's root is a Project task, which reaches its Workspace.
+  const guide = platformGuideForRun({
+    role: c.role,
+    reach: c.profile === "main" ? "user" : "workspace",
+  });
   const treatment = {
     prompt: fingerprint({
       guide,
@@ -144,7 +141,7 @@ export async function runEngine(input: {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      tools: toolsForCapabilityProfile(c.profile).map(({ name }) => name),
+      tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
       skills: selected.map(({ fullName }) => fullName),

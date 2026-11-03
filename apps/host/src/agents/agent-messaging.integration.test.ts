@@ -585,7 +585,6 @@ integration("agent-to-agent messaging round trip", () => {
     claimsByToken.set(
       fixture.tokenB,
       testClaims({
-        capabilityProfileId: fixture.threadB.capabilityProfileId,
         environmentId: fixture.environmentId,
         requestedBy: fixture.userId,
         runId: outbound.result.run.id,
@@ -1340,8 +1339,8 @@ integration("agent-to-agent messaging round trip", () => {
       title: "Client research",
       workspaceId: mainWorkspace.id,
     });
-    expect(threadA.capabilityProfileId).toBe("main");
-    expect(threadB.capabilityProfileId).toBe("main");
+    expect(threadA.inheritsMain).toBe(true);
+    expect(threadB.inheritsMain).toBe(true);
 
     const humanTurn = await commands.enqueueThreadInput({
       content: [{ text: "Coordinate the contract review", type: "text" }],
@@ -1368,7 +1367,6 @@ integration("agent-to-agent messaging round trip", () => {
     claimsByToken.set(
       tokenA,
       testClaims({
-        capabilityProfileId: threadA.capabilityProfileId,
         environmentId,
         requestedBy: userId,
         runId: humanTurn.run.id,
@@ -1548,7 +1546,6 @@ integration("agent-to-agent messaging round trip", () => {
 });
 
 function testClaims(input: {
-  readonly capabilityProfileId: Thread["capabilityProfileId"];
   readonly environmentId: ReturnType<typeof createId<"environment">>;
   readonly requestedBy: UserId;
   readonly runId: ReturnType<typeof createId<"run">>;

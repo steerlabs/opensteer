@@ -135,7 +135,7 @@ export async function connectPiMcpServer(
         throw toPiMcpError(error, `Opensteer's ${plan.name} tools could not be listed`);
       }
       return listed.tools.flatMap((tool) =>
-        // Only the tools Opensteer declared for this capability profile are
+        // Only the tools the Host's Run plan declared are
         // registered; a server that offered another one is not this driver's to
         // hand to the model.
         declared.has(tool.name)

@@ -297,7 +297,7 @@ export interface HarnessSessionContext {
   readonly machineAccessRelaySocket: string | undefined;
   /** Host-independent Opensteer product facts and capability scope. */
   readonly platformGuide: string;
-  /** Runner-owned Agent Skills selected by the signed capability profile. */
+  /** Runner-owned Agent Skills the Host's Run plan selected. */
   readonly skills: HarnessSkillPlan | undefined;
   /** Exact provider/model/options snapshot chosen for this Run. */
   readonly modelSelection: ModelSelection;

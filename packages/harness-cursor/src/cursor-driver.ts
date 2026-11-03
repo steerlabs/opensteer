@@ -1088,7 +1088,7 @@ class CursorHarnessSession implements HarnessSession {
     }
     if (event === "beforeMCPExecution") {
       const server = typeof payload.mcp_server_name === "string" ? payload.mcp_server_name : "";
-      // Opensteer's own tools are approved by the signed capability profile, as
+      // Opensteer's own tools are approved by the Host's Run plan, as
       // they are for Codex; asking again would turn a durable decision into
       // provider-specific approval noise.
       if (cursorOpensteerMcpServerIdentifiers.includes(server)) return undefined;

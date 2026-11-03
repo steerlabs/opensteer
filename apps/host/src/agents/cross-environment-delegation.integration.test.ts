@@ -588,10 +588,10 @@ integration("cross-environment delegation reaches the Runner", () => {
       expectedRevisions: new Map([[fixture.lentHarnessInstanceId, 1]]),
     });
     let caller = fixture.parent;
-    for (const profile of ["workspace", "delegated"] as const) {
+    // The Project root, then the task it delegates.
+    for (const profile of ["root", "delegated"] as const) {
       const mcp = await startDiscoveryMcp(caller.token);
       try {
-        expect(claimsByToken.get(caller.token)?.capabilityProfileId).toBe(profile);
         const listed = await mcp.client.listTools();
         expect(listed.tools.map(({ name }) => name)).toContain("environment_list");
         expect(listed.tools.map(({ name }) => name)).not.toContain("workspace_list");
@@ -2617,7 +2617,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     claimsByToken.set(token, {
       aud: "opensteer-agent-control",
       bindingGeneration: binding.bindingGeneration,
-      capabilityProfileId: parent.capabilityProfileId,
       environmentId: mainEnvironmentId,
       exp: Math.floor(Date.now() / 1_000) + 60,
       iat: Math.floor(Date.now() / 1_000),
@@ -2729,7 +2728,6 @@ integration("cross-environment delegation reaches the Runner", () => {
         "runs.environmentId",
         "runs.nextRunnerOrdinal",
         "runs.providerSessionId",
-        "threads.capabilityProfileId",
         "threads.id as threadId",
         "threads.workspaceId",
       ])
@@ -2777,7 +2775,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     claimsByToken.set(token, {
       aud: "opensteer-agent-control",
       bindingGeneration: binding.bindingGeneration,
-      capabilityProfileId: target.capabilityProfileId,
       environmentId: target.environmentId,
       exp: Math.floor(Date.now() / 1_000) + 60,
       iat: Math.floor(Date.now() / 1_000),

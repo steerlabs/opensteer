@@ -1,4 +1,4 @@
-import { agentToolDefinitions } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -12,7 +12,6 @@ import {
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   isolatedServiceHarnessRuntimeBoundary,
@@ -135,7 +134,7 @@ describe("OpenCode tool identity", () => {
   it("is unambiguous for every tool the two Opensteer servers actually offer", () => {
     // The split only works because no agent tool name begins with
     // `integrations_`; assert that over the real lists rather than trusting it.
-    for (const { name } of toolsForCapabilityProfile("main")) {
+    for (const { name } of agentTools.filter((tool) => tool.callers.includes("run"))) {
       expect(name.startsWith("integrations_")).toBe(false);
       expect(opencodeToolIdentity(`opensteer_${name}`)).toEqual({
         name,
@@ -787,7 +786,7 @@ describe("OpenCode sessions", () => {
     expect(Object.keys(mcp)).toEqual(["opensteer"]);
     const permission = config.permission as Record<string, string>;
     expect(permission.opensteer_host_only_tool).toBe("allow");
-    for (const { name } of toolsForCapabilityProfile("main")) {
+    for (const { name } of agentTools.filter((tool) => tool.callers.includes("run"))) {
       expect(permission[`opensteer_${name}`]).toBe("allow");
     }
     for (const name of integrationGatewayToolNames) {
@@ -1833,8 +1832,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     agentTools: {
       tools: [
         "host_only_tool",
-        ...agentToolDefinitions.map(({ name }) => name),
-        ...integrationGatewayToolNames,
+        ...agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       ],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",

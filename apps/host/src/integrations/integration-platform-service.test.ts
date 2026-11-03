@@ -4,11 +4,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  type IntegrationToolsTokenService,
-  type TriggerIntegrationToolsTokenService,
-} from "../mcp/handlers/integrations.js";
-
-import {
   IntegrationDefinitionSchema,
   createIntegrationId,
   integrationDefinitionSummary,
@@ -81,7 +76,6 @@ const runCaller = (run: RunToolContext): ToolCaller => ({
     ...run,
     aud: "opensteer-integration-tools",
     bindingGeneration: 1,
-    capabilityProfileId: "main",
     environmentId: createId("environment"),
     exp: 2_000_000_000,
     iat: 1_900_000_000,
@@ -4158,12 +4152,12 @@ describe("IntegrationPlatformService computer use gateway", () => {
           getWorkspaceForOwner: async () => ({ id: who.run!.workspaceId }),
           runTokens: {
             authenticate: async () => who.run!,
-          } as unknown as IntegrationToolsTokenService,
+          },
           triggerTokens: {
             authenticate: async () => {
               throw new Error("Not a trigger token");
             },
-          } as unknown as TriggerIntegrationToolsTokenService,
+          },
           onWorkspaceEvent: () => undefined,
           platform: f.service,
           publicUrl: url,

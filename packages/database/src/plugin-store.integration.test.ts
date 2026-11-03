@@ -49,7 +49,6 @@ describeStore("plugin activation", (test) => {
       threadId: project.homeThreadId!,
     });
     expect(await fixture.store.runCapabilityScope(turn.run.id)).toMatchObject({
-      inheritsMain: false,
       workspaceId: project.id,
     });
     await fixture.database

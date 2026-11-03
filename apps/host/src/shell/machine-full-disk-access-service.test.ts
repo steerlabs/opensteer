@@ -7,7 +7,6 @@ import { MachineFullDiskAccessService } from "./machine-full-disk-access-service
 const claims: AgentControlRunScope = {
   aud: "opensteer-agent-control",
   bindingGeneration: 1,
-  capabilityProfileId: "workspace",
   environmentId: createId("environment"),
   exp: 2000000000,
   iat: 1900000000,

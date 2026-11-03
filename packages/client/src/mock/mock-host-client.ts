@@ -3337,7 +3337,7 @@ function mockThread(thread: ThreadSummary): Thread {
     providerSessionId: thread.providerSessionId,
     doneAt: thread.doneAt,
     accessMode: thread.accessMode,
-    capabilityProfileId: "workspace",
+    inheritsMain: false,
     continuationIdentity: thread.continuationIdentity,
     askedAt: thread.askedAt,
     createdAt: thread.createdAt,

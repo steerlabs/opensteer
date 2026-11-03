@@ -13746,7 +13746,7 @@ function makeThread(workspaceId: Thread["workspaceId"]): Thread {
   return {
     doneAt: null,
     accessMode: "full-access",
-    capabilityProfileId: "main",
+    inheritsMain: true,
     continuationIdentity: null,
     providerSessionId: null,
     createdAt: now,

@@ -11,7 +11,9 @@ it("matches the caller-visible MCP context byte budget", async () => {
     metrics[`opensteer.${kind}.instructionsBytes`] = bytes(context.instructions);
   }
   for (const role of ["conversation", "work"] as const) {
-    metrics[`runGuide.${role}.bytes`] = bytes(platformGuideForRun({ role }));
+    for (const reach of ["user", "workspace", "lineage"] as const) {
+      metrics[`runGuide.${role}.${reach}.bytes`] = bytes(platformGuideForRun({ role, reach }));
+    }
   }
   await expect(`${JSON.stringify(metrics, null, 2)}\n`).toMatchFileSnapshot(
     "./agent-context-budget.json",

@@ -298,7 +298,6 @@ export function runScope(input: {
 }): AgentControlRunScope {
   return {
     bindingGeneration: 1,
-    capabilityProfileId: "workspace",
     environmentId: createId("environment"),
     membershipGeneration: 1,
     requestedBy: input.requestedBy,

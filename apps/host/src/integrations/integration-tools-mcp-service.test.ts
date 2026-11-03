@@ -120,7 +120,6 @@ const definition = IntegrationDefinitionSchema.parse({
 const scope = {
   aud: "opensteer-integration-tools" as const,
   bindingGeneration: 1,
-  capabilityProfileId: "main" as const,
   environmentId: createId("environment"),
   exp: 2_000_000_000,
   iat: 1_900_000_000,
@@ -1100,7 +1099,7 @@ describe("IntegrationToolsMcpService access classes", () => {
 
     const project = await createHarness({
       inventory: [entry],
-      runScope: { ...scope, capabilityProfileId: "workspace" },
+      runScope: scope,
       reach: { kind: "workspace", workspaceId: scope.workspaceId },
     });
     const projectResponse = await project.handler(
@@ -1127,7 +1126,7 @@ describe("IntegrationToolsMcpService access classes", () => {
       inventory: [entry],
       mainAccess: "withheld",
       propose: vi.fn(),
-      runScope: { ...scope, capabilityProfileId: "workspace" },
+      runScope: scope,
       reach: { kind: "workspace", workspaceId: scope.workspaceId },
     });
     const refusal =

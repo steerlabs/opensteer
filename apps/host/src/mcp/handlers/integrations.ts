@@ -41,14 +41,8 @@ import { IntegrationToolRefSchema } from "../../integrations/integration-tool-re
 import { renderIntegrationDescribe } from "../../integrations/integration-describe.js";
 
 import { z } from "zod";
-import type {
-  RunCapabilityClaims,
-  RunCapabilityTokenService,
-} from "../../agents/run-capability.js";
-import type {
-  TriggerCapabilityClaims,
-  TriggerCapabilityTokenService,
-} from "../../triggers/trigger-control-service.js";
+import type { RunCapabilityClaims } from "../../agents/run-capability.js";
+import type { TriggerCapabilityClaims } from "../../triggers/trigger-control-service.js";
 import type { WatchCapabilityClaims } from "../../triggers/watch-capability.js";
 import {
   type IntegrationPlatformService,
@@ -86,9 +80,6 @@ type IntegrationToolsWatchScope = WatchCapabilityClaims<"opensteer-watch-integra
 type AnyIntegrationToolsScope = (IntegrationToolsScope | IntegrationToolsWatchScope) & {
   readonly reach?: import("@opensteer/core").ThreadReachScope;
 };
-export type IntegrationToolsTokenService = RunCapabilityTokenService<"opensteer-integration-tools">;
-export type TriggerIntegrationToolsTokenService =
-  TriggerCapabilityTokenService<"opensteer-trigger-integration-tools">;
 
 type DiscoveryInventoryEntry = Awaited<
   ReturnType<IntegrationPlatformService["listDiscoveryInventory"]>
@@ -881,8 +872,8 @@ export class IntegrationToolHandlers {
     await this.#refuseWithheldMain(scope, targetWorkspaceId);
     if ("kind" in input) return this.#requestComputerApp(scope, input, callId);
     if (targetWorkspaceId !== scope.workspaceId) {
-      // Cross-Workspace targeting is a capability-profile decision, and a
-      // Trigger execution carries no capability profile to make it with.
+      // A Trigger execution asks only where it runs; another Workspace's access
+      // is a Run's request to make within its reach.
       if (!("runId" in scope)) {
         throw new Error(
           "A Trigger execution may only request integration access for its own Workspace. Omit workspaceId and request access where the Trigger runs.",

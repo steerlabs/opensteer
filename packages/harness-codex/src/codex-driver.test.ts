@@ -1,5 +1,4 @@
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
-import { agentToolDefinitions } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   lstat,
@@ -2772,7 +2771,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     machineAccessRelaySocket: undefined,
     accessMode: options.accessMode ?? "full-access",
     agentTools: {
-      tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+      tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
       skills: ["opensteer:threads"],

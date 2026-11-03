@@ -2237,7 +2237,7 @@ describe("thread event history route", () => {
     const page = {
       thread: ThreadViewSchema.parse({
         accessMode: "full-access",
-        capabilityProfileId: "main",
+        inheritsMain: true,
         continuationIdentity: null,
         createdAt: request.createdAt,
         updatedAt: request.createdAt,
@@ -2424,7 +2424,7 @@ describe("Thread input command boundary", () => {
 
   const thread = {
     accessMode: "full-access" as const,
-    capabilityProfileId: "main" as const,
+    inheritsMain: true,
     continuationIdentity: null,
     createdAt: now,
     createdBy: ownerId,
@@ -2727,7 +2727,7 @@ describe("durable harness catalogs", () => {
     const createThread = vi.fn(async (input: { readonly modelSelection: unknown }) => ({
       thread: {
         accessMode: "full-access" as const,
-        capabilityProfileId: "main",
+        inheritsMain: true,
         continuationIdentity: null,
         createdAt: "2026-09-15T09:00:00.000Z",
         createdBy: ownerId,
@@ -2812,7 +2812,7 @@ describe("durable harness catalogs", () => {
         asOfSequence: "0",
         thread: {
           accessMode: "full-access" as const,
-          capabilityProfileId: "main",
+          inheritsMain: true,
           continuationIdentity: null,
           createdAt: "2026-09-15T09:00:00.000Z",
           createdBy: ownerId,
@@ -2935,7 +2935,7 @@ describe("durable harness catalogs", () => {
         asOfSequence: "0",
         thread: {
           accessMode: input.accessMode,
-          capabilityProfileId: "main",
+          inheritsMain: true,
           continuationIdentity: null,
           createdAt: "2026-09-15T09:00:00.000Z",
           createdBy: ownerId,

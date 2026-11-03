@@ -179,11 +179,9 @@ describeStore("published app HTML", (it) => {
     }
   });
 
-  it("lets only a publisher that reaches the origin Thread update its app", async ({
-    storeFixture,
-  }) => {
+  it("lets a publisher that reaches the origin Thread update its app", async ({ storeFixture }) => {
     const { store, database, startRunFixture } = storeFixture;
-    const f = await startRunFixture("app-reach");
+    const f = await startRunFixture("app-reach", "project");
     const apps = new AppStore(database);
     const publication = (threadId: ThreadId, runId: RunId, publishKey: string, appId?: string) =>
       apps.publish({
@@ -224,23 +222,21 @@ describeStore("published app HTML", (it) => {
         .execute();
       return turn.run.id;
     };
-    // A task delegated from another conversation sits in a different lineage.
+    // Reach follows consent, not lineage: a task delegated from another
+    // conversation in this Workspace reaches the origin as much as its own child.
     const { thread: unrelatedRoot } = await thread("unrelated-root");
     const { thread: delegated } = await thread("unrelated-task", unrelatedRoot.id);
     const { thread: child } = await thread("origin-task", f.thread.id);
-    expect([delegated.capabilityProfileId, child.capabilityProfileId]).toEqual([
-      "delegated",
-      "delegated",
-    ]);
+    expect([delegated.inheritsMain, child.inheritsMain]).toEqual([false, false]);
     const delegatedRun = await running(delegated.id, "unrelated-task-run");
     const childRun = await running(child.id, "origin-task-run");
 
     await expect(
       publication(delegated.id, delegatedRun, "outside-lineage", original.appId),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).resolves.toMatchObject({ appId: original.appId, version: 2 });
     await expect(
       publication(child.id, childRun, "origin-lineage", original.appId),
-    ).resolves.toMatchObject({ appId: original.appId, version: 2 });
+    ).resolves.toMatchObject({ appId: original.appId, version: 3 });
   });
 
   it("refuses foreign and missing IDs, missing/non-HTML/oversized files, and offline Runner reads without a publication", async ({

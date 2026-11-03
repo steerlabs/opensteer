@@ -409,7 +409,7 @@ function harness(
 function thread(): Thread {
   return {
     accessMode: "full-access",
-    capabilityProfileId: "main",
+    inheritsMain: true,
     continuationIdentity: null,
     doneAt: null,
     icon: null,

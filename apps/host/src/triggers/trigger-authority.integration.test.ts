@@ -592,7 +592,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           threadId: actor.thread.id,
         });
         await denied(
-          `F4b ${actor.thread.capabilityProfileId} ${accessMode}`,
+          `F4b ${actor.thread.title} ${accessMode}`,
           actor.thread.id,
           "create",
           "forbidden",
@@ -2384,9 +2384,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       titleSource: "chosen",
       workspaceId: project.id,
     });
-    expect(chat.capabilityProfileId).toBe("main");
-    expect(specialist.capabilityProfileId).toBe("workspace");
-    expect(delegated.capabilityProfileId).toBe("delegated");
+    expect(chat.inheritsMain).toBe(true);
+    expect(specialist.inheritsMain).toBe(false);
+    expect(delegated.inheritsMain).toBe(true);
     expect(crossChild.lineageRootThreadId).toBe(chat.id);
     expect(isolatedChild.lineageRootThreadId).toBe(specialist.id);
     expect(unrelated.lineageRootThreadId).not.toBe(chat.id);
@@ -2475,7 +2475,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       ...signedClaims(),
       aud: "opensteer-agent-control",
       bindingGeneration: binding.bindingGeneration,
-      capabilityProfileId: thread.capabilityProfileId,
       environmentId: f.environmentId,
       membershipGeneration: 1,
       requestedBy: f.ownerId,

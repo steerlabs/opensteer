@@ -11,8 +11,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { agentToolDefinitions } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
+import { agentTools } from "@opensteer/agent-tools";
 import { describe, expect, it } from "vitest";
 import { resolveClaudeExecutable } from "./executable.js";
 
@@ -56,21 +55,16 @@ describe("Claude deferred Opensteer tools", () => {
         if (slow) await delay(25_000);
         entry.ready = Date.now();
         return {
-          tools: [
-            ...agentToolDefinitions.map((tool) => ({
+          tools: agentTools
+            .filter((tool) => tool.callers.includes("run"))
+            .map((tool) => ({
               name: tool.name,
               description: tool.description,
-              inputSchema: toJsonSchemaCompat(tool.inputSchema, {
+              inputSchema: toJsonSchemaCompat(tool.input, {
                 strictUnions: true,
                 pipeStrategy: "input",
               }),
             })),
-            ...integrationGatewayToolNames.map((name) => ({
-              name,
-              description: `Fixture ${name}`,
-              inputSchema: { type: "object" as const, properties: { query: { type: "string" } } },
-            })),
-          ],
         };
       });
       server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -118,9 +112,10 @@ describe("Claude deferred Opensteer tools", () => {
       allowedTools: [
         "ToolSearch",
         "Agent",
-        ...[...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames].map(
-          (name) => `mcp__opensteer__${name}`,
-        ),
+        ...agentTools
+          .filter((tool) => tool.callers.includes("run"))
+          .map(({ name }) => name)
+          .map((name) => `mcp__opensteer__${name}`),
       ],
       permissionMode: "default",
       maxTurns: 12,

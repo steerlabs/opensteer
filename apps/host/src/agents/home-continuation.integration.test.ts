@@ -901,25 +901,25 @@ integration("durable Thread changes native continuation", () => {
     const [home, ordinaryMain, specialistRow] = await Promise.all([
       stack.host.store.database
         .selectFrom("threads")
-        .select(["role", "capabilityProfileId"])
+        .select(["role", "inheritsMain"])
         .where("id", "=", homeId)
         .executeTakeFirstOrThrow(),
       stack.host.store.database
         .selectFrom("threads")
-        .select(["role", "capabilityProfileId"])
+        .select(["role", "inheritsMain"])
         .where("id", "=", ordinaryMainId)
         .executeTakeFirstOrThrow(),
       stack.host.store.database
         .selectFrom("threads")
-        .select(["role", "capabilityProfileId"])
+        .select(["role", "inheritsMain"])
         .where("id", "=", specialistId)
         .executeTakeFirstOrThrow(),
     ]);
     expect(home.role).toBe("conversation");
     expect(ordinaryMain.role).toBe("work");
     expect(specialistRow.role).toBe("work");
-    expect(home.capabilityProfileId).toBe("main");
-    expect(ordinaryMain.capabilityProfileId).toBe("main");
+    expect(home.inheritsMain).toBe(true);
+    expect(ordinaryMain.inheritsMain).toBe(true);
 
     const foreignUserId = await stack.host.store.createUser("Other owner");
     const foreignPlacement = await createForeignPlacement(stack, foreignUserId);
@@ -1014,7 +1014,6 @@ integration("durable Thread changes native continuation", () => {
         claims = {
           aud: "opensteer-agent-control",
           bindingGeneration: session.bindingGeneration,
-          capabilityProfileId: source.capabilityProfileId,
           environmentId: stack!.environmentId,
           exp: Math.floor(Date.now() / 1_000) + 60,
           iat: Math.floor(Date.now() / 1_000),
@@ -1220,7 +1219,6 @@ integration("durable Thread changes native continuation", () => {
         claims = {
           aud: "opensteer-agent-control",
           bindingGeneration: session.bindingGeneration,
-          capabilityProfileId: "main",
           environmentId: stack!.environmentId,
           exp: Math.floor(Date.now() / 1_000) + 60,
           iat: Math.floor(Date.now() / 1_000),

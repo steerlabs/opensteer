@@ -4,18 +4,14 @@ import { describe, expect, it } from "vitest";
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 describe("agent instruction delivery", () => {
-  it("keeps profile instructions out of product MCP initialization", () => {
-    const product = source("apps/host/src/agents/agent-tools-mcp-service.ts");
-    expect(product).not.toContain("instructions: agentCapabilityProfile(");
-  });
-
-  it("keeps integration guidance out of MCP initialization", () => {
-    const integration = source("apps/host/src/integrations/integration-tools-mcp-service.ts");
-    const initialization = integration.slice(
-      integration.indexOf("const server = new Server("),
-      integration.indexOf("server.setRequestHandler(ListToolsRequestSchema"),
+  it("keeps guidance out of MCP initialization", () => {
+    const service = source("apps/host/src/mcp/opensteer-mcp-service.ts");
+    const initialization = service.slice(
+      service.indexOf("new McpServer("),
+      service.indexOf("const advertisedTools"),
     );
-    expect(initialization).not.toContain("instructions:");
+    expect(initialization).toContain("McpServer(");
+    expect(initialization).not.toContain("instructions");
   });
 
   it.each(["claude", "codex", "cursor", "opencode", "pi"])(

@@ -179,10 +179,7 @@ import {
 import { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
 import { ShellHub } from "../shell/shell-hub.js";
 import { AutomationFailureService } from "../triggers/automation-failure-service.js";
-import {
-  TriggerCapabilityTokenService,
-  TriggerControlTokenService,
-} from "../triggers/trigger-control-service.js";
+import { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
 import {
   WatchCapabilityTokenService,
@@ -1830,12 +1827,6 @@ export async function createHostRuntime(
       runners,
       store,
     });
-    const integrationToolsTokens = new RunCapabilityTokenService({
-      audience: "opensteer-integration-tools",
-      authorizer: store,
-      tokens: runCapabilityTokens,
-      ...runCapabilityLifetime,
-    });
     const pluginsTokens = new RunCapabilityTokenService({
       audience: "opensteer-plugin-packages",
       authorizer: store,
@@ -1858,17 +1849,7 @@ export async function createHostRuntime(
       store: triggerStore,
       tokens,
     });
-    const triggerIntegrationToolsTokens = new TriggerCapabilityTokenService({
-      audience: "opensteer-trigger-integration-tools",
-      store: triggerStore,
-      tokens,
-    });
     const watchControlTokens = new WatchControlTokenService({ store: triggerStore, tokens });
-    const watchIntegrationToolsTokens = new WatchCapabilityTokenService({
-      audience: "opensteer-watch-integration-tools",
-      store: triggerStore,
-      tokens,
-    });
     const watchBrowserTokens = new WatchCapabilityTokenService({
       audience: "opensteer-watch-browser-cdp",
       store: triggerStore,

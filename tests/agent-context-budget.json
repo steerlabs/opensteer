@@ -5,6 +5,10 @@
   "opensteer.program.instructionsBytes": 0,
   "opensteer.connection.toolsJsonBytes": 3537,
   "opensteer.connection.instructionsBytes": 0,
-  "runGuide.conversation.bytes": 3746,
-  "runGuide.work.bytes": 2908
+  "runGuide.conversation.user.bytes": 4516,
+  "runGuide.conversation.workspace.bytes": 4170,
+  "runGuide.conversation.lineage.bytes": 4413,
+  "runGuide.work.user.bytes": 3678,
+  "runGuide.work.workspace.bytes": 3332,
+  "runGuide.work.lineage.bytes": 3575
 }

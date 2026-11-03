@@ -897,7 +897,7 @@ describe("wire protocol", () => {
       const id = createId("thread");
       return {
         accessMode: "full-access" as const,
-        capabilityProfileId: "main" as const,
+        inheritsMain: true,
         continuationIdentity: null,
         createdAt: new Date().toISOString(),
         createdBy: createId("user"),

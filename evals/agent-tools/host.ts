@@ -38,7 +38,6 @@ export async function startFakeHost(testCase: EvalCase) {
   const scope = {
     bindingGeneration: 1,
     membershipGeneration: 1,
-    capabilityProfileId: testCase.profile,
     environmentId: createId("environment"),
     requestedBy: createId("user"),
     runId: createId("run"),
@@ -72,6 +71,7 @@ export async function startFakeHost(testCase: EvalCase) {
     createdAt: new Date().toISOString(),
     createdBy: scope.requestedBy,
     harnessInstanceId: createId("harnessInstance"),
+    inheritsMain: testCase.profile === "main",
     lineageRootThreadId: scope.threadId,
     inputQueuePaused: false,
     listed: true,

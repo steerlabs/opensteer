@@ -1,5 +1,4 @@
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
-import { agentToolDefinitions } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -3002,8 +3001,7 @@ async function context(
     agentTools: {
       tools: [
         "host_only_tool",
-        ...agentToolDefinitions.map(({ name }) => name),
-        ...integrationGatewayToolNames,
+        ...agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       ],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
