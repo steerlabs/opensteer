@@ -35,7 +35,8 @@ the same way and use the person's zone as a cron `timezone`. Queue to `home` onl
 something worth telling: compare with the last handled result in code and return without queueing
 when nothing changed, because each reply in Chat can notify the person. When the update needs
 judgment or real work, have the program call `thread_delegate` instead; the task's result returns
-to the anchor, Chat, whose agent tells the person.
+to the anchor, Chat, whose agent tells the person. Tell the task to end with no reply when
+nothing is worth passing on; an empty final reply returns nothing.
 
 When an automation stops working, because its one-shot run failed or Opensteer paused it after
 repeated failures, Opensteer queues a message saying so to its anchor Thread. That Thread's agent

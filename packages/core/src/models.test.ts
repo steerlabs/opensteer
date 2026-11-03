@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createId } from "./ids.js";
 import {
+  AssignmentSchema,
   MessageContentSchema,
   MessageSchema,
   ProviderContinuationIdentitySchema,
@@ -136,5 +137,54 @@ describe("Workspace storage invariants", () => {
       WorkspaceSchema.parse({ ...baseWorkspace, backing: { ...backing, storageAuthorityId: null } })
         .backing.storageAuthorityId,
     ).toBeNull();
+  });
+});
+
+describe("Assignment result receipts", () => {
+  const finished = {
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:00:00.000Z",
+    id: createId("delegation"),
+    initialInputMessageId: createId("message"),
+    initialRunId: createId("run"),
+    objective: "Check quietly",
+    origin: "run",
+    parentAssignmentId: null,
+    parentOccurrenceId: null,
+    parentRunId: createId("run"),
+    parentThreadId: createId("thread"),
+    parentWatchActivationId: null,
+    replyTarget: null,
+    revision: 1,
+    resultRunId: createId("run"),
+    resultText: "",
+    returnAttemptedAt: null,
+    returnMessageId: null,
+    returnReason: null,
+    returnStatus: "delivered",
+    status: "completed",
+    workerThreadId: createId("thread"),
+  };
+  it("accepts an empty completion without a return message", () => {
+    expect(AssignmentSchema.safeParse(finished).success).toBe(true);
+  });
+  it("requires a receipt for a nonempty delivered result", () => {
+    expect(AssignmentSchema.safeParse({ ...finished, resultText: "Found something" }).success).toBe(
+      false,
+    );
+    expect(
+      AssignmentSchema.safeParse({
+        ...finished,
+        resultText: "Found something",
+        returnMessageId: createId("message"),
+      }).success,
+    ).toBe(true);
+  });
+  it("rejects empty failures", () => {
+    expect(
+      AssignmentSchema.safeParse({ ...finished, status: "failed", returnStatus: "pending" })
+        .success,
+    ).toBe(false);
   });
 });

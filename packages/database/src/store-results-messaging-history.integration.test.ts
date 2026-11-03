@@ -2537,8 +2537,10 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toBeNull();
   });
 
-  it("pages Thread history by whole turns", async ({ storeFixture }) => {
-    const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
+  it("pages human and silent automatic Thread turns with split-turn budgets", async ({
+    storeFixture,
+  }) => {
+    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const { environmentId, runnerId, thread, userId, workspace } =
       await createRunFixture("turn_history");
     const runTurn = async (index: number, outputs: readonly string[], toolArguments = {}) => {
@@ -2548,6 +2550,31 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: userId,
         threadId: thread.id,
       });
+      if (index === 3) {
+        await database
+          .updateTable("threads")
+          .set({ role: "conversation" })
+          .where("id", "=", thread.id)
+          .execute();
+        await database
+          .updateTable("messages")
+          .set({
+            author: {
+              kind: "watch",
+              displayName: "Watcher",
+              activationId: createId("triggerWatchActivation"),
+              revisionId: createId("triggerRevision"),
+              triggerId: createId("trigger"),
+            },
+          })
+          .where("id", "=", turn.run.seedInputId)
+          .execute();
+        await database
+          .updateTable("runs")
+          .set({ personWaited: false })
+          .where("id", "=", turn.run.id)
+          .execute();
+      }
       await store.claimCommand(turn.command.id, `host-worker-turn-history-${index}`);
       const binding = await store.acquireExecutionBinding({
         bindingLeaseExpiresAt: new Date(Date.now() + 60_000),

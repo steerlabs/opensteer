@@ -738,10 +738,7 @@ describe("Home conversation", () => {
         ...snapshot,
         transcripts: {
           ...snapshot.transcripts,
-          [home]: [
-            { ...homeRun, startedBy: report.author },
-            { ...recent, ...(moved ? { body: "Streaming update", streaming: true } : {}) },
-          ],
+          [home]: [{ ...recent, ...(moved ? { body: "Streaming update", streaming: true } : {}) }],
         },
       };
     await draw();
@@ -1063,7 +1060,7 @@ function stubLayoutApis(): void {
   );
 }
 
-it("quiet Chat hides non-human work, names its reply source and opens homeRun human Activity", async () => {
+it("Chat shows automatic work by its source, names its reply source and opens homeRun human Activity", async () => {
   const { node, root } = setup();
   const open = vi.fn();
   const waking = { ...report, runId: homeRun.runId, policy: "queue" as const };
@@ -1099,9 +1096,13 @@ it("quiet Chat hides non-human work, names its reply source and opens homeRun hu
       ),
     );
   await render([waking, { ...automated, status: "running" }]);
-  expect(node.textContent).toBe("");
+  expect(node.textContent).toContain("Mattress research");
+  expect(node.textContent).not.toContain("FINAL SOURCE");
+  // A silent automatic turn still has a row: its source and how long it worked.
   await render([waking, automated]);
-  expect(node.textContent).toBe("");
+  expect(node.textContent).toContain("Mattress research");
+  expect(node.textContent).toContain("Worked");
+  expect(node.textContent).not.toContain("FINAL SOURCE");
   await render([waking, { ...automated, replyMessageId: answer.id }, answer]);
   expect(node.textContent).toContain(answer.body);
   expect(node.querySelector(".update-line")).toBeNull();

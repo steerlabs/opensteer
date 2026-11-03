@@ -1104,7 +1104,17 @@ export const AssignmentSchema = z
         message: "Finished Assignment must have an exact result",
       });
     }
-    if (assignment.returnStatus === "delivered" && assignment.returnMessageId === null) {
+    if (assignment.status === "failed" && assignment.resultText === "") {
+      context.addIssue({
+        code: "custom",
+        message: "Failed Assignment must have a nonempty result",
+      });
+    }
+    if (
+      assignment.returnStatus === "delivered" &&
+      assignment.returnMessageId === null &&
+      assignment.resultText !== ""
+    ) {
       context.addIssue({
         code: "custom",
         message: "Delivered Assignment must have a return receipt",

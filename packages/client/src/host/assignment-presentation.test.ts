@@ -4,6 +4,7 @@ import { MockHostClient } from "../mock/mock-host-client.js";
 import type { DelegationEntry } from "./client.js";
 import {
   assignmentPresentation,
+  assignmentReturnText,
   delegationPresentation,
   taskRowNote,
   tasksUnderWay,
@@ -124,5 +125,27 @@ describe("tasksUnderWay", () => {
       "earlier",
       "later",
     ]);
+  });
+});
+
+describe("assignment return text", () => {
+  it("does not claim an empty completed result was returned", () => {
+    expect(
+      assignmentReturnText(
+        { ...settled("completed"), resultPreview: "", returnStatus: "delivered" },
+        "Chat",
+      ),
+    ).toBeNull();
+  });
+  it("keeps written results and cancellation receipts visible", () => {
+    expect(
+      assignmentReturnText(
+        { ...settled("completed"), resultPreview: "Found it", returnStatus: "delivered" },
+        "Chat",
+      ),
+    ).toBe("Returned to Chat");
+    expect(
+      assignmentReturnText({ ...settled("cancelled"), returnStatus: "delivered" }, "Chat"),
+    ).toBe("Chat was told");
   });
 });

@@ -171,18 +171,11 @@ survives history boundaries. See
 
 ## Conversation history
 
-A conversation's turns are mostly automatic Runs it never draws, so its pages
-(`view: "conversation"`) count and send only turns that can show. The Host's
-quiet set must stay strictly inside what clients hide: a Run is quiet only once
-terminal, from facts frozen then, and a person who ever waited on it keeps it
-shown even after their input moves elsewhere. Getting this backwards hides a
-reply; the reverse only costs a row the client filters. Pages are sparse, so a
-page's coverage is its `readState.asOfSequence`, never its last event: replaying
-buffered events against the last event resurrects what was omitted. Message
-jumps (`aroundMessageId`) stay unfiltered so every search or notification target
-opens. Automatic inputs never count as unread in a conversation, for the same
-reason they are never drawn. See
-[`run-visibility.ts`](../packages/database/src/run-visibility.ts) and
+Conversations page by whole turns like any Thread. Every settled turn draws its
+reply or an outcome, including silent automatic work, so a page shows the turns
+it counts without the Host predicting client visibility. Oversized turns can be
+split by the page budget. Automatic input messages remain hidden behind their
+turn's source and never count as unread. See
 [`snapshot-store.ts`](../packages/database/src/snapshot-store.ts).
 
 ## Personal process recovery and diagnostics

@@ -760,7 +760,7 @@ describe("task titles", () => {
   });
 });
 
-it("opens Chat behind silent automatic Runs with a full conversation page in one read", async () => {
+it("opens Chat with a whole-turn page in one read", async () => {
   let fixture!: ReturnType<typeof conversationHistoryHost>;
   await mount("/", {
     hostClient: (source) => {
@@ -771,12 +771,12 @@ it("opens Chat behind silent automatic Runs with a full conversation page in one
   await vi.waitFor(
     () => {
       for (let index = 0; index < 10; index += 1)
-        expect(document.body.textContent, "Chat did not draw the filtered history").toContain(
+        expect(document.body.textContent, "Chat did not draw its history page").toContain(
           `Visible conversation question ${index}`,
         );
     },
     { timeout: 1000 },
   );
   expect(fixture.requests).toHaveLength(1);
-  expect(fixture.requests[0]).toMatchObject({ turns: 10, view: "conversation" });
+  expect(fixture.requests[0]).toMatchObject({ turns: 10 });
 });
