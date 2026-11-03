@@ -2090,7 +2090,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
     "specialist.list": async (input) =>
       rpcSuccess({ specialists: client.listSpecialists(input.workspaceId) }),
-    "plugin.list": async () => rpcSuccess({ plugins: client.listPlugins() }),
+    "plugin.list": async (input) => rpcSuccess({ plugins: client.listPlugins(input.workspaceId) }),
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
@@ -2859,7 +2859,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       client.removeSpecialist(command.workspaceId, command.specialistId);
       return rpcSuccess({ type: command.type });
     case "plugin.list":
-      return rpcSuccess({ type: command.type, plugins: client.listPlugins() });
+      return rpcSuccess({ type: command.type, plugins: client.listPlugins(command.workspaceId) });
     case "plugin.update":
     case "plugin.remove":
     case "plugin.activation.set":
@@ -4696,11 +4696,19 @@ export class MockHostClient implements HostClient {
 interface MockPlugin {
   id: string;
   name: string;
-  scope: string;
-  workspaceId: null;
+  scope: "deployment" | "workspace";
+  workspaceId: string | null;
+  source: { directory?: string };
   currentVersionId: string;
-  versions: { id: string; digest: string; specialistManifest?: SpecialistManifest | undefined }[];
+  versions: {
+    id: string;
+    digest: string;
+    manifest: { name: string; version?: string; description?: string; skills: unknown[] };
+    specialistManifest?: SpecialistManifest | undefined;
+  }[];
   activations: { workspaceId: string }[];
+  createdAt: string;
+  updatedAt: string;
 }
 class MockHostState {
   private readonly plugins: MockPlugin[] = [];
@@ -4858,8 +4866,11 @@ class MockHostState {
     );
     if (index >= 0) this.specialists.splice(index, 1);
   }
-  listPlugins(): Record<string, unknown>[] {
-    return this.plugins.map((p) => ({ ...p }));
+  /** The Host's rows: every Deployment plugin, and a Workspace's own when one is named. */
+  listPlugins(workspaceId?: string): Record<string, unknown>[] {
+    return this.plugins
+      .filter((p) => !workspaceId || p.scope === "deployment" || p.workspaceId === workspaceId)
+      .map((p) => ({ ...p, servers: [] }));
   }
   mutatePlugin(
     command: Extract<
@@ -4876,13 +4887,16 @@ class MockHostState {
         if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
     } else if (command.type === "plugin.update") {
       const id = crypto.randomUUID();
+      const current = plugin.versions.find((v) => v.id === plugin.currentVersionId);
       plugin.versions.push({
         id,
         digest: id,
-        specialistManifest: plugin.versions.find((v) => v.id === plugin.currentVersionId)
-          ?.specialistManifest,
+        manifest: current?.manifest ?? { name: plugin.name, skills: [] },
+        specialistManifest: current?.specialistManifest,
       });
       plugin.currentVersionId = id;
+      plugin.source = { directory: command.input.directory };
+      plugin.updatedAt = this.now().toISOString();
     } else {
       if (
         command.active &&
@@ -5542,16 +5556,25 @@ class MockHostState {
   constructor(options: MockHostClientOptions = {}) {
     for (const p of options.specialistPlugins ?? []) {
       const id = crypto.randomUUID();
+      const at = new Date(0).toISOString();
       this.plugins.push({
         id: p.id,
         name: p.name,
         scope: "deployment",
         workspaceId: null,
+        source: { directory: `/opt/opensteer/plugins/${p.name}` },
         currentVersionId: id,
         versions: [
-          { id, digest: id, specialistManifest: SpecialistManifestSchema.parse(p.manifest) },
+          {
+            id,
+            digest: id,
+            manifest: { name: p.name, version: "1.0.0", skills: [] },
+            specialistManifest: SpecialistManifestSchema.parse(p.manifest),
+          },
         ],
         activations: [],
+        createdAt: at,
+        updatedAt: at,
       });
     }
     this.sessions = [
@@ -8237,15 +8260,19 @@ class MockHostState {
     const name = directory.split("/").filter(Boolean).at(-1) ?? "plugin";
     if (name === "opensteer") throw new Error("The plugin name opensteer is reserved");
     const id = crypto.randomUUID(),
-      versionId = crypto.randomUUID();
+      versionId = crypto.randomUUID(),
+      at = this.now().toISOString();
     this.plugins.push({
       id,
       name,
       scope: "deployment",
       workspaceId: null,
+      source: { directory },
       currentVersionId: versionId,
-      versions: [{ id: versionId, digest: versionId }],
+      versions: [{ id: versionId, digest: versionId, manifest: { name, skills: [] } }],
       activations: [],
+      createdAt: at,
+      updatedAt: at,
     });
     return { issues: [] };
   }

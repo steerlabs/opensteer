@@ -66,3 +66,5 @@ export * from "./app-icons.js";
 export * from "./run-place.js";
 
 export * from "./browser-cursor.js";
+export * from "./plugins.js";
+export * from "./project-folders.js";
