@@ -4697,6 +4697,7 @@ export function migrationProvider() {
         "0143_specialist_threads": specialistThreadsMigration,
         "0144_project_chats": projectChatsMigration,
         "0145_specialist_lifecycle": specialistLifecycleMigration,
+        "0146_every_turn_shows": everyTurnShowsMigration,
       };
     },
   };
@@ -6604,7 +6605,7 @@ export const runVisibilityMigration: Migration = {
             'run.completed', 'run.failed', 'run.interrupted')
           and event.data @> '{"personWaiting":true}'::jsonb and event.run_id is not null
       ) update runs set person_waited = true from waited where waited.id = runs.id;
-      -- This historical backfill precedes app_versions; finalization uses the current predicate.
+      -- This historical backfill precedes app_versions.
       update runs set quiet = (
         exists (select 1 from messages seed where seed.id = runs.seed_input_id
           and seed.author->>'kind' <> 'human')
@@ -7056,5 +7057,11 @@ export const specialistLifecycleMigration: Migration = {
       ALTER TABLE specialists ADD FOREIGN KEY(plugin_id, plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE RESTRICT`.execute(
       database,
     );
+  },
+};
+
+export const everyTurnShowsMigration: Migration = {
+  async up(database) {
+    await sql`alter table runs drop column quiet`.execute(database);
   },
 };

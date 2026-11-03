@@ -335,9 +335,7 @@ function ConversationTurn(props: {
       ? undefined
       : () => onOpenActivity(activityKey);
   const outcome =
-    turn.personWaiting !== false &&
-    turn.run !== null &&
-    (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
+    turn.run !== null && (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
       turn.run.status === "completed" && turn.run.replyMessageId === null ? (
         <Pressable accessibilityRole="button" onPress={onActivity}>
           <AppText role="caption" tone="muted" style={{ fontSize: 12.5 }}>
@@ -355,7 +353,7 @@ function ConversationTurn(props: {
       ) : line?.kind === "kept" ? (
         <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} />
       ) : null}
-      {view.reply !== null && turn.source ? (
+      {turn.source ? (
         <TurnSource
           source={turn.source}
           onOpenThread={props.onOpenThread}

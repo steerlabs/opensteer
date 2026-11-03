@@ -752,7 +752,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const kept = useKeptComputerStop(turn, now);
   const composing = view.composing && live && now === null && kept === null;
   const startHold = live ? view.startHold : null;
-  const outcome = turn.personWaiting !== false && turn.run !== null && showsRunOutcome(turn.run);
+  const outcome = turn.run !== null && showsRunOutcome(turn.run);
   const settled = turnState(turn) === "settled";
   // A Run that ended without a reply, stopped or failed, keeps its places under how it ended.
   const placesUnderOutcome = settled && outcome && view.reply === null;
@@ -772,7 +772,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
         <KeptComputerStopLine key={kept.sessionId} stop={kept} />
       ) : null}
       {composing && restartPending(turn.run) ? <RunRestart>{restartingLabel}</RunRestart> : null}
-      {view.reply && turn.source ? <TurnSource source={turn.source} /> : null}
+      {turn.source ? <TurnSource source={turn.source} /> : null}
       {view.reply ? (
         <ReplyBubble message={view.reply} turnKey={turnKey} />
       ) : composing ? (

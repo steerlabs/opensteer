@@ -1916,7 +1916,7 @@ describe("quiet Chat", () => {
   it("does not count hidden automatic inputs as incoming Chat messages", () => {
     const hidden = input({ author: startedBy, sequence: "10" });
     const entries = [hidden, run({ startedBy })];
-    expect(rows(entries)).toEqual([]);
+    expect(rows(entries)).toHaveLength(1);
     expect(incomingTranscriptMessages(entries, "viewer", true)).toEqual([]);
     expect(incomingTranscriptMessages(entries, "viewer", false)).toEqual([hidden]);
     const reply = message({ id: "reply", sequence: "11" });
@@ -1954,12 +1954,13 @@ describe("quiet Chat", () => {
       expect(drawnTranscriptRowKeys(after, context)).toEqual(keys);
     }
   });
-  it("hides a returning task's silent turn, including typing and failures", () => {
+  it("shows a returning task's silent turn, including typing and failures", () => {
     for (const status of ["running", "completed", "failed", "interrupted"] as const) {
       const entry = run({ startedBy, status });
-      expect(rows([entry])).toEqual([]);
+      expect(rows([entry])).toHaveLength(1);
       const group = groupTranscriptEntries([entry])[0];
-      if (group?.kind === "turn") expect(conversationTurn(group.turn).composing).toBe(false);
+      if (group?.kind === "turn")
+        expect(conversationTurn(group.turn).composing).toBe(status === "running");
     }
   });
   it("keeps the reply, live computer use, human steers and unknown older Hosts", () => {
@@ -1983,7 +1984,7 @@ describe("quiet Chat", () => {
   });
 });
 
-it("shows only decisions and failed assignments from automatic work, including standalone assignments", () => {
+it("shows every turn task and only standalone assignments needing the reader", () => {
   const automatic = run({ startedBy: { kind: "platform", cause: "assignment-result" } });
   const task: import("./client.js").AssignmentEntry = {
     kind: "assignment",
@@ -2048,7 +2049,7 @@ it("shows only decisions and failed assignments from automatic work, including s
             : [],
       });
       expect(rows.length, `${origin} ${state}`).toBe(
-        state === "waiting" || state === "failed" ? 1 : 0,
+        origin === "run" || state === "waiting" || state === "failed" ? 1 : 0,
       );
     }
   }

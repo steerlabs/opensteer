@@ -2,7 +2,11 @@ import { sql } from "kysely";
 import { createId } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
-import { runStartedByMigration, runVisibilityMigration } from "./migrations.js";
+import {
+  runStartedByMigration,
+  runVisibilityMigration,
+  everyTurnShowsMigration,
+} from "./migrations.js";
 import { stampRunContext } from "./workspace-events.js";
 
 it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
@@ -137,12 +141,9 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
             ).rows[0]!.bytes,
           }),
         );
-        const rows = await tx
-          .selectFrom("runs")
-          .select(["id", "personWaited", "quiet"])
-          .where(sql<boolean>`id like 'run-%'`)
-          .orderBy("id")
-          .execute();
+        const { rows } = await sql<{ id: string; personWaited: boolean; quiet: boolean }>`
+          select id, person_waited as "personWaited", quiet from runs
+          where id like 'run-%' order by id`.execute(tx);
         expect(rows.map((r) => r.quiet)).toEqual([
           true,
           false,
@@ -180,6 +181,23 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
         expect(await stampRunContext(tx, "run.interrupted", runId, {})).toMatchObject({
           personWaiting: true,
         });
+        await sql`create index runs_quiet_fixture on runs (quiet)`.execute(tx);
+        await everyTurnShowsMigration.up(tx);
+        const remaining = await sql<{
+          quiet: boolean;
+          personWaited: boolean;
+          quietIndex: boolean;
+          unreadIndex: boolean;
+        }>`
+          select exists (select 1 from information_schema.columns where table_schema = 'visibility_migration_fixture' and table_name = 'runs' and column_name = 'quiet') as quiet,
+          exists (select 1 from information_schema.columns where table_schema = 'visibility_migration_fixture' and table_name = 'runs' and column_name = 'person_waited') as "personWaited",
+          to_regclass('visibility_migration_fixture.runs_quiet_fixture') is not null as "quietIndex",
+          to_regclass('visibility_migration_fixture.messages_conversation_unread') is not null as "unreadIndex"`.execute(
+          tx,
+        );
+        expect(remaining.rows).toEqual([
+          { quiet: false, personWaited: true, quietIndex: false, unreadIndex: true },
+        ]);
         await sql`drop schema visibility_migration_fixture cascade`.execute(tx);
       });
     } finally {

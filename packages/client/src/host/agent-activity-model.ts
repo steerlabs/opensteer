@@ -497,12 +497,11 @@ export interface ConversationTurn {
 }
 
 export function conversationTurn(turn: Turn): ConversationTurn {
-  const startHold = turn.personWaiting === false ? null : turnStartHold(turn);
+  const startHold = turnStartHold(turn);
   // A Run working in the background is not writing anything, nobody is writing
   // for one that has not started, and one a message joined is writing its
   // reply after that message, not here.
   const composing =
-    turn.personWaiting !== false &&
     startHold === null &&
     turn.reply === null &&
     turn.continued !== true &&
@@ -564,28 +563,7 @@ export function conversationRows(
   options: ConversationRowOptions,
 ): readonly ConversationRow[] {
   const rows: ConversationRow[] = [];
-  const automaticRuns = new Set(
-    groups.flatMap((group) =>
-      group.kind === "turn" &&
-      group.turn.startedBy !== undefined &&
-      group.turn.startedBy.kind !== "human"
-        ? [group.turn.runId]
-        : [],
-    ),
-  );
-  for (const original of groups) {
-    const group =
-      original.kind === "turn" && original.turn.personWaiting === false
-        ? {
-            ...original,
-            turn: {
-              ...original.turn,
-              assignments: original.turn.assignments.filter((entry) =>
-                conversationAssignmentNeedsReader(entry, options.waitingRequests),
-              ),
-            },
-          }
-        : original;
+  for (const group of groups) {
     if (
       group.kind === "assignment" &&
       group.entry.assignment.origin !== "run" &&
@@ -596,8 +574,7 @@ export function conversationRows(
       group.kind === "message" &&
       group.entry.messageKind === "input" &&
       group.entry.author.kind !== "human" &&
-      group.entry.runId !== null &&
-      automaticRuns.has(group.entry.runId)
+      group.entry.runId !== null
     )
       continue;
     if (group.kind === "turn" && !conversationTurnShows(group.turn, options)) continue;
@@ -618,8 +595,6 @@ export function conversationRows(
  * its Run ended, or its work on a computer.
  */
 function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRowOptions): boolean {
-  if (turn.personWaiting === false)
-    return turn.reply !== null || turn.assignments.length > 0 || (live && atComputer(turn));
   const { composing, reply, startHold } = conversationTurn(turn);
   return (
     reply !== null ||

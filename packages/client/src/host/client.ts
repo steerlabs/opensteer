@@ -145,10 +145,8 @@ export interface ComputerViewMutationOptions {
   readonly idempotencyKey?: string;
 }
 
-/** A conversation view's window has no exact total (`history-conversation-v1`). */
-type TranscriptWindow = Omit<ThreadMessageWindow, "threadId" | "totalItems"> & {
+type TranscriptWindow = Omit<ThreadMessageWindow, "threadId"> & {
   threadId: string;
-  totalItems?: number | undefined;
 };
 
 export interface WorkspaceSummary {
