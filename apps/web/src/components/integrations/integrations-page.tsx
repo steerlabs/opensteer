@@ -827,7 +827,10 @@ export function IntegrationsPage({ embedded = false }: { readonly embedded?: boo
                   workspaces={snapshot.workspaces}
                 />
                 <PluginsAndMcpSection
-                  entries={otherInstallations.filter((e) => e.installation.sourceKind !== "plugin")}
+                  entries={otherInstallations.filter(
+                    (entry) =>
+                      entry.installation.sourceKind !== "plugin" || entry.servers.length > 0,
+                  )}
                   isAdministrator={dashboard?.isAdministrator ?? false}
                   onInstall={() => {
                     setError(null);
