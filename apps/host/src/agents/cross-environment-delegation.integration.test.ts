@@ -1920,14 +1920,20 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const cancel = (token: string, assignmentId: typeof parent.assignmentId) =>
       service.handle(token, { assignmentId, requestId: randomUUID(), type: "assignment.cancel" });
-    // A task's own Run stops only what it started.
+    // A task's own Run cannot stop itself, but stops work within its reach,
+    // including work it did not start.
     await expect(cancel(parentWorker.token, parent.assignmentId)).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(cancel(parentWorker.token, sibling.assignmentId)).rejects.toMatchObject({
-      code: "forbidden",
-    });
     await expect(cancel(parentWorker.token, child.assignmentId)).resolves.toMatchObject({
+      assignment: { status: "cancelled" },
+    });
+    const unrelated = await delegate(fixture.token, {
+      environmentId: fixture.lentEnvironmentId,
+      task: "Unrelated follow-up",
+      workspaceId: fixture.workspaceId,
+    });
+    await expect(cancel(parentWorker.token, unrelated.assignmentId)).resolves.toMatchObject({
       assignment: { status: "cancelled" },
     });
     // A member who neither started the work nor owns the Workspace cannot stop it.
@@ -1947,7 +1953,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         requestedBy: fixture.userId,
       }),
     ).resolves.toMatchObject({ assignment: { status: "cancelled" } });
-    // A Main-profile Run stops whatever its person could.
+    // A Run that inherits Main stops whatever its person could.
     await expect(cancel(fixture.token, parent.assignmentId)).resolves.toMatchObject({
       assignment: { status: "cancelled" },
     });

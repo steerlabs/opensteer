@@ -532,6 +532,8 @@ describeStore("published app HTML", (it) => {
         await (await import("@opensteer/shared/httpServer")).closeHttpServerNow(upstream);
       }
       const startsBefore = start.mock.calls.length;
+      // A Project task reaches only its Project, so the Main app is out of reach.
+      const otherProject = await storeFixture.createProjectWorkspace(f.userId, "app-outside");
       const { thread: unrelated } = await store.createThread({
         createdBy: f.userId,
         environmentId: f.environmentId,
@@ -539,7 +541,7 @@ describeStore("published app HTML", (it) => {
         idempotencyKey: "unrelated-app-root",
         modelSelection: f.thread.modelSelection,
         title: "Other",
-        workspaceId: f.workspace.id,
+        workspaceId: otherProject.id,
       });
       const { thread: child } = await store.createThread({
         createdBy: f.userId,
@@ -548,9 +550,10 @@ describeStore("published app HTML", (it) => {
         idempotencyKey: "unrelated-app-child",
         modelSelection: f.thread.modelSelection,
         title: "Other task",
-        workspaceId: f.workspace.id,
+        workspaceId: otherProject.id,
         parentThreadId: unrelated.id,
       });
+      expect(child.inheritsMain).toBe(false);
       const turn = await storeFixture.enqueueHumanTrigger({
         content: [{ type: "text", text: "Other task" }],
         idempotencyKey: "unrelated-app-turn",
@@ -568,7 +571,12 @@ describeStore("published app HTML", (it) => {
         .where("id", "=", child.id)
         .execute();
       const originScope = scope;
-      scope = { ...scope, threadId: child.id, runId: turn.run.id };
+      scope = {
+        ...scope,
+        threadId: child.id,
+        runId: turn.run.id,
+        workspaceId: otherProject.id,
+      };
       await expect(publish({ appId: first.appId })).rejects.toMatchObject({ code: "not_found" });
       expect(start).toHaveBeenCalledTimes(startsBefore);
       await expect(

@@ -96,7 +96,9 @@ original route to the registered callback after approval, without copying a Host
 session into the browser. PKCE binds the code to the requesting agent. Consent selects
 an access ceiling and either everything the person can access or one Workspace
 they own. MCP credentials are opaque, hashed in a separate durable record, and
-cannot become Host sessions or authenticate Runners, Runs or programs. The live
+cannot become Host sessions or authenticate Runners, Runs or programs. The one MCP
+route serves a connection only on the route origin it was approved for, and Runs and
+programs only on the runtime origin, so neither credential works on the other's route. The live
 connection authenticator rechecks expiry and revocation on every call; transport
 sessions do not retain connection authority. Workspace consent loses authority when ownership ends.
 Revoking a login does not revoke independently approved connections: remove those
