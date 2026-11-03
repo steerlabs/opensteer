@@ -24,7 +24,6 @@ import type { DatabaseSchema } from "./schema.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 import { describe, expect } from "vitest";
 import {
-  agentControlActionLimits,
   agentControlMaxDelegationDepth,
   IntegrationPlatformStore,
   OpensteerStore,
@@ -125,7 +124,7 @@ describeStore("PostgreSQL store", (it) => {
         message: "Milestone passed.",
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    for (let index = 1; index < agentControlActionLimits["thread.message"]; index += 1) {
+    for (let index = 1; index < 40; index += 1) {
       await store.admitAgentControlRequest({
         ...admission,
         action: "thread.message",
@@ -138,10 +137,7 @@ describeStore("PostgreSQL store", (it) => {
         admission: { ...admission, requestId: randomUUID() },
         message: "Milestone passed.",
       }),
-    ).rejects.toMatchObject({
-      code: "conflict",
-      details: { actionClass: "thread.message", limit: 32 },
-    });
+    ).resolves.toMatchObject({ wasDuplicate: false });
     await expect(
       store.publishPersonMessage({ admission, message: "Milestone passed." }),
     ).resolves.toMatchObject({ wasDuplicate: true, message: { id: row.id }, events: [] });
@@ -155,9 +151,7 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("serializes durable per-Run admission and charges an exact retry only once", async ({
-    storeFixture,
-  }) => {
+  it("serializes durable per-Run receipts without an action quota", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
     const fixture = await createRunFixture("agent-admission-run");
@@ -201,7 +195,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
 
-    const remaining = agentControlActionLimits["thread.message"] - 1;
+    const remaining = 40;
     await Promise.all(
       Array.from({ length: remaining }, async (_, index) =>
         store.admitAgentControlRequest({
@@ -223,24 +217,17 @@ describeStore("PostgreSQL store", (it) => {
         runId: sourceTurn.run.id,
         sourceThreadId: fixture.thread.id,
       }),
-    ).rejects.toMatchObject({
-      code: "conflict",
-      details: {
-        actionClass: "thread.message",
-        limit: agentControlActionLimits["thread.message"],
-      },
-    });
+    ).resolves.toMatchObject({ wasDuplicate: false });
     const count = await database
       .selectFrom("agentControlRequests")
       .select(({ fn }) => fn.countAll<string>().as("count"))
       .where("runId", "=", sourceTurn.run.id)
       .where("actionClass", "=", "thread.message")
       .executeTakeFirstOrThrow();
-    expect(Number(count.count)).toBe(agentControlActionLimits["thread.message"]);
+    expect(Number(count.count)).toBe(remaining + 2);
 
-    expect(agentControlActionLimits["thread.list"]).toBe(64);
     await Promise.all(
-      Array.from({ length: agentControlActionLimits["thread.list"] }, async (_, index) =>
+      Array.from({ length: 65 }, async (_, index) =>
         store.admitAgentControlRequest({
           ...agentControlBinding,
           action: "thread.list",
@@ -260,10 +247,7 @@ describeStore("PostgreSQL store", (it) => {
         runId: sourceTurn.run.id,
         sourceThreadId: fixture.thread.id,
       }),
-    ).rejects.toMatchObject({
-      code: "conflict",
-      details: { actionClass: "thread.list", limit: agentControlActionLimits["thread.list"] },
-    });
+    ).resolves.toMatchObject({ wasDuplicate: false });
     await expect(
       store.admitAgentControlRequest({
         ...agentControlBinding,

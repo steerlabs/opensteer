@@ -9,6 +9,7 @@ import {
   RunIdSchema,
   SequenceSchema,
   ThreadIdSchema,
+  threadReachScope,
   type AgentEvent,
   type WorkspaceId,
 } from "@opensteer/core";
@@ -558,6 +559,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: agentControlToken,
           url: this.#agentToolsUrl,
           role: context.thread.role,
+          reach: threadReachScope(context.thread).kind,
         }),
         browserCdp: {
           token: agentControlToken,

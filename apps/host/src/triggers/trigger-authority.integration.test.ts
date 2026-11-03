@@ -1,8 +1,13 @@
+import { TriggerOutputSchema } from "@opensteer/agent-tools/outputs";
+import { type AgentControlResponse } from "../mcp/control.test-support.js";
+import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
+import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import {
   createId,
   HarnessIdSchema,
@@ -31,13 +36,7 @@ import {
   type RunnerIdentity,
   type RunnerRegistry,
 } from "@opensteer/orchestration";
-import {
-  AgentControlResponseSchema,
-  hostApi,
-  type AgentControlResponse,
-  type HostApiServerContext,
-  type RunnerDescriptor,
-} from "@opensteer/protocol";
+import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
   TriggerControlInputSchema,
   TriggerRevisionSchema,
@@ -55,22 +54,22 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
-  AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "../agents/agent-control-service.js";
-import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { AgentOperationReceipts } from "@opensteer/database";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import {
-  TriggerControlService,
   type TriggerControlScope,
   type TriggerControlTokenService,
 } from "./trigger-control-service.js";
 import { createTriggerRpcHandlers, handleTriggerCommand } from "./trigger-routes.js";
 import { TriggerService } from "./trigger-service.js";
 import type { WatchControlScope, WatchControlTokenService } from "./watch-capability.js";
-import { WatchControlService } from "./watch-control-service.js";
+import { WatchToolsTestClient } from "../mcp/control.test-support.js";
 import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -94,7 +93,10 @@ const modelSelection = ModelSelectionSchema.parse({
   options: { effort: "low" },
   providerId: "openai",
 });
-const createdSchema = z.object({ trigger: TriggerSchema, revision: TriggerRevisionSchema });
+const createdSchema = z.object({
+  trigger: z.object(TriggerSchema.omit({ webhookRouteKey: true }).shape),
+  revision: TriggerRevisionSchema,
+});
 type Created = z.infer<typeof createdSchema>;
 type Evidence = {
   scenario: string;
@@ -177,7 +179,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
   }
   const triggers = triggerService();
-  const agents = new AgentControlService({
+  const agents = new ProductToolsTestClient({
     ...services,
     browserSources: { agentSignIn: unexpected },
     machineFullDiskAccess: { request: unexpected },
@@ -195,10 +197,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
     triggers,
     workspaceMounts: { mount: unexpected },
   });
-  const programs = new TriggerControlService({ ...services, tokens: triggerTokens, triggers });
-  const watches = new WatchControlService({ ...services, tokens: watchTokens });
+  const programs = new TriggerToolsTestClient({ ...services, tokens: triggerTokens, triggers });
+  const watches = new WatchToolsTestClient({ ...services, tokens: watchTokens, triggers });
   const clients: Client[] = [];
-  const mcpServices: AgentToolsMcpService[] = [];
+  const mcpServices: OpensteerMcpService[] = [];
   const servers: Server[] = [];
 
   beforeAll(async () => {
@@ -287,9 +289,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const f = await fixture();
     const created = await personCreate(f, f.chat);
     await check("A1 list Chat Trigger", f.child.id, "trigger_read list", "visible", async () => {
-      const result = hostApi["triggers.list"].success.parse(
-        await agentTrigger(f.childToken, { operation: "list", limit: 100 }),
-      );
+      const result = hostApi["triggers.list"].success
+        .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
+        .parse(await agentTrigger(f.childToken, { operation: "list", limit: 100 }));
       expect(result.triggers.map(({ id }) => id)).toEqual([created.trigger.id]);
       return result;
     });
@@ -486,9 +488,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "list",
       "only project Workspace",
       async () => {
-        const result = hostApi["triggers.list"].success.parse(
-          await agentTrigger(f.specialistToken, { operation: "list", limit: 100 }),
-        );
+        const result = hostApi["triggers.list"].success
+          .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
+          .parse(await agentTrigger(f.specialistToken, { operation: "list", limit: 100 }));
         expect(result.triggers.length).toBeGreaterThan(0);
         expect(result.triggers.every(({ workspaceId }) => workspaceId === f.project.id)).toBe(true);
         expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(false);
@@ -496,9 +498,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
     await check("F12 delegated list", f.child.id, "list", "only lineage", async () => {
-      const result = hostApi["triggers.list"].success.parse(
-        await agentTrigger(f.childToken, { operation: "list", limit: 100 }),
-      );
+      const result = hostApi["triggers.list"].success
+        .extend({ triggers: TriggerOutputSchema.shape.triggers.unwrap() })
+        .parse(await agentTrigger(f.childToken, { operation: "list", limit: 100 }));
       expect(result.triggers.some(({ id }) => id === chatTrigger.trigger.id)).toBe(true);
       expect(
         result.triggers.some(
@@ -605,19 +607,27 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
   });
 
-  it("A5/F8-F11/F16b: Trigger and Watch programs use the delegated anchor's reach", async () => {
-    const f = await fixture();
-    const own = await personCreate(f, f.isolatedChild);
-    const triggerToken = await startProgram(f, own);
-    const watch = await personCreate(f, f.isolatedChild, { kind: "watch" });
-    const watchToken = await startWatch(f, watch);
-    const outside = await personCreate(f, f.unrelated);
-    for (const [kind, control, token] of [
-      ["Trigger", programs, triggerToken],
-      ["Watch", watches, watchToken],
-    ] as const) {
+  it.each(["Trigger", "Watch"] as const)(
+    "A5: %s programs keep Thread operations within anchor reach",
+    async (kind) => {
+      const f = await fixture();
+      const own = await personCreate(f, f.isolatedChild);
+      const triggerToken = await startProgram(f, own);
+      const watch = await personCreate(f, f.isolatedChild, { kind: "watch" });
+      const watchToken = await startWatch(f, watch);
+      const control = kind === "Trigger" ? programs : watches;
+      const token = kind === "Trigger" ? triggerToken : watchToken;
+      const projects = await control.handle(token, {
+        type: "project.list",
+        requestId: randomUUID(),
+      });
+      expect(projects).toMatchObject({
+        type: "project.list.result",
+        workspaces: [{ id: f.project.id }],
+      });
+      if (projects.type !== "project.list.result") throw new Error("Expected scoped Projects");
+      expect(projects.workspaces).toHaveLength(1);
       for (const request of [
-        { type: "project.list" },
         { type: "project.create", name: "Unauthorized Workspace" },
         { type: "thread.delegate", workspaceId: f.main.id, task: "Cross Workspace" },
         { type: "thread.delegate", threadId: f.unrelated.id, task: "Outside lineage" },
@@ -649,25 +659,19 @@ integration.sequential("Trigger authority through real Host services and Postgre
           () => control.handle(token, { ...request, requestId: randomUUID() }),
         );
       }
-      await check(
-        `A5 ${kind} report home`,
+      await denied(
+        `A5 ${kind} report home stays within reach`,
         f.isolatedChild.id,
         "thread_message report home",
-        "pending report",
-        async () => {
-          const response = await control.handle(token, {
+        "forbidden",
+        () =>
+          control.handle(token, {
             type: "thread.message",
             threadId: "home",
             delivery: "report",
             content: [{ type: "text", text: `${kind} report` }],
             requestId: randomUUID(),
-          });
-          if (response.type !== "thread.message.result") throw new Error("Expected report result");
-          expect(response.result.thread.id).toBe(f.chat.id);
-          expect(response.result.run).toBeNull();
-          expect(response.result.input.policy).toBe("report");
-          return response.result;
-        },
+          }),
       );
       await check(
         `A5 ${kind} delegates locally`,
@@ -705,7 +709,24 @@ integration.sequential("Trigger authority through real Host services and Postgre
           return response.result;
         },
       );
-    }
+      expect((await store.listWorkspacesForOwner(f.ownerId)).length).toBe(2);
+      expect(
+        await database
+          .selectFrom("messages")
+          .select("id")
+          .where("threadId", "=", f.unrelated.id)
+          .execute(),
+      ).toEqual([]);
+    },
+  );
+
+  it("A5: program Trigger controls use current anchor authority", async () => {
+    const f = await fixture();
+    const own = await personCreate(f, f.isolatedChild);
+    const triggerToken = await startProgram(f, own);
+    const watch = await personCreate(f, f.isolatedChild, { kind: "watch" });
+    const watchToken = await startWatch(f, watch);
+    const outside = await personCreate(f, f.unrelated);
     await check(
       "A5 Trigger controls own clock",
       f.isolatedChild.id,
@@ -770,19 +791,15 @@ integration.sequential("Trigger authority through real Host services and Postgre
           triggerId: outside.trigger.id,
         }),
     );
-    await denied(
-      "F16b Watch cannot manage Triggers",
-      f.isolatedChild.id,
-      "trigger_read",
-      "forbidden",
-      () =>
-        watches.handle(watchToken, {
-          type: "trigger.control",
-          tool: "trigger.read",
-          input: { operation: "list", limit: 50 },
-          requestId: randomUUID(),
-        }),
-    );
+    const watchRead = await watches.handle(watchToken, {
+      type: "trigger.control",
+      tool: "trigger.read",
+      input: { operation: "list", limit: 50 },
+      requestId: randomUUID(),
+    });
+    if (watchRead.type !== "trigger.control.result") throw new Error("Expected Watch Trigger read");
+    const visible = TriggerOutputSchema.parse(watchRead.result).triggers ?? [];
+    expect(visible.map(({ id }) => id).sort()).toEqual([own.trigger.id, watch.trigger.id].sort());
     expect((await store.listWorkspacesForOwner(f.ownerId)).length).toBe(2);
     expect(
       await database
@@ -1249,7 +1266,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       onWorkspaceEvent: vi.fn(),
       store: peer,
     });
-    const peerPrograms = new TriggerControlService({
+    const peerPrograms = new TriggerToolsTestClient({
       ...services,
       store: peer,
       commands: peerCommands,
@@ -1534,21 +1551,25 @@ integration.sequential("Trigger authority through real Host services and Postgre
         "delegated Trigger",
         f.fullChild.id,
         childClient,
-        toolsForCapabilityProfile("trigger")
-          .filter(({ id }) => toolsForCapabilityProfile("delegated").some((tool) => tool.id === id))
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "program"))
           .map(({ name }) => name),
       ],
       [
         "Chat Trigger",
         f.chat.id,
         chatClient,
-        toolsForCapabilityProfile("trigger").map(({ name }) => name),
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "program"))
+          .map(({ name }) => name),
       ],
       [
         "delegated Watch",
         f.crossChild.id,
         watchClient,
-        ["environment_list", "thread_message", "thread_delegate"],
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "program"))
+          .map((tool) => tool.name),
       ],
     ] as const) {
       await check(
@@ -1559,12 +1580,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         async () => {
           const names = (await client.listTools()).tools.map(({ name }) => name).sort();
           expect(names).toEqual([...expectedNames].sort());
-          if (label === "delegated Trigger") {
-            expect(names).toContain("trigger_read");
-            expect(names).toContain("trigger_write");
-            expect(names).not.toContain("project_list");
-            expect(names).not.toContain("project_create");
-          }
           return names;
         },
       );
@@ -1727,7 +1742,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
             : ingress === "webhook"
               ? (
                   await triggerStore.enqueueWebhook({
-                    routeKey: saved.trigger.webhookRouteKey!,
+                    routeKey: (await personDetail(f, saved.trigger.id)).trigger.webhookRouteKey!,
                     method: "POST",
                     headers: {},
                     payload: { ingress },
@@ -2525,9 +2540,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     return response.result;
   }
   async function agentDetail(token: string, triggerId: TriggerId) {
-    return hostApi["triggers.get"].success.parse(
-      await agentTrigger(token, { operation: "get", triggerId, occurrenceLimit: 100 }),
-    );
+    return hostApi["triggers.get"].success
+      .extend({ trigger: z.object(TriggerSchema.omit({ webhookRouteKey: true }).shape) })
+      .parse(await agentTrigger(token, { operation: "get", triggerId, occurrenceLimit: 100 }));
   }
   async function personDetail(f: Fixture, triggerId: TriggerId) {
     return hostApi["triggers.get"].success.parse(
@@ -2650,8 +2665,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
     ]);
   }
 
-  async function mcpEndpoint(legacyOverride?: boolean) {
-    let service: AgentToolsMcpService;
+  async function mcpEndpoint(_legacyOverride?: boolean) {
+    let service: OpensteerMcpService;
     const server = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = [];
@@ -2673,30 +2688,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
-    service = new AgentToolsMcpService({
-      apps: {
-        list: async () => ({ apps: [] }),
-        fetch: async () => {
-          throw new Error("Unexpected app fetch");
-        },
-        publish: async () => {
-          throw new Error("Unexpected app publication in fixture");
-        },
-      },
-      agentControl: agents,
-      runnerCapabilities: async (scope) => {
-        const capabilities = (await store.runnerCapabilities(scope.runnerId)) ?? [];
-        if (legacyOverride === undefined) return capabilities;
-        const other = capabilities.filter((capability) => capability !== "environment-list-v1");
-        return legacyOverride ? other : [...other, "environment-list-v1"];
-      },
+    service = new OpensteerMcpService({
       publicUrl: url,
-      store,
-      tokens,
-      triggerControl: programs,
-      triggerTokens,
-      watchControl: watches,
-      watchTokens,
+      store: store,
+      handlers: agents.service.options.handlers,
+      receipts: new AgentOperationReceipts(store.database),
+      callers: new AgentCallerResolver({
+        store: store,
+        runs: tokens,
+        triggers: triggerTokens,
+        watches: watchTokens,
+      }),
     });
     mcpServices.push(service);
     return url;

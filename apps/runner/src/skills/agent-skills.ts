@@ -2,7 +2,7 @@ import type { Stats } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
-  opensteerAgentSkills,
+  opensteerAgentSkillNames,
   OpensteerAgentSkillNameSchema,
   type OpensteerAgentSkillName,
 } from "@opensteer/agent-tools";
@@ -36,7 +36,7 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
   PluginManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
 
   const entries = await Promise.all(
-    opensteerAgentSkills.map(async ({ name }) => {
+    opensteerAgentSkillNames.map(async (name) => {
       const skillDirectory = join(rootPath, "skills", name.split(":")[1]!);
       await requireDirectory(skillDirectory, `Agent Skill ${name}`);
       const resolvedSkill = await realpath(skillDirectory);

@@ -99,8 +99,13 @@ import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
 import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
-import { AgentControlService, AgentControlTokenService } from "../agents/agent-control-service.js";
-import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
+import { AgentControlTokenService } from "../agents/agent-control-service.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { ProductToolHandlers } from "../mcp/handlers/product.js";
+import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
+import { agentToolHandlers } from "../mcp/handlers/index.js";
+import { AgentOperationReceipts } from "@opensteer/database";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
@@ -155,7 +160,7 @@ import {
   type IntegrationConnectionConnected,
 } from "../integrations/integration-service.js";
 import { PluginPackageService } from "../integrations/plugin-package-service.js";
-import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
+import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
 import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
@@ -176,7 +181,6 @@ import { ShellHub } from "../shell/shell-hub.js";
 import { AutomationFailureService } from "../triggers/automation-failure-service.js";
 import {
   TriggerCapabilityTokenService,
-  TriggerControlService,
   TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
 import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
@@ -184,7 +188,6 @@ import {
   WatchCapabilityTokenService,
   WatchControlTokenService,
 } from "../triggers/watch-capability.js";
-import { WatchControlService } from "../triggers/watch-control-service.js";
 import { WatchProgramService } from "../triggers/watch-program-service.js";
 import { WatchService } from "../triggers/watch-service.js";
 import {
@@ -2045,7 +2048,7 @@ export async function createHostRuntime(
       publish: (workspaceId, ownerIds) =>
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
-    const agentControl = new AgentControlService({
+    const productHandlers = new ProductToolHandlers({
       computerUse,
       personShow: (userId, message) => realtime.showToPerson(userId, message),
       browserTabs,
@@ -2071,33 +2074,8 @@ export async function createHostRuntime(
       isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
       onWorkspaceEvent: publishWorkspaceEvent,
       store,
-      tokens: agentControlTokens,
-      triggers,
       workspaceMounts,
       workspaces,
-    });
-    const triggerControl = new TriggerControlService({
-      canRunHarness: (environmentId, driverKind) =>
-        runners.canRunHarness(environmentId, driverKind),
-      commands,
-      defaultWorkspaceBacking: config.workspace.shape.defaultWorkspaceBacking,
-      environmentWorkspaceBackings: (environmentId) =>
-        runners.identityForEnvironment(environmentId)?.modules.agents?.workspaceBackings ?? [],
-      isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
-      store,
-      tokens: triggerControlTokens,
-      triggers,
-      workspaces,
-    });
-    const watchControl = new WatchControlService({
-      environmentWorkspaceBackings: (environmentId) =>
-        runners.identityForEnvironment(environmentId)?.modules.agents?.workspaceBackings ?? [],
-      canRunHarness: (environmentId, driverKind) =>
-        runners.canRunHarness(environmentId, driverKind),
-      commands,
-      isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
-      store,
-      tokens: watchControlTokens,
     });
     const apps = new AppService({
       tunnels: new AppTunnelHub(runners),
@@ -2109,71 +2087,71 @@ export async function createHostRuntime(
       publishEvent: publishWorkspaceEvent,
     });
     await apps.collectGarbage();
-    const agentTools = new AgentToolsMcpService({
-      pluginInstall: async (scope, directory) => {
-        const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
-        if (!admission) throw new Error("Workspace is unavailable");
-        if (admission.workspace.backing.kind !== "local-directory")
-          throw new Error("Plugins require a local Workspace");
-        return withWorkspacePluginPackage({
-          directory,
-          admission,
-          files,
-          install: async (directory) => {
-            const result = await integrationPlatform.installAgentPlugin({
-              directory,
-              actorUserId: scope.requestedBy,
-              workspaceId: scope.workspaceId,
-              runnerId: scope.runnerId,
-              requestId: randomUUID(),
-            });
-            const pluginId = result.installation.pluginId;
-            const registration =
-              result.specialist && pluginId
-                ? await integrationPlatform.store.specialists.add({
-                    workspaceId: scope.workspaceId,
-                    pluginId,
-                    actorUserId: scope.requestedBy,
-                  })
-                : null;
-            if (registration)
-              await requestSpecialistRequirements({
-                registration,
-                scope: { ...scope, aud: "opensteer-integration-tools" },
-                browser,
-                integrations: integrationTools,
-              });
-            return { pluginId, issues: result.issues, specialist: result.specialist, registration };
-          },
-        });
-      },
-      apps,
-      // The Runner's stored advertisement, not its live connection: a Run's
-      // engine keeps using its tools while that connection drops and returns.
-      runnerCapabilities: async (scope) => {
-        const capabilities = await store.runnerCapabilities(scope.runnerId);
-        if (!capabilities) throw new Error("The Run's Runner is not enrolled");
-        return capabilities;
-      },
-      agentControl,
-      store,
-      publicUrl: config.runtimeOrigin,
-      tokens: agentControlTokens,
-      triggerControl,
-      triggerTokens: triggerControlTokens,
-      watchControl,
-      watchTokens: watchControlTokens,
-    });
-    const integrationTools = new IntegrationToolsMcpService({
+    const integrationTools = new IntegrationToolHandlers({
       definitions: integrationDefinitions,
       getWorkspaceForOwner: (workspaceId, requestedBy) =>
         store.getWorkspaceForOwner(workspaceId, requestedBy),
       onWorkspaceEvent: publishWorkspaceEvent,
       platform: integrationPlatform,
+    });
+    const agentTools = new OpensteerMcpService({
       publicUrl: config.runtimeOrigin,
-      runTokens: integrationToolsTokens,
-      triggerTokens: triggerIntegrationToolsTokens,
-      watchTokens: watchIntegrationToolsTokens,
+      callers: new AgentCallerResolver({
+        store,
+        runs: agentControlTokens,
+        triggers: triggerControlTokens,
+        watches: watchControlTokens,
+      }),
+      receipts: new AgentOperationReceipts(database),
+      store,
+      handlers: agentToolHandlers({
+        apps,
+        product: productHandlers,
+        integrations: integrationTools,
+        triggers: new TriggerToolHandlers(triggers),
+        pluginInstall: async (scope, directory) => {
+          const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
+          if (!admission) throw new Error("Workspace is unavailable");
+          if (admission.workspace.backing.kind !== "local-directory")
+            throw new Error("Plugins require a local Workspace");
+          return withWorkspacePluginPackage({
+            directory,
+            admission,
+            files,
+            install: async (directory) => {
+              const result = await integrationPlatform.installAgentPlugin({
+                directory,
+                actorUserId: scope.requestedBy,
+                workspaceId: scope.workspaceId,
+                runnerId: scope.runnerId,
+                requestId: randomUUID(),
+              });
+              const pluginId = result.installation.pluginId;
+              const registration =
+                result.specialist && pluginId
+                  ? await integrationPlatform.store.specialists.add({
+                      workspaceId: scope.workspaceId,
+                      pluginId,
+                      actorUserId: scope.requestedBy,
+                    })
+                  : null;
+              if (registration)
+                await requestSpecialistRequirements({
+                  registration,
+                  scope: { ...scope, aud: "opensteer-integration-tools" },
+                  browser,
+                  integrations: integrationTools,
+                });
+              return {
+                pluginId,
+                issues: result.issues,
+                specialist: result.specialist,
+                registration,
+              };
+            },
+          });
+        },
+      }),
     });
     const plugins = new PluginPackageService({
       computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
@@ -2266,7 +2244,6 @@ export async function createHostRuntime(
               },
             }
           : {}),
-        agentControl,
         attachments,
         apps,
         liveRuns,
@@ -2302,7 +2279,6 @@ export async function createHostRuntime(
           platform: integrationPlatform,
           service: integrations,
           skills: plugins,
-          tools: integrationTools,
         },
         ...(localBootstrap ? { localBootstrap: { service: localBootstrap } } : {}),
         ...(personalRemoteAccess
@@ -2627,7 +2603,6 @@ export async function createHostRuntime(
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
         await step("agent tools", () => agentTools.close());
-        await step("integration tools", () => integrationTools.close());
         await step("integration platform", () => integrationPlatform.close());
         unsubscribePlaceMembership?.();
         await step("browser", () => browser.close());

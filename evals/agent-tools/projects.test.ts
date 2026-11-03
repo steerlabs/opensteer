@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { parseCases } from "./cases.js";
 import { grade } from "./grader.js";
 
@@ -15,12 +15,14 @@ describe("Project decision corpus", () => {
   ])("requires the intended boundary in %s", (id, required, wrong) => {
     const testCase = cases.find((value) => value.id === id)!;
     const expected = testCase.expect.calls.find((value) => value.tool === required)!;
-    const tool = toolsForCapabilityProfile("main").find((value) => value.name === required)!;
+    const tool = agentTools
+      .filter((tool) => tool.callers.some((kind) => kind === "run"))
+      .find((value) => value.name === required)!;
     const args =
       required === "thread_delegate"
         ? { workspaceId: "wsp_00000000-0000-4000-8000-000000000001", task: "Compare vendors" }
         : expected.args;
-    expect(tool.inputSchema.safeParse(args).success).toBe(true);
+    expect(tool.input.safeParse(args).success).toBe(true);
     expect(
       grade(testCase.expect, [{ tool: required, args, valid: true }], "").every(
         (check) => check.pass,

@@ -1,3 +1,4 @@
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
@@ -29,7 +30,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testRpcRequest } from "../server/test-host-api-request.js";
 import {
-  AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "./agent-control-service.js";
@@ -854,7 +854,7 @@ integration("durable Thread changes native continuation", () => {
     console.info(`Home paused switch evidence: ${evidenceRoot}`);
   }, 90_000);
 
-  it("accepts a specialist's Home report through agent control while Home changes accounts", async () => {
+  it("refuses a specialist's out-of-reach Home report while Home changes accounts", async () => {
     captureRoot = await mkdtemp(join(tmpdir(), "opensteer-home-specialist-"));
     stack = await startVerticalStack({
       additionalHarnessInstances: [
@@ -952,7 +952,7 @@ integration("durable Thread changes native continuation", () => {
     const unexpected = async (): Promise<never> => {
       throw new Error("Unexpected agent-control dependency");
     };
-    const service = new AgentControlService({
+    const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {
@@ -989,7 +989,7 @@ integration("durable Thread changes native continuation", () => {
       workspaceMounts: { mount: unexpected },
       workspaces: { create: unexpected },
     });
-    let reportMessageId: string | undefined;
+    let reportRefused = false;
     let selectedAfterSwitch: string | undefined;
     const specialist = await stack.sendMessage({
       text: "Research the migration while Home changes accounts.",
@@ -1049,23 +1049,24 @@ integration("durable Thread changes native continuation", () => {
             type: "thread.message",
           }),
         ).rejects.toMatchObject({ code: "forbidden" });
-        const sent = await service.handle("child-token", {
-          content: [{ text: "Specialist findings for Home", type: "text" }],
-          delivery: "report",
-          requestId: randomUUID(),
-          threadId: "home",
-          type: "thread.message",
+        await expect(
+          service.handle("child-token", {
+            content: [{ text: "Specialist findings for Home", type: "text" }],
+            delivery: "report",
+            requestId: randomUUID(),
+            threadId: "home",
+            type: "thread.message",
+          }),
+        ).rejects.toMatchObject({
+          code: "forbidden",
+          message: "Target Thread is outside the caller's reach",
         });
-        if (sent.type !== "thread.message.result")
-          throw new Error("Agent-control report response mismatch");
-        expect(sent.result.thread.id).toBe(homeId);
-        expect(sent.result.run).toBeNull();
-        reportMessageId = sent.result.message.id;
+        reportRefused = true;
       },
     });
     expect(specialist.assistantText).toBe("Completed by Codex.");
-    if (!reportMessageId || !selectedAfterSwitch)
-      throw new Error("Specialist did not report after switching Home");
+    if (!reportRefused || !selectedAfterSwitch)
+      throw new Error("Specialist report did not respect reach after switching Home");
     expect(selectedAfterSwitch).not.toBe(originalSelection.id);
     const childStatus = await stack.host.store.database
       .selectFrom("runs")
@@ -1085,25 +1086,14 @@ integration("durable Thread changes native continuation", () => {
       query: "Specialist findings for Home",
     });
     if (!report.ok) throw new Error(`Specialist report lookup failed: ${report.error.code}`);
-    expect(report.data.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: reportMessageId,
-          author: expect.objectContaining({
-            kind: "agent",
-            threadId: specialistId,
-            workspaceId: specialistWorkspace.id,
-          }),
-        }),
-      ]),
-    );
+    expect(report.data.messages).toEqual([]);
 
     const evidenceRoot =
       process.env.OPENSTEER_HOME_ACCEPTANCE_OUTPUT ??
       join(tmpdir(), "opensteer-home-acceptance", randomUUID());
     await mkdir(evidenceRoot, { recursive: true });
     await writeFile(
-      join(evidenceRoot, "specialist-report.json"),
+      join(evidenceRoot, "specialist-report-refusal.json"),
       JSON.stringify(
         {
           homeId,
@@ -1112,7 +1102,7 @@ integration("durable Thread changes native continuation", () => {
           specialistRunStatus: childStatus.status,
           originalSelectionId: originalSelection.id,
           selectedAfterSwitch,
-          reportMessageId,
+          reportRefused,
           reportSourceWorkspaceId: specialistWorkspace.id,
           homeRunCount: 0,
           foreignHomeIdRefused: foreignHome.thread.id,
@@ -1151,7 +1141,7 @@ integration("durable Thread changes native continuation", () => {
     };
     // The Host's own dispatcher, Runner and event reactions run the task; this
     // service only stands in for the MCP endpoint Home's engine would call.
-    const service = new AgentControlService({
+    const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {

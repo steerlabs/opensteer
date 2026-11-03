@@ -3,7 +3,7 @@ import { RequestIdSchema } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -124,9 +124,11 @@ export function passwordsAnywhereJourneys() {
             ).toContain("sign_in");
             // The Host still serves browser_sign_in to previous-release Runners;
             // a current driver enables only its own catalog, which offers sign_in.
-            expect(toolsForCapabilityProfile("main").map(({ name }) => name)).not.toContain(
-              "browser_sign_in",
-            );
+            expect(
+              agentTools
+                .filter((tool) => tool.callers.some((kind) => kind === "run"))
+                .map(({ name }) => name),
+            ).not.toContain("browser_sign_in");
             expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
             if (name === "browser-loginFill-required") {
               const browser = await startBrowserRuntime(host.hostPort, "unused-main", {

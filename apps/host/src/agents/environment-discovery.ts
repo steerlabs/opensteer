@@ -9,10 +9,12 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import {
   EnvironmentListInputSchema,
-  EnvironmentDiscoverySchema,
   type EnvironmentListInput,
+} from "@opensteer/agent-tools/tools";
+import {
+  EnvironmentDiscoverySchema,
   type EnvironmentDiscovery,
-} from "@opensteer/protocol";
+} from "@opensteer/agent-tools/outputs";
 import { delegationEngines } from "./delegation-placement.js";
 
 export type EnvironmentDiscoveryStore = Pick<

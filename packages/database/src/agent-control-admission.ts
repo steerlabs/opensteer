@@ -1,6 +1,8 @@
 import { withDatabaseTransaction } from "./connection.js";
 import {
   agentDelegationMaxDepth,
+  threadAccessModeAtMost,
+  threadInReach,
   OpensteerError,
   type EnvironmentId,
   type RunId,
@@ -18,34 +20,6 @@ import { assertActiveGrant } from "./execution-authority.js";
 import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
 import type { DatabaseSchema } from "./schema.js";
-
-export const agentControlActionLimits = {
-  "assignment.cancel": 16,
-  "machine.full-disk-access.request": 8,
-  "browser.access.request": 8,
-  "browser.sign-in": 64,
-  "browser.profile.create": 8,
-  "browser.profile.list": 64,
-  "browser.session.close": 32,
-  "browser.session.list": 128,
-  "browser.tab.read": 128,
-  "browser.tab.write": 64,
-  "browser.session.open": 32,
-  "request.list": 64,
-  "request.withdraw": 32,
-  "thread.delegate": 8,
-  "thread.list": 64,
-  "thread.message": 32,
-  "person.show": 32,
-  "thread.read": 64,
-  "thread.write": 32,
-  "trigger.read": 128,
-  "trigger.write": 32,
-  "project.create": 16,
-  "project.list": 16,
-  // A maximum-size catalog takes 1,024 focused pages before directory discovery.
-  "environment.list": 2048,
-} as const;
 
 export const agentControlMaxDelegationDepth = agentDelegationMaxDepth;
 
@@ -76,18 +50,15 @@ export type AgentControlAction =
   | "environment.list"
   | "project.list";
 
-export type AgentControlActionClass = keyof typeof agentControlActionLimits;
+export type AgentControlActionClass = Exclude<AgentControlAction, "person.message">;
 
-/**
- * The Trigger control path reaches the same actions the Run path does, so it is
- * bounded by the same class ledger: a Trigger program that could delegate or
- * message Threads without an admission class would be unbounded.
- */
 type TriggerControlAction = AgentControlAction;
 
 export type TriggerControlActionClass = AgentControlActionClass;
 
 export interface AgentControlAdmissionInput {
+  readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
+  readonly targetThreadIds?: readonly ThreadId[];
   readonly action: AgentControlAction;
   readonly bindingGeneration: number;
   readonly environmentId: EnvironmentId;
@@ -108,6 +79,8 @@ export interface AgentControlAdmissionResult {
 }
 
 export interface TriggerControlAdmissionInput {
+  readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
+  readonly targetThreadIds?: readonly ThreadId[];
   readonly action: TriggerControlAction;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
@@ -127,6 +100,8 @@ export interface TriggerControlAdmissionResult {
 }
 
 export interface WatchControlAdmissionInput {
+  readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
+  readonly targetThreadIds?: readonly ThreadId[];
   readonly action: "thread.delegate" | "thread.message";
   readonly activationId: TriggerWatchActivationId;
   readonly anchorThreadId: ThreadId;
@@ -186,7 +161,7 @@ export async function admitAgentControlRequest(
 
 /**
  * `check` runs every admission test without the source fence or the receipt,
- * so a mutation can refuse a dead binding or exhausted quota before its own
+ * so a mutation can refuse a dead binding before its own
  * work; the mutation still admits with `admit` once its lock order allows.
  */
 export type AdmissionMode = "admit" | "check";
@@ -217,7 +192,7 @@ export async function admitAgentControlRequestInTransaction(
         message: "Agent-control Run does not belong to the claimed source Thread",
       });
     }
-    // The ledger is an active-execution quota/idempotency receipt, not a
+    // The ledger is an active-execution idempotency receipt, not a
     // capability that survives its Run. Exact retries still require the same
     // live binding before their immutable receipt can be replayed.
     if (run.status !== "starting" && run.status !== "running" && run.status !== "waiting") {
@@ -244,6 +219,7 @@ export async function admitAgentControlRequestInTransaction(
       executionNow,
     );
 
+    await assertOperationTargets(transaction, input.sourceThreadId, input);
     const existing = await transaction
       .selectFrom("agentControlRequests")
       .selectAll()
@@ -265,11 +241,6 @@ export async function admitAgentControlRequestInTransaction(
       };
     }
 
-    const admittedInClass = await countAdmittedInClass(transaction, input.runId, actionClass);
-    const actionLimit = agentControlActionLimits[actionClass];
-    if (admittedInClass >= actionLimit) {
-      throw quotaExceeded(actionClass, actionLimit);
-    }
     if (mode === "check") return { actionClass, wasDuplicate: false };
 
     await transaction
@@ -291,9 +262,7 @@ export async function admitAgentControlRequestInTransaction(
 }
 
 /**
- * Admits one request on the Trigger control path. A Trigger program has no Run,
- * so its Occurrence is the ledger scope: the same limits that bound an agent
- * Run bound the single-shot Occurrence that holds the Trigger token.
+ * A Trigger program has no Run, so its Occurrence namespaces its domain receipts.
  */
 export async function admitTriggerControlRequest(
   database: Kysely<DatabaseSchema>,
@@ -337,6 +306,7 @@ export async function admitTriggerControlRequestInTransaction(
       workspaceId: input.workspaceId,
     });
 
+    await assertOperationTargets(transaction, input.threadId, input);
     const existing = await transaction
       .selectFrom("triggerControlRequests")
       .selectAll()
@@ -354,19 +324,6 @@ export async function admitTriggerControlRequestInTransaction(
       return { actionClass, wasDuplicate: true };
     }
 
-    const admittedInClass = await countAdmittedTriggerInClass(
-      transaction,
-      input.occurrenceId,
-      actionClass,
-    );
-    const actionLimit = agentControlActionLimits[actionClass];
-    if (admittedInClass >= actionLimit) {
-      throw new OpensteerError({
-        code: "resource_exhausted",
-        details: { actionClass, limit: actionLimit },
-        message: `Trigger-control ${actionClass} request limit of ${actionLimit} was reached for this Occurrence`,
-      });
-    }
     if (mode === "check") return { actionClass, wasDuplicate: false };
 
     await transaction
@@ -410,6 +367,7 @@ export async function admitWatchControlRequestInTransaction(
     throw new OpensteerError({ code: "not_found", message: "Watch activation not found" });
   }
   await assertActiveWatchBinding(transaction, input);
+  await assertOperationTargets(transaction, input.anchorThreadId, input);
   const existing = await transaction
     .selectFrom("watchControlRequests")
     .selectAll()
@@ -456,48 +414,12 @@ export async function admitWatchControlRequestInTransaction(
   return { wasDuplicate: false };
 }
 
-async function countAdmittedTriggerInClass(
-  transaction: Transaction<DatabaseSchema>,
-  occurrenceId: TriggerOccurrenceId,
-  actionClass: TriggerControlActionClass,
-): Promise<number> {
-  const row = await transaction
-    .selectFrom("triggerControlRequests")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("occurrenceId", "=", occurrenceId)
-    .where("actionClass", "=", actionClass)
-    .executeTakeFirstOrThrow();
-  return safeCount(row.count);
-}
-
-async function countAdmittedInClass(
-  transaction: Transaction<DatabaseSchema>,
-  runId: RunId,
-  actionClass: AgentControlActionClass,
-): Promise<number> {
-  const row = await transaction
-    .selectFrom("agentControlRequests")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("runId", "=", runId)
-    .where("actionClass", "=", actionClass)
-    .executeTakeFirstOrThrow();
-  return safeCount(row.count);
-}
-
 function safeCount(value: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
     throw new OpensteerError({ code: "internal", message: "Invalid admission count" });
   }
   return parsed;
-}
-
-function quotaExceeded(actionClass: AgentControlActionClass, limit: number): OpensteerError {
-  return new OpensteerError({
-    code: "conflict",
-    details: { actionClass, limit },
-    message: `Agent-control ${actionClass} request limit of ${limit} was reached for this Run`,
-  });
 }
 
 function requestIdConflict(requestId: string): OpensteerError {
@@ -514,4 +436,38 @@ function triggerRequestIdConflict(requestId: string): OpensteerError {
     details: { requestId },
     message: "Trigger-control request ID was already used with different input",
   });
+}
+
+async function assertOperationTargets(
+  transaction: Transaction<DatabaseSchema>,
+  sourceThreadId: ThreadId,
+  input: {
+    readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
+    readonly targetThreadIds?: readonly ThreadId[];
+  },
+): Promise<void> {
+  if (!input.accessMode) return;
+  const source = await transaction
+    .selectFrom("threads")
+    .selectAll()
+    .where("id", "=", sourceThreadId)
+    .executeTakeFirstOrThrow();
+  if (!threadAccessModeAtMost(input.accessMode, source.accessMode))
+    throw new OpensteerError({ code: "forbidden", message: "Caller access mode was reduced" });
+  for (const id of input.targetThreadIds ?? []) {
+    const target = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    if (
+      !threadInReach(source, target) ||
+      !threadAccessModeAtMost(target.accessMode, input.accessMode) ||
+      !threadAccessModeAtMost(target.accessMode, source.accessMode)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Target Thread exceeds the caller's live reach or access mode",
+      });
+  }
 }

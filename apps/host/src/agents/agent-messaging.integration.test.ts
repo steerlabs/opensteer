@@ -1,3 +1,4 @@
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -40,11 +41,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import {
-  AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "./agent-control-service.js";
-import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { AgentOperationReceipts } from "@opensteer/database";
 
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -96,7 +98,7 @@ integration("agent-to-agent messaging round trip", () => {
       >(),
   };
   const drainRunPlaces = vi.fn(async (_runId: Run["id"]) => undefined);
-  const service = new AgentControlService({
+  const service = new ProductToolsTestClient({
     computerUse,
     browserTabs,
     personShow: (userId, message) => realtime.showToPerson(userId, message),
@@ -314,8 +316,8 @@ integration("agent-to-agent messaging round trip", () => {
         close: vi.fn(),
       },
     });
+    const request = { type: "person.show", requestId: randomUUID(), target: { tabId } };
     try {
-      const request = { type: "person.show", requestId: randomUUID(), target: { tabId } };
       await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
         status: "sent-unconfirmed",
         connectedDevices: 1,
@@ -331,8 +333,8 @@ integration("agent-to-agent messaging round trip", () => {
       ]);
       expect(legacyFrames.some((message) => message.type === "host.show")).toBe(false);
       await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
-        status: "already-requested",
-        connectedDevices: 0,
+        status: "sent-unconfirmed",
+        connectedDevices: 1,
       });
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
@@ -364,6 +366,7 @@ integration("agent-to-agent messaging round trip", () => {
       releaseLegacy();
     }
     await tabs.close(f.userId, tabId);
+    await expect(service.handle(f.tokenA, request)).rejects.toMatchObject({ code: "forbidden" });
     await expect(show(f.tokenA, { tabId })).rejects.toMatchObject({ code: "forbidden" });
     await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
   });
@@ -872,7 +875,7 @@ integration("agent-to-agent messaging round trip", () => {
         task: "New task",
         icon: "hotel",
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toThrow("An existing Thread keeps its symbol");
     const reused = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
@@ -1222,24 +1225,18 @@ integration("agent-to-agent messaging round trip", () => {
     );
   });
 
-  it("gates thread_write on the bound Runner capability and returns the compact Thread summary", async () => {
+  it("keeps one tool inventory through Runner reconnects and returns a compact Thread summary", async () => {
     const f = await createMessagingFixture();
     const claims = claimsByToken.get(f.tokenA)!;
-    const mcp = new AgentToolsMcpService({
-      apps: {
-        list: async () => ({ apps: [] }),
-        fetch: async () => {
-          throw new Error("Unexpected app fetch in fixture");
-        },
-        publish: async () => {
-          throw new Error("Unexpected app publication in fixture");
-        },
-      },
-      agentControl: service,
+    const mcp = new OpensteerMcpService({
       publicUrl: new URL("http://localhost"),
-      store,
-      runnerCapabilities: async (scope) => (await store.runnerCapabilities(scope.runnerId)) ?? [],
-      tokens: { authenticate: async () => claims } as unknown as AgentControlTokenService,
+      store: store,
+      handlers: service.service.options.handlers,
+      receipts: new AgentOperationReceipts(store.database),
+      callers: new AgentCallerResolver({
+        store: store,
+        runs: { authenticate: async () => claims } as unknown as AgentControlTokenService,
+      }),
     });
     const inventories: string[][] = [];
     try {
@@ -1250,14 +1247,7 @@ integration("agent-to-agent messaging round trip", () => {
             .set({ capabilities: sql`${JSON.stringify(["filesystem"])}::jsonb` })
             .where("id", "=", f.runnerId)
             .execute();
-        const server = await mcp.createServer({
-          control: service,
-          profileId: claims.capabilityProfileId,
-          run: claims,
-          scope: "run",
-          subjectId: claims.runId,
-          toolContractVersion: null,
-        });
+        const server = await mcp.createServer(await mcp.options.callers.authenticate("fixture"));
         const client = new Client({ name: "task-done-test", version: "1" });
         const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
         try {
@@ -1271,7 +1261,7 @@ integration("agent-to-agent messaging round trip", () => {
           await client.connect(clientTransport);
           const names = (await client.listTools()).tools.map(({ name }) => name);
           inventories.push(names);
-          expect(names.includes("thread_write")).toBe(modern);
+          expect(names).toContain("thread_write");
           if (modern) {
             const result = await client.callTool({
               name: "thread_write",
@@ -1294,7 +1284,7 @@ integration("agent-to-agent messaging round trip", () => {
           requestId: randomUUID(),
           input: { action: "done" },
         }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      ).resolves.toMatchObject({ type: "thread.write.result", doneWhenRunEnds: true });
       await mkdir("/tmp/opensteer-task-done", { recursive: true });
       await writeFile(
         "/tmp/opensteer-task-done/runner-capability.json",

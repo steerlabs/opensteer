@@ -119,7 +119,7 @@ export async function runEngine(input: {
     workspace: workspaceSkills.skills,
   });
   const instructions = c.fixtures["AGENTS.md"];
-  const guide = platformGuideForRun({ capabilityProfileId: c.profile, role: c.role });
+  const guide = platformGuideForRun({ role: c.role });
   const treatment = {
     prompt: fingerprint({
       guide,

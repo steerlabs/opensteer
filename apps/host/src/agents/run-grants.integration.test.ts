@@ -241,9 +241,22 @@ integration("Run tool authority", () => {
   }
 
   async function agentControl(active: VerticalStack, token: string): Promise<number> {
-    const response = await fetch(new URL("/internal/v1/agent-control", active.hostOrigin), {
-      body: JSON.stringify({ requestId: randomUUID(), type: "thread.list" }),
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    const response = await fetch(new URL("/internal/v1/mcp", active.hostOrigin), {
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "grant-test", version: "1" },
+        },
+      }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
       method: "POST",
     });
     await response.arrayBuffer();

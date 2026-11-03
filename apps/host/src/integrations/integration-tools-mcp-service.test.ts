@@ -1,3 +1,6 @@
+import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
+import { agentTools } from "@opensteer/agent-tools";
+
 import { requestSpecialistRequirements } from "./specialist-access-requests.js";
 import {
   SpecialistRegistrationSchema,
@@ -47,24 +50,38 @@ const mcp = vi.hoisted(() => ({
   transports: [] as ("detached" | "session")[],
 }));
 
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: class {
-    constructor(_identity: unknown, options: { instructions?: string }) {
-      mcp.instructions = options.instructions ?? "";
+vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
+  McpServer: class {
+    readonly callbacks = new Map<
+      string,
+      (args: unknown, extra: McpCallExtra) => Promise<unknown>
+    >();
+    readonly server = {
+      setRequestHandler: (_schema: unknown, handler: () => Promise<unknown>) => {
+        mcp.listHandler = handler;
+      },
+    };
+    constructor() {
+      mcp.instructions = "";
+      mcp.callHandler = async (request, extra) => {
+        const callback = this.callbacks.get(request.params.name);
+        if (!callback)
+          return {
+            isError: true,
+            content: [{ type: "text", text: "Tool is unavailable to this caller" }],
+          };
+        return callback(request.params.arguments ?? {}, extra);
+      };
+    }
+    registerTool(
+      name: string,
+      _registration: unknown,
+      callback: (args: unknown, extra: McpCallExtra) => Promise<unknown>,
+    ) {
+      this.callbacks.set(name, callback);
     }
     async close() {}
     async connect() {}
-    setRequestHandler(
-      _schema: unknown,
-      handler: (
-        request: { params: { arguments?: unknown; name: string } },
-        extra: McpCallExtra,
-      ) => Promise<unknown>,
-    ) {
-      mcp.registrations += 1;
-      if (mcp.registrations % 2 === 1) mcp.listHandler = handler as () => Promise<unknown>;
-      else mcp.callHandler = handler;
-    }
   },
 }));
 
@@ -84,10 +101,9 @@ vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
 }));
 
 import {
-  IntegrationToolsMcpService,
   type IntegrationToolsRunScope,
   type IntegrationToolsTriggerScope,
-} from "./integration-tools-mcp-service.js";
+} from "../mcp/handlers/integrations.js";
 
 const invalidToken = "not-a-token";
 const computerDefinition = computerAppIntegrations[0]!;
@@ -191,13 +207,11 @@ describe("IntegrationToolsMcpService access classes", () => {
         name: string;
       }[];
     };
-    expect(listed.tools.map(({ name }) => name)).toEqual([
-      "integration_search",
-      "integration_describe",
-      "integration_call",
-      "integration_propose",
-      "integration_request",
-    ]);
+    expect(listed.tools.map(({ name }) => name)).toEqual(
+      agentTools
+        .filter((tool) => tool.callers.some((kind) => kind === "run"))
+        .map((tool) => tool.name),
+    );
     // The MCP SDK rejects a tools/list result whose inputSchema has no object
     // root, taking every tool with it.
     for (const tool of listed.tools) expect(tool.inputSchema).toMatchObject({ type: "object" });
@@ -250,7 +264,7 @@ describe("IntegrationToolsMcpService access classes", () => {
         description: { maxLength: 240, minLength: 1, type: "string" },
         name: { maxLength: 80, minLength: 1, type: "string" },
       },
-      required: ["reason", "source", "description"],
+      required: ["description", "reason", "source"],
     });
   });
 
@@ -447,9 +461,8 @@ describe("IntegrationToolsMcpService access classes", () => {
       { params: { arguments: { toolRef }, name: "integration_describe" } },
       callExtra("describe"),
     );
-    // One page of text, header line first; structured content would repeat it.
-    expect(described).not.toHaveProperty("structuredContent");
-    const text = errorText(described);
+    const text = (described as { structuredContent: { description: string } }).structuredContent
+      .description;
     const newline = text.indexOf("\n");
     expect(JSON.parse(text.slice(0, newline))).toMatchObject({
       account: { alias: "Work", connectionId: callable.grant.connectionId, isDefault: true },
@@ -1088,6 +1101,7 @@ describe("IntegrationToolsMcpService access classes", () => {
     const project = await createHarness({
       inventory: [entry],
       runScope: { ...scope, capabilityProfileId: "workspace" },
+      reach: { kind: "workspace", workspaceId: scope.workspaceId },
     });
     const projectResponse = await project.handler(
       {
@@ -1103,30 +1117,7 @@ describe("IntegrationToolsMcpService access classes", () => {
       },
       callExtra("project-cross-workspace"),
     );
-    expect(errorText(projectResponse)).toBe(
-      "Only a main-profile agent may target another Workspace",
-    );
-  });
-
-  it.each([
-    { catalog: definition.id, access: "read-write" },
-    { integration: "linear", access: "read-write" },
-  ])("refuses delegated integration requests before creating an approval: %j", async (input) => {
-    const { handler, requests } = await createHarness({
-      inventory: [inventoryEntry()],
-      runScope: { ...scope, capabilityProfileId: "delegated" },
-    });
-    const response = await handler(
-      {
-        params: { arguments: { ...input, reason: "Use the account" }, name: "integration_request" },
-      },
-      callExtra("delegated-cloud-request"),
-    );
-    expect(errorText(response)).toContain(
-      "This capability profile cannot request integration access.",
-    );
-    expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
-    expect(requests.createIntegrationInstallRequest).not.toHaveBeenCalled();
+    expect(errorText(projectResponse)).toBe("This caller may request access only in its Workspace");
   });
 
   it("refuses to widen the owner's Main for a lineage that runs below it", async () => {
@@ -1137,6 +1128,7 @@ describe("IntegrationToolsMcpService access classes", () => {
       mainAccess: "withheld",
       propose: vi.fn(),
       runScope: { ...scope, capabilityProfileId: "workspace" },
+      reach: { kind: "workspace", workspaceId: scope.workspaceId },
     });
     const refusal =
       "This conversation runs for people other than the owner, so it cannot use or request the owner's personal integrations. Ask the owner to route it to a Workspace and grant the integration there.";
@@ -1298,34 +1290,6 @@ describe("integration_request computer-app variant", () => {
     expect(errorText(response)).toContain("No Mac is set up for computer use.");
   });
 
-  it("refuses a delegated Thread, which may use what it was given and never widen it", async () => {
-    const { handler, requestComputerAppAccess } = await createHarness({
-      computerUseMacs: [mac],
-      inventory: [],
-      runScope: { ...scope, capabilityProfileId: "delegated" },
-    });
-
-    const response = await handler(
-      {
-        params: {
-          arguments: {
-            access: "read",
-            app: "Notes",
-            kind: "computer-app",
-            reason: "Read the shopping list",
-          },
-          name: "integration_request",
-        },
-      },
-      callExtra("computer-app-delegated"),
-    );
-
-    expect(errorText(response)).toContain(
-      "This capability profile cannot request integration access.",
-    );
-    expect(requestComputerAppAccess).not.toHaveBeenCalled();
-  });
-
   it("enforces each request shape although the advertisement merges them", async () => {
     const { handler } = await createHarness({ inventory: [] });
     for (const [index, attempt] of [
@@ -1343,6 +1307,7 @@ describe("integration_request computer-app variant", () => {
 });
 
 async function createHarness(input: {
+  readonly reach?: import("@opensteer/core").ThreadReachScope;
   readonly installedComputerApps?: ReturnType<typeof vi.fn>;
   readonly computerAppHolders?: ReadonlyMap<
     string,
@@ -1489,7 +1454,8 @@ async function createHarness(input: {
       };
     },
   );
-  const service = new IntegrationToolsMcpService({
+  const handlerOptions = {
+    ...(input.reach ? { reach: input.reach } : {}),
     definitions: input.definitions ?? [definition],
     getWorkspaceForOwner: vi.fn(async (workspaceId) => ({ id: workspaceId })),
     onWorkspaceEvent: vi.fn(),
@@ -1534,14 +1500,15 @@ async function createHarness(input: {
         if (input.triggerScope || token === invalidToken) throw new Error("not a Run token");
         return input.runScope ?? scope;
       }),
-    } as never,
+    },
     triggerTokens: {
       authenticate: vi.fn(async (token: string) => {
         if (token === invalidToken) throw new Error("not a Trigger token");
         return input.triggerScope ?? triggerScope;
       }),
-    } as never,
-  });
+    },
+  };
+  const service = createIntegrationMcpFixture(handlerOptions);
   await service.handle(
     {
       headers: { host: "opensteer.example.test", origin: "https://opensteer.example.test" },
@@ -1570,7 +1537,7 @@ async function createHarness(input: {
     token: "run-token",
   };
   return {
-    service,
+    service: service,
     handler: (
       request: Parameters<typeof callHandler>[0],
       extra: McpCallExtra,

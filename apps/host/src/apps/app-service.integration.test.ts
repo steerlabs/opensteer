@@ -67,7 +67,7 @@ describeStore("published app HTML", (it) => {
         .set({ status: "waiting" })
         .where("id", "=", f.run.id)
         .execute();
-      const first = await service.publish("run-token", "publish-1", {
+      const first = await service.publish(scope, "publish-1", {
         path: "index.html",
         title: "Budget",
       });
@@ -97,12 +97,12 @@ describeStore("published app HTML", (it) => {
       expect(content.startsWith("<!doctype html>")).toBe(true);
       bytes = Buffer.from(html.replace("First", "Latest"));
       const updates = await Promise.all([
-        service.publish("run-token", "publish-2", {
+        service.publish(scope, "publish-2", {
           path: "index.html",
           title: "Budget",
           appId: first.appId,
         }),
-        service.publish("run-token", "publish-3", {
+        service.publish(scope, "publish-3", {
           path: "index.html",
           title: "Budget",
           appId: first.appId,
@@ -114,7 +114,7 @@ describeStore("published app HTML", (it) => {
       const listedBeforeReplay = files.list.mock.calls.length;
       const readBeforeReplay = files.download.mock.calls.length;
       expect(
-        await service.publish("run-token", "publish-3", {
+        await service.publish(scope, "publish-3", {
           path: "index.html",
           title: "Budget",
           appId: first.appId,
@@ -326,7 +326,7 @@ describeStore("published app HTML", (it) => {
       publishEvent: published,
     });
     const publish = (input = {}) =>
-      service.publish("token", crypto.randomUUID(), {
+      service.publish(scope, crypto.randomUUID(), {
         path: "index.html",
         title: "Test",
         ...input,
@@ -426,7 +426,7 @@ describeStore("published app HTML", (it) => {
     };
     const service = new AppService(options);
     const publish = (extra = {}) =>
-      service.publish("run-token", crypto.randomUUID(), {
+      service.publish(scope, crypto.randomUUID(), {
         path: "app",
         title: "Server",
         start: "node server.js",
@@ -493,7 +493,7 @@ describeStore("published app HTML", (it) => {
       expect((await service.view(first.appId, f.userId, "light")).path.split("/").at(-2)).toBe(
         token,
       );
-      expect(await service.list("token")).toMatchObject({
+      expect(await service.list(scope)).toMatchObject({
         apps: [
           expect.objectContaining({
             id: first.appId,
@@ -522,9 +522,9 @@ describeStore("published app HTML", (it) => {
           port: address.port,
         }));
         expect(
-          await service.fetch("token", { appId: first.appId, method: "GET", path: "/error" }),
+          await service.fetch(scope, { appId: first.appId, method: "GET", path: "/error" }),
         ).toMatchObject({ status: 409, body: "app response" });
-        const large = await service.fetch("token", {
+        const large = await service.fetch(scope, {
           appId: first.appId,
           method: "GET",
           path: "/large",
@@ -576,9 +576,9 @@ describeStore("published app HTML", (it) => {
       await expect(publish({ appId: first.appId })).rejects.toMatchObject({ code: "not_found" });
       expect(start).toHaveBeenCalledTimes(startsBefore);
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "not_found" });
-      expect(await service.list("token")).toEqual({ apps: [] });
+      expect(await service.list(scope)).toEqual({ apps: [] });
       scope = originScope;
       const retainedOwner = await store.createUser("Retained app Workspace owner");
       await database
@@ -608,7 +608,7 @@ describeStore("published app HTML", (it) => {
         code: "not_found",
       });
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "not_found" });
       await database
         .updateTable("workspaceMemberships")
@@ -622,9 +622,9 @@ describeStore("published app HTML", (it) => {
         .where("id", "=", f.thread.id)
         .execute();
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "forbidden" });
-      await expect(service.list("token")).rejects.toMatchObject({ code: "forbidden" });
+      await expect(service.list(scope)).rejects.toMatchObject({ code: "forbidden" });
       await database
         .updateTable("threads")
         .set({ accessMode: "full-access" })
@@ -632,14 +632,14 @@ describeStore("published app HTML", (it) => {
         .execute();
 
       const stopsBefore = stop.mock.calls.length;
-      await service.publish("token", "html-republish", {
+      await service.publish(scope, "html-republish", {
         appId: first.appId,
         path: "index.html",
         title: "HTML",
       });
       expect(stop).toHaveBeenCalledTimes(stopsBefore + 1);
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "bad_request" });
       const next = await publish({ appId: first.appId });
       expect(next.version).toBe(3);

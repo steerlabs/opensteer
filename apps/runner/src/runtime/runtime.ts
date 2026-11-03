@@ -83,7 +83,6 @@ import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
 import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-manager.js";
-import { HttpAgentControlClient } from "../agent/agent-control-client.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
@@ -2207,7 +2206,6 @@ export class RunnerRuntime {
     let browserCdpRelay: BrowserCdpRelay | undefined;
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
-    let agentControl: HttpAgentControlClient | undefined;
     let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
     let consumptionError: unknown;
@@ -2557,16 +2555,10 @@ export class RunnerRuntime {
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       });
-      agentControl = new HttpAgentControlClient({
-        plan: context.agentControl,
-        token: () => credentials.agentControl,
-        transport,
-      });
       const machineAccessContext = context.machineAccess;
       const sessionContext = {
         ...attachmentContext,
         accessMode: context.accessMode,
-        agentControl,
         agentTools: {
           ...context.agentTools,
           token: proxied.secret,

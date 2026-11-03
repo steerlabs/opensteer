@@ -2,7 +2,7 @@ import { cp, lstat, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { opensteerAgentSkills, type OpensteerAgentSkillName } from "@opensteer/agent-tools";
+import { agentTools, opensteerAgentSkillNames, type OpensteerAgentSkillName } from "@opensteer/agent-tools";
 import { parseHarnessSkillMetadata, renderHarnessSkillCatalog } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadAgentSkillBundle, planAgentSkills } from "./agent-skills.js";
@@ -32,6 +32,37 @@ describe("Runner Agent Skills", () => {
     expect(catalog).not.toContain("Metadata unavailable");
   });
 
+  it("links only registry tools from the browser skill", async () => {
+    const bundle = await loadAgentSkillBundle(bundleDirectory);
+    // Check the skill's tool links against the actual registry, not its prose.
+    const skill = (
+      await Promise.all(
+        ["SKILL.md", "references/identity.md", "references/tabs-and-show.md"].map((file) =>
+          readFile(join(bundle.paths["opensteer:browser"], file), "utf8"),
+        ),
+      )
+    ).join("\n");
+    const runTools = new Set<string>(
+      agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+    );
+    const references = [...skill.matchAll(/`((?:browser|request)_[a-z_]+)`/gu)].map(
+      (match) => match[1],
+    );
+    expect(references).toEqual(
+      expect.arrayContaining([
+        "browser_session_open",
+        "browser_session_list",
+        "browser_profile_list",
+        "browser_profile_create",
+        "browser_access_request",
+        "browser_tab_read",
+        "request_list",
+        "request_withdraw",
+      ]),
+    );
+    for (const name of references) expect(runTools.has(name!)).toBe(true);
+  });
+
   it("routes app UI work to the computer tool in the skill catalog and bodies", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const read = (name: OpensteerAgentSkillName) =>
@@ -54,7 +85,7 @@ describe("Runner Agent Skills", () => {
     const catalog = await renderHarnessSkillCatalog({
       skills: planAgentSkills(
         bundle,
-        opensteerAgentSkills.map(({ name }) => name),
+        opensteerAgentSkillNames,
       ),
     });
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {

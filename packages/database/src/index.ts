@@ -37,3 +37,4 @@ export { readIntegrationAccountBinding } from "./integration-account-binding.js"
 export { requestSettlementActor } from "./request-settlement.js";
 
 export * from "./agent-connection-store.js";
+export { AgentOperationReceipts } from "./agent-control-admission-receipts.js";

@@ -1,3 +1,4 @@
+import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
 import { randomUUID } from "node:crypto";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -16,7 +17,6 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { AgentControlResponseSchema } from "@opensteer/protocol";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { sql } from "kysely";
 import { z } from "zod";

@@ -1,6 +1,8 @@
+import { callMcpTool } from "../mcp/call-tool.test-support.js";
+import { RequestCreationResultSchema } from "@opensteer/protocol";
+
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { createDatabase } from "@opensteer/database";
-import { AgentControlResponseSchema } from "@opensteer/protocol";
 import { connect, createServer, type Socket } from "node:net";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -116,24 +118,14 @@ integration("Machine access session lifecycle", () => {
         run.machineAccess?.machines.find((machine) => machine.runnerId === target.runnerId)
           ?.fullDiskAccess,
       ).toBe(false);
-      const response = await fetch(new URL("/internal/v1/agent-control", host.origin), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${run.agentControlToken}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          requestId: crypto.randomUUID(),
-          type: "machine.full-disk-access.request",
-          computer: "test-mac",
-          reason: "Read Mail",
-        }),
-      });
-      expect(response.status).toBe(200);
-      const result = AgentControlResponseSchema.parse(await response.json());
-      if (result.type !== "machine.full-disk-access.request.result")
-        throw new Error("Unexpected response");
-      const requestId = result.result.requestId;
+      const response = await callMcpTool(
+        host.origin,
+        run.agentControlToken,
+        "machine_full_disk_access_request",
+        { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
+      );
+      expect(response.isError, JSON.stringify(response)).not.toBe(true);
+      const requestId = RequestCreationResultSchema.parse(response.structuredContent).requestId;
       expect(await host.store.requests.get(requestId)).toMatchObject({
         kind: "machine.full-disk-access",
         mode: "durable",
@@ -211,24 +203,14 @@ integration("Machine access session lifecycle", () => {
         key: "fda-relaunch-run",
         title: "Read Mail",
       });
-      const response = await fetch(new URL("/internal/v1/agent-control", host.origin), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${run.agentControlToken}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          requestId: crypto.randomUUID(),
-          type: "machine.full-disk-access.request",
-          computer: "test-mac",
-          reason: "Read Mail",
-        }),
-      });
-      expect(response.status).toBe(200);
-      const result = AgentControlResponseSchema.parse(await response.json());
-      if (result.type !== "machine.full-disk-access.request.result")
-        throw new Error("Unexpected response");
-      const requestId = result.result.requestId;
+      const response = await callMcpTool(
+        host.origin,
+        run.agentControlToken,
+        "machine_full_disk_access_request",
+        { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
+      );
+      expect(response.isError, JSON.stringify(response)).not.toBe(true);
+      const requestId = RequestCreationResultSchema.parse(response.structuredContent).requestId;
       expect((await host.store.requests.get(requestId))?.status).toBe("pending");
 
       await target.disconnect();

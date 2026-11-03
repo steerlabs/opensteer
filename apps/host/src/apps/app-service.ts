@@ -1,3 +1,4 @@
+import type { AgentControlRunScope } from "../agents/agent-control-service.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -55,9 +56,12 @@ export class AppService {
     this.#directory = join(options.dataDirectory, "apps");
   }
 
-  async publish(token: string, publishKey: string, input: z.infer<typeof AppPublishInputSchema>) {
+  async publish(
+    scope: AgentControlRunScope,
+    publishKey: string,
+    input: z.infer<typeof AppPublishInputSchema>,
+  ) {
     input = AppPublishInputSchema.parse(input);
-    const scope = await this.#options.tokens.authenticate(token);
     return this.#locks.run(input.appId ?? `${scope.runId}:${publishKey}`, async () => {
       const admission = await this.#options.store.admitWorkspaceFiles(
         scope.workspaceId,
@@ -309,14 +313,12 @@ export class AppService {
     }
   }
 
-  async list(token: string) {
-    const scope = await this.#options.tokens.authenticate(token);
+  async list(scope: AgentControlRunScope) {
     return { apps: await this.#options.apps.list({ ...scope, userId: scope.requestedBy }) };
   }
 
-  async fetch(token: string, input: z.infer<typeof AppFetchInputSchema>) {
+  async fetch(scope: AgentControlRunScope, input: z.infer<typeof AppFetchInputSchema>) {
     input = AppFetchInputSchema.parse(input);
-    const scope = await this.#options.tokens.authenticate(token);
     await this.#options.apps.authorize({
       ...scope,
       userId: scope.requestedBy,

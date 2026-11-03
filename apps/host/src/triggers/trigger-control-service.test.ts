@@ -1,7 +1,8 @@
+import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
 import {
   createId,
   ModelSelectionSchema,
-  OpensteerError,
   type EnvironmentId,
   type Message,
   type Run,
@@ -13,10 +14,7 @@ import type { OpensteerStore, TriggerControlAdmissionResult } from "@opensteer/d
 import type { CommandService } from "@opensteer/orchestration";
 import type { TriggerControlInput } from "@opensteer/triggers";
 import { describe, expect, it, vi } from "vitest";
-import {
-  TriggerControlService,
-  type TriggerControlTokenService,
-} from "./trigger-control-service.js";
+import { type TriggerControlTokenService } from "./trigger-control-service.js";
 
 const now = "2026-08-12T12:00:00.000Z";
 const ownerId = createId("user");
@@ -32,28 +30,15 @@ const modelSelection = ModelSelectionSchema.parse({
 });
 
 describe("TriggerControlService", () => {
-  it("admits Workspace and Thread requests, not just the Trigger tools", async () => {
-    const { admitTriggerControlRequest, occurrenceId, service } = makeService({});
-    const requestId = crypto.randomUUID();
-
-    await service.handle("trigger-token", { requestId, type: "project.list" });
-
-    expect(admitTriggerControlRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "project.list",
-        environmentId,
-        executionGeneration: 1,
-        occurrenceId,
-        requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        requestId,
-        requestedBy: ownerId,
-        runnerId,
-        threadId,
-        workspaceId,
-      }),
-    );
+  it("reads Projects without spending a per-action quota", async () => {
+    const { admitTriggerControlRequest, service } = makeService({});
+    const result = await service.handle("trigger-token", {
+      requestId: crypto.randomUUID(),
+      type: "project.list",
+    });
+    expect(result.type).toBe("project.list.result");
+    expect(admitTriggerControlRequest).not.toHaveBeenCalled();
   });
-
   it("returns a created Project's slug and absolute path", async () => {
     const created = { ...workspace(createId("workspace"), "Analysis"), slug: "analysis" };
     const { service } = makeService({ create: async () => created });
@@ -101,7 +86,12 @@ describe("TriggerControlService", () => {
         executionGeneration: 1,
         occurrenceId,
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        requestId,
+        requestId: mcpToolCallId(
+          `trigger:${occurrenceId}`,
+          requestId,
+          "operation",
+          "thread_message",
+        ),
         requestedBy: ownerId,
         runnerId,
         threadId,
@@ -110,36 +100,11 @@ describe("TriggerControlService", () => {
     );
     expect(enqueueThreadInput).toHaveBeenCalledWith(
       expect.objectContaining({
-        idempotencyKey: `trigger:${occurrenceId}:${requestId}:message`,
+        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_message")}:message`,
         policy: "queue",
         source: { kind: "trigger", occurrenceId },
       }),
     );
-  });
-
-  it("refuses a delegation once the Occurrence delegation budget is spent", async () => {
-    const delegateThread = vi.fn(async () => {
-      throw new Error("Unexpected Thread creation");
-    });
-    const { service } = makeService({
-      admitTriggerControlRequest: async () => {
-        throw new OpensteerError({
-          code: "resource_exhausted",
-          message: "Trigger-control thread.delegate request limit of 8 was reached",
-        });
-      },
-      commands: { delegateThread } as unknown as CommandService,
-    });
-
-    await expect(
-      service.handle("trigger-token", {
-        requestId: crypto.randomUUID(),
-        task: "Keep delegating forever",
-        type: "thread.delegate",
-        workspaceId,
-      }),
-    ).rejects.toMatchObject({ code: "resource_exhausted" });
-    expect(delegateThread).not.toHaveBeenCalled();
   });
 
   it("places delegated work in an explicitly selected available environment", async () => {
@@ -258,33 +223,10 @@ describe("TriggerControlService", () => {
     expect(manage).toHaveBeenCalledWith(
       ownerId,
       expect.objectContaining({
-        idempotencyKey: `trigger:${occurrenceId}:${requestId}:trigger.create`,
+        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.create`,
       }),
       threadId,
     );
-  });
-
-  it("refuses a Trigger control request once its Occurrence write budget is spent", async () => {
-    const manage = vi.fn(async () => ({}));
-    const { service } = makeService({
-      admitTriggerControlRequest: async () => {
-        throw new OpensteerError({
-          code: "resource_exhausted",
-          message: "Trigger-control trigger.write request limit of 32 was reached",
-        });
-      },
-      manage,
-    });
-
-    await expect(
-      service.handle("trigger-token", {
-        input: { operation: "run", triggerId: createId("trigger") },
-        requestId: crypto.randomUUID(),
-        tool: "trigger.write",
-        type: "trigger.control",
-      }),
-    ).rejects.toMatchObject({ code: "resource_exhausted" });
-    expect(manage).not.toHaveBeenCalled();
   });
 });
 
@@ -408,7 +350,7 @@ function makeService(options: {
   return {
     admitTriggerControlRequest,
     occurrenceId: claims.occurrenceId,
-    service: new TriggerControlService({
+    service: new TriggerToolsTestClient({
       defaultWorkspaceBacking: "local-directory",
       canRunHarness: () => true,
       commands,

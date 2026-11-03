@@ -1,12 +1,15 @@
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
-import { agentToolDefinitions } from "@opensteer/agent-tools";
+import {
+  agentTools,
+  environment_list,
+  thread_read,
+  thread_list,
+  thread_message,
+} from "@opensteer/agent-tools/tools";
 import { ThreadAccessModeSchema, createId, type Message } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AgentBrowserSessionSummarySchema,
-  AgentControlRequestSchema,
-  AgentControlResponseSchema,
   BrowserAttachTicketClaimsSchema,
   BrowserAttachTicketIdentitySchema,
   BrowserClientMessageSchema,
@@ -673,7 +676,7 @@ describe("wire protocol", () => {
           url: "https://host.example.test/internal/v1/agent-control",
         },
         agentTools: {
-          tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+          tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
           toolsRevision: "test-tools-v1",
           instructions: "Host Opensteer instructions",
           skills: ["opensteer:threads"],
@@ -930,7 +933,7 @@ describe("wire protocol", () => {
       modelId: `${index}`.padEnd(255, "m"),
       providerId: `p${index}`.padEnd(100, "p"),
     });
-    const catalog = AgentControlResponseSchema.parse({
+    const catalog = environment_list.output.parse({
       delegationDefault: {
         environmentId: environments[0]!.id,
         harnessInstanceId: harnessIds[0],
@@ -978,7 +981,7 @@ describe("wire protocol", () => {
     };
     const readWindow = { ...window, byteCount: 300 * 1_024, itemCount: 1, threadId };
     expect(
-      AgentControlResponseSchema.safeParse({
+      thread_read.output.safeParse({
         assignments: [],
         assignmentWindow: {
           byteCount: 2,
@@ -995,7 +998,7 @@ describe("wire protocol", () => {
       }).success,
     ).toBe(true);
     expect(
-      AgentControlResponseSchema.safeParse({
+      thread_read.output.safeParse({
         messages: [largeMessage, { ...largeMessage, id: createId("message") }],
         requestId,
         thread,
@@ -1006,9 +1009,7 @@ describe("wire protocol", () => {
   });
 
   it("fits a full Thread listing page and requires explicit agent message delivery", () => {
-    const requestId = randomUUID();
-    const listing = AgentControlResponseSchema.parse({
-      requestId,
+    const listing = thread_list.output.parse({
       threads: Array.from({ length: 50 }, () => ({
         environmentConnected: true,
         environmentId: createId("environment"),
@@ -1034,48 +1035,38 @@ describe("wire protocol", () => {
       agentToolPayloadMaxSerializedBytes,
     );
     expect(
-      AgentControlResponseSchema.safeParse({
+      thread_list.output.safeParse({
         ...listing,
-        threads: [...(listing.type === "thread.list.result" ? listing.threads : []), listing],
+        threads: [...listing.threads, listing],
       }).success,
     ).toBe(false);
 
-    const untitled = AgentControlRequestSchema.parse({
-      content: [{ text: "Status?", type: "text" }],
+    const untitled = thread_message.input.parse({
+      message: "Status?",
       delivery: "queue",
-      requestId,
       threadId: createId("thread"),
-      type: "thread.message",
     });
     expect(untitled).toMatchObject({ delivery: "queue" });
     expect(
-      AgentControlRequestSchema.safeParse({
-        content: [{ text: "Status?", type: "text" }],
-        requestId,
+      thread_message.input.safeParse({
+        message: "Status?",
         threadId: createId("thread"),
-        type: "thread.message",
       }).success,
     ).toBe(false);
     for (const delivery of ["turn", "notify"] as const) {
       expect(
-        AgentControlRequestSchema.safeParse({
-          content: [{ text: "Status?", type: "text" }],
+        thread_message.input.safeParse({
+          message: "Status?",
           delivery,
-          requestId,
           threadId: createId("thread"),
-          type: "thread.message",
         }).success,
       ).toBe(false);
     }
-    expect(
-      AgentControlRequestSchema.parse({ limit: 50, requestId, type: "thread.list" }),
-    ).toMatchObject({ limit: 50 });
-    expect(AgentControlRequestSchema.parse({ requestId, type: "thread.list" })).toMatchObject({
+    expect(thread_list.input.parse({ limit: 50 })).toMatchObject({ limit: 50 });
+    expect(thread_list.input.parse({})).toMatchObject({
       limit: 25,
     });
-    expect(
-      AgentControlRequestSchema.safeParse({ limit: 51, requestId, type: "thread.list" }).success,
-    ).toBe(false);
+    expect(thread_list.input.safeParse({ limit: 51 }).success).toBe(false);
   });
 
   it("rejects duplicate and unbounded Runner harness advertisements", () => {

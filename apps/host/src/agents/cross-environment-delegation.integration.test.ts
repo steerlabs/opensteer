@@ -1,3 +1,6 @@
+import { EnvironmentDiscoverySchema } from "@opensteer/agent-tools/outputs";
+import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -31,8 +34,6 @@ import {
 import { resolvedInputParts } from "@opensteer/harness";
 import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
 import {
-  AgentControlResponseSchema,
-  EnvironmentDiscoverySchema,
   HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
   type RunnerCommand,
@@ -44,11 +45,12 @@ import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "./agent-control-service.js";
-import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { AgentOperationReceipts } from "@opensteer/database";
 import { ContinuationService } from "./continuation-service.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
 
@@ -94,7 +96,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     store,
   });
   const assertDelegatedPlaces = vi.fn(async () => undefined);
-  const service = new AgentControlService({
+  const service = new ProductToolsTestClient({
     placeContext: { assertDelegated: assertDelegatedPlaces },
     browserSources: {
       agentSignIn: async () => {
@@ -2656,7 +2658,7 @@ integration("cross-environment delegation reaches the Runner", () => {
 
   const controlService = service;
   async function startDiscoveryMcp(token: string) {
-    let service: AgentToolsMcpService;
+    let service: OpensteerMcpService;
     const server = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = [];
@@ -2678,31 +2680,21 @@ integration("cross-environment delegation reaches the Runner", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
-    service = new AgentToolsMcpService({
-      apps: {
-        list: async () => ({ apps: [] }),
-        fetch: async () => {
-          throw new Error("Unexpected app fetch in fixture");
-        },
-        publish: async () => {
-          throw new Error("Unexpected app publication in fixture");
-        },
-      },
-      agentControl: controlService,
-      runnerCapabilities: async () => [
-        "browser-profile-create-v1",
-        "task-done-v1",
-        "environment-list-v1",
-      ],
-      store,
+    service = new OpensteerMcpService({
       publicUrl: url,
-      tokens: {
-        authenticate: async (presented: string) => {
-          const claims = claimsByToken.get(presented);
-          if (!claims || presented !== token) throw new Error("Invalid MCP token");
-          return claims;
-        },
-      } as AgentControlTokenService,
+      store: store,
+      handlers: controlService.service.options.handlers,
+      receipts: new AgentOperationReceipts(store.database),
+      callers: new AgentCallerResolver({
+        store: store,
+        runs: {
+          authenticate: async (presented: string) => {
+            const claims = claimsByToken.get(presented);
+            if (!claims || presented !== token) throw new Error("Invalid MCP token");
+            return claims;
+          },
+        } as AgentControlTokenService,
+      }),
     });
     const client = new Client({ name: "model-discovery-e2e", version: "1.0.0" });
     await client.connect(

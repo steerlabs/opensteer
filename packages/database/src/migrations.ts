@@ -4699,6 +4699,7 @@ export function migrationProvider() {
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_consent_scope": consentScopeMigration,
         "0147_agent_connections": agentConnectionsMigration,
+        "0148_agent_tool_operations": agentToolOperationsMigration,
       };
     },
   };
@@ -7167,6 +7168,14 @@ export const agentConnectionsMigration: Migration = {
       CHECK (expires_at > created_at)
     );
     CREATE INDEX agent_connections_owner ON agent_connections(user_id, created_at) WHERE revoked_at IS NULL`.execute(
+      database,
+    );
+  },
+};
+
+const agentToolOperationsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE agent_tool_operations (key text PRIMARY KEY, input_fingerprint text NOT NULL CHECK (input_fingerprint ~ '^[0-9a-f]{64}$'), result jsonb, created_at timestamptz NOT NULL DEFAULT now())`.execute(
       database,
     );
   },
