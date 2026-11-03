@@ -92,6 +92,8 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
+        ...(config.iosAppUrl ? { iosAppUrl: config.iosAppUrl } : {}),
+        ...(config.androidAppUrl ? { androidAppUrl: config.androidAppUrl } : {}),
         ...(config.desktopDownloadUrl ? { desktopDownloadUrl: config.desktopDownloadUrl } : {}),
         portalOrigin: config.portalOrigin,
         notifications,

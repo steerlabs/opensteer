@@ -8,7 +8,7 @@ import {
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { DeploymentIdSchema } from "@opensteer/core";
+import { DeploymentIdSchema, opensteerMobileClient } from "@opensteer/core";
 import { sessionExchangePath } from "@opensteer/protocol";
 import {
   deploymentKindLabel,
@@ -89,6 +89,8 @@ interface PortalDependencies {
   readonly auth: ControlPlaneAuth;
   /** Where "Get the Desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
+  readonly iosAppUrl?: string;
+  readonly androidAppUrl?: string;
   readonly portalOrigin: URL;
   readonly portalSessions: PortalSessionStore;
   readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -195,7 +197,8 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     return sendPortalPage(reply, {
       content: `<p class="lead">${lead}</p>
         <a class="btn btn--primary btn--wide" href="${escapeHtml(portalSignInPath)}">Sign in</a>
-        <p class="fine">Every Opensteer keeps its own data.</p>`,
+        <p class="fine">Every Opensteer keeps its own data.</p>
+        ${dependencies.desktopDownloadUrl ? `<ul class="deployments">${desktopAppRow(dependencies.desktopDownloadUrl)}</ul>` : ""}`,
       eyebrow: "Opensteer Account",
       heading: "Opensteer",
       layout: "centered",
@@ -285,6 +288,52 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           throw new ControlPlaneError("not_found", "Route was not found");
         }
       };
+
+      app.get("/mac", async (request, reply) => {
+        guard(request);
+        return reply.redirect(dependencies.desktopDownloadUrl ?? "/", 302);
+      });
+
+      app.get("/open", async (request, reply) => {
+        guard(request);
+        const nonce = randomBytes(18).toString("base64url");
+        const stores = [
+          dependencies.iosAppUrl &&
+            `<a href="${escapeHtml(dependencies.iosAppUrl)}">Get it for iPhone</a>`,
+          dependencies.androidAppUrl &&
+            `<a href="${escapeHtml(dependencies.androidAppUrl)}">Get it for Android</a>`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        void reply
+          .header("cache-control", "no-store")
+          .header(
+            "content-security-policy",
+            `${browserPageContentSecurityPolicy}; script-src 'nonce-${nonce}'`,
+          )
+          .type("text/html; charset=utf-8");
+        return portalPage({
+          layout: "centered",
+          title: "Open Opensteer on this phone",
+          heading: "Open Opensteer on this phone",
+          content: `<a id="open-app" class="btn btn--primary btn--wide" hidden>Open in Opensteer</a>
+            <p id="incomplete" hidden>This link is incomplete. Scan the code on your computer again.</p>
+            ${stores ? `<p class="fine">${stores}</p>` : ""}
+            <p class="fine">Already installed? Scan the code again after installing.</p>
+            <script nonce="${nonce}">
+              const match = /^#d=(dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(location.hash);
+              if (match) {
+                const destination = ${JSON.stringify(opensteerMobileClient.applicationId + ":/open?d=")} + match[1];
+                const button = document.getElementById("open-app");
+                button.href = destination;
+                button.hidden = false;
+                location.href = destination;
+              } else {
+                document.getElementById("incomplete").hidden = false;
+              }
+            </script>`,
+        });
+      });
 
       app.get("/personal-host-link", async (request, reply) => {
         guard(request);

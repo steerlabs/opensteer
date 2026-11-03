@@ -58,6 +58,7 @@ ${preconnect}<title>${escapeHtml(page.title)}</title><style>${pageStyles}</style
 
 const pageStyles = `
 *,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
 :root{
 color-scheme:light dark;
 --bg:#faf8f6;--glow:rgb(154 74 40 / 7%);--surface:#fff;--sunken:#f2eeeb;
