@@ -242,3 +242,36 @@ it("rechecks Workspace deletion after waiting for an app's publication lock", as
     vi.useRealTimers();
   }
 });
+
+it.each(["deleted", "deleting"])(
+  "explains an app's %s Workspace instead of suggesting reconnect",
+  async (state) => {
+    const connectApp = vi.fn();
+    const { service, app, userId, options } = fixture(connectApp);
+    const { path } = await service.view(app.id, userId, "dark");
+    vi.spyOn(options.store, "admitWorkspaceFiles").mockImplementation(async () => {
+      if (state === "deleting")
+        throw new OpensteerError({
+          code: "workspace_unavailable",
+          message: "Workspace is awaiting deletion",
+        });
+      return null;
+    });
+    const response = await service.response({
+      appId: app.id,
+      token: path.split("/").at(-2)!,
+      theme: "dark",
+      method: "GET",
+      path: "/",
+      prefix: path.slice(0, -1),
+      headers: {},
+      signal: AbortSignal.timeout(2_000),
+    });
+    let body = "";
+    for await (const chunk of response.body) body += String(chunk);
+    expect(response.status).toBe(404);
+    expect(body).toContain("This app is no longer available");
+    expect(body).not.toContain("reconnect");
+    expect(connectApp).not.toHaveBeenCalled();
+  },
+);

@@ -1473,7 +1473,7 @@ export class RunnerRegistry {
       if (canceled) return;
       canceled = true;
       void connection.peer
-        .send({ ...request, type: "host.app.cancel", fence })
+        .send({ type: "host.app.cancel", requestId: request.requestId, spec: request.spec, fence })
         .catch(() => undefined);
     };
     signal.addEventListener("abort", cancel, { once: true });
