@@ -288,13 +288,17 @@ it.each(["ios", "android"])(
         },
       ],
     });
-    const check = vi.fn(async () => ({ ok: true, data: { ready: true, capabilities: [], identity: null, issues: [] } }));
+    const check = vi.fn(async () => ({
+      ok: true,
+      data: { ready: true, capabilities: [], identity: null, issues: [] },
+    }));
     const rpc = host.rpc;
     Object.defineProperty(host, "rpc", {
       value: new Proxy(rpc, {
         get(target, key, receiver) {
           if (key === "channel.connection.check") return check;
-          if (key === "channels.get") return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
+          if (key === "channels.get")
+            return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
           return Reflect.get(target, key, receiver);
         },
       }),
@@ -316,7 +320,11 @@ it.each(["ios", "android"])(
     data.accounts[0]!.status = "paused";
     await press("Refresh");
     await press("Resume");
-    expect(commands.at(-1)).toMatchObject({ type: "channel.connection.status.set", status: "connected", connectionId });
+    expect(commands.at(-1)).toMatchObject({
+      type: "channel.connection.status.set",
+      status: "connected",
+      connectionId,
+    });
     await input("Conversation ID", "support");
     await press("Add route");
     expect(commands.at(-1)).toMatchObject({
@@ -444,14 +452,47 @@ it("withholds folder install from non-administrators", async () => {
   expect(rows().some((row) => row.label === "Folder on your computer")).toBe(false);
 });
 
-it.each(["ios", "android"])("fences retained Messaging actions and late checks on %s", async (os) => {
-  state.os = os;
-  await open("messaging");
-  await input("Link code", "ABCDEFGH");
-  const retained = row("Link account");
-  const dispatch = vi.spyOn(host, "dispatch");
-  state.host = null;
-  if (retained.kind !== "button") throw new Error("Missing link action");
-  await act(async () => retained.onPress());
-  expect(dispatch).not.toHaveBeenCalled();
-});
+it.each(["ios", "android"])(
+  "fences retained Messaging actions and late checks on %s",
+  async (os) => {
+    state.os = os;
+    await open("messaging");
+    await input("Link code", "ABCDEFGH");
+    const retained = row("Link account");
+    const dispatch = vi.spyOn(host, "dispatch");
+    state.host = null;
+    if (retained.kind !== "button") throw new Error("Missing link action");
+    await act(async () => retained.onPress());
+    expect(dispatch).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["ios", "android"])(
+  "requires explicit catalog consent before installing on %s",
+  async (os) => {
+    state.os = os;
+    await open("plugins");
+    await press("Add plugins");
+    const directory = await host.rpc["plugins.directory.get"]({});
+    if (!directory.ok) throw new Error("Missing directory");
+    const item = directory.data.catalog.find((item) => !item.added)!;
+    expect(item).toBeDefined();
+    const dispatch = vi.spyOn(host, "dispatch");
+    await press(`${item.title} · Add`);
+    const add = row("Add and continue to sign-in");
+    expect(add.kind === "button" && add.disabled).toBe(true);
+    expect(dispatch).not.toHaveBeenCalled();
+    const consent = row(`Allow ${item.title} to request this access`);
+    if (consent.kind !== "toggle") throw new Error("Missing consent");
+    await act(async () => consent.onChange(true));
+    expect(row("Add and continue to sign-in")).toMatchObject({ disabled: false });
+    await press("Add and continue to sign-in");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "integration.catalog.install",
+        input: expect.objectContaining({ definitionId: item.definitionId }),
+      }),
+    );
+    expect(rows().some((row) => row.label === "Choose where it’s on")).toBe(true);
+  },
+);
