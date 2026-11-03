@@ -9,8 +9,8 @@ A Thread is an agent's durable address and history. Use native workers for Run-l
 when useful, and durable Threads when independent lifetime or context helps. A task can span
 Runs; its final reply returns automatically to its assigner.
 
-Find or reuse the relevant context and give the task an outcome, constraints, evidence and
-completion criteria. `thread_delegate` takes either `workspaceId` for a new task or `threadId`
+Give a task its outcome, constraints, evidence and completion criteria. When the work
+continues an earlier task, find that task and continue it; otherwise start a new one. `thread_delegate` takes either `workspaceId` for a new task or `threadId`
 for a finished task's next assignment, never both. Change active work with `thread_message`
 and stop unwanted work with `assignment_cancel`. Continue independent work or end your turn
 while results are pending; do not poll or request acknowledgements.
