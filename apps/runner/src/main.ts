@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveAppWorkspaceRoot } from "./apps/app-workspace-root.js";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -333,20 +334,13 @@ async function startAgentsRunner(input: {
     agentSkills,
     ...(localWorkspace
       ? {
-          resolveAppWorkspaceRoot: async (binding, signal) => {
-            const read = await localWorkspace.authority.resolveReadAuthority(binding, signal);
-            const identity = await localWorkspace.filesystem.directoryIdentity(
-              { root: read.root, path: read.root },
+          resolveAppWorkspaceRoot: (binding, signal) =>
+            resolveAppWorkspaceRoot(
+              localWorkspace.authority,
+              localWorkspace.filesystem,
+              binding,
               signal,
-            );
-            if (
-              identity.kind !== read.rootIdentity.kind ||
-              identity.volumeId !== read.rootIdentity.volumeId ||
-              identity.fileId !== read.rootIdentity.fileId
-            )
-              throw new Error("The Workspace root was replaced");
-            return read.root;
-          },
+            ),
         }
       : {}),
     attachmentCache,
