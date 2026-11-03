@@ -19,7 +19,7 @@ export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
 /**
  * The runtime contract for Trigger programs. Agents read it in the
- * opensteer-triggers skill, which must contain it verbatim; the automation
+ * opensteer:triggers skill, which must contain it verbatim; the automation
  * editor shows it to people. Tool metadata does not repeat it.
  */
 export const triggerProgramContract = [

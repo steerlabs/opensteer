@@ -80,11 +80,13 @@ import {
   type HarnessSession,
   type HarnessSessionContext,
   type ResolvedAttachment,
+  renderHarnessSkillCatalog,
+  renderNativeHarnessSkill,
   type HarnessSkill,
   SubagentNodes,
 } from "@opensteer/harness";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
-import { mkdir, rm, symlink, writeFile, readFile, copyFile } from "node:fs/promises";
+import { mkdir, readdir, rm, symlink, writeFile, readFile, copyFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
@@ -2107,6 +2109,7 @@ async function writeOpencodeInstructionsFile(
   const body = [
     context.platformGuide,
     context.instructions,
+    await renderHarnessSkillCatalog(context.skills),
     durableHistoryWindowNotice(context),
     opencodeToolsNotice(openSteerToolIds),
   ]
@@ -2157,7 +2160,15 @@ async function materializeOpencodeSkills(context: HarnessSessionContext): Promis
   await mkdir(directory, { mode: 0o700, recursive: true });
   assertUniqueSkillNames(context.skills?.skills ?? []);
   for (const skill of context.skills?.skills ?? []) {
-    await symlink(skill.path, join(directory, skill.name), "dir");
+    const target = join(directory, skill.fullName);
+    await mkdir(target, { mode: 0o700 });
+    for (const entry of await readdir(skill.path)) {
+      if (entry === "SKILL.md") {
+        await writeFile(join(target, entry), await renderNativeHarnessSkill(skill), {
+          mode: 0o600,
+        });
+      } else await symlink(join(skill.path, entry), join(target, entry));
+    }
   }
   return directory;
 }
@@ -2165,13 +2176,13 @@ async function materializeOpencodeSkills(context: HarnessSessionContext): Promis
 function assertUniqueSkillNames(skills: readonly HarnessSkill[]): void {
   const names = new Set<string>();
   for (const skill of skills) {
-    if (names.has(skill.name)) {
+    if (names.has(skill.fullName)) {
       throw new OpensteerError({
         code: "conflict",
-        message: `OpenCode cannot load duplicate Agent Skill name ${skill.name}`,
+        message: `OpenCode cannot load duplicate Agent Skill name ${skill.fullName}`,
       });
     }
-    names.add(skill.name);
+    names.add(skill.fullName);
   }
 }
 

@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   lstat,
   mkdir,
@@ -2825,7 +2826,9 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     skills: {
       skills: [
         {
-          name: "opensteer-workspaces",
+          plugin: null,
+          localName: "opensteer-workspaces",
+          fullName: "opensteer-workspaces",
           path: join(directory, "skills", "opensteer-workspaces"),
         },
       ],
@@ -3136,4 +3139,34 @@ describe("Codex Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+});
+
+it("delivers distinct full names for two plugins and a loose review skill", async () => {
+  const fixture = await setup("reasoning");
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const context = { ...fixture.context, skills };
+  const session = await fixture.adapter.startSession(context);
+  await session.execute(
+    fixture.turn("Use alpha:review, beta:review and review by their SKILL.md paths."),
+  );
+  await session.stop();
+  const capture = await fixture.capture();
+  const start = capture.find((message) => message.method === "thread/start")!;
+  const config = (start.params as JsonRecord).config as JsonRecord;
+  expect(config["skills.config"]).toEqual(
+    expect.arrayContaining(
+      await Promise.all(
+        skills.skills.map(async (skill) => ({
+          enabled: true,
+          path: await realpath(join(skill.path, "SKILL.md")),
+        })),
+      ),
+    ),
+  );
+  const payload = JSON.stringify(capture);
+  for (const skill of skills.skills) {
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await fixture.adapter.close();
 });

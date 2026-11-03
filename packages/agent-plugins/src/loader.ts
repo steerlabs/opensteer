@@ -1,3 +1,4 @@
+import { maximumSkillBytes } from "@opensteer/shared/agentSkills";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import type { Stats } from "node:fs";
@@ -15,7 +16,6 @@ export const agentPluginMcpSchemaUrl =
   "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json" as const;
 
 const maximumDocumentBytes = 1 * 1_024 * 1_024;
-const maximumSkillBytes = 256 * 1_024;
 const maximumServers = 128;
 const maximumArguments = 256;
 const maximumEnvironmentEntries = 128;

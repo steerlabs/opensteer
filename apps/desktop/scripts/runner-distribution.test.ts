@@ -39,7 +39,7 @@ function manifest(
     { mode: "data", path: "pi/node_modules/@earendil-works/pi-coding-agent/package.json" },
     { mode: "code", path: "pi/node_modules/jiti/lib/jiti.cjs" },
     { mode: "data", path: "agent-skills/plugin.json" },
-    { mode: "data", path: "agent-skills/skills/opensteer-triggers/SKILL.md" },
+    { mode: "data", path: "agent-skills/skills/triggers/SKILL.md" },
     { mode: "executable", path: "node/bin/node" },
     { mode: "executable", path: "postgres/bin/postgres" },
     { mode: "code", path: "services/browser-harness.mjs" },
@@ -108,7 +108,7 @@ describe("Runner distribution", () => {
     expect(runnerDistributionArtifacts(manifest()).map((artifact) => artifact.path)).toEqual([
       "THIRD_PARTY_NOTICES.md",
       "agent-skills/plugin.json",
-      "agent-skills/skills/opensteer-triggers/SKILL.md",
+      "agent-skills/skills/triggers/SKILL.md",
       "bin/browser-harness",
       "bin/opencode",
       "bin/opensteer-native-fs",
@@ -186,7 +186,7 @@ describe("Runner distribution", () => {
         "services/node_modules/sharp/package.json",
         "services/runner.mjs",
         "agent-skills/plugin.json",
-        "agent-skills/skills/opensteer-triggers/SKILL.md",
+        "agent-skills/skills/triggers/SKILL.md",
         "runner-release.json",
       ]),
     );

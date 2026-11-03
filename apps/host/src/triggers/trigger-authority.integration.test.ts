@@ -2057,7 +2057,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           const legacyTool = (await client.listTools()).tools.find(
             ({ name }) => name === "trigger_write",
           );
-          expect(legacyTool?.description).toContain("load opensteer-triggers");
+          expect(legacyTool?.description).toContain("load opensteer:triggers");
           return { refused, capabilities, supported };
         },
       );

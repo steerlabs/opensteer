@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   ModelSelectionSchema,
   OpensteerError,
@@ -395,6 +396,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
   await mkdir(workspacePath);
   const instanceId = createId("harnessInstance") as HarnessInstanceId;
   const selectedPermissions: string[] = [];
+  const prompts: unknown[] = [];
   let notifyHeldAssistantReached: () => void = () => undefined;
   const heldAssistantReached = new Promise<void>((resolve) => {
     notifyHeldAssistantReached = resolve;
@@ -511,6 +513,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       (choice) => selectedPermissions.push(choice),
       input.process,
       notifyHeldAssistantReached,
+      prompts,
     );
   };
   const adapter = new AcpHarnessAdapter(
@@ -563,6 +566,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
     context,
     heldAssistantReached,
     selectedPermissions,
+    prompts,
     turn(text: string, signal = new AbortController().signal): HarnessRunInput {
       return {
         context: {
@@ -600,6 +604,7 @@ function fakeClient(
   selected: (choice: string) => void,
   process: SupervisedProcess,
   notifyHeldAssistantReached: () => void,
+  prompts: unknown[],
 ): AcpProtocolClient {
   let cancelled: () => void = () => undefined;
   const cancellation = new Promise<void>((resolve) => {
@@ -619,7 +624,8 @@ function fakeClient(
       protocolVersion: 1,
     }),
     newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
-    prompt: async () => {
+    prompt: async (_sessionId, input) => {
+      prompts.push(input);
       if (scenario === "wait-interruption") {
         handlers.update("new-session", {
           sessionUpdate: "usage_update",
@@ -855,3 +861,17 @@ async function temporaryDirectory(): Promise<string> {
   directories.push(directory);
   return directory;
 }
+
+it("delivers distinct plugin and loose skill identities through ACP for Grok and Antigravity", async () => {
+  const fixture = await setup("replay");
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const session = await fixture.adapter.startSession({ ...fixture.context, skills });
+  await session.execute(fixture.turn("Use alpha:review, beta:review and review."));
+  await session.stop();
+  const payload = JSON.stringify(fixture.prompts);
+  for (const skill of skills.skills) {
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await fixture.adapter.close();
+});

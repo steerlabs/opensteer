@@ -84,14 +84,14 @@ const accessToken = "vertical-access-".padEnd(40, "a");
 const agentSkillsRoot = fileURLToPath(new URL("../../../runner/agent-skills/", import.meta.url));
 const testAgentSkills = {
   paths: {
-    "opensteer-browser": join(agentSkillsRoot, "skills", "opensteer-browser"),
-    "opensteer-computer-use": join(agentSkillsRoot, "skills", "opensteer-computer-use"),
-    "opensteer-computers": join(agentSkillsRoot, "skills", "opensteer-computers"),
-    "opensteer-skills": join(agentSkillsRoot, "skills", "opensteer-skills"),
-    "opensteer-integrations": join(agentSkillsRoot, "skills", "opensteer-integrations"),
-    "opensteer-threads": join(agentSkillsRoot, "skills", "opensteer-threads"),
-    "opensteer-triggers": join(agentSkillsRoot, "skills", "opensteer-triggers"),
-    "opensteer-projects": join(agentSkillsRoot, "skills", "opensteer-projects"),
+    "opensteer:browser": join(agentSkillsRoot, "skills", "browser"),
+    "opensteer:computer-use": join(agentSkillsRoot, "skills", "computer-use"),
+    "opensteer:computers": join(agentSkillsRoot, "skills", "computers"),
+    "opensteer:skills": join(agentSkillsRoot, "skills", "skills"),
+    "opensteer:integrations": join(agentSkillsRoot, "skills", "integrations"),
+    "opensteer:threads": join(agentSkillsRoot, "skills", "threads"),
+    "opensteer:triggers": join(agentSkillsRoot, "skills", "triggers"),
+    "opensteer:projects": join(agentSkillsRoot, "skills", "projects"),
   },
   rootPath: agentSkillsRoot,
 } as const;

@@ -852,7 +852,7 @@ describe("machine access notice", () => {
     expect(notice).toContain(
       "…and 3 more computers are not listed and cannot be addressed this Run.",
     );
-    expect(notice).toContain("Details: the opensteer-computers skill");
+    expect(notice).toContain("Details: the opensteer:computers skill");
     expect(
       renderMachineAccessNotice({ callerMachineName: "cloud-1", machines: [], omittedMachines: 0 }),
     ).toBe(noReachableComputersNotice("cloud-1"));
@@ -915,7 +915,7 @@ describe("machine access notice", () => {
     expect(notice).toContain(
       `…and ${fitted.omittedMachines} more computers are not listed and cannot be addressed this Run.`,
     );
-    expect(notice).toContain("Details: the opensteer-computers skill");
+    expect(notice).toContain("Details: the opensteer:computers skill");
     const small = machineContext();
     expect(fitMachineAccessNotice(small)).toEqual(small);
   });

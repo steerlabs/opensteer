@@ -233,7 +233,7 @@ describe("agent tool catalog", () => {
   it("loads the Trigger contract only for program authoring, not timing controls", () => {
     const write = tool("trigger", "trigger_write");
     expect(write.description).toContain(
-      "Before writing or changing a program, load opensteer-triggers",
+      "Before writing or changing a program, load opensteer:triggers",
     );
     expect(write.description).not.toContain("Trigger programs execute as Node.js ESM modules");
     const schema = JSON.stringify(write.inputSchema.toJSONSchema({ io: "input" }));
@@ -248,7 +248,7 @@ describe("agent tool catalog", () => {
     expect(new TextEncoder().encode(opensteerPlatformGuide).byteLength).toBeLessThanOrEqual(2_048);
     expect(opensteerPlatformGuide).toContain("runs as Node.js on its anchor Thread's Runner");
     expect(opensteerPlatformGuide).toContain(
-      "Load opensteer-triggers before writing or changing a program",
+      "Load opensteer:triggers before writing or changing a program",
     );
     expect(platformGuideForCapabilityProfile("trigger")).toContain(
       "runs as Node.js on its anchor Thread's Runner",
@@ -296,10 +296,10 @@ describe("agent tool catalog", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const instructions = agentCapabilityProfile(profileId).instructions;
       const cue =
-        "To see or operate an app on a person's Mac, or a whole Android phone, write JavaScript in the computer tool (opensteer-computer-use).";
+        "To see or operate an app on a person's Mac, or a whole Android phone, write JavaScript in the computer tool (opensteer:computer-use).";
       expect(instructions.split(cue).length - 1).toBe(profileId === "trigger" ? 0 : 1);
       expect(
-        skillsForCapabilityProfile(profileId).some(({ name }) => name === "opensteer-computer-use"),
+        skillsForCapabilityProfile(profileId).some(({ name }) => name === "opensteer:computer-use"),
       ).toBe(profileId !== "trigger");
     }
   });
@@ -310,8 +310,8 @@ describe("agent tool catalog", () => {
       const tools = toolsForCapabilityProfile(profileId).map(({ name }) => name);
       const skills = skillsForCapabilityProfile(profileId).map(({ name }) => name);
       const browses = tools.includes("browser_session_open");
-      expect(instructions.includes("opensteer-browser")).toBe(browses);
-      expect(skills.includes("opensteer-browser")).toBe(browses);
+      expect(instructions.includes("opensteer:browser")).toBe(browses);
+      expect(skills.includes("opensteer:browser")).toBe(browses);
       expect(instructions.length).toBeLessThanOrEqual(2_048);
     }
   });

@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -1747,7 +1748,7 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
         join(path, "SKILL.md"),
         `---\nname: ${name}\ndescription: ${description}\n---\nPRIVATE ${name} BODY\n`,
       );
-      return { name, path };
+      return { plugin: null, localName: name, fullName: name, path };
     }),
   );
   const context: HarnessSessionContext = {
@@ -2127,4 +2128,24 @@ describe("pi Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+});
+
+it("delivers distinct full names for two plugins and a loose review skill", async () => {
+  const fixture = await setup({});
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const context = { ...fixture.context, skills };
+  const session = await fixture.adapter.startSession(context);
+  await session.execute(
+    fixture.turn("Use alpha:review, beta:review and review by their SKILL.md paths."),
+  );
+  await session.stop();
+  const payload = await readFile(
+    join(context.threadStateDirectory, "opensteer-instructions.md"),
+    "utf8",
+  );
+  for (const skill of skills.skills) {
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await fixture.adapter.close();
 });

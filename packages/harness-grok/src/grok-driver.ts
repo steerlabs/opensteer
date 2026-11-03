@@ -574,8 +574,8 @@ export function rewriteGrokSkillInvocation(
   text: string,
   context: Pick<HarnessSessionContext, "skills">,
 ): string {
-  const enabled = new Set(context.skills?.skills.map((skill) => skill.name) ?? []);
-  return text.replace(/(^|\n\n)\$([a-z0-9][a-z0-9_-]*)\b/giu, (match, prefix, name) =>
+  const enabled = new Set(context.skills?.skills.map((skill) => skill.fullName) ?? []);
+  return text.replace(/(^|\n\n)\$([a-z0-9][a-z0-9_.:-]*)\b/giu, (match, prefix, name) =>
     enabled.has(String(name)) ? `${String(prefix)}/${String(name)}` : String(match),
   );
 }

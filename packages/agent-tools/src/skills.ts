@@ -2,14 +2,14 @@ import { AgentCapabilityProfileIdSchema, type AgentCapabilityProfileId } from "@
 import { z } from "zod";
 
 export const OpensteerAgentSkillNameSchema = z.enum([
-  "opensteer-integrations",
-  "opensteer-computer-use",
-  "opensteer-projects",
-  "opensteer-threads",
-  "opensteer-triggers",
-  "opensteer-browser",
-  "opensteer-computers",
-  "opensteer-skills",
+  "opensteer:integrations",
+  "opensteer:computer-use",
+  "opensteer:projects",
+  "opensteer:threads",
+  "opensteer:triggers",
+  "opensteer:browser",
+  "opensteer:computers",
+  "opensteer:skills",
 ]);
 export type OpensteerAgentSkillName = z.infer<typeof OpensteerAgentSkillNameSchema>;
 
@@ -20,7 +20,7 @@ export interface OpensteerAgentSkillDefinition {
 
 export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Object.freeze([
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-skills"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:skills"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -28,7 +28,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-integrations"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:integrations"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -36,7 +36,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-computer-use"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:computer-use"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -44,7 +44,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-browser"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:browser"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -52,7 +52,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-computers"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:computers"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -60,11 +60,11 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-projects"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:projects"),
     profiles: Object.freeze([AgentCapabilityProfileIdSchema.parse("main")]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-threads"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:threads"),
     profiles: Object.freeze([
       AgentCapabilityProfileIdSchema.parse("main"),
       AgentCapabilityProfileIdSchema.parse("workspace"),
@@ -72,7 +72,7 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
     ]),
   }),
   Object.freeze({
-    name: OpensteerAgentSkillNameSchema.parse("opensteer-triggers"),
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:triggers"),
     profiles: Object.freeze([...AgentCapabilityProfileIdSchema.options]),
   }),
 ]);

@@ -495,7 +495,7 @@ export function fitMachineAccessNotice(
 export function machineAccessUnavailableSentence(reason: MachineAccessUnavailableReason): string {
   switch (reason) {
     case "none-reachable":
-      return "No other computers are reachable from this Run. Nothing in the opensteer-computers skill applies.";
+      return "No other computers are reachable from this Run. Nothing in the opensteer:computers skill applies.";
     case "platform":
       return "This Runner's operating system cannot reach other computers.";
     case "driver-unsupported":
@@ -543,7 +543,7 @@ export function renderMachineAccessNotice(
     );
   }
   lines.push(
-    "Paths are absolute or relative to that computer's home. Commands run as that computer's Opensteer account. A refusal means the owner's access settings said no, not that your command was wrong. Sessions end when your Run ends. Details: the opensteer-computers skill.",
+    "Paths are absolute or relative to that computer's home. Commands run as that computer's Opensteer account. A refusal means the owner's access settings said no, not that your command was wrong. Sessions end when your Run ends. Details: the opensteer:computers skill.",
   );
   return lines.join("\n");
 }

@@ -89,7 +89,14 @@ export async function materializeIntegrationSkills(input: {
             content.fill(0);
           }
         }
-        skills.push(Object.freeze({ name: skillName, path: skillPath }));
+        skills.push(
+          Object.freeze({
+            plugin: pluginName,
+            localName: skillName,
+            fullName: `${pluginName}:${skillName}`,
+            path: skillPath,
+          }),
+        );
       }
     }
     return {

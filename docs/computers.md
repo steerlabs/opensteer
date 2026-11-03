@@ -91,7 +91,7 @@ Keep private-state denial intact. Eligibility belongs to
 [machine-access-setup.test.ts](../apps/runner/src/shell/machine-access-setup.test.ts).
 PTYs, remote/agent/X11 forwarding, per-user allowlists, Windows endpoints and peer-to-peer
 transport are outside this contract. Agent-facing SSH procedures remain in the shipped
-[computer skill](../apps/runner/agent-skills/skills/opensteer-computers/SKILL.md).
+[computer skill](../apps/runner/agent-skills/skills/computers/SKILL.md).
 
 ## Computer apps
 

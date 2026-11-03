@@ -48,7 +48,9 @@
     "./processGroup": "./src/processGroup.ts",
     "./test-support/serverProbes": "./src/serverProbes.test-support.ts",
     "./test-support/loopbackPort": "./src/loopbackPort.test-support.ts",
-    "./test-support/tcpServer": "./src/tcpServer.test-support.ts"
+    "./test-support/tcpServer": "./src/tcpServer.test-support.ts",
+    "./agentSkills": "./src/agentSkills.ts",
+    "./test-support/agentSkills": "./src/agentSkills.test-support.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

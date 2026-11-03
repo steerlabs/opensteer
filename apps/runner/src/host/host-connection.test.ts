@@ -48,14 +48,14 @@ const cloudDeploymentShape = {
 } as const;
 const testAgentSkills = {
   paths: {
-    "opensteer-skills": "/runner/agent-skills/skills/opensteer-skills",
-    "opensteer-integrations": "/runner/agent-skills/skills/opensteer-integrations",
-    "opensteer-browser": "/runner/agent-skills/skills/opensteer-browser",
-    "opensteer-computer-use": "/runner/agent-skills/skills/opensteer-computer-use",
-    "opensteer-computers": "/runner/agent-skills/skills/opensteer-computers",
-    "opensteer-threads": "/runner/agent-skills/skills/opensteer-threads",
-    "opensteer-triggers": "/runner/agent-skills/skills/opensteer-triggers",
-    "opensteer-projects": "/runner/agent-skills/skills/opensteer-projects",
+    "opensteer:skills": "/runner/agent-skills/skills/skills",
+    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:browser": "/runner/agent-skills/skills/browser",
+    "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
+    "opensteer:computers": "/runner/agent-skills/skills/computers",
+    "opensteer:threads": "/runner/agent-skills/skills/threads",
+    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:projects": "/runner/agent-skills/skills/projects",
   },
   rootPath: "/runner/agent-skills",
 } as const;

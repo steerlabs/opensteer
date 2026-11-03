@@ -76,14 +76,14 @@ import { providerContinuationIdentityProjector } from "@opensteer/runner-client"
 
 const testAgentSkills = {
   paths: {
-    "opensteer-skills": "/runner/agent-skills/skills/opensteer-skills",
-    "opensteer-integrations": "/runner/agent-skills/skills/opensteer-integrations",
-    "opensteer-browser": "/runner/agent-skills/skills/opensteer-browser",
-    "opensteer-computer-use": "/runner/agent-skills/skills/opensteer-computer-use",
-    "opensteer-computers": "/runner/agent-skills/skills/opensteer-computers",
-    "opensteer-threads": "/runner/agent-skills/skills/opensteer-threads",
-    "opensteer-triggers": "/runner/agent-skills/skills/opensteer-triggers",
-    "opensteer-projects": "/runner/agent-skills/skills/opensteer-projects",
+    "opensteer:skills": "/runner/agent-skills/skills/skills",
+    "opensteer:integrations": "/runner/agent-skills/skills/integrations",
+    "opensteer:browser": "/runner/agent-skills/skills/browser",
+    "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
+    "opensteer:computers": "/runner/agent-skills/skills/computers",
+    "opensteer:threads": "/runner/agent-skills/skills/threads",
+    "opensteer:triggers": "/runner/agent-skills/skills/triggers",
+    "opensteer:projects": "/runner/agent-skills/skills/projects",
   },
   rootPath: "/runner/agent-skills",
 } as const;
@@ -3480,7 +3480,7 @@ describe("RunnerRuntime", () => {
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
     await writeWorkspaceSkill(workspacePath, "research");
-    await writeWorkspaceSkill(workspacePath, "opensteer-threads");
+    await writeWorkspaceSkill(workspacePath, "opensteer:threads");
     const driver = new FakeHarnessDriver();
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
@@ -3500,8 +3500,18 @@ describe("RunnerRuntime", () => {
         digest: "example",
         directory: "/state/integration-skills/example",
         skills: [
-          { name: "research", path: "/state/integration-skills/example/research" },
-          { name: "example-helper", path: "/state/integration-skills/example/helper" },
+          {
+            plugin: "example",
+            localName: "research",
+            fullName: "example:research",
+            path: "/state/integration-skills/example/research",
+          },
+          {
+            plugin: "example",
+            localName: "helper",
+            fullName: "example:helper",
+            path: "/state/integration-skills/example/helper",
+          },
         ],
       }),
       logger: {
@@ -3532,30 +3542,74 @@ describe("RunnerRuntime", () => {
       expect(driver.context?.providerState.privateStateRoot).toBe(dirname(stateRoot));
       expect(driver.context?.skills?.skills).toEqual([
         {
-          name: "opensteer-skills",
-          path: "/runner/agent-skills/skills/opensteer-skills",
+          plugin: "opensteer",
+          localName: "skills",
+          fullName: "opensteer:skills",
+          path: "/runner/agent-skills/skills/skills",
         },
         {
-          name: "opensteer-integrations",
-          path: "/runner/agent-skills/skills/opensteer-integrations",
+          plugin: "opensteer",
+          localName: "integrations",
+          fullName: "opensteer:integrations",
+          path: "/runner/agent-skills/skills/integrations",
         },
         {
-          name: "opensteer-computer-use",
-          path: "/runner/agent-skills/skills/opensteer-computer-use",
+          plugin: "opensteer",
+          localName: "computer-use",
+          fullName: "opensteer:computer-use",
+          path: "/runner/agent-skills/skills/computer-use",
         },
-        { name: "opensteer-browser", path: "/runner/agent-skills/skills/opensteer-browser" },
-        { name: "opensteer-computers", path: "/runner/agent-skills/skills/opensteer-computers" },
-        { name: "opensteer-threads", path: "/runner/agent-skills/skills/opensteer-threads" },
-        { name: "opensteer-triggers", path: "/runner/agent-skills/skills/opensteer-triggers" },
         {
-          name: "example-helper",
+          plugin: "opensteer",
+          localName: "browser",
+          fullName: "opensteer:browser",
+          path: "/runner/agent-skills/skills/browser",
+        },
+        {
+          plugin: "opensteer",
+          localName: "computers",
+          fullName: "opensteer:computers",
+          path: "/runner/agent-skills/skills/computers",
+        },
+        {
+          plugin: "opensteer",
+          localName: "threads",
+          fullName: "opensteer:threads",
+          path: "/runner/agent-skills/skills/threads",
+        },
+        {
+          plugin: "opensteer",
+          localName: "triggers",
+          fullName: "opensteer:triggers",
+          path: "/runner/agent-skills/skills/triggers",
+        },
+        {
+          plugin: "example",
+          localName: "research",
+          fullName: "example:research",
+          path: "/state/integration-skills/example/research",
+        },
+        {
+          plugin: "example",
+          localName: "helper",
+          fullName: "example:helper",
           path: "/state/integration-skills/example/helper",
         },
-        { name: "release-notes", path: join(workspacePath, "skills", "release-notes") },
-        { name: "research", path: join(workspacePath, "skills", "research") },
+        {
+          plugin: null,
+          localName: "release-notes",
+          fullName: "release-notes",
+          path: join(workspacePath, "skills", "release-notes"),
+        },
+        {
+          plugin: null,
+          localName: "research",
+          fullName: "research",
+          path: join(workspacePath, "skills", "research"),
+        },
       ]);
       expect(logged).toEqual([
-        "Workspace skill opensteer-threads was skipped: the opensteer- prefix is reserved for the skills Opensteer ships",
+        "Workspace skill opensteer:threads was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();

@@ -1021,7 +1021,7 @@ function handleTurnStart(message) {
     return;
   }
   if (scenario === "browser-agent") {
-    // Acts as an agent following the opensteer-browser skill: it opens
+    // Acts as an agent following the opensteer:browser skill: it opens
     // Browser Sessions through Opensteer's MCP tools, drives each one by ID
     // with the shipped Browser Harness, and reports exactly what it saw.
     void browserAgentTurn(message.params.input).then(

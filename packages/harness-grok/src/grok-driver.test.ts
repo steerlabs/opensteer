@@ -122,10 +122,23 @@ describe("Grok normalization", () => {
   });
 
   it("rewrites only enabled leading skill invocations", () => {
-    const context = { skills: { skills: [{ name: "review", path: "/skills/review" }] } };
+    const context = {
+      skills: {
+        skills: ["alpha", "beta", "alpha.tools", null].map((plugin) => ({
+          plugin,
+          localName: "review",
+          fullName: plugin ? `${plugin}:review` : "review",
+          path: "/skills/review",
+        })),
+      },
+    };
+    expect(
+      rewriteGrokSkillInvocation("$alpha:review a\n\n$beta:review b\n\n$review c", context),
+    ).toBe("/alpha:review a\n\n/beta:review b\n\n/review c");
     expect(rewriteGrokSkillInvocation("$review this\n\n$missing that", context)).toBe(
       "/review this\n\n$missing that",
     );
+    expect(rewriteGrokSkillInvocation("$alpha.tools:review", context)).toBe("/alpha.tools:review");
     expect(rewriteGrokSkillInvocation("mention $review here", context)).toBe(
       "mention $review here",
     );

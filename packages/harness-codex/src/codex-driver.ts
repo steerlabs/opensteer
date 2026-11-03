@@ -75,6 +75,7 @@ import {
   runFailedEvent,
   runStartedEvent,
   clampConnectionLabel,
+  renderHarnessSkillCatalog,
   durableHistoryWindowNotice,
   opensteerToolIdentity,
   providerSecretFile,
@@ -1190,6 +1191,10 @@ class CodexHarnessSession implements HarnessSession {
     const initialContext = initialContinuationContextPrompt(this.#context);
     const overrides = turnOverrides(this.#context);
     const additionalContext = runAdditionalContext(this.#context, this.#resumed);
+    additionalContext.opensteer_skills = {
+      kind: "application",
+      value: (await renderHarnessSkillCatalog(this.#context.skills)) ?? "(No skills selected.)",
+    };
     // The one request both measured for image budgeting and sent.
     const turnStart = (input: readonly JsonObject[]): JsonObject => ({
       ...overrides,
@@ -3282,7 +3287,7 @@ async function codexThreadRuntimeConfig(
   client: CodexStdioClient,
   context: HarnessSessionContext,
   features: CodexFeatureBoundary,
-  selectedSkills: readonly { readonly name: string; readonly path: string }[],
+  selectedSkills: readonly { readonly fullName: string; readonly path: string }[],
   timeoutMs: number,
 ): Promise<JsonObject> {
   const configRead = requireObject(
@@ -3436,7 +3441,7 @@ function codexShellEnvironmentPolicyApplied(value: unknown): boolean {
 async function codexSkillRules(
   client: CodexStdioClient,
   workspacePath: string,
-  selectedSkills: readonly { readonly name: string; readonly path: string }[],
+  selectedSkills: readonly { readonly fullName: string; readonly path: string }[],
   timeoutMs: number,
 ): Promise<readonly JsonObject[]> {
   const expectedPaths = new Set(
@@ -3557,17 +3562,17 @@ function codexMcpConfigPath(name: string, property: string): string {
 }
 
 function assertUniqueSkillNames(
-  skills: readonly { readonly name: string; readonly path: string }[],
+  skills: readonly { readonly fullName: string; readonly path: string }[],
 ): void {
   const names = new Set<string>();
   for (const skill of skills) {
-    if (names.has(skill.name)) {
+    if (names.has(skill.fullName)) {
       throw new OpensteerError({
         code: "conflict",
-        message: `Codex cannot load duplicate Agent Skill name ${skill.name}`,
+        message: `Codex cannot load duplicate Agent Skill name ${skill.fullName}`,
       });
     }
-    names.add(skill.name);
+    names.add(skill.fullName);
   }
 }
 

@@ -137,14 +137,14 @@ it("records a successful Codex command with large inline arguments without faili
     agentSkills: {
       rootPath: skillsRoot,
       paths: {
-        "opensteer-skills": skillPath("opensteer-skills"),
-        "opensteer-integrations": skillPath("opensteer-integrations"),
-        "opensteer-browser": skillPath("opensteer-browser"),
-        "opensteer-computer-use": skillPath("opensteer-computer-use"),
-        "opensteer-computers": skillPath("opensteer-computers"),
-        "opensteer-threads": skillPath("opensteer-threads"),
-        "opensteer-triggers": skillPath("opensteer-triggers"),
-        "opensteer-projects": skillPath("opensteer-projects"),
+        "opensteer:skills": skillPath("skills"),
+        "opensteer:integrations": skillPath("integrations"),
+        "opensteer:browser": skillPath("browser"),
+        "opensteer:computer-use": skillPath("computer-use"),
+        "opensteer:computers": skillPath("computers"),
+        "opensteer:threads": skillPath("threads"),
+        "opensteer:triggers": skillPath("triggers"),
+        "opensteer:projects": skillPath("projects"),
       },
     },
     integrationSkills: async () => ({

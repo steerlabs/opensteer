@@ -59,7 +59,9 @@ describe("Runner integration skills", () => {
       stateDirectory,
       threadId: createId("thread"),
     });
-    expect(materialized.skills.map(({ name }) => name)).toEqual(["research"]);
+    expect(materialized.skills.map(({ fullName }) => fullName)).toEqual([
+      "example-plugin:research",
+    ]);
     const skillPath = materialized.skills[0]?.path;
     expect(skillPath).toBeTruthy();
     expect(skillPath).toContain(join("example-plugin", "research"));

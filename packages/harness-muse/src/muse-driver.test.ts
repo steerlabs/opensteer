@@ -1,3 +1,4 @@
+import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -630,3 +631,25 @@ function observe(stream: AsyncIterable<HarnessEvent>) {
     },
   };
 }
+
+it("delivers distinct full names for two plugins and a loose review skill", async () => {
+  const fixture = await setup("happy");
+  const adapter = await fixture.driver.create({
+    config: {},
+    instanceId: fixture.context.harnessInstanceId,
+    sourceId: "meta",
+  });
+  const skills = await collisionSkills(fixture.context.workspacePath);
+  const context = { ...fixture.context, skills };
+  const session = await adapter.startSession(context);
+  await session.execute(
+    fixture.turn("Use alpha:review, beta:review and review by their SKILL.md paths."),
+  );
+  await session.stop();
+  const payload = JSON.stringify(await fixture.messages());
+  for (const skill of skills.skills) {
+    expect(payload).toContain(`${skill.fullName} workflow`);
+    expect(payload).toContain(skill.path);
+  }
+  await adapter.close();
+});

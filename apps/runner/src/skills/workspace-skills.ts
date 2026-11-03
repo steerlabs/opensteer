@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { parseHarnessSkillMetadata, type HarnessSkill } from "@opensteer/harness";
+import {
+  maximumSkillBytes,
+  parseHarnessSkillMetadata,
+  type HarnessSkill,
+} from "@opensteer/harness";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 
-const maximumSkillBytes = 64 * 1_024;
 const maximumSkills = 64;
 const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
@@ -62,7 +65,7 @@ export async function discoverWorkspaceSkills(
       continue;
     }
     digest.update(`${name}\0${read.content}\0`);
-    skills.push(Object.freeze({ name, path }));
+    skills.push(Object.freeze({ plugin: null, localName: name, fullName: name, path }));
   }
   return Object.freeze({
     digest: digest.digest("base64url"),
@@ -76,9 +79,6 @@ async function readSkill(
   skillFile: string,
   size: number,
 ): Promise<{ readonly content: string } | { readonly problem: string }> {
-  if (name.startsWith("opensteer-")) {
-    return { problem: "the opensteer- prefix is reserved for the skills Opensteer ships" };
-  }
   if (!skillNamePattern.test(name))
     return { problem: "the directory name is not a valid skill name" };
   if (size > maximumSkillBytes) {
