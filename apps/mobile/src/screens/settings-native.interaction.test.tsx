@@ -494,5 +494,39 @@ it.each(["ios", "android"])(
       }),
     );
     expect(rows().some((row) => row.label === "Choose where it’s on")).toBe(true);
+    const overview = await host.rpc["plugins.overview.get"]({});
+    if (!overview.ok) throw new Error("Missing overview");
+    const template = await host.rpc["plugins.detail.get"]({
+      target: overview.data.rows[0]!.target,
+    });
+    if (!template.ok) throw new Error("Missing detail template");
+    const rpc = host.rpc;
+    Object.defineProperty(host, "rpc", {
+      value: new Proxy(rpc, {
+        get(target, key, receiver) {
+          if (key === "plugins.detail.get")
+            return async () => ({
+              ok: true,
+              data: {
+                ...template.data,
+                row: {
+                  ...template.data.row,
+                  target: { kind: "service", definitionId: item.definitionId },
+                  title: item.title,
+                },
+              },
+            });
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+    });
+    await press("Choose where it’s on");
+    await press("Done");
+    expect(
+      [...state.pages.values()].some((page) =>
+        page.sections.some((section) => section.key === "hero"),
+      ),
+    ).toBe(false);
+    expect(rows().some((row) => row.label === "Add plugins")).toBe(true);
   },
 );

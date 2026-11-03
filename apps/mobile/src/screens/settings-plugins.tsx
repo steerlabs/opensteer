@@ -585,6 +585,7 @@ function Plugins({
         onClose={() => {
           setAdd(null);
           setAddEntry(null);
+          if (placingAdd) setDetail(null);
           void overview.reload();
         }}
       >
@@ -604,6 +605,7 @@ function Plugins({
                           button("done", "Done", () => {
                             setAdd(null);
                             setDirectory(null);
+                            setDetail(null);
                           }),
                         ],
                       },
@@ -648,7 +650,12 @@ function Plugins({
                                 run("placement", async () => {
                                   const result = unwrapRpcResult(
                                     await host.rpc["plugins.detail.get"]({
-                                      target: { kind: "service", definitionId: add.definitionId },
+                                      target: {
+                                        kind: addEntry.definition.computerApp
+                                          ? "device-app"
+                                          : "service",
+                                        definitionId: add.definitionId,
+                                      },
                                     }),
                                   );
                                   if (!isCurrent()) return;
