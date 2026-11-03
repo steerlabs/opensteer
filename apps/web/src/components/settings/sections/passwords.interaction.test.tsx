@@ -55,7 +55,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
       ),
     ].map((link) => link.getAttribute("href"));
     expect(links.slice(-2)).toEqual(["/settings/plugins", "/settings/sign-ins"]);
-    expect(page.querySelector(".settings-section__title")?.textContent).toBe("Passwords");
+    expect(page.querySelector("h2.settings-group__title")?.textContent).toBe("Passwords");
   });
 
   it("explains Passwords before setup and opens setup in the Passwords window", async () => {

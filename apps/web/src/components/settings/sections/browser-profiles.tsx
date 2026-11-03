@@ -15,7 +15,6 @@ import { Icon } from "../../icon.js";
 import { Popover } from "../../popover.js";
 import { ProfileAvatar } from "../../workspace/identity.js";
 import { lastBrowsingChoice, rememberBrowsingChoice } from "../../workspace/start-page.js";
-import { SectionHeader } from "../primitives.js";
 
 /**
  * Settings → Browser profiles. Each profile is its own browser with its own
@@ -31,10 +30,7 @@ export function BrowserProfilesSection() {
   const [creating, setCreating] = useState(() => params.has("new"));
   return (
     <>
-      <SectionHeader
-        lead="Each profile is a separate browser with its own sign-ins and site data. Agents browse as one of them."
-        title="Browser profiles"
-      />
+      <h2 className="settings-group__title">Opensteer browsers</h2>
       <section aria-labelledby="browser-profiles-title" className="settings-group">
         <h2 className="settings-group__title" id="browser-profiles-title">
           Your profiles
