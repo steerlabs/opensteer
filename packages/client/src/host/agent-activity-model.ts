@@ -1807,7 +1807,7 @@ function said([activeLabel, label]: StepWords, icon: ActivityIcon): OpensteerSte
 
 /**
  * A step that says which of its tool's actions it took, and the name it gave
- * when there is one. An action only a newer Runner offers reads as `otherwise`.
+ * when there is one. An action from a newer Host reads as `otherwise`.
  */
 function saidByAction<Action extends string>(
   words: Readonly<Record<Action, StepWords>>,
@@ -1849,11 +1849,7 @@ const automationActions: Record<TriggerWriteInput["action"], StepWords> = {
   update: ["Changing an automation", "Changed an automation"],
 };
 
-/**
- * Opensteer's own tools, by what each step did and never by the tool's name.
- * It holds every tool the agent catalog offers and the names older Runners
- * still report; `tests/opensteer-tool-steps.test.ts` keeps it that way.
- */
+/** Transcripts outlive their tool inventory, so removed names stay readable. */
 const opensteerSteps = new Map<string, OpensteerStep>([
   ["thread_wait", said(["Waiting for a task", "Waited for a task"], "list")],
   [
