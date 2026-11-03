@@ -563,6 +563,17 @@ export function conversationRows(
   options: ConversationRowOptions,
 ): readonly ConversationRow[] {
   const rows: ConversationRow[] = [];
+  // An automatic turn's row names its source, so its own inputs need no row.
+  // One that joined a person's Run keeps its message.
+  const automaticRuns = new Set(
+    groups.flatMap((group) =>
+      group.kind === "turn" &&
+      group.turn.startedBy !== undefined &&
+      group.turn.startedBy.kind !== "human"
+        ? [group.turn.runId]
+        : [],
+    ),
+  );
   for (const group of groups) {
     if (
       group.kind === "assignment" &&
@@ -574,7 +585,8 @@ export function conversationRows(
       group.kind === "message" &&
       group.entry.messageKind === "input" &&
       group.entry.author.kind !== "human" &&
-      group.entry.runId !== null
+      group.entry.runId !== null &&
+      automaticRuns.has(group.entry.runId)
     )
       continue;
     if (group.kind === "turn" && !conversationTurnShows(group.turn, options)) continue;

@@ -82,7 +82,7 @@ describe("harnessThreadContextPrompt", () => {
     expect(lines[0]).toBe("[Opensteer thread context]");
     expect(lines[1]).toMatch(/^Person's time zone: America\/New_York\./u);
     expect(lines[2]).toBe(
-      `Task: ${assignmentId}, assigned by Thread ${parentThreadId}. Its final reply returns there when the task closes; an empty final reply returns nothing.`,
+      `Task: ${assignmentId}, assigned by Thread ${parentThreadId}. Its final reply returns there when the task closes.`,
     );
     expect(lines.at(-1)).toBe("[End Opensteer thread context]");
   });

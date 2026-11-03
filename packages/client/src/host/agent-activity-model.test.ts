@@ -2111,6 +2111,32 @@ it("a human restart or steer keeps automatic work's outcomes, and reports remain
   ).toMatchObject({ kind: "message", entry: report });
 });
 
+it("keeps an automatic message that joined a person's Run, and lets an automatic turn stand for its own", () => {
+  const options = { live: false, atComputer: () => false };
+  const joined = input({
+    id: "joined",
+    runId: "run-a",
+    author: { kind: "agent", runId: "run-b", threadId: "thr-b" },
+  });
+  const personRun = run({ id: "run-a", status: "running" });
+  expect(
+    conversationRows(groupTranscriptEntries([personRun, input(), joined]), options).some(
+      (row) => row.group.kind === "message" && row.group.entry.id === joined.id,
+    ),
+  ).toBe(true);
+  const seed = input({
+    id: "seed",
+    runId: "run-a",
+    author: { kind: "platform", cause: "assignment-result" },
+  });
+  const automatic = run({
+    id: "run-a",
+    startedBy: { kind: "platform", cause: "assignment-result" },
+  });
+  const rows = conversationRows(groupTranscriptEntries([seed, automatic]), options);
+  expect(rows.map((row) => row.group.kind)).toEqual(["turn"]);
+});
+
 it("automatic background work has no Chat indicator, while a new human input still does", () => {
   const automatic = run({
     status: "running",

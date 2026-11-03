@@ -304,7 +304,7 @@ function requesterTimeLine(timeZone: string | null, now: Date): string {
 
 function currentTaskLine(assignment: AssignmentRunContext | null): string {
   return assignment
-    ? `Task: ${assignment.id}, assigned by ${assigner(assignment.origin, assignment.parentThreadId)}. Its final reply returns there when the task closes; an empty final reply returns nothing.`
+    ? `Task: ${assignment.id}, assigned by ${assigner(assignment.origin, assignment.parentThreadId)}. Its final reply returns there when the task closes.`
     : "Task: none. This Run's final reply is shown in this Thread.";
 }
 

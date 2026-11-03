@@ -1244,6 +1244,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     );
     const silentWorker = await activateRun(fixture, silent.run!.id);
     await end(silentWorker, "completed");
+    await drainReturns();
     expect(await assignmentRow(silent.assignmentId)).toMatchObject({
       status: "completed",
       resultText: "",
@@ -1256,7 +1257,19 @@ integration("cross-environment delegation reaches the Runner", () => {
         .where("id", "=", silent.assignmentId)
         .executeTakeFirstOrThrow(),
     ).toEqual({ resultMessageId: null });
-    await drainReturns();
+    // The assigning Thread still sees its task finish.
+    const parentUpdates = await database
+      .selectFrom("workspaceEvents")
+      .select("data")
+      .where("threadId", "=", fixture.parentThreadId)
+      .where("type", "=", "assignment.updated")
+      .execute();
+    expect(
+      parentUpdates.some(({ data }) => {
+        const assignment = (data as { assignment?: { id?: string; status?: string } }).assignment;
+        return assignment?.id === silent.assignmentId && assignment.status === "completed";
+      }),
+    ).toBe(true);
     const after = await Promise.all([
       database
         .selectFrom("messages")

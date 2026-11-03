@@ -53,8 +53,7 @@ Pass either `workspaceId` for a new task Thread or `threadId` for a finished Thr
 assignment. A Thread works on one task at a time. Reuse a suitable Project when its context helps. For matching work, pass specialist with a ready registration id or plugin name; workspaceId defaults to this Workspace. Give a new task a title of two to five plain words naming the outcome, as the person
 would find it in their task list, such as “Hyatt Seoul booking”. Keep the returned `threadId`
 as its address and `assignmentId` as the assignment's identity. The final reply returns
-automatically; an empty final reply returns nothing. For recurring or conditional checks, tell
-the task to end with no reply when nothing is worth passing on. Continue independent work or end your turn.
+automatically; continue independent work or end your turn.
 
 A delegated Thread reads its Workspace's `AGENTS.md` and skills. Establish a new Project's
 identity before delegating into it. Send the concrete outcome and expected answer rather than
