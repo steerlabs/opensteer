@@ -25,6 +25,17 @@ describe("Opensteer tool registry", () => {
       }),
     ).not.toHaveProperty("surpriseSecret");
   });
+  it("retains safe Trigger details and cancellation receipts", () => {
+    const detail = {
+      activation: null,
+      anchorThreadTitle: "Anchor",
+      createdByThreadTitle: null,
+      downstreamRuns: [],
+      downstreamRunsTruncated: false,
+      canceledOccurrenceIds: ["toc_11111111-1111-4111-8111-111111111111"],
+    };
+    expect(trigger_write.output.parse({ ...detail, unnamedSecret: "hidden" })).toEqual(detail);
+  });
   it("does not expose webhook credentials", () => {
     expect(
       trigger_write.output.parse({
