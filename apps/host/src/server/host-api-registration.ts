@@ -85,6 +85,8 @@ const hostApiScopes = {
   "run.attempts.list": "session",
   "tasks.list": "session",
   "sessions.list": "session",
+  "connections.list": "session",
+  "connections.authorization.get": "session",
   "personal.remoteAccess.get": "session",
   "thread.events.list": "session",
   "thread.messages.list": "session",

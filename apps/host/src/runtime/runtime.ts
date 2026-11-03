@@ -1,3 +1,5 @@
+import { ConnectionOAuth } from "../mcp/connections/index.js";
+import { AgentConnectionStore } from "@opensteer/database";
 import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
 import { randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
@@ -446,6 +448,7 @@ export async function createHostRuntime(
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
     });
+
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
     const liveRuns = new LiveRunRegistry();
@@ -459,6 +462,12 @@ export async function createHostRuntime(
       canonicalOrigin: config.canonicalOrigin.origin,
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.workspace.shape,
+    });
+    const connections = new ConnectionOAuth({
+      deploymentId: deployment.id,
+      store: new AgentConnectionStore(database),
+      signingKey: keys.privateKey,
+      verificationKey: keys.publicKey,
     });
     const triggerStore = new TriggerStore(database);
     const operatorOidcProviders = await loadOidcProvidersFromFile(config.identity.oidcConfigPath, {
@@ -2252,6 +2261,7 @@ export async function createHostRuntime(
     });
     const app = await createHostServer(
       {
+        connections,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
