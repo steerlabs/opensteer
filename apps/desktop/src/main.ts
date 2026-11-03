@@ -1,5 +1,6 @@
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { autoUpdater } from "electron-updater";
+import { loadDesktopUpdatePreference } from "./app/desktop-update-preference.js";
 import { DesktopUpdater } from "./app/desktop-updater.js";
 import { offerMoveToApplications } from "./app/move-to-applications.js";
 import { DesktopWebLinks, routeDesktopUrl } from "./app/web-links.js";
@@ -253,7 +254,11 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
   );
-  const updater = new DesktopUpdater({ updates: loaded.config.updates, log: reportEvent });
+  const updater = new DesktopUpdater({
+    updates: loaded.config.updates,
+    log: reportEvent,
+    preference: await loadDesktopUpdatePreference(loaded.config.dataDirectory, reportEvent),
+  });
   const downloads = new DesktopDownloads({
     directory: () => app.getPath("downloads"),
     staging: path.join(loaded.config.dataDirectory, "partial-downloads"),
@@ -932,6 +937,7 @@ async function runDesktop(
       state: () => updater.state(),
       subscribe: (listener) => updater.subscribe(listener),
       download: () => updater.download(),
+      setChannel: (channel) => updater.setChannel(channel),
       restart: () => restartToUpdate(),
     },
     webLinks,
@@ -1046,22 +1052,29 @@ async function runDesktop(
     if (state.status === "available") return mainProcess.activate();
     const name = app.getName();
     const result =
-      state.status === "up-to-date"
+      state.status === "ahead"
         ? {
-            message: "You're up to date",
-            detail: `${name} ${state.currentVersion} is the newest version.`,
+            message: `${state.channel === "stable" ? "Stable" : "Beta"} selected`,
+            detail: `You’re on ${state.currentVersion}; latest is ${state.latestVersion}. Updates resume after it passes your version.`,
           }
-        : state.status === "error"
-          ? {
-              message: "Couldn't check for updates",
-              detail: "Check your internet connection, then try again.",
-            }
-          : state.status === "unavailable"
+        : state.status === "no-stable-release"
+          ? { message: "No Stable release yet", detail: "Stable is selected. Check again later." }
+          : state.status === "up-to-date"
             ? {
-                message: "Updates unavailable",
-                detail: `Move ${name} to your Applications folder to get updates.`,
+                message: "You're up to date",
+                detail: `${name} ${state.currentVersion} is the newest version.`,
               }
-            : null;
+            : state.status === "error"
+              ? {
+                  message: "Couldn't check for updates",
+                  detail: "Check your internet connection, then try again.",
+                }
+              : state.status === "unavailable"
+                ? {
+                    message: "Updates unavailable",
+                    detail: `Move ${name} to your Applications folder to get updates.`,
+                  }
+                : null;
     if (result)
       await dialog.showMessageBox({
         type: state.status === "error" ? "warning" : "info",

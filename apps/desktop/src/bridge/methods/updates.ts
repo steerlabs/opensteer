@@ -1,4 +1,4 @@
-import { DesktopUpdateStateSchema } from "@opensteer/protocol/desktop";
+import { DesktopUpdateChannelSchema, DesktopUpdateStateSchema } from "@opensteer/protocol/desktop";
 import { z } from "zod";
 import { desktopBridgeChannels } from "../desktop-bridge-channels.js";
 import {
@@ -14,6 +14,15 @@ export function updatesHandlers(
   const updates = context.options.updates;
   if (!updates) return [];
   return [
+    [
+      desktopBridgeChannels.setUpdateChannel,
+      async (event, envelope) => {
+        assertAuthorizedRenderer(context, event, envelope);
+        return DesktopUpdateStateSchema.parse(
+          await updates.setChannel(DesktopUpdateChannelSchema.parse(envelope.input)),
+        );
+      },
+    ],
     [
       desktopBridgeChannels.getUpdate,
       (event, envelope) => {

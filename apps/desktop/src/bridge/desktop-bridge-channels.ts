@@ -16,6 +16,7 @@ export const desktopBridgeChannels = {
   openDownload: "opensteer.desktop.downloads.open",
   showDownload: "opensteer.desktop.downloads.show",
   cancelDownload: "opensteer.desktop.downloads.cancel",
+  setUpdateChannel: "opensteer.desktop.updates.set-channel",
   getUpdate: "opensteer.desktop.updates.get",
   updateChanged: "opensteer.desktop.updates.changed",
   downloadUpdate: "opensteer.desktop.updates.download",

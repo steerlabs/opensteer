@@ -1,3 +1,4 @@
+import { DesktopUpdatesRow } from "./desktop-updates.js";
 import { useEffect, useState } from "react";
 import {
   requestNotificationPermission,
@@ -51,6 +52,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
         />
         <AccountListingRow view={view} />
         <NotificationsRow />
+        <DesktopUpdatesRow />
         <SearchSuggestionsRow />
       </div>
     </>

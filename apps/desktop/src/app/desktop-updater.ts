@@ -1,6 +1,10 @@
 import { app, autoUpdater as nativeUpdater } from "electron";
 import { autoUpdater } from "electron-updater";
-import type { DesktopUpdateState } from "@opensteer/protocol/desktop";
+import {
+  DesktopUpdateChannelSchema,
+  type DesktopUpdateChannel,
+  type DesktopUpdateState,
+} from "@opensteer/protocol/desktop";
 import type { DesktopUpdates } from "../config.js";
 import type { ShutdownLog } from "./desktop-shutdown.js";
 import { z } from "zod";
@@ -41,12 +45,22 @@ export class DesktopUpdater {
   #state: DesktopUpdateState;
   #operation: Promise<void> | null = null;
   #stopped = false;
+  #staged = false;
+  readonly #preference: {
+    channel: DesktopUpdateChannel;
+    save(channel: DesktopUpdateChannel): Promise<void>;
+  };
 
   constructor(options: {
-    readonly updates: DesktopUpdates | undefined;
+    readonly updates: Pick<DesktopUpdates, "owner" | "repo" | "host"> | undefined;
+    readonly preference?: {
+      channel: DesktopUpdateChannel;
+      save(channel: DesktopUpdateChannel): Promise<void>;
+    };
     readonly log: ShutdownLog;
   }) {
     this.#log = options.log;
+    this.#preference = options.preference ?? { channel: "stable", save: async () => undefined };
     this.#enabled =
       app.isPackaged &&
       process.platform === "darwin" &&
@@ -55,6 +69,8 @@ export class DesktopUpdater {
       app.isInApplicationsFolder();
     this.#state = {
       status: this.#enabled ? "idle" : "unavailable",
+      channel: this.#preference.channel,
+      latestVersion: null,
       currentVersion: app.getVersion(),
       availableVersion: null,
       downloadPercent: null,
@@ -64,10 +80,7 @@ export class DesktopUpdater {
     // The provider and cache name come from the staged app-update.yml.
     // Suppress library logs: they include URLs, local paths and staging identifiers.
     autoUpdater.logger = null;
-    autoUpdater.channel = options.updates.channel;
-    autoUpdater.allowPrerelease = options.updates.channel !== "latest";
-    // The channel setter enables downgrades, so this assignment must follow it.
-    autoUpdater.allowDowngrade = false;
+    this.#applyChannel();
     autoUpdater.autoDownload = false;
     // On macOS this hands each finished download to Squirrel at once, which
     // verifies and stages it; it also installs a staged bundle on quit.
@@ -82,9 +95,9 @@ export class DesktopUpdater {
       if (percent !== this.#state.downloadPercent) this.#set({ downloadPercent: percent });
     });
     nativeUpdater.on("update-downloaded", () => {
-      if (this.#state.status !== "downloading") return;
+      this.#staged = true;
       this.#log("desktop.update.downloaded", {});
-      this.#set({ status: "downloaded", downloadPercent: null });
+      this.#set({ status: "downloaded", downloadPercent: null, failed: null });
     });
     // Squirrel refuses a bad signature or a downgrade after the download
     // resolved; a failure after staging leaves nothing safe to install.
@@ -105,7 +118,7 @@ export class DesktopUpdater {
     };
   }
 
-  /** Background checks until the signal aborts; they never show `checking` or a failed check. */
+  /** Background checks omit `checking`; a failed refresh retains an existing offer. */
   start(signal: AbortSignal): void {
     if (!this.#enabled || signal.aborted) return;
     const tick = () => {
@@ -150,40 +163,115 @@ export class DesktopUpdater {
     });
   }
 
+  /** Wait out an active check before changing the provider or its saved offer. */
+  async setChannel(value: DesktopUpdateChannel): Promise<DesktopUpdateState> {
+    const channel = DesktopUpdateChannelSchema.parse(value);
+    const assertSwitchable = () => {
+      if (this.#state.status === "downloading" || this.#staged)
+        throw new Error("Restart before changing update channel.");
+      if (this.#stopped) throw new Error("The app is shutting down.");
+    };
+    assertSwitchable();
+    while (this.#operation) await this.#operation;
+    assertSwitchable();
+    await this.#exclusive(async () => {
+      this.#set({
+        status: this.#enabled ? "checking" : "unavailable",
+        availableVersion: null,
+        latestVersion: null,
+        downloadPercent: null,
+        failed: null,
+      });
+      try {
+        await this.#preference.save(channel);
+      } catch {
+        this.#set({ status: this.#enabled ? "error" : "unavailable", failed: "check" });
+        throw new Error("Couldn't save update channel.");
+      }
+      this.#set({ channel });
+      if (this.#enabled) await this.#performCheck(true);
+    });
+    return this.#state;
+  }
+
+  #applyChannel(): void {
+    autoUpdater.channel = this.#state.channel === "stable" ? "latest" : "insider";
+    autoUpdater.allowPrerelease = this.#state.channel === "beta";
+    // The channel setter enables downgrades; this must come last.
+    autoUpdater.allowDowngrade = false;
+  }
+
   #checkable(): boolean {
-    return !this.#stopped && !["downloading", "downloaded"].includes(this.#state.status);
+    return (
+      !this.#stopped && !this.#staged && !["downloading", "downloaded"].includes(this.#state.status)
+    );
   }
 
   async #check(manual: boolean): Promise<void> {
-    if (manual) this.#set({ status: "checking", availableVersion: null, failed: null });
+    await this.#exclusive(() => this.#performCheck(manual));
+  }
+
+  async #performCheck(manual: boolean): Promise<void> {
+    if (manual)
+      this.#set({ status: "checking", availableVersion: null, latestVersion: null, failed: null });
     this.#log("desktop.update.checking", {});
-    await this.#exclusive(async () => {
-      try {
-        const result = await autoUpdater.checkForUpdates();
-        if (result?.isUpdateAvailable) {
-          this.#log("desktop.update.available", {});
-          this.#set({
-            status: "available",
-            availableVersion: result.updateInfo.version,
-            failed: null,
-          });
-        } else {
-          this.#log("desktop.update.not-available", {});
-          this.#set({ status: "up-to-date", availableVersion: null, failed: null });
-        }
-      } catch {
-        // A background failure keeps what the person last saw, including an offer.
-        if (manual) this.#set({ status: "error", failed: "check" });
+    this.#applyChannel();
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      const latestVersion = result?.updateInfo.version ?? null;
+      if (result?.isUpdateAvailable) {
+        this.#log("desktop.update.available", {});
+        this.#set({
+          status: "available",
+          availableVersion: latestVersion,
+          latestVersion,
+          failed: null,
+        });
+      } else {
+        this.#log("desktop.update.not-available", {});
+        this.#set({
+          // With downgrades disabled, an unavailable unequal version is older.
+          status:
+            latestVersion && latestVersion !== this.#state.currentVersion ? "ahead" : "up-to-date",
+          availableVersion: null,
+          latestVersion,
+          failed: null,
+        });
       }
-    });
+    } catch (error) {
+      const missing = z
+        .object({ code: z.literal("ERR_UPDATER_LATEST_VERSION_NOT_FOUND") })
+        .safeParse(error).success;
+      if (missing && this.#state.channel === "stable") {
+        this.#set({
+          status: "no-stable-release",
+          availableVersion: null,
+          latestVersion: null,
+          failed: null,
+        });
+      } else if (manual || this.#state.status !== "available") {
+        this.#set({
+          status: "error",
+          availableVersion: null,
+          latestVersion: null,
+          failed: "check",
+        });
+      }
+    }
   }
 
   async #exclusive(run: () => Promise<void>): Promise<void> {
-    const operation = run().finally(() => {
-      this.#operation = null;
+    let release!: () => void;
+    // Reserve before publishing state: a subscriber may request another action.
+    this.#operation = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    this.#operation = operation;
-    await operation;
+    try {
+      await run();
+    } finally {
+      this.#operation = null;
+      release();
+    }
   }
 
   #failDownload(): void {

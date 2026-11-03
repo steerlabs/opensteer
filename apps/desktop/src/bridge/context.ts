@@ -42,7 +42,7 @@ export interface DesktopBridgeOptions {
   readonly passkeys?: Pick<DesktopPasskeyRequests, "available" | "present">;
   readonly dictation?: import("../dictation/dictation-service.js").DictationService;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
-  readonly updates?: Pick<DesktopUpdater, "state" | "subscribe" | "download"> & {
+  readonly updates?: Pick<DesktopUpdater, "state" | "subscribe" | "download" | "setChannel"> & {
     /** Restarts into the downloaded version; does nothing before one is ready. */
     restart(): void;
   };
