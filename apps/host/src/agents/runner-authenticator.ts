@@ -1,3 +1,8 @@
+import {
+  BrowserVideoDataTicketClaimsSchema,
+  MediaDataTicketClaimsSchema,
+  type BrowserVideoDataTicketClaims,
+} from "@opensteer/protocol";
 import type { MacWindowTarget } from "@opensteer/protocol";
 import { computerRunnerGrant } from "./runner-enrollment-grant.js";
 import {
@@ -526,6 +531,44 @@ export class RunnerAuthenticator {
       "opensteer-display-data+jwt",
       DisplayDataTicketClaimsSchema,
     );
+    this.#consumeNonce(this.#consumedDisplayDataNonces, claims.nonce, claims.expiresAt);
+    return claims;
+  }
+
+  issueBrowserVideoDataTicket(
+    input: Pick<
+      BrowserVideoDataTicketClaims,
+      "capability" | "channelId" | "target" | "streamId"
+    > & { readonly fence: RunnerAuxiliaryFrameFence },
+  ): { claims: BrowserVideoDataTicketClaims; ticket: string } {
+    if (input.fence.module !== "browser")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "A browser media ticket requires browser authority.",
+      });
+    const now = this.#now();
+    const claims = BrowserVideoDataTicketClaimsSchema.parse({
+      ...input.fence,
+      capability: input.capability,
+      channelId: input.channelId,
+      target: input.target,
+      streamId: input.streamId,
+      audience: "opensteer-display-data",
+      type: "opensteer.display.data-ticket",
+      issuedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + displayDataTicketTtlMs).toISOString(),
+      nonce: randomBytes(32).toString("base64url"),
+    });
+    return { claims, ticket: this.#signTicket("opensteer-display-data+jwt", claims) };
+  }
+  verifyBrowserVideoDataTicket(ticket: string): BrowserVideoDataTicketClaims {
+    const claims = this.#readSignedTicket(
+      ticket,
+      "opensteer-display-data+jwt",
+      MediaDataTicketClaimsSchema,
+    );
+    if (claims.module !== "browser")
+      throw new OpensteerError({ code: "forbidden", message: "Browser media authority required." });
     this.#consumeNonce(this.#consumedDisplayDataNonces, claims.nonce, claims.expiresAt);
     return claims;
   }

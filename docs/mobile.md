@@ -226,9 +226,16 @@ Watch follows the agent's window; an owner view binds its own window. Follow the
 shared [window-group rules](computer-use.md#2-the-helper). iOS Mac window video requires a binary advertising decoder recovery; older
 binaries keep the placeholder after OTA updates. Android retains native decoding. Bundle
 exports do not qualify playback. Native H.264 viewing requires a matching binary.
-JavaScript sends media bytes, and draws browser pictures in the native view,
-only when the binary declares `binaryPresentationVersion`; an update running on
-an older binary keeps base64 decoding and Image data URIs.
+JPEG qualification uses the binary picture view when available. The explicit
+The iOS Simulator cannot prove Metal drawable presentation and advertises browser
+presentation identity as unsupported. Physical iOS qualification is required.
+H.264 browser selection instead requires `browserPresentationIdentityVersion` in
+the installed PhoneDisplay binary; an older binary shows an update-required state.
+Its native presenter carries each decoder output's identity into Metal presentation
+on iOS or owned texture latching/composition on Android. Touches sample that native
+record and transform, never the most recently received frame or React state.
+A transition with ambiguous visible identity refuses new taps. Background,
+revocation and target replacement clear both pixels and input identity.
 A zero-reorder H.264 stream does not guarantee immediate Android output: the
 platform software AVC decoder can retain pictures until more input arrives, and
 [low-latency decoding](https://source.android.com/docs/core/media/low-latency-media)

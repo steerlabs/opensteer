@@ -54,6 +54,7 @@ export interface PageCapturePort {
 
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
 export interface BrowserPage {
+  readonly presentation?: import("./browser-presentation-session.js").BrowserPresentationPort;
   readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;
   /**
@@ -192,6 +193,7 @@ export interface LocalProfileEngine {
 }
 
 export interface BrowserLauncher {
+  readonly presentationVersion?: 1;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

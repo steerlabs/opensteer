@@ -1,3 +1,6 @@
+import { BrowserPresentationSession } from "./browser-presentation-session.js";
+import { encodeBrowserVideoFrame, type DisplayStreamId } from "@opensteer/protocol";
+import type { BrowserLocalVideoOperation } from "@opensteer/protocol/browser-relay";
 import {
   SessionCdpRouter,
   SessionCdpRouterError,
@@ -371,6 +374,95 @@ export class BrowserController {
     });
   }
 
+  private readonly presentations = new Map<
+    BrowserSurfaceId,
+    { streamId: DisplayStreamId; session: BrowserPresentationSession; revision: number }
+  >();
+  async video(
+    operation: BrowserLocalVideoOperation,
+    send: (bytes: Uint8Array) => void,
+  ): Promise<void> {
+    if (this.closed || operation.target.sessionId !== this.claims.sessionId)
+      throw new Error("Browser video target is not admitted.");
+    const surfaceId = operation.target.surfaceId;
+    const current = this.presentations.get(surfaceId);
+    if (operation.type === "browser.video.start") {
+      const page = this.ledger.binding(surfaceId)?.page;
+      if (!page?.presentation)
+        throw new Error("This browser build lacks private H.264 presentation support.");
+      if (current || this.presentations.size >= 2)
+        throw new Error("Browser presentation capacity is full.");
+      const session = new BrowserPresentationSession(page.presentation);
+      const entry = { streamId: operation.streamId, session, revision: 0 };
+      this.presentations.set(surfaceId, entry);
+      const state = (state: "starting" | "live" | "stopped" | "failed", extra: object = {}) => {
+        if (this.presentations.get(surfaceId) !== entry) return;
+        void this.send({
+          type: "browser.video.state",
+          surfaceId,
+          streamId: operation.streamId,
+          state,
+          ...extra,
+        }).catch(() => undefined);
+      };
+      try {
+        state("starting");
+        const result = await withTimeout(
+          session.start(
+            operation.streamId,
+            operation.budget,
+            operation.creditWindow,
+            (header, payload) => send(encodeBrowserVideoFrame(header, payload)),
+            (reason) => {
+              if (this.presentations.get(surfaceId) !== entry) return;
+              state("stopped", { reason: reason === "capacity" ? "capacity" : "source-ended" });
+              this.presentations.delete(surfaceId);
+            },
+          ),
+          operation.timeoutMs,
+          { timeoutError: () => new Error("Browser producer startup timed out.") },
+        );
+        if (this.presentations.get(surfaceId) !== entry) {
+          await session.stop();
+          return;
+        }
+        state("live", { ...result, budget: operation.budget });
+      } catch (error) {
+        if (this.presentations.get(surfaceId) === entry) {
+          state("failed", { reason: "unsupported" });
+          this.presentations.delete(surfaceId);
+        }
+        await session.stop();
+        throw error;
+      }
+      return;
+    }
+    if (!current || current.streamId !== operation.streamId) return;
+    if (operation.type === "browser.video.stop") {
+      this.presentations.delete(surfaceId);
+      await current.session.stop();
+    } else if (operation.type === "browser.video.keyframe") await current.session.keyframe();
+    else if (operation.revision > current.revision) {
+      current.revision = operation.revision;
+      await current.session.budget(operation.budget);
+    }
+  }
+  async videoAck(
+    streamId: DisplayStreamId,
+    sequence: number,
+    retainFor: readonly string[],
+  ): Promise<void> {
+    const entry = [...this.presentations.values()].find((e) => e.streamId === streamId);
+    if (!entry || this.closed) throw new Error("Browser presentation ended.");
+    await entry.session.ack(sequence, retainFor);
+  }
+  async stopVideo(streamId: DisplayStreamId): Promise<void> {
+    for (const [surface, entry] of this.presentations)
+      if (entry.streamId === streamId) {
+        this.presentations.delete(surface);
+        await entry.session.stop();
+      }
+  }
   diagnostics() {
     return [...this.lanes].map(([surfaceId, lane]) => ({
       surfaceId,
@@ -451,6 +543,9 @@ export class BrowserController {
       sessionId: this.claims.sessionId,
       state: "ready",
       surfaces,
+      ...(surfaces.some((surface) => this.ledger.binding(surface.id)?.page.presentation)
+        ? { videoVersion: 1 as const }
+        : {}),
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
       ...(this.claims.navigationAttributionVersion === 1
@@ -535,6 +630,13 @@ export class BrowserController {
       this.#passkeys?.result(this.claims.sessionId, parsed.data);
       return Promise.resolve();
     }
+    if (
+      parsed.data.type === "video.presented" ||
+      parsed.data.type === "video.unsubscribe" ||
+      parsed.data.type === "video.gesture" ||
+      parsed.data.type === "video.recover"
+    )
+      return this.run(parsed.data);
     return this.enqueue(parsed.data);
   }
 
@@ -550,6 +652,13 @@ export class BrowserController {
       this.#passkeys?.result(this.claims.sessionId, parsed.data);
       return Promise.resolve();
     }
+    if (
+      parsed.data.type === "video.presented" ||
+      parsed.data.type === "video.unsubscribe" ||
+      parsed.data.type === "video.gesture" ||
+      parsed.data.type === "video.recover"
+    )
+      return this.run(parsed.data);
     return this.enqueue(parsed.data);
   }
 
@@ -557,6 +666,9 @@ export class BrowserController {
     this.#passkeys?.disconnect(this.claims.sessionId);
     if (this.disconnected) return;
     this.disconnected = true;
+    for (const entry of this.presentations.values())
+      void entry.session.stop().catch(() => undefined);
+    this.presentations.clear();
     this.screencast.abort();
     for (const { cast } of this.targetedCasts.values()) cast.abort();
     this.targetedCasts.clear();
@@ -564,6 +676,9 @@ export class BrowserController {
   }
 
   close(): Promise<void> {
+    for (const entry of this.presentations.values())
+      void entry.session.stop().catch(() => undefined);
+    this.presentations.clear();
     for (const entry of this.cursorHints.values()) {
       entry.unsubscribe();
       entry.hints.close();
@@ -895,7 +1010,32 @@ export class BrowserController {
     });
   }
 
+  private readonly guardedTerminals = new WeakSet<BrowserClientMessage>();
+  private async guardedResult(
+    message: Extract<BrowserClientMessage, { type: "input.guarded-click" }>,
+    outcome: "dispatched" | "refused" | "uncertain",
+  ): Promise<void> {
+    if (this.guardedTerminals.has(message)) return;
+    this.guardedTerminals.add(message);
+    if (outcome !== "dispatched" && message.producerId)
+      void this.presentations
+        .get(message.surfaceId)
+        ?.session.gesture(message.producerId, message.gestureId, message.reference, "cancel")
+        .catch(() => undefined);
+    await this.send({
+      type: "browser.guarded-click.result",
+      surfaceId: message.surfaceId,
+      streamId: message.streamId,
+      gestureId: message.gestureId,
+      ...(message.producerId ? { producerId: message.producerId } : {}),
+      outcome,
+    });
+  }
   private async refuseInput(message: BrowserClientMessage, reason: string): Promise<void> {
+    if (message.type === "input.guarded-click") {
+      await this.guardedResult(message, "refused");
+      return;
+    }
     if (!isInputRelease(message)) {
       const surfaceId = this.pageOf(message);
       const reservation = surfaceId ? this.reservation(message, surfaceId) : null;
@@ -1004,6 +1144,10 @@ export class BrowserController {
     try {
       await this.dispatch(message, surfaceId);
     } catch (error) {
+      if (message.type === "input.guarded-click") {
+        await this.guardedResult(message, "uncertain");
+        return;
+      }
       await this.refuseClipboard(message);
       const normalized = normalizeControllerError(error);
       const reservation = surfaceId ? this.reservation(message, surfaceId) : null;
@@ -1084,6 +1228,7 @@ export class BrowserController {
       case "clipboard.paste":
       case "input.key":
         return message.targeted ? message.surfaceId : (this.ledger.active()?.surface.id ?? null);
+      case "input.guarded-click":
       case "input.pointer":
       case "input.wheel":
       case "viewport.follow":
@@ -1190,6 +1335,60 @@ export class BrowserController {
     message: BrowserClientMessage,
     admittedSurface: BrowserSurfaceId | null,
   ): Promise<void> {
+    if (
+      message.type === "video.presented" ||
+      message.type === "video.unsubscribe" ||
+      message.type === "video.gesture" ||
+      message.type === "video.recover"
+    ) {
+      const entry = this.presentations.get(message.surfaceId);
+      if (!entry || !message.producerId)
+        throw new Error("Browser presentation viewer is unavailable.");
+      if (message.type === "video.recover") {
+        await entry.session.recover(message.producerId, message.through);
+        return;
+      }
+      if (message.type === "video.gesture") {
+        await entry.session.gesture(
+          message.producerId,
+          message.gestureId,
+          message.reference,
+          message.phase,
+        );
+        return;
+      }
+      if (message.type === "video.presented") {
+        if (entry.streamId !== message.streamId)
+          throw new Error("Browser presentation was replaced.");
+        await entry.session.presented(message.producerId, message.reference);
+      } else await entry.session.release(message.producerId);
+      return;
+    }
+    if (message.type === "input.guarded-click") {
+      const entry = this.presentations.get(message.surfaceId);
+      if (
+        !entry ||
+        entry.streamId !== message.streamId ||
+        !message.producerId ||
+        this.claims.access !== "read-write"
+      )
+        throw new Error("Browser guarded input is unavailable.");
+      let outcome: "dispatched" | "refused" | "uncertain" = "uncertain";
+      try {
+        const result = await entry.session.click(
+          message.producerId,
+          message.gestureId,
+          message.reference,
+          message.point,
+          message.modifiers,
+        );
+        outcome = result.dispatched ? "dispatched" : "refused";
+      } catch {
+        /* A lost native answer never authorizes a retry. */
+      }
+      await this.guardedResult(message, outcome);
+      return;
+    }
     await this.clipboard?.finish();
     if (admittedSurface) {
       const owner = this.menuConsumers.get(admittedSurface);

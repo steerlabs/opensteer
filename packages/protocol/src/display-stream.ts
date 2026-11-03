@@ -1,3 +1,27 @@
+import {
+  DisplayStreamIdSchema,
+  DisplayGenerationSchema,
+  DisplaySequenceSchema,
+  displayFrameHeaderFields,
+  displayKeyHasCodec,
+  encodeDisplayEnvelope,
+  decodeDisplayEnvelope,
+} from "./media-frame.js";
+export {
+  DisplayStreamIdSchema,
+  type DisplayStreamId,
+  DisplayGenerationSchema,
+  DisplaySequenceSchema,
+  displayFrameHeaderFields,
+  displayKeyHasCodec,
+  encodeDisplayEnvelope,
+  decodeDisplayEnvelope,
+  displayMaxFramePayloadBytes,
+  displayMaxHeaderBytes,
+  displayMaxEnvelopeBytes,
+} from "./media-frame.js";
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
+import { BrowserCapabilityReferenceSchema, BrowserChannelIdSchema } from "./browser-capability.js";
 import { ComputerViewIdSchema, IsoDateTimeSchema } from "@opensteer/core";
 import { z } from "zod";
 import { ComputerUseSessionIdSchema } from "./computer-use-id.js";
@@ -29,12 +53,6 @@ export const displayRefreshCoalescingMs = 500;
 export const displayDemandGraceMs = 5_000;
 // A viewer that cannot recover must not retain resources indefinitely.
 export const displaySlowViewerCloseMs = 10_000;
-// A single access unit has a separate bound from either socket's credits.
-export const displayMaxFramePayloadBytes = 4 * 1_024 * 1_024;
-// A bounded header prevents JSON metadata from exhausting a media receiver.
-export const displayMaxHeaderBytes = 16 * 1_024;
-// The socket can reject oversize messages before parsing their headers.
-export const displayMaxEnvelopeBytes = 4 + displayMaxHeaderBytes + displayMaxFramePayloadBytes;
 // Short-lived, one-use credentials admit only the requested data socket.
 export const displayDataTicketTtlMs = 60_000;
 // This picture size keeps text legible within the phone's encoder budget.
@@ -50,13 +68,8 @@ export const displayMinMaxFps = 1;
 // Cap requested frame rate independently of a device's display refresh rate.
 export const displayMaxMaxFps = 60;
 
-const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-export const DisplayStreamIdSchema = z
-  .string()
-  .regex(new RegExp(`^dsp_${uuid}$`, "i"))
-  .brand<"DisplayStreamId">();
-export type DisplayStreamId = z.infer<typeof DisplayStreamIdSchema>;
 /** Read only from previous-release viewers, whose Take over named a control; never issued. */
+const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 export const LegacyDisplayControlIdSchema = z.string().regex(new RegExp(`^dcl_${uuid}$`, "i"));
 
 /** Viewer authority is independent of the shared phone producer. */
@@ -111,6 +124,28 @@ export const DisplayDataTicketClaimsSchema = z.strictObject({
   streamId: DisplayStreamIdSchema,
   type: z.literal("opensteer.display.data-ticket"),
 });
+export const BrowserVideoDataTicketClaimsSchema = z.strictObject({
+  ...RunnerAuxiliaryFrameFenceSchema.shape,
+  audience: z.literal("opensteer-display-data"),
+  expiresAt: IsoDateTimeSchema,
+  issuedAt: IsoDateTimeSchema,
+  module: z.literal("browser"),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{32,255}$/),
+  capability: BrowserCapabilityReferenceSchema,
+  channelId: BrowserChannelIdSchema,
+  target: z.strictObject({
+    kind: z.literal("browser-tab"),
+    sessionId: BrowserSessionIdSchema,
+    surfaceId: BrowserSurfaceIdSchema,
+  }),
+  streamId: DisplayStreamIdSchema,
+  type: z.literal("opensteer.display.data-ticket"),
+});
+export type BrowserVideoDataTicketClaims = z.infer<typeof BrowserVideoDataTicketClaimsSchema>;
+export const MediaDataTicketClaimsSchema = z.discriminatedUnion("module", [
+  DisplayDataTicketClaimsSchema,
+  BrowserVideoDataTicketClaimsSchema,
+]);
 export type DisplayDataTicketClaims = z.infer<typeof DisplayDataTicketClaimsSchema>;
 
 export const DisplayMaxLongSideSchema = z
@@ -119,38 +154,18 @@ export const DisplayMaxLongSideSchema = z
   .min(displayMinMaxLongSide)
   .max(displayMaxMaxLongSide);
 export const DisplayMaxFpsSchema = z.number().int().min(displayMinMaxFps).max(displayMaxMaxFps);
-export const DisplayGenerationSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-export const DisplaySequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const pictureDimension = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const stateDimension = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const codec = z.string().regex(/^avc1\.[0-9A-Fa-f]{6}$/);
-const frameHeaderBase = {
-  generation: DisplayGenerationSchema,
-  sequence: DisplaySequenceSchema,
-  ptsUs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  key: z.boolean(),
-  codec: codec.optional(),
-  width: pictureDimension,
-  height: pictureDimension,
-};
-function keyHasCodec(header: {
-  readonly key: boolean;
-  readonly codec?: string | undefined;
-}): boolean {
-  return header.key === (header.codec !== undefined);
-}
-
 /** Sequence increases for the entire stream, including across generation resets. */
 export const DisplayMediaFrameHeaderSchema = z
   .strictObject({
     streamId: DisplayStreamIdSchema,
-    ...frameHeaderBase,
+    ...displayFrameHeaderFields,
   })
-  .refine(keyHasCodec, "Only keyframes carry a required avc1 codec");
+  .refine(displayKeyHasCodec, "Only keyframes carry a required avc1 codec");
 export type DisplayMediaFrameHeader = z.infer<typeof DisplayMediaFrameHeaderSchema>;
 export const DisplayViewerFrameHeaderSchema = z
-  .strictObject(frameHeaderBase)
-  .refine(keyHasCodec, "Only keyframes carry a required avc1 codec");
+  .strictObject(displayFrameHeaderFields)
+  .refine(displayKeyHasCodec, "Only keyframes carry a required avc1 codec");
 export type DisplayViewerFrameHeader = z.infer<typeof DisplayViewerFrameHeaderSchema>;
 
 /**
@@ -452,75 +467,28 @@ export function encodeDisplayMediaFrame(
   header: DisplayMediaFrameHeader,
   payload: Uint8Array,
 ): Uint8Array {
-  return encodeEnvelope(DisplayMediaFrameHeaderSchema.parse(header), payload);
+  return encodeDisplayEnvelope(DisplayMediaFrameHeaderSchema.parse(header), payload);
 }
 export function decodeDisplayMediaFrame(value: Uint8Array): {
   readonly header: DisplayMediaFrameHeader;
   readonly payload: Uint8Array;
 } {
-  const { header, payload } = decodeEnvelope(value);
+  const { header, payload } = decodeDisplayEnvelope(value);
   return { header: DisplayMediaFrameHeaderSchema.parse(header), payload };
 }
 export function encodeDisplayViewerFrame(
   header: DisplayViewerFrameHeader,
   payload: Uint8Array,
 ): Uint8Array {
-  return encodeEnvelope(DisplayViewerFrameHeaderSchema.parse(header), payload);
+  return encodeDisplayEnvelope(DisplayViewerFrameHeaderSchema.parse(header), payload);
 }
 export function decodeDisplayViewerFrame(value: Uint8Array): {
   readonly header: DisplayViewerFrameHeader;
   readonly payload: Uint8Array;
 } {
-  const { header, payload } = decodeEnvelope(value);
+  const { header, payload } = decodeDisplayEnvelope(value);
   return { header: DisplayViewerFrameHeaderSchema.parse(header), payload };
 }
-function validatePayload(payload: Uint8Array): void {
-  if (payload.byteLength < 1 || payload.byteLength > displayMaxFramePayloadBytes)
-    throw new Error("Invalid display frame payload size.");
-}
-function encodeEnvelope(
-  header: DisplayViewerFrameHeader | DisplayMediaFrameHeader,
-  payload: Uint8Array,
-): Uint8Array {
-  validatePayload(payload);
-  const bytes = new TextEncoder().encode(JSON.stringify(header));
-  if (bytes.byteLength > displayMaxHeaderBytes)
-    throw new Error("Invalid display frame header size.");
-  const result = new Uint8Array(4 + bytes.byteLength + payload.byteLength);
-  new DataView(result.buffer).setUint32(0, bytes.byteLength, false);
-  result.set(bytes, 4);
-  result.set(payload, 4 + bytes.byteLength);
-  return result;
-}
-function decodeEnvelope(value: Uint8Array): {
-  readonly header: unknown;
-  readonly payload: Uint8Array;
-} {
-  if (value.byteLength < 7 || value.byteLength > displayMaxEnvelopeBytes)
-    throw new Error("Invalid display frame size.");
-  const headerLength = new DataView(value.buffer, value.byteOffset, value.byteLength).getUint32(
-    0,
-    false,
-  );
-  if (
-    headerLength < 2 ||
-    headerLength > displayMaxHeaderBytes ||
-    4 + headerLength >= value.byteLength
-  )
-    throw new Error("Invalid display frame header size.");
-  let header: unknown;
-  try {
-    header = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(value.subarray(4, 4 + headerLength)),
-    );
-  } catch (cause) {
-    throw new Error("Invalid display frame JSON header.", { cause });
-  }
-  const payload = value.subarray(4 + headerLength);
-  validatePayload(payload);
-  return { header, payload };
-}
-
 /** Fixed lifecycle vocabulary; never accepts application or document content. */
 export const DisplayClientDiagnosticSchema = z.strictObject({
   transition: z.enum([

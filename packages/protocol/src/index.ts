@@ -2,6 +2,7 @@ export * from "./access.js";
 export * from "./attachments.js";
 export * from "./agent-control.js";
 export * from "./browser.js";
+export * from "./browser-video.js";
 export * from "./places.js";
 export * from "./browser-sources.js";
 export * from "./password-sign-in.js";
@@ -42,3 +43,4 @@ export * from "./apps.js";
 
 export * from "./settings.js";
 export * from "./runner-skill-metadata.js";
+export { validateBrowserH264 } from "./h264.js";

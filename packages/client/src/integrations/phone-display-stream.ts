@@ -1,3 +1,4 @@
+import { acceptMediaOrder, type MediaFrame } from "../media/display-media.js";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import {
@@ -56,25 +57,7 @@ export function computerDisplayTargetKey(target: ComputerDisplayTarget): string 
 }
 
 /** One H.264 access unit, held by a view until its decoder is done with it. */
-export interface DisplayFrame {
-  /**
-   * The socket that delivered it. A new socket may join a new stream whose
-   * generations and sequences start over, so a decoder starts over with it.
-   */
-  readonly connection: number;
-  readonly header: DisplayViewerFrameHeader;
-  readonly payload: Uint8Array;
-  /**
-   * A cached frame older than its replay's `replayThrough`: decode it so the
-   * frames after it decode, but never show it, so catching up plays nothing stale.
-   */
-  readonly replayed: boolean;
-  /**
-   * The decoder took this frame off its submission queue, or the view dropped it. The Host
-   * gets the frame's credit back once every view is done; repeats are ignored.
-   */
-  done(): void;
-}
+export interface DisplayFrame extends MediaFrame {}
 
 export interface DisplaySnapshot {
   /**
@@ -848,11 +831,7 @@ function read(connection: Connection, data: unknown): Received {
       previousGeneration: connection.generation,
       incomingGeneration: header.generation,
     });
-  connection.replayRestarts = false;
-  connection.sequence = header.sequence;
-  connection.generation = header.generation;
-  const replayed = connection.replayThrough !== null && header.sequence < connection.replayThrough;
-  if (!replayed) connection.replayThrough = null;
+  const replayed = acceptMediaOrder(connection, header);
   return { kind: "frame", header, payload, replayed };
 }
 

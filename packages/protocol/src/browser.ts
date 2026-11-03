@@ -1,3 +1,9 @@
+import {
+  BrowserVideoClickResultSchema,
+  BrowserVideoClientMessageSchema,
+  BrowserVideoAttachmentSchema,
+  BrowserVideoStateSchema,
+} from "./browser-video.js";
 export const browserRuntimeWireVersion = 1;
 import { browserFrameFits, browserFrameLimits } from "@opensteer/browser-core/frame-limits";
 import { BrowserCookieSchema } from "@opensteer/browser-profile/cookies";
@@ -728,6 +734,7 @@ const BaselineBrowserClientMessageSchema = z
     }
   });
 export const BrowserClientMessageSchema = z.union([
+  BrowserVideoClientMessageSchema,
   BaselineBrowserClientMessageSchema,
   PasskeyCancelSchema,
 ]);
@@ -742,6 +749,7 @@ const BrowserSnapshotSchema = z
     state: z.literal("ready"),
     passkeys: PasskeyModeSchema.optional(),
     passkeyConsumerToken: z.uuid().optional(),
+    videoVersion: z.literal(1).optional(),
     targetedStreamingVersion: z.literal(1).optional(),
     inputLanesVersion: z.literal(1).optional(),
     /** Runtime → Host only; permits Host-issued navigationId on navigation commands. */
@@ -952,6 +960,9 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export const BrowserServerMessageSchema = z.union([
+  BrowserVideoClickResultSchema,
+  BrowserVideoAttachmentSchema,
+  BrowserVideoStateSchema,
   BaselineBrowserServerMessageSchema,
   PasskeyCeremonySchema,
   PasskeyRuntimeCancelSchema,

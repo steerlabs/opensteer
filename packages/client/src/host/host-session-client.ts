@@ -527,6 +527,7 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly browserPresentation?: "jpeg" | "h264";
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
@@ -640,6 +641,7 @@ export class HttpHostClient {
   readonly #tabCatalogs = new Map<string, BrowserTabCatalog>();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
+  #browserPresentation: "jpeg" | "h264" = "jpeg";
   readonly #targetedControl = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
@@ -672,6 +674,10 @@ export class HttpHostClient {
     },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
+    {
+      selected: () => this.#browserPresentation === "h264",
+      connect: () => this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video")),
+    },
   );
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
@@ -685,6 +691,10 @@ export class HttpHostClient {
     undefined,
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
+    {
+      selected: () => this.#browserPresentation === "h264",
+      connect: () => this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video")),
+    },
   );
   #targetedBrowserSocket(
     sessionId: string,
@@ -1174,6 +1184,7 @@ export class HttpHostClient {
 
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
+    this.#browserPresentation = options.browserPresentation ?? "jpeg";
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
@@ -1337,6 +1348,7 @@ export class HttpHostClient {
   );
   readonly #browserPresentationScope = {};
   readonly browserFrames: BrowserFrameStore = {
+    video: this.#targetedControl.video,
     invalidationKey: this.#targetedControl.invalidationKey,
     editing: this.#browserEditing,
     cursor: this.#browserCursor,
@@ -1370,6 +1382,7 @@ export class HttpHostClient {
     },
   };
   readonly browserWatchFrames: BrowserFrameStore = {
+    video: this.#targetedWatch.video,
     invalidationKey: this.#targetedWatch.invalidationKey,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {

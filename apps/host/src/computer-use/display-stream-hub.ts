@@ -1,3 +1,8 @@
+import {
+  DisplayMediaHub,
+  displayGopRefreshBytes,
+  displayGopCacheFrames,
+} from "../media/display-media-hub.js";
 import { DisplayLinkRate, macLinkRate } from "./display-link-rate.js";
 import { DisplayViewerBitrate } from "./display-viewer-bitrate.js";
 import { randomUUID } from "node:crypto";
@@ -22,7 +27,6 @@ import {
   displayDemandGraceMs,
   displayRefreshCoalescingMs,
   displaySlowViewerCloseMs,
-  displayViewerCreditBytes,
   displayViewerCreditFrames,
   displayViewerWindowFrames,
   type ComputerUseSessionId,
@@ -50,23 +54,18 @@ import type { ComputerViewService } from "./computer-view-service.js";
 import type { ComputerUseService } from "./computer-use-service.js";
 
 // Host-only retention bound: viewers and phones need no cache-size negotiation.
-const displayGopCacheBytes = 4 * 1_024 * 1_024;
 // Refresh by delta bytes; an unavoidable large IDR must not defeat the bound.
 // Leave room for post-motion refinement before forcing another IDR.
-const displayGopRefreshBytes = 256 * 1_024;
 // Two ten-second GOPs at 30 fps bound metadata and replay work for tiny frames.
-const displayGopCacheFrames = 600;
 // Eight tabs cover ordinary watching while bounding per-session fan-out work.
 const displayMaxViewers = 8;
 // Credit is decoder feedback, not proof that the network drained its writes.
 const displaySocketBufferedBytes = 8 * 1_024 * 1_024;
-const displayReplayBudgetMs = 500;
 /**
  * A Mac window makes keys only on demand, so its cache can hold a long chain.
  * Before a viewer's link is measured, replay only what a slow link takes quickly;
  * a phone's own refresh threshold already bounds its chain.
  */
-const macUnmeasuredReplayBytes = 512 * 1_024;
 const displayKeyframeRetryMs = 1_500;
 /** How often a Mac viewer's path is re-measured while it sits empty. */
 const displayRoundTripPingMs = 2_000;
@@ -90,7 +89,6 @@ function macLegibleLongSide(
 }
 /** The original Mac budget, kept while a viewer that cannot report its link watches. */
 const macUnmeasuredViewerBitrate = 2_500_000;
-const displayDeliveryEstimateLifetimeMs = 5_000;
 const displayCongestionRefreshMs = 2_000;
 
 interface CachedFrame {
@@ -245,6 +243,13 @@ function releasesHeldInput(event: DisplayInputEvent): boolean {
 }
 
 export class DisplayStreamHub {
+  readonly #media = new DisplayMediaHub<Viewer, Stream>({
+    now: () => this.#now(),
+    live: (stream, viewer) => this.#viewerLive(stream, viewer),
+    refresh: (stream) => this.#refresh(stream),
+    state: (stream, viewer, state) => this.#viewerState(stream, viewer, state),
+    binary: (socket, bytes) => this.#binary(socket, bytes),
+  });
   readonly #options: DisplayStreamHubOptions;
   readonly #streams = new Map<DisplayStreamId, Stream>();
   readonly #byTarget = new Map<string, Stream>();
@@ -698,19 +703,11 @@ export class DisplayStreamHub {
             stream.refreshPendingAt = null;
           }
           const cachedBytes = this.#cachedDeltaBytes(stream);
-          if (header.key || stream.cache.length > 0) {
-            if (
-              stream.cacheBytes + envelope.byteLength > displayGopCacheBytes ||
-              stream.cache.length >= displayGopCacheFrames
-            ) {
-              const replaying = [...stream.viewers].filter((viewer) => viewer.replayIndex !== null);
-              this.#clearCache(stream);
-              for (const viewer of replaying) this.#skip(stream, viewer);
-            } else {
-              stream.cache.push({ sequence: header.sequence, bytes: envelope });
-              stream.cacheBytes += envelope.byteLength;
-            }
-          }
+          this.#media.cacheFrame(
+            stream,
+            { sequence: header.sequence, bytes: envelope },
+            header.key,
+          );
           if (
             !stream.target &&
             !header.key &&
@@ -720,16 +717,16 @@ export class DisplayStreamHub {
             this.#refresh(stream);
           for (const viewer of stream.viewers) {
             if (!this.#viewerLive(stream, viewer)) continue;
-            if (viewer.replayIndex !== null) {
-              this.#drainCache(stream, viewer);
-              continue;
-            }
-            if (viewer.waiting && !header.key) continue;
-            if (!this.#hasCredit(viewer, envelope.byteLength, false, header.key)) {
-              if (viewer.displayWindow) {
-                this.#stall(stream, viewer);
-              }
-              if (!viewer.waiting) {
+            const wasWaiting = viewer.waiting;
+            const offered = this.#media.offer(
+              stream,
+              viewer,
+              { sequence: header.sequence, bytes: envelope },
+              header.key,
+            );
+            if (offered === "stalled") {
+              if (viewer.displayWindow) this.#stall(stream, viewer);
+              if (!wasWaiting) {
                 const oldest = viewer.outstanding.values().next().value;
                 this.#options.log?.("computer.display.viewer-credit-stall", {
                   outstanding: viewer.outstanding.size,
@@ -737,16 +734,7 @@ export class DisplayStreamHub {
                   oldestAckAgeMs: oldest ? this.#now() - oldest.sentAt : 0,
                 });
               }
-              this.#skip(stream, viewer);
-              continue;
             }
-            if (viewer.waiting) {
-              viewer.keyframePending = false;
-              viewer.recoverySample = null;
-            }
-            viewer.waiting = false;
-            viewer.slowSince = null;
-            this.#sendFrame(viewer, { sequence: header.sequence, bytes: envelope });
           }
         } else {
           // Older queued media cannot affect the announced generation's decoder cache.
@@ -1360,42 +1348,21 @@ export class DisplayStreamHub {
   }
 
   #clearCache(stream: Stream): void {
-    stream.cache = [];
-    stream.cacheBytes = 0;
-    for (const viewer of stream.viewers) {
-      if (viewer.replayIndex === null) continue;
-      viewer.replayIndex = null;
-      viewer.replayThrough = null;
-      viewer.waiting = true;
-    }
+    return this.#media.clearCache(stream);
   }
   #cachedDeltaBytes(stream: Stream): number {
-    return stream.cacheBytes - (stream.cache[0]?.bytes.byteLength ?? 0);
+    return this.#media.cachedDeltaBytes(stream);
   }
-  #hasCredit(viewer: Viewer, bytes: number, replay = false, key = false): boolean {
-    // A measured link carries what fits a round trip and a short queue; a fixed
-    // megabyte is seconds of stale video on a slow one. A key replaces the
-    // chain, is rare, and would otherwise only trigger another key.
-    const credit = viewer.link
-      ? viewer.link.creditBytes(this.#now(), displayViewerCreditBytes)
-      : displayViewerCreditBytes;
-    return (
-      (replay ||
-        (viewer.displayWindow
-          ? viewer.outstanding.size < displayViewerWindowFrames && this.#withinCreditAge(viewer)
-          : viewer.outstanding.size < displayViewerCreditFrames)) &&
-      (viewer.outstanding.size === 0 ||
-        (key && viewer.link !== null) ||
-        viewer.bytes + bytes <= credit)
-    );
-  }
+
   #withinCreditAge(viewer: Viewer): boolean {
-    const now = this.#now();
-    while (viewer.ackDelays[0] && now - viewer.ackDelays[0].at >= 10_000) viewer.ackDelays.shift();
-    const oldest = viewer.outstanding.values().next().value;
-    // A measured link knows its round trip net of a slow first key's transfer.
-    const base = viewer.link ? viewer.link.baseRtt(now) : (viewer.ackDelays[0]?.delay ?? 400);
-    return !oldest || now - oldest.sentAt <= Math.min(1_500, base + 250);
+    return this.#media.withinCreditAge(viewer);
+  }
+
+  #replay(stream: Stream, viewer: Viewer): boolean {
+    return this.#media.replay(stream, viewer);
+  }
+  #drainCache(stream: Stream, viewer: Viewer): void {
+    return this.#media.drainCache(stream, viewer);
   }
   #stall(stream: Stream, viewer: Viewer): void {
     const now = this.#now();
@@ -1407,76 +1374,6 @@ export class DisplayStreamHub {
     else viewer.bitrate.stall(now, queued, oldest?.sentAt ?? now);
     this.#bitrate(stream);
   }
-  #sendFrame(viewer: Viewer, frame: CachedFrame): void {
-    viewer.outstanding.set(frame.sequence, {
-      bytes: frame.bytes.byteLength,
-      sentAt: this.#now(),
-    });
-    viewer.link?.sent(frame.sequence, frame.bytes.byteLength, this.#now());
-    viewer.bytes += frame.bytes.byteLength;
-    this.#binary(viewer.socket, frame.bytes);
-  }
-  #skip(stream: Stream, viewer: Viewer): void {
-    // Measure an actual credit stall, not idle time between capture updates.
-    // The sample includes network and decoder delay, both of which affect how
-    // long this viewer would spend catching up on a cached dependency chain.
-    const oldest = viewer.outstanding.values().next().value;
-    if (!viewer.recoverySample && oldest)
-      viewer.recoverySample = { bytes: viewer.bytes, sentAt: oldest.sentAt };
-    viewer.replayIndex = null;
-    viewer.replayThrough = null;
-    viewer.waiting = true;
-    viewer.slowSince ??= this.#now();
-    if (stream.cache.length === 0 && stream.state.state === "live") this.#refresh(stream);
-  }
-  #replay(stream: Stream, viewer: Viewer): boolean {
-    if (!this.#viewerLive(stream, viewer)) return false;
-    const last = stream.cache.at(-1);
-    if (!last) return false;
-    const estimate = viewer.deliveryEstimate;
-    const fresh = estimate && this.#now() - estimate.measuredAt < displayDeliveryEstimateLifetimeMs;
-    const budget = fresh
-      ? estimate.bytesPerMs * displayReplayBudgetMs
-      : stream.target
-        ? macUnmeasuredReplayBytes
-        : Infinity;
-    if (stream.cache.length > 1 && stream.cacheBytes > budget) {
-      viewer.slowSince ??= this.#now();
-      return false;
-    }
-    viewer.recoverySample = null;
-    viewer.replayIndex = 0;
-    viewer.replayThrough = last.sequence;
-    viewer.keyframePending = false;
-    viewer.waiting = false;
-    this.#viewerState(stream, viewer, { ...stream.state, replayThrough: last.sequence });
-    this.#drainCache(stream, viewer);
-    return true;
-  }
-  #drainCache(stream: Stream, viewer: Viewer): void {
-    if (viewer.replayIndex === null || !this.#viewerLive(stream, viewer)) return;
-    // Indexing visits each cached frame once per replay, independent of ack count.
-    while (viewer.replayIndex < stream.cache.length) {
-      const frame = stream.cache[viewer.replayIndex]!;
-      if (
-        !this.#hasCredit(viewer, frame.bytes.byteLength, frame.sequence <= viewer.replayThrough!)
-      ) {
-        viewer.slowSince ??= this.#now();
-        return;
-      }
-      this.#sendFrame(viewer, frame);
-      viewer.replayIndex += 1;
-      viewer.slowSince = null;
-    }
-    // Keep the catch-up lane until its deliveries drain. Newly arriving live
-    // frames still pay both credits, but wait here rather than causing a skip
-    // merely because the preceding replay used more than four frame slots.
-    if (viewer.outstanding.size === 0) {
-      viewer.replayIndex = null;
-      viewer.replayThrough = null;
-    }
-  }
-
   #refresh(stream: Stream, minimumIntervalMs = displayRefreshCoalescingMs): void {
     const after = stream.refreshAt + minimumIntervalMs;
     if (this.#now() < after) {

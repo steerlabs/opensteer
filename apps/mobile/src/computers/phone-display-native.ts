@@ -89,3 +89,47 @@ export function macWindowVideoSupported(): boolean {
         ?.decoderRecoveryVersion ?? 0) >= 1)
   );
 }
+
+export interface NativeBrowserVideoDecoder {
+  reset(epoch: string): Promise<void>;
+  decodeBytes(
+    bytes: Uint8Array,
+    metadata: DisplayFrameMetadata & {
+      identity: string;
+      cropX: number;
+      cropY: number;
+      cropWidth: number;
+      cropHeight: number;
+    },
+  ): Promise<boolean>;
+}
+interface VideoIdentityEvent {
+  epoch: string;
+  identity: string;
+}
+type BrowserVideoNativeView = ComponentType<
+  ViewProps & {
+    ref?: Ref<NativeBrowserVideoDecoder>;
+    onNeedsKeyframe?: (event: { nativeEvent: { epoch: string } }) => void;
+    onVideoPresented?: (event: { nativeEvent: VideoIdentityEvent }) => void;
+    onVideoGesture?: (event: {
+      nativeEvent: VideoIdentityEvent & { gestureId: string; phase: "begin" | "cancel" };
+    }) => void;
+    onVideoScroll?: (event: {
+      nativeEvent: VideoIdentityEvent & { x: number; y: number; dx: number; dy: number };
+    }) => void;
+    onVideoTap?: (event: {
+      nativeEvent: VideoIdentityEvent & { gestureId: string; x: number; y: number };
+    }) => void;
+  }
+>;
+let browserVideoView: BrowserVideoNativeView | null = null;
+export function nativeBrowserVideoView(): BrowserVideoNativeView | null {
+  if (
+    (requireOptionalNativeModule<{ browserPresentationIdentityVersion?: number }>("PhoneDisplay")
+      ?.browserPresentationIdentityVersion ?? 0) !== 1
+  )
+    return null;
+  browserVideoView ??= requireNativeView("PhoneDisplay", "PhoneDisplayVideo");
+  return browserVideoView;
+}

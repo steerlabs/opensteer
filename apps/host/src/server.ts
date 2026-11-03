@@ -1,3 +1,5 @@
+import type { BrowserVideoHub } from "./browser/browser-video-hub.js";
+import { registerBrowserVideoRoutes } from "./browser/browser-video-routes.js";
 import { afterResponse } from "./server/after-response.js";
 import type { AppService } from "./apps/app-service.js";
 import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
@@ -354,6 +356,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly browserVideo?: BrowserVideoHub;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
@@ -3155,6 +3158,7 @@ export async function createHostServer(
   );
 
   registerShellRoutes(app, { shell: dependencies.shellControl });
+  if (dependencies.browserVideo) registerBrowserVideoRoutes(app, dependencies.browserVideo);
   if (dependencies.displayStreams)
     registerComputerUseDisplayRoutes(app, {
       hub: dependencies.displayStreams,
@@ -3302,6 +3306,7 @@ export function advertisedCapabilities(
     "ownerViewWindows",
     "browser-target-control-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
+    "browser-h264-v1",
     "browser-frame-window-v1",
     "browser-raster-demand-v1",
     "browser-capture-region-v1",

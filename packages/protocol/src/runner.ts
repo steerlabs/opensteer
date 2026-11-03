@@ -1256,6 +1256,12 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
   .object({
+    videoVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((v) => (v === 1 ? v : undefined))
+      .optional(),
     localProfileStorage: z
       .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
       .optional()

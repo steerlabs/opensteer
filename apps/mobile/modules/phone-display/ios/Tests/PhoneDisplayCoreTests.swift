@@ -5,6 +5,11 @@ import XCTest
 @testable import PhoneDisplayCore
 
 final class H264AccessUnitTests: XCTestCase {
+  func testBoundsNALAllocationBeforeSplittingAnUntrustedAccessUnit() {
+    let bytes=Array(repeating:[UInt8](arrayLiteral:0,0,1,0x41),count:4097).flatMap{$0}
+    bytes.withUnsafeBytes{XCTAssertTrue(H264AccessUnit($0).units.isEmpty)}
+  }
+
   func testSplitsParameterSetsAndWritesLengthPrefixedUnits() {
     let annexB: [UInt8] = [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 0, 1, 0x65, 4, 5, 6, 0, 0, 1, 0x06, 7]
     annexB.withUnsafeBytes { bytes in

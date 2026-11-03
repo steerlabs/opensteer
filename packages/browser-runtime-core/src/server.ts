@@ -1,4 +1,11 @@
 import {
+  BrowserVideoSourceAckSchema,
+  DisplayStreamIdSchema,
+  displayMaxEnvelopeBytes,
+  type DisplayStreamId,
+} from "@opensteer/protocol";
+import { BrowserLocalVideoOperationSchema } from "@opensteer/protocol/browser-relay";
+import {
   BrowserAttachPublicKeysSchema,
   BrowserServerMessageSchema,
   LocalProfileBindingSchema,
@@ -47,6 +54,19 @@ export class BrowserRuntimeServer {
   private readonly port: number;
   private readonly runtime: BrowserRuntime;
   private readonly websocketServer: WebSocketServer;
+  private readonly videoChannels = new Map<
+    string,
+    {
+      socket: WebSocket;
+      attachment: BrowserAttachment | null;
+      media: Map<DisplayStreamId, WebSocket>;
+    }
+  >();
+  private readonly videoSockets = new WebSocketServer({
+    noServer: true,
+    maxPayload: 16384,
+    perMessageDeflate: false,
+  });
   private closePromise: Promise<void> | null = null;
   private listening: Promise<unknown> | null = null;
   private startPromise: Promise<ListeningAddress> | undefined;
@@ -82,6 +102,49 @@ export class BrowserRuntimeServer {
     });
     this.httpServer.on("upgrade", (request, socket, head) => {
       const pathname = safePathname(request);
+      if (pathname === "/v1/browser/video") {
+        const token = request.headers["x-opensteer-browser-bridge-token"];
+        const channelId = request.headers["x-opensteer-browser-channel"];
+        const id = DisplayStreamIdSchema.safeParse(request.headers["x-opensteer-browser-stream"]);
+        const channel =
+          typeof channelId === "string" ? this.videoChannels.get(channelId) : undefined;
+        if (
+          !this.relayBridge ||
+          typeof token !== "string" ||
+          !safeTokenEqual(token, this.relayBridge.token) ||
+          !channel?.attachment ||
+          !id.success ||
+          channel.media.has(id.data) ||
+          channel.media.size >= 2
+        ) {
+          refuseConnection(socket, 403, "Forbidden");
+          return;
+        }
+        this.videoSockets.handleUpgrade(request, socket, head, (media) => {
+          const streamId = id.data;
+          channel.media.set(streamId, media);
+          media.on("message", (raw, binary) => {
+            try {
+              if (binary) throw new Error("JSON admission required");
+              const ack = BrowserVideoSourceAckSchema.parse(
+                JSON.parse(normalizeRawData(raw).toString("utf8")),
+              );
+              if (ack.streamId !== streamId) throw new Error("Wrong browser stream");
+              void channel
+                .attachment!.videoAck(streamId, ack.sequence, ack.retainFor)
+                .catch(() => media.close(4002, "Invalid source admission"));
+            } catch {
+              media.close(4002, "Invalid source admission");
+            }
+          });
+          media.once("close", () => {
+            channel.media.delete(streamId);
+            void channel.attachment?.stopVideo(streamId).catch(() => undefined);
+          });
+          media.on("error", () => media.close(1011, "Browser media transport ended"));
+        });
+        return;
+      }
       if (pathname !== "/v1/browser") {
         refuseConnection(socket, 404, "Not Found");
         return;
@@ -107,7 +170,29 @@ export class BrowserRuntimeServer {
         websocket.close(1008, "attach rejected");
         return;
       }
+      const channelId = request.headers["x-opensteer-browser-channel"];
+      const bridgeToken = request.headers["x-opensteer-browser-bridge-token"];
+      const trustedChannel =
+        typeof channelId === "string" &&
+        channelId.length <= 64 &&
+        this.relayBridge &&
+        typeof bridgeToken === "string" &&
+        safeTokenEqual(bridgeToken, this.relayBridge.token)
+          ? channelId
+          : undefined;
+      if (trustedChannel) {
+        if (this.videoChannels.has(trustedChannel)) {
+          websocket.close(4003, "Channel already admitted");
+          return;
+        }
+        this.videoChannels.set(trustedChannel, {
+          socket: websocket,
+          attachment: null,
+          media: new Map(),
+        });
+      }
       this.accept(websocket, ticket, {
+        channelId: trustedChannel,
         passkeys:
           Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
       });
@@ -213,7 +298,11 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(websocket: WebSocket, ticket: string, options: { passkeys: boolean }): void {
+  private accept(
+    websocket: WebSocket,
+    ticket: string,
+    options: { passkeys: boolean; channelId?: string | undefined },
+  ): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
@@ -238,6 +327,36 @@ export class BrowserRuntimeServer {
         websocket.close(1009, "command too large");
         return;
       }
+      if (attachment && options.channelId) {
+        let value: unknown;
+        try {
+          value = JSON.parse(frame.toString("utf8"));
+        } catch {
+          /* The normal command parser reports malformed JSON. */
+        }
+        const video = BrowserLocalVideoOperationSchema.safeParse(value);
+        if (video.success) {
+          const operation = video.data;
+          const media = this.videoChannels.get(options.channelId)?.media.get(operation.streamId);
+          if (operation.channelId !== options.channelId || !media) {
+            websocket.close(4003, "Browser video channel is not admitted");
+            return;
+          }
+          void attachment
+            .video(operation, (bytes) => {
+              if (
+                media.readyState !== WebSocket.OPEN ||
+                media.bufferedAmount + bytes.byteLength > 2 * displayMaxEnvelopeBytes
+              )
+                throw new Error("Browser media backlog exceeded");
+              media.send(bytes, { binary: true }, (error) => {
+                if (error) media.close(1011, "Browser media write failed");
+              });
+            })
+            .catch(() => media.close(1011, "Browser producer failed"));
+          return;
+        }
+      }
       if (attachment) {
         // The controller reports a command's failure itself; this rejects only
         // when that report cannot leave, as once the socket closes.
@@ -255,6 +374,13 @@ export class BrowserRuntimeServer {
 
     websocket.once("close", () => {
       disconnected = true;
+      if (options.channelId) {
+        const channel = this.videoChannels.get(options.channelId);
+        if (channel?.socket === websocket) {
+          this.videoChannels.delete(options.channelId);
+          for (const media of channel.media.values()) media.close(1000, "Browser control ended");
+        }
+      }
       cancellation.abort();
       void attachment?.close().catch(() => undefined);
     });
@@ -262,6 +388,10 @@ export class BrowserRuntimeServer {
     void this.runtime.attach(ticket, sink, { ...options, signal: cancellation.signal }).then(
       async (attached) => {
         attachment = attached;
+        if (options.channelId) {
+          const channel = this.videoChannels.get(options.channelId);
+          if (channel?.socket === websocket) channel.attachment = attached;
+        }
         if (disconnected) {
           await attached.close().catch(() => undefined);
           return;
@@ -289,9 +419,12 @@ export class BrowserRuntimeServer {
     const persistence = this.runtime.shutdown();
     void persistence.catch(() => undefined);
     await this.listening?.catch(() => undefined);
-    const closed = [new Promise<void>((resolve) => this.websocketServer.close(() => resolve()))];
+    const closed = [
+      new Promise<void>((resolve) => this.websocketServer.close(() => resolve())),
+      new Promise<void>((resolve) => this.videoSockets.close(() => resolve())),
+    ];
     if (this.httpServer.listening) closed.push(closeHttpServerNow(this.httpServer));
-    for (const websocket of this.websocketServer.clients) {
+    for (const websocket of [...this.websocketServer.clients, ...this.videoSockets.clients]) {
       // The reason goes first as best effort; nobody's answer is waited for.
       if (websocket.readyState === WebSocket.OPEN) {
         websocket.close(1001, "runtime shutting down");

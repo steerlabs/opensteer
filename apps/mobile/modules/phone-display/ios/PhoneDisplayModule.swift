@@ -5,6 +5,11 @@ public final class PhoneDisplayModule: Module {
   public func definition() -> ModuleDefinition {
     Name("PhoneDisplay")
     Constant("decoderRecoveryVersion") { 1 }
+    #if targetEnvironment(simulator)
+    Constant("browserPresentationIdentityVersion") { 0 }
+    #else
+    Constant("browserPresentationIdentityVersion") { 1 }
+    #endif
     // JavaScript reads this before using decodeBytes or the picture view: an
     // older binary has neither, and keeps the base64 and Image paths.
     Constant("binaryPresentationVersion") { 1 }
@@ -21,6 +26,12 @@ public final class PhoneDisplayModule: Module {
       AsyncFunction("decodeBytes") { (view: PhoneDisplayView, bytes: Data, metadata: FrameMetadata) -> Bool in
         view.decode(bytes, metadata)
       }
+    }
+    View(BrowserVideoView.self) {
+      ViewName("PhoneDisplayVideo")
+      Events("onReady", "onNeedsKeyframe", "onVideoPresented", "onVideoGesture", "onVideoTap", "onVideoScroll")
+      AsyncFunction("reset") { (view: BrowserVideoView, epoch: String) in view.reset(epoch) }
+      AsyncFunction("decodeBytes") { (view: BrowserVideoView, bytes: Data, metadata: FrameMetadata, promise: Promise) in view.decode(bytes,metadata) { promise.resolve($0) } }
     }
     View(PhoneDisplayPictureView.self) {
       ViewName("PhoneDisplayPicture")
@@ -44,6 +55,7 @@ struct FramePacket: Record {
 }
 
 struct FrameMetadata: Record {
+  var presentationVersion: Int = 0
   @Field var epoch: String = ""
   @Field var width: Int = 0
   @Field var height: Int = 0
@@ -51,6 +63,11 @@ struct FrameMetadata: Record {
   @Field var key: Bool = false
   @Field var replayed: Bool = false
 
+  @Field var identity: String = ""
+  @Field var cropX: Double = 0
+  @Field var cropY: Double = 0
+  @Field var cropWidth: Double = 0
+  @Field var cropHeight: Double = 0
   init() {}
   init(_ packet: FramePacket) {
     epoch = packet.epoch

@@ -91,6 +91,8 @@ export function createNetworkHostPort(options: {
         openWebSocket: options.openWebSocket,
       });
       return new HttpHostClient({
+        browserPresentation:
+          process.env.EXPO_PUBLIC_BROWSER_PRESENTATION === "h264" ? "h264" : "jpeg",
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }

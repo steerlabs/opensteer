@@ -1,3 +1,4 @@
+import type { BrowserVideoHub, BrowserVideoBinding } from "./browser-video-hub.js";
 import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -149,6 +150,7 @@ export class BrowserCdpConnectionEnded extends Error {
  * control only the Host itself issues, so it is never relayed from a consumer.
  */
 const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set([
+  "input.guarded-click",
   "cursor.query",
   "cursor.reset",
   "input.command",
@@ -439,6 +441,8 @@ export interface BrowserUsageCredit {
 }
 
 export interface BrowserRuntimeConnection {
+  readonly video?:
+    { readonly hub: BrowserVideoHub; readonly binding: BrowserVideoBinding } | undefined;
   readonly initialPage?: InitialPageReady | undefined;
   readonly readyState: number;
   close(code?: number, reason?: string): void;
@@ -4684,6 +4688,18 @@ class HostedBrowserBroker {
       onClose();
       const wasSubscribed = outlet.subscription !== null;
       this.#consumers.delete(peer.id);
+      const video = this.#socket.video;
+      if (video) {
+        const slot =
+          outlet.videoStream && video.hub.slot(outlet.clipboardToken, outlet.videoStream);
+        if (slot && outlet.surfaceId)
+          void this.#sendCommand({
+            type: "video.unsubscribe",
+            surfaceId: BrowserSurfaceIdSchema.parse(outlet.surfaceId),
+            producerId: slot,
+          }).catch(() => undefined);
+        video.hub.remove(outlet.clipboardToken);
+      }
       this.#passkeys?.refresh();
       if (
         outlet.mode === "control" &&
@@ -5021,6 +5037,21 @@ class HostedBrowserBroker {
       };
     }
     const message = BrowserServerMessageSchema.parse(decoded);
+    if (message.type === "browser.guarded-click.result") {
+      if (!message.producerId) return false;
+      const id = this.#socket.video?.hub.completeGesture(
+        message.streamId,
+        message.producerId,
+        message.gestureId,
+      );
+      const consumer = id && [...this.#consumers.values()].find((c) => c.clipboardToken === id);
+      if (consumer && (await consumer.authorized())) {
+        const { producerId: _producer, ...result } = message;
+        await consumer.sendText(JSON.stringify(result));
+      }
+      return false;
+    }
+
     if (message.type === "passkey.ceremony" || message.type === "passkey.cancel") {
       if (!this.#passkeys || !this.#runtimeReady)
         throw new Error("Browser passkeys were not negotiated.");
@@ -5111,8 +5142,11 @@ class HostedBrowserBroker {
       const previousSurfaces = this.#snapshot.surfaces;
       for (const surface of previousSurfaces) {
         const next = message.surfaces.find((candidate) => candidate.id === surface.id);
-        if (!next || next.documentId !== surface.documentId)
+        if (!next || next.documentId !== surface.documentId) {
           this.#passkeys?.documentChanged(surface.id);
+          const video = this.#socket.video;
+          if (video) video.hub.retireTarget(video.binding, surface.id);
+        }
       }
       const previousIcons = this.#durableIconRefs();
       const inventoryChanged =
@@ -5361,7 +5395,7 @@ class HostedBrowserBroker {
     pending.resolve(message);
   }
 
-  #handleConsumerFrame(
+  async #handleConsumerFrame(
     outlet: BrowserConsumerOutlet,
     frame: Buffer,
     isBinary: boolean,
@@ -5484,6 +5518,107 @@ class HostedBrowserBroker {
           message: "The engine clipboard was not negotiated.",
         }),
       );
+    if (
+      message.type === "input.guarded-click" ||
+      (message.type === "video.gesture" && message.phase === "begin")
+    ) {
+      if (
+        message.inputSequence === undefined ||
+        message.inputSequence <= outlet.guardedClientSequence ||
+        message.inputGeneration !== outlet.inputGeneration
+      )
+        throw new Error("Stale browser gesture sequence.");
+      outlet.guardedClientSequence = message.inputSequence;
+    }
+    if (
+      message.type === "video.subscribe" ||
+      message.type === "video.budget" ||
+      message.type === "video.presented" ||
+      message.type === "video.unsubscribe" ||
+      message.type === "video.gesture"
+    ) {
+      const video = this.#socket.video;
+      if (!video || this.#snapshot?.videoVersion !== 1)
+        throw new Error("Update the browser computer for H.264 presentation.");
+      const videoSurface = message.surfaceId;
+      if (
+        !this.#snapshot.surfaces.some((s) => s.id === videoSurface) ||
+        (outlet.surfaceId && outlet.surfaceId !== message.surfaceId) ||
+        !(await outlet.authorized())
+      )
+        throw new Error("Browser video target is not authorized.");
+      if (message.type === "video.subscribe") {
+        outlet.surfaceId = message.surfaceId;
+        outlet.subscription = "control";
+        await this.#reconcileStreaming();
+        await video.hub.add(video.binding, {
+          id: outlet.clipboardToken,
+          input: outlet.mode === "control",
+          target: { kind: "browser-tab", sessionId: this.#sessionId, surfaceId: message.surfaceId },
+          budget: message.budget,
+          authorized: () => outlet.authorized(),
+          release: (slot) =>
+            this.#sendCommand({
+              type: "video.unsubscribe",
+              surfaceId: videoSurface,
+              producerId: slot,
+            }),
+          recover: (slot, streamId, through) =>
+            this.#sendCommand({
+              type: "video.recover",
+              surfaceId: videoSurface,
+              streamId,
+              through,
+              producerId: slot,
+            }),
+          send: async (response) => {
+            if (response.type === "browser.video.attached") outlet.videoStream = response.streamId;
+            await outlet.sendText(JSON.stringify(response));
+          },
+        });
+        return;
+      }
+      if (message.type === "video.unsubscribe") {
+        const slot =
+          outlet.videoStream && video.hub.slot(outlet.clipboardToken, outlet.videoStream);
+        if (slot) await this.#sendCommand({ ...message, producerId: slot });
+        video.hub.remove(outlet.clipboardToken);
+        outlet.videoStream = null;
+        outlet.subscription = null;
+        await this.#reconcileStreaming();
+        return;
+      }
+      if (outlet.videoStream !== message.streamId)
+        throw new Error("Browser video stream was replaced.");
+      if (message.type === "video.budget") {
+        video.hub.update(
+          outlet.clipboardToken,
+          message.streamId,
+          message.budget,
+          message.focus === true,
+        );
+        return;
+      }
+      if (message.type === "video.gesture") {
+        await video.hub.gesture(
+          outlet.clipboardToken,
+          message.streamId,
+          message.gestureId,
+          message.reference,
+          message.phase,
+        );
+        outlet.videoGesture = message.phase === "begin" ? message.gestureId : null;
+        const slot = video.hub.slot(outlet.clipboardToken, message.streamId);
+        if (!slot) throw new Error("Browser viewer ended.");
+        await this.#sendCommand({ ...message, producerId: slot });
+        return;
+      }
+      await video.hub.presented(outlet.clipboardToken, message.streamId, message.reference);
+      const slot = video.hub.slot(outlet.clipboardToken, message.streamId);
+      if (!slot) throw new Error("Browser video viewer ended.");
+      await this.#sendCommand({ ...message, producerId: slot });
+      return;
+    }
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
       const subscription =
         message.type === "stream.subscribe"
@@ -5715,6 +5850,31 @@ class HostedBrowserBroker {
       message = { ...message, targeted: outlet.surfaceId !== null };
     if (message.type === "input.cancel" && this.#snapshot?.inputLanesVersion !== 1)
       return Promise.resolve();
+    if (message.type === "input.guarded-click") {
+      const video = this.#socket.video;
+      if (
+        !video ||
+        outlet.videoStream !== message.streamId ||
+        outlet.surfaceId !== message.surfaceId ||
+        !(await video.hub.allowsClick(outlet.clipboardToken, message.streamId, message.reference))
+      )
+        throw new Error("Browser gesture does not name this viewer's retained picture.");
+      const slot = video.hub.slot(outlet.clipboardToken, message.streamId);
+      if (!slot) throw new Error("Browser viewer ended.");
+      if (
+        outlet.videoGesture !== message.gestureId ||
+        !video.hub.consumeGesture(outlet.clipboardToken, message.streamId, message.gestureId)
+      )
+        throw new Error("Browser gesture is stale.");
+      outlet.videoGesture = null;
+      return this.#sendCommand({
+        ...message,
+        producerId: slot,
+        inputGeneration: outlet.inputGeneration,
+        inputSequence: ++outlet.inputSequence,
+        inputSequenceStart: undefined,
+      });
+    }
     // A consumer can advance only its own generation, never choose its identity.
     if (
       message.inputGeneration !== undefined &&
@@ -5729,6 +5889,27 @@ class HostedBrowserBroker {
       inputSequence: ++outlet.inputSequence,
       inputSequenceStart: undefined,
     };
+    if (message.type === "input.cancel" && outlet.videoStream && this.#socket.video) {
+      const slot = this.#socket.video.hub.slot(outlet.clipboardToken, outlet.videoStream);
+      if (slot) {
+        const pending = this.#socket.video.hub.cancelGesture(
+          outlet.clipboardToken,
+          outlet.videoStream,
+        );
+        if (pending && outlet.surfaceId) {
+          outlet.videoGesture = null;
+          await this.#sendCommand({
+            type: "video.gesture",
+            surfaceId: BrowserSurfaceIdSchema.parse(outlet.surfaceId),
+            streamId: outlet.videoStream,
+            producerId: slot,
+            phase: "cancel",
+            ...pending,
+          });
+        }
+        message = { ...message, producerId: slot };
+      }
+    }
     if (message.type === "input.cancel") outlet.inputGeneration++;
     if (message.type === "clipboard.paste-data") {
       if (outlet.clipboardOperations.size >= 32)
@@ -6153,6 +6334,9 @@ const browserFrameRateEstimateMs = 10_000;
  * to avoid converting a frame-rate improvement into older pictures on screen.
  */
 export class BrowserConsumerOutlet {
+  guardedClientSequence = -1;
+  videoGesture: string | null = null;
+  videoStream: import("@opensteer/protocol").DisplayStreamId | null = null;
   frameWindow = false;
   #window = 1;
   #baselineDelay = Infinity;

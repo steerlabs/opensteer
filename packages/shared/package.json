@@ -54,7 +54,9 @@
     "./test-support/tcpServer": "./src/tcpServer.test-support.ts",
     "./agentSkills": "./src/agentSkills.ts",
     "./test-support/agentSkills": "./src/agentSkills.test-support.ts",
-    "./appFrame": "./src/appFrame.ts"
+    "./appFrame": "./src/appFrame.ts",
+    "./displayLinkRate": "./src/displayLinkRate.ts",
+    "./mediaForwarder": "./src/mediaForwarder.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

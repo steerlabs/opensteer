@@ -634,7 +634,10 @@ export interface BrowserTabSummary {
 
 export interface BrowserFrameView {
   data: ArrayBuffer | Uint8Array<ArrayBuffer>;
-  header: BrowserBinaryFrameHeader;
+  header: Omit<BrowserBinaryFrameHeader, "encoding"> & {
+    encoding: BrowserBinaryFrameHeader["encoding"] | "h264";
+  };
+  readonly video?: import("@opensteer/protocol").BrowserVideoFrameHeader;
 }
 
 export interface BrowserProfileDeletionSummary {
@@ -682,6 +685,7 @@ export interface BrowserRasterDemand {
 }
 
 export interface BrowserFrameStore {
+  readonly video?: import("./browser-video.js").BrowserVideoStore;
   readonly cursor?: import("./browser-cursor.js").BrowserCursorStore;
   /** Changes only when previously displayed pixels lose authorization. */
   readonly invalidationKey?: (sessionId: string, surfaceId: string) => string | number;

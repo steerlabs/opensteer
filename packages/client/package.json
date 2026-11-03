@@ -18,7 +18,9 @@
     "./react": "./src/react/index.ts",
     "./test-support": "./src/test-support/index.ts",
     "./voice": "./src/voice/index.ts",
-    "./settings": "./src/settings/index.ts"
+    "./settings": "./src/settings/index.ts",
+    "./media": "./src/media/display-media.ts",
+    "./host/browser-video": "./src/host/browser-video.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

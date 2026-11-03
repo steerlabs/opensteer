@@ -346,6 +346,28 @@ Sources: `packages/browser-runtime-core/src/browser/surface-ledger.ts`,
 `apps/host/src/browser/browser-service.ts`,
 `apps/web/src/components/browser/browser-presenter.ts`.
 
+### Certified video qualification
+
+H.264 browser viewing shares the display media envelope, link estimator and
+fan-out/recovery mechanics with Mac windows. BrowserService retains browser,
+profile, login and exact-tab authority. A dedicated media admission belongs to an
+already admitted control/watch outlet and cannot acquire control. Media never
+occupies its control connection. One rendition follows an explicit visible
+controller; slow spectators spend independent credit and can pause without
+resetting a healthy controller. With no controller, visible watchers choose the
+shared budget deterministically.
+
+A browser certificate identifies the copied pixels and their root CSS transform;
+it grants no input permission. Publication, offered frames, the current picture
+and pending gestures have separate bounded holds. Decoder admission returns
+credit; presentation advances a viewer's retained picture. Static silence never
+expires it. A new tap samples the presentation owner's certificate and local
+transform at contact start and retains it through the gesture. It never substitutes
+a newer frame or retries uncertain native input. Only the private native owner
+can perform the guarded left click; other input keeps its existing ordered lane.
+JPEG remains an explicit qualification selection until custom producers and every
+viewer are qualified. See the [qualification workflow](../.agents/skills/verify-browser-sessions/SKILL.md#certified-h264-browser-qualification).
+
 ## Site icons
 
 Icons must use the page's own storage, routing and service worker. Never share a

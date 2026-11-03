@@ -15,11 +15,12 @@ struct H264AccessUnit {
     var starts: [(code: Int, unit: Int)] = []
     var i = 0
     while i + 2 < bytes.count {
-      if bytes[i] == 0 && bytes[i + 1] == 0 {
-        if bytes[i + 2] == 1 { starts.append((i, i + 3)); i += 3; continue }
-        if i + 3 < bytes.count && bytes[i + 2] == 0 && bytes[i + 3] == 1 { starts.append((i, i + 4)); i += 4; continue }
-      }
-      i += 1
+      let length: Int
+      if bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1 { length = 3 }
+      else if i + 3 < bytes.count && bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 0 && bytes[i + 3] == 1 { length = 4 }
+      else { i += 1; continue }
+      guard starts.count < 4096 else { self.sps = nil; self.pps = nil; self.units = []; return }
+      starts.append((i, i + length)); i += length
     }
     var sps: Range<Int>?, pps: Range<Int>?, units: [Range<Int>] = []
     for (index, start) in starts.enumerated() {

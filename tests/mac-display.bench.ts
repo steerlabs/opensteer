@@ -378,10 +378,12 @@ it("benchmarks synthetic Mac video through the real Host and shared WebCodecs vi
             });
             viewers.push({ profile, paints, received, proxy, first, transitions, decoderLosses });
           }
-          await deadline(
-            Promise.all(viewers.map((v) => v.first)),
-            `No first paint in ${scenario}: ${errors.join(";")}`,
-          );
+          await withTimeout(Promise.all(viewers.map((v) => v.first)), 15_000, {
+            timeoutError: () =>
+              new Error(
+                `No first paint in ${scenario}: ${JSON.stringify({ errors, emitted: emitted.length, keyframes, producerAcks, producerCreditStalls })}`,
+              ),
+          });
           const begin = performance.now();
           const byteStarts = viewers.map((v) =>
             v.proxy.connections.reduce((sum, c) => sum + c.bytesDown + c.bytesUp, 0),

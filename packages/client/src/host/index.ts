@@ -70,3 +70,5 @@ export * from "./personal-remote-access.js";
 export * from "./browser-cursor.js";
 export * from "./plugins.js";
 export * from "./project-folders.js";
+
+export type { BrowserVideoFrame, BrowserVideoStore } from "./browser-video.js";

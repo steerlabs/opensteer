@@ -1,3 +1,4 @@
+import { browserPresentationRef } from "@opensteer/protocol";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
 import type { EditingOperation } from "@opensteer/client/editing";
 import {
@@ -8,7 +9,7 @@ import { BrowserEditingStore, type BrowserEditingState } from "@opensteer/client
 import type { EditingCaret, EditingContext } from "@opensteer/protocol/editing";
 import { StreamedContextMenu, type StreamedMenuAction } from "./streamed-context-menu.js";
 import type { DesktopWindowRect } from "@opensteer/protocol/desktop";
-import { attachBrowserCanvas } from "./browser-presenter.js";
+import { attachBrowserCanvas, sampleBrowserVideo } from "./browser-presenter.js";
 import { BrowserCropCue } from "./browser-crop-cue.js";
 import {
   browserFrameContentRect,
@@ -643,7 +644,74 @@ export function BrowserViewport({
     return count;
   }
 
+  const videoGesture = useRef<{
+    sample: NonNullable<ReturnType<typeof sampleBrowserVideo>>;
+    id: string;
+    pointer: number;
+    canvas: HTMLCanvasElement;
+    x: number;
+    y: number;
+    lastX: number;
+    lastY: number;
+    scrolling: boolean;
+  } | null>(null);
+  const cancelVideoGesture = useCallback(() => {
+    const gesture = videoGesture.current;
+    videoGesture.current = null;
+    if (gesture && !gesture.scrolling)
+      frames.video?.gesture(
+        sessionId,
+        activeSurfaceId ?? "",
+        gesture.sample.header.streamId,
+        browserPresentationRef(gesture.sample.header),
+        gesture.id,
+        "cancel",
+      );
+  }, [activeSurfaceId, frames.video, sessionId]);
+  useLayoutEffect(() => {
+    if (!viewportCanInput) cancelVideoGesture();
+    return cancelVideoGesture;
+  }, [cancelVideoGesture, viewportCanInput]);
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (frames.video?.selected()) {
+      if (
+        !canInputRef.current ||
+        !activeSurfaceId ||
+        (event.pointerType !== "touch" && event.button !== 0)
+      )
+        return;
+      const canvas = event.currentTarget.querySelector("canvas");
+      const sample = canvas && sampleBrowserVideo(canvas, event.clientX, event.clientY);
+      if (!sample || !canvas) return;
+      if (videoGesture.current) {
+        cancelVideoGesture();
+        return;
+      }
+      const id = crypto.randomUUID();
+      videoGesture.current = {
+        sample,
+        id,
+        pointer: event.pointerId,
+        canvas,
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        scrolling: false,
+      };
+      frames.video.gesture(
+        sessionId,
+        activeSurfaceId,
+        sample.header.streamId,
+        browserPresentationRef(sample.header),
+        id,
+        "begin",
+      );
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      textInputRef.current?.pointerDown();
+      return;
+    }
     flushMove();
     if (event.pointerType === "touch") {
       resetCursor();
@@ -726,6 +794,52 @@ export function BrowserViewport({
   }
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (frames.video?.selected()) {
+      const gesture = videoGesture.current;
+      if (!gesture || gesture.pointer !== event.pointerId || !activeSurfaceId) return;
+      const rect = gesture.canvas.getBoundingClientRect();
+      if (
+        rect.left !== gesture.sample.rect.left ||
+        rect.top !== gesture.sample.rect.top ||
+        rect.width !== gesture.sample.rect.width ||
+        rect.height !== gesture.sample.rect.height
+      ) {
+        cancelVideoGesture();
+        return;
+      }
+      if (
+        Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 8 &&
+        !gesture.scrolling
+      ) {
+        frames.video.gesture(
+          sessionId,
+          activeSurfaceId,
+          gesture.sample.header.streamId,
+          browserPresentationRef(gesture.sample.header),
+          gesture.id,
+          "cancel",
+        );
+        gesture.scrolling = true;
+      }
+      if (gesture.scrolling && event.pointerType === "touch") {
+        const p = gesture.sample.header.presentation;
+        onCommand({
+          type: "input.wheel",
+          surfaceId: activeSurfaceId as import("@opensteer/core").BrowserSurfaceId,
+          x: (gesture.sample.point.x - p.rasterCrop.x) / p.rasterCrop.width,
+          y: (gesture.sample.point.y - p.rasterCrop.y) / p.rasterCrop.height,
+          viewportWidth: p.rootCssWidth,
+          viewportHeight: p.rootCssHeight,
+          deltaX: ((gesture.lastX - event.clientX) * p.rootCssWidth) / rect.width,
+          deltaY: ((gesture.lastY - event.clientY) * p.rootCssHeight) / rect.height,
+          modifiers: [],
+        });
+      }
+      gesture.lastX = event.clientX;
+      gesture.lastY = event.clientY;
+      event.preventDefault();
+      return;
+    }
     if (!canInputRef.current) return;
     if (event.pointerType === "touch") {
       if (!fingers.current.has(event.pointerId)) return;
@@ -793,6 +907,40 @@ export function BrowserViewport({
   }
 
   function pointerUp(event: PointerEvent<HTMLDivElement>) {
+    if (frames.video?.selected()) {
+      const gesture = videoGesture.current;
+      if (!gesture || gesture.pointer !== event.pointerId || !activeSurfaceId) return;
+      const rect = gesture.canvas.getBoundingClientRect();
+      if (
+        !canInputRef.current ||
+        rect.left !== gesture.sample.rect.left ||
+        rect.top !== gesture.sample.rect.top ||
+        rect.width !== gesture.sample.rect.width ||
+        rect.height !== gesture.sample.rect.height
+      ) {
+        cancelVideoGesture();
+        return;
+      }
+      videoGesture.current = null;
+      event.preventDefault();
+      if (gesture.scrolling) return;
+      const modifiers =
+        (event.altKey ? 1 : 0) |
+        (event.ctrlKey ? 2 : 0) |
+        (event.metaKey ? 4 : 0) |
+        (event.shiftKey ? 8 : 0);
+      frames.video.click(
+        sessionId,
+        activeSurfaceId,
+        gesture.sample.header.streamId,
+        browserPresentationRef(gesture.sample.header),
+        gesture.id,
+        gesture.sample.point,
+        modifiers,
+      );
+      textInputRef.current?.activate();
+      return;
+    }
     flushMove();
     if (event.pointerType === "touch") {
       if (fingerId.current === event.pointerId) touchGesture.release();
@@ -829,6 +977,10 @@ export function BrowserViewport({
   }
 
   function pointerCancel(event: PointerEvent<HTMLDivElement>) {
+    if (frames.video?.selected()) {
+      cancelVideoGesture();
+      return;
+    }
     resetCursor();
     if (event.pointerType === "touch") {
       discardMove();
@@ -891,6 +1043,7 @@ export function BrowserViewport({
         data-live-page=""
         onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) {
+            cancelVideoGesture();
             cancelInput(activeSurfaceId);
           }
         }}
@@ -898,7 +1051,11 @@ export function BrowserViewport({
         onPointerDown={pointerDown}
         onPointerCancel={pointerCancel}
         onLostPointerCapture={(event) => {
-          if (fingers.current.has(event.pointerId) || pointerPress.current?.id === event.pointerId)
+          if (
+            fingers.current.has(event.pointerId) ||
+            pointerPress.current?.id === event.pointerId ||
+            videoGesture.current?.pointer === event.pointerId
+          )
             pointerCancel(event);
         }}
         onPointerLeave={pointerLeave}
@@ -953,7 +1110,7 @@ export function BrowserViewport({
           />
         ) : null}
         <BrowserCropCue />
-        {frame ? (
+        {frame || frames.video?.selected() ? (
           <BrowserFrameImage
             frames={frames}
             sessionId={sessionId}

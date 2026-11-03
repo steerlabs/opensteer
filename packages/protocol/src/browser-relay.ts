@@ -1,4 +1,10 @@
 import { IsoDateTimeSchema } from "@opensteer/core";
+import {
+  BrowserVideoBudgetSchema,
+  BrowserVideoStateSchema,
+  BrowserVideoTargetSchema,
+} from "./browser-video.js";
+import { DisplayStreamIdSchema } from "./display-stream.js";
 import { z } from "zod";
 import {
   BrowserAttachPublicKeysSchema,
@@ -22,40 +28,13 @@ import {
   type RunnerAuxiliaryFrameFence,
 } from "./runner-auxiliary.js";
 
-const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-
-export const BrowserChannelIdSchema = z
-  .string()
-  .regex(new RegExp(`^bch_${uuid}$`, "i"))
-  .brand<"BrowserChannelId">();
-export type BrowserChannelId = z.infer<typeof BrowserChannelIdSchema>;
-
-export const BrowserCapabilityLeaseIdSchema = z
-  .string()
-  .regex(new RegExp(`^bcl_${uuid}$`, "i"))
-  .brand<"BrowserCapabilityLeaseId">();
-export type BrowserCapabilityLeaseId = z.infer<typeof BrowserCapabilityLeaseIdSchema>;
-
-/**
- * A time-bounded permission to serve browser sessions on one runtime. It is
- * separate from the stream lease: losing the grant stops new sessions without
- * tearing the module's transport down.
- */
-export const BrowserCapabilityLeaseSchema = z.strictObject({
-  capabilityGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  capabilityLeaseId: BrowserCapabilityLeaseIdSchema,
-  expiresAt: IsoDateTimeSchema,
-  runtimeId: z.string().min(1).max(255),
-});
-export type BrowserCapabilityLease = z.infer<typeof BrowserCapabilityLeaseSchema>;
-
-export const BrowserCapabilityReferenceSchema = BrowserCapabilityLeaseSchema.pick({
-  capabilityGeneration: true,
-  capabilityLeaseId: true,
-  runtimeId: true,
-});
-export type BrowserCapabilityReference = z.infer<typeof BrowserCapabilityReferenceSchema>;
-
+import {
+  BrowserCapabilityLeaseSchema,
+  BrowserCapabilityReferenceSchema,
+  BrowserChannelIdSchema,
+  type BrowserCapabilityReference,
+} from "./browser-capability.js";
+export * from "./browser-capability.js";
 export const BrowserRuntimeHealthSchema = z.strictObject({
   checkedAt: IsoDateTimeSchema,
   detail: z.string().max(1_000).nullable(),
@@ -102,7 +81,77 @@ export const LocalProfileDeletionResultSchema = DeleteLocalProfileSchema.extend(
 });
 export type LocalProfileDeletionResult = z.infer<typeof LocalProfileDeletionResultSchema>;
 
+const browserVideoBase = {
+  ...relayEventBase,
+  module: z.literal("browser"),
+  capability: BrowserCapabilityReferenceSchema,
+  channelId: BrowserChannelIdSchema,
+  target: BrowserVideoTargetSchema,
+  streamId: DisplayStreamIdSchema,
+};
+export const BrowserVideoOperationSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...browserVideoBase,
+    type: z.literal("browser.video.start"),
+    dataTicket: z.string().min(1).max(16384),
+    budget: BrowserVideoBudgetSchema,
+    creditWindow: z.number().int().min(1).max(8),
+    timeoutMs: z.number().int().min(1).max(30000),
+  }),
+  z.strictObject({
+    ...browserVideoBase,
+    type: z.literal("browser.video.budget"),
+    budget: BrowserVideoBudgetSchema,
+    revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  }),
+  z.strictObject({ ...browserVideoBase, type: z.literal("browser.video.keyframe") }),
+  z.strictObject({ ...browserVideoBase, type: z.literal("browser.video.stop") }),
+]);
+export type BrowserVideoOperation = z.infer<typeof BrowserVideoOperationSchema>;
+const localVideoOmit = {
+  auxiliaryStreamId: true,
+  bootId: true,
+  connectionGeneration: true,
+  connectionId: true,
+  connectionLeaseId: true,
+  module: true,
+  runnerId: true,
+  capability: true,
+} as const;
+export const BrowserLocalVideoOperationSchema = z.discriminatedUnion("type", [
+  BrowserVideoOperationSchema.options[0].omit({ ...localVideoOmit, dataTicket: true }),
+  BrowserVideoOperationSchema.options[1].omit(localVideoOmit),
+  BrowserVideoOperationSchema.options[2].omit(localVideoOmit),
+  BrowserVideoOperationSchema.options[3].omit(localVideoOmit),
+]);
+export type BrowserLocalVideoOperation = z.infer<typeof BrowserLocalVideoOperationSchema>;
+export function browserLocalVideoOperation(
+  operation: BrowserVideoOperation,
+): BrowserLocalVideoOperation {
+  const {
+    auxiliaryStreamId: _aux,
+    bootId: _boot,
+    connectionGeneration: _generation,
+    connectionId: _connection,
+    connectionLeaseId: _lease,
+    module: _module,
+    runnerId: _runner,
+    capability: _capability,
+    ...local
+  } = operation;
+  if (local.type === "browser.video.start") {
+    const { dataTicket: _ticket, ...start } = local;
+    return start;
+  }
+  return local;
+}
+export const BrowserVideoRelayStateSchema = z.strictObject({
+  ...browserVideoBase,
+  type: z.literal("browser.video.state"),
+  state: BrowserVideoStateSchema,
+});
 const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
+  BrowserVideoOperationSchema,
   DeleteLocalProfileSchema,
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
@@ -156,6 +205,7 @@ export type RoutedHostToBrowserRelayMessage = Extract<
 >;
 
 const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
+  BrowserVideoRelayStateSchema,
   LocalProfileInventorySchema,
   LocalProfileDeletionResultSchema,
   RunnerAuxiliaryHeartbeatSchema,

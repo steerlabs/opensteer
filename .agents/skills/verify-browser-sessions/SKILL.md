@@ -86,3 +86,70 @@ releases. Check their clear update refusal; do not preserve Vault, preparation,
 snapshot or Guest-save adapters. Update model-facing browser cases with the tool
 catalog, and use the focused agent-eval workflow when behavioral qualification is
 requested. Skipped engines and unrun VM smokes remain unqualified.
+
+## Certified H.264 browser qualification
+
+JPEG remains an explicit qualification selection. Select H.264 before opening a
+presentation with `VITE_BROWSER_PRESENTATION=h264` for web/streamed desktop or
+`EXPO_PUBLIC_BROWSER_PRESENTATION=h264` for mobile. A missing producer owner or
+native presentation-identity capability is an update/build error; it never selects
+JPEG after an H.264 failure. Ordinary agent CDP never acquires this private owner.
+
+Stock npm Electron does not contain the producer. After the producer owner has
+linked and qualified the custom build, development Electron must use
+`ELECTRON_OVERRIDE_DIST_PATH=/Users/timjang/Developer/electron-build/electron/src/out/Testing`.
+Run Electron inside the disposable VM, with that distribution staged at the
+configured path inside the guest. Do not launch Electron or drive the shared host
+screen. Do not modify the external Electron build from this checkout.
+
+The adapter in `apps/desktop/src/browser/electron-browser-presentation.ts` is the
+only place that translates native video commands/certificates. Its retention
+operations require publication-to-offer transfer on ACK, a current picture per
+viewer, temporary gesture holds, offered-only recovery and release. Rate updates
+must preserve the stream. The supplied original producer queue has neither these
+retention operations nor in-place `OpensteerVideo.update`; qualify the revised
+native API against this adapter before using interactive H.264. Do not translate a
+missing operation into a repeated start, ordinary input or a different codec.
+
+Run the focused transport, owner and presenter checks:
+
+```sh
+pnpm exec vitest run packages/protocol/src/browser-video.test.ts packages/browser-runtime-core/src/browser/browser-presentation-session.test.ts apps/host/src/browser/browser-video-hub.test.ts packages/shared/src/mediaForwarder.test.ts packages/runner-client/src/browser-video-relay.test.ts apps/desktop/src/browser/electron-browser-presentation.test.ts apps/web/src/components/browser/browser-presenter.test.ts
+pnpm exec vitest run apps/host/src/computer-use/display-stream-hub.test.ts apps/runner/src/computer-apps/mac-window-video-relay.test.ts apps/web/src/components/phone-display-media.test.ts packages/client/src/host/browser-watch.test.ts
+swift test --package-path apps/mobile/modules/phone-display/ios
+pnpm bench:browser-stream --producer fixture-h264 --profile all --source-profile weak-cell --devices 2 --out /tmp/browser-h264-fixture.json
+```
+
+Certified browser canvas viewing selects software WebCodecs up front. In the
+current Chromium viewer, the fixture's lone initial key produced no hardware
+output despite `optimizeForLatency`; software presented both initial and final
+stills. `--decoder prefer-hardware` keeps that qualification visible. Do not add
+fake wake-up frames or flush/re-key every image to hide buffering.
+
+The fixture benchmark uses real pre-encoded lime/blue AUs, synthetic certificates,
+the real Host media hub and production WatchStore/WebCodecs/canvas path. It includes
+attach, source-uplink shaping and independent devices. It proves neither native
+input nor an encoder's rate/CPU/idle behavior. The unchanged JPEG benchmark owns
+real-page scroll, typing and click workloads. Custom producer kinds require an
+explicit qualified executable and the VM/private-owner or Runner-pipe workflow;
+no stock producer is substituted. `--viewer ios`/`android` require native device
+qualification rather than a canvas substitute.
+
+In the VM or reserved native job, use the existing PhoneDisplay fixture entry
+under `apps/mobile/modules/phone-display/tests/native`. Exercise the
+`PhoneDisplayVideo` view with the same AUs and full per-input identity metadata.
+The existing native journey now checks that view's lone key, final delta, per-output
+certificate, replay suppression and reset with real screenshot pixels; its touch
+events record the sampled certificate for the reserved-device input run.
+Check same-sized alternating colours, delayed/skipped output, a lone initial key,
+a final delta, replay suppression, resize while touching and background/reset.
+The iOS Simulator SDK has no Metal drawable presentation receipt and advertises
+this capability as unsupported; use an owned physical iPhone for that acceptance.
+An iOS drawable presentation or Android owned texture commit must identify the
+visible colour; decoder admission and frame-rendered callbacks alone do not pass.
+Check that native touch-start retains the old certificate through a later picture,
+and refuses while the presentation identity is ambiguous. Keep real Connect,
+hardware/software encoders, text readability, popup exclusions, multi-device
+handover and native disposal/cleanup as explicit unqualified boundaries until the
+corresponding binary/device run passes. A standalone Runner implements only the
+typed `BrowserPage.presentation` port here; its private launch pipe is separate.
