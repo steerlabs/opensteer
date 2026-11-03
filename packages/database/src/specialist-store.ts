@@ -60,12 +60,12 @@ export class SpecialistStore {
         .selectAll()
         .where("workspaceId", "=", input.workspaceId)
         .where("pluginId", "=", input.pluginId)
+        .where("ownerUserId", "=", input.actorUserId)
         .executeTakeFirst();
-      // A collaborator must explicitly remove their own registration before another consent owner replaces it.
-      if (previous && previous.ownerUserId !== input.actorUserId)
+      if (previous?.removedAt)
         throw new OpensteerError({
-          code: "forbidden",
-          message: "Only this specialist's consent owner may re-add it",
+          code: "conflict",
+          message: "Specialist cleanup is pending; retry removal before adding it again",
         });
       const now = new Date();
       const id = previous?.id ?? randomUUID();
@@ -84,7 +84,7 @@ export class SpecialistStore {
           updatedAt: now,
         })
         .onConflict((c) =>
-          c.columns(["workspaceId", "pluginId"]).doUpdateSet({
+          c.columns(["workspaceId", "pluginId", "ownerUserId"]).doUpdateSet({
             pluginVersionId: plugin.id,
             status: "pending",
             bindings: jsonValue([]),
@@ -122,6 +122,13 @@ export class SpecialistStore {
         code: "forbidden",
         message: "Only the consent owner may bind this specialist",
       });
+    if (current.status === "removing" || current.status === "removal-failed")
+      throw new OpensteerError({ code: "conflict", message: "Specialist is being removed" });
+    const stored = await this.database
+      .selectFrom("specialists")
+      .select("bindings")
+      .where("id", "=", input.specialistId)
+      .executeTakeFirstOrThrow();
     const requirement = current.access[input.requirement];
     if (!requirement?.candidates.some((c) => c.resourceId === input.resourceId))
       throw new OpensteerError({
@@ -132,9 +139,7 @@ export class SpecialistStore {
       .updateTable("specialists")
       .set({
         bindings: jsonValue([
-          ...current.access.flatMap((a, i) =>
-            i !== input.requirement && a.binding ? [a.binding] : [],
-          ),
+          ...stored.bindings.filter((b) => b.requirement !== input.requirement),
           {
             requirement: input.requirement,
             resourceId: input.resourceId,
@@ -143,12 +148,9 @@ export class SpecialistStore {
         ]),
       })
       .where("id", "=", input.specialistId)
+      .where("removedAt", "is", null)
       .where("pluginVersionId", "=", current.pluginVersionId)
-      .where(
-        "bindings",
-        "=",
-        jsonValue(current.access.flatMap((a) => (a.binding ? [a.binding] : []))),
-      )
+      .where("bindings", "=", jsonValue(stored.bindings))
       .executeTakeFirst();
     if (updated.numUpdatedRows !== 1n)
       throw new OpensteerError({
@@ -163,12 +165,16 @@ export class SpecialistStore {
       .selectFrom("specialists")
       .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
       .innerJoin("plugins", "plugins.id", "specialists.pluginId")
+      .innerJoin("users", "users.id", "specialists.ownerUserId")
       .selectAll("specialists")
-      .select(["pluginVersions.specialistManifest", "plugins.name", "pluginVersions.digest"])
+      .select([
+        "pluginVersions.specialistManifest",
+        "plugins.name",
+        "pluginVersions.digest",
+        "users.displayName as ownerName",
+      ])
       .where("specialists.id", "=", id)
       .executeTakeFirstOrThrow();
-    if (row.removedAt)
-      throw new OpensteerError({ code: "conflict", message: "Specialist is being removed" });
     const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
     const bindings: SpecialistBinding[] = [];
     const states = [];
@@ -176,34 +182,42 @@ export class SpecialistStore {
       const previous = row.bindings.find((binding) => binding.requirement === index);
       const candidates = await this.candidates(row.workspaceId, row.ownerUserId, requirement);
       const resourceId =
-        previous && candidates.some((c) => c.resourceId === previous.resourceId)
+        previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
           ? previous.resourceId
-          : candidates.length === 1
+          : !previous && candidates.length === 1
             ? candidates[0]!.resourceId
             : null;
       const binding = resourceId
         ? { requirement: index, resourceId, level: requirement.level }
         : null;
       if (binding) bindings.push(binding);
+      else if (previous) bindings.push({ ...previous, rebind: true });
       states.push({
         ...requirement,
         binding,
         state: binding
           ? ("bound" as const)
-          : candidates.length
-            ? ("choose" as const)
-            : ("needs-access" as const),
+          : previous
+            ? ("rebind" as const)
+            : candidates.length
+              ? ("choose" as const)
+              : ("needs-access" as const),
         candidates,
       });
     }
-    const status =
-      bindings.length === (manifest.access ?? []).length
+    const status = row.removedAt
+      ? row.status === "removal-failed"
+        ? ("removal-failed" as const)
+        : ("removing" as const)
+      : states.every((s) => s.state === "bound")
         ? ("ready" as const)
         : ("pending" as const);
     const update = await this.database
       .updateTable("specialists")
       .set({ bindings: jsonValue(bindings), status, updatedAt: new Date() })
       .where("id", "=", id)
+      .where("status", "=", row.status)
+      .where("removedAt", row.removedAt ? "is not" : "is", null)
       .where("pluginVersionId", "=", row.pluginVersionId)
       .where("bindings", "=", jsonValue(row.bindings))
       .executeTakeFirst();
@@ -218,6 +232,7 @@ export class SpecialistStore {
       pluginId: row.pluginId,
       pluginVersionId: row.pluginVersionId,
       ownerUserId: row.ownerUserId,
+      ownerName: row.ownerName,
       plugin: row.name,
       version: row.digest,
       status,
@@ -233,10 +248,17 @@ export class SpecialistStore {
       .selectFrom("specialists")
       .select("id")
       .where("workspaceId", "=", workspaceId)
-      .where("removedAt", "is", null)
       .orderBy("createdAt")
       .execute();
-    return Promise.all(rows.map(({ id }) => this.refresh(id)));
+    return Promise.all(
+      rows.map(async ({ id }) => {
+        const registration = await this.refresh(id);
+        return {
+          ...registration,
+          canUse: registration.ownerUserId === actorUserId && registration.status === "ready",
+        };
+      }),
+    );
   }
 
   private removalHandler?: (input: {
@@ -251,11 +273,23 @@ export class SpecialistStore {
 
   async remove(input: { workspaceId: WorkspaceId; specialistId: string; actorUserId: UserId }) {
     await this.authorize(input.workspaceId, input.actorUserId);
-    if (!this.removalHandler)
-      throw new OpensteerError({ code: "conflict", message: "Specialist removal is unavailable" });
+    await this.cleanup(input);
+  }
+
+  private async cleanup(input: {
+    workspaceId: WorkspaceId;
+    specialistId: string;
+    actorUserId: UserId;
+  }) {
+    const exists = await this.database
+      .selectFrom("specialists")
+      .select("id")
+      .where("id", "=", input.specialistId)
+      .executeTakeFirst();
+    if (!exists) return;
     const removed = await this.database
       .updateTable("specialists")
-      .set({ removedAt: new Date() })
+      .set({ removedAt: new Date(), status: "removing" })
       .where("id", "=", input.specialistId)
       .where("workspaceId", "=", input.workspaceId)
       .where("ownerUserId", "=", input.actorUserId)
@@ -266,13 +300,103 @@ export class SpecialistStore {
         code: "forbidden",
         message: "Only the consent owner may remove this specialist",
       });
-    await this.removalHandler(input);
+    try {
+      if (!this.removalHandler)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Specialist removal is unavailable",
+        });
+      await this.removalHandler(input);
+    } catch (error) {
+      await this.database
+        .updateTable("specialists")
+        .set({ status: "removal-failed" })
+        .where("id", "=", input.specialistId)
+        .execute();
+      throw error;
+    }
     await this.database
       .deleteFrom("specialists")
       .where("id", "=", input.specialistId)
       .where("workspaceId", "=", input.workspaceId)
       .where("ownerUserId", "=", input.actorUserId)
       .execute();
+  }
+
+  async assertRunnable(id: string, workspaceId: WorkspaceId, requester: UserId) {
+    await this.authorize(workspaceId, requester);
+    const exists = await this.database
+      .selectFrom("specialists")
+      .select("id")
+      .where("id", "=", id)
+      .where("workspaceId", "=", workspaceId)
+      .executeTakeFirst();
+    if (!exists)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Specialist registration was removed",
+      });
+    const registration = await this.refresh(id);
+    if (registration.ownerUserId !== requester)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: `${registration.plugin} uses ${registration.ownerName}'s accounts; add it for yourself to use your own`,
+      });
+    if (registration.status !== "ready")
+      throw new OpensteerError({
+        code: "conflict",
+        message: `Specialist is ${registration.status}: ${registration.access
+          .filter((a) => a.state !== "bound")
+          .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+          .join("; ")}`,
+      });
+    return registration;
+  }
+
+  async retirePlugin(pluginId: string) {
+    const rows = await this.database
+      .selectFrom("specialists")
+      .selectAll()
+      .where("pluginId", "=", pluginId)
+      .execute();
+    // Revoke every registration before attempting any remote cleanup.
+    await this.database
+      .updateTable("specialists")
+      .set({ removedAt: new Date(), status: "removing" })
+      .where("pluginId", "=", pluginId)
+      .execute();
+    for (const row of rows)
+      await this.cleanup({
+        workspaceId: row.workspaceId,
+        specialistId: row.id,
+        actorUserId: row.ownerUserId,
+      });
+  }
+
+  async resumeRemovals(environmentIds: readonly string[]) {
+    const rows = await this.database
+      .selectFrom("specialists")
+      .innerJoin("workspaces", "workspaces.id", "specialists.workspaceId")
+      .selectAll("specialists")
+      .select("workspaces.backing")
+      .where("specialists.removedAt", "is not", null)
+      .execute();
+    for (const row of rows) {
+      if (
+        row.backing.kind === "local-directory" &&
+        environmentIds.includes(row.backing.ownerEnvironmentId)
+      ) {
+        try {
+          await this.cleanup({
+            workspaceId: row.workspaceId,
+            specialistId: row.id,
+            actorUserId: row.ownerUserId,
+          });
+        } catch {
+          /* The visible failed state remains retryable. */
+        }
+      }
+    }
   }
 
   private async candidates(

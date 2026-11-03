@@ -799,7 +799,10 @@ function SpecialistCard(props: {
   readonly workspace: WorkspaceSummary;
 }): ReactNode {
   const { hostClient, registration, workspace } = props;
-  const editable = props.mine && props.connected;
+  const editable =
+    props.mine &&
+    props.connected &&
+    (registration.status === "ready" || registration.status === "pending");
   const [pending, setPending] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const workspaceId = WorkspaceIdSchema.parse(workspace.id);
@@ -883,12 +886,18 @@ function SpecialistCard(props: {
             </AppText>
             <View style={[styles.pill, ready ? styles.pillReady : styles.pillPending]}>
               <AppText role="caption" style={ready ? styles.readyText : styles.pendingText}>
-                {ready ? "Ready" : "Needs setup"}
+                {ready
+                  ? "Ready"
+                  : registration.status === "pending"
+                    ? "Needs setup"
+                    : registration.status === "removing"
+                      ? "Removing"
+                      : "Removal failed"}
               </AppText>
             </View>
           </View>
           <AppText role="caption" tone="muted">
-            {`${summary === null ? "" : `${summary}. `}Runs on ${models.join(", then ")}${
+            {`Uses ${registration.ownerName ?? (props.mine ? "your" : "another member’s")} accounts. ${registration.canUse === false ? "Unavailable to you. " : ""}${summary === null ? "" : `${summary}. `}Runs on ${models.join(", then ")}${
               registration.fallback === "caller" ? ", or the model of the task that asks" : ""
             }.`}
           </AppText>
@@ -898,7 +907,11 @@ function SpecialistCard(props: {
             busy={pending === "remove"}
             compact
             disabled={!props.connected || pending !== null}
-            label="Remove"
+            label={
+              registration.status === "removal-failed" || registration.status === "removing"
+                ? "Retry removal"
+                : "Remove"
+            }
             onPress={remove}
             tone="danger"
           />

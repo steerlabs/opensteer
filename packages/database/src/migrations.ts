@@ -4696,6 +4696,7 @@ export function migrationProvider() {
         "0142_specialists": specialistsMigration,
         "0143_specialist_threads": specialistThreadsMigration,
         "0144_project_chats": projectChatsMigration,
+        "0145_specialist_lifecycle": specialistLifecycleMigration,
       };
     },
   };
@@ -7037,6 +7038,21 @@ export const specialistThreadsMigration: Migration = {
 export const projectChatsMigration: Migration = {
   async up(database) {
     await sql`ALTER TABLE workspaces DROP CONSTRAINT workspaces_home_main_only_check`.execute(
+      database,
+    );
+  },
+};
+
+export const specialistLifecycleMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE specialists DROP CONSTRAINT specialists_workspace_id_plugin_id_key;
+      ALTER TABLE specialists ADD UNIQUE(workspace_id, plugin_id, owner_user_id);
+      ALTER TABLE specialists DROP CONSTRAINT specialists_status_check;
+      ALTER TABLE specialists ADD CHECK(status IN ('pending','ready','removing','removal-failed'));
+      ALTER TABLE specialists DROP CONSTRAINT specialists_plugin_id_fkey;
+      ALTER TABLE specialists ADD FOREIGN KEY(plugin_id) REFERENCES plugins(id) ON DELETE RESTRICT;
+      ALTER TABLE specialists DROP CONSTRAINT specialists_plugin_id_plugin_version_id_fkey;
+      ALTER TABLE specialists ADD FOREIGN KEY(plugin_id, plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE RESTRICT`.execute(
       database,
     );
   },

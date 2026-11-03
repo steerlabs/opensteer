@@ -567,7 +567,8 @@ function SpecialistCard({
 }) {
   const { snapshot } = useShell();
   const mine = registration.ownerUserId === snapshot.user?.id;
-  const editable = mine && connected;
+  const editable =
+    mine && connected && (registration.status === "ready" || registration.status === "pending");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<number | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -604,11 +605,19 @@ function SpecialistCard({
             {registration.status === "ready" ? (
               <span className="chip chip--ok">Ready</span>
             ) : (
-              <span className="chip chip--warn">Needs setup</span>
+              <span className="chip chip--warn">
+                {registration.status === "pending"
+                  ? "Needs setup"
+                  : registration.status === "removing"
+                    ? "Removing"
+                    : "Removal failed"}
+              </span>
             )}
           </span>
           <span className="card__row-detail">
             {pendingSummary ? `${pendingSummary}. ` : ""}
+            Uses {registration.ownerName ?? (mine ? "your" : "another member’s")} accounts.{" "}
+            {registration.canUse === false ? "Unavailable to you. " : ""}
             Runs on {models.join(", then ")}
             {registration.fallback === "caller" ? ", or the model of the task that asks" : ""}.
           </span>
@@ -621,7 +630,9 @@ function SpecialistCard({
               onClick={() => setRemoving(true)}
               type="button"
             >
-              Remove
+              {registration.status === "removal-failed" || registration.status === "removing"
+                ? "Retry removal"
+                : "Remove"}
             </button>
           </span>
         ) : null}

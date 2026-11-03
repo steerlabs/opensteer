@@ -18,6 +18,51 @@ afterEach(async () => {
 });
 
 describe("integration platform OAuth routes", () => {
+  it("keeps plugin uninstall retryable until specialist retirement completes", async () => {
+    const order: string[] = [];
+    const retirePlugin = vi.fn(async (): Promise<void> => {
+      throw new Error("Owner computer offline");
+    });
+    const remove = vi.fn(async () => {
+      order.push("remove");
+    });
+    const uninstallIntegration = vi.fn(async () => {
+      order.push("uninstall");
+    });
+    const options = {
+      authenticator: {} as HostAuthenticator,
+      dashboard: {} as never,
+      mcpOauth: {} as McpOAuthService,
+      platform: {
+        store: {
+          specialists: { retirePlugin },
+          plugins: { remove },
+          listInstallations: async () => [{ id: "installation", pluginId: "plugin" }],
+        },
+        uninstallIntegration,
+      } as never,
+    };
+    const context = testHostApiContext(createId("user"), { instanceRole: "administrator" });
+    const command = {
+      type: "plugin.remove",
+      pluginId: "plugin",
+      idempotencyKey: "remove",
+    } as const;
+    await expect(handleIntegrationPlatformCommand(options, command, context)).rejects.toThrow(
+      "offline",
+    );
+    expect(remove).not.toHaveBeenCalled();
+    expect(uninstallIntegration).not.toHaveBeenCalled();
+    retirePlugin.mockImplementation(async () => {
+      order.push("retire");
+    });
+    await expect(handleIntegrationPlatformCommand(options, command, context)).resolves.toEqual({
+      type: "plugin.remove",
+    });
+    expect(retirePlugin).toHaveBeenCalledWith("plugin");
+    expect(order).toEqual(["retire", "uninstall", "remove"]);
+  });
+
   it("routes member plugin reads through the scoped projection on both entry points", async () => {
     const userId = createId("user"),
       workspaceId = createId("workspace");

@@ -626,11 +626,13 @@ export class AgentControlService {
                   claims.requestedBy,
                 )
               : [];
-          const specialist = registrations.find((r) =>
-            existingThread?.specialistId
-              ? r.id === existingThread.specialistId
-              : r.id === request.specialist || r.plugin === request.specialist,
-          );
+          const specialist = existingThread?.specialistId
+            ? registrations.find((r) => r.id === existingThread.specialistId)
+            : (registrations.find((r) => r.id === request.specialist) ??
+              registrations.find(
+                (r) => r.plugin === request.specialist && r.ownerUserId === claims.requestedBy,
+              ) ??
+              registrations.find((r) => r.plugin === request.specialist));
           if ((request.specialist || existingThread?.specialistId) && !specialist)
             throw badRequest("Specialist is not registered in this Workspace");
           if (
@@ -640,12 +642,22 @@ export class AgentControlService {
             request.specialist !== specialist?.plugin
           )
             throw badRequest("An existing Thread keeps its specialist binding");
+          if (specialist && specialist.ownerUserId !== claims.requestedBy)
+            throw forbidden(
+              `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,
+            );
           if (specialist?.status === "pending")
             throw badRequest(
               `Specialist is pending: ${specialist.access
                 .filter((a) => a.state !== "bound")
                 .map((a) => `${a.type}: ${a.state} (${a.reason})`)
                 .join("; ")}`,
+            );
+          if (specialist)
+            await new SpecialistStore(this.#store.database).assertRunnable(
+              specialist.id,
+              workspace.id,
+              claims.requestedBy,
             );
           if (specialist && (request.model || request.harnessInstanceId || request.environmentId))
             throw badRequest("Specialist execution is selected by its registration");
@@ -963,6 +975,12 @@ export class AgentControlService {
     }
     const thread = await this.#store.getThreadForOwner(destination, claims.requestedBy);
     if (!thread) throw forbidden("Thread is unavailable to this user");
+    if (thread.specialistId && request.delivery !== "report")
+      await new SpecialistStore(this.#store.database).assertRunnable(
+        thread.specialistId,
+        thread.workspaceId,
+        claims.requestedBy,
+      );
     // Any Thread may leave its person's Home a report. Work there needs the
     // same reach as addressing Home by id.
     if (!home || request.delivery !== "report") {

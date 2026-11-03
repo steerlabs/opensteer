@@ -150,7 +150,11 @@ export function specialistPendingSummary(
   registration: Pick<SpecialistRegistration, "access" | "status">,
 ): string | null {
   if (registration.status === "ready") return null;
-  const choose = registration.access.filter(({ state }) => state === "choose").length;
+  if (registration.status === "removing") return "Removing";
+  if (registration.status === "removal-failed") return "Removal failed; retry removal";
+  const choose = registration.access.filter(
+    ({ state }) => state === "choose" || state === "rebind",
+  ).length;
   const missing = registration.access.filter(({ state }) => state === "needs-access").length;
   const parts = [
     choose > 0 ? `${choose} ${choose === 1 ? "choice" : "choices"} to make` : null,

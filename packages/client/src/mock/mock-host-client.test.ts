@@ -1282,7 +1282,7 @@ it("mock specialists reevaluate missing, ambiguous, chosen and revoked access", 
       });
     }
     expect(await list()).toMatchObject({
-      data: { specialists: [{ status: "pending", access: [{ state: "needs-access" }] }] },
+      data: { specialists: [{ status: "pending", access: [{ state: "rebind" }] }] },
     });
     await send({ type: "specialist.remove", workspaceId, specialistId, idempotencyKey: "remove" });
     expect(await list()).toMatchObject({ data: { specialists: [] } });

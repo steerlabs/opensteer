@@ -152,6 +152,7 @@ const releasedMigrationNames = [
   "0142_specialists",
   "0143_specialist_threads",
   "0144_project_chats",
+  "0145_specialist_lifecycle",
 ];
 
 describe("migration names", () => {

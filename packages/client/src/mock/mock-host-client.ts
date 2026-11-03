@@ -4825,9 +4825,9 @@ class MockHostState {
               .map((c) => ({ resourceId: c.id, name: c.id }));
       const previous = s.bindings.find((b) => b.requirement === index);
       const resourceId =
-        previous && candidates.some((c) => c.resourceId === previous.resourceId)
+        previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
           ? previous.resourceId
-          : candidates.length === 1
+          : !previous && candidates.length === 1
             ? candidates[0]!.resourceId
             : null;
       const binding = resourceId
@@ -4839,18 +4839,26 @@ class MockHostState {
         candidates,
         state: binding
           ? ("bound" as const)
-          : candidates.length
-            ? ("choose" as const)
-            : ("needs-access" as const),
+          : previous
+            ? ("rebind" as const)
+            : candidates.length
+              ? ("choose" as const)
+              : ("needs-access" as const),
       };
     });
-    s.bindings = access.flatMap((a) => (a.binding ? [a.binding] : []));
+    s.bindings = access.flatMap((a, index) => {
+      const previous = s.bindings.find((b) => b.requirement === index);
+      return a.binding ? [a.binding] : previous ? [{ ...previous, rebind: true }] : [];
+    });
     return {
       id: s.id,
       workspaceId: s.workspaceId,
       pluginId: s.pluginId,
       pluginVersionId: s.pluginVersionId,
       ownerUserId: s.ownerUserId,
+      ownerName:
+        s.ownerUserId === this.snapshot.user?.id ? this.snapshot.user.displayName : s.ownerUserId,
+      canUse: s.ownerUserId === this.snapshot.user?.id && access.every((a) => a.binding),
       plugin: plugin.name,
       version: plugin.versions.find((v) => v.id === s.pluginVersionId)!.digest,
       models: s.manifest.models,
@@ -4866,7 +4874,8 @@ class MockHostState {
       throw new Error("Install a specialist package first");
     const ownerUserId = this.snapshot.user!.id;
     const previous = this.specialists.find(
-      (s) => s.workspaceId === workspaceId && s.pluginId === pluginId,
+      (s) =>
+        s.workspaceId === workspaceId && s.pluginId === pluginId && s.ownerUserId === ownerUserId,
     );
     if (previous && previous.ownerUserId !== ownerUserId)
       throw new Error("Only the consent owner may re-add this specialist");

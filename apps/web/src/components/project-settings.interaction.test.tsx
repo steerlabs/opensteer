@@ -95,6 +95,8 @@ describe("a Project's settings", () => {
     const specialists = section("Specialists");
     expect(element(".card__row-title", specialists).textContent).toContain("Needs setup");
     expect(specialists.textContent).toContain("Runs on Claude Code · opus");
+    expect(specialists.textContent).toContain("accounts.");
+    expect(specialists.textContent).toContain("Unavailable to you.");
     const [profile, github] = [...specialists.querySelectorAll<HTMLElement>(".specialist-access")];
     expect(profile!.textContent).toContain("Reads the sites you research in");
     expect(profile!.className).toContain("specialist-access--choose");

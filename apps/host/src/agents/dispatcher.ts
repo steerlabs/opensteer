@@ -1,3 +1,4 @@
+import { SpecialistStore } from "@opensteer/database";
 import {
   ModelSelectionSchema,
   OpensteerError,
@@ -225,6 +226,20 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     const context = await this.#store.loadRunDispatchContext(command.id);
+    if (context.thread.specialistId) {
+      try {
+        await new SpecialistStore(this.#store.database).assertRunnable(
+          context.thread.specialistId,
+          context.workspace.id,
+          context.run.requestedBy,
+        );
+      } catch (error) {
+        throw new CommandDispatchError(
+          error instanceof Error ? error.message : "Specialist is unavailable",
+          "failed",
+        );
+      }
+    }
     const assignment = context.run.assignmentId
       ? await this.#store.getAssignment(context.run.assignmentId)
       : null;

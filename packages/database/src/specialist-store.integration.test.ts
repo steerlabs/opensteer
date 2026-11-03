@@ -203,14 +203,91 @@ describeStore("specialist registration", (test) => {
     // A stale ready row cannot preserve withdrawn Workspace consent.
     expect((await check(profile.id)).access).toBeNull();
     expect((await platform.specialists.refresh(pending.id)).status).toBe("pending");
+    platform.specialists.setRemovalHandler(async () => {
+      throw new Error("Runner offline");
+    });
+    await expect(
+      platform.specialists.remove({
+        workspaceId: workspace.id,
+        specialistId: pending.id,
+        actorUserId: run.userId,
+      }),
+    ).rejects.toThrow("Runner offline");
+    expect((await platform.specialists.list(workspace.id, run.userId))[0]).toMatchObject({
+      status: "removal-failed",
+    });
+    await expect(platform.plugins.remove(pluginId)).rejects.toThrow("specialist");
+    expect((await check(profile.id)).access).toBeNull();
     platform.specialists.setRemovalHandler(async () => undefined);
+    if (workspace.backing.kind !== "local-directory") throw new Error("Expected local storage");
+    await platform.specialists.resumeRemovals([workspace.backing.ownerEnvironmentId]);
+    expect(await platform.specialists.list(workspace.id, run.userId)).toEqual([]);
+    expect((await add()).id).not.toBe(pending.id);
+    await platform.specialists.retirePlugin(pluginId);
+    await platform.plugins.remove(pluginId);
+    expect(await platform.specialists.list(workspace.id, run.userId)).toEqual([]);
+    await expect(
+      platform.specialists.assertRunnable(pending.id, workspace.id, run.userId),
+    ).rejects.toThrow("removed");
+    expect((await check(profile.id)).access).toBeNull();
+  });
+
+  test("plugin retirement revokes all registrations before cleanup and keeps offline cleanup retryable", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("retire-plugin");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "retire");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "retire",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "d".repeat(64),
+      manifest: { name: "retire" },
+      specialistManifest: SpecialistManifestSchema.parse({
+        version: 1,
+        models: [{ engine: "claude", model: "haiku" }],
+      }),
+    });
+    const registration = await platform.specialists.add({
+      workspaceId: workspace.id,
+      pluginId,
+      actorUserId: owner.userId,
+    });
+    await platform.specialists.add({
+      workspaceId: owner.workspace.id,
+      pluginId,
+      actorUserId: owner.userId,
+    });
+    platform.specialists.setRemovalHandler(async () => {
+      throw new Error("Owner computer offline");
+    });
+    await expect(platform.specialists.retirePlugin(pluginId)).rejects.toThrow("offline");
+    const rows = await fixture.database
+      .selectFrom("specialists")
+      .selectAll()
+      .where("pluginId", "=", pluginId)
+      .execute();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.removedAt && row.status !== "ready")).toBe(true);
+    await expect(platform.plugins.remove(pluginId)).rejects.toThrow("specialist");
+    await expect(
+      platform.specialists.assertRunnable(registration.id, workspace.id, owner.userId),
+    ).rejects.toThrow(/remov/);
+    await expect(
+      platform.specialists.add({ workspaceId: workspace.id, pluginId, actorUserId: owner.userId }),
+    ).rejects.toThrow("cleanup is pending");
+    platform.specialists.setRemovalHandler(async () => undefined);
+    await platform.specialists.retirePlugin(pluginId);
     await platform.specialists.remove({
       workspaceId: workspace.id,
-      specialistId: pending.id,
-      actorUserId: run.userId,
+      specialistId: registration.id,
+      actorUserId: owner.userId,
     });
-    expect(await platform.specialists.list(workspace.id, run.userId)).toEqual([]);
-    expect((await check(profile.id)).access).toBeNull();
+    await platform.plugins.remove(pluginId);
+    expect((await platform.plugins.list()).some((plugin) => plugin.id === pluginId)).toBe(false);
   });
 
   test("ambiguous consent requires an owner choice and list revalidates revocations", async ({
@@ -285,11 +362,29 @@ describeStore("specialist registration", (test) => {
       .updateTable("browserProfileGrants")
       .set({ revokedAt: new Date() })
       .where("workspaceId", "=", workspace.id)
+      .where("profileId", "=", profiles[1]!.id)
       .execute();
     expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
       status: "pending",
-      access: [{ state: "needs-access" }],
+      access: [{ state: "rebind", binding: null }],
     });
+    expect((await platform.specialists.list(workspace.id, owner.userId))[0]?.status).toBe(
+      "pending",
+    );
+    await expect(
+      platform.specialists.assertRunnable(pending.id, workspace.id, owner.userId),
+    ).rejects.toThrow("pending");
+    expect(
+      (
+        await platform.specialists.bind({
+          workspaceId: workspace.id,
+          specialistId: pending.id,
+          actorUserId: owner.userId,
+          requirement: 0,
+          resourceId: profiles[0]!.id,
+        })
+      ).status,
+    ).toBe("ready");
   });
 
   test("a shared Project never binds another member's browser consent", async ({
@@ -426,8 +521,17 @@ describeStore("specialist registration", (test) => {
         resourceId: profile.id,
       }),
     ).rejects.toThrow("consent owner");
+    const own = await platform.specialists.add({
+      workspaceId: workspace.id,
+      pluginId,
+      actorUserId: other.userId,
+    });
+    expect(own).toMatchObject({ status: "ready", ownerUserId: other.userId });
+    const listed = await platform.specialists.list(workspace.id, other.userId);
+    expect(listed).toHaveLength(2);
+    expect(listed.find((r) => r.id === registration!.id)).toMatchObject({ canUse: false });
     await expect(
-      platform.specialists.add({ workspaceId: workspace.id, pluginId, actorUserId: other.userId }),
-    ).rejects.toThrow("consent owner");
+      platform.specialists.assertRunnable(registration!.id, workspace.id, other.userId),
+    ).rejects.toThrow("add it for yourself");
   });
 });

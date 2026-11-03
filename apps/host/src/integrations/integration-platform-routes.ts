@@ -281,6 +281,7 @@ export async function handleIntegrationPlatformCommand(
       return { type: command.type };
     case "plugin.remove": {
       requireAdministrator(context);
+      await options.platform.store.specialists.retirePlugin(command.pluginId);
       for (const installation of await options.platform.store.listInstallations()) {
         if (installation.pluginId === command.pluginId)
           await options.platform.uninstallIntegration({

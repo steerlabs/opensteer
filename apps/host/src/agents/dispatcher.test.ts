@@ -1,5 +1,6 @@
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
+import { SpecialistStore } from "@opensteer/database";
 import type { CommandRow, OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
 import { HarnessModelDescriptorSchema, type RunnerCommand } from "@opensteer/protocol";
@@ -185,6 +186,45 @@ describe("HostCommandDispatcher steering", () => {
       dispatcher.dispatch(steerCommand(), new AbortController().signal),
     ).rejects.toMatchObject({ disposition: "uncertain" });
     expect(refuseSteer).not.toHaveBeenCalled();
+  });
+});
+
+describe("HostCommandDispatcher specialist admission", () => {
+  it.each([
+    "Specialist is pending: browser-profile: rebind (Research)",
+    "invoices uses Alice's accounts; add it for yourself to use your own",
+    "Specialist registration was removed",
+  ])("fails the Run before Runner dispatch: %s", async (message) => {
+    const admit = vi
+      .spyOn(SpecialistStore.prototype, "assertRunnable")
+      .mockRejectedValue(new Error(message));
+    const send = vi.fn();
+    const workspaceId = createId("workspace");
+    const requestedBy = createId("user");
+    const dispatcher = new HostCommandDispatcher({
+      executionLeaseMs: 90000,
+      publicUrl: new URL("https://host.example"),
+      runners: { dispatch: send },
+      store: {
+        loadRunDispatchContext: async () => ({
+          run: { requestedBy },
+          thread: { specialistId: "registration" },
+          workspace: { id: workspaceId },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof HostCommandDispatcher>[0]);
+    try {
+      await expect(
+        dispatcher.dispatch(
+          { ...steerCommand(), type: "run.execute", payload: { type: "run.execute" } },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ message, disposition: "failed" });
+      expect(admit).toHaveBeenCalledWith("registration", workspaceId, requestedBy);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      admit.mockRestore();
+    }
   });
 });
 

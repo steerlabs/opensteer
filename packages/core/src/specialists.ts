@@ -39,6 +39,7 @@ export const SpecialistManifestSchema = z.strictObject({
 export type SpecialistManifest = z.infer<typeof SpecialistManifestSchema>;
 export type SpecialistAccessRequirement = z.infer<typeof SpecialistAccessRequirementSchema>;
 export const SpecialistBindingSchema = z.strictObject({
+  rebind: z.boolean().optional(),
   requirement: z.number().int().nonnegative(),
   resourceId: z.string().min(1),
   level: ResourceAccessLevelSchema,
@@ -58,9 +59,11 @@ export const SpecialistRegistrationViewSchema = z.object({
   pluginId: z.string().min(1),
   pluginVersionId: z.string().min(1),
   ownerUserId: z.string().min(1),
+  ownerName: z.string().optional(),
+  canUse: z.boolean().optional(),
   plugin: z.string(),
   version: z.string(),
-  status: z.enum(["pending", "ready"]),
+  status: z.enum(["pending", "ready", "removing", "removal-failed"]),
   models: z.array(SpecialistManifestSchema.shape.models.element.strip()).min(1).max(8),
   fallback: z.enum(["none", "caller"]),
   access: z.array(
@@ -68,7 +71,7 @@ export const SpecialistRegistrationViewSchema = z.object({
       SpecialistAccessRequirementViewSchema,
       z.object({
         binding: SpecialistBindingSchema.strip().nullable(),
-        state: z.enum(["bound", "choose", "needs-access"]),
+        state: z.enum(["bound", "choose", "needs-access", "rebind"]),
         candidates: z.array(z.object({ resourceId: z.string().min(1), name: z.string() })),
       }),
     ),

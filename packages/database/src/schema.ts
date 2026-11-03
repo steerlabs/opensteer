@@ -2183,7 +2183,7 @@ export interface DatabaseSchema {
     pluginVersionId: string;
     ownerUserId: UserId;
     createdBy: UserId;
-    status: "pending" | "ready";
+    status: "pending" | "ready" | "removing" | "removal-failed";
     bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
     createdAt: Timestamp;
     updatedAt: Timestamp;

@@ -1695,6 +1695,7 @@ export async function createHostRuntime(
               // its Workspace, and a binding the Host never issued is counted
               // for the Computers page.
               await reconcileRunnerLocalStorage(identity, store);
+              await integrationPlatformStore.specialists.resumeRemovals(identity.environmentIds);
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.
               if (identity.runnerKind === "managed") {
@@ -1937,7 +1938,7 @@ export async function createHostRuntime(
       store,
     });
     integrationPlatformStore.specialists.setRemovalHandler(async (input) => {
-      const workspace = await store.getWorkspaceForOwner(input.workspaceId, input.actorUserId);
+      const workspace = await store.getWorkspace(input.workspaceId);
       if (!workspace || workspace.backing.kind !== "local-directory")
         throw new Error("Specialist storage is unavailable");
       const active = await database

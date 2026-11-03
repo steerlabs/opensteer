@@ -296,6 +296,16 @@ export class PluginStore {
 
   async remove(pluginId: string) {
     await this.database.transaction().execute(async (tx) => {
+      const registration = await tx
+        .selectFrom("specialists")
+        .select("id")
+        .where("pluginId", "=", pluginId)
+        .executeTakeFirst();
+      if (registration)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Remove plugin specialist registrations before uninstalling",
+        });
       await tx
         .updateTable("plugins")
         .set({ currentVersionId: null })

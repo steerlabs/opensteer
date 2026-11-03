@@ -66,6 +66,8 @@ describe("AgentControlService", () => {
         pluginId: "plugin",
         pluginVersionId: "version",
         ownerUserId: ownerId,
+        ownerName: "Alice",
+        canUse: false,
         plugin: "invoices",
         version: "a".repeat(64),
         status: "pending",
