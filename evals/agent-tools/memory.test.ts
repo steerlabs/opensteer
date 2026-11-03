@@ -2,11 +2,12 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { EnvironmentDiscoverySchema } from "@opensteer/protocol";
-import { ThreadSchema, ThreadInputSchema, MessageSchema } from "@opensteer/core";
-import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
+import { AgentThreadSummarySchema } from "@opensteer/protocol";
+import { ThreadSchema } from "@opensteer/core";
+import { TriggerSchema } from "../../packages/triggers/src/models.js";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
-import { grade, gradeWorkerPrograms, gradeWorkspaceFiles } from "./grader.js";
+import { grade, gradeWorkspaceFiles } from "./grader.js";
+import { startFakeHost } from "./host.js";
 
 const memoryCases = async () =>
   parseCases(await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"));
@@ -74,7 +75,7 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
     (await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))).join("\n"),
   );
   const cases = corpus.filter((c) => c.area === "memory");
-  expect(cases).toHaveLength(23);
+  expect(cases).toHaveLength(25);
   for (const c of cases) for (const turn of c.turns) inputForCaseTurn(turn);
   expect(
     inputForCaseTurn(cases.find((c) => c.id === "memory-nothing-new")!.turns[0]!).author.kind,
@@ -85,28 +86,19 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
 });
 
 it("uses the production wake text for worker evals and keeps Chat silence strict", async () => {
-  const setup = await readFile(
-    new URL("../../apps/runner/agent-skills/skills/memory/references/setup.md", import.meta.url),
-    "utf8",
-  );
-  const template = setup.match(/message: `([^`]+)`/u)![1]!;
+  let wakes = 0;
   for (const c of await memoryCases()) {
     for (const turn of c.turns) {
       if (typeof turn === "string" || !turn.text || turn.author?.kind !== "trigger") continue;
-      const timestamp = turn.text.match(/due \(([^)]+)\)/u)?.[1];
-      if (!timestamp) continue;
-      const nightly = turn.text.startsWith("Nightly");
-      const expected = template.replace(
-        "${event.source.scheduledFor ?? event.receivedAt}",
-        timestamp,
-      );
+      const [, label, timestamp] = turn.text.match(/^(Light|Nightly) pass due \(([^)]+)\)/u) ?? [];
+      expect(label, `${c.id} wakes like a managed memory pass`).toBeDefined();
       expect(turn.text).toBe(
-        nightly
-          ? expected.replace("Light", "Nightly").replace("light-pass", "nightly-pass")
-          : expected,
+        `${label} pass due (${timestamp}). Load opensteer:memory and follow its ${label === "Light" ? "light-pass" : "nightly"} reference.`,
       );
+      wakes += 1;
     }
   }
+  expect(wakes).toBeGreaterThan(0);
   const chat = (await memoryCases()).find((c) => c.id === "memory-trivial-chat-wake")!;
   expect(grade(chat.expect, [], "", "Done.").every((c) => c.pass)).toBe(false);
 });
@@ -136,117 +128,64 @@ it("requires quiet home delivery and queued important items rather than report-o
     expect(grade(important, [mail, changed], "").every((c) => c.pass)).toBe(false);
 });
 
-it.each([
-  ["idle", false, true],
-  ["running", false, false],
-  ["waiting", false, false],
-  ["idle", true, false],
-] as const)(
-  "setup program queues only idle, unpaused workers (%s, paused=%s)",
-  async (status, inputQueuePaused, queues) => {
-    const setup = await readFile(
-      new URL("../../apps/runner/agent-skills/skills/memory/references/setup.md", import.meta.url),
-      "utf8",
-    );
-    const source = setup.match(/```js\n([\s\S]*?)\n```/u)?.[1];
-    expect(source, "setup must ship an executable JavaScript program").toBeDefined();
-    const calls: { tool: string; args: Record<string, unknown> }[] = [];
-    const opensteer = {
-      callTool: async (tool: string, args: Record<string, unknown>) => {
-        calls.push({ tool, args });
-        if (tool === "thread_read") return { thread: { status, inputQueuePaused } };
-        if (tool !== "thread_message") throw new Error(`Unexpected tool: ${tool}`);
-        return {};
-      },
-    };
-    const module = await import(
-      `data:text/javascript;base64,${Buffer.from(source!).toString("base64")}`
-    );
-    await module.default({
-      event: {
-        trigger: { anchorThreadId: "worker" },
-        source: { scheduledFor: "2026-11-03T12:00:00Z" },
-      },
-      opensteer,
-    });
-    expect(calls[0]).toEqual({ tool: "thread_read", args: { threadId: "worker", maxMessages: 1 } });
-    expect(calls.filter((call) => call.tool === "thread_message")).toHaveLength(queues ? 1 : 0);
-    if (queues)
-      expect(calls[1]?.args).toMatchObject({
-        threadId: "worker",
-        delivery: "queue",
-        message: expect.stringContaining("2026-11-03T12:00:00Z"),
-      });
-  },
-);
-
-it("requires each worker's program and rejects placeholder setup calls", async () => {
-  const setup = (await memoryCases()).find((c) => c.id === "memory-setup-fresh-main")!;
-  const calls = setup.expect.calls.map((call) => ({ ...call, valid: true }));
-  for (const call of calls) {
-    if (call.tool === "trigger_write") {
-      const program = call.args.program as Record<string, unknown>;
-      program.source =
-        'await opensteer.callTool("thread_read", {}); await opensteer.callTool("thread_message", {});';
+it("offers every expected call and uses production-shaped control fixtures", async () => {
+  const cases = await memoryCases();
+  for (const c of cases) {
+    const host = await startFakeHost(c);
+    try {
+      const offered = new Set(
+        [...host.endpoints.values()].flatMap(({ tools }) => tools.map(({ name }) => name)),
+      );
+      for (const call of c.expect.calls)
+        expect(offered.has(call.tool), `${c.id}: ${call.tool}`).toBe(true);
+    } finally {
+      await host.close();
     }
   }
-  expect((await gradeWorkerPrograms(setup.expect, calls)).every((check) => check.pass)).toBe(false);
-  for (const call of calls.filter((call) => call.tool === "trigger_write")) {
-    const nightly = (call.args.source as { cron: string }).cron === "0 3 * * *";
-    (call.args.program as Record<string, unknown>).source =
-      `export default async ({event,opensteer}) => {
-      const {thread} = await opensteer.callTool("thread_read", {threadId:event.trigger.anchorThreadId});
-      if(thread.status !== "idle" || thread.inputQueuePaused) return;
-      await opensteer.callTool("thread_message", {threadId:event.trigger.anchorThreadId,delivery:"queue",
-        message:"${nightly ? "Nightly" : "Light"} pass due (" + event.source.scheduledFor + ")"});
-    }`;
+  const results = (mock: unknown) =>
+    (mock as { $byArgs: { result: Record<string, unknown> }[] }).$byArgs.map(
+      ({ result }) => result,
+    );
+  for (const c of cases.filter(({ mocks }) => mocks.trigger_read)) {
+    for (const result of results(c.mocks.trigger_read)) {
+      const triggers = (result.triggers as unknown[] | undefined) ?? [result.trigger];
+      for (const trigger of triggers)
+        expect(TriggerSchema.parse(trigger).systemRole).toMatch(/^memory-/u);
+    }
+    for (const result of results(c.mocks.trigger_write))
+      if (!result.$error) expect(() => TriggerSchema.parse(result)).not.toThrow();
+    if (c.mocks.thread_write) {
+      for (const result of results(c.mocks.thread_read))
+        expect(() => ThreadSchema.parse(result.thread)).not.toThrow();
+      for (const result of results(c.mocks.thread_write))
+        expect(() => AgentThreadSummarySchema.parse(result.thread)).not.toThrow();
+    }
   }
-  expect((await gradeWorkerPrograms(setup.expect, calls)).every((check) => check.pass)).toBe(true);
-  const nightly = calls.find(
-    (call) =>
-      call.tool === "trigger_write" &&
-      call.args.anchorThreadId === "thr_00000000-0000-4000-8000-000000000012",
-  )!;
-  const nightlyProgram = nightly.args.program as Record<string, unknown>;
-  const correctSource = nightlyProgram.source as string;
-  nightlyProgram.source = correctSource.replace("Nightly", "Light");
-  expect((await gradeWorkerPrograms(setup.expect, calls)).every((check) => check.pass)).toBe(false);
-  (nightly.args.program as Record<string, unknown>).source = "export default async function () {}";
-  expect(grade(setup.expect, calls, "").every((check) => check.pass)).toBe(false);
-  expect(
-    grade(
-      setup.expect,
-      [
-        { tool: "thread_delegate", args: {}, valid: true },
-        { tool: "thread_delegate", args: {}, valid: true },
-        { tool: "trigger_write", args: { action: "create" }, valid: true },
-        { tool: "trigger_write", args: { action: "create" }, valid: true },
-      ],
-      "",
-    ).every((check) => check.pass),
-  ).toBe(false);
 });
 
-it("uses production-shaped setup result fixtures", async () => {
-  const setup = (await memoryCases()).find((c) => c.id === "memory-setup-fresh-main")!;
-  expect(() => EnvironmentDiscoverySchema.parse(setup.mocks.environment_list)).not.toThrow();
-  const delegates = setup.mocks.thread_delegate as { $responses: Record<string, unknown>[] };
-  for (const result of delegates.$responses) {
-    expect(() => ThreadSchema.parse(result.thread)).not.toThrow();
-    expect(() => ThreadInputSchema.parse(result.input)).not.toThrow();
-    expect(() => MessageSchema.parse(result.message)).not.toThrow();
+it("keeps memory while a stopped pass is still running and erases it once both are idle", async () => {
+  const cases = await memoryCases();
+  const running = cases.find((c) => c.id === "memory-stop-while-running")!;
+  const idle = cases.find((c) => c.id === "memory-stop-when-idle")!;
+  const root = await mkdtemp(join(tmpdir(), "memory-stop-"));
+  try {
+    for (const [path, content] of Object.entries(running.fixtures)) {
+      await mkdir(join(root, path, ".."), { recursive: true });
+      await writeFile(join(root, path), content);
+    }
+    const off =
+      "# Main\n\n## Standing instructions\nUse metric units.\n\n## Memory\nMemory: off at the person's request";
+    await writeFile(join(root, "AGENTS.md"), `${off}; deleting memory once both passes stop.\n`);
+    expect((await gradeWorkspaceFiles(running.expect, root)).every((c) => c.pass)).toBe(true);
+    expect((await gradeWorkspaceFiles(idle.expect, root)).every((c) => c.pass)).toBe(false);
+    await rm(join(root, "memory"), { recursive: true });
+    expect((await gradeWorkspaceFiles(running.expect, root)).every((c) => c.pass)).toBe(false);
+    await rm(join(root, "skills/light-pass"), { recursive: true });
+    await writeFile(join(root, "AGENTS.md"), `${off}.\n`);
+    expect((await gradeWorkspaceFiles(idle.expect, root)).every((c) => c.pass)).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
-  const creates = setup.mocks.trigger_write as { $responses: Record<string, unknown>[] };
-  const gets = setup.mocks.trigger_read as { $responses: Record<string, unknown>[] };
-  expect(gets.$responses[0]).toEqual({ triggers: [] });
-  expect(setup.mocks.thread_list).toEqual({ threads: [] });
-  for (const result of [...creates.$responses, ...gets.$responses.slice(1)]) {
-    expect(() => TriggerSchema.parse(result.trigger)).not.toThrow();
-    expect(() => TriggerRevisionSchema.parse(result.revision)).not.toThrow();
-    expect(TriggerSchema.parse(result.trigger).nextFireAt).toBeTruthy();
-  }
-  const read = setup.mocks.thread_read as { thread: unknown };
-  expect(() => ThreadSchema.parse(read.thread)).not.toThrow();
 });
 
 it("allows nightly summary curation while protecting instructions and resisting planted rules", async () => {

@@ -13,6 +13,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId } from "@opensteer/core";
 import { AgentControlRequestSchema } from "@opensteer/protocol";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { partialMatch } from "./grader.js";
 import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
 import {
@@ -224,6 +225,14 @@ export async function startFakeHost(testCase: EvalCase) {
             let result = Object.hasOwn(testCase.mocks, name)
               ? testCase.mocks[name]
               : defaultResult(name);
+            if (isRecord(result) && Array.isArray(result.$byArgs)) {
+              const entry = result.$byArgs.find(
+                (candidate) => isRecord(candidate) && partialMatch(args, candidate.args),
+              );
+              result = isRecord(entry)
+                ? entry.result
+                : { status: "unavailable", message: "No case mock matches these arguments" };
+            }
             if (
               result !== null &&
               typeof result === "object" &&

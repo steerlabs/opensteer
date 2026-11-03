@@ -47,7 +47,12 @@ it("serves the production inventory and validates mocked calls through real MCP 
       role: "work",
       profile: "main",
       turns: ["hi"],
-      mocks: { integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] } },
+      mocks: {
+        integration_search: { $responses: [{ marker: "first" }, { marker: "second" }] },
+        trigger_read: {
+          $byArgs: [{ args: { systemRole: "memory-light" }, result: { marker: "light" } }],
+        },
+      },
       expect: {},
     }),
   )[0]!;
@@ -77,7 +82,19 @@ it("serves the production inventory and validates mocked calls through real MCP 
         expect(JSON.stringify(second)).toContain("second");
       }
     }
-    expect(host.calls.map((call) => call.valid)).toEqual([true, false, true, false, true]);
+    const byArgs = async (args: Record<string, unknown>) =>
+      JSON.stringify(await clients[0]!.callTool({ name: "trigger_read", arguments: args }));
+    expect(await byArgs({ action: "list", systemRole: "memory-light" })).toContain("light");
+    expect(await byArgs({ action: "list" })).toContain("No case mock matches these arguments");
+    expect(host.calls.map((call) => call.valid)).toEqual([
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+    ]);
     const out = await mkdtemp(join(tmpdir(), "opensteer-eval-mcp-evidence-"));
     await writeFile(
       join(out, "journey.json"),

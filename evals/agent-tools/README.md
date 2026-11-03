@@ -43,7 +43,10 @@ required sample makes a case incomplete and prevents baseline comparison.
 
 Mocks are keyed by bare tool name and return JSON. If a test needs different
 responses to successive calls, use `{"$responses": [first, second]}`; exhaustion
-returns an explicit unavailable result. Product calls must reach the stubbed backend through production MCP action
+returns an explicit unavailable result. If it needs a response per target, use
+`{"$byArgs": [{"args": partial, "result": response}]}`: the first entry whose
+`args` partially match the call answers it, and no match returns an explicit
+unavailable result. Product calls must reach the stubbed backend through production MCP action
 expansion and control-request validation before a mock is returned. Semantic
 errors remain errors, even when the flat tool schema accepts the arguments. `{"$error": "message"}` returns an MCP
 tool error, including inside a response sequence, so refusal cases exercise the
@@ -57,8 +60,8 @@ never behavioral failures or passes. A baseline comparison refuses incompatible
 engine/model/effort/corpus identities, permits prompt/schema treatment changes,
 and fails the command for strict-majority regressions beyond the given budget.
 
-Use `--area memory --samples N` to repeat the personal memory/background-pass
-cases, or `--area memory --validate` to validate selection without inspecting or
+Use `--area memory --samples N` to repeat the personal memory, background-pass
+and pass-control cases, or `--area memory --validate` to validate selection without inspecting or
 running an engine. Fixtures seed the disposable Workspace before skill discovery;
 `AGENTS.md` is also delivered as Workspace instructions. File expectations run
 before cleanup. `expect.files` matches a file or, with `recursive: true`, a subtree
@@ -70,5 +73,6 @@ Memory cases use synthetic fixtures in Main; the cold-read pair tests two plain
 Markdown styles on both engines, not a live cross-engine write/read handoff.
 Nightly replay after forgetting and the repeat-source light wake use seeded prior
 state; the important-item case separately requires recording the reported source
-ID. The setup program test executes the JavaScript block in the shipped reference
-against deterministic tool stubs.
+ID. Opensteer provisions the passes, so cases start from existing passes woken
+with the Host's wake text, and control cases find them through `trigger_read`
+`systemRole` mocks. The Host's own tests cover the wake program.

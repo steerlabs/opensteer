@@ -8,7 +8,7 @@ import { z } from "zod";
 import { ModelSelectionSchema } from "@opensteer/core";
 import { caseChain, copyWorkspace } from "./chains.js";
 import { parseCases } from "./cases.js";
-import { grade, gradeWorkerPrograms, gradeWorkspaceFiles, type Check } from "./grader.js";
+import { grade, gradeWorkspaceFiles, type Check } from "./grader.js";
 import {
   compareBaseline,
   fingerprint,
@@ -263,7 +263,6 @@ async function main() {
                 treatment = result.treatment;
                 const stageChecks = [
                   ...grade(stage.expect, host.calls, finalText, assistantText, earlierText),
-                  ...(await gradeWorkerPrograms(stage.expect, host.calls)),
                   ...(await gradeWorkspaceFiles(stage.expect, p.workspace)),
                 ];
                 fileChecks.push(
@@ -302,7 +301,6 @@ async function main() {
             const checks = [
               ...grade(c.expect, calls, finalText, assistantText, earlierText),
               ...fileChecks,
-              ...(await gradeWorkerPrograms(c.expect, calls)),
             ];
             const row = {
               caseId: c.id,
