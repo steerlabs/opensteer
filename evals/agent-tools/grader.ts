@@ -54,7 +54,9 @@ export function grade(
       ),
     );
   for (const [i, match] of expect.callsArgMatch.entries()) {
-    const candidates = calls.filter((c) => toolMatches(c.tool, match.tool));
+    const candidates = calls.filter(
+      (c) => toolMatches(c.tool, match.tool) && partialMatch(c.args, match.args),
+    );
     add(
       `callsArgMatch[${i}]:${match.tool}`,
       (match.first ? candidates.slice(0, 1) : candidates).some((c) => {

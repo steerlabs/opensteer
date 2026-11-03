@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId } from "@opensteer/core";
+import { AgentControlRequestSchema } from "@opensteer/protocol";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
@@ -26,7 +27,8 @@ import type { EvalCase } from "./cases.js";
 import type { RecordedCall } from "./grader.js";
 
 // These are test doubles, never a real Host store, grant, credential or integration.
-// Every tool call first traverses the production MCP service's Zod boundary.
+// Product calls traverse the production action expansion and control request
+// validation before this sentinel allows a fixture to replace the backend.
 const validated = "EVAL_VALIDATED_NO_SIDE_EFFECT";
 function unavailable(): never {
   throw new Error(validated);
@@ -85,7 +87,12 @@ export async function startFakeHost(testCase: EvalCase) {
   const url = new URL(`http://127.0.0.1:${address.port}`);
   const agent = new AgentToolsMcpService({
     publicUrl: url,
-    agentControl: { handle: async () => unavailable() },
+    agentControl: {
+      handle: async (_token, request) => {
+        AgentControlRequestSchema.parse(request);
+        return unavailable();
+      },
+    },
     apps: {
       publish: async () => unavailable(),
       list: async () => unavailable(),
@@ -197,7 +204,13 @@ export async function startFakeHost(testCase: EvalCase) {
               (tool) => tool.name === name,
             );
             const valid = definition
-              ? definition.inputSchema.safeParse(args).success
+              ? definition.inputSchema.safeParse(args).success &&
+                (original.isError !== true ||
+                  (Array.isArray(original.content) &&
+                    original.content.some(
+                      (block) =>
+                        isRecord(block) && block.type === "text" && block.text === validated,
+                    )))
               : !text.includes("invalid_arguments:") &&
                 !text.includes("Unknown tool") &&
                 !text.includes("not available to this execution");

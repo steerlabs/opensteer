@@ -35,15 +35,17 @@ included app and phone places), with production author/kind validation. Every tu
 executes a new Run in the same native session; only the last turn is graded.
 `finalText` checks trimmed presence and `maxFinalTextBytes` bounds UTF-8 bytes.
 `notCallsWithArgs` forbids partial argument matches, including invalid attempts.
-`callsArgMatch` checks a string at an argument path; `first: true` restricts it to
-the first attempt of that tool in the graded turn. The resumed computer case
+`callsArgMatch` checks a string at an argument path; optional `args` selects
+matching calls, and `first: true` restricts it to the first selected attempt in
+the graded turn. The resumed computer case
 checks code shape only, not executed handle semantics. Any missing or incomplete
 required sample makes a case incomplete and prevents baseline comparison.
 
 Mocks are keyed by bare tool name and return JSON. If a test needs different
 responses to successive calls, use `{"$responses": [first, second]}`; exhaustion
-returns an explicit unavailable result. Calls still use the production Zod
-validator, even when a mock is present. `{"$error": "message"}` returns an MCP
+returns an explicit unavailable result. Product calls must reach the stubbed backend through production MCP action
+expansion and control-request validation before a mock is returned. Semantic
+errors remain errors, even when the flat tool schema accepts the arguments. `{"$error": "message"}` returns an MCP
 tool error, including inside a response sequence, so refusal cases exercise the
 same result shape as the production service. The transcript contains all native
 engine events, while `calls` contains ordered Opensteer MCP attempts and their
@@ -66,3 +68,7 @@ harness's reserved `.eval-*` directories are always omitted. Missing paths fail
 positive matches and pass prohibitions; symlinks make the sample incomplete.
 Memory cases use synthetic fixtures in Main; the cold-read pair tests two plain
 Markdown styles on both engines, not a live cross-engine write/read handoff.
+Nightly replay after forgetting and the repeat-source light wake use seeded prior
+state; the important-item case separately requires recording the reported source
+ID. The setup program test executes the JavaScript block in the shipped reference
+against deterministic tool stubs.

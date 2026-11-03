@@ -2,6 +2,9 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { EnvironmentDiscoverySchema } from "@opensteer/protocol";
+import { ThreadSchema, ThreadInputSchema, MessageSchema } from "@opensteer/core";
+import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles } from "./grader.js";
 
@@ -71,7 +74,7 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
     (await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))).join("\n"),
   );
   const cases = corpus.filter((c) => c.area === "memory");
-  expect(cases).toHaveLength(16);
+  expect(cases).toHaveLength(22);
   for (const c of cases) for (const turn of c.turns) inputForCaseTurn(turn);
   expect(
     inputForCaseTurn(cases.find((c) => c.id === "memory-nothing-new")!.turns[0]!).author.kind,
@@ -104,4 +107,100 @@ it("requires quiet turns and queued home delivery rather than report-only or inv
     { ...message, valid: false },
   ])
     expect(grade(important, [mail, changed], "").every((c) => c.pass)).toBe(false);
+});
+
+it.each([
+  ["idle", false, true],
+  ["running", false, false],
+  ["waiting", false, false],
+  ["idle", true, false],
+] as const)(
+  "setup program queues only idle, unpaused workers (%s, paused=%s)",
+  async (status, inputQueuePaused, queues) => {
+    const setup = await readFile(
+      new URL("../../apps/runner/agent-skills/skills/memory/references/setup.md", import.meta.url),
+      "utf8",
+    );
+    const source = setup.match(/```js\n([\s\S]*?)\n```/u)?.[1];
+    expect(source, "setup must ship an executable JavaScript program").toBeDefined();
+    const calls: { tool: string; args: Record<string, unknown> }[] = [];
+    const opensteer = {
+      callTool: async (tool: string, args: Record<string, unknown>) => {
+        calls.push({ tool, args });
+        if (tool === "thread_read") return { thread: { status, inputQueuePaused } };
+        if (tool !== "thread_message") throw new Error(`Unexpected tool: ${tool}`);
+        return {};
+      },
+    };
+    const module = await import(
+      `data:text/javascript;base64,${Buffer.from(source!).toString("base64")}`
+    );
+    await module.default({
+      event: {
+        trigger: { anchorThreadId: "worker" },
+        source: { scheduledFor: "2026-11-03T12:00:00Z" },
+      },
+      opensteer,
+    });
+    expect(calls[0]).toEqual({ tool: "thread_read", args: { threadId: "worker", maxMessages: 1 } });
+    expect(calls.filter((call) => call.tool === "thread_message")).toHaveLength(queues ? 1 : 0);
+    if (queues)
+      expect(calls[1]?.args).toMatchObject({
+        threadId: "worker",
+        delivery: "queue",
+        message: expect.stringContaining("2026-11-03T12:00:00Z"),
+      });
+  },
+);
+
+it("requires each worker's program and rejects placeholder setup calls", async () => {
+  const setup = (await memoryCases()).find((c) => c.id === "memory-setup-fresh-main")!;
+  const calls = setup.expect.calls.map((call) => ({ ...call, valid: true }));
+  for (const call of calls) {
+    if (call.tool === "trigger_write") {
+      const program = call.args.program as Record<string, unknown>;
+      program.source =
+        'await opensteer.callTool("thread_read", {}); await opensteer.callTool("thread_message", {});';
+    }
+  }
+  expect(grade(setup.expect, calls, "").every((check) => check.pass)).toBe(true);
+  const nightly = calls.find(
+    (call) =>
+      call.tool === "trigger_write" &&
+      call.args.anchorThreadId === "thr_00000000-0000-4000-8000-000000000012",
+  )!;
+  (nightly.args.program as Record<string, unknown>).source = "export default async function () {}";
+  expect(grade(setup.expect, calls, "").every((check) => check.pass)).toBe(false);
+  expect(
+    grade(
+      setup.expect,
+      [
+        { tool: "thread_delegate", args: {}, valid: true },
+        { tool: "thread_delegate", args: {}, valid: true },
+        { tool: "trigger_write", args: { action: "create" }, valid: true },
+        { tool: "trigger_write", args: { action: "create" }, valid: true },
+      ],
+      "",
+    ).every((check) => check.pass),
+  ).toBe(false);
+});
+
+it("uses production-shaped setup result fixtures", async () => {
+  const setup = (await memoryCases()).find((c) => c.id === "memory-setup-fresh-main")!;
+  expect(() => EnvironmentDiscoverySchema.parse(setup.mocks.environment_list)).not.toThrow();
+  const delegates = setup.mocks.thread_delegate as { $responses: Record<string, unknown>[] };
+  for (const result of delegates.$responses) {
+    expect(() => ThreadSchema.parse(result.thread)).not.toThrow();
+    expect(() => ThreadInputSchema.parse(result.input)).not.toThrow();
+    expect(() => MessageSchema.parse(result.message)).not.toThrow();
+  }
+  const creates = setup.mocks.trigger_write as { $responses: Record<string, unknown>[] };
+  const gets = setup.mocks.trigger_read as { $responses: Record<string, unknown>[] };
+  for (const result of [...creates.$responses, ...gets.$responses]) {
+    expect(() => TriggerSchema.parse(result.trigger)).not.toThrow();
+    expect(() => TriggerRevisionSchema.parse(result.revision)).not.toThrow();
+    expect(TriggerSchema.parse(result.trigger).nextFireAt).toBeTruthy();
+  }
+  const read = setup.mocks.thread_read as { thread: unknown };
+  expect(() => ThreadSchema.parse(read.thread)).not.toThrow();
 });

@@ -83,6 +83,7 @@ export const CaseSchema = z.strictObject({
       .array(
         z.strictObject({
           tool: z.string().min(1),
+          args: z.record(z.string(), z.json()).default({}),
           path: z.array(z.string().min(1)).min(1),
           pattern: regex,
           first: z.boolean().default(false),

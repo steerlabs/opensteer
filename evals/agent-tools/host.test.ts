@@ -147,3 +147,63 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
     }
   }
 });
+
+it("preserves production action validation before consuming mocks", async () => {
+  const testCase = parseCases(
+    JSON.stringify({
+      id: "semantic-admission",
+      area: "memory",
+      kind: "guard",
+      source: { commit: "a".repeat(40), note: "Flat schemas must retain handler validation" },
+      profile: "main",
+      role: "conversation",
+      turns: ["hi"],
+      expect: {},
+      mocks: { trigger_write: { marker: "admitted" }, trigger_read: { marker: "admitted" } },
+    }),
+  )[0]!;
+  const host = await startFakeHost(testCase);
+  const client = new Client({ name: "semantic-validation", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    for (const [name, args] of [
+      ["trigger_write", { action: "create" }],
+      ["trigger_write", { action: "set_status", status: "paused" }],
+      [
+        "trigger_write",
+        { action: "run", triggerId: "trg_00000000-0000-4000-8000-000000000011", name: "stray" },
+      ],
+      ["trigger_read", { action: "get" }],
+      ["thread_delegate", { task: "Missing destination" }],
+      ["browser_session_open", { fresh: true, sessionId: "existing" }],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).not.toContain("admitted");
+      expect(host.calls.at(-1)?.valid).toBe(false);
+    }
+    const result = await client.callTool({
+      name: "trigger_write",
+      arguments: {
+        action: "create",
+        anchorThreadId: "thr_00000000-0000-4000-8000-000000000011",
+        name: "Light memory pass",
+        source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
+        program: {
+          language: "javascript",
+          toolContractVersion: 3,
+          source: "export default async function () {}",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).toContain("admitted");
+    expect(host.calls.at(-1)?.valid).toBe(true);
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
