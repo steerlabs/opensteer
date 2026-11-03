@@ -27,6 +27,8 @@ export class ComputerMcpTransport implements Transport {
     readonly authorize: () => Promise<void>;
     readonly launch: LocalMcpLaunch;
     readonly runnerId: RunnerId;
+    /** What its launch's secrets were given, which the computer starts it with. */
+    readonly secrets: Readonly<Record<string, string>>;
     readonly serverId: IntegrationServerId;
   };
   /** Aborted by `close`, ending a session the computer is still starting. */
@@ -40,6 +42,7 @@ export class ComputerMcpTransport implements Transport {
       readonly authorize: () => Promise<void>;
       readonly launch: LocalMcpLaunch;
       readonly runnerId: RunnerId;
+      readonly secrets: Readonly<Record<string, string>>;
       readonly serverId: IntegrationServerId;
     },
   ) {
@@ -56,6 +59,7 @@ export class ComputerMcpTransport implements Transport {
         opening: this.#hub.openMcpSession({
           launch: this.#target.launch,
           runnerId: this.#target.runnerId,
+          secrets: this.#target.secrets,
           serverId: this.#target.serverId,
           onclose: (error) => {
             if (this.#closed) return;

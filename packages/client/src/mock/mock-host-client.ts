@@ -2858,6 +2858,8 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "integration.computer.setup.respond":
       await client.respondComputerAppSetup(command.setupRequestId, command.decision);
       return rpcSuccess({ type: command.type });
+    case "integration.server.secrets.set":
+      throw new Error("This mock has no local MCP executor.");
     case "integration.computer.policy.set":
       await client.setComputerUsePolicy(command.input.runnerId);
       return rpcSuccess({ appApproval: "ask", type: command.type });

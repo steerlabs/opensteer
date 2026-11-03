@@ -1756,6 +1756,13 @@ export interface IntegrationServerTable {
   updatedAt: Timestamp;
 }
 
+/** One server's secrets, as its computer's owner entered them; see `LocalMcpServerStore`. */
+export interface IntegrationServerSecretTable {
+  serverId: IntegrationServerId;
+  encryptedPayload: Buffer;
+  updatedAt: Timestamp;
+}
+
 export interface IntegrationToolTable {
   id: IntegrationToolId;
   serverId: IntegrationServerId;
@@ -2151,6 +2158,7 @@ export interface DatabaseSchema {
   integrationApplicationSourceDefaults: IntegrationApplicationSourceDefaultTable;
   integrationInstallations: IntegrationInstallationTable;
   integrationServers: IntegrationServerTable;
+  integrationServerSecrets: IntegrationServerSecretTable;
   integrationTools: IntegrationToolTable;
   integrationToolDefinitions: IntegrationToolDefinitionsTable;
   plugins: {

@@ -26,6 +26,7 @@ it("checks exact-launch authority in admission, then releases admission while th
     runnerId: createId("runner"),
     serverId: createIntegrationId("server"),
     launch: { type: "stdio", command: "program", args: [], cwd: "/tmp", env: {} },
+    secrets: {},
   });
   const started = transport.start();
   await vi.waitFor(() => {
@@ -51,6 +52,7 @@ it("sends no launch if the Host's exact-launch check fails at admission", async 
     runnerId: createId("runner"),
     serverId: createIntegrationId("server"),
     launch: { type: "stdio", command: "program", args: [], cwd: "/tmp", env: {} },
+    secrets: {},
   });
   await expect(transport.start()).rejects.toThrow("Launch changed");
   expect(hub.openMcpSession).not.toHaveBeenCalled();

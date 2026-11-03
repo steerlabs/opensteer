@@ -138,7 +138,17 @@ sessions; an unchanged launch retains consent, while a changed launch requires r
 An offline computer can retain consent but starts nothing until it reconnects.
 Protocol-incompatible Runners retain other modules and show an update refusal.
 
-Run servers with the person's login/manifest environment in their own process group. End
+Agent Plugins forbids credentials in `env`, so a program server declares the environment
+variables its owner must supply in `plugin.json` under `extensions["com.opensteer"].secrets`
+(see [the loader](../packages/agent-plugins/src/loader.ts)). Only names and labels are part
+of the launch and its digest. The computer's owner enters the values when allowing it and
+can change them later without new consent; a new launch keeps values for names it still
+declares. Values are sealed per server in a table of their own, so no server listing,
+Request event or snapshot carries them, and are opened only to start that server: the Host
+adds them to the launch it sends, which leaves the Runner's wire unchanged. They keep secrets
+out of chat, manifests and agent context, not from the program or a same-user shell.
+
+Run servers with the MCP SDK's minimal inherited environment plus the launch's in their own process group. End
 the entire tree when the session, stream or Runner ends, including descendants of launchers
 such as npx. Malformed/oversized/stalled transport ends that session, not the integrations
 stream. A lost write remains unconfirmed; read retries retain ordinary app semantics.

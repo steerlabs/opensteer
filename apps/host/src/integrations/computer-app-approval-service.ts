@@ -48,6 +48,7 @@ import {
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import type { LocalMcpSecrets } from "./local-mcp-secrets.js";
 import {
   ComputerUseError,
   computerUseDefinitionId,
@@ -169,6 +170,7 @@ export interface ComputerAppApprovalServiceOptions {
   readonly listConnections: (
     ownerUserId: UserId,
   ) => Promise<readonly IntegrationConnectionSummary[]>;
+  readonly localMcpSecrets: Pick<LocalMcpSecrets, "saved" | "update">;
   readonly onConnectionsChanged: () => void;
   readonly onInputAccessWithdrawn?: (runnerId: RunnerId) => void;
   /**
@@ -202,6 +204,7 @@ export class ComputerAppApprovalService {
   readonly #installCatalogDefinition: ComputerAppApprovalServiceOptions["installCatalogDefinition"];
   readonly #listCallableTools: ComputerAppApprovalServiceOptions["listCallableTools"];
   readonly #listConnections: ComputerAppApprovalServiceOptions["listConnections"];
+  readonly #localMcpSecrets: ComputerAppApprovalServiceOptions["localMcpSecrets"];
   readonly #onConnectionsChanged: () => void;
   readonly #onInputAccessWithdrawn: (runnerId: RunnerId) => void;
   readonly #onLocalServerApproved: ComputerAppApprovalServiceOptions["onLocalServerApproved"];
@@ -216,6 +219,7 @@ export class ComputerAppApprovalService {
     this.#installCatalogDefinition = options.installCatalogDefinition;
     this.#listCallableTools = options.listCallableTools;
     this.#listConnections = options.listConnections;
+    this.#localMcpSecrets = options.localMcpSecrets;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onInputAccessWithdrawn = options.onInputAccessWithdrawn ?? (() => undefined);
     this.#onLocalServerApproved = options.onLocalServerApproved;
@@ -271,13 +275,25 @@ export class ComputerAppApprovalService {
           message: "This app changed since it was requested. Request access again.",
         });
     }
-    return { request, app };
+    if (request.kind !== "server" || !request.server) return { request, app };
+    const { launch, serverId } = request.server;
+    return {
+      request,
+      app,
+      savedSecrets: await this.#localMcpSecrets.saved(
+        serverId,
+        launch,
+        await this.#store.localMcp.secrets(serverId),
+      ),
+    };
   }
 
   async respondComputerAppSetup(input: {
     readonly settlementSessionId?: string | undefined;
     readonly setupRequestId: string;
     readonly decision: "allow" | "deny";
+    /** Allowing a server: what the owner entered for the secrets its launch declares. */
+    readonly secrets?: Readonly<Record<string, string>> | undefined;
     readonly actorUserId: UserId;
     readonly isAdministrator: boolean;
     readonly requestId: string;
@@ -291,12 +307,23 @@ export class ComputerAppApprovalService {
         code: "conflict",
         message: "This approval is no longer waiting for you.",
       });
+    if (input.secrets && (request.kind !== "server" || input.decision !== "allow"))
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Only allowing an MCP server takes secrets.",
+      });
     if (input.decision === "allow" && request.app)
       await this.reviewComputerAppSetup({
         setupRequestId: request.id,
         ownerUserId: input.actorUserId,
       });
     if (request.kind === "server") {
+      const server = request.server;
+      // Checked before admission; the values are sealed inside the approval.
+      const secrets =
+        input.decision === "allow" && server
+          ? this.#localMcpSecrets.update(server.serverId, server.launch, input.secrets ?? {})
+          : null;
       const approved = await this.#computerApps.withRunnerAdmission(request.runnerId, async () => {
         await input.authorize();
         const answer = {
@@ -309,7 +336,12 @@ export class ComputerAppApprovalService {
           await this.#store.localMcp.decline(answer);
           return null;
         }
-        return this.#store.localMcp.approve(answer);
+        if (!secrets)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This approval is no longer waiting.",
+          });
+        return this.#store.localMcp.approve({ ...answer, secrets });
       });
       this.#onConnectionsChanged();
       if (approved) this.#onLocalServerApproved(approved);

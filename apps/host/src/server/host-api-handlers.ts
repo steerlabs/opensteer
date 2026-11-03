@@ -262,6 +262,7 @@ function isIntegrationPlatformCommand(
     case "integration.mcp.authorization.begin":
     case "integration.mcp.disconnect":
     case "integration.remoteMcp.install":
+    case "integration.server.secrets.set":
     case "integration.uninstall":
       return true;
     default:

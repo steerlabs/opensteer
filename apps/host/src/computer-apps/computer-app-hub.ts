@@ -2,11 +2,12 @@ import { type DisplaySource, type MacWindowTarget } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunId, type RunnerId } from "@opensteer/core";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
-import type {
-  ComputerAppIdentity,
-  IntegrationServerId,
-  IntegrationToolEffect,
-  LocalMcpLaunch,
+import {
+  localMcpLaunchWithSecrets,
+  type ComputerAppIdentity,
+  type IntegrationServerId,
+  type IntegrationToolEffect,
+  type LocalMcpLaunch,
 } from "@opensteer/integration-core";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
@@ -555,10 +556,13 @@ export class ComputerAppHub {
    * `signal` while it opens ends it there, and on the computer.
    */
   async openMcpSession(input: {
+    /** The launch as approved, which its package is fetched for. */
     readonly launch: LocalMcpLaunch;
     readonly onclose: (error: ComputerMcpSessionError | null) => void;
     readonly onmessage: (message: unknown) => void;
     readonly runnerId: RunnerId;
+    /** Values for the secrets the launch declares, which reach the computer in its environment. */
+    readonly secrets: Readonly<Record<string, string>>;
     readonly serverId: IntegrationServerId;
     readonly signal: AbortSignal;
   }): Promise<ComputerMcpSession> {
@@ -594,7 +598,7 @@ export class ComputerAppHub {
       const submission = await this.#submit(entry, {
         ...fence,
         packageSource: this.#options.packageSource?.(input.serverId, input.runnerId, input.launch),
-        launch: input.launch,
+        launch: localMcpLaunchWithSecrets(input.launch, input.secrets),
         serverId: input.serverId,
         sessionId,
         type: "host.integrations.mcp.open",

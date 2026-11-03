@@ -139,6 +139,7 @@ export type IntegrationPlatformCommand = Extract<
       | "integration.mcp.authorization.begin"
       | "integration.mcp.disconnect"
       | "integration.remoteMcp.install"
+      | "integration.server.secrets.set"
       | "integration.uninstall";
   }
 >;
@@ -189,6 +190,7 @@ export async function handleIntegrationPlatformCommand(
         settlementSessionId: session.id,
         setupRequestId: command.setupRequestId,
         decision: command.decision,
+        secrets: command.secrets,
         actorUserId: session.user.id,
         isAdministrator: session.user.instanceRole === "administrator",
         requestId: context.requestId,
@@ -206,6 +208,13 @@ export async function handleIntegrationPlatformCommand(
               message: "Your session changed. Review this approval again.",
             });
         },
+      });
+      return { type: command.type };
+    case "integration.server.secrets.set":
+      await options.platform.setServerSecrets({
+        actorUserId: session.user.id,
+        secrets: command.secrets,
+        serverId: command.serverId,
       });
       return { type: command.type };
     case "integration.computer.setup.set": {

@@ -4499,7 +4499,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       };
       const decide = () =>
         decision === "mcp-allow"
-          ? held.localMcp.approve(input)
+          ? held.localMcp.approve({ ...input, secrets: async () => null })
           : decision === "mcp-deny"
             ? held.localMcp.decline(input)
             : held.setComputerUsePolicy({
@@ -4556,6 +4556,75 @@ integration.sequential("PostgreSQL computer app connections", () => {
       }
     });
   }
+
+  it("changes a server's secrets only for its computer's owner, while it runs as approved", async ({
+    storeFixture,
+  }) => {
+    const { database, guiFixture, platform } = storeFixture;
+    const setup = await guiFixture("server-secrets");
+    const stranger = await guiFixture("server-secrets-stranger");
+    const setLaunch = (env: Record<string, string>) =>
+      database
+        .updateTable("integrationServers")
+        .set({
+          transport: jsonValue({
+            launch: {
+              args: [],
+              command: "node",
+              cwd: "/tmp",
+              env,
+              secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+              type: "stdio",
+            },
+            runnerId: setup.runnerId,
+            type: "runner",
+          }),
+        })
+        .where("id", "=", setup.gui.serverId)
+        .execute();
+    await setLaunch({});
+    await platform.localMcp.requestApprovals();
+    const asked = (await platform.listComputerAppSetupRequests(setup.ownerUserId)).find(
+      ({ kind }) => kind === "server",
+    );
+    if (!asked) throw new Error("The server's computer was not asked");
+    await platform.localMcp.approve({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      secrets: async (current) => {
+        expect(current).toBeNull();
+        return Buffer.from("sealed");
+      },
+      setupRequestId: asked.id,
+    });
+    const server = await platform.localMcp.get(setup.gui.serverId);
+    if (!server) throw new Error("The server is installed");
+    const change = (
+      actorUserId: typeof setup.ownerUserId,
+      launchDigest: string = server.launchDigest,
+    ) =>
+      platform.localMcp.setSecrets({
+        actorUserId,
+        launchDigest,
+        secrets: async (current) => Buffer.concat([current ?? Buffer.alloc(0), Buffer.from("+")]),
+        serverId: server.id,
+      });
+    await expect(change(stranger.ownerUserId)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(change(setup.ownerUserId, "another-launch")).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await change(setup.ownerUserId);
+    expect(await platform.localMcp.secrets(server.id)).toEqual(Buffer.from("sealed+"));
+
+    // Launched differently, it waits for approval, which takes its secrets.
+    await setLaunch({ EDITION: "2" });
+    const relaunched = await platform.localMcp.get(server.id);
+    await expect(change(setup.ownerUserId, relaunched?.launchDigest)).rejects.toMatchObject({
+      code: "conflict",
+      message: "It's waiting for approval. Enter its secrets when you approve it.",
+    });
+    expect(await platform.localMcp.secrets(server.id)).toEqual(Buffer.from("sealed+"));
+  });
 
   it("requires the pending policy request, consumes it once, and keeps connections when switched off", async ({
     storeFixture,

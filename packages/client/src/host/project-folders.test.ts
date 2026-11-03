@@ -95,7 +95,13 @@ describe("pluginSummaries", () => {
           },
         ],
         activations: [{ workspaceId: "wsp_main" }],
-        servers: [{}],
+        servers: [
+          {},
+          secretServer("isv_00000000-0000-4000-8000-000000000001", "active", "digest"),
+          // Waiting for its first approval, or retired: its secrets aren't changed here.
+          secretServer("isv_00000000-0000-4000-8000-000000000002", "needs-attention", null),
+          secretServer("isv_00000000-0000-4000-8000-000000000003", "disabled", "digest"),
+        ],
       },
       { id: 3 },
     ]);
@@ -105,9 +111,16 @@ describe("pluginSummaries", () => {
       description: "CRM notes",
       specialist: true,
       skills: 2,
-      servers: 1,
+      servers: 4,
       activeIn: ["wsp_main"],
     });
+    expect(plugin?.secretServers).toEqual([
+      {
+        id: "isv_00000000-0000-4000-8000-000000000001",
+        name: "camera",
+        secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+      },
+    ]);
     expect(pluginVersionLabel(plugin!)).toBe("Build bbbbbbbb");
     expect(pluginVersionLabel({ digest: "x", version: "v2.1.0" })).toBe("Version 2.1.0");
   });
@@ -130,6 +143,20 @@ describe("pluginSummaries", () => {
     expect(specialistPendingSummary({ status: "ready", access: [access("bound")] })).toBe(null);
   });
 });
+
+function secretServer(id: string, status: string, approvedLaunchDigest: string | null) {
+  return {
+    approvedLaunchDigest,
+    id,
+    name: "camera",
+    status,
+    transport: {
+      launch: { secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }], type: "stdio" },
+      runnerId: "run_1",
+      type: "runner",
+    },
+  };
+}
 
 function workspace(id: string, kind: "main" | "project"): WorkspaceSummary {
   return {

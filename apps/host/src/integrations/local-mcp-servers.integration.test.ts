@@ -453,7 +453,215 @@ integration("MCP servers on a computer", () => {
       );
     }
   }, 240_000);
+
+  it("starts a server with the secrets its Mac's owner entered, and only them", async () => {
+    const work = await mkdtemp(join(tmpdir(), "opensteer-local-mcp-secrets-"));
+    const fixture = await secretPluginFixture(work);
+    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+    const closers: (() => Promise<void>)[] = [() => host.close()];
+    closeCurrent = async () => {
+      for (const close of closers) await close().catch(() => undefined);
+    };
+    const desktop = await startFakeDesktop();
+    closers.unshift(() => desktop.close());
+    const prepared = prepareIntegrationsModule({
+      computerUseBridge: { token: desktop.token, url: desktop.url },
+      dataDirectory: join(work, "runner"),
+      platform: "darwin",
+    });
+    if (!prepared?.computerUse || !prepared.localMcp) throw new Error("A Mac runs MCP servers");
+    const { computerUse, localMcp } = prepared;
+    closers.push(async () => computerUse.close());
+    const computer = await connectComputerAppMachine(host, prepared.providers, {
+      desktop: { computerUse, localMcp },
+    });
+    closers.unshift(() => computer.close());
+    const dispatch = (key: string, command: Record<string, unknown>) =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        { idempotencyKey: `${key}:${randomUUID()}`, ...command } as never,
+        { headers: host.ownerHeaders },
+      );
+    const pluginId = async () =>
+      (
+        await host.store.database
+          .selectFrom("integrationInstallations")
+          .select("pluginId")
+          .executeTakeFirstOrThrow()
+      ).pluginId!;
+    const started = (value: string) =>
+      waitForCondition(async () => (await readText(fixture.seenFile)) === value, 30_000);
+
+    await dispatch("install", {
+      input: { directory: fixture.plugin, runnerId: computer.runnerId },
+      type: "plugin.install",
+    });
+    const server = await serverRow(host);
+    const launch = (server.transport as { readonly launch: LocalMcpLaunch }).launch;
+    expect(launch).toMatchObject({
+      env: expect.not.objectContaining({ CAMERA_PASSWORD: expect.anything() }),
+      secrets: [{ name: "CAMERA_PASSWORD", title: "Camera password" }],
+    });
+    const asked = await waitingRequest(host, server.id);
+    const review = (id: string) =>
+      testRpcData(
+        host.origin,
+        "integration.computer.setup.review",
+        { setupRequestId: id },
+        { headers: host.ownerHeaders },
+      );
+    expect((await review(asked.id)).savedSecrets).toEqual([]);
+
+    // Allowing needs every secret, and only the ones its launch declares.
+    const answer = (id: string, secrets?: Record<string, string>) =>
+      dispatch("answer", {
+        decision: "allow",
+        setupRequestId: id,
+        ...(secrets ? { secrets } : {}),
+        type: "integration.computer.setup.respond",
+      });
+    await expect(answer(asked.id)).rejects.toThrow("Enter Camera password.");
+    await expect(answer(asked.id, { CAMERA_PASSWORD: "x", OTHER: "y" })).rejects.toThrow(
+      "This server doesn't ask for OTHER.",
+    );
+    expect(await readText(fixture.seenFile)).toBeNull();
+    expect((await waitingRequest(host, server.id)).id).toBe(asked.id);
+
+    await answer(asked.id, { CAMERA_PASSWORD: "hunter2" });
+    await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
+    await started("hunter2");
+    const sealed = await host.store.database
+      .selectFrom("integrationServerSecrets")
+      .select("encryptedPayload")
+      .where("serverId", "=", server.id)
+      .executeTakeFirstOrThrow();
+    expect(sealed.encryptedPayload.includes("hunter2")).toBe(false);
+    const listed = JSON.stringify(
+      await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
+    );
+    expect(listed).not.toContain("hunter2");
+    expect(listed).not.toContain("encryptedPayload");
+
+    // Changed: its running process ends, and the next starts with the new value.
+    await dispatch("change", {
+      secrets: { CAMERA_PASSWORD: "swordfish" },
+      serverId: server.id,
+      type: "integration.server.secrets.set",
+    });
+    await started("swordfish");
+    // Values aren't part of the launch, so changing one asks nothing again.
+    expect(
+      await host.store.database
+        .selectFrom("computerAppSetupRequests")
+        .select("id")
+        .where("kind", "=", "server")
+        .execute(),
+    ).toEqual([]);
+
+    // A new launch is asked about again; leaving the field blank keeps the value.
+    await fixture.changeLaunch();
+    await dispatch("update", {
+      input: { directory: fixture.plugin, runnerId: computer.runnerId },
+      pluginId: await pluginId(),
+      type: "plugin.update",
+    });
+    const askedAgain = await waitingRequest(host, server.id);
+    expect((await review(askedAgain.id)).savedSecrets).toEqual(["CAMERA_PASSWORD"]);
+    await expect(
+      dispatch("early", {
+        secrets: { CAMERA_PASSWORD: "too-early" },
+        serverId: server.id,
+        type: "integration.server.secrets.set",
+      }),
+    ).rejects.toThrow("It's waiting for approval.");
+    await writeFile(fixture.seenFile, "");
+    await answer(askedAgain.id);
+    await started("swordfish");
+
+    // Uninstalled: its secrets go with it.
+    await dispatch("uninstall", {
+      installationId: server.installationId,
+      type: "integration.uninstall",
+    });
+    expect(
+      await host.store.database.selectFrom("integrationServerSecrets").select("serverId").execute(),
+    ).toEqual([]);
+  }, 180_000);
 });
+
+async function readText(file: string): Promise<string | null> {
+  try {
+    return await readFile(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** A plugin whose one server asks for a camera password and records what it started with. */
+async function secretPluginFixture(work: string) {
+  const plugin = join(work, "plugin");
+  await mkdir(plugin, { recursive: true });
+  const require = createRequire(import.meta.url);
+  const sdk = (path: string) =>
+    JSON.stringify(require.resolve(`@modelcontextprotocol/sdk/${path}`));
+  const seenFile = join(work, "seen.txt");
+  await writeFile(
+    join(plugin, "plugin.json"),
+    JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      extensions: {
+        "com.opensteer": {
+          secrets: {
+            camera: [
+              {
+                description: "The camera account password from the Tapo app.",
+                name: "CAMERA_PASSWORD",
+                title: "Camera password",
+              },
+            ],
+          },
+        },
+      },
+      name: "camera-fixture",
+    }),
+  );
+  const writeLaunch = (env: Record<string, string>) =>
+    writeFile(
+      join(plugin, "mcp.json"),
+      JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        mcpServers: {
+          camera: {
+            args: ["${PLUGIN_ROOT}/server.cjs"],
+            command: "node",
+            env: { SEEN_FILE: seenFile, ...env },
+            type: "stdio",
+          },
+        },
+      }),
+    );
+  await writeLaunch({});
+  await writeFile(
+    join(plugin, "server.cjs"),
+    `const { writeFileSync } = require("node:fs");
+const { Server } = require(${sdk("server/index.js")});
+const { StdioServerTransport } = require(${sdk("server/stdio.js")});
+const { ListToolsRequestSchema } = require(${sdk("types.js")});
+writeFileSync(process.env.SEEN_FILE, process.env.CAMERA_PASSWORD ?? "");
+const server = new Server({ name: "camera-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [{ annotations: { readOnlyHint: true }, description: "Snapshot", inputSchema: { type: "object" }, name: "snapshot" }],
+}));
+server.connect(new StdioServerTransport());
+`,
+  );
+  return {
+    changeLaunch: () => writeLaunch({ CAMERA_EDITION: "2" }),
+    plugin,
+    seenFile,
+  };
+}
 
 async function serverRow(host: MachineAccessHost) {
   return host.store.database
