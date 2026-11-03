@@ -1626,7 +1626,8 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "conflict" });
 
     const otherWorkspace = await createTestWorkspace(store, {
-      backing: workspace.backing,
+      kind: "project",
+      backing: { ...materializedBacking, bindingId: createId("workspaceBinding") },
 
       createdBy: userId,
       name: "Other workspace",
@@ -1656,7 +1657,12 @@ describeStore("PostgreSQL store", (it) => {
 
     const foreignUserId = await store.createUser("Other owner");
     const foreignWorkspace = await createTestWorkspace(store, {
-      backing: workspace.backing,
+      backing: {
+        ...workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
+      },
 
       createdBy: foreignUserId,
       name: "Foreign workspace",
