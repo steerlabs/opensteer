@@ -2931,6 +2931,42 @@ describe("pending computer fencing", () => {
   );
 });
 
+it("restarts a pending computer link when an earlier selection lands mid-lookup", async () => {
+  const { client, opened } = open(testPort({ held: false }).factory, undefined, {
+    accountOrigin,
+    fetch: accountFetch(),
+  });
+  vi.spyOn(client.accountDirectory, "sync").mockResolvedValue({
+    syncedDeploymentIds: [],
+    unavailable: [],
+  });
+  const thirdId = createId("deployment");
+  await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: otherId })));
+  await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: thirdId })));
+  await client.initialize();
+  await signInTestAccount(client, opened);
+  await client.refreshDirectory();
+  await client.select(otherId);
+  const refresh = deferred<void>();
+  vi.spyOn(client.directoryRefresh, "refreshNow").mockReturnValue(refresh.promise);
+  // A switch the person started before the link arrived lands mid-lookup.
+  const selecting = client.select(thirdId);
+  client.openComputer(serverId);
+  const completion = client.retryOpenComputer();
+  await selecting;
+  refresh.resolve();
+  await completion;
+  await vi.waitFor(
+    () =>
+      expect(client.getSnapshot().pendingComputer).toEqual({
+        deploymentId: serverId,
+        status: "not-listed",
+      }),
+    { timeout: 2000 },
+  );
+  client.dispose();
+});
+
 it("retains a cold computer intent above the remembered selection", async () => {
   const files = new MemoryPrivateFilesystem();
   await files.writeFileAtomic(

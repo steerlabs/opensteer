@@ -102,12 +102,15 @@ export function App({
       window.history.replaceState(window.history.state, "", setupPath + window.location.search);
     }
   });
-  const setupToAnnounce = useRef(openSetup);
+  // Setup stays on screen through the session and workspace waits below, and
+  // hands back only once the app it continues into can draw.
+  const [continuingSetup, setContinuingSetup] = useState(openSetup);
+  const shellReady = snapshot.session === "authenticated" && snapshot.workspaces.length > 0;
   useEffect(() => {
-    if (!setupToAnnounce.current) return;
-    setupToAnnounce.current = false;
+    if (!continuingSetup || !shellReady) return;
+    setContinuingSetup(false);
     onSetupOpened?.();
-  }, [onSetupOpened]);
+  }, [continuingSetup, onSetupOpened, shellReady]);
   const [recoveryToken] = useState(takeRecoveryToken);
   const [nativeOAuthQuery] = useState(() =>
     consumeNativeOAuthQuery(window.location, (url) => window.history.replaceState(null, "", url)),
@@ -365,7 +368,7 @@ export function App({
   }
 
   if (snapshot.session === "checking") {
-    if (openSetup && !loadError) {
+    if (continuingSetup && !loadError) {
       return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
     }
     return (
@@ -438,7 +441,7 @@ export function App({
   // empty list means it is still being written, not that there is nothing to
   // show. This is a brief moment on a first run and none at all afterwards.
   if (snapshot.workspaces.length === 0) {
-    if (openSetup && !loadError) {
+    if (continuingSetup && !loadError) {
       return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
     }
     return (

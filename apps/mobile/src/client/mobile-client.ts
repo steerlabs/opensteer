@@ -475,15 +475,20 @@ export class MobileClient {
     const identity = this.oauth.accountIdentity();
     this.#pendingAccount = identity === null ? null : `${identity.issuer}/${identity.subject}`;
     const selection = this.#attachedDeploymentId;
-    const current = (): boolean =>
+    // The link, the Account and the authorization it was resolved under.
+    const sameIntent = (): boolean =>
       !this.#disposed &&
       generation === this.#pendingGeneration &&
       epoch === this.#authorizationEpoch &&
-      this.#attachedDeploymentId === selection &&
       identity?.issuer === this.oauth.accountIdentity()?.issuer &&
       identity?.subject === this.oauth.accountIdentity()?.subject;
+    const current = (): boolean => sameIntent() && this.#attachedDeploymentId === selection;
+    // A selection that lands mid-lookup was started before this link, so the
+    // link starts over from it instead of waiting on a lookup nobody will finish.
+    const restart = (): Promise<void> | undefined =>
+      sameIntent() ? this.retryOpenComputer() : undefined;
     const status = (value: PendingComputer["status"]): void => {
-      if (!current()) return;
+      if (!sameIntent()) return;
       this.#pendingComputer = { ...pending, status: value };
       this.#publishPending();
     };
@@ -494,9 +499,9 @@ export class MobileClient {
     status("finding");
     try {
       await this.directoryRefresh.refreshNow("renderer");
-      if (!current()) return;
+      if (!current()) return await restart();
       const catalog = await this.catalog.load();
-      if (!current()) return;
+      if (!current()) return await restart();
       if (this.#directoryState.status !== "ready") {
         status("error");
         return;
@@ -523,23 +528,24 @@ export class MobileClient {
         status("offline");
         return;
       }
+      let moved = false;
       await this.#operations.run(async () => {
-        if (!current()) return;
-        const attempt = await this.#selectLocallyNow(pending.deploymentId, false, current);
-        if (
-          generation !== this.#pendingGeneration ||
-          epoch !== this.#authorizationEpoch ||
-          this.#disposed ||
-          this.#attachedDeploymentId !== pending.deploymentId ||
-          identity.issuer !== this.oauth.accountIdentity()?.issuer ||
-          identity.subject !== this.oauth.accountIdentity()?.subject
-        )
+        if (!current()) {
+          moved = true;
           return;
+        }
+        const attempt = await this.#selectLocallyNow(pending.deploymentId, false, current);
+        if (!sameIntent()) return;
+        if (this.#attachedDeploymentId !== pending.deploymentId) {
+          moved = true;
+          return;
+        }
         this.#pendingComputer = null;
         this.#pendingAccount = null;
         this.#publishPending();
         if (attempt !== null) void this.#attachSelection(pending.deploymentId, attempt).catch(noop);
       });
+      if (moved) await restart();
     } catch {
       status("error");
     }
