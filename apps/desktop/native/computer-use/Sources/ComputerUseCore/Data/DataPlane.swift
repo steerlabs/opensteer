@@ -54,20 +54,20 @@ public struct DataPlane: Sendable {
     if implemented.effect == .write && params.access != .readWrite {
       throw HelperError(.failed, "This app is read only.")
     }
-    // Only this operation's grant: any other may be a question macOS is
+    // Only this operation's grants: any other may be a question macOS is
     // holding for the person, and this call must not wait behind it.
     // `unknown` is for the app to settle before it acts, as Messages does.
-    let grant = implemented.effect == .write ? appGrants.write : appGrants.read
-    let state = await grantReader.state(of: grant)
-    // Given after this process started: a retry in a moment, not a grant to
-    // go and find. Asked after the read, which may be what found it.
-    if await grantReader.awaitingRestart(grant) {
-      throw HelperError(.failed, Self.restartingSentence)
+    let required = implemented.effect == .write ? appGrants.write : appGrants.read
+    var missing: DataGrant?
+    for grant in required {
+      let state = await grantReader.state(of: grant)
+      if await grantReader.awaitingRestart(grant) {
+        throw HelperError(.failed, Self.restartingSentence)
+      }
+      if missing == nil && (state == .requestable || state == .denied) { missing = grant }
     }
-    switch state {
-    case .granted, .unknown: break
-    case .requestable, .denied:
-      throw HelperError(.permissionRequired, Self.permissionSentence(grant))
+    if let missing {
+      throw HelperError(.permissionRequired, Self.permissionSentence(missing))
     }
     do {
       return try await provider.invoke(

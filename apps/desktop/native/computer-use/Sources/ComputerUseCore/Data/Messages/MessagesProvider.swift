@@ -1,7 +1,8 @@
 import Foundation
+import OpensteerAppleData
 
 /// Messages on this Mac: the history read from `chat.db` under the helper's
-/// Full Disk Access, and sends made through the Messages app under its
+/// Full Disk Access and Contacts grant, and sends made through the Messages app under its
 /// Automation permission for Messages.
 ///
 /// Reading and sending go two ways on purpose. `chat.db` is the only complete
@@ -12,6 +13,7 @@ actor MessagesProvider: DataProvider {
   /// cursor still reach the agent.
   private static let searchMargin: TimeInterval = 2
 
+  private let contacts: @Sendable (WorkBudget) throws -> [ContactRecord]
   private let reader: MessagesReader
   private let automation: @Sendable () async -> DataGrantState
   private let runOsascript: @Sendable (OsascriptRequest, WorkBudget) async throws -> OsascriptOutcome
@@ -22,12 +24,16 @@ actor MessagesProvider: DataProvider {
     databasePath: String = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/Messages/chat.db").path,
     clock: DataClock = .mac,
+    contacts: @escaping @Sendable (WorkBudget) throws -> [ContactRecord] = {
+      try ContactsStore.records(budget: $0)
+    },
     automation: @escaping @Sendable () async -> DataGrantState = {
       await MessagesAutomation.shared.stateForSending()
     },
     runOsascript: @escaping @Sendable (OsascriptRequest, WorkBudget) async throws
       -> OsascriptOutcome = { try await MessagesOutbox.shared.run($0, budget: $1) }
   ) {
+    self.contacts = contacts
     self.reader = MessagesReader(path: databasePath, clock: clock)
     self.automation = automation
     self.runOsascript = runOsascript
@@ -38,10 +44,14 @@ actor MessagesProvider: DataProvider {
   ) async throws -> JSONValue {
     switch operation {
     case "list_conversations":
+      var reader = self.reader
+      reader.contacts = MessagesContacts(try contacts(budget))
       return try JSONValue(
         encoding: reader.listConversations(
           DataArguments.decode(ListConversationsArguments.self, from: arguments)))
     case "read_messages":
+      var reader = self.reader
+      reader.contacts = MessagesContacts(try contacts(budget))
       return try JSONValue(
         encoding: reader.readMessages(
           DataArguments.decode(ReadMessagesArguments.self, from: arguments),

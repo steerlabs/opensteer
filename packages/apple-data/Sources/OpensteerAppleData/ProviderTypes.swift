@@ -28,9 +28,9 @@ public enum DataGrantState: String, Codable, Sendable {
 }
 
 public struct DataAppGrants: Codable, Sendable, Equatable {
-  public let read: DataGrant
-  public let write: DataGrant
-  public init(read: DataGrant, write: DataGrant) {
+  public let read: [DataGrant]
+  public let write: [DataGrant]
+  public init(read: [DataGrant], write: [DataGrant]) {
     self.read = read
     self.write = write
   }

@@ -1,20 +1,20 @@
 {
   "grants": {
     "apple-calendar": {
-      "read": "calendars",
-      "write": "calendars"
+      "read": ["calendars"],
+      "write": ["calendars"]
     },
     "apple-contacts": {
-      "read": "contacts",
-      "write": "contacts"
+      "read": ["contacts"],
+      "write": ["contacts"]
     },
     "apple-messages": {
-      "read": "full-disk-access",
-      "write": "automation"
+      "read": ["full-disk-access", "contacts"],
+      "write": ["automation"]
     },
     "apple-reminders": {
-      "read": "reminders",
-      "write": "reminders"
+      "read": ["reminders"],
+      "write": ["reminders"]
     }
   },
   "operations": {
