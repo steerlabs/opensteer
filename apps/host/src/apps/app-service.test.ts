@@ -7,6 +7,7 @@ import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import type { AppStore } from "@opensteer/database";
+import { hostApi } from "@opensteer/protocol";
 import { AppService } from "./app-service.js";
 import { AppTunnelError } from "./app-tunnel-hub.js";
 
@@ -125,7 +126,10 @@ it("keeps failure log tails in agent results and excludes them from prepared vie
   const { service, app, userId } = fixture(async () => {
     throw new AppTunnelError("App startup failed", "private server log tail");
   });
-  const { path } = await service.view(app.id, userId, "dark");
+  const view = await service.view(app.id, userId, "dark");
+  // Clients parse this answer with the wire schema; a mismatch blanks every viewer.
+  expect(hostApi["apps.view"].success.safeParse(view).success).toBe(true);
+  const { path } = view;
   const token = path.split("/").at(-2)!;
   const response = await service.response({
     appId: app.id,
