@@ -1,7 +1,4 @@
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { createId as createStorageFixtureId } from "@opensteer/core";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -105,15 +102,14 @@ it("records a successful Codex command with large inline arguments without faili
       threadRole: "work",
       threadState: { previousAssignment: null, previousRun: null },
       workspaceId,
+      workspaceKind: "project",
       machineAccess: { callerMachineName: "test-runner", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: null,
       workspaceAccess: {
         generation: 1,
         kind: "local-directory",
         bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
+        ownerEnvironmentId: environmentId,
         storageAuthorityId: createStorageFixtureId("storageAuthority"),
 
         workspaceId,

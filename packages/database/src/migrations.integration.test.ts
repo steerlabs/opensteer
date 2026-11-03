@@ -7604,21 +7604,23 @@ integration("local directory conversion", () => {
     await sql`insert into users(id, display_name, email) values (${owner}, 'Storage owner', 'storage@example.test')`.execute(
       database,
     );
-    for (const [id, kind, title] of [
-      [main, "main", "Main"],
-      [project, "project", "My project"],
-    ] as const) {
-      await sql`insert into workspaces(id, name, status, created_by, kind, backing, capacity_policy, color)
+    await database.transaction().execute(async (transaction) => {
+      for (const [id, kind, title] of [
+        [main, "main", "Main"],
+        [project, "project", "My project"],
+      ] as const) {
+        await sql`insert into workspaces(id, name, status, created_by, kind, backing, capacity_policy, color)
         values (${id}, ${title}, 'ready', ${owner}, ${kind},
           ${JSON.stringify({ kind: "portablefs", generation: 2, serviceId: "retired", volumeId: id })}::jsonb,
           '{"kind":"hard-quota","blockHardLimitBytes":1024,"inodeHardLimit":100}'::jsonb, 'blue')`.execute(
-        database,
-      );
-      await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state)
+          transaction,
+        );
+        await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state)
         values (${createStorageFixtureId("workspaceMembership")}, ${id}, ${owner}, 'owner', 'active')`.execute(
-        database,
-      );
-    }
+          transaction,
+        );
+      }
+    });
     await migrateToLatest(database);
     const rows = await database.selectFrom("workspaces").selectAll().orderBy("kind").execute();
     expect(rows).toHaveLength(2);

@@ -4588,13 +4588,13 @@ describe("RunnerRuntime", () => {
       registry,
       workspacePrepare: async (input) => {
         preparedPlans.push(
-          input.plan.kind === "local-directory" ? "workspace.mount" : "run.execute",
+          input.plan.workspaceId === targetWorkspaceId ? "workspace.mount" : "run.execute",
         );
         return {
           instructions: undefined,
           path:
-            input.plan.kind === "local-directory"
-              ? `/Users/test/Opensteer/Workspaces/${targetWorkspaceId}`
+            input.plan.workspaceId === targetWorkspaceId
+              ? "/Users/test/Opensteer/Workspaces/main/Projects/research"
               : "/Users/test/Opensteer/Workspaces/main",
         };
       },
@@ -4606,8 +4606,6 @@ describe("RunnerRuntime", () => {
         ...base.context,
         workspaceAccess: {
           ...base.context.workspaceAccess,
-          createdBy: base.context.requestedBy,
-          workspaceKind: "main",
         },
         workspaceKind: "main",
       },
@@ -4640,7 +4638,7 @@ describe("RunnerRuntime", () => {
 
       expect(decision).toEqual({
         status: "accepted",
-        workspacePath: `/Users/test/Opensteer/Workspaces/${targetWorkspaceId}`,
+        workspacePath: "/Users/test/Opensteer/Workspaces/main/Projects/research",
       });
       expect(preparedPlans).toEqual(["run.execute", "workspace.mount"]);
     } finally {
@@ -4661,8 +4659,6 @@ describe("RunnerRuntime", () => {
         ...mainBase.context,
         workspaceAccess: {
           ...mainBase.context.workspaceAccess,
-          createdBy: mainBase.context.requestedBy,
-          workspaceKind: "main",
         },
         workspaceKind: "main",
       },

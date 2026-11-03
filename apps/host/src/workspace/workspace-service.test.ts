@@ -111,45 +111,6 @@ describe("WorkspaceService with a machine that owns its own directories", () => 
     });
     expect(harness.stateChanges).toEqual([]);
   });
-
-  it("refuses a storage quota on a Workspace that lives on a machine's own disk", async () => {
-    const harness = createStore([]);
-    const service = localService(harness.store, {});
-
-    await expect(
-      service.create({
-        kind: "main",
-
-        createdBy: createId("user"),
-        idempotencyKey: "quota-on-a-laptop",
-        name: "Research",
-      }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-  });
-});
-
-describe("WorkspaceService creation capacity policy", () => {
-  it("refuses a hard-quota override on a local-directory deployment", async () => {
-    const service = new WorkspaceService({
-      drivers: { local: { kind: "local-directory" } as never },
-      shape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
-      },
-      resolveOwnerEnvironmentId: async () => createId("environment"),
-      store: createStore([]).store as never,
-    });
-
-    await expect(
-      service.create({
-        kind: "main",
-
-        createdBy: createId("user"),
-        idempotencyKey: "local-hard-quota",
-        name: "Local",
-      }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-  });
 });
 
 const localEnvironmentId = createId("environment");

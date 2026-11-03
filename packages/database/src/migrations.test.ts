@@ -139,6 +139,7 @@ const releasedMigrationNames = [
   "0129_project_slugs",
   "0130_project_relocation",
   "0131_project_control_actions",
+  "0132_local_directory_only",
 ];
 
 describe("migration names", () => {

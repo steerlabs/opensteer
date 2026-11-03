@@ -265,7 +265,7 @@ describe("Ed25519 envelope verification", () => {
         ...legacyEnvelope,
         document: {
           ...legacyDocument,
-          deploymentShape: { backing: "local-directory", kind: "personal" },
+          deploymentShape: { backing: "local-directory", kind: "server" },
         },
       }),
     ).toThrow("signature is invalid");

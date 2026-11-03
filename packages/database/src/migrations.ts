@@ -6802,9 +6802,9 @@ export const localDirectoryOnlyMigration: Migration = {
         and jsonb_typeof(backing->'generation') = 'number'
         and (backing->>'generation') ~ '^[0-9]+$'
         and (backing->>'generation')::numeric between 1 and 9007199254740991
-        and (backing->>'bindingId') ~ '^wbd_[0-9a-fA-F-]{36}$'
-        and (backing->>'ownerEnvironmentId') ~ '^env_[0-9a-fA-F-]{36}$'
-        and (backing->'storageAuthorityId' = 'null'::jsonb or (backing->>'storageAuthorityId') ~ '^sta_[0-9a-fA-F-]{36}$')
+        and (backing->>'bindingId') ~ '^wbd_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        and (backing->>'ownerEnvironmentId') ~ '^env_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        and (backing->'storageAuthorityId' = 'null'::jsonb or (backing->>'storageAuthorityId') ~ '^sta_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')
       );
     `.execute(database);
   },
