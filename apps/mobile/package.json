@@ -6,9 +6,9 @@
   "type": "module",
   "main": "index.ts",
   "scripts": {
-    "android": "EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com expo run:android",
-    "export": "EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com expo export",
-    "ios": "EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com expo run:ios",
+    "android": "EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN=https://app.opensteer.com expo run:android",
+    "export": "EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN=https://app.opensteer.com expo export",
+    "ios": "EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN=https://app.opensteer.com expo run:ios",
     "start": "expo start",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
   },

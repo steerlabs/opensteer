@@ -1,4 +1,4 @@
-import { parseMobileThreadDeepLink } from "@opensteer/core";
+import { parseMobileOpenDeepLink, parseMobileThreadDeepLink } from "@opensteer/core";
 
 /**
  * What a link the operating system handed this app asks for.
@@ -44,4 +44,12 @@ export function resolveThreadLink(
     ...(link.messageId ? { messageId: link.messageId } : {}),
     threadId: link.threadId,
   };
+}
+
+/** Called before any catalog or Thread read, including before cold initialization. */
+export function routeComputerLink(url: string, open: (deploymentId: string) => void): boolean {
+  const destination = parseMobileOpenDeepLink(url);
+  if (destination === null) return false;
+  open(destination.deploymentId);
+  return true;
 }

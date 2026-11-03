@@ -135,12 +135,42 @@ export interface AccountIdentity {
 
 export function signedOutBody(input: {
   readonly ended: boolean;
+  readonly desktopDownloadUrl?: string;
   readonly signInHref: string;
 }): string {
   return card({
     head: `${brandMark()}<h1 class="title">${input.ended ? "You’re signed out" : "Opensteer"}</h1>`,
-    content: `<a class="btn btn--primary btn--block" href="${escapeHtml(input.signInHref)}">Sign in</a>`,
+    content: `<a class="btn btn--primary btn--block" href="${escapeHtml(input.signInHref)}">Sign in</a>${input.desktopDownloadUrl ? `<ul class="places"><li class="place place--add"><span class="device">${icon("download")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">Get the desktop app</a></span></li></ul>` : ""}`,
   });
+}
+
+export function openPhoneBody(input: {
+  readonly nonce: string;
+  readonly scheme: string;
+  readonly iosAppUrl?: string;
+  readonly androidAppUrl?: string;
+}): string {
+  const stores = [
+    input.iosAppUrl && `<a href="${escapeHtml(input.iosAppUrl)}">Get it for iPhone</a>`,
+    input.androidAppUrl && `<a href="${escapeHtml(input.androidAppUrl)}">Get it for Android</a>`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return `${card({
+    head: `${brandMark()}<h1 class="title">Open Opensteer on this phone</h1>`,
+    content: `<a id="open-app" class="btn btn--primary btn--block" hidden>Open in Opensteer</a><p id="incomplete" class="fine" hidden>This link is incomplete. Scan the code on your computer again.</p>${stores ? `<p class="fine">${stores}</p>` : ""}<p class="fine">Already installed? Scan the code again after installing.</p>`,
+  })}<script nonce="${escapeHtml(input.nonce)}">
+    const match = /^#d=(dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(location.hash);
+    if (match) {
+      const destination = ${JSON.stringify(input.scheme + ":/open?d=")} + match[1];
+      const button = document.getElementById("open-app");
+      button.href = destination;
+      button.hidden = false;
+      location.href = destination;
+    } else {
+      document.getElementById("incomplete").hidden = false;
+    }
+  </script>`;
 }
 
 export function portalRestartBody(signInHref: string): string {

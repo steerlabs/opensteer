@@ -76,9 +76,18 @@ Connector credentials stay on the Host computer. Only the supervisor's private
 executor channel can obtain them; owner sessions request durable intents and
 read status.
 
-Administration status is observed only while Settings is open, invalidated by the
-Host event stream and reread after reconnect. It adds no attach round trips or
-initial-screen dependencies.
+Administration status is observed only while Settings or first-run setup is
+open, invalidated by the Host event stream and reread after reconnect. It adds no
+attach round trips or initial-screen dependencies.
+
+First-run setup's Phone row composes these same steps; it adds no authority. It
+reads live state, skips what is already true, links through the desktop's
+Account-link operation and settles a Connect request on that operation's own
+result. Cancelling stops later steps and never undoes a finished link or route.
+Its QR code is `<portal>/open#d=<DeploymentId>`: a destination in the fragment,
+never a pairing code, Host origin or grant. The phone still signs in to its own
+Account and opens only that id from its authenticated directory. See
+`apps/web/src/components/first-run/phone-setup.ts`.
 
 ## Durable stream and live progress
 

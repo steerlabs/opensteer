@@ -3,6 +3,8 @@ import { Link } from "react-router";
 import { CHAT_THREAD_TITLE, type ThreadAccessMode } from "@opensteer/core";
 import {
   accessModeConflict,
+  chatExecutionDecision,
+  lastExecutionSelection,
   placementForSelection,
   accountGettingReady,
   chatExecutionSelection,
@@ -28,6 +30,7 @@ import {
 import { AreaHeader } from "./workspace/conversation-header.js";
 import { ChatOrb } from "./workspace/task-mark.js";
 import { useComposerContext } from "./workspace/composer-context.js";
+import { setupPath } from "./workspace/navigation.js";
 
 const suggestions = ["Help me plan my week", "Think through a decision"];
 
@@ -53,6 +56,8 @@ export function HomeIntro({
 }) {
   const {
     clearHomeHandoff,
+    desktopBridge,
+    desktopDeployment,
     executionPreferences,
     homeDraft,
     homeHandoff,
@@ -63,6 +68,11 @@ export function HomeIntro({
     setHomeDraft,
     snapshot,
   } = useShell();
+  // On the computer it runs on, the AI is set up where the rest of setup is.
+  const setupHere =
+    desktopBridge !== null &&
+    desktopDeployment?.kind === "personal" &&
+    desktopDeployment.onThisComputer;
   const [accessMode, setAccessMode] = useState<ThreadAccessMode>(executionPreferences.accessMode);
   // One channel into the composer, so a quote handed over from a task and an
   // example prompt cannot cancel each other out. The draft kept by the shell
@@ -98,15 +108,19 @@ export function HomeIntro({
         }
       : null;
   }, [snapshot.homeThreadId, snapshot.threads]);
+  const remembered = useMemo(
+    () => lastExecutionSelection(executionPreferences),
+    [executionPreferences],
+  );
   const selection = useMemo(
-    () => chatExecutionSelection({ chosen, existing, placements }),
-    [chosen, existing, placements],
+    () => chatExecutionSelection({ chosen, existing, placements, remembered }),
+    [chosen, existing, placements, remembered],
   );
   // A choice that no longer runs stays named. Replacing it with another
   // account would quietly move the work — and the bill — somewhere else.
   const blocked = useMemo(
-    () => (selection === null ? (chosen ?? existing) : null),
-    [chosen, existing, selection],
+    () => (selection === null ? chatExecutionDecision({ chosen, existing, remembered }) : null),
+    [chosen, existing, remembered, selection],
   );
   const selectedPlacement = useMemo(
     () => (selection ? placementForSelection(placements, selection) : null),
@@ -249,8 +263,8 @@ export function HomeIntro({
           <h1 className="hero__title">What can I help you with?</h1>
           {runnable.length === 0 ? (
             <p className="hero__subtitle">
-              <Link to="/settings/ai-engines">Connect an AI account</Link> to start. Whatever you
-              write here is kept while you do.
+              <Link to={setupHere ? setupPath : "/settings/ai-engines"}>Connect an AI account</Link>{" "}
+              to start. Whatever you write here is kept while you do.
             </p>
           ) : null}
           <VoiceDock />

@@ -4,7 +4,9 @@ import { createId } from "@opensteer/core";
 import {
   DeploymentAccessSnapshotSchema,
   DesktopDeploymentSummarySchema,
+  DesktopPersonalDeploymentStatusSchema,
   type DeploymentAccessSnapshot,
+  type DesktopPersonalDeploymentStatus,
   type DeploymentAccessDeployment,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
@@ -57,6 +59,110 @@ it("lets a connecting place go back and shows cancellation failures", async () =
   await act(async () => root.unmount());
   container.remove();
 });
+
+it("carries setup from creating this computer straight into the app it opens", async () => {
+  let access = snapshot({
+    account: { available: false, status: "signed-out" },
+    personalSetup: personalStatus({
+      canStart: true,
+      deploymentId: null,
+      state: "stopped",
+      step: null,
+    }),
+  });
+  const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
+  const emit = (next: DeploymentAccessSnapshot) => {
+    access = next;
+    for (const listener of listeners) listener(next);
+  };
+  const createPersonalDeployment = vi.fn(async () => undefined);
+  const bridge = {
+    createPersonalDeployment,
+    getDeploymentAccessSnapshot: async () => access,
+    onHostWebSocketEvent: () => () => undefined,
+    onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    onNotificationActivated: () => () => undefined,
+  } as unknown as OpensteerDesktopBridge;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(<DesktopApp bridge={bridge} />));
+  await vi.waitFor(() => expect(container.textContent).toContain("Welcome to Opensteer"));
+
+  const setUp = [...container.querySelectorAll("button")].find((candidate) =>
+    candidate.textContent?.startsWith("Set up this"),
+  );
+  await act(async () => setUp?.click());
+  expect(createPersonalDeployment).toHaveBeenCalledOnce();
+
+  await act(async () =>
+    emit(
+      snapshot({
+        account: { available: false, status: "signed-out" },
+        personalSetup: personalStatus({ step: "starting-host" }),
+        revision: 2,
+      }),
+    ),
+  );
+  await vi.waitFor(() => expect(container.textContent).toContain("Set up Opensteer"));
+  expect(container.textContent).toContain("Starting Opensteer");
+  expect(container.textContent).toContain("AI");
+  expect(container.textContent).toContain("Phone");
+
+  // Ready, and the app is still attaching: the same setup screen stays up
+  // rather than a separate loading screen.
+  const personal = DesktopDeploymentSummarySchema.parse({
+    ...deployment,
+    activeOrigin: "http://127.0.0.1:45000",
+    canonicalOrigin: "http://127.0.0.1:45000",
+    kind: "personal",
+    name: "Studio Mac",
+    onThisComputer: true,
+    routes: [{ kind: "canonical", origin: "http://127.0.0.1:45000", selected: true }],
+  });
+  await act(async () =>
+    emit(
+      snapshot({
+        account: { available: false, status: "signed-out" },
+        deployments: [{ ...accessDeployment("connecting"), ...personal }],
+        personalSetup: personalStatus({ deploymentId: personal.id, state: "ready", step: "ready" }),
+        revision: 3,
+        selectedDeploymentId: personal.id,
+      }),
+    ),
+  );
+  await vi.waitFor(() => expect(container.textContent).toContain("Studio Mac"));
+  expect(container.textContent).toContain("Set up Opensteer");
+  expect(container.textContent).not.toContain("Opening Opensteer…");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+function personalStatus(
+  overrides: Partial<DesktopPersonalDeploymentStatus> = {},
+): DesktopPersonalDeploymentStatus {
+  return DesktopPersonalDeploymentStatusSchema.parse({
+    canStart: false,
+    components: {
+      browser: { state: "stopped", version: null },
+      host: { state: "starting", version: null },
+      messaging: { state: "stopped", version: null },
+      postgresql: { state: "ready", version: "18" },
+      runner: { state: "stopped", version: null },
+    },
+    deploymentId: null,
+    environmentId: null,
+    issue: null,
+    schemaVersion: 1,
+    state: "starting",
+    step: "checking-computer",
+    ...overrides,
+  });
+}
 
 const deployment = DesktopDeploymentSummarySchema.parse({
   activeOrigin: "https://server.example.test",

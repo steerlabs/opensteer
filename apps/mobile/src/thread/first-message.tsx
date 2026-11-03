@@ -124,8 +124,8 @@ export function firstMessageExecution(
 ): FirstMessageExecution {
   const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
   const runnable = placements.filter((placement) => placement.available);
-  const remembered =
-    target === "task" ? lastExecutionSelection(snapshot.executionPreferences) : null;
+  // A task and a new Chat both start from the AI the person last picked.
+  const remembered = lastExecutionSelection(snapshot.executionPreferences);
   const home =
     target === "home" ? snapshot.threads.find(({ id }) => id === snapshot.homeThreadId) : undefined;
   const existing = home
@@ -137,7 +137,7 @@ export function firstMessageExecution(
     : null;
   const selection =
     target === "home"
-      ? chatExecutionSelection({ chosen, existing, placements })
+      ? chatExecutionSelection({ chosen, existing, placements, remembered })
       : composerExecutionSelection({
           chosen,
           defaultPlacement: startingPlacement(target, snapshot, runnable),

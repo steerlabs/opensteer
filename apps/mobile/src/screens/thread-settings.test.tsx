@@ -57,7 +57,7 @@ describe("Expo engine/account/model journeys", () => {
   let snapshot: HostSnapshot;
   const listeners = new Set<() => void>();
 
-  it("uses the ranked Chat model while tasks keep their remembered default", () => {
+  it("starts a new Chat and a task on the AI last picked, and Chat on the ranked model before any pick", () => {
     const home = base.threads.find(({ id }) => id === base.homeThreadId)!;
     const taskChoice = {
       environmentId: EnvironmentIdSchema.parse(cursor.environmentId),
@@ -97,11 +97,16 @@ describe("Expo engine/account/model journeys", () => {
       threads: base.threads.filter(({ id }) => id !== home.id),
     };
 
-    expect(firstMessageExecution("home", ranked).selection).toMatchObject({
+    expect(firstMessageExecution("home", ranked).selection).toEqual(taskChoice);
+    expect(firstMessageExecution("task", ranked).selection).toEqual(taskChoice);
+    const unpicked: HostSnapshot = {
+      ...ranked,
+      executionPreferences: { ...ranked.executionPreferences, history: [] },
+    };
+    expect(firstMessageExecution("home", unpicked).selection).toMatchObject({
       harnessInstanceId: codex.harnessInstanceId,
       modelSelection: { modelId: "gpt-6.1-terra", options: { effort: "high" } },
     });
-    expect(firstMessageExecution("task", ranked).selection).toEqual(taskChoice);
   });
 
   const access = vi.fn(async (threadId: string, mode: ThreadAccessMode) => {

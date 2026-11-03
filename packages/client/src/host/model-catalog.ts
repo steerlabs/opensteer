@@ -412,21 +412,35 @@ export function rankedChatExecutionSelection(
 }
 
 /**
- * Chat's one selection rule on every surface. A choice made in this visit and
- * an existing Chat's saved route are decisions, so an unavailable one blocks
- * instead of falling through. Only a genuinely new Chat takes the ranked default.
+ * Chat's one selection rule on every surface. A choice made in this visit, an
+ * existing Chat's saved route and the AI the person last picked are decisions,
+ * so an unavailable one blocks instead of falling through. Only a Chat nobody
+ * has chosen anything for takes the ranked default.
  */
 export function chatExecutionSelection(options: {
   readonly chosen: ExecutionSelection | null;
   readonly existing: ExecutionSelection | null;
   readonly placements: readonly ThreadPlacementOption[];
+  readonly remembered?: ExecutionSelection | null;
 }): ExecutionSelection | null {
-  const decision = options.chosen ?? options.existing;
+  const decision = chatExecutionDecision(options);
   if (decision) return resolveExecutionSelection(decision, options.placements);
   const ranked = rankedChatExecutionSelection(options.placements);
   if (ranked) return ranked;
   const runnable = options.placements.filter(({ available }) => available);
   return runnable.length === 1 ? executionSelectionForPlacement(runnable[0]!) : null;
+}
+
+/**
+ * The decision Chat runs, or null when nothing was decided and the ranked
+ * default applies. A surface that names a blocked choice names this one.
+ */
+export function chatExecutionDecision(options: {
+  readonly chosen: ExecutionSelection | null;
+  readonly existing: ExecutionSelection | null;
+  readonly remembered?: ExecutionSelection | null;
+}): ExecutionSelection | null {
+  return options.chosen ?? options.existing ?? options.remembered ?? null;
 }
 
 /** Everything about a Thread that decides what sending into it will do. */
