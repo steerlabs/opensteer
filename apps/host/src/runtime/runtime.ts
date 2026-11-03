@@ -1492,7 +1492,7 @@ export async function createHostRuntime(
           }
           return {
             credentials: {
-              agentControl: agentControlTokens.issue(scope),
+              agentTools: agentControlTokens.issue(scope),
               attachments: attachmentRunTokens.issue(scope),
             },
             status: "issued",

@@ -1129,7 +1129,7 @@ async function createSetup(context: MachineAccessRunContext, hostUrl: URL) {
     }),
   );
   setup.relay.bind({
-    credentials: { agentControl: "agent-token" },
+    credentials: { agentTools: "agent-token" },
     runId: createId("run"),
     targets: context.machines.map((machine) => machine.runnerId),
   });

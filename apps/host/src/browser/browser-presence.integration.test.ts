@@ -2146,18 +2146,13 @@ integration("Browser presence and conversation usage", () => {
     );
 
     // The agent forwards that structured reference through the production control route.
-    const delegatedResponse = await callMcpTool(
-      host.origin,
-      run.agentControlToken,
-      "thread_delegate",
-      {
-        operationKey: randomUUID(),
-        task: "Compare the included page",
-        title: "Page comparison",
-        workspaceId: run.workspaceId,
-        places: [page],
-      },
-    );
+    const delegatedResponse = await callMcpTool(host.origin, run.toolsToken, "thread_delegate", {
+      operationKey: randomUUID(),
+      task: "Compare the included page",
+      title: "Page comparison",
+      workspaceId: run.workspaceId,
+      places: [page],
+    });
     expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
     const delegated = {
       type: "thread.delegate.result" as const,
@@ -2196,7 +2191,7 @@ integration("Browser presence and conversation usage", () => {
         ),
       );
     }
-    const unrelated = await callMcpTool(host.origin, run.agentControlToken, "thread_delegate", {
+    const unrelated = await callMcpTool(host.origin, run.toolsToken, "thread_delegate", {
       operationKey: randomUUID(),
       task: "Read unrelated browser",
       workspaceId: run.workspaceId,

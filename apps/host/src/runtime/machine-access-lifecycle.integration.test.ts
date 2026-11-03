@@ -120,7 +120,7 @@ integration("Machine access session lifecycle", () => {
       ).toBe(false);
       const response = await callMcpTool(
         host.origin,
-        run.agentControlToken,
+        run.toolsToken,
         "machine_full_disk_access_request",
         { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
       );
@@ -205,7 +205,7 @@ integration("Machine access session lifecycle", () => {
       });
       const response = await callMcpTool(
         host.origin,
-        run.agentControlToken,
+        run.toolsToken,
         "machine_full_disk_access_request",
         { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
       );
@@ -945,7 +945,7 @@ integration("Machine access across a Run's authority", () => {
     });
     const { alias, host, launch, run, target } = scenario;
     const issuedAt = Date.now();
-    const issued = run.agentControlToken;
+    const issued = run.toolsToken;
     const generation = run.attempt.bindingGeneration;
     // Writes a line a second for longer than the first token lives.
     const ticks = lifetimeSeconds * 2 + 2;
@@ -956,7 +956,7 @@ integration("Machine access across a Run's authority", () => {
     const tickingSession = await activeSessionId(host, target.runnerId);
 
     expect(await run.refreshCredentials()).toBe("issued");
-    expect(run.agentControlToken).not.toBe(issued);
+    expect(run.toolsToken).not.toBe(issued);
     await new Promise<void>((resolve) =>
       setTimeout(resolve, Math.max(0, issuedAt + (lifetimeSeconds + 1) * 1_000 - Date.now())),
     );

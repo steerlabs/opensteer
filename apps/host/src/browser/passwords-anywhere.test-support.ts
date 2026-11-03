@@ -117,7 +117,7 @@ export function passwordsAnywhereJourneys() {
               cleanups.push(() => client.close());
               return client;
             };
-            const client = await connect(run.agentControlToken);
+            const client = await connect(run.toolsToken);
             expect(
               (await client.listTools()).tools.map(({ name }) => name),
               "sign_in is a first-class tool without a Browser Session",
@@ -304,7 +304,7 @@ export function passwordsAnywhereJourneys() {
               const resumed = await acceptCallerRun(host, caller, await executed);
               expect(resumed.threadId).toBe(run.threadId);
               expect(resumed.runId).not.toBe(run.runId);
-              const continuedClient = await connect(resumed.agentControlToken);
+              const continuedClient = await connect(resumed.toolsToken);
               expect(
                 (
                   await continuedClient.callTool({
@@ -331,7 +331,7 @@ export function passwordsAnywhereJourneys() {
                   title: "Same Workspace",
                   workspaceId: main.id,
                 });
-                const second = await connect(secondRun.agentControlToken);
+                const second = await connect(secondRun.toolsToken);
                 const reused = await second.callTool({
                   name: "sign_in",
                   arguments: { site: passwordFixture.site, reason: "Continue in an app" },

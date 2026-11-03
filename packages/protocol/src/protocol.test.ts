@@ -671,10 +671,6 @@ describe("wire protocol", () => {
         assignment: null,
         threadRole: "work",
         threadState: { previousAssignment: null, previousRun: null },
-        agentControl: {
-          token: "agent-token",
-          url: "https://host.example.test/internal/v1/agent-control",
-        },
         agentTools: {
           tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
           toolsRevision: "test-tools-v1",
@@ -683,10 +679,7 @@ describe("wire protocol", () => {
           token: "agent-tools-token",
           url: "https://host.example.test/internal/v1/mcp",
         },
-        browserCdp: {
-          token: "browser-cdp-token",
-          url: "https://host.example.test/internal/v1/browser-cdp",
-        },
+        browserCdp: { url: "https://host.example.test/internal/v1/browser-cdp" },
 
         plugins: {
           versions: [],
@@ -769,6 +762,25 @@ describe("wire protocol", () => {
       true,
     );
     expect(RunnerCommandSchema.safeParse({ ...base, inputs: [] }).success).toBe(false);
+    // The Run has one Host credential, the tool plan's.
+    expect(
+      RunnerCommandSchema.safeParse({
+        ...base,
+        context: {
+          ...base.context,
+          agentControl: { token: "agent-token", url: "https://host.example.test/internal/v1/mcp" },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      RunnerCommandSchema.safeParse({
+        ...base,
+        context: {
+          ...base.context,
+          browserCdp: { ...base.context.browserCdp, token: "browser-cdp-token" },
+        },
+      }).success,
+    ).toBe(false);
     expect(
       RunnerCommandSchema.safeParse({
         ...base,

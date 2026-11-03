@@ -2451,8 +2451,8 @@ export class RunnerRuntime {
       }
       if (!browserCdpRelay) {
         browserCdpRelay = new BrowserCdpRelay({
-          plan: context.browserCdp,
-          token: () => current().browserCdp,
+          url: context.browserCdp.url,
+          token: () => current().agentTools,
           transport,
         });
       }

@@ -451,7 +451,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       workspace: context.workspace,
     });
 
-    const agentControlToken = this.#agentControlTokens.issue({
+    const toolsToken = this.#agentControlTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
       ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
@@ -546,20 +546,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             }
           : null,
         ...(attachmentPlan ? { attachments: attachmentPlan } : {}),
-        agentControl: {
-          token: agentControlToken,
-          url: this.#agentToolsUrl,
-        },
         agentTools: agentToolsPlanForRun({
-          token: agentControlToken,
+          token: toolsToken,
           url: this.#agentToolsUrl,
           role: context.thread.role,
           reach: threadReachScope(context.thread).kind,
         }),
-        browserCdp: {
-          token: agentControlToken,
-          url: this.#agentBrowserCdpUrl,
-        },
+        browserCdp: { url: this.#agentBrowserCdpUrl },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
         plugins: {
           versions: pinnedPlugins,

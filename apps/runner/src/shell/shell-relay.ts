@@ -24,7 +24,7 @@ const unlistedSentence =
 /** One Run's hold on the relay. */
 export interface ShellRelayBinding {
   /** Read at each connection, so a refreshed token is the one presented. */
-  readonly credentials: { readonly agentControl: string };
+  readonly credentials: { readonly agentTools: string };
   readonly runId: string;
   /** The computers the Run's note lists; any other target is refused here. */
   readonly targets: readonly string[];
@@ -195,7 +195,7 @@ export class ShellRelay {
     const upstream = new WebSocket(transport.url, {
       ...(transport.ca ? { ca: transport.ca } : {}),
       followRedirects: false,
-      headers: { authorization: `Bearer ${binding.credentials.agentControl}` },
+      headers: { authorization: `Bearer ${binding.credentials.agentTools}` },
       maxPayload: shellDataMessageMaxBytes,
       perMessageDeflate: false,
       rejectUnauthorized: true,

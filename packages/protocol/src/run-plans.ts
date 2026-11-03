@@ -10,18 +10,14 @@ export const RequestCreationResultSchema = z.strictObject({
 });
 export type RequestCreationResult = z.infer<typeof RequestCreationResultSchema>;
 
-export const RunToolTokenPlanSchema = z.strictObject({
-  token: z.string().min(1).max(4_096),
-  url: z.url(),
-});
-
+/** Authenticated with the Run's one tool credential, `agentTools.token`. */
 export const RunBrowserCdpPlanSchema = z.strictObject({
-  token: z.string().min(1).max(4_096),
   url: z.url(),
 });
 export type RunBrowserCdpPlan = z.infer<typeof RunBrowserCdpPlanSchema>;
 
 export const RunAgentToolsPlanSchema = z.strictObject({
+  /** The Run's one Host credential: its MCP tools, browser control and shell relay. */
   token: z.string().min(1).max(4_096),
   url: z.url(),
   tools: z

@@ -1337,7 +1337,7 @@ async function acceptRun(
       .executeTakeFirst();
     return run?.status === "running";
   });
-  return { token: context.agentControl.token };
+  return { token: context.agentTools.token };
 }
 
 /** A minimal MCP Streamable HTTP client, as an agent's engine speaks to the Host. */

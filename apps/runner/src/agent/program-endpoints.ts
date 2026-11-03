@@ -41,7 +41,7 @@ export async function startProgramEndpoints(input: {
   });
   const relay = initial.browserCdp
     ? new BrowserCdpRelay({
-        plan: initial.browserCdp,
+        url: initial.browserCdp.url,
         token: () => input.capabilities().browserCdp?.token ?? "",
         transport: input.transport,
       })

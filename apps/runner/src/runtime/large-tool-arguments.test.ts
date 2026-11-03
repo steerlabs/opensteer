@@ -52,10 +52,6 @@ it("records a successful Codex command with large inline arguments without faili
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "test-control",
-        url: "https://host.example/internal/v1/agent-control",
-      },
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
         toolsRevision: "test-tools-v1",
@@ -64,7 +60,7 @@ it("records a successful Codex command with large inline arguments without faili
         token: "test-tools",
         url: "https://host.example/internal/v1/mcp",
       },
-      browserCdp: { token: "test-browser", url: "https://host.example/internal/v1/browser-cdp" },
+      browserCdp: { url: "https://host.example/internal/v1/browser-cdp" },
 
       plugins: {
         versions: [],

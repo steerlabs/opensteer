@@ -5544,10 +5544,6 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "opaque-agent-control-token",
-        url: `${hostOrigin}/internal/v1/agent-control`,
-      },
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
         toolsRevision: "test-tools-v1",
@@ -5566,7 +5562,6 @@ function executeCommand(
         url: "https://host.example/internal/v1/mcp",
       },
       browserCdp: {
-        token: "opaque-browser-cdp-token",
         url: `${hostOrigin}/internal/v1/browser-cdp`,
       },
 

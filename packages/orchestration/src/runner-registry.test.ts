@@ -1894,10 +1894,6 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "agent-token",
-        url: "https://host.example.test/internal/v1/agent-control",
-      },
       agentTools: {
         tools: ["thread_read", "integration_call", "computer"],
         toolsRevision: "test-tools-v1",
@@ -1906,10 +1902,7 @@ function executeCommand(
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/mcp",
       },
-      browserCdp: {
-        token: "browser-cdp-token",
-        url: "https://host.example.test/internal/v1/browser-cdp",
-      },
+      browserCdp: { url: "https://host.example.test/internal/v1/browser-cdp" },
 
       plugins: {
         versions: [],
