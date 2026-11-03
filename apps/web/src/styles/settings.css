@@ -929,3 +929,128 @@ html.electron-shell .settings-navigation__header :is(a, button) {
 #plugin-placement .card__row {
   justify-content: space-between;
 }
+.settings-row-menu {
+  position: relative;
+}
+.settings-row-menu summary {
+  list-style: none;
+}
+.settings-row-menu summary::-webkit-details-marker {
+  display: none;
+}
+.settings-row-menu[open] > .btn {
+  position: absolute;
+  z-index: var(--layer-drawer);
+  inset-inline-end: 0;
+  background: var(--surface-elevated);
+  box-shadow: var(--lift-float);
+  white-space: nowrap;
+}
+.settings-item .icon-btn:has(svg) {
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+@media (hover: hover) {
+  .settings-item .icon-btn:has(svg) {
+    opacity: 0;
+  }
+  .settings-item:hover .icon-btn,
+  .settings-item:focus-within .icon-btn {
+    opacity: 1;
+  }
+}
+.intg-icon--brand {
+  padding: 6px;
+  background: var(--text);
+}
+.intg-icon--brand img {
+  object-fit: contain;
+}
+.intg-icon--device {
+  background: var(--fill-plate-hover);
+  color: var(--ember);
+}
+.intg-icon--device svg {
+  width: 60%;
+  height: 60%;
+}
+.intg-icon--apple-calendar {
+  background: var(--red-text);
+  color: var(--ground);
+}
+.settings-content__inner .intg-hero {
+  padding-inline: 0;
+}
+.settings-content__inner .section {
+  width: 100%;
+  max-width: none;
+}
+
+.settings-plugin-overview .card__row {
+  padding-block: var(--space-8);
+}
+
+.settings-content__inner .card__row-actions {
+  width: auto;
+  flex: none;
+}
+.settings-content__inner .card__row-title {
+  min-width: 0;
+}
+.settings-content__inner .settings-item .btn:not(.btn--primary):not(.btn--danger) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.settings-content__inner .page__header:has(.settings-section__title-row) {
+  margin-bottom: var(--space-12);
+}
+@media (max-width: 600px) {
+  .settings-content__inner .intg-account {
+    flex-wrap: wrap;
+  }
+  .settings-content__inner .intg-account .card__row-body {
+    min-width: 110px;
+  }
+  .settings-content__inner .intg-account .card__row-actions {
+    margin-inline-start: auto;
+  }
+  .settings-content__inner .intg-account .btn {
+    font-size: var(--text-sm);
+  }
+}
+.settings-layout .connected-apps__panel > .page__inner {
+  padding: 0;
+  max-width: none;
+}
+.intg-icon--calendar {
+  background: var(--text);
+  color: var(--ground);
+  border-top: 7px solid var(--red-text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-strong);
+}
+.settings-plugin-overview .card__row-detail > svg {
+  width: 12px;
+  height: 12px;
+  vertical-align: -2px;
+  margin-inline-end: 4px;
+}
+.settings-content__inner .card__row-title > a {
+  color: inherit;
+}
+.settings-messaging-row .card__row-title {
+  flex-wrap: wrap;
+}
+.settings-messaging-row .card__row-title > a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-messaging-row .card__row-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-messaging-row .card__row-actions {
+  gap: var(--space-4);
+}
