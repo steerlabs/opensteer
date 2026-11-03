@@ -19,8 +19,6 @@ import type {
 const watchReconcileRetryInitialMs = 5_000;
 const watchReconcileRetryMaximumMs = 60_000;
 
-type WatchIntegrationTokenService =
-  WatchCapabilityTokenService<"opensteer-watch-integration-tools">;
 type WatchBrowserTokenService = WatchCapabilityTokenService<"opensteer-watch-browser-cdp">;
 type WatchStore = Pick<
   TriggerStore,
@@ -35,8 +33,6 @@ export interface WatchServiceOptions {
   readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
   readonly browserCdpUrl: string;
   readonly controlTokens: Pick<WatchControlTokenService, "issue">;
-  readonly integrationMcpUrl: string;
-  readonly integrationTokens: Pick<WatchIntegrationTokenService, "issue">;
   readonly mcpUrl: string;
   readonly onChanged: (workspaceId: WorkspaceId) => void;
   readonly onError: (error: unknown, environmentId: EnvironmentId) => void;
@@ -51,8 +47,6 @@ export class WatchService {
   readonly #browser: WatchServiceOptions["browser"];
   readonly #browserCdpUrl: string;
   readonly #controlTokens: WatchServiceOptions["controlTokens"];
-  readonly #integrationMcpUrl: string;
-  readonly #integrationTokens: WatchServiceOptions["integrationTokens"];
   readonly #mcpUrl: string;
   readonly #onChanged: WatchServiceOptions["onChanged"];
   readonly #onError: WatchServiceOptions["onError"];
@@ -74,8 +68,6 @@ export class WatchService {
     this.#browser = options.browser;
     this.#browserCdpUrl = options.browserCdpUrl;
     this.#controlTokens = options.controlTokens;
-    this.#integrationMcpUrl = options.integrationMcpUrl;
-    this.#integrationTokens = options.integrationTokens;
     this.#mcpUrl = options.mcpUrl;
     this.#onChanged = options.onChanged;
     this.#onError = options.onError;
@@ -199,11 +191,13 @@ export class WatchService {
     }[] = [];
     let waitingForWorkspace = false;
     for (const context of snapshot.activations) {
-      const incompatibility = await triggerProgramCompatibilityReason(
-        this.#runnerStore,
-        context.activation.environmentId,
-        context.toolContractVersion,
-      );
+      const incompatibility = !identity.capabilities.includes("agent-tools-plan-v1")
+        ? "Update this computer to use Opensteer tools."
+        : await triggerProgramCompatibilityReason(
+            this.#runnerStore,
+            context.activation.environmentId,
+            context.toolContractVersion,
+          );
       if (incompatibility) {
         unavailable.push({
           activationId: context.activation.id,
@@ -249,7 +243,6 @@ export class WatchService {
         continue;
       }
       const mcp = this.#controlTokens.issue(scope);
-      const integrationMcp = this.#integrationTokens.issue(scope);
       const hasBrowser = await this.#browser.hasBrowserProfileAccess(
         context.activation.createdBy,
         context.activation.workspaceId,
@@ -261,7 +254,6 @@ export class WatchService {
         anchorThreadId: context.activation.anchorThreadId,
         capabilities: {
           browserCdp: browserCdp ? { ...browserCdp, url: this.#browserCdpUrl } : null,
-          integrationMcp: { ...integrationMcp, url: this.#integrationMcpUrl },
           mcp: { ...mcp, url: this.#mcpUrl },
         },
         executionGeneration: context.activation.executionGeneration,

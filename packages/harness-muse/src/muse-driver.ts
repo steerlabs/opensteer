@@ -1475,12 +1475,6 @@ function museSessionConfig(context: HarnessSessionContext): Record<string, unkno
         transport: "streamableHttp",
         url: context.agentTools.url,
       },
-      opensteer_integrations: {
-        headers: { Authorization: `Bearer ${context.integrationTools.token}` },
-        mode: "required",
-        transport: "streamableHttp",
-        url: context.integrationTools.url,
-      },
     },
   };
 }

@@ -1,3 +1,4 @@
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -783,17 +784,14 @@ describe("OpenCode sessions", () => {
       type: "remote",
       url: "https://host.example/internal/v1/mcp",
     });
-    expect(mcp.opensteer_integrations).toMatchObject({
-      headers: { Authorization: "Bearer test-integration-tools-token" },
-      oauth: false,
-      type: "remote",
-    });
+    expect(Object.keys(mcp)).toEqual(["opensteer"]);
     const permission = config.permission as Record<string, string>;
+    expect(permission.opensteer_host_only_tool).toBe("allow");
     for (const { name } of toolsForCapabilityProfile("main")) {
       expect(permission[`opensteer_${name}`]).toBe("allow");
     }
     for (const name of integrationGatewayToolNames) {
-      expect(permission[`opensteer_integrations_${name}`]).toBe("allow");
+      expect(permission[`opensteer_${name}`]).toBe("allow");
     }
   });
 
@@ -842,7 +840,7 @@ describe("OpenCode sessions", () => {
     // The model is told the names it must type, not just the servers: OpenCode
     // renames every MCP tool to `<server>_<tool>`.
     expect(instructions).toContain("opensteer_thread_read");
-    expect(instructions).toContain("opensteer_integrations_integration_call");
+    expect(instructions).toContain("opensteer_integration_call");
   });
 
   it("refuses to load two Agent Skills of one name", async () => {
@@ -1833,7 +1831,14 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   const context: HarnessSessionContext = {
     accessMode: options.accessMode ?? "approval-required",
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [
+        "host_only_tool",
+        ...agentToolDefinitions.map(({ name }) => name),
+        ...integrationGatewayToolNames,
+      ],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
@@ -1847,10 +1852,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       itemCount: options.history?.length ?? 0,
     },
     instructions: "Follow the workspace instructions.",
-    integrationTools: {
-      token: "test-integration-tools-token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

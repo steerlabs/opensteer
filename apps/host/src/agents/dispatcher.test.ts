@@ -39,13 +39,13 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      integrationToolsTokens: {} as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: { dispatch: runnersDispatch } as never,
       store: { dispatchRequestResponse } as never,
       triggerControlTokens: {} as never,
-      triggerIntegrationToolsTokens: {} as never,
+
       triggers: {} as never,
       workspaces: {} as never,
       workspaceAccess: {} as never,
@@ -89,7 +89,7 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      integrationToolsTokens: {} as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: { dispatch: runnersDispatch } as never,
@@ -102,7 +102,7 @@ describe("HostCommandDispatcher Request responses", () => {
         }),
       } as never,
       triggerControlTokens: {} as never,
-      triggerIntegrationToolsTokens: {} as never,
+
       triggers: {} as never,
       workspaces: {} as never,
       workspaceAccess: {} as never,
@@ -245,7 +245,7 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
         egress: {} as never,
         pluginVersions: async () => [],
         pluginsTokens: {} as never,
-        integrationToolsTokens: {} as never,
+
         onWorkspaceEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
@@ -256,6 +256,7 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
               "thread-state-v1",
               "requester-time-zone-v1",
               "execution-plane-v2",
+              "agent-tools-plan-v1",
             ],
             connectionGeneration: 7,
             name: "Runner",
@@ -269,7 +270,7 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
           }),
         } as never,
         triggerControlTokens: {} as never,
-        triggerIntegrationToolsTokens: {} as never,
+
         triggers: {} as never,
         workspaceAccess: {} as never,
         workspaces: {} as never,
@@ -586,6 +587,25 @@ describe("HostCommandDispatcher model selection", () => {
     );
   });
 
+  it("refuses the new tool plan on an old Runner with a visible update reason", async () => {
+    const { dispatch, run } = dispatchRun({
+      capabilities: [
+        "native-session-continuation-v1",
+        "assignments-v1",
+        "thread-state-v1",
+        "requester-time-zone-v1",
+        "execution-plane-v2",
+      ],
+      models: [gpt5],
+      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+    });
+    await expect(run()).rejects.toMatchObject({
+      disposition: "failed",
+      message: "Update this computer to use Opensteer tools.",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("asks a Runner that cannot carry the requester's time zone to update instead of running", async () => {
     const { dispatch, run, timeZoneFor } = dispatchRun({
       capabilities: [
@@ -593,6 +613,7 @@ describe("HostCommandDispatcher model selection", () => {
         "assignments-v1",
         "thread-state-v1",
         "execution-plane-v2",
+        "agent-tools-plan-v1",
       ],
       models: [gpt5],
       modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
@@ -614,6 +635,7 @@ describe("HostCommandDispatcher model selection", () => {
       "thread-state-v1",
       "requester-time-zone-v1",
       "execution-plane-v2",
+      "agent-tools-plan-v1",
     ];
     const conversation = dispatchRun({
       capabilities: older,
@@ -677,7 +699,7 @@ describe("HostCommandDispatcher model selection", () => {
       egress: { issue: () => "egress-token" } as never,
       pluginVersions: async () => [],
       pluginsTokens: { issue: () => "skills-token" } as never,
-      integrationToolsTokens: { issue: () => "tools-token" } as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
@@ -693,6 +715,7 @@ describe("HostCommandDispatcher model selection", () => {
             "thread-state-v1",
             "requester-time-zone-v1",
             "execution-plane-v2",
+            "agent-tools-plan-v1",
           ],
           name: "Run computer",
           runnerId: createId("runner"),
@@ -745,7 +768,7 @@ describe("HostCommandDispatcher model selection", () => {
         }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
       } as never,
       triggerControlTokens: {} as never,
-      triggerIntegrationToolsTokens: {} as never,
+
       triggers: {} as never,
       workspaces: { ensureExecutionReady: async () => undefined } as never,
       workspaceAccess: { plan: async () => ({ kind: "test-plan" }) } as never,
@@ -786,6 +809,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
           "thread-state-v1",
           "requester-time-zone-v1",
           "execution-plane-v2",
+          "agent-tools-plan-v1",
         ],
         name: "Run computer",
         runnerId: createId("runner"),
@@ -812,7 +836,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
         egress: { issue: () => "egress-token" } as never,
         pluginVersions: async () => [],
         pluginsTokens: { issue: () => "skills-token" } as never,
-        integrationToolsTokens: { issue: () => "tools-token" } as never,
+
         onWorkspaceEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
@@ -883,7 +907,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
           }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
         } as never,
         triggerControlTokens: {} as never,
-        triggerIntegrationToolsTokens: {} as never,
+
         triggers: {} as never,
         workspaces: { ensureExecutionReady: async () => undefined } as never,
         workspaceAccess: { plan } as never,
@@ -938,7 +962,7 @@ function steerDispatcher(input: {
     egress: {} as never,
     pluginVersions: async () => [],
     pluginsTokens: {} as never,
-    integrationToolsTokens: {} as never,
+
     onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
     runners: { dispatch: input.runnersDispatch } as never,
@@ -953,7 +977,7 @@ function steerDispatcher(input: {
       succeedCommand: input.succeedCommand,
     } as never,
     triggerControlTokens: {} as never,
-    triggerIntegrationToolsTokens: {} as never,
+
     triggers: {} as never,
     workspaces: {} as never,
     workspaceAccess: {} as never,

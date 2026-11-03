@@ -1,3 +1,4 @@
+import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { AgentEventSchema, BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -50,6 +51,20 @@ integration.sequential("previous public release client journeys", () => {
     stack = undefined;
     for (const close of cleanups.splice(0)) await close();
   }, 60_000);
+
+  it("keeps the released Runner's strict plan boundary visible", async () => {
+    const released = await releasedClientReader(previousPublicRelease);
+    cleanups.push(released.close);
+    const plan = agentToolsPlanForRun({
+      role: "work",
+      token: "run-token",
+      url: "https://host.test/internal/v1/mcp",
+    });
+    expect(released.reader.RunnerCapabilitySchema.safeParse("agent-tools-plan-v1").success).toBe(
+      false,
+    );
+    expect(released.reader.RunAgentToolsPlanSchema.safeParse(plan).success).toBe(false);
+  });
 
   for (const revision of [previousPublicRelease]) {
     it(`serves discovery, subscription, reads and ordinary mutations to ${revision}`, async () => {

@@ -164,6 +164,8 @@ describe("Muse Code sessions", () => {
       headers: { Authorization: "Bearer agent-tools-token" },
       transport: "streamableHttp",
     });
+    expect(Object.keys(start?.params?.config?.mcpServers ?? {})).toEqual(["opensteer"]);
+    expect(start?.params?.config?.mcpServers?.opensteer).toMatchObject({ mode: "required" });
     const turn = messages.find((entry) => entry.message?.method === "turn/start")?.message;
     expect(turn?.params?.workspaceRoots).toEqual([await realpath(fixture.context.workspacePath)]);
     expect(observer.events.map((event) => event.type)).toEqual(
@@ -285,6 +287,17 @@ describe("Muse Code sessions", () => {
     expect(methods).toEqual(
       expect.arrayContaining(["session/resume", "session/setApprovalMode", "session/setModel"]),
     );
+    const resumed = (await fixture.messages()).find(
+      (entry) => entry.message?.method === "session/resume",
+    )?.message;
+    expect(resumed?.params?.config?.mcpServers).toEqual({
+      opensteer: {
+        headers: { Authorization: "Bearer agent-tools-token" },
+        mode: "required",
+        transport: "streamableHttp",
+        url: fixture.context.agentTools.url,
+      },
+    });
     await session.stop();
     await adapter.close();
   });
@@ -469,7 +482,10 @@ async function setup(scenario: string) {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      capabilityProfileId: "main",
+      tools: ["thread_read", "integration_call", "computer"],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "agent-tools-token",
       url: "https://host.test/mcp",
     },
@@ -479,7 +495,6 @@ async function setup(scenario: string) {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Workspace instructions.",
-    integrationTools: { token: "integration-tools-token", url: "https://host.test/integrations" },
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

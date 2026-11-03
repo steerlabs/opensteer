@@ -1092,6 +1092,7 @@ export async function connectCallerMachine(
       "browser-page-input-v1",
       "thread-state-v1",
       "requester-time-zone-v1",
+      "agent-tools-plan-v1",
       "execution-plane-v2",
       ...(input.restartsRuns ? ["attempts-v1"] : []),
     ],
@@ -1395,7 +1396,7 @@ export async function acceptCallerRun(
     get attempt() {
       return current;
     },
-    integrationTools: context.integrationTools,
+    integrationTools: context.agentTools,
     complete: async () => {
       release();
       await report(current, "run.completed", { status: "completed" });

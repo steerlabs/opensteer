@@ -11,6 +11,7 @@ import { createId } from "@opensteer/core";
 import { TriggerExecutionContextSchema } from "@opensteer/protocol";
 import { TriggerExecutionOutputSchema } from "@opensteer/triggers";
 import { afterEach, describe, expect, it } from "vitest";
+import { startProgramEndpoints } from "./program-endpoints.js";
 import { TriggerProgramExecutor } from "./program-executor.js";
 
 const temporaryDirectories: string[] = [];
@@ -24,6 +25,7 @@ afterEach(async () => {
 describe("TriggerProgramExecutor", () => {
   it("runs ordinary TypeScript with event data, fetch, and the standard MCP transport", async () => {
     const requests: Array<{ readonly method: string; readonly name?: string }> = [];
+    const toolRequests: { url: string | undefined; authorization: string | undefined }[] = [];
     const handleRequest = async (
       request: IncomingMessage,
       response: ServerResponse,
@@ -33,6 +35,7 @@ describe("TriggerProgramExecutor", () => {
         response.end(JSON.stringify({ available: true }));
         return;
       }
+      toolRequests.push({ url: request.url, authorization: request.headers.authorization });
       if (request.method === "DELETE") {
         requests.push({ method: "DELETE" });
         response.writeHead(204).end();
@@ -129,6 +132,10 @@ describe("TriggerProgramExecutor", () => {
         credentials: { EXAMPLE_TOKEN: "plaintext-must-not-cross-wire" },
       }),
     ).toThrow();
+    const endpoints = await startProgramEndpoints({
+      capabilities: () => context,
+      transport: { mode: "development" },
+    });
     try {
       const output = await new TriggerProgramExecutor({
         nodeExecutable: process.execPath,
@@ -136,6 +143,7 @@ describe("TriggerProgramExecutor", () => {
       }).execute({
         context,
         ...direct(context),
+        endpoints: endpoints.endpoints,
         signal: new AbortController().signal,
         workspace,
       });
@@ -159,10 +167,18 @@ describe("TriggerProgramExecutor", () => {
         { method: "tools/call", name: "integration_tool" },
       ]);
       expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(2);
+      expect(toolRequests.length).toBeGreaterThan(0);
+      expect(
+        toolRequests.every(
+          ({ url, authorization }) =>
+            url === "/mcp" && authorization === `Bearer ${context.mcp.token}`,
+        ),
+      ).toBe(true);
       await expect(
         stat(join(workspace.path, ".opensteer", ".trigger-executions", context.occurrenceId)),
       ).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
+      await endpoints.close();
       await new Promise<void>((resolvePromise, reject) =>
         server.close((error) => (error ? reject(error) : resolvePromise())),
       );
@@ -390,7 +406,6 @@ function direct(context: ReturnType<typeof triggerContext>) {
   return {
     endpoints: {
       ...(context.browserCdp ? { browserCdp: context.browserCdp } : {}),
-      integrationMcp: context.integrationMcp,
       mcp: context.mcp,
     },
     planLaunch: async () => (launch: HarnessProcessLaunch) => launch,
@@ -429,10 +444,7 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
       trigger: { anchorThreadId: threadId, id: triggerId, revisionId, workspaceId },
     },
     executionGeneration: 1,
-    integrationMcp: {
-      token: "test-integration-token",
-      url: input.mcpUrl ?? "http://127.0.0.1:1/integration-mcp",
-    },
+
     mcp: { token: "test-token", url: input.mcpUrl ?? "http://127.0.0.1:1/mcp" },
     occurrenceId,
     program: { toolContractVersion: 2, language: "typescript", source: input.source },

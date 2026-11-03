@@ -11,7 +11,6 @@ interface CapabilityPlan {
 /** The Host capabilities a program acts under, current at each call. */
 export interface ProgramCapabilities {
   readonly browserCdp: CapabilityPlan | null;
-  readonly integrationMcp: CapabilityPlan;
   readonly mcp: CapabilityPlan;
 }
 
@@ -37,10 +36,6 @@ export async function startProgramEndpoints(input: {
   const proxy = new CredentialProxy({
     routes: {
       "agent-tools": { token: () => input.capabilities().mcp.token, upstream: initial.mcp.url },
-      "integration-tools": {
-        token: () => input.capabilities().integrationMcp.token,
-        upstream: initial.integrationMcp.url,
-      },
     },
     transport: input.transport,
   });
@@ -60,7 +55,6 @@ export async function startProgramEndpoints(input: {
       },
       endpoints: {
         ...(browserCdpUrl ? { browserCdp: { token: proxied.secret, url: browserCdpUrl } } : {}),
-        integrationMcp: { token: proxied.secret, url: proxied.urls["integration-tools"] },
         mcp: { token: proxied.secret, url: proxied.urls["agent-tools"] },
       },
       revoke() {

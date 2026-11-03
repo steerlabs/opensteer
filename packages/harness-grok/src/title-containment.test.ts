@@ -326,14 +326,20 @@ function sessionContext(
   const instanceId = createId("harnessInstance") as HarnessInstanceId;
   return {
     accessMode: "approval-required",
-    agentTools: { capabilityProfileId: "main", token: "agent", url: "https://host/mcp" },
+    agentTools: {
+      tools: ["thread_read", "integration_call", "computer"],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
+      token: "agent",
+      url: "https://host/mcp",
+    },
     environment,
     environmentId: createId("environment"),
     harnessInstanceId: instanceId,
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
-    integrationTools: { token: "integration", url: "https://host/integrations" },
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

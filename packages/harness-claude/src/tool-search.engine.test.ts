@@ -11,7 +11,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { describe, expect, it } from "vitest";
 import { resolveClaudeExecutable } from "./executable.js";
@@ -43,7 +43,7 @@ describe("Claude deferred Opensteer tools", () => {
         response.writeHead(405).end();
         return;
       }
-      const name = request.url === "/integrations" ? "opensteer_integrations" : "opensteer";
+      const name = "opensteer";
       const server = new Server({ name, version: "1" }, { capabilities: { tools: {} } });
       resources.add(server);
       server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -56,24 +56,21 @@ describe("Claude deferred Opensteer tools", () => {
         if (slow) await delay(25_000);
         entry.ready = Date.now();
         return {
-          tools:
-            name === "opensteer"
-              ? toolsForCapabilityProfile("main").map((tool) => ({
-                  name: tool.name,
-                  description: tool.description,
-                  inputSchema: toJsonSchemaCompat(tool.inputSchema, {
-                    strictUnions: true,
-                    pipeStrategy: "input",
-                  }),
-                }))
-              : integrationGatewayToolNames.map((tool) => ({
-                  name: tool,
-                  description: `Fixture ${tool}`,
-                  inputSchema: {
-                    type: "object" as const,
-                    properties: { query: { type: "string" } },
-                  },
-                })),
+          tools: [
+            ...agentToolDefinitions.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: toJsonSchemaCompat(tool.inputSchema, {
+                strictUnions: true,
+                pipeStrategy: "input",
+              }),
+            })),
+            ...integrationGatewayToolNames.map((name) => ({
+              name,
+              description: `Fixture ${name}`,
+              inputSchema: { type: "object" as const, properties: { query: { type: "string" } } },
+            })),
+          ],
         };
       });
       server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -118,7 +115,13 @@ describe("Claude deferred Opensteer tools", () => {
       settingSources: [],
       strictMcpConfig: true,
       tools: ["ToolSearch", "Agent"],
-      allowedTools: ["ToolSearch", "Agent", "mcp__opensteer__*", "mcp__opensteer_integrations__*"],
+      allowedTools: [
+        "ToolSearch",
+        "Agent",
+        ...[...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames].map(
+          (name) => `mcp__opensteer__${name}`,
+        ),
+      ],
       permissionMode: "default",
       maxTurns: 12,
       persistSession: true,
@@ -132,7 +135,6 @@ describe("Claude deferred Opensteer tools", () => {
       systemPrompt: { type: "preset", preset: "claude_code", excludeDynamicSections: true },
       mcpServers: {
         opensteer: { type: "http", url: `${origin}/tools`, alwaysLoad },
-        opensteer_integrations: { type: "http", url: `${origin}/integrations`, alwaysLoad },
       },
       canUseTool: async (_name, input) => ({ behavior: "allow", updatedInput: input }),
     });
@@ -170,23 +172,21 @@ describe("Claude deferred Opensteer tools", () => {
       const fresh = await run("deferred-fresh", prompt, options(false));
       slow = false;
       expect(calls.map(({ name }) => name)).toContain("opensteer:thread_list");
-      expect(calls.map(({ name }) => name)).toContain("opensteer_integrations:integration_search");
+      expect(calls.map(({ name }) => name)).toContain("opensteer:integration_search");
       const init = fresh.find(
         ({ message }) => message.type === "system" && message.subtype === "init",
       )?.message;
       if (init?.type !== "system" || init.subtype !== "init") throw new Error("No session init");
       expect(init.tools).toContain("ToolSearch");
       expect(init.tools).toContain("mcp__opensteer__thread_list");
-      expect(init.tools).toContain("mcp__opensteer_integrations__integration_search");
+      expect(init.tools).toContain("mcp__opensteer__integration_search");
       const resumed = await run(
         "deferred-resumed",
         "Find and call Opensteer's thread_read tool for threadId home, and integration_describe. Use ToolSearch to load their schemas. Reply with their proof values.",
         { ...options(false), resume: init.session_id },
       );
       expect(calls.map(({ name }) => name)).toContain("opensteer:thread_read");
-      expect(calls.map(({ name }) => name)).toContain(
-        "opensteer_integrations:integration_describe",
-      );
+      expect(calls.map(({ name }) => name)).toContain("opensteer:integration_describe");
       await run(
         "deferred-subagent",
         "Start one foreground Agent subagent. Instruct it to use ToolSearch to find and call Opensteer's thread_list tool, then return its proof. Do not call thread_list yourself.",

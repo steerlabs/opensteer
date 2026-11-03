@@ -1,6 +1,5 @@
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import { pathToFileURL } from "node:url";
 import {
   attachmentMaxBytes,
@@ -27,7 +26,6 @@ import {
   type UserId,
   type ExecutionNodeId,
 } from "@opensteer/core";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
@@ -94,7 +92,6 @@ import { OpencodeHarnessConfigSchema, type OpencodeHarnessConfig } from "./confi
 import {
   opencodeAgentToolsServer,
   opencodeInspectionConfiguration,
-  opencodeIntegrationToolsServer,
   opencodeSessionConfiguration,
   opencodeToolIdentity,
 } from "./configuration.js";
@@ -1086,7 +1083,7 @@ class OpencodeHarnessSession implements HarnessSession {
         });
       }
     }
-    const openSteerToolIds = opencodeOpensteerToolIds(context.agentTools.capabilityProfileId);
+    const openSteerToolIds = opencodeOpensteerToolIds(context.agentTools.tools);
     const configHome = opencodeSessionConfigHome(context);
     const instructionsFile = join(context.threadStateDirectory, "opencode", "instructions.md");
     const skillsDirectory = await materializeOpencodeSkills(context);
@@ -1098,10 +1095,6 @@ class OpencodeHarnessSession implements HarnessSession {
         agentTools: { token: context.agentTools.token, url: context.agentTools.url },
         baseUrl: this.#config.baseUrl,
         instructionsFile,
-        integrationTools: {
-          token: context.integrationTools.token,
-          url: context.integrationTools.url,
-        },
         modelId: harnessModelId(context.modelSelection),
         ...(compatibleModel
           ? {
@@ -2127,24 +2120,11 @@ async function writeOpencodeInstructionsFile(
  * the model guessing at every call.
  */
 export function opencodeToolsNotice(openSteerToolIds: readonly string[]): string | undefined {
-  const agentTools = openSteerToolIds.filter(
-    (id) =>
-      id.startsWith(`${opencodeAgentToolsServer}_`) &&
-      !id.startsWith(`${opencodeIntegrationToolsServer}_`),
-  );
-  const integrationTools = openSteerToolIds.filter((id) =>
-    id.startsWith(`${opencodeIntegrationToolsServer}_`),
-  );
-  if (agentTools.length === 0 && integrationTools.length === 0) return undefined;
+  if (openSteerToolIds.length === 0) return undefined;
   return [
     "## Opensteer tools",
     "Call Opensteer tools as `<server>_<tool>`; they need no prompt in any access mode.",
-    ...(agentTools.length > 0
-      ? [`\nFrom \`${opencodeAgentToolsServer}\`: ${agentTools.join(", ")}.`]
-      : []),
-    ...(integrationTools.length > 0
-      ? [`\nFrom \`${opencodeIntegrationToolsServer}\`: ${integrationTools.join(", ")}.`]
-      : []),
+    `From \`${opencodeAgentToolsServer}\`: ${openSteerToolIds.join(", ")}.`,
   ].join("\n");
 }
 
@@ -2342,15 +2322,8 @@ function opencodeConnectionLabel(sourceLabel: string, baseUrl: string | undefine
 /* ------------------------------------------------------------------- turn */
 
 /** Every Opensteer tool id as OpenCode will flatten it, for the permission table. */
-export function opencodeOpensteerToolIds(
-  capabilityProfileId: Parameters<typeof toolsForCapabilityProfile>[0],
-): readonly string[] {
-  return [
-    ...toolsForCapabilityProfile(capabilityProfileId).map(
-      ({ name }) => `${opencodeAgentToolsServer}_${name}`,
-    ),
-    ...integrationGatewayToolNames.map((name) => `${opencodeIntegrationToolsServer}_${name}`),
-  ];
+export function opencodeOpensteerToolIds(tools: readonly string[]): readonly string[] {
+  return tools.map((name) => `${opencodeAgentToolsServer}_${name}`);
 }
 
 const opencodeCurrentRunHeading = "## This Run's computers";

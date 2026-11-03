@@ -1,3 +1,5 @@
+import { integrationGatewayToolNames } from "@opensteer/integration-core";
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readdir, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -144,10 +146,6 @@ describe("Cursor plugin materialisation", () => {
         opensteer: {
           headers: { Authorization: "Bearer test-agent-tools-token" },
           url: "https://host.example/internal/v1/mcp",
-        },
-        opensteer_integrations: {
-          headers: { Authorization: "Bearer test-integration-tools-token" },
-          url: "https://host.example/internal/v1/integration-mcp",
         },
       },
     });
@@ -634,6 +632,8 @@ describe("Cursor turns", () => {
     expect(prompt).toContain("Follow the workspace instructions.");
     expect(prompt).toContain("plugin-opensteer-opensteer");
     expect(prompt).toContain("getMcpTools");
+    expect(prompt).toContain("host_only_tool");
+    expect(prompt).not.toContain("Server plugin-opensteer-opensteer_integrations holds:");
     expect(prompt).toContain("- release-notes: Prepare release notes");
     expect(prompt).toContain(
       `SKILL.md: ${join(fixture.context.skills!.skills[0]!.path, "SKILL.md")}`,
@@ -1259,7 +1259,14 @@ async function setup(options: SetupOptions): Promise<Fixture> {
   const context: HarnessSessionContext = {
     accessMode: options.accessMode ?? "full-access",
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [
+        "host_only_tool",
+        ...agentToolDefinitions.map(({ name }) => name),
+        ...integrationGatewayToolNames,
+      ],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
@@ -1269,10 +1276,6 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Follow the workspace instructions.",
-    integrationTools: {
-      token: "test-integration-tools-token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

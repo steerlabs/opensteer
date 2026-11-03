@@ -64,7 +64,6 @@ import {
   RunAgentToolsPlanSchema,
   RunBrowserCdpPlanSchema,
   RunPluginsPlanSchema,
-  RunIntegrationToolsPlanSchema,
 } from "./agent-control.js";
 import { RunAttachmentPlanSchema } from "./attachments.js";
 import { BrowserEngineSchema } from "./browser-profile-storage.js";
@@ -204,7 +203,6 @@ export const RunExecutionContextSchema = z.strictObject({
   attachments: RunAttachmentPlanSchema.optional(),
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
-  integrationTools: RunIntegrationToolsPlanSchema,
   specialistId: z
     .string()
     .regex(/^[a-zA-Z0-9-]+$/u)
@@ -368,7 +366,6 @@ export const WatchReconcileActivationSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   capabilities: z.strictObject({
     browserCdp: WatchCapabilityPlanSchema.nullable(),
-    integrationMcp: WatchCapabilityPlanSchema,
     mcp: WatchCapabilityPlanSchema,
   }),
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -384,7 +381,6 @@ export const TriggerExecutionContextSchema = z.strictObject({
   browserCdp: TriggerCapabilityPlanSchema.nullable(),
   event: TriggerProgramEventSchema,
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  integrationMcp: TriggerCapabilityPlanSchema,
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,
   program: TriggerProgramSchema,
@@ -2019,7 +2015,6 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
         credentials: z.strictObject({
           agentControl: capabilityTokenSchema,
           attachments: capabilityTokenSchema.optional(),
-          integrationTools: capabilityTokenSchema,
         }),
         status: z.literal("issued"),
       }),

@@ -1,3 +1,4 @@
+import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
   ModelSelectionSchema,
@@ -45,10 +46,6 @@ import {
   type RequestResponseVault,
 } from "../identity/request-response-vault.js";
 import type { PluginPackagesTokenService } from "../integrations/plugin-package-service.js";
-import type {
-  IntegrationToolsTokenService,
-  TriggerIntegrationToolsTokenService,
-} from "../integrations/integration-tools-mcp-service.js";
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
@@ -114,13 +111,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #agentControlUrl: string;
   readonly #agentToolsUrl: string;
   readonly #agentBrowserCdpUrl: string;
-  readonly #integrationToolsUrl: string;
   readonly #pluginVersions: (
     workspaceId: WorkspaceId,
   ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
   readonly #pluginsTokens: PluginPackagesTokenService;
   readonly #pluginsUrl: string;
-  readonly #integrationToolsTokens: IntegrationToolsTokenService;
   readonly #browser: Pick<BrowserService, "hasBrowserProfileAccess">;
   readonly #browserCdpUrl: string;
   readonly #egress: EgressService;
@@ -131,7 +126,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
   readonly #triggerControlTokens: TriggerControlTokenService;
-  readonly #triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
   readonly #triggers: TriggerStore;
   readonly #workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
   readonly #workspaceAccess: WorkspaceExecutionAccessService;
@@ -148,7 +142,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       workspaceId: WorkspaceId,
     ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
     readonly pluginsTokens: PluginPackagesTokenService;
-    readonly integrationToolsTokens: IntegrationToolsTokenService;
     readonly egress: EgressService;
     readonly executionLeaseMs: number;
     readonly executionClock?: Pick<import("@opensteer/shared/clock").Clock, "now">;
@@ -156,7 +149,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly runners: RunnerRegistry;
     readonly store: OpensteerStore;
     readonly triggerControlTokens: TriggerControlTokenService;
-    readonly triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
@@ -168,14 +160,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#agentControlUrl = new URL("/internal/v1/agent-control", options.publicUrl).toString();
     this.#agentToolsUrl = new URL("/internal/v1/mcp", options.publicUrl).toString();
     this.#agentBrowserCdpUrl = new URL("/internal/v1/browser-cdp", options.publicUrl).toString();
-    this.#integrationToolsUrl = new URL(
-      "/internal/v1/integration-mcp",
-      options.publicUrl,
-    ).toString();
     this.#pluginVersions = options.pluginVersions;
     this.#pluginsTokens = options.pluginsTokens;
     this.#pluginsUrl = new URL("/internal/v1/plugin-cache", options.publicUrl).toString();
-    this.#integrationToolsTokens = options.integrationToolsTokens;
     this.#browser = options.browser;
     this.#browserCdpUrl = new URL("/internal/v1/trigger-cdp", options.publicUrl).toString();
     this.#egress = options.egress;
@@ -186,7 +173,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.#store = options.store;
     this.#triggerControlTokens = options.triggerControlTokens;
-    this.#triggerIntegrationToolsTokens = options.triggerIntegrationToolsTokens;
     this.#triggers = options.triggers;
     this.#workspaces = options.workspaces;
     this.#workspaceAccess = options.workspaceAccess;
@@ -281,6 +267,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "Update this Runner so agents know the person's time zone.",
         "failed",
       );
+    }
+    if (!identity.capabilities.includes("agent-tools-plan-v1")) {
+      throw new CommandDispatchError("Update this computer to use Opensteer tools.", "failed");
     }
     if (!identity.capabilities.includes("execution-plane-v2")) {
       throw new CommandDispatchError(
@@ -477,20 +466,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       threadId: context.thread.id,
       workspaceId: context.workspace.id,
     });
-    const integrationToolsToken = this.#integrationToolsTokens.issue({
-      bindingGeneration: binding.bindingGeneration,
-      grantId: binding.grantId,
-      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
-      capabilityProfileId: context.thread.capabilityProfileId,
-      environmentId: context.run.environmentId,
-      membershipGeneration: context.membershipGeneration,
-      requestedBy: command.requestedBy,
-      runId: context.run.id,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.thread.id,
-      workspaceId: context.workspace.id,
-    });
     const specialist = context.thread.specialistId
       ? await this.#store.database
           .selectFrom("specialists")
@@ -579,19 +554,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           token: agentControlToken,
           url: this.#agentControlUrl,
         },
-        agentTools: {
-          ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
-          capabilityProfileId: context.thread.capabilityProfileId,
+        agentTools: agentToolsPlanForRun({
           token: agentControlToken,
           url: this.#agentToolsUrl,
-        },
+          role: context.thread.role,
+        }),
         browserCdp: {
           token: agentControlToken,
           url: this.#agentBrowserCdpUrl,
-        },
-        integrationTools: {
-          token: integrationToolsToken,
-          url: this.#integrationToolsUrl,
         },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
         plugins: {
@@ -759,6 +729,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       initial.revision.program.toolContractVersion,
     );
     if (incompatibility) throw new CommandDispatchError(incompatibility, "failed");
+    if (!identity.capabilities.includes("agent-tools-plan-v1")) {
+      throw new CommandDispatchError("Update this computer to use Opensteer tools.", "failed");
+    }
     if (!identity.capabilities.includes("execution-plane-v2")) {
       throw new CommandDispatchError(
         "Update this Runner to the current execution protocol.",
@@ -793,17 +766,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       toolContractVersion: context.revision.program.toolContractVersion,
       workspaceId: context.workspace.id,
     });
-    const integrationToken = this.#triggerIntegrationToolsTokens.issue({
-      environmentId: context.anchorThread.environmentId,
-      executionGeneration,
-      occurrenceId: context.occurrence.id,
-      requestedBy: context.trigger.createdBy,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.anchorThread.id,
-      toolContractVersion: context.revision.program.toolContractVersion,
-      workspaceId: context.workspace.id,
-    });
     const hasBrowser = await this.#browser.hasBrowserProfileAccess(
       context.trigger.createdBy,
       context.workspace.id,
@@ -816,7 +778,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         browserCdp: hasBrowser ? { token: capabilityToken, url: this.#browserCdpUrl } : null,
         event: context.occurrence.event,
         executionGeneration,
-        integrationMcp: { token: integrationToken, url: this.#integrationToolsUrl },
         mcp: { token: capabilityToken, url: this.#agentToolsUrl },
         occurrenceId: context.occurrence.id,
         program: context.revision.program,

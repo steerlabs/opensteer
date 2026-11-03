@@ -211,7 +211,7 @@ integrations versions are separate from the Runner proof format.
 
 Upgrade Hosts before Runners needing new execution/storage semantics; Personal
 ships both together. Enrollment is not execution admission. Native continuation,
-execution leases and requester-time-zone support are mandatory execution gates;
+execution leases, requester-time-zone support and Host-authored MCP plans are mandatory execution gates;
 unsupported Runners stay visible but cannot execute. Refused durable events end
 only their still-bound Run, not unrelated Runs or the connection.
 

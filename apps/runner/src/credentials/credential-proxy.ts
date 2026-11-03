@@ -9,7 +9,7 @@ import { allowsPlaintextRunnerTransport } from "@opensteer/core";
 import { agentToolPayloadMaxSerializedBytes } from "@opensteer/protocol";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 
-export type CredentialRouteName = "agent-tools" | "integration-tools";
+export type CredentialRouteName = "agent-tools";
 
 export interface CredentialRoute {
   /** The Host endpoint this route stands in for. */
@@ -107,7 +107,6 @@ export class CredentialProxy {
       secret: this.#secret.toString("utf8"),
       urls: {
         "agent-tools": `${base}/agent-tools`,
-        "integration-tools": `${base}/integration-tools`,
       },
     };
   }

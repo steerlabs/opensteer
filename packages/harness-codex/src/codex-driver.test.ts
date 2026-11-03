@@ -1,3 +1,5 @@
+import { integrationGatewayToolNames } from "@opensteer/integration-core";
+import { agentToolDefinitions } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   lstat,
@@ -17,7 +19,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import {
-  AgentCapabilityProfileIdSchema,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -26,7 +27,6 @@ import {
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
 import {
   isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
@@ -72,25 +72,22 @@ afterEach(async () => {
 });
 
 describe("Codex app-server harness", () => {
-  it.each(["main", "workspace", "delegated", "trigger"])(
-    "enables exactly the current %s catalog without the legacy browser sign-in alias",
-    async (profile) => {
+  it.each([["host_only_tool"], ["thread_read", "integration_call", "computer"]])(
+    "enables exactly the Host plan %j",
+    async (...tools) => {
       const fixture = await setup("happy");
-      const capabilityProfileId = AgentCapabilityProfileIdSchema.parse(profile);
       try {
         const session = await fixture.adapter.startSession({
           ...fixture.context,
-          agentTools: { ...fixture.context.agentTools, capabilityProfileId },
+          agentTools: { ...fixture.context.agentTools, tools },
         });
         try {
           const captured = await fixture.capture();
           const threadStart = captured.find((message) => message.method === "thread/start");
           const config =
             (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
-          const expected = toolsForCapabilityProfile(capabilityProfileId).map(({ name }) => name);
-          expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(expected);
-          expect(expected).not.toContain("browser_sign_in");
-          expect(expected.includes("sign_in")).toBe(profile !== "trigger");
+          expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(tools);
+          expect(config["mcp_servers.opensteer_integrations.enabled"]).toBeUndefined();
         } finally {
           await session.stop();
         }
@@ -1285,7 +1282,7 @@ describe("Codex app-server harness", () => {
       expect.arrayContaining([expect.stringMatching(/^permissions\.opensteer_/u)]),
     );
     expect(captured.find((message) => message.fakeOpensteerTokenEnvironment)).toEqual({
-      fakeOpensteerTokenEnvironment: { agentTools: true, integrationTools: true },
+      fakeOpensteerTokenEnvironment: { agentTools: true },
     });
     expect(captured[0]).toMatchObject({
       method: "initialize",
@@ -1332,26 +1329,11 @@ describe("Codex app-server harness", () => {
           "mcp_servers.opensteer.required": true,
           "mcp_servers.opensteer.tool_timeout_sec": 120,
           "mcp_servers.opensteer.url": fixture.context.agentTools.url,
-          "mcp_servers.opensteer_integrations.bearer_token_env_var":
-            "OPENSTEER_INTEGRATION_TOOLS_TOKEN",
-          "mcp_servers.opensteer_integrations.default_tools_approval_mode": "approve",
-          "mcp_servers.opensteer_integrations.enabled": true,
-          "mcp_servers.opensteer_integrations.enabled_tools": [
-            "integration_search",
-            "integration_describe",
-            "integration_call",
-            "computer",
-            "integration_request",
-            "integration_propose",
-          ],
-          "mcp_servers.opensteer_integrations.required": true,
-          "mcp_servers.opensteer_integrations.tool_timeout_sec": 120,
           // A whole computer-use observation or describe page must reach the
           // model uncut, including on models whose default policy is 10,000 bytes.
-          "mcp_servers.opensteer_integrations.tools.integration_call.output_token_limit": 10_000,
-          "mcp_servers.opensteer_integrations.tools.computer.output_token_limit": 10_000,
-          "mcp_servers.opensteer_integrations.tools.integration_describe.output_token_limit": 10_000,
-          "mcp_servers.opensteer_integrations.url": fixture.context.integrationTools.url,
+          "mcp_servers.opensteer.tools.integration_call.output_token_limit": 10_000,
+          "mcp_servers.opensteer.tools.computer.output_token_limit": 10_000,
+          "mcp_servers.opensteer.tools.integration_describe.output_token_limit": 10_000,
           "skills.bundled.enabled": false,
           "tools.update_plan.enabled": false,
           allow_login_shell: false,
@@ -1981,19 +1963,19 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it("starts a new Runner against a previous Host without the optional computer tool", async () => {
+  it("refuses startup when the required computer tool is missing", async () => {
     const fixture = await setup("previous-host");
     try {
-      const session = await fixture.adapter.startSession(fixture.context);
-      expect(session.providerSessionReference).toBe("codex-thread-1");
-      await session.stop();
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
+        "unexpected tool contract",
+      );
     } finally {
       await fixture.adapter.close();
     }
   });
 
   it.each(["mcp-extra-tool", "mcp-missing-required-tool"])(
-    "rejects %s despite optional computer negotiation",
+    "rejects %s against the exact Host plan",
     async (scenario) => {
       const fixture = await setup(scenario);
       try {
@@ -2790,14 +2772,14 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     machineAccessRelaySocket: undefined,
     accessMode: options.accessMode ?? "full-access",
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [...agentToolDefinitions.map(({ name }) => name), ...integrationGatewayToolNames],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
-    integrationTools: {
-      token: "test-agent-tools-token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
+
     environment,
     environmentId: createId("environment"),
     harnessInstanceId,

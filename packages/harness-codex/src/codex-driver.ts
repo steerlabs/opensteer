@@ -46,8 +46,6 @@ import {
   type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
@@ -173,7 +171,6 @@ const codexIntegrationOutputTokenLimit = 10_000;
 
 const codexAuthenticationTimeoutMs = 10 * 60_000;
 const agentToolsTokenEnvironmentVariable = "OPENSTEER_AGENT_TOOLS_TOKEN";
-const integrationToolsTokenEnvironmentVariable = "OPENSTEER_INTEGRATION_TOOLS_TOKEN";
 
 // Codex answers turn/steer with this JSON-RPC code for every precondition it
 // owns: no active turn, an expectedTurnId mismatch, and a review or compact
@@ -1435,7 +1432,6 @@ class CodexHarnessSession implements HarnessSession {
         this.#source,
       )),
       [agentToolsTokenEnvironmentVariable]: this.#context.agentTools.token,
-      [integrationToolsTokenEnvironmentVariable]: this.#context.integrationTools.token,
     };
     const features = await codexFeatureBoundary(this.#launch);
     this.#client = await CodexStdioClient.start({
@@ -3333,9 +3329,7 @@ async function codexThreadRuntimeConfig(
   for (const name of ambientMcpNames) {
     runtimeConfig[codexMcpConfigPath(name, "enabled")] = false;
   }
-  const agentToolNames = toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-    ({ name }) => name,
-  );
+  const agentToolNames = context.agentTools.tools;
   runtimeConfig[codexMcpConfigPath("opensteer", "url")] = context.agentTools.url;
   runtimeConfig[codexMcpConfigPath("opensteer", "bearer_token_env_var")] =
     agentToolsTokenEnvironmentVariable;
@@ -3344,21 +3338,9 @@ async function codexThreadRuntimeConfig(
   runtimeConfig[codexMcpConfigPath("opensteer", "required")] = true;
   runtimeConfig[codexMcpConfigPath("opensteer", "tool_timeout_sec")] = 120;
   runtimeConfig[codexMcpConfigPath("opensteer", "enabled")] = true;
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "url")] = context.integrationTools.url;
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "bearer_token_env_var")] =
-    integrationToolsTokenEnvironmentVariable;
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "enabled_tools")] = [
-    ...integrationGatewayToolNames,
-  ];
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "default_tools_approval_mode")] =
-    "approve";
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "required")] = true;
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "tool_timeout_sec")] = 120;
-  runtimeConfig[codexMcpConfigPath("opensteer_integrations", "enabled")] = true;
   for (const tool of ["integration_call", "integration_describe", "computer"]) {
-    runtimeConfig[
-      codexMcpConfigPath("opensteer_integrations", `tools.${tool}.output_token_limit`)
-    ] = codexIntegrationOutputTokenLimit;
+    runtimeConfig[codexMcpConfigPath("opensteer", `tools.${tool}.output_token_limit`)] =
+      codexIntegrationOutputTokenLimit;
   }
   return runtimeConfig;
 }
@@ -3492,13 +3474,7 @@ async function assertCodexMcpBoundary(
     throw protocolError("Codex returned an invalid or truncated MCP server inventory");
   }
   const expected = new Map<string, ReadonlySet<string>>([
-    [
-      "opensteer",
-      new Set(
-        toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(({ name }) => name),
-      ),
-    ],
-    ["opensteer_integrations", new Set(integrationGatewayToolNames)],
+    ["opensteer", new Set(context.agentTools.tools)],
   ]);
   const connected = new Set<string>();
   const unexpected: string[] = [];
@@ -3518,12 +3494,7 @@ async function assertCodexMcpBoundary(
         throw protocolError(`Opensteer MCP server ${name} exposed unsupported resources`);
       }
       const actualTools = Object.keys(tools);
-      // Older Hosts do not advertise the negotiated computer REPL. Other
-      // gateway operations and the agent-control server remain required.
-      const requiredTools = [...expectedTools].filter(
-        (tool) => name !== "opensteer_integrations" || tool !== "computer",
-      );
-      const missingTools = requiredTools.filter((tool) => !actualTools.includes(tool));
+      const missingTools = [...expectedTools].filter((tool) => !actualTools.includes(tool));
       const extraTools = actualTools.filter((tool) => !expectedTools.has(tool));
       if (missingTools.length > 0 || extraTools.length > 0) {
         throw protocolError(`Opensteer MCP server ${name} exposed an unexpected tool contract`, {

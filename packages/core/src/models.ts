@@ -273,6 +273,7 @@ export const RunnerCapabilitySchema = z.enum([
   "native-session-continuation-v1",
   // Carries `requesterTimeZone` in every Run's context.
   "requester-time-zone-v1",
+  "agent-tools-plan-v1",
   // A message steered into a Run and accepted by its engine is answered in that
   // Run, as a turn of its own if the engine was already answering.
   "steer-answer-v1",
