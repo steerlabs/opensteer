@@ -1,5 +1,7 @@
 import {
   Button,
+  ContextMenu,
+  SwipeActions,
   Picker,
   DisclosureGroup,
   Host,
@@ -16,6 +18,7 @@ import {
 } from "@expo/ui/swift-ui";
 import {
   disabled,
+  frame,
   searchable,
   navigationTitle,
   tag,
@@ -86,15 +89,35 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
       </Picker>
     );
   if (row.kind === "text") return <Text>{row.label}</Text>;
-  if (row.kind === "button")
-    return (
+  if (row.kind === "button") {
+    const button = (
       <Button
         label={row.label}
         role={row.destructive ? "destructive" : "default"}
-        modifiers={[disabled(row.disabled ?? false)]}
+        modifiers={[disabled(row.disabled ?? false), frame({ minHeight: 44 })]}
         onPress={row.onPress}
       />
     );
+    if (!row.actions?.length) return button;
+    const actions = row.actions.map((action) => (
+      <Button
+        key={action.label}
+        label={action.label}
+        role={action.destructive ? "destructive" : "default"}
+        modifiers={[disabled(row.disabled ?? false)]}
+        onPress={action.onPress}
+      />
+    ));
+    return (
+      <SwipeActions>
+        <ContextMenu>
+          <ContextMenu.Trigger>{button}</ContextMenu.Trigger>
+          <ContextMenu.Items>{actions}</ContextMenu.Items>
+        </ContextMenu>
+        <SwipeActions.Actions allowsFullSwipe={false}>{actions}</SwipeActions.Actions>
+      </SwipeActions>
+    );
+  }
   if (row.kind === "toggle")
     return (
       <Toggle

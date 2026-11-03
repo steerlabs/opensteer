@@ -15,6 +15,11 @@ export type NativeSettingsRow =
       readonly disabled?: boolean;
       readonly destructive?: boolean;
       readonly onPress: () => void;
+      readonly actions?: readonly {
+        readonly label: string;
+        readonly destructive?: boolean;
+        readonly onPress: () => void;
+      }[];
     }
   | {
       readonly key: string;

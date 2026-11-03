@@ -8,12 +8,23 @@ import type { HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 import { settingsDestinations } from "./settings-home-model.js";
 const state = vi.hoisted(() => ({
+  os: "ios",
+  navigate: vi.fn(),
   host: null as HostClient | null,
   page: null as NativeSettingsPageProps | null,
   pages: new Map<string, NativeSettingsPageProps>(),
 }));
-vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
-vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
+vi.mock("react-native", () => ({
+  Platform: {
+    get OS() {
+      return state.os;
+    },
+  },
+  Alert: { alert: vi.fn() },
+}));
+vi.mock("@react-navigation/native", () => ({
+  useNavigation: () => ({ navigate: state.navigate }),
+}));
 vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children, open }: { children: ReactNode; open: boolean }) => (open ? children : null),
 }));
@@ -39,9 +50,10 @@ vi.mock("../ui/mobile-client-context.js", () => {
   const mobile = { getSnapshot: () => ({ selection: { hostClient: state.host } }) };
   return { useMobileClient: () => mobile };
 });
+vi.mock("./settings-plugin-accounts.js", () => ({ PluginAccounts: () => null }));
 const { SettingsMessagingScreen } = await import("./settings-messaging.js");
 const { SettingsPluginsScreen } = await import("./settings-plugins.js");
-const { filterPlugins, pluginGroup } = await import("./settings-adapter.js");
+const { pluginGroups, pluginState } = await import("@opensteer/client/settings");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 let host: MockHostClient;
@@ -143,18 +155,18 @@ it("searches by identity without promoting Waiting to Needs you", async () => {
     placement: { ...first.placement, enabled: true },
     issues: ["waiting-device" as const],
   };
-  expect(pluginGroup(waiting)).toBe("On");
-  expect(pluginGroup({ ...waiting, issues: ["waiting-device", "needs-sign-in"] })).toBe(
+  expect(pluginState(waiting).group).toBe("On");
+  expect(pluginState({ ...waiting, issues: ["waiting-device", "needs-sign-in"] }).group).toBe(
     "Needs you",
   );
   expect(
-    pluginGroup({
+    pluginState({
       ...waiting,
       placement: { ...waiting.placement, enabled: false },
       issues: ["needs-sign-in"],
-    }),
+    }).group,
   ).toBe("Turned off");
-  expect(filterPlugins([first], first.title.toUpperCase(), null)).toEqual([first]);
+  expect(Object.values(pluginGroups([first], first.title.toUpperCase())).flat()).toEqual([first]);
 });
 it("offers native Messaging setup on Android, secure transient credentials and linking", async () => {
   await open("messaging");
@@ -203,132 +215,174 @@ it("discards a deferred overview when the attachment changes", async () => {
   );
   expect(state.page!.sections.some((section) => section.key === "empty")).toBe(false);
 });
-it("sends Messaging route and sender mutations with their current revision fences", async () => {
-  await open("messaging");
-  const snapshot = host.getSnapshot();
-  const workspaceId = snapshot.workspaces[0]!.id;
-  const now = new Date().toISOString();
-  const accountId = `cha_${crypto.randomUUID()}`;
-  const connectionId = `con_${crypto.randomUUID()}`;
-  const bindingId = `chb_${crypto.randomUUID()}`;
-  const response = await host.rpc["channels.get"]({});
-  if (!response.ok) throw new Error("Missing messaging catalog");
-  const base = response.data;
-  const data = hostApi["channels.get"].success.parse({
-    ...base,
-    accounts: [
-      {
-        id: accountId,
-        connectionId,
-        provider: "slack",
-        displayName: "Team bot",
-        externalAccountId: "team",
-        handle: null,
-        metadata: {},
-        routingMode: "shared",
-        status: "connected",
-        createdAt: now,
-        updatedAt: now,
-      },
-    ],
-    bindings: [
-      {
-        id: bindingId,
-        accountId,
-        createdBy: snapshot.user!.id,
-        createdAt: now,
-        updatedAt: now,
-        workspaceId,
-        revision: 7,
-        status: "active",
-        selector: {
-          conversationId: "general",
-          conversationType: null,
-          scopeId: null,
-          threadId: null,
+it.each(["ios", "android"])(
+  "sends every Messaging mutation with revision fences on %s",
+  async (os) => {
+    state.os = os;
+    await open("messaging");
+    const snapshot = host.getSnapshot();
+    const workspaceId = snapshot.workspaces[0]!.id;
+    const now = new Date().toISOString();
+    const accountId = `cha_${crypto.randomUUID()}`;
+    const connectionId = `con_${crypto.randomUUID()}`;
+    const bindingId = `chb_${crypto.randomUUID()}`;
+    const response = await host.rpc["channels.get"]({});
+    if (!response.ok) throw new Error("Missing messaging catalog");
+    const base = response.data;
+    const data = hostApi["channels.get"].success.parse({
+      ...base,
+      accounts: [
+        {
+          id: accountId,
+          connectionId,
+          provider: "slack",
+          displayName: "Team bot",
+          externalAccountId: "team",
+          handle: null,
+          metadata: {},
+          routingMode: "shared",
+          status: "connected",
+          createdAt: now,
+          updatedAt: now,
         },
-        accessPolicy: {
-          channels: {
-            scope: "selected",
-            conversationIds: [],
-            sender: { mode: "approved", allowedExternalUserIds: [] },
+      ],
+      bindings: [
+        {
+          id: bindingId,
+          accountId,
+          createdBy: snapshot.user!.id,
+          createdAt: now,
+          updatedAt: now,
+          workspaceId,
+          revision: 7,
+          status: "active",
+          selector: {
+            conversationId: "general",
+            conversationType: null,
+            scopeId: null,
+            threadId: null,
           },
-          directMessages: { mode: "owner", allowedExternalUserIds: [] },
+          accessPolicy: {
+            channels: {
+              scope: "selected",
+              conversationIds: [],
+              sender: { mode: "approved", allowedExternalUserIds: [] },
+            },
+            directMessages: { mode: "owner", allowedExternalUserIds: [] },
+          },
+          executionPolicy: { harness: "default", harnessInstanceId: null },
         },
-        executionPolicy: { harness: "default", harnessInstanceId: null },
-      },
-    ],
-    accessGrants: [
-      {
-        accountId,
+      ],
+      accessGrants: [
+        {
+          accountId,
+          bindingId,
+          externalUserId: "alice",
+          displayName: "Alice",
+          status: "pending",
+          revision: 4,
+          requestedAt: now,
+          decidedAt: null,
+          decidedBy: null,
+        },
+      ],
+    });
+    const rpc = host.rpc;
+    Object.defineProperty(host, "rpc", {
+      value: new Proxy(rpc, {
+        get(target, key, receiver) {
+          if (key === "channels.get") return async () => ({ ok: true, data });
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+    });
+    await press("Refresh");
+    const commands: HostApiCommandInput[] = [];
+    vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+      commands.push(command);
+      throw new Error("Keep the current state");
+    });
+    await press("Pause");
+    expect(commands.at(-1)).toMatchObject({
+      type: "channel.connection.status.set",
+      connectionId,
+      status: "paused",
+    });
+    await input("Conversation ID", "support");
+    await press("Add route");
+    expect(commands.at(-1)).toMatchObject({
+      type: "channel.binding.create",
+      accountId,
+      selector: { conversationId: "support" },
+    });
+    for (const label of [
+      "Direct messages: approved",
+      "Channel senders: anyone",
+      "Channels: all",
+      "✓ Channels: selected",
+      "Channels: off",
+    ]) {
+      await press(label);
+      expect(commands.at(-1)).toMatchObject({
+        type: "channel.binding.update",
+        bindingId,
+        expectedRevision: 7,
+      });
+    }
+    for (const [label, decision] of [
+      ["Approve", "approved"],
+      ["Decline", "declined"],
+      ["Revoke", "revoked"],
+    ]) {
+      await press(label!);
+      expect(commands.at(-1)).toMatchObject({
+        type: "channel.access.review",
         bindingId,
         externalUserId: "alice",
-        displayName: "Alice",
-        status: "pending",
-        revision: 4,
-        requestedAt: now,
-        decidedAt: null,
-        decidedBy: null,
-      },
-    ],
-  });
-  const rpc = host.rpc;
-  Object.defineProperty(host, "rpc", {
-    value: new Proxy(rpc, {
-      get(target, key, receiver) {
-        if (key === "channels.get") return async () => ({ ok: true, data });
-        return Reflect.get(target, key, receiver);
-      },
-    }),
-  });
-  await press("Refresh");
-  const commands: HostApiCommandInput[] = [];
-  vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
-    commands.push(command);
-    throw new Error("Keep the current state");
-  });
-  await press("Pause");
-  expect(commands.at(-1)).toMatchObject({
-    type: "channel.connection.status.set",
-    connectionId,
-    status: "paused",
-  });
-  await input("Conversation ID", "support");
-  await press("Add route");
-  expect(commands.at(-1)).toMatchObject({
-    type: "channel.binding.create",
-    accountId,
-    selector: { conversationId: "support" },
-  });
-  await press("Direct messages: approved");
-  expect(commands.at(-1)).toMatchObject({
-    type: "channel.binding.update",
-    bindingId,
-    expectedRevision: 7,
-  });
-  for (const [label, decision] of [
-    ["Approve", "approved"],
-    ["Decline", "declined"],
-    ["Revoke", "revoked"],
-  ]) {
-    await press(label!);
+        expectedRevision: 4,
+        decision,
+      });
+    }
+    await press("Remove route");
+    expect(commands.at(-1)).toMatchObject({ type: "channel.binding.revoke", bindingId });
+    const { Alert } = await import("react-native");
+    await press("Remove");
+    const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
+    expect(buttons?.find((button) => button.style === "destructive")).toBeDefined();
+    await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
     expect(commands.at(-1)).toMatchObject({
-      type: "channel.access.review",
-      bindingId,
-      externalUserId: "alice",
-      expectedRevision: 4,
-      decision,
+      type: "channel.connection.status.set",
+      status: "revoked",
+      connectionId,
     });
-  }
-  await press("Remove route");
-  expect(commands.at(-1)).toMatchObject({ type: "channel.binding.revoke", bindingId });
-  await press("Repair");
-  await input("Bot user OAuth token", "replacement");
-  await input("App-level token", "replacement-app");
-  await press("Replace credentials");
-  expect(commands.at(-1)).toMatchObject({
-    type: "channel.connection.credentials.replace",
-    connectionId,
-    credentials: { botToken: "replacement", appToken: "replacement-app" },
+    await press("iMessage");
+    await input("Your iMessage addresses, separated by commas", "owner@example.com");
+    await press("Connect");
+    expect(commands.at(-1)).toMatchObject({
+      type: "channel.connection.computer.create",
+      ownerHandles: ["owner@example.com"],
+    });
+    await press("Cancel");
+    await press("Repair");
+    await input("Bot user OAuth token", "replacement");
+    await input("App-level token", "replacement-app");
+    await press("Replace credentials");
+    expect(commands.at(-1)).toMatchObject({
+      type: "channel.connection.credentials.replace",
+      connectionId,
+      credentials: { botToken: "replacement", appToken: "replacement-app" },
+    });
+  },
+);
+
+it("pushes validated plugin identity so Back returns to the searchable list", async () => {
+  await open("plugins");
+  const result = await host.rpc["plugins.overview.get"]({});
+  if (!result.ok) throw new Error("Missing overview");
+  const plugin = result.data.rows[0]!;
+  await press(plugin.title === "Apple Messages" ? "iMessage" : plugin.title);
+  expect(state.navigate).toHaveBeenCalledWith("SettingsPluginDetail", {
+    deploymentId: "deployment",
+    target: plugin.target,
   });
 });

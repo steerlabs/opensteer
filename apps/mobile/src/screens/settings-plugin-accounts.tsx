@@ -64,13 +64,14 @@ export function ConnectedAppsScreen({
       </Screen>
     );
   }
-  return <SignedInConnectedApps hostClient={hostClient} hostName={row.name} />;
+  return <PluginAccounts hostClient={hostClient} hostName={row.name} />;
 }
 
 /** Keyed by who is signed in, so a changed account never sees the last one's apps. */
-function SignedInConnectedApps(props: {
+export function PluginAccounts(props: {
   readonly hostClient: HostClient;
   readonly hostName: string;
+  readonly definitionId?: string | undefined;
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
@@ -87,9 +88,28 @@ function SignedInConnectedApps(props: {
   return <ConnectedApps key={userId} {...props} />;
 }
 
-function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostName: string }) {
+function ConnectedApps(props: {
+  readonly hostClient: HostClient;
+  readonly hostName: string;
+  readonly definitionId?: string | undefined;
+}) {
   const { hostClient, hostName } = props;
   const mobile = useMobileClient();
+  const active = useRef(true);
+  const viewer = useRef(hostClient.getSnapshot().user?.id);
+  const current = useCallback(
+    () =>
+      active.current &&
+      hostClient.getSnapshot().user?.id === viewer.current &&
+      canRespondToRequests(hostClient.getSnapshot()),
+    [hostClient],
+  );
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, [hostClient]);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
@@ -111,14 +131,15 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
         hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
+      if (!current()) return null;
       setApps(connectedAppsModel({ dashboard, hostName, platform }));
       setLoadError(null);
       return dashboard;
     } catch (reason) {
-      setLoadError(operationDetail(reason, "Connections could not be loaded."));
+      if (current()) setLoadError(operationDetail(reason, "Connections could not be loaded."));
       return null;
     }
-  }, [hostClient, hostName]);
+  }, [hostClient, hostName, current]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
@@ -135,20 +156,20 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
 
   /** One action at a time, its failure said once, and the list read again after it. */
   const run = async (key: string, action: () => Promise<string | null>) => {
-    if (busy !== null) return;
+    if (busy !== null || !current()) return;
     setBusy(key);
     setError(null);
     setDone(null);
     try {
       const message = await action();
-      if (message !== null) {
+      if (current() && message !== null) {
         setDone(message);
         void AccessibilityInfo.announceForAccessibility(message);
       }
     } catch (reason) {
-      setError(operationDetail(reason, "That did not finish. Try again."));
+      if (current()) setError(operationDetail(reason, "That did not finish. Try again."));
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   };
 
@@ -195,6 +216,7 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
           applicationSource: source,
           definitionId: app.definitionId,
         });
+        if (!current()) return null;
         const outcome = integrationAuthorizationError(status.status, status.failureCode);
         if (outcome !== null) throw new Error(outcome);
         const dashboard = await load();
@@ -254,10 +276,6 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
       >
-        <AppText role="secondary" tone="soft">
-          The accounts agents use. Which Workspaces can use each one is set from Opensteer on a
-          computer.
-        </AppText>
         {online ? null : (
           <Notice
             detail="Reconnect to see your apps or make changes."
@@ -279,16 +297,18 @@ function ConnectedApps(props: { readonly hostClient: HostClient; readonly hostNa
             No apps yet. Add one from Opensteer on a computer, or when an agent asks for it.
           </AppText>
         ) : null}
-        {(apps ?? []).map((app) => (
-          <AppGroup
-            app={app}
-            busy={busy}
-            key={app.definitionId}
-            onChooseRepositories={chooseRepositories}
-            onDisconnect={disconnect}
-            onSignIn={(key) => signIn(app, key)}
-          />
-        ))}
+        {(apps ?? [])
+          .filter((app) => !props.definitionId || app.definitionId === props.definitionId)
+          .map((app) => (
+            <AppGroup
+              app={app}
+              busy={busy}
+              key={app.definitionId}
+              onChooseRepositories={chooseRepositories}
+              onDisconnect={disconnect}
+              onSignIn={(key) => signIn(app, key)}
+            />
+          ))}
       </ScrollView>
     </Screen>
   );

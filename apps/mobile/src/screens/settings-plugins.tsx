@@ -1,26 +1,38 @@
-import { useDeferredValue, useRef, useState } from "react";
+import { PluginAccounts } from "./settings-plugin-accounts.js";
+import {
+  pluginGroups,
+  pluginState,
+  pluginTargetKey,
+  pluginPlacementLabel,
+  pluginAccountRows,
+} from "@opensteer/client/settings";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
-import type { HostApiCommandInput, PluginDetailView, PluginRow } from "@opensteer/protocol";
+import { PluginTargetSchema } from "@opensteer/protocol";
+import type {
+  HostApiCommandInput,
+  PluginDetailView,
+  PluginRow,
+  PluginTarget,
+} from "@opensteer/protocol";
 import { Alert } from "react-native";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import {
-  filterPlugins,
-  pluginGroup,
-  pluginKey,
-  useSettingsRead,
-  useSettingsLease,
-  type SettingsRpcData,
-} from "./settings-adapter.js";
+import { useSettingsRead, useSettingsLease, type SettingsRpcData } from "./use-settings-read.js";
 export function SettingsPluginsScreen({
   route,
-}: StaticScreenProps<{ readonly deploymentId: string }>) {
+}: StaticScreenProps<{ readonly deploymentId: string; readonly target?: PluginTarget }>) {
   const host = useAttachedHost(route.params.deploymentId);
   return host ? (
-    <Plugins key={route.params.deploymentId} host={host} deploymentId={route.params.deploymentId} />
+    <Plugins
+      key={route.params.deploymentId}
+      host={host}
+      deploymentId={route.params.deploymentId}
+      target={route.params.target}
+    />
   ) : (
     <DeploymentGate deploymentId={route.params.deploymentId} />
   );
@@ -28,9 +40,11 @@ export function SettingsPluginsScreen({
 function Plugins({
   host,
   deploymentId,
+  target,
 }: {
   readonly host: HostClient;
   readonly deploymentId: string;
+  readonly target?: PluginTarget | undefined;
 }) {
   const isCurrent = useSettingsLease(host);
   const navigation = useNavigation();
@@ -39,12 +53,30 @@ function Plugins({
   );
   const [query, setQuery] = useState("");
   const search = useDeferredValue(query);
-  const [tag, setTag] = useState<string | null>(null);
+  const [tag, setTag] = useState<PluginRow["tags"][number] | "all">("all");
   const [detail, setDetail] = useState<PluginDetailView | null>(null);
+  useEffect(() => {
+    if (!target) return;
+    const parsed = PluginTargetSchema.safeParse(target);
+    if (!parsed.success) return;
+    let active = true;
+    void host.rpc["plugins.detail.get"]({ target: parsed.data })
+      .then(unwrapRpcResult)
+      .then((value) => {
+        if (active && isCurrent()) setDetail(value);
+      })
+      .catch(() => {
+        if (active && isCurrent()) setError("Couldn’t load plugin.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [host, target, isCurrent]);
   const [directory, setDirectory] = useState<SettingsRpcData<"plugins.directory.get"> | null>(null);
   const [add, setAdd] = useState<
     SettingsRpcData<"plugins.directory.get">["catalog"][number] | null
   >(null);
+  const [accountDefinition, setAccountDefinition] = useState<string | null>(null);
   const [mcpTitle, setMcpTitle] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const busy = useRef(false);
@@ -86,7 +118,11 @@ function Plugins({
         if (isCurrent()) setDetail(result);
       }
     });
-  const button = (key: string, label: string, onPress: () => void): NativeSettingsRow => ({
+  const button = (
+    key: string,
+    label: string,
+    onPress: () => void,
+  ): Extract<NativeSettingsRow, { kind: "button" }> => ({
     key,
     kind: "button",
     label,
@@ -95,13 +131,13 @@ function Plugins({
   });
   const text = (key: string, label: string): NativeSettingsRow => ({ key, kind: "text", label });
   const toggle = (row: PluginRow): NativeSettingsRow => ({
-    key: `${pluginKey(row)}:enabled`,
+    key: `${`${row.target.kind}:${pluginTargetKey(row.target)}`}:enabled`,
     kind: "toggle",
-    label: `${row.title}${pending === pluginKey(row) ? " · Saving…" : ""}`,
+    label: `${row.title}${pending === `${row.target.kind}:${pluginTargetKey(row.target)}` ? " · Saving…" : ""}`,
     value: row.placement.enabled,
     disabled: pending !== null || !row.permissions.canEnable,
     onChange: (enabled) =>
-      command(pluginKey(row), {
+      command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
         type: "settings.plugin.enabled.set",
         target: row.target,
         expectedRevision: row.placement.revision,
@@ -153,7 +189,6 @@ function Plugins({
       key: "hero",
       title: row.title === "Apple Messages" ? "iMessage" : row.title,
       rows: [
-        button("back", "Back to plugins", () => setDetail(null)),
         text("source", `${row.source.kind}${row.source.version ? ` · ${row.source.version}` : ""}`),
         toggle(row),
       ],
@@ -162,11 +197,15 @@ function Plugins({
       key: "accounts",
       title: "Accounts",
       rows: [
-        ...detail.accounts.map((account) =>
+        ...pluginAccountRows(detail).map((account) =>
           text(account.connectionId, `${account.displayName} · ${account.status}`),
         ),
         button("add", "Add another account", () =>
-          navigation.navigate("ConnectedApps", { deploymentId }),
+          setAccountDefinition(
+            row.target.kind === "service" || row.target.kind === "device-app"
+              ? row.target.definitionId
+              : null,
+          ),
         ),
       ],
     });
@@ -197,7 +236,7 @@ function Plugins({
         value: place.selected,
         disabled: pending !== null || !place.canSelect || !row.permissions.canPlace,
         onChange: (selected) =>
-          command(pluginKey(row), {
+          command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
             type: "settings.plugin.placement.set",
             target: row.target,
             expectedRevision: row.placement.revision,
@@ -219,7 +258,11 @@ function Plugins({
       title: "Manage",
       rows: [
         button("repair", "Manage sign-in and permissions", () =>
-          navigation.navigate("ConnectedApps", { deploymentId }),
+          setAccountDefinition(
+            row.target.kind === "service" || row.target.kind === "device-app"
+              ? row.target.definitionId
+              : null,
+          ),
         ),
         ...(row.permissions.canRemove
           ? [button("remove", "Remove plugin", () => remove(detail))]
@@ -241,7 +284,9 @@ function Plugins({
           )
           .map((item) =>
             button(item.definitionId, `${item.title}${item.added ? " · Added" : " · Add"}`, () => {
-              if (!item.added) setAdd(item);
+              if (!item.added) {
+                setAdd(item);
+              }
             }),
           ),
       ],
@@ -343,10 +388,13 @@ function Plugins({
           key: "filters",
           kind: "chips",
           label: "Filter plugins",
-          value: tag ?? "",
-          onChange: (value) => setTag(value || null),
+          value: tag,
+          onChange: (value) => {
+            if (["all", "accounts", "devices", "skills", "specialists"].includes(value))
+              setTag(value as typeof tag);
+          },
           choices: [
-            { value: "", label: "All" },
+            { value: "all", label: "All" },
             { value: "accounts", label: "Accounts" },
             { value: "devices", label: "On your devices" },
             { value: "skills", label: "Skills" },
@@ -355,34 +403,47 @@ function Plugins({
         },
       ],
     });
-    const rows = filterPlugins(overview.data?.rows ?? [], search, tag);
+    const groups = pluginGroups(overview.data?.rows ?? [], search, tag);
     for (const group of ["Needs you", "On", "Turned off"] as const) {
       const items: NativeSettingsRow[] = [];
-      for (const row of rows.filter((row) => pluginGroup(row) === group)) {
-        const key = pluginKey(row);
-        items.push(
-          button(key, row.title === "Apple Messages" ? "iMessage" : row.title, () =>
-            run(key, async () => {
-              const result = unwrapRpcResult(
-                await host.rpc["plugins.detail.get"]({ target: row.target }),
-              );
-              if (isCurrent()) setDetail(result);
-            }),
+      for (const row of groups[group]) {
+        const key = `${row.target.kind}:${pluginTargetKey(row.target)}`;
+        items.push({
+          ...button(key, row.title === "Apple Messages" ? "iMessage" : row.title, () =>
+            navigation.navigate("SettingsPluginDetail", { deploymentId, target: row.target }),
           ),
-        );
+          actions:
+            row.placement.enabled && row.permissions.canEnable
+              ? [
+                  {
+                    label: "Turn off",
+                    onPress: () =>
+                      command(key, {
+                        type: "settings.plugin.enabled.set",
+                        target: row.target,
+                        expectedRevision: row.placement.revision,
+                        enabled: false,
+                        idempotencyKey: mutationIdempotencyKey("settings-plugin-off"),
+                      }),
+                  },
+                ]
+              : [],
+        });
         items.push(
           text(
             `${key}:status`,
-            group === "Needs you"
-              ? row.issues.join(" · ")
-              : row.issues.some((issue) => issue.startsWith("waiting-"))
-                ? "Waiting"
-                : row.placement.personalEverywhere
-                  ? "Everywhere"
-                  : `${row.placement.mainIncluded ? "Main · " : ""}${row.placement.projectCount} Projects`,
+            pluginState(row).group === "Needs you" || pluginState(row).label === "Waiting"
+              ? pluginState(row).label
+              : pluginPlacementLabel(row, host.getSnapshot().deploymentShape?.kind === "personal"),
           ),
         );
-        items.push(toggle(row));
+        if (group !== "Needs you") items.push(toggle(row));
+        else
+          items.push(
+            button(`${key}:repair`, pluginState(row).label, () =>
+              navigation.navigate("SettingsPluginDetail", { deploymentId, target: row.target }),
+            ),
+          );
       }
       if (items.length)
         sections.push({ key: group, title: group, collapsed: group === "Turned off", rows: items });
@@ -403,7 +464,26 @@ function Plugins({
   }
   return (
     <>
-      <NativeSettingsPage sections={sections} search={{ value: query, onChange: setQuery }} />
+      <NativeSettingsPage
+        sections={sections}
+        {...(target ? {} : { search: { value: query, onChange: setQuery } })}
+      />
+      <Sheet
+        open={accountDefinition !== null}
+        title="Accounts and permissions"
+        onClose={() => {
+          setAccountDefinition(null);
+          void overview.reload();
+        }}
+      >
+        {accountDefinition ? (
+          <PluginAccounts
+            hostClient={host}
+            hostName={host.getSnapshot().identityConfig?.deployment.name ?? "Opensteer"}
+            definitionId={accountDefinition}
+          />
+        ) : null}
+      </Sheet>
       <Sheet open={add !== null} title={add?.title ?? "Add plugin"} onClose={() => setAdd(null)}>
         {add ? (
           <NativeSettingsPage
@@ -434,7 +514,7 @@ function Plugins({
                       if (!isCurrent()) return;
                       setAdd(null);
                       setDirectory(null);
-                      navigation.navigate("ConnectedApps", { deploymentId });
+                      setAccountDefinition(add.definitionId);
                     }),
                   ),
                 ],

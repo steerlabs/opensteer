@@ -1,4 +1,4 @@
-import { FlatList, TextInput, View, ScrollView, Pressable } from "react-native";
+import { FlatList, TextInput, View, ScrollView, Pressable, Alert } from "react-native";
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { useState } from "react";
@@ -79,12 +79,29 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
   if (row.kind === "text") return <AppText>{row.label}</AppText>;
   if (row.kind === "button")
     return (
-      <SecondaryButton
-        label={row.label}
-        disabled={row.disabled ?? false}
-        onPress={row.onPress}
-        tone={row.destructive ? "danger" : "default"}
-      />
+      <View>
+        <SecondaryButton
+          label={row.label}
+          disabled={row.disabled ?? false}
+          onPress={row.onPress}
+          tone={row.destructive ? "danger" : "default"}
+        />
+        {row.actions?.length ? (
+          <SecondaryButton
+            label={`More actions for ${row.label}`}
+            onPress={() =>
+              Alert.alert(row.label, undefined, [
+                ...row.actions!.map((action) => ({
+                  text: action.label,
+                  style: action.destructive ? ("destructive" as const) : ("default" as const),
+                  onPress: action.onPress,
+                })),
+                { text: "Cancel", style: "cancel" },
+              ])
+            }
+          />
+        ) : null}
+      </View>
     );
   if (row.kind === "toggle")
     return (

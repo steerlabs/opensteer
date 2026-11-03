@@ -1,6 +1,6 @@
 import { FlatList, Pressable, View } from "react-native";
-import { Screen } from "../ui/screen.js";
 import { AppText } from "../ui/primitives.js";
+import { Screen } from "../ui/screen.js";
 import { settingsDestinations } from "./settings-home-model.js";
 export function SettingsHomeForm({
   onOpen,

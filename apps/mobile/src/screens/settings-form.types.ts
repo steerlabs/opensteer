@@ -40,6 +40,7 @@ export interface SignInsSettingsActions {
 }
 
 export interface SettingsFormActionHandlers {
+  readonly onChooseModel?: (() => void) | undefined;
   readonly onAccountAction: () => void;
   readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;

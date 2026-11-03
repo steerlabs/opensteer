@@ -60,7 +60,7 @@ vi.mock("../ui/primitives.js", () => ({
   SwitchRow: () => null,
 }));
 
-const { SettingsForm } = await import("./settings-form.js");
+const { SettingsForm } = await import("../../test-support/settings-form-fixture.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];

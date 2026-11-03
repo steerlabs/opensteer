@@ -14,18 +14,25 @@ vi.mock("@expo/ui/swift-ui", () => {
       children,
       label,
       onPress,
+      allowsFullSwipe,
     }: {
       children?: ReactNode;
       label?: string;
       onPress?: () => void;
+      allowsFullSwipe?: boolean;
     }) => (
-      <div data-native={name}>
+      <div data-native={name} data-full-swipe={allowsFullSwipe}>
         {onPress ? <button onClick={onPress}>{label}</button> : label}
         {children}
       </div>
     );
   const Toolbar = Object.assign(view("Toolbar"), { Content: view("Toolbar.Content") });
   return {
+    ContextMenu: Object.assign(view("ContextMenu"), {
+      Trigger: view("ContextMenu.Trigger"),
+      Items: view("ContextMenu.Items"),
+    }),
+    SwipeActions: Object.assign(view("SwipeActions"), { Actions: view("SwipeActions.Actions") }),
     Host: view("Host"),
     List: view("List"),
     NavigationStack: view("NavigationStack"),
@@ -44,6 +51,7 @@ vi.mock("@expo/ui/swift-ui", () => {
 });
 vi.mock("@expo/ui/swift-ui/modifiers", () => ({
   disabled: () => ({}),
+  frame: () => ({}),
   navigationTitle: () => ({}),
   tag: () => ({}),
   pickerStyle: () => ({}),
@@ -81,6 +89,50 @@ it("hosts native search in one SwiftUI navigation environment and returns throug
     expect(container.textContent).toContain("Gmail");
     await act(async () => container.querySelector("button")!.click());
     expect(state.back).toHaveBeenCalledOnce();
+  } finally {
+    act(() => root.unmount());
+  }
+});
+
+it("uses labeled native secondary actions and disables full-swipe execution", async () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const remove = vi.fn();
+  try {
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "plugins",
+              title: "On",
+              rows: [
+                {
+                  key: "mail",
+                  kind: "button",
+                  label: "Mail",
+                  onPress: vi.fn(),
+                  actions: [{ label: "Remove", destructive: true, onPress: remove }],
+                },
+              ],
+            },
+          ]}
+        />,
+      ),
+    );
+    expect(container.querySelectorAll('[data-native="ContextMenu"]')).toHaveLength(1);
+    expect(
+      container
+        .querySelector('[data-native="SwipeActions.Actions"]')
+        ?.getAttribute("data-full-swipe"),
+    ).toBe("false");
+    expect(remove).not.toHaveBeenCalled();
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Remove")!
+        .click(),
+    );
+    expect(remove).toHaveBeenCalledOnce();
   } finally {
     act(() => root.unmount());
   }

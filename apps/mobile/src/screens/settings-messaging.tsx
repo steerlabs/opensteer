@@ -12,7 +12,7 @@ import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
-import { useSettingsRead, useSettingsLease, type SettingsRpcData } from "./settings-adapter.js";
+import { useSettingsRead, useSettingsLease, type SettingsRpcData } from "./use-settings-read.js";
 
 type Dashboard = SettingsRpcData<"channels.get">;
 type Policy = Dashboard["bindings"][number]["accessPolicy"];

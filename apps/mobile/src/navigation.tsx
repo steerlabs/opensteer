@@ -18,7 +18,10 @@ import {
 import { BrowserHistoryScreen, type BrowserHistoryDestination } from "./screens/browser-history.js";
 import { BrowserTabsScreen } from "./screens/browser-tabs.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
-import { ConnectedAppsScreen, type ConnectedAppsDestination } from "./screens/connected-apps.js";
+import {
+  ConnectedAppsScreen,
+  type ConnectedAppsDestination,
+} from "./screens/settings-plugin-accounts.js";
 import type { SurfacesRoute } from "./browser/surface-route.js";
 import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
 import { ComputerScreen } from "./screens/computer.js";
@@ -294,6 +297,8 @@ const RootStack = createNativeStackNavigator({
       screen: SettingsPluginsScreen,
       options: { title: "Plugins", headerShown: Platform.OS !== "ios" },
     },
+    SettingsPluginDetail: { screen: SettingsPluginsScreen, options: { title: "Plugin" } },
+    SettingsDeviceDetail: { screen: ComputerScreen, options: { title: "Device" } },
     SettingsSignIns: { screen: SettingsSignInsScreen, options: { title: "Sign-ins" } },
     Settings: {
       screen: SettingsScreen,
@@ -489,6 +494,11 @@ type OpensteerRootParamList = {
   readonly SettingsMessaging: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
+  readonly SettingsPluginDetail: {
+    readonly deploymentId: string;
+    readonly target: import("@opensteer/protocol").PluginTarget;
+  };
+  readonly SettingsDeviceDetail: { readonly deploymentId: string; readonly machineId: string };
   readonly SettingsSignIns: { readonly deploymentId: string };
   readonly Settings: undefined;
   readonly Plugins: PluginsDestination;

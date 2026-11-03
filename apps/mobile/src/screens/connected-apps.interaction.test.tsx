@@ -104,7 +104,7 @@ vi.mock("../ui/primitives.js", () => ({
   StatusDot: () => null,
 }));
 
-const { ConnectedAppsScreen } = await import("./connected-apps.js");
+const { ConnectedAppsScreen } = await import("./settings-plugin-accounts.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const roots: Root[] = [];
