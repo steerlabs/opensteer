@@ -18,7 +18,7 @@ import {
   type BrowserTabMove,
   browserPageSite,
   browserTabRestoreMaxTabs,
-  agentControlResponseMaxSerializedBytes,
+  agentToolPayloadMaxSerializedBytes,
   type BrowserSessionId,
   type BrowserTabReadInput,
   type BrowserTabReadResult,
@@ -249,7 +249,7 @@ export class BrowserTabGroupService {
       };
       const addedBytes = Buffer.byteLength(JSON.stringify(tab), "utf8") + 1;
       // Reserve the cursor and agent-control envelope within the shared tool response budget.
-      if (bytes + addedBytes > agentControlResponseMaxSerializedBytes - 1024) break;
+      if (bytes + addedBytes > agentToolPayloadMaxSerializedBytes - 1024) break;
       tabs.push(tab);
       bytes += addedBytes;
     }

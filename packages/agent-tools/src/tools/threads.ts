@@ -45,7 +45,7 @@ export const thread_list = defineAgentTool({
   name: "thread_list",
   title: "List Threads",
   description:
-    "Find reachable Threads, newest updated first; workspaceId and query narrow the list. Main reaches owned Workspaces, Workspace reaches its Workspace, delegated reaches its lineage. Pass window.nextBefore as before for more.",
+    "Find reachable Threads, newest updated first; workspaceId and query narrow the list. Reach follows the caller’s current authority. Pass window.nextBefore as before for more.",
   input: z.strictObject({
     before: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
@@ -133,7 +133,7 @@ export const thread_message = defineAgentTool({
   name: "thread_message",
   title: "Message Thread",
   description:
-    "Send an asynchronous message. report saves context without starting work or alerting the person. queue starts an idle Thread or waits for its next turn. steer directs a compatible active Run and fails if none exists. queue and steer join an active task; assignmentId is null if none exists. To continue a finished task and receive its result, use thread_delegate. home means Chat; reporting there is allowed, but queueing requires reach. disposition is steering, run-queued, pending or cancelled. Accepted does not mean read; cancelled means it will not run. Task updates go to the assigning Thread; final replies return automatically. The Host supplies authorship.",
+    "Send an asynchronous message. report saves context without starting work or alerting the person. queue starts an idle Thread or waits for its next turn. steer directs a compatible active Run and fails if none exists. queue and steer join an active task; assignmentId is null if none exists. To continue a finished task and receive its result, use thread_delegate. home means Chat; every destination must remain within the caller’s live reach and access mode. disposition is steering, run-queued, pending or cancelled. Accepted does not mean read; cancelled means it will not run. Task updates go to the assigning Thread; final replies return automatically. The Host supplies authorship.",
   input: z
     .strictObject({
       delivery: z.enum(["report", "queue", "steer"]),

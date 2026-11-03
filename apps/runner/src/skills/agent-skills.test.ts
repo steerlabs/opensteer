@@ -3,10 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  agentCapabilityProfiles,
-  agentToolDefinitions,
+  opensteerAgentSkills,
+  agentTools,
   skillsForCapabilityProfile,
-  toolsForCapabilityProfile,
   type OpensteerAgentSkillName,
 } from "@opensteer/agent-tools";
 import { parseHarnessSkillMetadata, renderHarnessSkillCatalog } from "@opensteer/harness";
@@ -74,8 +73,13 @@ describe("Runner Agent Skills", () => {
 
   it("delivers the Trigger contract skill in every trigger-capable Run plan", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    for (const { id } of agentCapabilityProfiles) {
-      if (!toolsForCapabilityProfile(id).some(({ name }) => name === "trigger_write")) continue;
+    for (const id of new Set(opensteerAgentSkills.flatMap((skill) => skill.profiles))) {
+      if (
+        !agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "run"))
+          .some(({ name }) => name === "trigger_write")
+      )
+        continue;
       const plan = resolveSkillPlan({
         bundled: planAgentSkills(bundle, id),
         integration: [],
@@ -105,16 +109,20 @@ describe("Runner Agent Skills", () => {
     for (const profileId of ["main", "workspace", "delegated"] as const) {
       const selected = planAgentSkills(bundle, profileId);
       expect(selected.some(({ fullName }) => fullName === "opensteer:browser")).toBe(true);
-      expect(toolsForCapabilityProfile(profileId).map(({ name }) => name)).toEqual(
-        expect.arrayContaining(recoveryTools),
-      );
+      expect(
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "run"))
+          .map(({ name }) => name),
+      ).toEqual(expect.arrayContaining(recoveryTools));
     }
     expect(skillsForCapabilityProfile("trigger").map(({ name }) => name)).not.toContain(
       "opensteer:browser",
     );
-    expect(toolsForCapabilityProfile("trigger").map(({ name }) => name)).not.toEqual(
-      expect.arrayContaining(recoveryTools),
-    );
+    expect(
+      agentTools
+        .filter((tool) => tool.callers.some((kind) => kind === "program"))
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(recoveryTools));
 
     // Check the skill's tool links against the actual catalog, not its prose.
     const skill = (
@@ -124,7 +132,7 @@ describe("Runner Agent Skills", () => {
         ),
       )
     ).join("\n");
-    const toolNames = new Set(agentToolDefinitions.map(({ name }) => name as string));
+    const toolNames = new Set(agentTools.map(({ name }) => name as string));
     const references = [...skill.matchAll(/`((?:browser|request)_[a-z_]+)`/gu)].map(
       (match) => match[1],
     );

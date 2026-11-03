@@ -1,8 +1,12 @@
+import { type AgentControlResponse } from "../mcp/control.test-support.js";
+import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
+import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import {
   createId,
   HarnessIdSchema,
@@ -31,13 +35,7 @@ import {
   type RunnerIdentity,
   type RunnerRegistry,
 } from "@opensteer/orchestration";
-import {
-  AgentControlResponseSchema,
-  hostApi,
-  type AgentControlResponse,
-  type HostApiServerContext,
-  type RunnerDescriptor,
-} from "@opensteer/protocol";
+import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
   TriggerControlInputSchema,
   TriggerRevisionSchema,
@@ -55,22 +53,22 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
-  AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "../agents/agent-control-service.js";
-import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { AgentOperationReceipts } from "@opensteer/database";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import {
-  TriggerControlService,
   type TriggerControlScope,
   type TriggerControlTokenService,
 } from "./trigger-control-service.js";
 import { createTriggerRpcHandlers, handleTriggerCommand } from "./trigger-routes.js";
 import { TriggerService } from "./trigger-service.js";
 import type { WatchControlScope, WatchControlTokenService } from "./watch-capability.js";
-import { WatchControlService } from "./watch-control-service.js";
+import { WatchToolsTestClient } from "../mcp/control.test-support.js";
 import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -177,7 +175,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
   }
   const triggers = triggerService();
-  const agents = new AgentControlService({
+  const agents = new ProductToolsTestClient({
     ...services,
     browserSources: { agentSignIn: unexpected },
     machineFullDiskAccess: { request: unexpected },
@@ -195,10 +193,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
     triggers,
     workspaceMounts: { mount: unexpected },
   });
-  const programs = new TriggerControlService({ ...services, tokens: triggerTokens, triggers });
-  const watches = new WatchControlService({ ...services, tokens: watchTokens });
+  const programs = new TriggerToolsTestClient({ ...services, tokens: triggerTokens, triggers });
+  const watches = new WatchToolsTestClient({ ...services, tokens: watchTokens });
   const clients: Client[] = [];
-  const mcpServices: AgentToolsMcpService[] = [];
+  const mcpServices: OpensteerMcpService[] = [];
   const servers: Server[] = [];
 
   beforeAll(async () => {
@@ -1249,7 +1247,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       onWorkspaceEvent: vi.fn(),
       store: peer,
     });
-    const peerPrograms = new TriggerControlService({
+    const peerPrograms = new TriggerToolsTestClient({
       ...services,
       store: peer,
       commands: peerCommands,
@@ -1534,21 +1532,25 @@ integration.sequential("Trigger authority through real Host services and Postgre
         "delegated Trigger",
         f.fullChild.id,
         childClient,
-        toolsForCapabilityProfile("trigger")
-          .filter(({ id }) => toolsForCapabilityProfile("delegated").some((tool) => tool.id === id))
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "program"))
           .map(({ name }) => name),
       ],
       [
         "Chat Trigger",
         f.chat.id,
         chatClient,
-        toolsForCapabilityProfile("trigger").map(({ name }) => name),
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "program"))
+          .map(({ name }) => name),
       ],
       [
         "delegated Watch",
         f.crossChild.id,
         watchClient,
-        ["environment_list", "thread_message", "thread_delegate"],
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "program"))
+          .map((tool) => tool.name),
       ],
     ] as const) {
       await check(
@@ -2651,8 +2653,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
     ]);
   }
 
-  async function mcpEndpoint(legacyOverride?: boolean) {
-    let service: AgentToolsMcpService;
+  async function mcpEndpoint(_legacyOverride?: boolean) {
+    let service: OpensteerMcpService;
     const server = createServer((request, response) => {
       void (async () => {
         const chunks: Buffer[] = [];
@@ -2674,30 +2676,17 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
-    service = new AgentToolsMcpService({
-      apps: {
-        list: async () => ({ apps: [] }),
-        fetch: async () => {
-          throw new Error("Unexpected app fetch");
-        },
-        publish: async () => {
-          throw new Error("Unexpected app publication in fixture");
-        },
-      },
-      agentControl: agents,
-      runnerCapabilities: async (scope) => {
-        const capabilities = (await store.runnerCapabilities(scope.runnerId)) ?? [];
-        if (legacyOverride === undefined) return capabilities;
-        const other = capabilities.filter((capability) => capability !== "environment-list-v1");
-        return legacyOverride ? other : [...other, "environment-list-v1"];
-      },
+    service = new OpensteerMcpService({
       publicUrl: url,
-      store,
-      tokens,
-      triggerControl: programs,
-      triggerTokens,
-      watchControl: watches,
-      watchTokens,
+      store: store,
+      handlers: agents.service.options.handlers,
+      receipts: new AgentOperationReceipts(store.database),
+      callers: new AgentCallerResolver({
+        store: store,
+        runs: tokens,
+        triggers: triggerTokens,
+        watches: watchTokens,
+      }),
     });
     mcpServices.push(service);
     return url;

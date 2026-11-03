@@ -26,7 +26,7 @@ import {
   type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
@@ -996,9 +996,9 @@ class PiHarnessSession implements HarnessSession {
       {
         name: piAgentToolsServer,
         token: context.agentTools.token,
-        toolNames: toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-          ({ name }) => name,
-        ),
+        toolNames: agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "run"))
+          .map(({ name }) => name),
         url: context.agentTools.url,
       },
       {

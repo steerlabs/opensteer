@@ -11,7 +11,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { describe, expect, it } from "vitest";
 import { resolveClaudeExecutable } from "./executable.js";
@@ -58,14 +58,16 @@ describe("Claude deferred Opensteer tools", () => {
         return {
           tools:
             name === "opensteer"
-              ? toolsForCapabilityProfile("main").map((tool) => ({
-                  name: tool.name,
-                  description: tool.description,
-                  inputSchema: toJsonSchemaCompat(tool.inputSchema, {
-                    strictUnions: true,
-                    pipeStrategy: "input",
-                  }),
-                }))
+              ? agentTools
+                  .filter((tool) => tool.callers.some((kind) => kind === "run"))
+                  .map((tool) => ({
+                    name: tool.name,
+                    description: tool.description,
+                    inputSchema: toJsonSchemaCompat(tool.input, {
+                      strictUnions: true,
+                      pipeStrategy: "input",
+                    }),
+                  }))
               : integrationGatewayToolNames.map((tool) => ({
                   name: tool,
                   description: `Fixture ${tool}`,

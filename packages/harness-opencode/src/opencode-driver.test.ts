@@ -11,7 +11,7 @@ import {
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   isolatedServiceHarnessRuntimeBoundary,
@@ -134,7 +134,9 @@ describe("OpenCode tool identity", () => {
   it("is unambiguous for every tool the two Opensteer servers actually offer", () => {
     // The split only works because no agent tool name begins with
     // `integrations_`; assert that over the real lists rather than trusting it.
-    for (const { name } of toolsForCapabilityProfile("main")) {
+    for (const { name } of agentTools.filter((tool) =>
+      tool.callers.some((kind) => kind === "run"),
+    )) {
       expect(name.startsWith("integrations_")).toBe(false);
       expect(opencodeToolIdentity(`opensteer_${name}`)).toEqual({
         name,
@@ -789,7 +791,9 @@ describe("OpenCode sessions", () => {
       type: "remote",
     });
     const permission = config.permission as Record<string, string>;
-    for (const { name } of toolsForCapabilityProfile("main")) {
+    for (const { name } of agentTools.filter((tool) =>
+      tool.callers.some((kind) => kind === "run"),
+    )) {
       expect(permission[`opensteer_${name}`]).toBe("allow");
     }
     for (const name of integrationGatewayToolNames) {

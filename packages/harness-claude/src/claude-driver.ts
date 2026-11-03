@@ -20,7 +20,7 @@ import {
   type SDKResultMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   attachmentMaxBytes,
@@ -1999,9 +1999,9 @@ class ClaudeHarnessSession implements HarnessSession {
   #queryOptions(environment: Record<string, string | undefined>, active: ActiveTurn): Options {
     const access = claudeAccessModeConfiguration(this.#context.accessMode);
     const systemAppend = this.#systemPromptAppend();
-    const opensteerTools = toolsForCapabilityProfile(
-      this.#context.agentTools.capabilityProfileId,
-    ).map(({ name }) => `mcp__opensteer__${name}`);
+    const opensteerTools = agentTools
+      .filter((tool) => tool.callers.some((kind) => kind === "run"))
+      .map(({ name }) => `mcp__opensteer__${name}`);
     const integrationTools = integrationGatewayToolNames.map(
       (name) => `mcp__opensteer_integrations__${name}`,
     );

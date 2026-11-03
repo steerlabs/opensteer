@@ -1,8 +1,11 @@
+import { callMcpTool } from "../mcp/call-tool.test-support.js";
+import { thread_delegate } from "@opensteer/agent-tools/tools";
+
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
-import { AgentControlResponseSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { resolvedInputParts } from "@opensteer/harness";
-import { hostInternalRoutePaths } from "../server/internal-routes.js";
+
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { liveWork, type HostSnapshot } from "@opensteer/client/host";
@@ -2143,22 +2146,23 @@ integration("Browser presence and conversation usage", () => {
     );
 
     // The agent forwards that structured reference through the production control route.
-    const delegatedResponse = await host.runtime.app.inject({
-      method: "POST",
-      url: hostInternalRoutePaths.agentControl,
-      headers: { authorization: `Bearer ${run.agentControlToken}` },
-      payload: {
-        type: "thread.delegate",
-        requestId: randomUUID(),
+    const delegatedResponse = await callMcpTool(
+      host.origin,
+      run.agentControlToken,
+      "thread_delegate",
+      {
+        operationKey: randomUUID(),
         task: "Compare the included page",
         title: "Page comparison",
         workspaceId: run.workspaceId,
         places: [page],
       },
-    });
-    expect(delegatedResponse.statusCode, delegatedResponse.body).toBe(200);
-    const delegated = AgentControlResponseSchema.parse(delegatedResponse.json());
-    if (delegated.type !== "thread.delegate.result") throw new Error("Expected delegated page");
+    );
+    expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
+    const delegated = {
+      type: "thread.delegate.result" as const,
+      result: thread_delegate.output.parse(delegatedResponse.structuredContent),
+    };
     expect(delegated.result.message.content).toContainEqual(page);
     const forwardedUsage = await testRpcData(
       host.origin,
@@ -2192,19 +2196,13 @@ integration("Browser presence and conversation usage", () => {
         ),
       );
     }
-    const unrelated = await host.runtime.app.inject({
-      method: "POST",
-      url: hostInternalRoutePaths.agentControl,
-      headers: { authorization: `Bearer ${run.agentControlToken}` },
-      payload: {
-        type: "thread.delegate",
-        requestId: randomUUID(),
-        task: "Read unrelated browser",
-        workspaceId: run.workspaceId,
-        places: [{ ...page, sessionId: "bsn_00000000-0000-4000-8000-000000000001" }],
-      },
+    const unrelated = await callMcpTool(host.origin, run.agentControlToken, "thread_delegate", {
+      operationKey: randomUUID(),
+      task: "Read unrelated browser",
+      workspaceId: run.workspaceId,
+      places: [{ ...page, sessionId: "bsn_00000000-0000-4000-8000-000000000001" }],
     });
-    expect(unrelated.statusCode, unrelated.body).toBe(403);
+    expect(unrelated.isError).toBe(true);
 
     // 3. A conversation in another Workspace, whose agent could not use this
     // browser, cannot take the page, and no message is kept.

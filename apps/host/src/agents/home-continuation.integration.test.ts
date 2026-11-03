@@ -1,3 +1,4 @@
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
@@ -29,7 +30,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testRpcRequest } from "../server/test-host-api-request.js";
 import {
-  AgentControlService,
   type AgentControlRunScope,
   type AgentControlTokenService,
 } from "./agent-control-service.js";
@@ -952,7 +952,7 @@ integration("durable Thread changes native continuation", () => {
     const unexpected = async (): Promise<never> => {
       throw new Error("Unexpected agent-control dependency");
     };
-    const service = new AgentControlService({
+    const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {
@@ -1151,7 +1151,7 @@ integration("durable Thread changes native continuation", () => {
     };
     // The Host's own dispatcher, Runner and event reactions run the task; this
     // service only stands in for the MCP endpoint Home's engine would call.
-    const service = new AgentControlService({
+    const service = new ProductToolsTestClient({
       browserSources: { agentSignIn: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {

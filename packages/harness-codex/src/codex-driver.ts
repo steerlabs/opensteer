@@ -46,7 +46,7 @@ import {
   type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
@@ -3333,9 +3333,9 @@ async function codexThreadRuntimeConfig(
   for (const name of ambientMcpNames) {
     runtimeConfig[codexMcpConfigPath(name, "enabled")] = false;
   }
-  const agentToolNames = toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-    ({ name }) => name,
-  );
+  const agentToolNames = agentTools
+    .filter((tool) => tool.callers.some((kind) => kind === "run"))
+    .map(({ name }) => name);
   runtimeConfig[codexMcpConfigPath("opensteer", "url")] = context.agentTools.url;
   runtimeConfig[codexMcpConfigPath("opensteer", "bearer_token_env_var")] =
     agentToolsTokenEnvironmentVariable;
@@ -3477,7 +3477,7 @@ async function codexSkillRules(
 async function assertCodexMcpBoundary(
   client: CodexStdioClient,
   threadId: string,
-  context: HarnessSessionContext,
+  _context: HarnessSessionContext,
   timeoutMs: number,
 ): Promise<void> {
   const response = requireObject(
@@ -3495,7 +3495,9 @@ async function assertCodexMcpBoundary(
     [
       "opensteer",
       new Set(
-        toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(({ name }) => name),
+        agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "run"))
+          .map(({ name }) => name),
       ),
     ],
     ["opensteer_integrations", new Set(integrationGatewayToolNames)],

@@ -16,7 +16,7 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -1411,14 +1411,14 @@ function hookCallId(payload: CursorHookPayload): string {
  * concluded the tool did not exist (cursor-facts §A.7). So the turn says which
  * servers exist and what they hold.
  */
-function cursorToolsNotice(context: HarnessSessionContext): string {
-  const agentTools = toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-    ({ name }) => name,
-  );
+function cursorToolsNotice(_context: HarnessSessionContext): string {
+  const productTools = agentTools
+    .filter((tool) => tool.callers.some((kind) => kind === "run"))
+    .map(({ name }) => name);
   return [
     "[Opensteer tools]",
     `To load Opensteer tools, call getMcpTools with the server name below, then use mcpToolCall.`,
-    `Server ${cursorMcpServerIdentifier(cursorAgentToolsServerName)} holds: ${agentTools.join(", ")}.`,
+    `Server ${cursorMcpServerIdentifier(cursorAgentToolsServerName)} holds: ${productTools.join(", ")}.`,
     `Server ${cursorMcpServerIdentifier(cursorIntegrationToolsServerName)} holds: ${[...integrationGatewayToolNames].join(", ")}.`,
   ].join("\n");
 }

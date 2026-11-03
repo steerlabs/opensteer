@@ -1,3 +1,4 @@
+import { TriggerToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   AgentEventSchema,
@@ -47,12 +48,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 // Design failures 1–5, 14–16, 19–21 and 23: real committed rows and events,
 // including retries, concurrent CAS, authorization and a first input outside history.
 import {
-  TriggerControlService,
   type TriggerControlScope,
   type TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
 import type { WatchControlScope } from "../triggers/watch-capability.js";
-import { WatchControlService } from "../triggers/watch-control-service.js";
+import { WatchToolsTestClient } from "../mcp/control.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -765,7 +765,7 @@ integration.sequential("Thread title lifecycle", () => {
         workspaceId: f.workspace.id,
         triggerId: created.trigger.id,
       };
-      let handle: (value: unknown) => ReturnType<TriggerControlService["handle"]>;
+      let handle: (value: unknown) => ReturnType<TriggerToolsTestClient["handle"]>;
       if (kind === "trigger") {
         const occurrence = await triggers.enqueueManual({
           actorThreadId: null,
@@ -788,7 +788,7 @@ integration.sequential("Thread title lifecycle", () => {
           runnerId: f.runnerId,
           threadId: anchor.id,
         };
-        const service = new TriggerControlService({
+        const service = new TriggerToolsTestClient({
           canRunHarness: () => true,
           commands,
           defaultWorkspaceBacking: "local-directory",
@@ -849,7 +849,7 @@ integration.sequential("Thread title lifecycle", () => {
           executionGeneration: activation.executionGeneration,
           revisionId: activation.revisionId,
         };
-        const service = new WatchControlService({
+        const service = new WatchToolsTestClient({
           environmentWorkspaceBackings: () => ["local-directory"],
           canRunHarness: () => true,
           commands,

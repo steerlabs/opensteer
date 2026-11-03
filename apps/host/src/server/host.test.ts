@@ -303,7 +303,7 @@ describe("Host signing keys", () => {
     const authenticateSession = vi.fn(async () => session);
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: {
         authenticateSession,
@@ -1533,7 +1533,6 @@ describe("rpc envelope", () => {
           platform: { uninstallIntegration } as never,
           service: {} as never,
           skills: {} as never,
-          tools: {} as never,
         },
       }),
     );
@@ -1604,7 +1603,6 @@ describe("rpc envelope", () => {
           } as never,
           service: { disconnect } as never,
           skills: {} as never,
-          tools: {} as never,
         },
       }),
     );
@@ -1852,7 +1850,7 @@ describe("Optional subsystem registration", () => {
     const handle = vi.fn();
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: { handle } as never,
       authenticator: { authenticateUser: async () => createId("user") } as never,
       browser: {} as never,
@@ -1888,7 +1886,7 @@ describe("Optional subsystem registration", () => {
   it("no longer answers on any of the replaced session-establishment paths", async () => {
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => createId("user") } as never,
       browser: {} as never,
@@ -1930,7 +1928,7 @@ describe("Workspace route projections", () => {
     const retry = vi.fn(async () => workspace);
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => ownerId } as never,
       browser: {} as never,
@@ -2005,7 +2003,7 @@ describe("Personal sharing boundary", () => {
     const diagnostics = new BootstrapNoticeDiagnostics();
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: {
         authenticateUser: async () => ownerId,
@@ -2286,7 +2284,7 @@ describe("thread event history route", () => {
     const threadEventPageForOwner = vi.fn(async () => result);
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => ownerId } as never,
       browser: {} as never,
@@ -2976,7 +2974,7 @@ describe("durable harness catalogs", () => {
       updateHarnessInstance,
       server: createHostServer({
         requestResponseVault: {} as never,
-        agentControl: {} as never,
+
         agentTools: {} as never,
         authenticator: {
           authenticateSession,
@@ -4239,7 +4237,7 @@ describe("Workspace Files routes", () => {
     );
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => ownerId } as never,
       browser: {} as never,
@@ -4360,7 +4358,7 @@ async function requestRouteServer(options: {
         open: vi.fn(),
         seal: vi.fn(async () => ({ envelope: Buffer.from("encrypted"), keyVersion: 1 })),
       } as never),
-    agentControl: {} as never,
+
     agentTools: {} as never,
     authenticator: { authenticateUser: async () => options.ownerId } as never,
     browser: { latestPlaces: async () => [], ...options.browser } as never,

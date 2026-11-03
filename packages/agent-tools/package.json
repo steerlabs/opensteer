@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./outputs": "./src/tools/outputs.ts",
     "./tools": "./src/tools/index.ts",
     "./integrations": "./src/tools/integrations.ts"
   },

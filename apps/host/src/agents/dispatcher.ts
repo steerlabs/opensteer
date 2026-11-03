@@ -48,7 +48,7 @@ import type { PluginPackagesTokenService } from "../integrations/plugin-package-
 import type {
   IntegrationToolsTokenService,
   TriggerIntegrationToolsTokenService,
-} from "../integrations/integration-tools-mcp-service.js";
+} from "../mcp/handlers/integrations.js";
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";

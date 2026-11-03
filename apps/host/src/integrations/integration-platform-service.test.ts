@@ -1,12 +1,12 @@
+import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { createServer } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  IntegrationToolsMcpService,
   type IntegrationToolsTokenService,
   type TriggerIntegrationToolsTokenService,
-} from "./integration-tools-mcp-service.js";
+} from "../mcp/handlers/integrations.js";
 
 import {
   IntegrationDefinitionSchema,
@@ -4130,7 +4130,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
       };
       expect(validateJsonSchema(f.inputSchema, args)).toEqual([]);
       const who = runCaller(context);
-      let mcp: IntegrationToolsMcpService | undefined;
+      let mcp: ReturnType<typeof createIntegrationMcpFixture> | undefined;
       const server = createServer((request, response) => {
         void (async () => {
           const chunks: Buffer[] = [];
@@ -4153,7 +4153,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
         if (!address || typeof address === "string")
           throw new Error("MCP test server did not bind");
         const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
-        mcp = new IntegrationToolsMcpService({
+        mcp = createIntegrationMcpFixture({
           definitions: [phone ? phoneDefinition : guiDefinition],
           getWorkspaceForOwner: async () => ({ id: who.run!.workspaceId }),
           runTokens: {

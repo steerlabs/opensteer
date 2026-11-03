@@ -1,6 +1,6 @@
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import { pathToFileURL } from "node:url";
 import {
   attachmentMaxBytes,
@@ -2342,13 +2342,11 @@ function opencodeConnectionLabel(sourceLabel: string, baseUrl: string | undefine
 /* ------------------------------------------------------------------- turn */
 
 /** Every Opensteer tool id as OpenCode will flatten it, for the permission table. */
-export function opencodeOpensteerToolIds(
-  capabilityProfileId: Parameters<typeof toolsForCapabilityProfile>[0],
-): readonly string[] {
+export function opencodeOpensteerToolIds(_profile: unknown): readonly string[] {
   return [
-    ...toolsForCapabilityProfile(capabilityProfileId).map(
-      ({ name }) => `${opencodeAgentToolsServer}_${name}`,
-    ),
+    ...agentTools
+      .filter((tool) => tool.callers.some((kind) => kind === "run"))
+      .map(({ name }) => `${opencodeAgentToolsServer}_${name}`),
     ...integrationGatewayToolNames.map((name) => `${opencodeIntegrationToolsServer}_${name}`),
   ];
 }

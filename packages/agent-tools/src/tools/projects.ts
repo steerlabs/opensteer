@@ -30,7 +30,7 @@ export const project_create = defineAgentTool({
   input: WorkspaceCreateInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: ProjectCreateOutputSchema,
   access: "settings",
-  callers: ["run", "program"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
 
 export const plugin_install = defineAgentTool({

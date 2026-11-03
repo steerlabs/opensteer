@@ -1,3 +1,4 @@
+import { AgentControlResponseSchema } from "../mcp/control.test-support.js";
 import { NotificationStore } from "@opensteer/database";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -25,7 +26,6 @@ import {
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import {
-  AgentControlResponseSchema,
   PendingAgentEventSchema,
   RunnerConnectionFenceSchema,
   sameRunnerConnectionFence,

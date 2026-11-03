@@ -17,7 +17,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import {
-  AgentCapabilityProfileIdSchema,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -26,7 +25,7 @@ import {
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { agentTools } from "@opensteer/agent-tools";
 import {
   isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
@@ -72,33 +71,30 @@ afterEach(async () => {
 });
 
 describe("Codex app-server harness", () => {
-  it.each(["main", "workspace", "delegated", "trigger"])(
-    "enables exactly the current %s catalog without the legacy browser sign-in alias",
-    async (profile) => {
-      const fixture = await setup("happy");
-      const capabilityProfileId = AgentCapabilityProfileIdSchema.parse(profile);
+  it("enables the Run registry without the legacy browser sign-in alias", async () => {
+    const fixture = await setup("happy");
+    try {
+      const session = await fixture.adapter.startSession({
+        ...fixture.context,
+      });
       try {
-        const session = await fixture.adapter.startSession({
-          ...fixture.context,
-          agentTools: { ...fixture.context.agentTools, capabilityProfileId },
-        });
-        try {
-          const captured = await fixture.capture();
-          const threadStart = captured.find((message) => message.method === "thread/start");
-          const config =
-            (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
-          const expected = toolsForCapabilityProfile(capabilityProfileId).map(({ name }) => name);
-          expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(expected);
-          expect(expected).not.toContain("browser_sign_in");
-          expect(expected.includes("sign_in")).toBe(profile !== "trigger");
-        } finally {
-          await session.stop();
-        }
+        const captured = await fixture.capture();
+        const threadStart = captured.find((message) => message.method === "thread/start");
+        const config =
+          (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
+        const expected = agentTools
+          .filter((tool) => tool.callers.some((kind) => kind === "run"))
+          .map(({ name }) => name);
+        expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(expected);
+        expect(expected).not.toContain("browser_sign_in");
+        expect(expected).toContain("sign_in");
       } finally {
-        await fixture.adapter.close();
+        await session.stop();
       }
-    },
-  );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 
   it("maps every Opensteer access mode to an explicit Codex policy", () => {
     const workspacePath = "/workspace";

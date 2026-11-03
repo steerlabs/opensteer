@@ -1,3 +1,7 @@
+import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { fingerprint } from "../mcp/operations.js";
+import { AgentControlRequestSchema } from "../mcp/control.test-support.js";
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
   createId,
@@ -17,16 +21,14 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-  AgentControlRequestSchema,
   createBrowserSessionId,
   HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
 } from "@opensteer/protocol";
-import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import {
-  AgentControlService,
   type AgentControlTokenService,
   type AgentTriggerManager,
   type AgentWorkspaceMountService,
@@ -198,25 +200,6 @@ describe("AgentControlService", () => {
     });
   });
 
-  it("derives the exposed tool surface from the Thread's pinned capability profile", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Delegated", null, {
-      capabilityProfileId: "delegated",
-    });
-    const { service } = makeService({
-      capabilityProfileId: "delegated",
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [current],
-    });
-
-    await expect(
-      service.handle("run-token", {
-        requestId: crypto.randomUUID(),
-        type: "project.list",
-      }),
-    ).rejects.toThrow("does not allow project.list");
-  });
-
   it.each(["sign-in"] as const)(
     "keeps %s Browser Session requests admitted through the single sign-in permission",
     async (type) => {
@@ -250,9 +233,7 @@ describe("AgentControlService", () => {
       expect(agentSignIn).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, site: result.site }),
       );
-      expect(admitAgentControlRequest).toHaveBeenCalledWith(
-        expect.objectContaining({ action: "browser.sign-in" }),
-      );
+      expect(admitAgentControlRequest).not.toHaveBeenCalled();
     },
   );
 
@@ -270,7 +251,7 @@ describe("AgentControlService", () => {
         requestId: crypto.randomUUID(),
         type: "environment.list",
       }),
-    ).rejects.toThrow("Main coordination requires active owner authority");
+    ).rejects.toThrow("MCP caller authority is unavailable or expired");
   });
 
   it("projects created Workspaces onto the public response shape", async () => {
@@ -331,6 +312,7 @@ describe("AgentControlService", () => {
       accessMode: "auto" as const,
     };
     const target = thread(targetThreadId, codexHarnessId, "Research", null, {
+      accessMode: "auto",
       environmentId: targetEnvironmentId,
       workspaceId: targetWorkspaceId,
     });
@@ -420,21 +402,26 @@ describe("AgentControlService", () => {
       type: "thread.delegate",
       workspaceId: targetWorkspaceId,
     });
+    if (delegateRequest.type !== "thread.delegate") throw new Error("Expected delegation");
     await expect(service.handle("run-token", delegateRequest)).resolves.toMatchObject({
       result: { run: childRun, thread: child },
     });
     expect(delegateThread).toHaveBeenCalledWith({
       accessMode: "auto",
       callerIntent: {
-        requestId: delegateId,
-        requestFingerprint: createHash("sha256")
-          .update(JSON.stringify(delegateRequest), "utf8")
-          .digest("hex"),
+        requestId: mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "thread_delegate"),
+        requestFingerprint: fingerprint({
+          task: delegateRequest.task,
+          title: delegateRequest.title,
+          workspaceId: delegateRequest.workspaceId,
+        }),
       },
       createdBy: ownerId,
       environmentId,
       harnessInstanceId: nativeHarnessId,
-      idempotencyKey: expect.stringContaining(`${delegateId}:delegate`),
+      idempotencyKey: expect.stringContaining(
+        `${mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "thread_delegate")}:delegate`,
+      ),
       modelSelection: testModelSelection,
       origin: {
         kind: "run",
@@ -459,13 +446,15 @@ describe("AgentControlService", () => {
     ).resolves.toMatchObject({ result: { run: targetRun, thread: target } });
     expect(enqueueThreadInput).toHaveBeenCalledWith({
       content: [{ text: "Please continue", type: "text" }],
-      idempotencyKey: expect.stringContaining(`${messageId}:message`),
+      idempotencyKey: expect.stringContaining(
+        `${mcpToolCallId(`run:${claims.runId}`, messageId, "operation", "thread_message")}:message`,
+      ),
       policy: "queue",
       requestedBy: ownerId,
       source: { kind: "agent", runId: claims.runId },
       threadId: target.id,
     });
-    expect(authenticate).toHaveBeenCalledTimes(4);
+    expect(authenticate).toHaveBeenCalledTimes(10);
     expect(authenticate).toHaveBeenCalledWith("run-token");
     expect(listEnvironmentsForUser).toHaveBeenCalledWith(ownerId, 65, {});
     expect(workspaceSnapshot).not.toHaveBeenCalled();
@@ -570,7 +559,7 @@ describe("AgentControlService", () => {
       type: "thread.list",
     });
     if (legacyList.type !== "thread.list.result") throw new Error("Expected thread list");
-    for (const summary of legacyList.threads) expect(summary).not.toHaveProperty("doneAt");
+    for (const summary of legacyList.threads) expect(summary).toHaveProperty("doneAt", null);
     expect(main.agentThreadPageForOwner).toHaveBeenCalledWith(
       expect.objectContaining({
         maxItems: 25,
@@ -676,7 +665,7 @@ describe("AgentControlService", () => {
         threadId: unrelated.id,
         type: "thread.message",
       }),
-    ).rejects.toThrow("delegation lineage");
+    ).rejects.toThrow("outside the caller's reach");
     expect(enqueueThreadInput).not.toHaveBeenCalled();
 
     await expect(
@@ -696,7 +685,7 @@ describe("AgentControlService", () => {
         threadId: unrelated.id,
         type: "thread.read",
       }),
-    ).rejects.toThrow("delegation lineage");
+    ).rejects.toThrow("outside the caller's reach");
 
     const foreignOwnerId = createId("user");
     const foreignWorkspaceId = createId("workspace");
@@ -725,7 +714,7 @@ describe("AgentControlService", () => {
         threadId: foreign.id,
         type: "thread.message",
       }),
-    ).rejects.toThrow("unavailable to this user");
+    ).rejects.toThrow("unavailable");
   });
 
   it("validates a chosen delegation environment instead of substituting one", async () => {
@@ -853,7 +842,7 @@ describe("AgentControlService", () => {
         type: "thread.delegate",
         workspaceId: targetWorkspaceId,
       }),
-    ).rejects.toThrow("unavailable to this user");
+    ).rejects.toThrow("unavailable");
   });
 
   it("fences a local-directory Workspace when the delegation names no environment", async () => {
@@ -1048,7 +1037,7 @@ describe("AgentControlService", () => {
         threadId: foreign.id,
         type: "thread.read",
       }),
-    ).rejects.toThrow("unavailable to this user");
+    ).rejects.toThrow("unavailable");
 
     await expect(
       service.handle("run-token", {
@@ -1058,7 +1047,7 @@ describe("AgentControlService", () => {
         threadId: foreign.id,
         type: "thread.message",
       }),
-    ).rejects.toThrow("unavailable to this user");
+    ).rejects.toThrow("unavailable");
 
     await expect(
       service.handle("run-token", {
@@ -1163,7 +1152,7 @@ describe("AgentControlService", () => {
 
     await expect(
       service.handle("run-token", { ...base, workspaceId: foreignWorkspaceId }),
-    ).rejects.toThrow("unavailable to this user");
+    ).rejects.toThrow("unavailable");
     await expect(service.handle("run-token", { ...base, workspaceId })).rejects.toThrow(
       "not connected",
     );
@@ -1275,40 +1264,19 @@ describe("AgentControlService", () => {
         }),
       ).toMatchObject({ type: "machine.full-disk-access.request.result" });
       expect(request).toHaveBeenCalledWith({
-        callId,
+        callId: mcpToolCallId(
+          `run:${claims.runId}`,
+          callId,
+          "operation",
+          "machine_full_disk_access_request",
+        ),
         computer: "test-mac",
         reason: "Read Mail",
         claims,
       });
-      expect(admitAgentControlRequest.mock.invocationCallOrder[0]).toBeLessThan(
-        request.mock.invocationCallOrder[0] ?? 0,
-      );
+      expect(admitAgentControlRequest).not.toHaveBeenCalled();
     },
   );
-
-  it("refuses full access requests from delegated agents before admission", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Delegated", null, {
-      capabilityProfileId: "delegated",
-    });
-    const request = vi.fn();
-    const { service, admitAgentControlRequest } = makeService({
-      capabilityProfileId: "delegated",
-      machineFullDiskAccess: { request },
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      service.handle("run-token", {
-        type: "machine.full-disk-access.request",
-        requestId: crypto.randomUUID(),
-        computer: "test-mac",
-        reason: "Read Mail",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(request).not.toHaveBeenCalled();
-    expect(admitAgentControlRequest).not.toHaveBeenCalled();
-  });
 
   it("scopes browser access requests to the claimed Workspace outside Main", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Client", null, {
@@ -1347,7 +1315,12 @@ describe("AgentControlService", () => {
       type: "browser.access.request.result",
     });
     expect(requestAccess).toHaveBeenCalledWith({
-      callId: toolRequestId,
+      callId: mcpToolCallId(
+        `run:${claims.runId}`,
+        toolRequestId,
+        "operation",
+        "browser_access_request",
+      ),
       originatingWorkspaceId: claims.workspaceId,
       ownerId,
       reason: "Sign in to the client portal",
@@ -1366,34 +1339,6 @@ describe("AgentControlService", () => {
       }),
     ).rejects.toThrow("can request browser access only for its Workspace");
     expect(requestAccess).toHaveBeenCalledTimes(1);
-  });
-
-  it("denies a delegated Thread the browser authority it cannot expand", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Delegated", null, {
-      capabilityProfileId: "delegated",
-    });
-    const { service } = makeService({
-      capabilityProfileId: "delegated",
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [current],
-    });
-
-    await expect(
-      service.handle("run-token", {
-        reason: "Sign in to the client portal",
-        requestId: crypto.randomUUID(),
-        suggestion: { kind: "user_choice" },
-        type: "browser.access.request",
-      }),
-    ).rejects.toThrow("does not allow browser.access.request");
-    await expect(
-      service.handle("run-token", {
-        requestId: crypto.randomUUID(),
-        sessionId: createBrowserSessionId(),
-        type: "browser.session.close",
-      }),
-    ).rejects.toThrow("does not allow browser.session.close");
   });
 
   it("uses Run-stable command idempotency after durable exact-request admission", async () => {
@@ -1425,24 +1370,21 @@ describe("AgentControlService", () => {
     await service.handle("first-token", request);
     await service.handle("replacement-token", request);
 
-    expect(admitAgentControlRequest).toHaveBeenCalledTimes(2);
-    expect(admitAgentControlRequest.mock.calls[0]?.[0]).toEqual(
-      admitAgentControlRequest.mock.calls[1]?.[0],
-    );
+    expect(admitAgentControlRequest).toHaveBeenCalledTimes(1);
     expect(admitAgentControlRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "thread.message",
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-        requestId,
+        requestId: mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_message"),
         runId: claims.runId,
         sourceThreadId: claims.threadId,
       }),
     );
-    expect(enqueueThreadInput).toHaveBeenCalledTimes(2);
+    expect(enqueueThreadInput).toHaveBeenCalledTimes(1);
     const firstKey = enqueueThreadInput.mock.calls[0]?.[0].idempotencyKey;
-    const secondKey = enqueueThreadInput.mock.calls[1]?.[0].idempotencyKey;
-    expect(firstKey).toBe(`agent:${claims.runId}:${requestId}:message`);
-    expect(secondKey).toBe(firstKey);
+    expect(firstKey).toBe(
+      `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_message")}:message`,
+    );
     expect(firstKey).not.toContain(claims.jti);
   });
 
@@ -1503,10 +1445,12 @@ describe("AgentControlService", () => {
       type: "trigger.control",
     });
 
-    expect(admitAgentControlRequest.mock.calls.map(([input]) => input.action)).toEqual([
-      "trigger.read",
-      "trigger.write",
-    ]);
+    expect(
+      (manage.mock.calls as unknown as readonly [unknown, { operation: string }][]).map(
+        ([, input]) => input.operation,
+      ),
+    ).toEqual(["list", "run"]);
+    expect(admitAgentControlRequest).not.toHaveBeenCalled();
   });
 
   it("derives the Trigger create idempotency key from the Run and request", async () => {
@@ -1544,7 +1488,7 @@ describe("AgentControlService", () => {
     expect(manage).toHaveBeenCalledWith(
       claims.requestedBy,
       expect.objectContaining({
-        idempotencyKey: `agent:${claims.runId}:${requestId}:trigger.create`,
+        idempotencyKey: `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "trigger_write")}:trigger.create`,
       }),
       current.id,
     );
@@ -1579,10 +1523,10 @@ describe("AgentControlService", () => {
 });
 
 function makeService(options: {
-  personShow?: ConstructorParameters<typeof AgentControlService>[0]["personShow"];
-  browserSources?: ConstructorParameters<typeof AgentControlService>[0]["browserSources"];
+  personShow?: ConstructorParameters<typeof ProductToolsTestClient>[0]["personShow"];
+  browserSources?: ConstructorParameters<typeof ProductToolsTestClient>[0]["browserSources"];
   machineFullDiskAccess?: ConstructorParameters<
-    typeof AgentControlService
+    typeof ProductToolsTestClient
   >[0]["machineFullDiskAccess"];
   admitAgentControlRequest?: ReturnType<typeof vi.fn>;
   browser?: Partial<
@@ -1979,7 +1923,7 @@ function makeService(options: {
     authenticate,
     claims,
     listEnvironmentsForUser,
-    service: new AgentControlService({
+    service: new ProductToolsTestClient({
       ...(options.personShow ? { personShow: options.personShow } : {}),
       browserSources: options.browserSources ?? { agentSignIn: unexpectedBrowserRequest },
       machineFullDiskAccess: options.machineFullDiskAccess ?? { request: vi.fn() },
@@ -2117,7 +2061,10 @@ function thread(
   title: string,
   parentThreadId: Thread["parentThreadId"] = null,
   overrides: Partial<
-    Pick<Thread, "capabilityProfileId" | "createdBy" | "environmentId" | "workspaceId">
+    Pick<
+      Thread,
+      "accessMode" | "capabilityProfileId" | "createdBy" | "environmentId" | "workspaceId"
+    >
   > = {},
 ): Thread {
   return {
@@ -2266,7 +2213,12 @@ it.each(["main", "workspace"] as const)(
         requestedBy: fixture.claims.requestedBy,
         sourceThreadId: fixture.claims.threadId,
         runId: fixture.claims.runId,
-        requestId,
+        requestId: mcpToolCallId(
+          `run:${fixture.claims.runId}`,
+          requestId,
+          "operation",
+          "person_message",
+        ),
       }),
     });
     expect(enqueueThreadInput).not.toHaveBeenCalled();
@@ -2293,8 +2245,6 @@ it("omits client-only addressing from agent thread history", async () => {
 });
 
 it.each([
-  ["person.message", "delegated", null],
-  ["person.show", "delegated", null],
   // A Thread the person started, reused as a task, answers its assigner.
   ["person.message", "workspace", { assignerThreadId: targetThreadId, open: true }],
   ["person.show", "main", { assignerThreadId: targetThreadId, open: true }],
@@ -2325,7 +2275,7 @@ it.each([
 );
 
 it.each(["report", "queue", "steer"] as const)(
-  "lets a reused worker %s to its current assigner outside its lineage",
+  "requires a reused worker to keep its %s within live reach",
   async (delivery) => {
     const parent = thread(createId("thread"), nativeHarnessId, "Original parent");
     const assigner = thread(targetThreadId, nativeHarnessId, "Current assigner");
@@ -2355,8 +2305,8 @@ it.each(["report", "queue", "steer"] as const)(
         delivery,
         content: [{ type: "text", text: "Update" }],
       }),
-    ).resolves.toMatchObject({ type: "thread.message.result" });
-    expect(enqueueThreadInput).toHaveBeenCalled();
+    ).rejects.toThrow("outside the caller's reach");
+    expect(enqueueThreadInput).not.toHaveBeenCalled();
   },
 );
 

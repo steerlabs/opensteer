@@ -1,3 +1,4 @@
+import { ProductToolsTestClient } from "../mcp/control.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import type {
   ComputerAppApprovalAnswer,
@@ -74,7 +75,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentControlService } from "../agents/agent-control-service.js";
 import {
   continuationMessage,
   type IntegrationInventorySource,
@@ -142,19 +142,45 @@ const mcp = vi.hoisted(() => ({
   registrations: 0,
 }));
 
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: class {
-    constructor(_identity: unknown, options: { instructions: string }) {
-      mcp.instructions = options.instructions;
+vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
+  McpServer: class {
+    readonly callbacks = new Map<
+      string,
+      (args: unknown, extra: McpCallExtra) => Promise<unknown>
+    >();
+    readonly server = {
+      setRequestHandler: (
+        _schema: unknown,
+        handler: (request: unknown, extra: McpCallExtra) => Promise<unknown>,
+      ) => {
+        mcp.listHandler = handler;
+      },
+    };
+    constructor() {
+      mcp.callHandler = async (request, extra): Promise<ToolResult> => {
+        const callback = this.callbacks.get(request.params.name);
+        if (!callback)
+          return { isError: true, content: [{ type: "text", text: "Tool is unavailable" }] };
+        const result = await callback(request.params.arguments ?? {}, extra);
+        if (
+          ["computer", "integration_call"].includes(request.params.name) &&
+          result &&
+          typeof result === "object" &&
+          "structuredContent" in result
+        )
+          return result.structuredContent as ToolResult;
+        return result as ToolResult;
+      };
     }
-    async close() {}
+    registerTool(
+      name: string,
+      _registration: unknown,
+      callback: (args: unknown, extra: McpCallExtra) => Promise<unknown>,
+    ) {
+      this.callbacks.set(name, callback);
+    }
     async connect() {}
-    setRequestHandler(_schema: unknown, handler: unknown) {
-      mcp.registrations += 1;
-      if (mcp.registrations % 2 === 1)
-        mcp.listHandler = handler as (request: unknown, extra: McpCallExtra) => Promise<unknown>;
-      else mcp.callHandler = handler as CallHandler;
-    }
+    async close() {}
   },
 }));
 
@@ -172,7 +198,7 @@ vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
   },
 }));
 
-const { IntegrationToolsMcpService } = await import("./integration-tools-mcp-service.js");
+const { createIntegrationMcpFixture } = await import("../mcp/integration-fixture.test-support.js");
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
@@ -1732,7 +1758,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       );
       expect(wrongDisplay.statusCode, wrongDisplay.body).toBe(400);
       // Forward the included Mac app to a real child; its scope is checked before it exists.
-      const control = new AgentControlService({
+      const control = new ProductToolsTestClient({
         browserSources: {} as never,
         machineFullDiskAccess: {} as never,
         browser: {} as never,
@@ -5452,10 +5478,10 @@ async function openGateway(
     runnerBootId: "boot",
     runnerId: run.agentRunnerId,
     threadId: run.threadId,
-    toolContractVersion: 2,
+    toolContractVersion: 2 as const,
     workspaceId: run.workspaceId,
   };
-  const service = new IntegrationToolsMcpService({
+  const service = createIntegrationMcpFixture({
     definitions,
     getWorkspaceForOwner: async (workspaceId) => ({ id: workspaceId }),
     onWorkspaceEvent: () => undefined,
@@ -5466,8 +5492,8 @@ async function openGateway(
         if (trigger) throw new Error("not a Run token");
         return runScope;
       },
-    } as never,
-    triggerTokens: { authenticate: async () => triggerScope } as never,
+    },
+    triggerTokens: { authenticate: async () => triggerScope },
   });
   await service.handle(
     {

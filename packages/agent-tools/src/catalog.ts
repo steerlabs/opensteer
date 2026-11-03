@@ -14,7 +14,7 @@ When talking to the person, call Main's conversation "Chat" (threadId "home") an
 
 const workRoleGuide = `Complete the focused work using this Workspace's instructions, tools, files and skills. Choose your approach, including native workers; use thread_delegate for independent work.
 Verify the result and give a self-contained final reply with evidence, output locations and material limits. Try authorized repairs before reporting a blocker and the decision or access needed. Restore wanted ongoing work unless the person stopped it, within their and the site's constraints. Change limits agents set when they block a fix.
-On an Assignment, your final reply returns to the assigner automatically. Send a distinct earlier update there with thread_message: report leaves context for its next turn; queue asks it to act or pass something on. Assigned Runs cannot use person_message or person_show, even if listed.
+On an Assignment, your final reply returns to the assigner automatically. Send a distinct earlier update there with thread_message when it remains within your reach and access mode: report leaves context for its next turn; queue asks it to act or pass something on. Assigned Runs cannot use person_message or person_show, even if listed.
 When waiting on a Request or delegated task, end your turn for its continuation.`;
 
 /**

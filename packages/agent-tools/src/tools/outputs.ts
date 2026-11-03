@@ -142,15 +142,20 @@ export const ThreadSummarySchema = z.object({
   workspaceName: z.string(),
 });
 export const MessageOutputSchema = z.object(MessageSchema.shape);
-export const ThreadReadOutputSchema = z.object({
-  assignments: z.array(AssignmentSummarySchema),
-  assignmentWindow: WindowSchema,
-  messages: z.array(MessageOutputSchema),
-  thread: ThreadOutputSchema,
-  window: WindowSchema,
-});
+export const ThreadReadOutputSchema = z
+  .object({
+    assignments: z.array(AssignmentSummarySchema).max(50),
+    assignmentWindow: WindowSchema,
+    messages: z.array(MessageOutputSchema).max(100),
+    thread: ThreadOutputSchema,
+    window: WindowSchema,
+  })
+  .refine(
+    (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
+    "Thread history exceeds the agent output byte limit",
+  );
 export const ThreadListOutputSchema = z.object({
-  threads: z.array(ThreadSummarySchema),
+  threads: z.array(ThreadSummarySchema).max(50),
   window: WindowSchema,
 });
 export const ThreadDelegateOutputSchema = z.object({
@@ -214,12 +219,13 @@ export const PluginInstallOutputSchema = z.object({
   issues: z.array(
     z.object({
       message: z.string().optional(),
-      path: z.string().optional(),
+      component: z.enum(["manifest", "mcp", "skill"]).optional(),
+      entry: z.string().nullable().optional(),
       severity: z.string().optional(),
       code: z.string().optional(),
     }),
   ),
-  specialist: z.object({ purpose: z.string().optional() }).nullable(),
+  specialist: z.boolean(),
   registration: z.object({ id: z.string(), status: z.string(), plugin: z.string() }).nullable(),
 });
 export const PersonMessageOutputSchema = z.object({ messageId: MessageIdSchema });

@@ -13,14 +13,15 @@ import { isRetryableHarnessCatalogStatus } from "@opensteer/harness";
 import {
   agentHarnessModelsShown,
   agentInspectionModelsShown,
-  EnvironmentListInputSchema,
   type AgentHarnessSummary,
   type EnvironmentHarnessSummary,
-  type EnvironmentListInput,
   type AgentModelSummary,
-  type HarnessInstanceCatalog,
-  type HarnessModelDescriptor,
-} from "@opensteer/protocol";
+} from "@opensteer/agent-tools/outputs";
+import {
+  EnvironmentListInputSchema,
+  type EnvironmentListInput,
+} from "@opensteer/agent-tools/tools";
+import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {

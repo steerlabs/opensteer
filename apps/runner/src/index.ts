@@ -13,7 +13,6 @@ export * from "./runtime/runtime.js";
 export * from "./attachments/attachment-cache.js";
 export * from "./skills/skill-plan.js";
 export * from "./skills/workspace-skills.js";
-export * from "./agent/agent-control-client.js";
 export * from "./browser/browser-cdp-relay.js";
 export * from "./shell/machine-access-setup.js";
 export * from "./shell/shell-host-key.js";

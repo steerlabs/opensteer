@@ -186,8 +186,7 @@ import { Readable } from "node:stream";
 import type WebSocket from "ws";
 import type { RawData } from "ws";
 import { z } from "zod";
-import type { AgentControlService } from "./agents/agent-control-service.js";
-import type { AgentToolsMcpService } from "./agents/agent-tools-mcp-service.js";
+import type { OpensteerMcpService } from "./mcp/opensteer-mcp-service.js";
 import {
   type BrowserConsumerAttachment,
   type BrowserConsumerPeer,
@@ -277,7 +276,6 @@ import {
   type IntegrationRpcOptions,
 } from "./integrations/integration-routes.js";
 import type { IntegrationService } from "./integrations/integration-service.js";
-import type { IntegrationToolsMcpService } from "./integrations/integration-tools-mcp-service.js";
 import type { McpOAuthService } from "./integrations/mcp-oauth-service.js";
 import type { LocalBootstrapService } from "./runtime/local-bootstrap.js";
 import {
@@ -363,9 +361,8 @@ export interface HostServerDependencies {
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
     { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
-  readonly agentControl: AgentControlService;
   readonly agentControlTokens: import("./agents/agent-control-service.js").AgentControlTokenService;
-  readonly agentTools: AgentToolsMcpService;
+  readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
   readonly machineFullDiskAccess: MachineFullDiskAccessService;
   readonly browser: BrowserService;
@@ -402,7 +399,6 @@ export interface HostServerDependencies {
     readonly platform: IntegrationPlatformService;
     readonly service: IntegrationService;
     readonly skills: import("./integrations/plugin-package-service.js").PluginPackageService;
-    readonly tools: IntegrationToolsMcpService;
   };
   /** Shared with Runner registration so live sign-in attempts resume on reconnect. */
   readonly harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator;
@@ -2977,11 +2973,6 @@ export async function createHostServer(
       .send(Buffer.from(content.bytes));
   });
 
-  app.post(hostInternalRoutePaths.agentControl, async (request) => {
-    const token = requireBearerToken(request);
-    return dependencies.agentControl.handle(token, request.body);
-  });
-
   app.get(hostInternalRoutePaths.triggerRevisionProgram, async (request, reply) => {
     const token = requireBearerToken(request);
     const params = z.strictObject({ revisionId: TriggerRevisionIdSchema }).parse(request.params);
@@ -2999,17 +2990,6 @@ export async function createHostServer(
     },
     method: ["GET", "POST", "DELETE"],
     url: hostInternalRoutePaths.mcp,
-  });
-
-  app.route({
-    bodyLimit: agentToolPayloadMaxSerializedBytes + 32 * 1_024,
-    handler: async (request, reply) => {
-      const token = requireBearerToken(request);
-      reply.hijack();
-      await dependencies.integrations.tools.handle(request.raw, reply.raw, request.body, token);
-    },
-    method: ["GET", "POST", "DELETE"],
-    url: hostInternalRoutePaths.integrationMcp,
   });
 
   app.get(hostInternalRoutePaths.computerPluginPackages, async (request, reply) =>
