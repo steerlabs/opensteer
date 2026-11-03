@@ -486,6 +486,9 @@ export interface DesktopDownloadsBridge {
  * This app's own release updates. Electron main checks on its own; the person
  * starts the download and the restart that installs it.
  */
+export const DesktopUpdateChannelSchema = z.enum(["stable", "beta"]);
+export type DesktopUpdateChannel = z.infer<typeof DesktopUpdateChannelSchema>;
+
 export const DesktopUpdateStateSchema = z.strictObject({
   /** `unavailable`: this copy cannot update itself, as outside Applications. */
   status: z.enum([
@@ -493,11 +496,15 @@ export const DesktopUpdateStateSchema = z.strictObject({
     "idle",
     "checking",
     "up-to-date",
+    "ahead",
+    "no-stable-release",
     "available",
     "downloading",
     "downloaded",
     "error",
   ]),
+  channel: DesktopUpdateChannelSchema,
+  latestVersion: z.string().min(1).max(64).nullable(),
   currentVersion: z.string().min(1).max(64),
   /** The newer version on offer, from `available` through `downloaded`, and after its download failed. */
   availableVersion: z.string().min(1).max(64).nullable(),
@@ -511,6 +518,7 @@ export type DesktopUpdateState = z.infer<typeof DesktopUpdateStateSchema>;
 /** This app's updates, app-wide; every app window sees the same state. */
 export interface DesktopUpdatesBridge {
   get(): Promise<DesktopUpdateState>;
+  setChannel(channel: DesktopUpdateChannel): Promise<DesktopUpdateState>;
   onChanged(listener: (state: DesktopUpdateState) => void): () => void;
   /** Starts downloading the offered version; progress arrives as changes. */
   download(): Promise<void>;

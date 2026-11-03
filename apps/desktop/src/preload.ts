@@ -19,6 +19,7 @@ import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import {
   DesktopDownloadsSnapshotSchema,
   DesktopUpdateStateSchema,
+  DesktopUpdateChannelSchema,
   DesktopDownloadActionResultSchema,
   DesktopDownloadTargetSchema,
   type DesktopDownloadsBridge,
@@ -374,6 +375,13 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       DesktopChooseUsbDeviceInputSchema.parse(input),
     ),
   updates: {
+    setChannel: async (channel) =>
+      DesktopUpdateStateSchema.parse(
+        await invoke(
+          desktopBridgeChannels.setUpdateChannel,
+          DesktopUpdateChannelSchema.parse(channel),
+        ),
+      ),
     get: async () => DesktopUpdateStateSchema.parse(await invoke(desktopBridgeChannels.getUpdate)),
     onChanged: (listener) => {
       const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
