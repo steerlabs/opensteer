@@ -1,5 +1,4 @@
 import {
-  AgentCapabilityProfileIdSchema,
   AssignmentIdSchema,
   AssignmentSummarySchema,
   BrowserAccessSuggestionSchema,
@@ -631,7 +630,7 @@ export const RunBrowserCdpPlanSchema = z.strictObject({
 export type RunBrowserCdpPlan = z.infer<typeof RunBrowserCdpPlanSchema>;
 
 export const RunAgentToolsPlanSchema = z.strictObject({
-  capabilityProfileId: AgentCapabilityProfileIdSchema,
+  capabilityProfileId: z.enum(["main", "workspace", "delegated", "specialist", "trigger"]),
   token: z.string().min(1).max(4_096),
   url: z.url(),
 });

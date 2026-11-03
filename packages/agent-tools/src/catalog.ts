@@ -2,7 +2,6 @@ import type { AgentToolAnnotations } from "./registry.js";
 import {
   AppPublishInputSchema,
   AppFetchInputSchema,
-  AgentCapabilityProfileIdSchema,
   AssignmentIdSchema,
   BrowserProfileIdSchema,
   BrowserTabReadInputSchema,
@@ -20,11 +19,19 @@ import {
   ThreadWriteInputSchema,
   WorkspaceIconNameSchema,
   WorkspaceIdSchema,
-  type AgentCapabilityProfileId,
   type ThreadRole,
 } from "@opensteer/core";
 import { TriggerReadInputSchema, TriggerWriteInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
+
+export const AgentCapabilityProfileIdSchema = z.enum([
+  "main",
+  "workspace",
+  "delegated",
+  "specialist",
+  "trigger",
+]);
+export type AgentCapabilityProfileId = z.infer<typeof AgentCapabilityProfileIdSchema>;
 
 export const AgentToolIdSchema = z.enum([
   "app.publish",
@@ -91,7 +98,6 @@ export const AgentToolNameSchema = z.enum([
   "trigger_write",
 ]);
 export type AgentToolName = z.infer<typeof AgentToolNameSchema>;
-
 
 export interface AgentToolDefinition<Input extends z.ZodType = z.ZodType> {
   readonly annotations: AgentToolAnnotations;

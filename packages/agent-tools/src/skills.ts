@@ -1,4 +1,4 @@
-import { AgentCapabilityProfileIdSchema, type AgentCapabilityProfileId } from "@opensteer/core";
+import { AgentCapabilityProfileIdSchema, type AgentCapabilityProfileId } from "./catalog.js";
 import { z } from "zod";
 
 export const OpensteerAgentSkillNameSchema = z.enum([
