@@ -1030,6 +1030,7 @@ export async function createHostRuntime(
     const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({ runners: runnerStorage });
     const localWorkspaceFiles = new RunnerLocalWorkspaceFilesDriver({ runners: runnerStorage });
     const workspaces = new WorkspaceService({
+      providerAuthorizations: (owner) => integrations.providerAuthorizations(owner),
       drivers: { local: localWorkspaceDriver },
       shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
       resolveOwnerEnvironmentId: async (ownerId) => {

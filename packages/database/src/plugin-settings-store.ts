@@ -451,16 +451,42 @@ export class PluginSettingsStore {
                 .execute();
           }
         } else {
-          if (command.personalEverywhere)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Future account consent is not supported by this Host yet",
-            });
+          if (command.personalEverywhere) {
+            const accounts = command.personalEverywhere.accounts;
+            if (
+              !accounts.length ||
+              new Set(accounts.map((a) => a.connectionId)).size !== accounts.length ||
+              accounts.some((a) => !detail.accounts.some((c) => c.connectionId === a.connectionId))
+            )
+              throw new OpensteerError({
+                code: "forbidden",
+                message: "Future consent needs exact owned accounts",
+              });
+            for (const project of command.projects)
+              if (
+                project.accounts.some(
+                  (a) =>
+                    !accounts.some(
+                      (ceiling) =>
+                        ceiling.connectionId === a.connectionId &&
+                        (ceiling.access === "read-write" || a.access === "read"),
+                    ),
+                )
+              )
+                throw new OpensteerError({
+                  code: "bad_request",
+                  message: "Project access exceeds future consent",
+                });
+          }
           const installationId = detail.installationIds[0];
           if (!installationId)
             throw new OpensteerError({ code: "conflict", message: "Installation is unavailable" });
-          for (const place of detail.places.filter((p) => p.kind === "project" && p.canSelect)) {
-            const selection = command.projects.find((p) => p.workspaceId === place.workspaceId);
+          for (const place of detail.places.filter((p) => p.canSelect)) {
+            if (place.kind === "main" && !command.personalEverywhere) continue;
+            const selection =
+              place.kind === "main"
+                ? command.personalEverywhere
+                : command.projects.find((p) => p.workspaceId === place.workspaceId);
             for (const grant of detail.grants.filter((g) => g.workspaceId === place.workspaceId)) {
               if (!selection?.accounts.some((a) => a.connectionId === grant.connectionId))
                 await tx

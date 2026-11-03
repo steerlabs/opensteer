@@ -1,5 +1,7 @@
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { createId } from "@opensteer/core";
+import { createIntegrationId } from "@opensteer/integration-core";
+import { jsonValue } from "./store-primitives.js";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 import type { KyselyPlugin } from "kysely";
@@ -190,5 +192,153 @@ describeStore("plugin Settings authority", (test) => {
         {},
       ),
     ).rejects.toThrow("explicit consent");
+  });
+  test("future account consent grants only exact accounts and ceilings, atomically with Project creation", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.createRunFixture("settings-future-accounts", {
+      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      workspaceBacking: "local-directory",
+    });
+    const platform = new IntegrationPlatformStore(f.database);
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    await platform.install({
+      adapterSnapshot: null,
+      actorUserId: run.userId,
+      requestId: "install-account-fixture",
+      installation: {
+        id: installationId,
+        name: "records",
+        title: "Records",
+        description: "Records",
+        version: "1",
+        sourceKind: "built-in",
+        status: "active",
+        trust: "built-in",
+        manifest: { definition: { id: "records" } },
+        provenance: {},
+      },
+      servers: [
+        {
+          id: serverId,
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          connectionRequirement: {
+            kind: "provider",
+            provider: "records",
+            definitionId: "records",
+            providerApplicationRequired: false,
+          },
+          transport: { type: "streamable-http", url: "https://records.example/mcp", headers: {} },
+          catalog: { definitions: {}, tools: [] },
+        },
+      ],
+    });
+    const connections = [createIntegrationId("connection"), createIntegrationId("connection")];
+    for (const id of connections)
+      await f.database
+        .insertInto("integrationConnections")
+        .values({
+          id,
+          ownerUserId: run.userId,
+          provider: "records",
+          integrationDefinitionId: "records",
+          connectionKind: "provider-account",
+          connectionMethod: "api-key",
+          status: "connected",
+          displayName: id,
+          accountIdentifier: null,
+          applicationSource: jsonValue({ kind: "api-key" }),
+          authMethodId: "api-key",
+          authorizationDigest: "a".repeat(43),
+          credentialId: null,
+          computerAccess: null,
+          computerBlockedAt: null,
+          integrationServerId: null,
+          providerApplicationId: null,
+          externalIdentityId: id,
+          externalTenantId: null,
+          capabilities: jsonValue([]),
+          grantedScopes: jsonValue([]),
+          runnerId: null,
+          statusDetail: null,
+          transportKind: null,
+          updatedAt: new Date(),
+        })
+        .execute();
+    const target = { kind: "service" as const, definitionId: "records" };
+    await platform.settings.setPlacement(
+      run.userId,
+      {
+        type: "settings.plugin.placement.set",
+        target,
+        expectedRevision: 0,
+        idempotencyKey: "account-everywhere",
+        mainIncluded: true,
+        projects: [],
+        personalEverywhere: { accounts: [{ connectionId: connections[0]!, access: "read" }] },
+      },
+      {},
+    );
+    const project = await createTestWorkspace(f.store, {
+      backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+      createdBy: run.userId,
+      idempotencyKey: "future-account-project",
+      kind: "project",
+      name: "Future accounts",
+      status: "ready",
+    });
+    await expect(
+      platform.settings.setPlacement(
+        run.userId,
+        {
+          type: "settings.plugin.placement.set",
+          target,
+          expectedRevision: 1,
+          idempotencyKey: "over-ceiling",
+          mainIncluded: true,
+          projects: [
+            {
+              workspaceId: project.id,
+              accounts: [{ connectionId: connections[0]!, access: "read-write" }],
+            },
+          ],
+          personalEverywhere: { accounts: [{ connectionId: connections[0]!, access: "read" }] },
+        },
+        {},
+      ),
+    ).rejects.toThrow("exceeds future consent");
+    const grants = await f.database
+      .selectFrom("integrationGrants")
+      .selectAll()
+      .where("workspaceId", "=", project.id)
+      .execute();
+    expect(grants.map(({ connectionId, access }) => ({ connectionId, access }))).toEqual([
+      { connectionId: connections[0], access: "read" },
+    ]);
+    await f.database
+      .updateTable("integrationConnections")
+      .set({ status: "revoked" })
+      .where("id", "=", connections[0]!)
+      .execute();
+    await expect(
+      createTestWorkspace(f.store, {
+        backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+        createdBy: run.userId,
+        idempotencyKey: "revoked-account-project",
+        kind: "project",
+        name: "Must roll back",
+        status: "ready",
+      }),
+    ).rejects.toThrow("unavailable");
+    expect(
+      await f.database
+        .selectFrom("workspaces")
+        .select("id")
+        .where("name", "=", "Must roll back")
+        .execute(),
+    ).toEqual([]);
   });
 });

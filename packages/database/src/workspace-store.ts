@@ -1,3 +1,6 @@
+import { PluginSettingsStore } from "./plugin-settings-store.js";
+import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
+import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
 import { PluginStore } from "./plugin-store.js";
 import {
   type AgentEvent,
@@ -49,6 +52,7 @@ import {
 } from "./store-primitives.js";
 
 export interface CreateWorkspaceInput {
+  readonly providerAuthorizations?: Readonly<Record<string, IntegrationProviderAuthorization>>;
   readonly backing: WorkspaceBacking;
   readonly color?: MarkColor;
   readonly createdBy: UserId;
@@ -217,11 +221,11 @@ export async function createWorkspace(
       if (deployment?.deploymentShape.kind === "personal") {
         const consent = await transaction
           .selectFrom("pluginOwnerSettings")
-          .select("target")
+          .select(["target", "personalEverywhereAccounts"])
           .where("ownerUserId", "=", input.createdBy)
           .where("personalEverywhereAccounts", "is not", null)
           .execute();
-        for (const { target } of consent)
+        for (const { target, personalEverywhereAccounts } of consent) {
           if (target.kind === "plugin")
             await new PluginStore(transaction).activateIn(
               transaction,
@@ -229,6 +233,30 @@ export async function createWorkspace(
               id,
               input.createdBy,
             );
+          else if (target.kind === "service" || target.kind === "device-app") {
+            const detail = await new PluginSettingsStore(transaction).detail(
+              input.createdBy,
+              target,
+            );
+            const installationId = detail.installationIds[0];
+            if (!installationId)
+              throw new OpensteerError({
+                code: "conflict",
+                message: "Consented installation is unavailable",
+              });
+            for (const account of personalEverywhereAccounts ?? [])
+              await writeIntegrationGrantInTransaction(transaction, {
+                ...account,
+                installationId,
+                ownerUserId: input.createdBy,
+                createdBy: input.createdBy,
+                workspaceId: id,
+                alias: account.connectionId,
+                isDefault: false,
+                providerAuthorizations: input.providerAuthorizations ?? {},
+              });
+          }
+        }
       }
     }
     await transaction
