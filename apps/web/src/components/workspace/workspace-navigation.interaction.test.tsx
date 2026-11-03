@@ -177,7 +177,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
           createdAt: "2026-10-19T12:00:00.000Z",
           session: {
             id: destination.sessionId as WorkspaceTabLineage["session"]["id"],
-            access: "full-control",
+            access: "read-write",
             createdAt: "2026-10-19T12:00:00.000Z",
             updatedAt: "2026-10-19T12:00:00.000Z",
             origin: "workspace",

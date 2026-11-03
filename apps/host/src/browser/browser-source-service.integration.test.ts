@@ -118,7 +118,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
       : undefined;
     queueMicrotask(() =>
       this.#reply({
-        access: "full-control",
+        access: "read-write",
         dialog: null,
         sessionId: claims.sessionId,
         state: "ready",

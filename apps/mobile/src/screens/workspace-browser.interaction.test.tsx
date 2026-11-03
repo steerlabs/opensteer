@@ -519,7 +519,7 @@ function session(
   state: BrowserSessionSummary["state"] = "ready",
 ): BrowserSessionSummary {
   return {
-    access: "full-control",
+    access: "read-write",
     attachedRunIds: [],
     uses:
       workspaceId === unrelated.id

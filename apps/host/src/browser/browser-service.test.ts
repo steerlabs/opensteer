@@ -1081,7 +1081,7 @@ describe("BrowserService", () => {
         createdBy: ownerId,
         profileId: profile.id,
         workspaceId,
-        access: "full-control",
+        access: "read-write",
       });
       const recordVisit = vi.fn().mockResolvedValue(true);
       const history = {
@@ -3450,7 +3450,7 @@ describe("BrowserService", () => {
       kind: "profile-local",
       binding: { profileId: workProfile.id },
     });
-    await repository.grant(workProfile.id, "full-control");
+    await repository.grant(workProfile.id, "read-write");
 
     const peer = new RecordingPeer("ui-1");
     const attachment = await service.attach(ownerId, started.session.id, peer, consumerOptions());
@@ -4036,7 +4036,7 @@ describe("BrowserService", () => {
     });
     await expect(service.listGrantedProfiles(ownerId, workspaceId)).resolves.toEqual([
       {
-        access: "full-control",
+        access: "read-write",
         grantId: resolved.grant?.id,
         id: resolved.profile?.id,
         name: "Client portal",
@@ -4183,7 +4183,7 @@ describe("BrowserService", () => {
     await expect(overflow.bootstrap(ownerId)).rejects.toMatchObject({ code: "conflict" });
   });
 
-  it("requires one full-control profile grant before raw CDP reaches a Runtime", async () => {
+  it("requires one read-write profile grant before raw CDP reaches a Runtime", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
@@ -4214,12 +4214,12 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(0);
 
     const grant = await service.grantProfileToWorkspace({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
       workspaceId,
     });
-    expect(grant).toMatchObject({ access: "full-control", profileId: profile.id });
+    expect(grant).toMatchObject({ access: "read-write", profileId: profile.id });
     const visible = await service.start({ ownerId, profileId: profile.id, workspaceId });
     expect(visible.session.placement).toEqual({ kind: "runner", runnerId: target.runnerId });
     const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
@@ -4527,7 +4527,7 @@ describe("BrowserService", () => {
     const environmentId = createId("environment");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId);
     const profile = repository.addHostedProfile("Established profile");
-    await repository.grant(profile.id, "full-control");
+    await repository.grant(profile.id, "read-write");
     const established = testRunner({});
     const bound = testRunner({ environmentIds: [environmentId] });
     const service = placementService({
@@ -4596,7 +4596,7 @@ describe("BrowserService", () => {
     });
     cleanups.push(async () => service.close());
     await service.start({ ownerId, profileId: userOnly.id, workspaceId });
-    await repository.grant(granted.id, "full-control");
+    await repository.grant(granted.id, "read-write");
     const agent = await service.openAgentSession({
       agentBindingId: "run:isolation-test",
       ownerId,
@@ -4732,6 +4732,22 @@ describe("BrowserService", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
 
     const mainWorkspaceId = repository.addWorkspace("main");
+    await expect(
+      service.openAgentSession({
+        agentBindingId: "run:channel",
+        ownerId,
+        sessionId: opened.session.id,
+        workspaceId: mainWorkspaceId,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      service.listAgentSessions({
+        agentBindingId: "run:channel",
+        ownerId,
+        workspaceId: mainWorkspaceId,
+      }),
+    ).resolves.toEqual([]);
+
     await expect(
       service.openAgentSession({
         agentBindingId: "run:main",
@@ -5222,7 +5238,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         grant =
           this.#grant ??
           ({
-            access: "full-control",
+            access: "read-write",
             createdAt: new Date(),
             grantId: createId("browserProfileGrant"),
             profileId: profile.id,
@@ -5371,6 +5387,18 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       attached.set(attachment.sessionId, ids);
     }
     return attached;
+  }
+
+  async resolveResourceAccess(input: {
+    ownerUserId: UserId;
+    workspaceId: WorkspaceId;
+    agentBindingId?: string;
+  }) {
+    return {
+      inheritsMain:
+        input.agentBindingId !== "run:channel" &&
+        (await this.getWorkspaceForOwner(input.workspaceId, input.ownerUserId))?.kind === "main",
+    };
   }
 
   async listActiveBrowserProfileGrantsForWorkspace(workspaceId: WorkspaceId, ownerId: UserId) {
@@ -5869,7 +5897,7 @@ class MaximumBrowserCatalogRepository extends MemoryBrowserRepository {
     if (ownerId !== this.#ownerId) return [];
     return Array.from({ length: this.#grantCount }, (_, grantIndex) => {
       return {
-        access: "full-control" as const,
+        access: "read-write" as const,
         createdAt: new Date(2_000 + grantIndex),
         grantId: createId("browserProfileGrant"),
         profileId: this.#profileId,

@@ -1,3 +1,4 @@
+import { resourceAccessLevelsMigration } from "./migrations.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
@@ -3738,13 +3739,13 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "not_found" });
 
     await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
       workspaceId: specialist.id,
     });
     const keptGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: kept.id,
       workspaceId: specialist.id,
@@ -3827,7 +3828,7 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "not_found" });
     await expect(
       store.createBrowserProfileGrant({
-        access: "full-control",
+        access: "read-write",
         createdBy: ownerId,
         profileId: profile.id,
         workspaceId: specialist.id,
@@ -3909,17 +3910,48 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual([]);
     const browserGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: clientProfile.id,
       workspaceId: project.id,
     });
     const secondBrowserGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
       workspaceId: project.id,
     });
+    // Upgrade existing consent in place: its identity and owner must survive.
+    await sql`alter table browser_profile_grants drop constraint browser_profile_grants_access_check;
+      update browser_profile_grants set access = 'full-control';
+      alter table browser_profile_grants add constraint browser_profile_grants_access_check check (access = 'full-control')`.execute(
+      database,
+    );
+    await resourceAccessLevelsMigration.up(database);
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ grantId: browserGrant.grantId, access: "read-write" }),
+      ]),
+    );
+    const teammateId = await store.createUser("Browser teammate");
+    await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state)
+      values (${createId("workspaceMembership")}, ${project.id}, ${teammateId}, 'collaborator', 'active')`.execute(
+      database,
+    );
+    const teammateProfile = await store.createBrowserProfile({
+      ownerId: teammateId,
+      name: "Private teammate",
+      idempotencyKey: "private-teammate",
+    });
+    await store.createBrowserProfileGrant({
+      access: "read",
+      createdBy: teammateId,
+      profileId: teammateProfile.id,
+      workspaceId: project.id,
+    });
+    expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, teammateId)).toEqual([
+      expect.objectContaining({ profileId: teammateProfile.id, access: "read" }),
+    ]);
     expect(browserGrant.grantId).toMatch(/^bpg_/);
     expect(await store.listActiveBrowserProfileGrantsForWorkspace(project.id, ownerId)).toEqual(
       expect.arrayContaining([
@@ -3938,7 +3970,7 @@ describeStore("PostgreSQL store", (it) => {
           id, workspace_id, created_by, profile_id, access
         ) values (
           ${`grt_${randomUUID()}`}, ${project.id}, ${ownerId}, ${clientProfile.id},
-          ${"full-control"}
+          ${"read-write"}
         )
       `.execute(database),
     ).rejects.toThrow();
@@ -3958,12 +3990,12 @@ describeStore("PostgreSQL store", (it) => {
     const hostedRunnerId = await enrollBrowserRunner(ownerId, "Hosted browser");
     const laptopRunnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
     const laptopGrant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: ownerId,
       profileId: profile.id,
       workspaceId: project.id,
     });
-    expect(laptopGrant.access).toBe("full-control");
+    expect(laptopGrant.access).toBe("read-write");
 
     const sessionId = createBrowserSessionId();
     const session = await nativeSession(store, {

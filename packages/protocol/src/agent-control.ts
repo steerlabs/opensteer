@@ -452,7 +452,7 @@ export const AgentThreadSummarySchema = z.strictObject({
 });
 
 const GrantedBrowserProfileSchema = z.strictObject({
-  access: z.literal("full-control"),
+  access: z.enum(["read", "read-write"]),
   grantId: BrowserProfileGrantIdSchema,
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),

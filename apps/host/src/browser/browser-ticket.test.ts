@@ -15,7 +15,7 @@ describe("BrowserAttachTicketSigner", () => {
       keyId: "host-primary",
       privateKey: keys.privateKey,
     }).issue({
-      access: "full-control",
+      access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "browser",
       sessionId: createBrowserSessionId(),
@@ -39,7 +39,7 @@ describe("BrowserAttachTicketSigner", () => {
     const sessionId = createBrowserSessionId();
 
     const ticket = signer.issue({
-      access: "full-control",
+      access: "read-write",
       identity: {
         kind: "fresh",
       },
@@ -82,7 +82,7 @@ describe("BrowserAttachTicketSigner", () => {
       keyId: "split",
       privateKey: keys.privateKey,
     }).issue({
-      access: "full-control",
+      access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "browser",
       sessionId: createBrowserSessionId(),
@@ -104,7 +104,7 @@ describe("BrowserAttachTicketSigner", () => {
       keyId: "host-primary",
       privateKey: keys.privateKey,
     }).issue({
-      access: "full-control",
+      access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "hosted-browser-1",
       sessionId,
@@ -136,7 +136,7 @@ it("keeps native storage out of the frozen released ticket reader", () => {
     engine: "electron" as const,
   };
   const ticket = signer.issue({
-    access: "full-control",
+    access: "read-write",
     identity: {
       kind: "profile-local",
       binding,

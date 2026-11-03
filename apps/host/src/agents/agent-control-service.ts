@@ -742,6 +742,7 @@ export class AgentControlService {
       const profiles = await this.#browser.listGrantedProfiles(
         claims.requestedBy,
         claims.workspaceId,
+        `run:${claims.runId}`,
       );
       return AgentControlResponseSchema.parse({
         profiles,

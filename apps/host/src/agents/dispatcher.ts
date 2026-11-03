@@ -764,6 +764,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const hasBrowser = await this.#browser.hasBrowserProfileAccess(
       context.trigger.createdBy,
       context.workspace.id,
+      `thread:${context.anchorThread.id}`,
     );
     const runnerCommand: RunnerCommand = {
       commandId: command.id,

@@ -1,3 +1,4 @@
+import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { z } from "zod";
 import { isPlaceContentPart } from "@opensteer/core";
@@ -2166,6 +2167,28 @@ export async function enqueueThreadInputInTransaction(
         .where("id", "=", sourceRunId)
         .executeTakeFirst()
     : null;
+  if (request.source.kind === "agent" && sourceRun && policy !== "report")
+    await assertLineageCompatibleReuse(transaction, sourceRun.threadId, thread.id);
+  if (
+    policy !== "report" &&
+    (request.source.kind === "trigger" || request.source.kind === "watch")
+  ) {
+    const anchor =
+      request.source.kind === "trigger"
+        ? await transaction
+            .selectFrom("triggerOccurrences")
+            .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+            .select("triggers.anchorThreadId")
+            .where("triggerOccurrences.id", "=", request.source.occurrenceId)
+            .executeTakeFirst()
+        : await transaction
+            .selectFrom("triggerWatchActivations")
+            .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+            .select("triggers.anchorThreadId")
+            .where("triggerWatchActivations.id", "=", request.source.activationId)
+            .executeTakeFirst();
+    if (anchor) await assertLineageCompatibleReuse(transaction, anchor.anchorThreadId, thread.id);
+  }
   if (sourceRun?.assignmentId) {
     const sourceAssignment = await transaction
       .selectFrom("delegations")
@@ -3948,11 +3971,21 @@ export async function delegateThreadInTransaction(
   // lock after the Workspaces are locked; this first read grants no authority.
   const observedParent = await transaction
     .selectFrom("threads")
-    .select(["id", "workspaceId"])
+    .select(["id", "workspaceId", "capabilityProfileId"])
     .where("id", "=", input.origin.parentThreadId)
     .executeTakeFirst();
   if (!observedParent) {
     throw new OpensteerError({ code: "not_found", message: "Parent Thread not found" });
+  }
+  if (
+    observedParent.workspaceId !== input.workspaceId &&
+    observedParent.capabilityProfileId !== "main"
+  ) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message:
+        "Only the main profile may delegate across Workspaces. Start a new task in this Workspace instead.",
+    });
   }
   const observedTarget = input.threadId
     ? await transaction
@@ -4253,6 +4286,7 @@ export async function delegateThreadInTransaction(
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
     : null;
+  if (reusedRow) await assertLineageCompatibleReuse(transaction, parent.id, reusedRow.id);
   const listed = await delegationListsThread(transaction, parent.role, input.origin);
   // Delegation can promote a task; only a migration can take it off the list.
   const listedNow = reusedRow !== null && !reusedRow.listed && listed;

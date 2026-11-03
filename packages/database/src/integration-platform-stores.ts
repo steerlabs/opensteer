@@ -1,3 +1,4 @@
+import { resolveResourceAccess } from "./resource-access.js";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -427,35 +428,8 @@ abstract class IntegrationPlatformStoreBase {
     return rows.map(integrationGrantFromRow);
   }
 
-  /**
-   * How the asking Thread stands to its owner's Main authority, or null when
-   * the Workspace is not their Main at all.
-   *
-   * A Main Workspace is its owner's own, and a Thread there reaches the
-   * owner's connections only when its lineage starts from a Main-profile
-   * Thread. A channel route runs as its creator without being them, so its
-   * root takes `workspace` even in their Main, and whatever that root
-   * delegates stays in its lineage. A Thread's profile and lineage never
-   * change, so neither does this answer.
-   */
   async mainAccess(input: IntegrationRequester): Promise<MainAccess | null> {
-    const [workspace, root] = await Promise.all([
-      this.database
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", input.workspaceId)
-        .where("createdBy", "=", input.ownerUserId)
-        .where("kind", "=", "main")
-        .executeTakeFirst(),
-      this.database
-        .selectFrom("threads as asking")
-        .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-        .select("root.capabilityProfileId")
-        .where("asking.id", "=", input.threadId)
-        .executeTakeFirst(),
-    ]);
-    if (!workspace) return null;
-    return root?.capabilityProfileId === "main" ? "inherited" : "withheld";
+    return (await resolveResourceAccess(this.database, input)).mainAccess;
   }
 
   protected async installationInventory(): Promise<readonly IntegrationInstallation[]> {

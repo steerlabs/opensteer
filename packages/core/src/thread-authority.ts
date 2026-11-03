@@ -30,3 +30,10 @@ export function threadInReach(actor: ReachThread, target: ReachThread): boolean 
       return target.lineageRootThreadId === scope.lineageRootThreadId;
   }
 }
+
+export function lineageCompatibleForReuse(
+  callerInheritsMain: boolean,
+  targetInheritsMain: boolean,
+): boolean {
+  return callerInheritsMain || !targetInheritsMain;
+}

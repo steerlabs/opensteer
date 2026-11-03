@@ -72,7 +72,7 @@ it("keeps notice-mode native input with that person instead of offering another 
       JSON.stringify({
         type: "browser.snapshot",
         sessionId,
-        access: "full-control",
+        access: "read-write",
         state: "ready",
         dialog: null,
         surfaces: [

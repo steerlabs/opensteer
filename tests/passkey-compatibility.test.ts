@@ -61,7 +61,7 @@ it.each([
     privateKey: generateKeyPairSync("ed25519").privateKey,
   });
   const ticket = signer.issue({
-    access: "full-control",
+    access: "read-write",
     identity: { kind: "fresh" },
     runtimeId: "runtime",
     sessionId: createBrowserSessionId(),
@@ -140,7 +140,7 @@ it("keeps ceremony details away from viewers without the capability", async () =
     const snapshot = BrowserServerMessageSchema.parse({
       type: "browser.snapshot",
       sessionId: createBrowserSessionId(),
-      access: "full-control",
+      access: "read-write",
       state: "ready",
       dialog: null,
       surfaces: [{ id: "tab", active: true, title: "Example", url: "https://login.example.test" }],

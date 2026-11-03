@@ -140,7 +140,7 @@ async function mount(
     ],
     browserProfileGrants: [
       {
-        access: "full-control",
+        access: "read-write",
         createdAt: "2026-10-30T12:00:00.000Z",
         id: "bpg_shopping_buyer",
         profileId: "bpr_shopping",

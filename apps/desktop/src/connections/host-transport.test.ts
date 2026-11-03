@@ -475,7 +475,7 @@ describe("DesktopHostTransport", () => {
     const second = await transport.openWebSocket(7, { path }, vi.fn());
     await transport.openWebSocket(8, { path: `${path}?mode=watch` }, vi.fn());
     const snapshot = JSON.stringify({
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId,
       state: "ready",
@@ -1254,7 +1254,7 @@ it("keeps a passkey request's origin, options and client data in main", async ()
     events!.message(
       JSON.stringify({
         type: "browser.snapshot",
-        access: "full-control",
+        access: "read-write",
         dialog: null,
         sessionId,
         state: "ready",
@@ -1326,7 +1326,7 @@ it("holds passkey messages in main before renderer delivery and binds native inp
     events!.message(
       JSON.stringify({
         type: "browser.snapshot",
-        access: "full-control",
+        access: "read-write",
         dialog: null,
         sessionId,
         state: "ready",

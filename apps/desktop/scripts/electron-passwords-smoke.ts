@@ -544,7 +544,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
       wireVersion: 1,
-      access: "full-control",
+      access: "read-write",
       audience: "opensteer-browser-runtime",
       issuedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + passwordLoginLifetimeMs).toISOString(),

@@ -118,6 +118,15 @@ const computerConnection: EffectiveGrantConnection = {
 };
 
 describe("resolveEffectiveGrants", () => {
+  it("never lends a different member's explicit consent to the requester", () => {
+    const grant = storedGrant({
+      ownerUserId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000099"),
+    });
+    const result = resolveEffectiveGrants(fixture({ storedGrants: [grant] }));
+    expect(result.tools).toEqual([]);
+    expect(result.skills).toEqual([]);
+  });
+
   it("resolves installation tools and skills covered by the access class", () => {
     const grant = storedGrant();
     const result = resolveEffectiveGrants(fixture({ storedGrants: [grant] }));

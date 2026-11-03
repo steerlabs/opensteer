@@ -159,7 +159,7 @@ async function run(): Promise<void> {
         operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
         remainingBudgetMs: 18_000,
         wireVersion: 1,
-        access: "full-control",
+        access: "read-write",
         audience: "opensteer-browser-runtime",
         expiresAt: "2099-01-01T00:05:00.000Z",
         identity: { kind: "fresh" },

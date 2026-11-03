@@ -132,7 +132,7 @@ export function seedMockPlaces(
       })),
     });
     sessions.push({
-      access: "full-control",
+      access: "read-write",
       acting: pages.some((page) => page.occupants.some((value) => value.acting)),
       attachedRunIds: [
         ...new Set(
@@ -1084,7 +1084,7 @@ export class MockPlaceWorld {
     const at = this.#now().toISOString();
     const session: BrowserSessionSummary = {
       id,
-      access: "full-control",
+      access: "read-write",
       opener: { kind: "you" },
       origin: "workspace",
       workspaceId: snapshot.homeWorkspaceId!,

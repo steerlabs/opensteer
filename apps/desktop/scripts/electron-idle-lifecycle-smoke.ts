@@ -50,7 +50,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
       profileGrants: [],
       sessions: [
         {
-          access: "full-control",
+          access: "read-write",
           createdAt: new Date().toISOString(),
           id: sessionId,
           origin: "workspace",
@@ -122,7 +122,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
           type: "browser.snapshot",
           sessionId,
           state: "ready",
-          access: "full-control",
+          access: "read-write",
           dialog: null,
           targetedStreamingVersion: 1,
           surfaces: [{ active: true, id: surfaceId, title: "Idle smoke", url: "about:blank" }],

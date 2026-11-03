@@ -253,6 +253,7 @@ export class WatchService {
       const hasBrowser = await this.#browser.hasBrowserProfileAccess(
         context.activation.createdBy,
         context.activation.workspaceId,
+        `thread:${context.activation.anchorThreadId}`,
       );
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
       desired.push({

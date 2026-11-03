@@ -948,7 +948,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Personal",
     });
     const grant = await store.createBrowserProfileGrant({
-      access: "full-control",
+      access: "read-write",
       createdBy: fixture.userId,
       profileId: profile.id,
       workspaceId: target.id,
@@ -995,7 +995,7 @@ describeStore("PostgreSQL store", (it) => {
           createdBy: fixture.userId,
           profileId: id,
           workspaceId: target.id,
-          access: "full-control",
+          access: "read-write",
           revokedAt: null,
         })),
       )

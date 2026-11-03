@@ -633,7 +633,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       createdAt: now,
       session: {
         id: sessionId,
-        access: "full-control",
+        access: "read-write",
         createdAt: now,
         updatedAt: now,
         origin: "workspace",
@@ -705,7 +705,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       createdAt: now,
       session: {
         id: sessionId,
-        access: "full-control",
+        access: "read-write",
         createdAt: now,
         updatedAt: now,
         origin: "workspace",
@@ -866,7 +866,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       createdAt: now,
       session: {
         id: sessionId,
-        access: "full-control",
+        access: "read-write",
         createdAt: now,
         updatedAt: now,
         origin: "workspace",
@@ -1794,7 +1794,7 @@ describe("HttpHostClient durable realtime", () => {
     const b = createId("thread");
     const sessions = [
       {
-        access: "full-control" as const,
+        access: "read-write" as const,
         createdAt: now,
         id: sessionId,
         origin: "agent" as const,
@@ -1918,7 +1918,7 @@ describe("HttpHostClient durable realtime", () => {
       const sockets: FakeSocket[] = [];
       const sessions = [
         {
-          access: "full-control" as const,
+          access: "read-write" as const,
           createdAt: now,
           id: sessionId,
           origin: "agent" as const,
@@ -2022,7 +2022,7 @@ describe("HttpHostClient durable realtime", () => {
     const now = new Date().toISOString();
     const sockets: FakeSocket[] = [];
     const session = (state: "ready" | "starting") => ({
-      access: "full-control" as const,
+      access: "read-write" as const,
       createdAt: now,
       id: sessionId,
       origin: "agent" as const,
@@ -2129,7 +2129,7 @@ describe("HttpHostClient durable realtime", () => {
               reads > 1
                 ? [
                     {
-                      access: "full-control" as const,
+                      access: "read-write" as const,
                       createdAt: now,
                       id: sessionId,
                       origin: "agent" as const,
@@ -6853,7 +6853,7 @@ describe("HttpHostClient hosted browser", () => {
             id: createId("browserProfileGrant"),
             profileId,
             workspaceId: workspace.id,
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
           },
         ],
@@ -6866,7 +6866,7 @@ describe("HttpHostClient hosted browser", () => {
             runtimeId: "runtime",
             origin: "workspace",
             state: "ready",
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
             updatedAt: now,
             tabCatalog: {
@@ -6912,7 +6912,7 @@ describe("HttpHostClient hosted browser", () => {
           type: "browser.snapshot",
           sessionId,
           state: "ready",
-          access: "full-control",
+          access: "read-write",
           targetedStreamingVersion: 1,
           dialog: null,
           surfaces: [{ id: "page-1", active: true, title: "Page", url: "https://example.com" }],
@@ -6976,7 +6976,7 @@ describe("HttpHostClient hosted browser", () => {
       browser.sessions = [
         {
           id: sessionId,
-          access: "full-control",
+          access: "read-write",
           origin: "workspace",
           state: "ready",
           createdAt: now,
@@ -7041,7 +7041,7 @@ describe("HttpHostClient hosted browser", () => {
         return json(
           {
             session: {
-              access: "full-control",
+              access: "read-write",
               createdAt: now,
               id: sessionId,
               origin: "workspace",
@@ -7084,7 +7084,7 @@ describe("HttpHostClient hosted browser", () => {
     expect(browserSocket?.binaryType).toBe("arraybuffer");
     browserSocket?.open();
     browserSocket?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: {
         id: "00000000-0000-4000-8000-0000000000d1",
         message: "Continue?",
@@ -7201,7 +7201,7 @@ describe("HttpHostClient hosted browser", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -7243,7 +7243,7 @@ describe("HttpHostClient hosted browser", () => {
 
     browserSockets()[2]?.open();
     browserSockets()[2]?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId,
       state: "ready",
@@ -7288,7 +7288,7 @@ describe("HttpHostClient hosted browser", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -7355,7 +7355,7 @@ describe("HttpHostClient hosted browser", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -7382,7 +7382,7 @@ describe("HttpHostClient hosted browser", () => {
     const socket = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
     socket?.open();
     socket?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: {
         id: "00000000-0000-4000-8000-0000000000d1",
         message: "Continue?",
@@ -7453,7 +7453,7 @@ describe("HttpHostClient browser profiles", () => {
         return json(
           {
             session: {
-              access: "full-control",
+              access: "read-write",
               createdAt: now,
               id: sessionId,
               origin: "workspace",
@@ -9506,7 +9506,7 @@ describe("HttpHostClient command projection", () => {
       return json(
         {
           session: {
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
             id: sessionId,
             origin: "workspace",
@@ -9538,7 +9538,7 @@ describe("HttpHostClient command projection", () => {
     expect(viewer).toBeDefined();
     viewer?.open();
     viewer?.receiveRaw({
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId,
       state: "ready",
@@ -10044,7 +10044,7 @@ describe("HttpHostClient lifecycle", () => {
             profiles: [{ id: profileId, name: "Default browser" }],
             sessions: [
               {
-                access: "full-control",
+                access: "read-write",
                 createdAt: now,
                 id: sessionId,
                 origin: "workspace",
@@ -12476,7 +12476,7 @@ describe("HttpHostClient owner views", () => {
           catalog: { generation: 1, revision: 1, tabs: [] },
           browserStarted: true,
           session: {
-            access: "full-control",
+            access: "read-write",
             createdAt: now,
             id: sessionId,
             origin: "workspace",
@@ -14924,7 +14924,7 @@ it.each([false, true])(
       sessions: [
         {
           id: sessionId,
-          access: "full-control",
+          access: "read-write",
           origin: "workspace",
           state: "ready",
           createdAt: now,
@@ -14975,7 +14975,7 @@ it.each([false, true])(
       connection.socket.receiveRaw({
         type: "browser.snapshot",
         sessionId,
-        access: "full-control",
+        access: "read-write",
         state: "ready",
         dialog: null,
         targetedStreamingVersion: 1,
@@ -15358,7 +15358,7 @@ it("orders bootstrap session state by read freshness and Host update time, inclu
         profileId: null,
         placement: { kind: "runner", runnerId },
         origin: "workspace",
-        access: "full-control",
+        access: "read-write",
         state: "starting",
         createdAt: now,
         updatedAt: now,
@@ -15430,7 +15430,7 @@ it("orders bootstrap session state by read freshness and Host update time, inclu
       type: "browser.snapshot",
       sessionId: id,
       state: "ready",
-      access: "full-control",
+      access: "read-write",
       targetedStreamingVersion: 1,
       dialog: null,
       surfaces: [{ id: tab, active: true, title: "Page", url: "https://example.com" }],

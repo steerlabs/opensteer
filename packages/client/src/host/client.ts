@@ -651,7 +651,7 @@ export interface BrowserPlacementSummary {
 }
 
 export interface BrowserProfileGrantSummary {
-  access: "full-control";
+  access: "read" | "read-write";
   createdAt: string;
   id: string;
   profileId: string;
@@ -716,7 +716,7 @@ export interface BrowserSessionSummary {
   workspaceTabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
   tabCatalog?: BrowserTabCatalog;
-  access: "full-control";
+  access: "read" | "read-write";
   /**
    * An agent is acting in this browser now: it sent a command within the
    * last few seconds. An attached Run that is thinking is not acting.

@@ -595,6 +595,7 @@ export class BrowserSourceService {
     const sessionId = parseSessionId(input.sessionId);
     const liveTarget = await this.#browser.signInTarget({
       agentWorkspaceId: input.workspaceId,
+      agentBindingId: `run:${input.runId}`,
       ownerId: input.ownerId,
       sessionId,
     });

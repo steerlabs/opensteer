@@ -4682,6 +4682,7 @@ export function migrationProvider() {
         "0130_project_relocation": projectRelocationMigration,
         "0131_project_control_actions": projectControlActionsMigration,
         "0132_local_directory_only": localDirectoryOnlyMigration,
+        "0133_resource_access_levels": resourceAccessLevelsMigration,
       };
     },
   };
@@ -6806,6 +6807,16 @@ export const localDirectoryOnlyMigration: Migration = {
         and (backing->>'ownerEnvironmentId') ~ '^env_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
         and (backing->'storageAuthorityId' = 'null'::jsonb or (backing->>'storageAuthorityId') ~ '^sta_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')
       );
+    `.execute(database);
+  },
+};
+
+export const resourceAccessLevelsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table browser_profile_grants drop constraint browser_profile_grants_access_check;
+      update browser_profile_grants set access = 'read-write' where access = 'full-control';
+      alter table browser_profile_grants add constraint browser_profile_grants_access_check check (access in ('read', 'read-write'));
     `.execute(database);
   },
 };

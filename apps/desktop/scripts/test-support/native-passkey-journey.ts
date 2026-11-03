@@ -139,7 +139,7 @@ export async function createNativePasskeyJourney({
               const message = BrowserServerMessageSchema.parse(JSON.parse(data));
               otherMessages.push(message);
               if (message.type === "browser.snapshot") {
-                assert.equal(message.access, "full-control");
+                assert.equal(message.access, "read-write");
                 assert.equal(message.passkeys, "native");
                 admitted.resolve();
               }

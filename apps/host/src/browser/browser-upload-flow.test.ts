@@ -55,7 +55,7 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
           await peer.send(
             JSON.stringify({
               type: "browser.snapshot",
-              access: "full-control",
+              access: "read-write",
               dialog: null,
               sessionId,
               state: "ready",

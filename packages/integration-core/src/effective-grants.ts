@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { UserId, WorkspaceId } from "@opensteer/core";
+import { intersectResourceAccess, type UserId, type WorkspaceId } from "@opensteer/core";
 import {
   IntegrationGrantIdSchema,
   type IntegrationConnectionId,
@@ -82,7 +82,9 @@ export interface ResolvedEffectiveGrants {
 export function resolveEffectiveGrants(
   input: ResolveEffectiveGrantsInput,
 ): ResolvedEffectiveGrants {
-  const activeGrants = input.storedGrants.filter(({ status }) => status === "active");
+  const activeGrants = input.storedGrants.filter(
+    ({ status, ownerUserId }) => status === "active" && ownerUserId === input.ownerUserId,
+  );
   return input.inheritedMainAccess
     ? resolveInheritedMainGrants(input, activeGrants)
     : resolveStoredGrants(input, activeGrants);
@@ -276,9 +278,12 @@ export function effectiveIntegrationAccess(
   access: IntegrationAccess,
   connection: Pick<EffectiveGrantConnection, "computerAccess" | "connectionKind"> | null,
 ): IntegrationAccess {
-  return connection?.connectionKind === "computer" && connection.computerAccess === "read"
-    ? "read"
-    : access;
+  return intersectResourceAccess(
+    access,
+    connection?.connectionKind === "computer"
+      ? (connection.computerAccess ?? undefined)
+      : undefined,
+  )!;
 }
 
 function grantWithConnectionCeiling(

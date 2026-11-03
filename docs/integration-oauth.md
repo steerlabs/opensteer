@@ -48,7 +48,7 @@ Open a same-origin preparation tab from the click before beginning authorization
 
 ## Integration access requests
 
-Installation needs administrator authorization, account consent belongs to the requester, and Project access needs an explicit grant. Only Main-profile lineage inherits Main connections; a channel root below Main cannot use or request inheritance ([Messaging](messaging.md#6a-conversation-scope-admission-and-authority)). Main requests disclose inherited read/write authority rather than imply requested read-only access limits Main.
+Installation needs administrator authorization, account consent belongs to the requester, and Project access needs an explicit grant. Connections, computer apps and phones follow the shared [Run resource authority rule](agent-orchestration.md#run-tool-authority). Main requests disclose inherited read/write authority rather than imply requested read-only access limits Main.
 
 Pin reviewed manifests, requested access and explicit account/server choices through installation. A pinned account must be repaired or the request declined; another account cannot fulfill it. Installation alone does not resolve access or resume the agent. Closing setup or canceling OAuth leaves the access request pending. Preserve older install-only request meaning; nullable pre-install targets and exact connection intent require epoch 6. See `packages/client/src/integrations/access-request.ts` and `apps/host/src/integrations/integration-platform-service.ts`.
 

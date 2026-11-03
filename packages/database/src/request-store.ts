@@ -183,7 +183,7 @@ export interface RequestMutation {
 export interface ResolvedBrowserRequest {
   readonly events: readonly AgentEvent[];
   readonly grant: {
-    readonly access: "full-control";
+    readonly access: "read-write";
     readonly createdAt: Date;
     readonly grantId: BrowserProfileGrantId;
     readonly profileId: BrowserProfileId;
@@ -4236,7 +4236,7 @@ async function ensureBrowserGrant(
   // Check this before capacity, since reusing access consumes no additional slot.
   if (existing) {
     return {
-      access: "full-control",
+      access: "read-write",
       createdAt: existing.createdAt,
       grantId: existing.id,
       profileId: existing.profileId,
@@ -4260,7 +4260,7 @@ async function ensureBrowserGrant(
   const row = await transaction
     .insertInto("browserProfileGrants")
     .values({
-      access: "full-control",
+      access: "read-write",
       createdBy: input.createdBy,
       id: createId("browserProfileGrant"),
       profileId: input.profileId,
@@ -4270,7 +4270,7 @@ async function ensureBrowserGrant(
     .returning(["access", "createdAt", "id", "profileId", "workspaceId"])
     .executeTakeFirstOrThrow();
   return {
-    access: "full-control",
+    access: "read-write",
     createdAt: row.createdAt,
     grantId: row.id,
     profileId: row.profileId,

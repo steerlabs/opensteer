@@ -1,3 +1,4 @@
+import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
@@ -4269,6 +4270,54 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(accounts(run.threadId)).resolves.not.toEqual([]);
     await expect(accounts(channelRoot)).resolves.toEqual([]);
     await expect(accounts(channelChild)).resolves.toEqual([]);
+    const { database } = storeFixture;
+    const profile = await store.createBrowserProfile({
+      name: "Owner",
+      idempotencyKey: "access-owner-profile",
+      ownerId: run.userId,
+    });
+    // The same guard resolves direct Thread callers and Run-backed browser callers.
+    await expect(
+      store.resolveResourceAccess({
+        ownerUserId: run.userId,
+        workspaceId: run.workspaceId,
+        threadId: channelRoot,
+      }),
+    ).resolves.toMatchObject({ access: null, inheritsMain: false });
+    await expect(
+      store.resolveResourceAccess({
+        ownerUserId: run.userId,
+        workspaceId: run.workspaceId,
+        threadId: homeChild,
+      }),
+    ).resolves.toMatchObject({ access: "read-write", inheritsMain: true });
+    await expect(
+      store.listActiveBrowserProfileGrantsForWorkspace(
+        run.workspaceId,
+        run.userId,
+        `run:${run.runId}`,
+      ),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ profileId: profile.id, access: "read-write" }),
+      ]),
+    );
+    await expect(
+      store.listActiveBrowserProfileGrantsForWorkspace(
+        run.workspaceId,
+        run.userId,
+        `thread:${channelRoot}`,
+      ),
+    ).resolves.toEqual([]);
+    await expect(assertLineageCompatibleReuse(database, channelRoot, homeChild)).rejects.toThrow(
+      "Start a new task instead",
+    );
+    await expect(assertLineageCompatibleReuse(database, channelChild, homeChild)).rejects.toThrow(
+      "Start a new task instead",
+    );
+    await expect(
+      assertLineageCompatibleReuse(database, homeChild, channelChild),
+    ).resolves.toBeUndefined();
   });
 
   // Computer use is the one definition whose connections name an app, so these

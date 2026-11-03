@@ -2159,7 +2159,7 @@ describe("surfaces belonging to one reply", () => {
       }),
       browserSessions: [
         {
-          access: "full-control",
+          access: "read-write",
           attachedRunIds: [],
           dialog: null,
           error: null,

@@ -1066,7 +1066,7 @@ describe("AgentControlService", () => {
       capabilityProfileId: "main",
     });
     const freshSummary = {
-      access: "full-control" as const,
+      access: "read-write" as const,
       activeAttachmentCount: 1,
       attached: true,
       createdAt: now,

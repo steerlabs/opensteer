@@ -1,3 +1,4 @@
+import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
 import { type BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
@@ -987,14 +988,20 @@ export class OpensteerStore {
     return browserSessionStore.createBrowserProfileGrant(this.#database, input);
   }
 
+  resolveResourceAccess(input: ResourceAccessInput) {
+    return resolveResourceAccess(this.#database, input);
+  }
+
   async listActiveBrowserProfileGrantsForWorkspace(
     workspaceId: WorkspaceId,
     ownerId: UserId,
+    agentBindingId?: string,
   ): Promise<readonly ActiveBrowserProfileGrantRecord[]> {
     return browserSessionStore.listActiveBrowserProfileGrantsForWorkspace(
       this.#database,
       workspaceId,
       ownerId,
+      agentBindingId,
     );
   }
 

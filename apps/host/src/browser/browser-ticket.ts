@@ -11,7 +11,7 @@ import { z } from "zod";
 const ticketType = "opensteer-browser-attach+jwt";
 
 interface IssueBrowserAttachTicketInput {
-  readonly access: "full-control";
+  readonly access: "read-write";
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;

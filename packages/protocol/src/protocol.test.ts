@@ -442,7 +442,7 @@ describe("wire protocol", () => {
 
   it("requires one ready browser snapshot before terminal lifecycle events", () => {
     const snapshot = {
-      access: "full-control",
+      access: "read-write",
       dialog: null,
       sessionId: `bsn_${randomUUID()}`,
       state: "ready",
@@ -1224,7 +1224,7 @@ describe("wire protocol", () => {
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
       wireVersion: 1,
-      access: "full-control",
+      access: "read-write",
       audience: "opensteer-browser-runtime",
       expiresAt: new Date().toISOString(),
       identity: { kind: "fresh" },
@@ -1246,7 +1246,7 @@ describe("wire protocol", () => {
 
   it("names a fresh Browser Session by the absence of a profile", () => {
     const session = {
-      access: "full-control",
+      access: "read-write",
       createdAt: new Date().toISOString(),
       id: `bsn_${randomUUID()}`,
       origin: "agent",

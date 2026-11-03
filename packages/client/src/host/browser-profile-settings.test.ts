@@ -30,7 +30,7 @@ describe("browser profile settings", () => {
       const buyer = { ...main, id: "wsp_buyer", kind: "project" as const, name: "Buyer" };
       const research = { ...buyer, id: "wsp_research", name: "Research" };
       const grant = (id: string, profileId: string, workspaceId: string) => ({
-        access: "full-control" as const,
+        access: "read-write" as const,
         createdAt: "2026-10-30T12:00:00.000Z",
         id,
         profileId,

@@ -2736,7 +2736,7 @@ export async function createHostServer(
       case "browser.profile.grant":
         return {
           grant: await dependencies.browser.grantProfileToWorkspace({
-            access: "full-control",
+            access: "read-write",
             createdBy: userId,
             profileId: command.profileId,
             workspaceId: command.workspaceId,

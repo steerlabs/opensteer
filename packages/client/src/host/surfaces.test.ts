@@ -37,7 +37,7 @@ function browser(
   state: BrowserSessionSummary["state"] = "ready",
 ): BrowserSessionSummary {
   return {
-    access: "full-control",
+    access: "read-write",
     attachedRunIds: [],
     dialog: null,
     error: null,

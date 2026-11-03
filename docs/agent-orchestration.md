@@ -232,6 +232,15 @@ input or fail a Run merely because its output exceeds storage limits. See
 
 ## Run tool authority
 
+Non-file resource access uses the [resource guard](../packages/database/src/resource-access.ts):
+Main inherits the requester's resources only when the Run's lineage root has the
+`main` profile. Projects require explicit grants belonging to the requester;
+browser consent additionally requires the grant creator's active membership.
+Connection ceilings and optional specialist restrictions can only narrow access.
+A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
+its own lineage has Main authority; start a new task instead. Cross-Workspace
+delegation still requires the caller's `main` profile. Reports grant no execution.
+
 Every capability names the current attempt's grant. Tool admission needs an
 active grant, live binding, matching Runner boot and non-deleting Workspace;
 Runner reporting needs only the binding so a stopped Run can record its end.

@@ -248,7 +248,7 @@ while context inventory is blocked by a dialog.
 
 `Opensteer.fillLogin` is platform-handled and never reaches Chromium. It needs
 current calling-Workspace lease authority, browser access, negotiated sign-in
-support and an attached full-control page. It returns status only; after filling,
+support and an attached page with read-write access. It returns status only; after filling,
 page scripts (including agent JavaScript) can read the value. See
 [Passwords](passwords.md#filling-a-field).
 
@@ -461,6 +461,10 @@ the attach for retry.
   the OS's client data or any other signed bytes.
 
 ## Profiles and identity
+
+Profile listing, opening, CDP and tab reach follow the shared
+[Run resource authority rule](agent-orchestration.md#run-tool-authority).
+Browser grants use `read` or `read-write`; driving a browser requires `read-write`.
 
 Profiles are durable identities, not account names. Main and the person create
 empty profiles; a Project needs an atomic creation-and-grant

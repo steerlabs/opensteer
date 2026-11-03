@@ -1,3 +1,4 @@
+import { resolveResourceAccess } from "./resource-access.js";
 import { eventDataSchemas, placeIdentityKey, type EventData } from "@opensteer/core";
 import { storableText } from "./runner-event-store.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
@@ -1883,15 +1884,14 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
   database: Kysely<DatabaseSchema>,
   workspaceId: WorkspaceId,
   ownerId: UserId,
+  agentBindingId?: string,
 ): Promise<readonly ActiveBrowserProfileGrantRecord[]> {
-  const mainWorkspace = await database
-    .selectFrom("workspaces")
-    .select("id")
-    .where("id", "=", workspaceId)
-    .where("createdBy", "=", ownerId)
-    .where("kind", "=", "main")
-    .executeTakeFirst(databaseOperationOptions());
-  if (mainWorkspace) {
+  const { inheritsMain } = await resolveResourceAccess(database, {
+    workspaceId,
+    ownerUserId: ownerId,
+    ...(agentBindingId ? { agentBindingId } : {}),
+  });
+  if (inheritsMain) {
     const profiles = await database
       .selectFrom("browserProfiles")
       .select(["createdAt", "id"])
@@ -1902,7 +1902,7 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
       .limit(129)
       .execute(databaseOperationOptions());
     return profiles.map((profile) => ({
-      access: "full-control" as const,
+      access: "read-write" as const,
       createdAt: profile.createdAt,
       grantId: inheritedMainBrowserGrantId(ownerId, workspaceId, profile.id),
       profileId: profile.id,
