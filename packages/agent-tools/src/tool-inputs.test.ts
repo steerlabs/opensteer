@@ -84,11 +84,11 @@ describe("Opensteer tool inputs", () => {
     expect(schema).toContain('"toolContractVersion"');
     for (const requirement of [
       "Timing controls require anchor access no higher than yours",
-      "archiving require full access",
-      "set_status needs triggerId and status",
-      "set_next_fire needs triggerId and future ISO nextFireAt",
-      "run needs a non-archived schedule/webhook triggerId",
-      "cancel needs triggerId and optional occurrenceId",
+      "archiving require full-access within reach",
+      "set_status: triggerId, status",
+      "set_next_fire: triggerId, future ISO nextFireAt",
+      "run: non-archived schedule/webhook triggerId",
+      "cancel: triggerId, optional occurrenceId",
       "Started work keeps running",
     ]) {
       expect(write.description).toContain(requirement);

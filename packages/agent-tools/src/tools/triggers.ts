@@ -6,9 +6,9 @@ import { OperationKeySchema } from "./inputs.js";
 import { TriggerOutputSchema } from "./outputs.js";
 export const trigger_read = defineAgentTool({
   name: "trigger_read",
-  title: "Read Triggers",
+  title: "Inspect Triggers",
   description:
-    "Read reachable schedule, webhook and watch Triggers. list accepts workspaceId and limit. get needs triggerId and returns the Trigger and recent occurrences, bounded by occurrenceLimit.",
+    "List reachable schedules, webhooks and watches, or get one Trigger’s current revision and recent occurrences. list accepts workspaceId/limit; get needs triggerId and accepts occurrenceLimit. Visibility is not authority to change it.",
   input: TriggerReadInputSchema,
   output: TriggerOutputSchema,
   access: "read",
@@ -17,9 +17,9 @@ export const trigger_read = defineAgentTool({
 
 export const trigger_write = defineAgentTool({
   name: "trigger_write",
-  title: "Write Triggers",
+  title: "Manage Triggers",
   description:
-    "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, program/source changes, manual runs and archiving require full access within the caller’s reach and Workspace. create needs name, anchorThreadId (home is Chat), program and source. update needs triggerId, expectedRevisionId and changed fields. set_status needs triggerId and status. set_next_fire needs triggerId and future ISO nextFireAt; it moves an active cron's next unclaimed run, then cadence resumes, leaving queued/running work untouched. run needs a non-archived schedule/webhook triggerId; it queues a real occurrence with optional payload. cancel needs triggerId and optional occurrenceId; omission cancels all pending occurrences. Started work keeps running. Tell the person when creating or changing what runs.",
+    "Create or control schedules, webhooks and watches. Before writing or changing a program, load opensteer:triggers. Timing controls require anchor access no higher than yours. Creation, code changes, manual runs and archiving require full-access within reach. create: name, anchorThreadId (home is Chat), program, source. update: triggerId, expectedRevisionId, changed fields. set_status: triggerId, status. set_next_fire: triggerId, future ISO nextFireAt; moves the next unclaimed cron run, then cadence resumes. run: non-archived schedule/webhook triggerId, optional payload. cancel: triggerId, optional occurrenceId (omit for all pending). Started work keeps running. Returns Trigger/occurrence state. Tell the person when changing what runs.",
   input: TriggerWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: TriggerOutputSchema,
   access: "work",

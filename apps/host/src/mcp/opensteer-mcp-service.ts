@@ -11,7 +11,12 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { agentTools, agentToolAnnotations, type AgentTool } from "@opensteer/agent-tools";
+import {
+  agentTools,
+  agentToolAnnotations,
+  connectionInstructions,
+  type AgentTool,
+} from "@opensteer/agent-tools";
 import { OpensteerError, AssignmentIdSchema, ThreadIdSchema, type Thread } from "@opensteer/core";
 import type { OpensteerStore, AgentOperationReceipts } from "@opensteer/database";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
@@ -266,7 +271,10 @@ export class OpensteerMcpService {
   createServer(caller: AgentCaller, detachedSessionId?: string): McpServer {
     const server = new McpServer(
       { name: "opensteer", version: "1.0.0" },
-      { maxToolInputElements: 10_000 },
+      {
+        maxToolInputElements: 10_000,
+        ...(caller.kind === "connection" ? { instructions: connectionInstructions } : {}),
+      },
     );
     const advertisedTools: Tool[] = [];
     for (const tool of agentTools.filter((spec) =>

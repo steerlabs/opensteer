@@ -28,6 +28,4 @@ when it works against what the person wants. For a failure an agent can fix, wri
 and continue, not a rule to stop and report.
 
 Do not store credentials or short-lived capability tokens in these files; refer to granted access.
-The one exception is a phone's screen-lock PIN when the person asks you to remember it. Keep it
-in one file for that phone, outside AGENTS.md (supplied to every Run) and outside version control;
-read it only when you need to unlock that phone.
+Never store or retrieve a screen-lock PIN; ask the person to unlock the phone.

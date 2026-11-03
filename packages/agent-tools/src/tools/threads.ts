@@ -31,15 +31,19 @@ import {
 } from "./outputs.js";
 export const thread_read = defineAgentTool({
   name: "thread_read",
-  title: "Read Thread",
+  title: "Read a Thread",
   description:
-    "Read reachable Thread history and assigned tasks. Use query to search or aroundMessageId for a known message. Pass window.nextBefore as before, keeping query, for earlier messages; use assignmentBefore for earlier tasks. An anchored read cannot also search or page.",
+    "Read reachable history/assigned tasks before answering about earlier work. Returns thread/messages/assignments and paging windows. query searches; aroundMessageId excludes search/paging. Page messages with window.nextBefore as before, keeping query; tasks with assignmentWindow.nextBefore as assignmentBefore.",
   input: z.strictObject({
-    before: CursorSchema.optional(),
+    before: CursorSchema.optional().describe("Message cursor from window.nextBefore; keep query."),
     maxMessages: z.number().int().min(1).max(100).default(100),
     query: z.string().trim().min(1).max(256).optional(),
-    aroundMessageId: MessageIdSchema.optional(),
-    assignmentBefore: CursorSchema.optional(),
+    aroundMessageId: MessageIdSchema.optional().describe(
+      "Exact message anchor; excludes query and paging.",
+    ),
+    assignmentBefore: CursorSchema.optional().describe(
+      "Assignment cursor from assignmentWindow.nextBefore.",
+    ),
     threadId: ThreadIdSchema,
   }),
   output: ThreadReadOutputSchema,
@@ -49,9 +53,9 @@ export const thread_read = defineAgentTool({
 
 export const thread_list = defineAgentTool({
   name: "thread_list",
-  title: "List Threads",
+  title: "Find Threads",
   description:
-    "Find reachable Threads, newest updated first; workspaceId and query narrow the list. Reach follows the caller’s current authority. Pass window.nextBefore as before for more.",
+    "Find reachable Threads by query/workspaceId, newest updated first. Returns Threads/window; pass window.nextBefore as before. Delegated work inherits its root’s reach.",
   input: z.strictObject({
     before: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
@@ -65,16 +69,30 @@ export const thread_list = defineAgentTool({
 
 export const thread_delegate = defineAgentTool({
   name: "thread_delegate",
-  title: "Delegate Work",
+  title: "Start or continue a task",
   description:
-    "Start work in workspaceId or reuse threadId. Runs and programs receive an Assignment and its result; connected agents create independent work and observe it with thread_read or thread_wait. Stop work with thread_write interrupt and inspect or resume it with thread_queue. New work stays within your approved access mode.",
+    "Start independent work in workspaceId (or specialist), or continue a finished threadId. Reuse keeps engine/model; change those with thread_configure. Returns thread/input/message, nullable run/assignmentId. Runs/programs receive the result automatically; connections use thread_wait/thread_read. Work fits your reach/access ceiling. Active changes use thread_message; Stop uses thread_write interrupt.",
   input: z
     .strictObject({
-      environmentId: EnvironmentIdSchema.optional(),
-      harnessInstanceId: HarnessInstanceIdSchema.optional(),
-      model: DelegationModelChoiceSchema.optional(),
-      observationId: z.string().trim().min(1).max(255).optional(),
-      places: z.array(PlaceContentPartSchema).max(63).optional(),
+      environmentId: EnvironmentIdSchema.optional().describe("New task computer; omit to inherit."),
+      harnessInstanceId: HarnessInstanceIdSchema.optional().describe(
+        "New task engine account from environment_list.",
+      ),
+      model: DelegationModelChoiceSchema.optional().describe(
+        "New task model selectors/options from environment_list.",
+      ),
+      observationId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(255)
+        .optional()
+        .describe("Watch observation identity; reuse for the same observation."),
+      places: z
+        .array(PlaceContentPartSchema)
+        .max(63)
+        .optional()
+        .describe("Authorized page/app/phone content to forward; text IDs alone do not attach it."),
       task: z
         .string()
         .trim()
@@ -86,15 +104,23 @@ export const thread_delegate = defineAgentTool({
         .min(1)
         .max(240)
         .optional()
-        .describe(
-          "For a new Thread: two to five words naming the outcome; defaults to task's first line.",
-        ),
+        .describe("New task: 2–5 words naming the outcome; defaults to the first task line."),
       icon: WorkspaceIconNameSchema.optional().describe(
-        "For a new Thread: choose a symbol matching the task; otherwise the engine chooses.",
+        "New task symbol; omit for automatic choice.",
       ),
-      specialist: z.string().trim().min(1).max(256).optional(),
-      workspaceId: WorkspaceIdSchema.optional(),
-      threadId: ThreadIdSchema.optional(),
+      specialist: z
+        .string()
+        .trim()
+        .min(1)
+        .max(256)
+        .optional()
+        .describe("Ready specialist registration ID or plugin name."),
+      workspaceId: WorkspaceIdSchema.optional().describe(
+        "New task Workspace; omit when reusing threadId.",
+      ),
+      threadId: ThreadIdSchema.optional().describe(
+        "Finished task to continue; omit new-task selectors.",
+      ),
     })
     .superRefine((input, context) => {
       if (
@@ -123,9 +149,9 @@ export const thread_delegate = defineAgentTool({
 
 export const assignment_cancel = defineAgentTool({
   name: "assignment_cancel",
-  title: "Stop Task",
+  title: "Cancel an Assignment",
   description:
-    "To stop a task durably, pass assignmentId. Cancels its descendants, interrupts running work and withdraws pending Requests; nothing restarts it. Its Thread remains reusable. Confirm the returned status before saying it stopped.",
+    "Permanently cancel assignmentId and descendants: interrupts work, withdraws Requests and fences continuations. Run-only; Thread stays reusable. Confirm returned assignment.status before reporting stopped. Resumable Stop: thread_write interrupt.",
   input: z
     .strictObject({ assignmentId: AssignmentIdSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
@@ -137,18 +163,26 @@ export const assignment_cancel = defineAgentTool({
 
 export const thread_message = defineAgentTool({
   name: "thread_message",
-  title: "Message Thread",
+  title: "Message a Thread",
   description:
-    "Send an asynchronous message. report saves context without starting work or alerting the person. queue starts an idle Thread or waits for its next turn. steer directs a compatible active Run and fails if none exists. queue and steer join an active task; assignmentId is null if none exists. To continue a finished task and receive its result, use thread_delegate. home means Chat; every destination must remain within the caller’s live reach and access mode. disposition is steering, run-queued, pending or cancelled. Accepted does not mean read; cancelled means it will not run. Task updates go to the assigning Thread; final replies return automatically. The Host supplies authorship.",
+    "Send within reach/access ceiling. report: passive context; queue: next turn; steer: compatible active Run, never falls back. Returns disposition/joined assignmentId; null means no automatic return. Accepted is not read; cancelled will not execute. Continue finished work with thread_delegate for a returned result. home means Chat; Host supplies authorship.",
   input: z
     .strictObject({
-      delivery: z.enum(["report", "queue", "steer"]),
+      delivery: z
+        .enum(["report", "queue", "steer"])
+        .describe("report: context only; queue: next turn; steer: active Run only."),
       message: z
         .string()
         .trim()
         .min(1)
         .max(256 * 1_024),
-      observationId: z.string().trim().min(1).max(255).optional(),
+      observationId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(255)
+        .optional()
+        .describe("Watch observation identity; reuse for the same observation."),
       threadId: z.union([ThreadIdSchema, z.literal("home")]),
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
@@ -159,9 +193,9 @@ export const thread_message = defineAgentTool({
 
 export const thread_write = defineAgentTool({
   name: "thread_write",
-  title: "Update Task",
+  title: "Update or interrupt a Thread",
   description:
-    "Interrupt a reachable Thread’s current Run; thread_queue shows and resumes paused work. A live Run can also rename, set_icon, mark done or reopen. Omit threadId for your own Thread; own done applies when the turn ends.",
+    "interrupt stops the current Run and pauses a work queue; pending inputs remain. Inspect/resume with thread_queue. Connections need threadId; Runs/programs default to their Thread. Rename/set_icon/done/reopen are Run-only; own done applies at turn end. Returns Thread/doneWhenRunEnds/interruptedRunId. Targets must fit reach/access ceiling.",
   input: ThreadWriteInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: ThreadWriteOutputSchema,
   access: "thread",
@@ -171,13 +205,21 @@ export const thread_write = defineAgentTool({
 
 export const thread_wait = defineAgentTool({
   name: "thread_wait",
-  title: "Wait for Thread",
+  title: "Wait for a Thread",
   description:
-    "Wait for the current Run to settle or a published message after afterMessageId. Waits at most 100 seconds. Disconnecting stops only the wait; work continues.",
+    "Wait for a Run to settle or a message after afterMessageId. Programs/connections only; Runs end their turn for continuation. Returns running/settled/offline/timed_out, messages and optional Run state. At most 100 seconds; disconnect ends only the wait. Use thread_read for missing history.",
   input: z.strictObject({
     threadId: ThreadIdSchema,
-    afterMessageId: MessageIdSchema.optional(),
-    timeoutMs: z.number().int().min(1).max(100_000).default(100_000),
+    afterMessageId: MessageIdSchema.optional().describe(
+      "Return published messages after this ID; omit to wait for Run settlement.",
+    ),
+    timeoutMs: z
+      .number()
+      .int()
+      .min(1)
+      .max(100_000)
+      .default(100_000)
+      .describe("Maximum wait in milliseconds; timeout never cancels work."),
   }),
   output: ThreadWaitOutputSchema,
   access: "read",
@@ -185,15 +227,19 @@ export const thread_wait = defineAgentTool({
 });
 export const thread_configure = defineAgentTool({
   name: "thread_configure",
-  title: "Configure Thread",
+  title: "Configure a Thread",
   description:
-    "Read or set a Thread's engine, model and options. Uses the same execution checks as the client. Access mode stays unchanged.",
+    "Read/set a reachable Thread’s engine/model/options within your access ceiling. set needs harnessInstanceId or modelSelection; returns saved selectors. Copy environment_list choices when available; never substitute after refusal. continuation confirms a known native-session switch. Access mode stays.",
   input: z
     .strictObject({
       action: z.enum(["read", "set"]),
       threadId: ThreadIdSchema,
-      harnessInstanceId: HarnessInstanceIdSchema.optional(),
-      modelSelection: ModelSelectionSchema.optional(),
+      harnessInstanceId: HarnessInstanceIdSchema.optional().describe(
+        "Engine account to set; omit to keep current.",
+      ),
+      modelSelection: ModelSelectionSchema.optional().describe(
+        "Exact provider/model IDs and typed options; omit to keep current.",
+      ),
       continuation: z
         .strictObject({ expectedProviderSessionId: ProviderSessionIdSchema.nullable() })
         .optional(),
@@ -214,16 +260,20 @@ export const thread_configure = defineAgentTool({
 });
 export const thread_queue = defineAgentTool({
   name: "thread_queue",
-  title: "Manage Thread Queue",
+  title: "Manage queued inputs",
   description:
-    "List waiting inputs, cancel or move one, steer a queued input into the active Run, or resume a paused queue. Steering preserves the original message and requester.",
+    "List/change waiting inputs within reach/access ceiling. list returns paused/items and canCancel/canMove/canSteer. Changes return queue state/input. cancel/move/steer need messageId; move needs beforeMessageId, steer expectedRunId. Steering preserves authorship. resume retains original authority; preserve a person’s pause unless told to resume.",
   input: z
     .strictObject({
       action: z.enum(["list", "cancel", "move", "steer", "resume"]),
       threadId: ThreadIdSchema,
-      messageId: MessageIdSchema.optional(),
-      beforeMessageId: MessageIdSchema.nullable().optional(),
-      expectedRunId: RunIdSchema.optional(),
+      messageId: MessageIdSchema.optional().describe(
+        "Queued input for cancel, move or steer only.",
+      ),
+      beforeMessageId: MessageIdSchema.nullable()
+        .optional()
+        .describe("For move: destination message ID, or null for end."),
+      expectedRunId: RunIdSchema.optional().describe("For steer: exact currently active Run."),
       operationKey: OperationKeySchema.optional(),
     })
     .superRefine((input, ctx) => {

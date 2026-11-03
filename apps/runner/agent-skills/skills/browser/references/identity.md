@@ -11,9 +11,9 @@ Choose the identity for each piece of work from what the person asked and what y
 
 If creating, getting access to, or opening the profile you need fails, report it; never substitute Guest. “Update this computer to open this profile” requires an update on its owning computer. Never work around that refusal by creating another profile, choosing another computer or substituting Guest.
 
-A Run can hold several sessions and use them side by side. Main can see the owner's sessions across Workspaces. Several Runs may use one session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close an exact session only when requested or deliberately disposable; delegated Threads cannot close sessions.
+A Run can hold several sessions and use them side by side. Main can see the owner's sessions across Workspaces. Several Runs may use one session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close an exact session only when requested or deliberately disposable. Delegated Runs use the same tools within inherited reach and resource grants.
 
-Named profiles keep browser data on their owning computer; Guest keeps nothing. Creating an empty profile may leave placement unset until first open. Main inherits every owner profile and creates new empty ones with `browser_profile_create`; it never needs a Request for itself.
+Named profiles keep browser data on their owning computer; Guest keeps nothing. Creating an empty profile may leave placement unset until first open. Main inheritance exposes owner profiles and permits creating empty ones with `browser_profile_create`; it never needs a Request for itself.
 
 `browser_access_request` asks the owner for a profile a Project cannot use yet, existing or new; it does not log in. A profile `browser_profile_list` already returns needs no Request. In Main, pass that Workspace's exact `workspaceId`. In a Workspace Thread, omit it. Suggest an existing profile, a new empty profile, or `user_choice`; the owner chooses in the Request surface, and the fulfilled Request names the exact profile. A declined Request leaves the profiles this Workspace already had untouched.
 
@@ -25,4 +25,4 @@ Name a new profile in one or two words, such as “Work” or “Shopping”, wh
 
 Use `request_list` for existing Requests and `request_withdraw` when this Thread no longer needs one it originated. Replaying the same tool call returns the same Request; a new call can create another even with identical arguments.
 
-Use profile creation and access-request tools only if listed for this Run. Delegated tasks return missing profile access to their assigner.
+Use profile creation and access-request tools only if listed for this Run. Delegated tasks inherit their root’s reach and can request missing access within it. A specialist’s bindings may narrow the result.

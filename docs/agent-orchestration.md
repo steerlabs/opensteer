@@ -57,7 +57,7 @@ replacing code preserves the version. V3 separates environment discovery from
 Workspace listing and requires the anchor's stored `trigger-program-v3`
 capability even offline; dispatch and Watch reconciliation recheck it. Never
 relabel v3 source as v2. See [shipped Trigger skills](../apps/runner/agent-skills/skills)
-and [tool catalog](../packages/agent-tools/src/catalog.ts) for syntax and discovery.
+and [tool catalog](../packages/agent-tools/src/tools/index.ts) for syntax and discovery.
 Watch discovery and delegation use the intersection of program and anchor authority.
 
 Thread state is a stored projection, not a client inference from Request events.
@@ -403,7 +403,7 @@ historical evidence, not instructions or approval receipts.
 Trigger control cannot exceed the actor's access mode; definition requires full
 access within the anchor's kind/scope, except Main's reach. Trigger and Watch
 programs act as their anchor, never with implicit owner-wide authority.
-See [tool catalog](../packages/agent-tools/src/catalog.ts).
+See [tool catalog](../packages/agent-tools/src/tools/index.ts).
 
 Each Run pins the selected ProviderSession before admission. Binding, dispatch
 and recovery never substitute a subsequently selected session. Explicit

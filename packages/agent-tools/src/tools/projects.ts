@@ -10,9 +10,9 @@ import {
 } from "./outputs.js";
 export const project_list = defineAgentTool({
   name: "project_list",
-  title: "List Projects",
+  title: "Find Projects",
   description:
-    "To find accessible Workspaces, use project_list; pass window.nextBefore as before for earlier entries.",
+    "Find reachable Workspaces with IDs and paging window; pass window.nextBefore as before. Tasks use thread_list; engines/models use environment_list.",
   input: z.strictObject({
     before: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
@@ -24,9 +24,9 @@ export const project_list = defineAgentTool({
 
 export const project_create = defineAgentTool({
   name: "project_create",
-  title: "Create Project",
+  title: "Create a Project",
   description:
-    "Create a Project inside its owner's Main folder. Main's computer must be connected. Returns the Project id, immutable slug and absolute folder path. Use ordinary file tools at that path to write AGENTS.md before delegating the first task.",
+    "Create a durable Project in the owner’s Main folder. Full-access; Main’s computer must be online. Returns id, immutable slug and absolute path. Write AGENTS.md there before first delegation. Grants no integration/browser access.",
   input: WorkspaceCreateInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: ProjectCreateOutputSchema,
   access: "settings",
@@ -35,9 +35,9 @@ export const project_create = defineAgentTool({
 
 export const plugin_install = defineAgentTool({
   name: "plugin_install",
-  title: "Install plugin",
+  title: "Install a plugin",
   description:
-    "Install an Agent Plugins 1.0 folder inside your own Workspace and activate its skills here. Use a relative path; symlinks are refused. Installing grants no connection access. Local MCP servers require the computer owner's approval.",
+    "Install a Workspace-relative Agent Plugins 1.0 folder; symlinks refused. Full-access Run only. Returns installation/activation, issues and specialist state. Skills activate here; resource grants, specialist bindings and local MCP launch approval need the person.",
   input: z
     .strictObject({ directory: z.string().min(1).max(4096) })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

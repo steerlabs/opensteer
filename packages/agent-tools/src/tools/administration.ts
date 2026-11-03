@@ -79,9 +79,9 @@ const specialist = z.object({
 
 export const project_write = defineAgentTool({
   name: "project_write",
-  title: "Manage Project",
+  title: "Manage a Project",
   description:
-    "Change a Project's mark or notifications, delete or recover it, or retry its storage. Main cannot be deleted.",
+    "Change Project marks/notifications, delete/recover or retry storage. Full-access within reach; Main cannot be deleted. Returns ok and changed Workspace/muted state. Invitations and grants need the person.",
   input: z.strictObject({
     action: z.enum([
       "set_icon",
@@ -92,9 +92,14 @@ export const project_write = defineAgentTool({
       "retry_storage",
     ]),
     workspaceId: WorkspaceIdSchema,
-    icon: WorkspaceIconNameSchema.nullable().optional(),
-    color: MarkColorSchema.optional(),
-    muted: z.boolean().optional(),
+    icon: WorkspaceIconNameSchema.nullable()
+      .optional()
+      .describe("set_icon: symbol, or null to clear."),
+    color: MarkColorSchema.optional().describe("set_color: mark color."),
+    muted: z
+      .boolean()
+      .optional()
+      .describe("set_notifications: whether this person mutes the Project."),
     operationKey,
   }),
   output: z.object({ ...ok, workspace: workspace.optional(), muted: z.boolean().optional() }),
@@ -105,7 +110,8 @@ export const project_write = defineAgentTool({
 export const settings_read = defineAgentTool({
   name: "settings_read",
   title: "Read settings",
-  description: "Read engines, remembered execution choices and the viewer's time zone.",
+  description:
+    "Read non-secret engine accounts, remembered execution choices and time zone. Requires user-wide reach. Use environment_list for live models.",
   input: z.strictObject({}),
   output: z.object({
     harnesses: z.array(harness),
@@ -119,7 +125,7 @@ export const settings_write = defineAgentTool({
   name: "settings_write",
   title: "Change settings",
   description:
-    "Set an engine default, model limits, enabled state or name; remember a model/access choice or set the viewer's time zone.",
+    "Set engine defaults/limits/enabled state/name, execution preferences or time zone. Full-access and user-wide reach. Returns ok/changed settings. remember_execution cannot exceed your ceiling or change a Thread’s mode. Authentication/new accounts/credentials need the person.",
   input: z.strictObject({
     action: z.enum([
       "set_default",
@@ -129,15 +135,33 @@ export const settings_write = defineAgentTool({
       "remember_execution",
       "set_time_zone",
     ]),
-    environmentId: EnvironmentIdSchema.optional(),
-    harnessInstanceId: HarnessInstanceIdSchema.optional(),
-    nativeModelId: z.string().min(1).max(255).optional(),
-    settings: modelSettings.nullable().optional(),
-    enabled: z.boolean().optional(),
-    name: name.optional(),
-    selection: ExecutionSelectionSchema.optional(),
-    accessMode: ThreadAccessModeSchema.optional(),
-    timeZone: TimeZoneSchema.optional(),
+    environmentId: EnvironmentIdSchema.optional().describe(
+      "Engine actions: computer containing the engine account.",
+    ),
+    harnessInstanceId: HarnessInstanceIdSchema.optional().describe(
+      "Engine actions: exact account ID.",
+    ),
+    nativeModelId: z
+      .string()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe("configure_model: native model ID, not display name."),
+    settings: modelSettings
+      .nullable()
+      .optional()
+      .describe("configure_model: limits, or null to clear overrides."),
+    enabled: z.boolean().optional().describe("set_enabled: whether the account may execute."),
+    name: name.optional().describe("rename: new engine-account label."),
+    selection: ExecutionSelectionSchema.optional().describe(
+      "remember_execution: saved engine/model selectors.",
+    ),
+    accessMode: ThreadAccessModeSchema.optional().describe(
+      "remember_execution: preference no higher than your ceiling; does not change a Thread.",
+    ),
+    timeZone: TimeZoneSchema.optional().describe(
+      "set_time_zone: IANA zone, such as America/New_York.",
+    ),
     operationKey,
   }),
   output: z.object({
@@ -152,7 +176,8 @@ export const settings_write = defineAgentTool({
 export const computer_list = defineAgentTool({
   name: "computer_list",
   title: "List computers",
-  description: "List enrolled computers and active access sessions.",
+  description:
+    "List enrolled computers, online/revoked state and active access-session IDs. User-wide reach required. Returns machines/nextCursor; pass cursor as after. Grants no shell/app access.",
   input: z.strictObject({ after: RunnerIdSchema.optional() }),
   output: z.object({
     machines: z.array(
@@ -171,8 +196,9 @@ export const computer_list = defineAgentTool({
 });
 export const computer_write = defineAgentTool({
   name: "computer_write",
-  title: "Manage computer",
-  description: "Rename or revoke an enrolled computer, or stop one of its access sessions.",
+  title: "Manage a computer",
+  description:
+    "Rename/revoke a computer or stop an access session. Full-access and user-wide reach. rename: machineId/name; revoke: machineId; stop_session: sessionId. Returns ok/ended. Enrollment/pairing/grants need the person.",
   input: z.strictObject({
     action: z.enum(["rename", "revoke", "stop_session"]),
     machineId: RunnerIdSchema.optional(),
@@ -189,13 +215,19 @@ export const integration_manage = defineAgentTool({
   name: "integration_manage",
   title: "Manage integrations",
   description:
-    "List connections and Workspace grants; disconnect an account, uninstall an integration or revoke a grant.",
+    "List connections/installations/grants; disconnect, uninstall or revoke_grant directly. Full-access within reach. Returns ok and non-secret inventory for list. New accounts/credentials/consent/grants need integration_request/the person.",
   input: z.strictObject({
     action: z.enum(["list", "disconnect", "uninstall", "revoke_grant"]),
-    workspaceId: WorkspaceIdSchema.optional(),
-    connectionId: IntegrationConnectionIdSchema.optional(),
-    installationId: IntegrationInstallationIdSchema.optional(),
-    grantId: IntegrationGrantIdSchema.optional(),
+    workspaceId: WorkspaceIdSchema.optional().describe(
+      "list/revoke_grant: reachable Workspace; required for revoke_grant.",
+    ),
+    connectionId: IntegrationConnectionIdSchema.optional().describe(
+      "disconnect: account connection ID.",
+    ),
+    installationId: IntegrationInstallationIdSchema.optional().describe(
+      "uninstall: installed integration ID.",
+    ),
+    grantId: IntegrationGrantIdSchema.optional().describe("revoke_grant: grant to remove."),
     operationKey,
   }),
   output: z.object({
@@ -220,11 +252,13 @@ export const channel_manage = defineAgentTool({
   name: "channel_manage",
   title: "Manage channels",
   description:
-    "List messaging channels and bindings; revoke a binding or pause/resume an existing connection.",
+    "List messaging connections/bindings, revoke_binding, or pause/resume an existing connection. Full-access within reach. Returns ok/inventory. New channels, identity links, credentials and binding grants need the person.",
   input: z.strictObject({
     action: z.enum(["list", "revoke_binding", "pause", "resume"]),
-    connectionId: IntegrationConnectionIdSchema.optional(),
-    bindingId: id.optional(),
+    connectionId: IntegrationConnectionIdSchema.optional().describe(
+      "pause/resume: existing channel connection.",
+    ),
+    bindingId: id.optional().describe("revoke_binding: existing binding to remove."),
     operationKey,
   }),
   output: z.object({
@@ -249,14 +283,23 @@ export const plugin_manage = defineAgentTool({
   name: "plugin_manage",
   title: "Manage plugins",
   description:
-    "List plugins and specialists; update, activate, deactivate or remove a plugin, or remove a specialist.",
+    "List plugins/specialists; update, activate/deactivate, remove or remove_specialist. Full-access within reach. Returns ok/inventory. Activation grants no resource access; bindings and local MCP launch approval need the person.",
   input: z.strictObject({
     action: z.enum(["list", "update", "activate", "deactivate", "remove", "remove_specialist"]),
-    workspaceId: WorkspaceIdSchema.optional(),
-    pluginId: id.optional(),
-    specialistId: id.optional(),
-    directory: z.string().min(1).max(4096).optional(),
-    runnerId: RunnerIdSchema.optional(),
+    workspaceId: WorkspaceIdSchema.optional().describe(
+      "list/activate/deactivate/remove_specialist: target Workspace.",
+    ),
+    pluginId: id.optional().describe("Plugin to update, activate/deactivate or remove."),
+    specialistId: id.optional().describe("remove_specialist: registration to remove."),
+    directory: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe("update: replacement plugin source folder on its computer."),
+    runnerId: RunnerIdSchema.optional().describe(
+      "update: computer holding the source; omit for existing placement.",
+    ),
     operationKey,
   }),
   output: z.object({
@@ -270,9 +313,9 @@ export const plugin_manage = defineAgentTool({
 });
 export const browser_profile_write = defineAgentTool({
   name: "browser_profile_write",
-  title: "Manage browser profile",
+  title: "Manage browser profiles",
   description:
-    "List profiles, grants and remembered sites; rename/delete a profile, clear/remove history, remove a site or revoke a grant.",
+    "List profiles/grants/sites; rename/delete, clear/remove history, remove_site or revoke_grant directly. Full-access within reach. Returns ok/inventory/deletion state. New grants need browser_access_request/the person; pairing/sign-in need the person.",
   input: z.strictObject({
     action: z.enum([
       "list",
@@ -283,12 +326,23 @@ export const browser_profile_write = defineAgentTool({
       "remove_site",
       "revoke_grant",
     ]),
-    profileId: BrowserProfileIdSchema.optional(),
-    name: name.optional(),
-    url: z.string().min(1).max(2048).optional(),
-    site: z.string().min(1).max(2048).optional(),
-    workspaceId: WorkspaceIdSchema.optional(),
-    grantId: BrowserProfileGrantIdSchema.optional(),
+    profileId: BrowserProfileIdSchema.optional().describe(
+      "rename/delete/clear_history/remove_history: profile ID.",
+    ),
+    name: name.optional().describe("rename: new profile label."),
+    url: z.string().min(1).max(2048).optional().describe("remove_history: exact history URL."),
+    site: z
+      .string()
+      .min(1)
+      .max(2048)
+      .optional()
+      .describe("remove_site: remembered site to remove."),
+    workspaceId: WorkspaceIdSchema.optional().describe(
+      "remove_site: Workspace remembering the site.",
+    ),
+    grantId: BrowserProfileGrantIdSchema.optional().describe(
+      "revoke_grant: profile grant to remove.",
+    ),
     operationKey,
   }),
   output: z.object({

@@ -96,7 +96,7 @@ which entries applied:
   [hostApi](packages/protocol/src/host-api.ts), with matching handlers, scope
   and mock behavior. Domain mutations use `commands.dispatch`.
 - **Agents.** If a person can do it, decide whether agents should reach it
-  through the [tool catalog](packages/agent-tools/src/catalog.ts).
+  through the [tool catalog](packages/agent-tools/src/tools/index.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
 - **Deployments and channels.** Personal and server Deployments; stable without
   an Account, and Beta with one.

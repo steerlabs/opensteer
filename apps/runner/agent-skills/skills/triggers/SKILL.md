@@ -9,7 +9,12 @@ Use a Trigger when work must happen later or continue durably. Its Node program 
 
 Inspect existing Triggers before creating overlapping work. Reuse the owning Thread and Workspace, preserve the person's criteria, timing and pauses, and suppress unchanged or non-actionable updates unless requested. Confirm future execution before promising continuation, and verify actual effects before saying the automation works.
 
-Visibility follows Thread reach. Control actions require an anchor access mode no higher than yours. Creating, updating, manually running or archiving requires full access in the same kind of Thread and Workspace as the anchor; Main can define across its reach. Tell the person when creating a Trigger or changing what it runs.
+Visibility follows Thread reach. Control actions require an anchor access mode no higher than yours. Creating, updating, manually running or archiving requires full-access within live reach and Workspace authority. Delegated work inherits its root’s reach. Tell the person when creating a Trigger or changing what it runs.
+
+Programs use the same MCP as Runs with the program tool list. They may observe tasks with
+`thread_wait`; Runs instead end their turn for continuation. `computer`, `sign_in` and person
+message/show tools are Run-only. Delegate when agent judgment or a Run-only tool is needed.
+Programs cannot approve, grant access, handle credentials or raise their ceiling.
 
 Manual runs have real side effects and work only for non-archived schedules and webhooks. Avoid duplicate effects while outcomes are unknown. Respect site limits and never bypass a block by changing identity or session.
 
