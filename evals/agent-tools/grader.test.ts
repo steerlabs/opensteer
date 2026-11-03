@@ -194,6 +194,19 @@ it("checks the first tool attempt's string argument, not a later repair", () => 
     expect(grade(e, calls, "").every((c) => c.pass)).toBe(false);
 });
 
+it("requires a resumed computer call to bind a fresh window or phone before acting", async () => {
+  const cases = parseCases(
+    await readFile(new URL("./cases/browser.ndjson", import.meta.url), "utf8"),
+  );
+  const e = cases.find((c) => c.id === "resumed-computer-reopens")!.expect;
+  const pass = (code: string) =>
+    grade(e, [{ tool: "computer", args: { code }, valid: true }], "").every((c) => c.pass);
+  expect(pass('const win = await (await app("Notes")).window(); await win.observe();')).toBe(true);
+  expect(pass('const p = await phone("Eval phone"); await p.observe();')).toBe(true);
+  expect(pass('await app("Notes"); await globalThis.win.type("Reviewed");')).toBe(false);
+  expect(pass('await globalThis.win.type("Reviewed");')).toBe(false);
+});
+
 it("preserves included native places for production input projection and rejects conflicting content", async () => {
   const { resolvedInputParts } = await import("@opensteer/harness");
   const cases = parseCases(

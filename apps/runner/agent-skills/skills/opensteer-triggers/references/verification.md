@@ -7,7 +7,7 @@
 
 Never claim an occurrence-based Trigger works when it has zero Occurrences, when the relevant Occurrence is `pending` or `running`, when it failed, or when you did not inspect its result. Report exactly what Opensteer returned, including status, error, result, stdout, and stderr where relevant.
 
-A manual Occurrence has `event.source.kind === "manual"`. It tests the runtime and general path, not schedule- or webhook-specific branches. Use schedule `scheduledFor` or webhook `receivedAt` to apply the person's freshness requirements; manual sources have neither timestamp. Do not impose a universal staleness cutoff.
+A manual Occurrence has `event.source.kind === "manual"`. It tests the runtime and general path, not schedule- or webhook-specific branches. Use `event.source.scheduledFor` for schedule freshness and `event.receivedAt` for webhook freshness. A manual event also has `receivedAt`, but no scheduled time or webhook arrival. Apply the person's freshness requirements, not a universal staleness cutoff.
 
 Programs can overlap and share Workspace state. Use `event.id` as an idempotency key for external effects, and do not assume exclusive access. Persist handled observations to avoid repeated actions or notifications.
 

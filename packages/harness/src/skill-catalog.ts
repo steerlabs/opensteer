@@ -41,7 +41,7 @@ export async function renderHarnessSkillCatalog(
   );
   return [
     "Available Agent Skills",
-    "Use a skill when its description matches the task. Read its SKILL.md file before following it; do not read unrelated skill files. Resolve relative paths in a skill from its SKILL.md directory.",
+    "Use a skill when its description matches the task. Read its SKILL.md file before following it; do not read unrelated skill files. Resolve a Markdown link from the file that contains it, and other relative paths from the SKILL.md directory.",
     ...entries,
   ].join("\n");
 }
