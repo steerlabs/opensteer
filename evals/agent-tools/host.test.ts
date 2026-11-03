@@ -207,3 +207,21 @@ it("preserves production action validation before consuming mocks", async () => 
     await host.close();
   }
 });
+
+it("closes once when a chained sample's stage and final cleanup both close it", async () => {
+  const c = parseCases(
+    JSON.stringify({
+      id: "close-twice",
+      area: "transport",
+      kind: "guard",
+      source: { commit: "a".repeat(40), note: "chained samples close each stage's Host" },
+      role: "work",
+      profile: "main",
+      turns: ["hi"],
+      expect: {},
+    }),
+  )[0]!;
+  const host = await startFakeHost(c);
+  await host.close();
+  await expect(host.close()).resolves.toBeUndefined();
+});

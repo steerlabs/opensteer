@@ -152,7 +152,12 @@ export async function startFakeHost(testCase: EvalCase) {
       res.end(String(error));
     });
   });
-  async function close() {
+  // Chained samples close each stage's Host, then sample cleanup closes the last one again.
+  let closing: Promise<void> | undefined;
+  function close(): Promise<void> {
+    return (closing ??= closeOnce());
+  }
+  async function closeOnce() {
     const closed = await Promise.allSettled([
       ...clients.map((client) => client.close()),
       ...sessions.map(({ server }) => server.close()),
