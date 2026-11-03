@@ -61,13 +61,10 @@ export interface WorkspaceBackingLifecycleDriver<K extends WorkspaceBackingKind>
     workspace: Workspace & { readonly backing: LocalWorkspaceBacking },
     adopt?: boolean,
   ): Promise<void>;
-  /** Optional deployment-level admission signal. An absent signal preserves
-   * create availability for drivers without a shared capacity authority. */
-  admitsCreates?(): Promise<boolean>;
   /**
    * Derive the first durable binding without touching external storage. The
    * Host persists this value before `provision` runs, so a crash always has one
-   * intent to replay instead of an untracked directory or volume allocation.
+   * intent to replay instead of an untracked directory allocation.
    */
   initialBacking(input: ProvisionWorkspaceInput<K>): WorkspaceBackingFor<K>;
   /**
