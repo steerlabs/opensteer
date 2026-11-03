@@ -1,3 +1,4 @@
+import { SettingsDeviceCapabilities } from "./settings-device-capabilities.js";
 import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
 import { ActivityIndicator, ScrollView, View } from "react-native";
 import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
@@ -222,6 +223,13 @@ function ComputerDetail(props: {
         {machine === null ? null : (
           <ComputerSummary apps={data.data} machine={machine} status={!thisIphone} />
         )}
+        {machine ? (
+          <SettingsDeviceCapabilities
+            host={props.hostClient}
+            machine={machine}
+            deploymentId={props.deploymentId}
+          />
+        ) : null}
         {machine === null ? (
           <AppText role="secondary" tone="muted">
             This computer is no longer part of this Opensteer.

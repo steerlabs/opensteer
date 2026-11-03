@@ -1,0 +1,121 @@
+import type { ReactNode } from "react";
+import { View } from "react-native";
+import { DeploymentMarkView } from "../threads/deployment-mark.js";
+import { AppText, RowGroup, SwitchRow } from "../ui/primitives.js";
+import { actionRow, ErrorText, LinkRow, Section, styles } from "./settings-form-primitives.js";
+import type { SettingsFormProps } from "./settings-form.types.js";
+import { projectNotificationsFooter } from "./settings-model.js";
+export function GeneralSettingsForm(
+  props: Pick<
+    SettingsFormProps,
+    | "page"
+    | "deployment"
+    | "notifications"
+    | "notificationError"
+    | "agents"
+    | "onDeploymentAction"
+    | "onNotificationAction"
+    | "onPreferenceChange"
+    | "onAgentMuteChange"
+    | "storageError"
+    | "version"
+  >,
+): ReactNode {
+  const notifications = props.notifications;
+  const preferences = notifications?.preferences ?? null;
+  return (
+    <>
+      {
+        <Section label="Deployment">
+          <RowGroup>
+            {[
+              <LinkRow
+                accessibilityLabel={`${props.deployment.title}, ${props.deployment.status}. ${props.deployment.action.label}`}
+                detail={props.deployment.status}
+                key="deployment"
+                lead={
+                  props.deployment.mark === null ? null : (
+                    <DeploymentMarkView mark={props.deployment.mark} />
+                  )
+                }
+                onPress={props.onDeploymentAction}
+                title={props.deployment.title}
+                trailing={props.deployment.action.label}
+              />,
+            ]}
+          </RowGroup>
+        </Section>
+      }
+      {notifications === null ? null : (
+        <Section footer={notifications.footer} label="Notifications">
+          <RowGroup>
+            {[
+              notifications.detail === null ? null : (
+                <View key="status" style={styles.row}>
+                  <AppText role="secondary" tone="soft">
+                    {notifications.detail}
+                  </AppText>
+                </View>
+              ),
+              preferences === null ? null : (
+                <SwitchRow
+                  disabled={notifications.disabled}
+                  key="approvals"
+                  label="Approvals and questions"
+                  onChange={(enabled) => props.onPreferenceChange("approvals", enabled)}
+                  value={preferences.approvalsEnabled}
+                />
+              ),
+              preferences === null ? null : (
+                <SwitchRow
+                  disabled={notifications.disabled}
+                  key="outcomes"
+                  label="Replies and updates"
+                  onChange={(enabled) => props.onPreferenceChange("run-outcomes", enabled)}
+                  value={preferences.runOutcomesEnabled}
+                />
+              ),
+              actionRow(notifications.action, props.onNotificationAction, "notification-action"),
+            ]}
+          </RowGroup>
+          <ErrorText detail={props.notificationError} />
+        </Section>
+      )}
+      {notifications === null || props.agents.length === 0 ? null : (
+        <Section footer={projectNotificationsFooter} label="Notifications from projects">
+          <RowGroup>
+            {props.agents.map((agent) => (
+              <SwitchRow
+                key={agent.workspaceId}
+                label={agent.name}
+                onChange={(enabled) => props.onAgentMuteChange(agent.workspaceId, !enabled)}
+                value={!agent.muted}
+              />
+            ))}
+          </RowGroup>
+        </Section>
+      )}
+      {
+        <Section label="About">
+          <RowGroup>
+            {[
+              <View key="version" style={styles.rowInline}>
+                <AppText role="body">Version</AppText>
+                <AppText role="body" tone="muted">
+                  {props.version}
+                </AppText>
+              </View>,
+            ]}
+          </RowGroup>
+          <ErrorText
+            detail={
+              props.storageError === null
+                ? null
+                : `This phone could not save a setting. ${props.storageError}`
+            }
+          />
+        </Section>
+      }
+    </>
+  );
+}
