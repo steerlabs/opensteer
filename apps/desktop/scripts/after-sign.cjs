@@ -223,7 +223,7 @@ async function verifySignedDesktopContents(context) {
       `Computer use helper must ${isDesktopRelease() ? "be universal" : "match the app architecture"}; found ${computerUseArchitectures || "no architectures"}.`,
     );
   }
-  // Stable and Beta share one installed broker, like the computer use helper.
+  // Desktop releases share one installed broker, like the computer use helper.
   for (const program of [passwordsExecutablePath, passwordsWorkerPath]) {
     const architectures = run("/usr/bin/lipo", ["-archs", program], true).trim();
     if (!helperArchitecturesMatch(architectures, appArchitectures, isDesktopRelease())) {
@@ -270,7 +270,7 @@ async function verifySignedDesktopContents(context) {
     throw new Error("Packaged Personal runtime architecture does not match its release manifest.");
   }
   if (process.env.OPENSTEER_DESKTOP_RELEASE !== "1") return;
-  const identity = desktopReleaseIdentity(required("OPENSTEER_DESKTOP_RELEASE_CHANNEL"));
+  const identity = desktopReleaseIdentity();
   const expectedTeamId = required("OPENSTEER_APPLE_TEAM_ID");
   if (expectedTeamId !== identity.teamId) {
     throw new Error(`The macOS release must use permanent Team ${identity.teamId}.`);
@@ -279,7 +279,7 @@ async function verifySignedDesktopContents(context) {
     context.packager.appInfo.id !== identity.bundleId ||
     context.packager.appInfo.productFilename !== identity.productName
   ) {
-    throw new Error("The packaged macOS application identity does not match its release channel.");
+    throw new Error("The packaged macOS application identity does not match its release policy.");
   }
   for (const signedPath of [
     appPath,

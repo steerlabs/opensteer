@@ -32,7 +32,7 @@ const {
 };
 const { desktopReleaseIdentity, validateReleaseEntitlements } =
   require("../../scripts/macos-release-identity.cjs") as {
-    readonly desktopReleaseIdentity: (channel: "beta" | "stable") => MacosReleaseIdentity;
+    readonly desktopReleaseIdentity: () => MacosReleaseIdentity;
     readonly validateReleaseEntitlements: (entitlements: Record<string, unknown>) => void;
   };
 const verifySignedDesktop = require("../../scripts/after-sign.cjs") as ((context: {
@@ -48,7 +48,6 @@ const temporaryDirectories: string[] = [];
 
 interface MacosReleaseIdentity {
   readonly bundleId: string;
-  readonly channel: "beta" | "stable";
   readonly productName: string;
   readonly teamId: string;
 }
@@ -62,81 +61,61 @@ afterEach(async () => {
 });
 
 describe("Desktop release policy", () => {
-  it("pins the stable macOS identity to the existing customer app and isolates Beta", () => {
-    expect(desktopReleaseIdentity("stable")).toMatchObject({
+  it("pins the single macOS identity", () => {
+    expect(desktopReleaseIdentity()).toMatchObject({
       bundleId: "com.opensteer.opensteer",
       productName: "Opensteer",
       teamId: "ABCDE12345",
     });
-    expect(desktopReleaseIdentity("beta")).toMatchObject({
-      bundleId: "com.steerlabs.opensteer.beta",
-      productName: "Opensteer Beta",
-      teamId: "ABCDE12345",
-    });
   });
 
-  it.each(["stable", "beta"] as const)(
-    "allows only Opensteer's reviewed hardened-runtime entitlements for %s",
-    () => {
+  it("allows only Opensteer's reviewed hardened-runtime entitlements", () => {
+    expect(() =>
+      validateReleaseEntitlements({
+        "com.apple.security.cs.allow-jit": true,
+        "com.apple.security.device.audio-input": true,
+      }),
+    ).not.toThrow();
+    for (const value of [false, undefined, "true"]) {
       expect(() =>
         validateReleaseEntitlements({
           "com.apple.security.cs.allow-jit": true,
-          "com.apple.security.device.audio-input": true,
+          "com.apple.security.device.audio-input": value,
         }),
-      ).not.toThrow();
-      for (const value of [false, undefined, "true"]) {
-        expect(() =>
-          validateReleaseEntitlements({
-            "com.apple.security.cs.allow-jit": true,
-            "com.apple.security.device.audio-input": value,
-          }),
-        ).toThrow();
-      }
-      expect(() =>
-        validateReleaseEntitlements({ "com.apple.security.cs.allow-jit": true }),
       ).toThrow();
-      expect(() => validateReleaseEntitlements({})).toThrow(/reviewed hardened-runtime/u);
-      expect(() =>
-        validateReleaseEntitlements({
-          "com.apple.security.cs.allow-jit": true,
-          "com.apple.security.device.audio-input": true,
-          "com.apple.security.get-task-allow": true,
-        }),
-      ).toThrow(/reviewed hardened-runtime/u);
-      // Every command an agent runs descends from this app, so Apple events
-      // — sending in Messages among them — belong to the helper alone.
-      expect(() =>
-        validateReleaseEntitlements({
-          "com.apple.security.automation.apple-events": true,
-          "com.apple.security.cs.allow-jit": true,
-          "com.apple.security.device.audio-input": true,
-        }),
-      ).toThrow(/reviewed hardened-runtime/u);
-    },
-  );
+    }
+    expect(() =>
+      validateReleaseEntitlements({ "com.apple.security.cs.allow-jit": true }),
+    ).toThrow();
+    expect(() => validateReleaseEntitlements({})).toThrow(/reviewed hardened-runtime/u);
+    expect(() =>
+      validateReleaseEntitlements({
+        "com.apple.security.cs.allow-jit": true,
+        "com.apple.security.device.audio-input": true,
+        "com.apple.security.get-task-allow": true,
+      }),
+    ).toThrow(/reviewed hardened-runtime/u);
+    // Every command an agent runs descends from this app, so Apple events
+    // — sending in Messages among them — belong to the helper alone.
+    expect(() =>
+      validateReleaseEntitlements({
+        "com.apple.security.automation.apple-events": true,
+        "com.apple.security.cs.allow-jit": true,
+        "com.apple.security.device.audio-input": true,
+      }),
+    ).toThrow(/reviewed hardened-runtime/u);
+  });
 
   it.each([
     {
-      application: { channel: "stable", id: "com.opensteer.opensteer", name: "Opensteer" },
+      application: { id: "com.opensteer.opensteer", name: "Opensteer" },
       oauth: {
         accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
         hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
       },
       scheme: "com.opensteer.opensteer",
     },
-    {
-      application: {
-        channel: "beta",
-        id: "com.steerlabs.opensteer.beta",
-        name: "Opensteer Beta",
-      },
-      oauth: {
-        accountCallback: "com.steerlabs.opensteer.beta:/oauth/account-callback",
-        hostCallback: "com.steerlabs.opensteer.beta:/oauth/host-callback",
-      },
-      scheme: "com.steerlabs.opensteer.beta",
-    },
-  ])("binds the $application.channel manifest to its packaged app and URI scheme", (profile) => {
+  ])("binds the manifest to its packaged app and URI scheme", (profile) => {
     const desktop = {
       application: profile.application,
       oauth: { ...profile.oauth, clientId: "client" },
@@ -157,20 +136,10 @@ describe("Desktop release policy", () => {
     ).toThrow(/OAuth scheme/u);
   });
 
-  it("packages a stable policy without Account access", async () => {
-    const fixture = await archivedPolicy({
-      accountUrl: undefined,
-      capabilities: { connect: false, localAgents: true, personal: true },
-    });
-    expect(readPackagedDesktopPolicy(fixture.archive)).toMatchObject({
-      capabilities: { connect: false },
-    });
-    for (const overrides of [
-      { capabilities: { connect: false, localAgents: true, personal: true } },
-      { accountUrl: undefined },
-    ]) {
+  it("requires Account and portal origins in the packaged policy", async () => {
+    for (const overrides of [{ accountUrl: undefined }, { portalUrl: undefined }]) {
       const invalid = await archivedPolicy(overrides);
-      expect(() => readPackagedDesktopPolicy(invalid.archive)).toThrow(/manifest is invalid/u);
+      expect(() => readPackagedDesktopPolicy(invalid.archive)).toThrow();
     }
   });
 
@@ -204,9 +173,8 @@ describe("Desktop release policy", () => {
   // The committed manifests, staged exactly as packaging stages them, must pass
   // the packaging gate; synthetic fixtures alone missed new optional fields.
   it.each([
-    ["desktop-release.source.json", "darwin", "arm64"],
-    ["desktop-release.source.json", "darwin", "x64"],
-    ["desktop-release.beta.json", "darwin", "arm64"],
+    ["desktop-release.json", "darwin", "arm64"],
+    ["desktop-release.json", "darwin", "x64"],
   ] as const)("packages the committed %s staged for %s/%s", async (file, os, arch) => {
     const staged = stageDesktopUpdatePolicy(
       readEmbeddedDesktopRelease(path.join(import.meta.dirname, file)),
@@ -219,12 +187,13 @@ describe("Desktop release policy", () => {
   });
 
   it.each([
+    { updates: { owner: "steerlabs", repo: "opensteer", channel: "insider" } },
+    { application: { id: "com.opensteer.opensteer", name: "Opensteer", channel: "beta" } },
     { updates: { feedUrl: "http://updates.opensteer.test/feed.json" } },
     { updates: { feedUrl: "https://updates.opensteer.test/feed.json", extra: true } },
     { updates: "https://updates.opensteer.test/feed.json" },
     {
       application: {
-        channel: "stable",
         id: "com.opensteer.opensteer",
         name: "Opensteer",
         stage: "beta",
@@ -232,31 +201,20 @@ describe("Desktop release policy", () => {
     },
   ])("rejects an invalid update feed or release stage", async (overrides) => {
     const fixture = await archivedPolicy(overrides);
-    expect(() => readPackagedDesktopPolicy(fixture.archive)).toThrow(/manifest is invalid/u);
+    expect(() => readPackagedDesktopPolicy(fixture.archive)).toThrow(
+      /manifest is invalid|unexpected manifest shape/u,
+    );
   });
 
   it.each([
-    {
-      capabilities: {
-        connect: true,
-        personal: true,
-        localAgents: false,
-        retiredCapability: true,
-      },
-      schemaVersion: 6,
-    },
-    {
-      capabilities: {
-        connect: true,
-        personal: true,
-        localAgents: false,
-      },
-      schemaVersion: 4,
-    },
+    { schemaVersion: 6 },
+    { capabilities: { connect: true } },
     { accountUrl: ["https://accounts.opensteer.test"] },
   ])("rejects an invalid or obsolete embedded policy", async (overrides) => {
     const fixture = await archivedPolicy(overrides);
-    expect(() => readPackagedDesktopPolicy(fixture.archive)).toThrow(/manifest is invalid/u);
+    expect(() => readPackagedDesktopPolicy(fixture.archive)).toThrow(
+      /manifest is invalid|unexpected manifest shape/u,
+    );
   });
 
   it("rejects a packaged runtime with an unresolved transitive import", async () => {
@@ -326,18 +284,14 @@ describe("Desktop release policy", () => {
 async function archivedPolicy(overrides: Record<string, unknown>) {
   const base = {
     accountUrl: "https://accounts.opensteer.test",
-    application: { channel: "stable", id: "com.opensteer.opensteer", name: "Opensteer" },
-    capabilities: {
-      connect: true,
-      personal: true,
-      localAgents: false,
-    },
+    portalUrl: "https://app.opensteer.test",
+    application: { id: "com.opensteer.opensteer", name: "Opensteer" },
     oauth: {
       accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
       clientId: "opensteer-desktop",
       hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
     },
-    schemaVersion: 6,
+    schemaVersion: 7,
   };
   return archivedManifest({ ...base, ...overrides });
 }
@@ -360,15 +314,14 @@ async function createFixtureArchive(source: string, archive: string): Promise<vo
   await finished(await createPackage(source, archive));
 }
 
-it.each(["source", "beta"])("stages %s updates only for Mac arm64", (profile) => {
+it("stages updates only for Mac arm64", () => {
   const release = readEmbeddedDesktopRelease(
-    path.join(import.meta.dirname, `desktop-release.${profile}.json`),
+    path.join(import.meta.dirname, "desktop-release.json"),
   );
   const staged = stageDesktopUpdatePolicy(release, "darwin", "arm64", "updates.localhost:8443");
   expect(staged.updates).toMatchObject({
     owner: "steerlabs",
     repo: "opensteer",
-    channel: profile === "beta" ? "insider" : "latest",
     host: "updates.localhost:8443",
   });
   for (const [os, arch] of [
@@ -378,43 +331,38 @@ it.each(["source", "beta"])("stages %s updates only for Mac arm64", (profile) =>
   ])
     expect(stageDesktopUpdatePolicy(release, os!, arch!, undefined).updates).toBeUndefined();
 });
-it.each(["source", "beta"])(
-  "validates the %s app-update.yml against the staged policy",
-  async (profile) => {
-    const release = readEmbeddedDesktopRelease(
-      path.join(import.meta.dirname, `desktop-release.${profile}.json`),
-    );
-    const updates = stageDesktopUpdatePolicy(
-      release,
-      "darwin",
-      "arm64",
-      "mirror.localhost:8443",
-    ).updates!;
-    const root = await mkdtemp(path.join(tmpdir(), "opensteer-update-yaml-"));
-    temporaryDirectories.push(root);
-    expect(desktopUpdateFeed(updates)).toBe(
-      `https://mirror.localhost:8443/steerlabs/opensteer#${profile === "beta" ? "insider" : "latest"}`,
-    );
-    expect(desktopUpdateFeed({ ...updates, host: undefined })).toBe(
-      `https://github.com/steerlabs/opensteer#${updates.channel}`,
-    );
-    const yaml = desktopAppUpdateYaml(updates);
-    const { parse } = await import("yaml");
-    expect(parse(yaml)).toEqual({
-      provider: "github",
-      owner: "steerlabs",
-      repo: "opensteer",
-      host: "mirror.localhost:8443",
-      updaterCacheDirName: profile === "beta" ? "opensteer-beta-updater" : "opensteer-updater",
-    });
-    await writeFile(path.join(root, "app-update.yml"), yaml);
-    expect(() => verifyAppUpdateConfig(root, { ...release, updates })).not.toThrow();
-    await writeFile(
-      path.join(root, "app-update.yml"),
-      yaml.replace("mirror.localhost", "wrong.localhost"),
-    );
-    expect(() => verifyAppUpdateConfig(root, { ...release, updates })).toThrow(
-      /update configuration/u,
-    );
-  },
-);
+it("validates app-update.yml against the staged policy", async () => {
+  const release = readEmbeddedDesktopRelease(
+    path.join(import.meta.dirname, "desktop-release.json"),
+  );
+  const updates = stageDesktopUpdatePolicy(
+    release,
+    "darwin",
+    "arm64",
+    "mirror.localhost:8443",
+  ).updates!;
+  const root = await mkdtemp(path.join(tmpdir(), "opensteer-update-yaml-"));
+  temporaryDirectories.push(root);
+  expect(desktopUpdateFeed(updates)).toBe(`https://mirror.localhost:8443/steerlabs/opensteer`);
+  expect(desktopUpdateFeed({ ...updates, host: undefined })).toBe(
+    `https://github.com/steerlabs/opensteer`,
+  );
+  const yaml = desktopAppUpdateYaml(updates);
+  const { parse } = await import("yaml");
+  expect(parse(yaml)).toEqual({
+    provider: "github",
+    owner: "steerlabs",
+    repo: "opensteer",
+    host: "mirror.localhost:8443",
+    updaterCacheDirName: "opensteer-updater",
+  });
+  await writeFile(path.join(root, "app-update.yml"), yaml);
+  expect(() => verifyAppUpdateConfig(root, { ...release, updates })).not.toThrow();
+  await writeFile(
+    path.join(root, "app-update.yml"),
+    yaml.replace("mirror.localhost", "wrong.localhost"),
+  );
+  expect(() => verifyAppUpdateConfig(root, { ...release, updates })).toThrow(
+    /update configuration/u,
+  );
+});

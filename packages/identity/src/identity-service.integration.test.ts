@@ -1121,31 +1121,31 @@ integration("IdentityService", () => {
     });
   });
 
-  it("keeps the signed Beta desktop registration active across the mobile registry upgrade", async () => {
+  it("keeps the desktop registration active across the mobile registry upgrade", async () => {
     const origin = "http://127.0.0.1:4310";
-    const beta: NativeOAuthClient = {
+    const desktop: NativeOAuthClient = {
       application: "desktop",
-      clientId: "opensteer-desktop-beta",
-      displayName: "Opensteer Beta",
-      redirectUris: ["com.steerlabs.opensteer.beta:/oauth/host-callback"],
+      clientId: "opensteer-desktop",
+      displayName: "Opensteer",
+      redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
       softwareId: "opensteer-native",
     };
-    const before = identityService({ nativeOAuth: { clients: [beta] }, signupPolicy: "open" });
+    const before = identityService({ nativeOAuth: { clients: [desktop] }, signupPolicy: "open" });
     await before.initialize();
     await before.signUpPassword(
       {
-        displayName: "Beta User",
-        email: "beta@example.com",
+        displayName: "Desktop User",
+        email: "desktop@example.com",
         password: "correct horse battery staple",
       },
       new Headers({ origin }),
     );
     const login = await nativeOAuthLogin(before, {
-      clientId: beta.clientId,
-      email: "beta@example.com",
+      clientId: desktop.clientId,
+      email: "desktop@example.com",
       origin,
-      redirectUri: beta.redirectUris[0]!,
-      state: "beta-state",
+      redirectUri: desktop.redirectUris[0]!,
+      state: "desktop-state",
     });
 
     const after = identityService({
@@ -1156,23 +1156,20 @@ integration("IdentityService", () => {
 
     await expect(
       after.authenticateNativeAccessToken(login.tokens.access_token),
-    ).resolves.toMatchObject({ application: "desktop", clientId: beta.clientId });
+    ).resolves.toMatchObject({ application: "desktop", clientId: desktop.clientId });
     await expect(
       database
         .selectFrom("hostOAuthClients")
         .select(["clientId", "disabled"])
-        .where("clientId", "=", beta.clientId)
+        .where("clientId", "=", desktop.clientId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ clientId: beta.clientId, disabled: false });
+    ).resolves.toEqual({ clientId: desktop.clientId, disabled: false });
   });
 
   it("retires an application that leaves configuration and revokes what it still holds", async () => {
     const origin = "http://127.0.0.1:4310";
     const desktop = opensteerHostNativeOAuthClients.find(
       (client) => client.application === "desktop",
-    )!;
-    const beta = opensteerHostNativeOAuthClients.find(
-      (client) => client.clientId === "opensteer-desktop-beta",
     )!;
     const mobile = opensteerHostNativeOAuthClients.find(
       (client) => client.application === "mobile",
@@ -1212,7 +1209,6 @@ integration("IdentityService", () => {
         .execute(),
     ).resolves.toEqual([
       { clientId: desktop.clientId, disabled: false },
-      { clientId: beta.clientId, disabled: true },
       { clientId: mobile.clientId, disabled: true },
     ]);
     await expect(

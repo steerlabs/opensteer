@@ -36,7 +36,7 @@ public enum PeerRequirement {
 
   static func policy(teamId: String?) -> PeerRequirementMode {
     guard let text = MacCodeIdentity.requirement(teamId: teamId,
-      identifiers: ["com.opensteer.opensteer", "com.steerlabs.opensteer.beta"])
+      identifiers: ["com.opensteer.opensteer"])
     else { return .refuse }
     return .codeRequirement(text)
   }

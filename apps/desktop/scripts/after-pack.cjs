@@ -204,24 +204,19 @@ function readPackagedDesktopPolicy(archivePath) {
   const desktopManifest = asarFile(archivePath, "dist/desktop-release.json");
   const desktop = exactObject(
     desktopManifest,
-    ["application", "capabilities", "oauth", "schemaVersion"],
-    // Service origins are present only when the build offers those services;
-    // only Mac arm64 release builds carry updates.
-    ["accountUrl", "portalUrl", "updates"],
+    ["accountUrl", "portalUrl", "application", "oauth", "schemaVersion"],
+    // Only Mac arm64 release builds carry updates.
+    ["updates"],
   );
   if (
-    desktop.schemaVersion !== 6 ||
+    desktop.schemaVersion !== 7 ||
+    typeof desktop.accountUrl !== "string" ||
     !bareHttpsOriginOrAbsent(desktop.accountUrl) ||
-    (desktop.capabilities?.connect === true
-      ? typeof desktop.accountUrl !== "string"
-      : desktop.accountUrl !== undefined) ||
     !exactApplication(desktop.application) ||
-    !exactCapabilities(desktop.capabilities) ||
     !exactOAuthIdentity(desktop.oauth) ||
+    typeof desktop.portalUrl !== "string" ||
     !bareHttpsOriginOrAbsent(desktop.portalUrl) ||
-    !updateFeedOrAbsent(desktop.updates) ||
-    (desktop.updates &&
-      desktop.updates.channel !== (desktop.application.channel === "stable" ? "latest" : "insider"))
+    !updateFeedOrAbsent(desktop.updates)
   ) {
     throw new Error("Packaged Desktop manifest is invalid.");
   }
@@ -253,10 +248,9 @@ function updateFeedOrAbsent(value) {
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value).every((key) => ["owner", "repo", "channel", "host"].includes(key)) &&
+    Object.keys(value).every((key) => ["owner", "repo", "host"].includes(key)) &&
     value.owner === "steerlabs" &&
     value.repo === "opensteer" &&
-    ["latest", "insider"].includes(value.channel) &&
     (value.host === undefined ||
       (typeof value.host === "string" && /^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u.test(value.host)))
   );
@@ -269,15 +263,12 @@ function verifyAppUpdateConfig(resources, desktop) {
     return;
   }
   const updates = desktop.updates;
-  if (updates.channel !== (desktop.application.channel === "stable" ? "latest" : "insider"))
-    throw new Error("Desktop update configuration channel mismatch.");
   const expected = {
     provider: "github",
     owner: updates.owner,
     repo: updates.repo,
     ...(updates.host ? { host: updates.host } : {}),
-    updaterCacheDirName:
-      updates.channel === "latest" ? "opensteer-updater" : "opensteer-beta-updater",
+    updaterCacheDirName: "opensteer-updater",
   };
   const actual = require("yaml").parse(readFileSync(file, "utf8"));
   if (
@@ -289,15 +280,12 @@ function verifyAppUpdateConfig(resources, desktop) {
 }
 
 function exactApplication(value) {
-  const keys = ["channel", "id", "name"];
-  if (value?.stage !== undefined) keys.push("stage");
+  const keys = ["id", "name"];
   return (
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
     JSON.stringify(Object.keys(value).sort()) === JSON.stringify(keys.sort()) &&
-    (value.stage === undefined || value.stage === "alpha") &&
-    ["beta", "stable"].includes(value.channel) &&
     /^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u.test(value.id) &&
     typeof value.name === "string" &&
     value.name.trim() === value.name &&
@@ -658,19 +646,6 @@ function verifyAgentPhone(resources, required) {
 
 function isDesktopRelease() {
   return process.env.OPENSTEER_DESKTOP_RELEASE === "1";
-}
-
-function exactCapabilities(value) {
-  return (
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify(["connect", "localAgents", "personal"].sort()) &&
-    typeof value.connect === "boolean" &&
-    value.personal === true &&
-    typeof value.localAgents === "boolean"
-  );
 }
 
 function regularFile(filePath, executable = false) {

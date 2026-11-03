@@ -13,7 +13,7 @@ export function computerUseHelperExecutablePath(appPath: string): string {
 /**
  * The canonical install root, shared by every Opensteer that installs a helper.
  *
- * Stable and Beta refresh one path so the two apps share one grant: macOS keys
+ * Desktop releases refresh one path so releases share one grant: macOS keys
  * Accessibility and Screen Recording on the bundle it granted them to, and a
  * second copy under a second app's data directory would be a second row in
  * System Settings for the same feature.

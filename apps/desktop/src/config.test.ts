@@ -22,10 +22,7 @@ describe("desktop configuration", () => {
   it("ships only builds the Host and Account registries know", () => {
     // Every Host registers exactly `opensteerNativeClients`, so a manifest
     // that names any other identity is a build no Deployment would admit.
-    for (const manifest of [
-      "./releases/desktop-release.source.json",
-      "./releases/desktop-release.beta.json",
-    ]) {
+    for (const manifest of ["./releases/desktop-release.json"]) {
       const release = readEmbeddedDesktopRelease(fileURLToPath(new URL(manifest, import.meta.url)));
       const registered = opensteerNativeClients.find(
         (client) => client.clientId === release.oauth.clientId,
@@ -45,49 +42,34 @@ describe("desktop configuration", () => {
     }
   });
 
-  it("ships stable without an Account and rejects mismatched Connect policy", () => {
-    const stablePath = fileURLToPath(
-      new URL("./releases/desktop-release.source.json", import.meta.url),
+  it("ships one Account and portal policy while development and tests stay opt-in", () => {
+    const releaseManifestPath = fileURLToPath(
+      new URL("./releases/desktop-release.json", import.meta.url),
     );
-    const stable = readEmbeddedDesktopRelease(stablePath);
-    expect(stable.capabilities.connect).toBe(false);
-    expect(stable.accountUrl).toBeUndefined();
-    expect(stable.portalUrl).toBeUndefined();
-    const loaded = readDesktopConfiguration({
+    const config = readDesktopConfiguration({
       appDataDirectory,
       defaultMode: "production",
       environment: baseEnvironment(),
       packaged: true,
-      releaseManifestPath: stablePath,
+      releaseManifestPath,
       resourcesDirectory,
-    });
-    expect(loaded.config.accountUrl).toBeNull();
-    expect(loaded.config.portalUrl).toBeNull();
-    const directory = mkdtempSync(join(tmpdir(), "opensteer-connect-policy-"));
-    try {
-      const manifestPath = join(directory, "release.json");
-      for (const invalid of [
-        { ...stable, accountUrl: "https://accounts.example.test" },
-        { ...stable, capabilities: { ...stable.capabilities, connect: true } },
-      ]) {
-        writeFileSync(manifestPath, JSON.stringify(invalid));
-        expect(() => readEmbeddedDesktopRelease(manifestPath)).toThrow();
-      }
-      const beta = readEmbeddedDesktopRelease(
-        fileURLToPath(new URL("./releases/desktop-release.beta.json", import.meta.url)),
-      );
-      expect(beta.capabilities.connect).toBe(true);
-      expect(beta.accountUrl).toBe("https://accounts.beta.opensteer.com");
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
+    }).config;
+    expect(config.accountUrl?.origin).toBe("https://accounts.opensteer.com");
+    expect(config.portalUrl?.origin).toBe("https://app.opensteer.com");
+    for (const defaultMode of ["development", "test"] as const) {
+      const local = readDesktopConfiguration({
+        appDataDirectory,
+        defaultMode,
+        environment: baseEnvironment(),
+        packaged: false,
+      }).config;
+      expect(local.accountUrl).toBeNull();
+      expect(local.portalUrl).toBeNull();
     }
   });
 
   it("binds every signed OAuth callback scheme to the build's own application id", () => {
-    for (const manifest of [
-      "./releases/desktop-release.source.json",
-      "./releases/desktop-release.beta.json",
-    ]) {
+    for (const manifest of ["./releases/desktop-release.json"]) {
       const release = readEmbeddedDesktopRelease(fileURLToPath(new URL(manifest, import.meta.url)));
       expect(new URL(release.oauth.accountCallback).protocol).toBe(`${release.application.id}:`);
       expect(new URL(release.oauth.hostCallback).protocol).toBe(`${release.application.id}:`);
@@ -100,12 +82,8 @@ describe("desktop configuration", () => {
         manifestPath,
         JSON.stringify({
           accountUrl: "https://accounts.opensteer.com",
-          application: { channel: "stable", id: "com.opensteer.opensteer", name: "Opensteer" },
-          capabilities: {
-            connect: true,
-            localAgents: true,
-            personal: true,
-          },
+          portalUrl: "https://app.opensteer.com",
+          application: { id: "com.opensteer.opensteer", name: "Opensteer" },
           oauth: {
             // A private-use scheme that is not this build's application id:
             // any other installed app could register it.
@@ -113,7 +91,7 @@ describe("desktop configuration", () => {
             clientId: "opensteer-desktop",
             hostCallback: "opensteer:/oauth/host-callback",
           },
-          schemaVersion: 6,
+          schemaVersion: 7,
         }),
       );
       expect(() => readEmbeddedDesktopRelease(manifestPath)).toThrow(/application id/u);
@@ -123,9 +101,10 @@ describe("desktop configuration", () => {
   });
 
   it("uses separate mode directories and consumes the enrollment token once", () => {
-    const durableProductName = `Open${"S"}teer`;
+    const durableProductName = "Opensteer";
     expect(desktopApplicationName(true, "Opensteer")).toBe(durableProductName);
     expect(desktopApplicationName(false, "Opensteer")).toBe(`${durableProductName} Development`);
+    expect(desktopApplicationName(false, "Opensteer", "test")).toBe("Opensteer Test");
     expect(desktopDataDirectory(undefined, appDataDirectory, "production")).toBe(
       `${appDataDirectory}/${durableProductName}`,
     );
@@ -151,7 +130,6 @@ describe("desktop configuration", () => {
     expect(loaded.config.personal.workspaceRoot).toBe(
       join(homedir(), durableProductName, "Workspaces"),
     );
-    expect(loaded.config.localExecution.enabled).toBe(true);
   });
 
   it("requires secure production origins and permits only loopback HTTP outside production", () => {
@@ -257,10 +235,10 @@ describe("desktop configuration", () => {
     ).toThrow(/packaged desktop app/);
   });
 
-  it("carries an apex portal only for a build that declares one", () => {
+  it("uses the packaged portal and accepts explicit development overrides", () => {
     const portalResources = packagedResources(
       "https://accounts.example.test",
-      "https://beta.opensteer.com",
+      "https://app.opensteer.test",
     );
     try {
       expect(
@@ -272,7 +250,7 @@ describe("desktop configuration", () => {
           releaseManifestPath: packagedDesktopManifest(portalResources),
           resourcesDirectory: portalResources,
         }).config.portalUrl?.href,
-      ).toBe("https://beta.opensteer.com/");
+      ).toBe("https://app.opensteer.test/");
       expect(() =>
         readDesktopConfiguration({
           appDataDirectory,
@@ -297,24 +275,24 @@ describe("desktop configuration", () => {
         packaged: true,
         releaseManifestPath: packagedDesktopManifest(resourcesDirectory),
         resourcesDirectory,
-      }).config.portalUrl,
-    ).toBeNull();
+      }).config.portalUrl?.origin,
+    ).toBe("https://app.example.test");
     expect(
       readDesktopConfiguration({
         appDataDirectory,
         defaultMode: "development",
         environment: baseEnvironment({
-          OPENSTEER_DESKTOP_PORTAL_URL: "https://beta.opensteer.com",
+          OPENSTEER_DESKTOP_PORTAL_URL: "https://app.opensteer.test",
         }),
         packaged: false,
       }).config.portalUrl?.href,
-    ).toBe("https://beta.opensteer.com/");
+    ).toBe("https://app.opensteer.test/");
     expect(() =>
       readDesktopConfiguration({
         appDataDirectory,
         defaultMode: "development",
         environment: baseEnvironment({
-          OPENSTEER_DESKTOP_PORTAL_URL: "https://beta.opensteer.com/portal",
+          OPENSTEER_DESKTOP_PORTAL_URL: "https://app.opensteer.test/portal",
         }),
         packaged: false,
       }),
@@ -351,7 +329,7 @@ function read(mode: DesktopMode, hostUrl: string) {
 
 function packagedResources(
   accountUrl = "https://accounts.example.test",
-  portalUrl: string | undefined = undefined,
+  portalUrl: string = "https://app.example.test",
 ): string {
   const directory = mkdtempSync(join(tmpdir(), "opensteer-desktop-resources-"));
   const desktop = join(directory, "desktop");
@@ -361,18 +339,16 @@ function packagedResources(
     JSON.stringify({
       accountUrl,
       application: {
-        channel: "stable",
         id: "com.opensteer.opensteer",
         name: "Opensteer",
       },
-      capabilities: { connect: true, localAgents: true, personal: true },
       oauth: {
         accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
         clientId: "opensteer-desktop",
         hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
       },
       ...(portalUrl ? { portalUrl } : {}),
-      schemaVersion: 6,
+      schemaVersion: 7,
     }),
     { mode: 0o444 },
   );

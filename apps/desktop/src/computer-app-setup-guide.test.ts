@@ -50,7 +50,7 @@ function harness(start: Partial<ComputerUseDataGrants> = {}) {
   }[] = [];
   const options = {
     appIcon: vi.fn(async (bundleId: string) => `icon:${bundleId}`),
-    appName: "Opensteer Beta",
+    appName: "Opensteer",
     dataGrants: vi.fn(async () => {
       if (grantGate) await grantGate;
       if (!reachable) throw new Error("This Mac's Computer use helper did not answer in time.");

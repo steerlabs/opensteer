@@ -19,7 +19,6 @@ export type DesktopMode = "development" | "production" | "test";
 const DesktopUpdatesSchema = z.strictObject({
   owner: z.literal("steerlabs"),
   repo: z.literal("opensteer"),
-  channel: z.enum(["latest", "insider"]),
   host: z
     .string()
     .regex(/^[a-zA-Z0-9.-]+(?::[0-9]+)?$/u)
@@ -49,7 +48,6 @@ export interface DesktopConfiguration {
 }
 
 export interface DesktopReleaseIdentity {
-  readonly channel: "beta" | "stable";
   readonly id: string;
   readonly name: string;
   readonly oauth: NativeOAuthIdentity;
@@ -57,8 +55,6 @@ export interface DesktopReleaseIdentity {
 
 export interface DesktopLocalExecutionConfiguration {
   readonly dataDirectory: string;
-  /** Signed release capability. Controls local agent execution. */
-  readonly enabled: boolean;
   readonly nativeFsHelperBinary: string;
   readonly runnerWorkerPath: string;
 }
@@ -167,13 +163,11 @@ export function readDesktopConfiguration(
     };
   }
 
-  const localAgentsEnabled = packagedDesktop?.localAgents ?? true;
   const packagedNativeFsHelper = options.packaged
     ? readPackagedNativeFsHelper(resourcesDirectory)
     : undefined;
   const localExecution: DesktopLocalExecutionConfiguration = {
     dataDirectory: path.join(dataDirectory, "runner"),
-    enabled: localAgentsEnabled,
     nativeFsHelperBinary: absolutePath(
       optional(parsed.OPENSTEER_DESKTOP_NATIVE_FS_HELPER) ??
         packagedNativeFsHelper ??
@@ -210,7 +204,7 @@ export function readDesktopConfiguration(
     ),
     workspaceRoot: absolutePath(
       optional(parsed.OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT) ??
-        path.join(homedir(), durableDesktopPathName("Opensteer"), "Workspaces"),
+        path.join(homedir(), "Opensteer", "Workspaces"),
       "OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT",
     ),
   };
@@ -270,40 +264,18 @@ const DesktopOAuthIdentitySchema = z
     { message: "Account and Host OAuth callbacks must use the same application scheme" },
   );
 
-const PackagedDesktopReleaseBaseSchema = z.strictObject({
-  application: z.strictObject({
-    channel: z.enum(["beta", "stable"]),
-    id: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u),
-    name: z.string().trim().min(1).max(80),
-    stage: z.literal("alpha").optional(),
-  }),
-  capabilities: z.strictObject({
-    connect: z.boolean(),
-    personal: z.literal(true),
-    localAgents: z.boolean(),
-  }),
-  oauth: DesktopOAuthIdentitySchema,
-  /** Present only for a build that belongs to a managed portal. */
-  portalUrl: z.url().optional(),
-  updates: DesktopUpdatesSchema.optional(),
-  schemaVersion: z.literal(6),
-});
-
 const PackagedDesktopReleaseSchema = z
-  .union([
-    PackagedDesktopReleaseBaseSchema.extend({
-      accountUrl: z.url(),
-      capabilities: PackagedDesktopReleaseBaseSchema.shape.capabilities.extend({
-        connect: z.literal(true),
-      }),
+  .strictObject({
+    accountUrl: z.url(),
+    application: z.strictObject({
+      id: z.literal("com.opensteer.opensteer"),
+      name: z.literal("Opensteer"),
     }),
-    PackagedDesktopReleaseBaseSchema.extend({
-      accountUrl: z.never().optional(),
-      capabilities: PackagedDesktopReleaseBaseSchema.shape.capabilities.extend({
-        connect: z.literal(false),
-      }),
-    }),
-  ])
+    oauth: DesktopOAuthIdentitySchema,
+    portalUrl: z.url(),
+    updates: DesktopUpdatesSchema.optional(),
+    schemaVersion: z.literal(7),
+  })
   // RFC 8252: a native client's redirect scheme must be a name it actually owns
   // with the operating system. Asserting it *is* the application id — rather
   // than merely that it is private-use — is what makes a squattable generic
@@ -314,7 +286,6 @@ const PackagedDesktopReleaseSchema = z
   });
 
 const defaultDesktopReleaseIdentity: DesktopReleaseIdentity = {
-  channel: "stable",
   id: "com.opensteer.opensteer",
   name: "Opensteer",
   oauth: {
@@ -335,7 +306,6 @@ const PackagedRunnerReleaseSchema = z.strictObject({
 function readPackagedDesktopRelease(manifestPath: string): {
   readonly updates?: DesktopUpdates;
   readonly accountUrl: string | null;
-  readonly localAgents: boolean;
   readonly portalUrl: string | undefined;
   readonly release: DesktopReleaseIdentity;
 } {
@@ -346,12 +316,10 @@ function readPackagedDesktopRelease(manifestPath: string): {
   return {
     ...(manifest.updates ? { updates: manifest.updates } : {}),
     accountUrl: accountUrl?.origin ?? null,
-    localAgents: manifest.capabilities.localAgents,
     portalUrl: manifest.portalUrl
       ? serviceOrigin(manifest.portalUrl, "production", "Opensteer portal URL").origin
       : undefined,
     release: {
-      channel: manifest.application.channel,
       id: manifest.application.id,
       name: manifest.application.name,
       // The build states which application it is rather than deriving it from
@@ -415,29 +383,20 @@ export function desktopDataDirectory(
   if (explicit) return absolutePath(explicit, "OPENSTEER_DESKTOP_DATA_DIR");
   const name =
     mode === "production"
-      ? durableDesktopPathName(releaseName)
+      ? releaseName
       : mode === "development"
-        ? durableDesktopPathName(desktopApplicationName(false, releaseName))
-        : durableDesktopPathName("Opensteer Test");
+        ? desktopApplicationName(false, releaseName)
+        : "Opensteer Test";
   return path.join(appData, name);
 }
 
-/**
- * Mutable roots predate the display-name capitalization change. Keep their
- * original bytes so an update opens the same profile on case-sensitive disks
- * and durable manifests continue to name the same managed Workspace root.
- */
-function durableDesktopPathName(displayName: string): string {
-  return displayName.replace(/^Opensteer/u, `Open${"S"}teer`);
-}
-
 /** Source builds must never share Chromium or Keychain identity with a distributable app. */
-export function desktopApplicationName(packaged: boolean, releaseName: string): string {
-  // Electron derives its Safe Storage keychain service from this runtime name.
-  // Preserve the established spelling until credentials have been explicitly
-  // migrated; the bundle and every user-visible product surface use the new
-  // display name independently.
-  return durableDesktopPathName(packaged ? releaseName : "Opensteer Development");
+export function desktopApplicationName(
+  packaged: boolean,
+  releaseName: string,
+  mode: DesktopMode = "development",
+): string {
+  return packaged ? releaseName : mode === "test" ? "Opensteer Test" : "Opensteer Development";
 }
 
 function nativeCallbackIdentity(url: URL): string {

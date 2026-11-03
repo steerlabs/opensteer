@@ -37,24 +37,9 @@ const targetDirectory = path.join(desktopDirectory, "generated-resources");
 async function main(): Promise<void> {
   const targetOs = targetOperatingSystem();
   const targetArch = targetArchitecture();
-  const applicationChannel = releaseChannel(
-    requiredEnvironmentValue(
-      process.env,
-      "OPENSTEER_DESKTOP_RELEASE_CHANNEL",
-      "OPENSTEER_DESKTOP_RELEASE_CHANNEL is required for a Desktop release build.",
-    ),
-  );
   const releaseProfile = readEmbeddedDesktopRelease(
-    path.join(
-      desktopDirectory,
-      "src",
-      "releases",
-      applicationChannel === "beta" ? "desktop-release.beta.json" : "desktop-release.source.json",
-    ),
+    path.join(desktopDirectory, "src", "releases", "desktop-release.json"),
   );
-  if (releaseProfile.application.channel !== applicationChannel) {
-    throw new Error("Desktop release profile channel does not match the requested build channel.");
-  }
   const personalSource = path.resolve(
     requiredEnvironmentValue(
       process.env,
@@ -193,13 +178,7 @@ async function main(): Promise<void> {
         path.join(temporary, "desktop", "app-update.yml"),
         desktopAppUpdateYaml(stagedRelease.updates),
       );
-    await writeJson(path.join(temporary, "desktop", "release.json"), {
-      ...stagedRelease,
-      capabilities: {
-        ...releaseProfile.capabilities,
-        localAgents: true,
-      },
-    });
+    await writeJson(path.join(temporary, "desktop", "release.json"), stagedRelease);
 
     readEmbeddedDesktopRelease(path.join(temporary, "desktop", "release.json"));
 
@@ -537,13 +516,6 @@ async function stagePersonalRuntime(
     await copyFile(path.join(source, ...artifact.path.split("/")), destination);
     await setArtifactMode(destination, artifact.mode, operatingSystem);
   }
-}
-
-function releaseChannel(value: string): "beta" | "stable" {
-  if (value !== "beta" && value !== "stable") {
-    throw new Error("OPENSTEER_DESKTOP_RELEASE_CHANNEL must be beta or stable.");
-  }
-  return value;
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {

@@ -29,7 +29,7 @@ export default defineConfig([
         await copyFile(path.join("generated-resources", "desktop", "release.json"), releaseTarget);
       } else {
         const release = JSON.parse(
-          await readFile(path.join("src", "releases", "desktop-release.source.json"), "utf8"),
+          await readFile(path.join("src", "releases", "desktop-release.json"), "utf8"),
         ) as Record<string, unknown>;
         delete release.updates;
         await writeFile(releaseTarget, JSON.stringify(release, null, 2) + "\n");

@@ -16,7 +16,7 @@ export function passwordsBrokerBundleId(development: boolean): string {
 }
 
 /**
- * The canonical install root. Stable and Beta share the release one, as they
+ * The canonical install root. Desktop releases share the release one, as they
  * share the computer use helper's: one vault per Mac user, served by the
  * newest installed broker.
  */
