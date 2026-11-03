@@ -63,6 +63,7 @@ import {
   readPersonalRuntimeRelease,
 } from "../src/releases/personal-runtime-release.js";
 import { personalRuntimeLayout } from "./personal-runtime-layout.js";
+import { hostProcessEntries } from "../../host/src/process-entries.js";
 import { postgresReleaseVersion } from "./postgres-release-version.js";
 
 const {
@@ -177,11 +178,17 @@ async function main(): Promise<void> {
       ...(await timedNodeService(
         staging,
         "host",
-        path.join(repositoryRoot, "apps/host/src/main.ts"),
+        path.join(repositoryRoot, "apps/host", hostProcessEntries.main),
         {
           launcher: `${layout.hostLauncher}${executableSuffix}`,
           script: layout.hostScript,
         },
+        Object.fromEntries(
+          Object.entries(hostProcessEntries.workers).map(([worker, entry]) => [
+            worker,
+            path.join(repositoryRoot, "apps/host", entry),
+          ]),
+        ),
       )),
       ...(await timedNodeService(
         staging,
@@ -490,34 +497,15 @@ export async function stageNodeService(
   service: "browser-harness" | "channel-runtime" | "host" | "runner",
   entry: string,
   destination: { readonly launcher: string; readonly script: string },
+  /** Worker thread modules the service loads from beside its script, by name. */
+  workers: Readonly<Record<string, string>> = {},
 ): Promise<readonly StagedArtifact[]> {
-  const scriptPath = path.join(staging, ...destination.script.split("/"));
-  // Both resolve the native decoder staged beside them by `stageSharpRuntime`.
-  const loadsSharp = service === "host" || service === "runner";
-  await mkdir(path.dirname(scriptPath), { mode: 0o700, recursive: true });
-  await timePhase(`runtime.bundle.${service}`, () =>
-    build({
-      banner: {
-        js: "import{createRequire as __opensteerCreateRequire}from'node:module';const require=__opensteerCreateRequire(import.meta.url);",
-      },
-      bundle: true,
-      clean: false,
-      config: false,
-      entry: { [service]: entry },
-      external: [...unbundledOptionalDependencies, ...(loadsSharp ? ["sharp"] : [])],
-      format: ["esm"],
-      noExternal: [loadsSharp ? /^(?!sharp(?:$|\/)).*/u : /.*/u],
-      outDir: path.dirname(scriptPath),
-      outExtension: () => ({ js: ".mjs" }),
-      platform: "node",
-      silent: true,
-      sourcemap: false,
-      splitting: false,
-      target: "node24",
-      treeshake: false,
-    }),
+  await bundleNodeService(
+    path.join(staging, ...destination.script.split("/")),
+    service,
+    entry,
+    workers,
   );
-  await rename(path.join(path.dirname(scriptPath), `${service}.mjs`), scriptPath);
 
   const launcherDirectory = path.dirname(path.join(staging, ...destination.launcher.split("/")));
   await timePhase(`runtime.launcher.${service}`, () =>
@@ -541,8 +529,53 @@ export async function stageNodeService(
 
   return [
     { mode: "code", path: destination.script },
+    ...Object.keys(workers).map(
+      (worker) =>
+        ({
+          mode: "code",
+          path: path.posix.join(path.posix.dirname(destination.script), `${worker}.mjs`),
+        }) as const,
+    ),
     { mode: "executable", path: destination.launcher },
   ];
+}
+
+/**
+ * Bundle a service's entry into `scriptPath`, and each of its worker threads
+ * beside it as `<name>.mjs`, where the service loads them from.
+ */
+export async function bundleNodeService(
+  scriptPath: string,
+  service: "browser-harness" | "channel-runtime" | "host" | "runner",
+  entry: string,
+  workers: Readonly<Record<string, string>> = {},
+): Promise<void> {
+  // Both resolve the native decoder staged beside them by `stageSharpRuntime`.
+  const loadsSharp = service === "host" || service === "runner";
+  await mkdir(path.dirname(scriptPath), { mode: 0o700, recursive: true });
+  await timePhase(`runtime.bundle.${service}`, () =>
+    build({
+      banner: {
+        js: "import{createRequire as __opensteerCreateRequire}from'node:module';const require=__opensteerCreateRequire(import.meta.url);",
+      },
+      bundle: true,
+      clean: false,
+      config: false,
+      entry: { [service]: entry, ...workers },
+      external: [...unbundledOptionalDependencies, ...(loadsSharp ? ["sharp"] : [])],
+      format: ["esm"],
+      noExternal: [loadsSharp ? /^(?!sharp(?:$|\/)).*/u : /.*/u],
+      outDir: path.dirname(scriptPath),
+      outExtension: () => ({ js: ".mjs" }),
+      platform: "node",
+      silent: true,
+      sourcemap: false,
+      splitting: false,
+      target: "node24",
+      treeshake: false,
+    }),
+  );
+  await rename(path.join(path.dirname(scriptPath), `${service}.mjs`), scriptPath);
 }
 
 /** Sharp's JS and native libraries sit beside host.mjs and runner.mjs so Node's
