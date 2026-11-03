@@ -1234,40 +1234,57 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
-  it("forces supervised Bash through permission callbacks before native auto-allow", async () => {
-    const sdk = new FakeSdk((parameters) =>
-      generatedQuery(async function* () {
-        yield initMessage(providerSessionId(parameters.options));
-        yield successMessage(providerSessionId(parameters.options), "Done.");
-      }),
-    );
-    const { adapter, session } = await openSession(sdk, { accessMode: "approval-required" });
-    await send(session, "Run printf");
-    const hook = sdk.calls[0]?.options.hooks?.PreToolUse?.[0];
-    expect(hook?.matcher).toBe("Bash");
-    expect(
-      await hook?.hooks[0]?.(
+  it.each(["approval-required", "auto-accept-edits", "auto", "full-access"] as const)(
+    "configures native shell and edit approval boundaries in %s",
+    async (accessMode) => {
+      const sdk = new FakeSdk((parameters) =>
+        generatedQuery(async function* () {
+          yield initMessage(providerSessionId(parameters.options));
+          yield successMessage(providerSessionId(parameters.options), "Done.");
+        }),
+      );
+      const { adapter, session } = await openSession(sdk, { accessMode });
+      await send(session, "Run printf");
+      const hook = sdk.calls[0]?.options.hooks?.PreToolUse?.[0];
+      const supervised = accessMode === "approval-required" || accessMode === "auto-accept-edits";
+      expect(sdk.calls[0]?.options.permissionMode).toBe(
         {
-          hook_event_name: "PreToolUse",
-          session_id: "test",
-          transcript_path: "/tmp/test",
-          cwd: "/tmp",
-          tool_name: "Bash",
-          tool_input: { command: "printf PROBE" },
-          tool_use_id: "bash-1",
+          "approval-required": "default",
+          "auto-accept-edits": "acceptEdits",
+          auto: "auto",
+          "full-access": "bypassPermissions",
+        }[accessMode],
+      );
+      if (!supervised) {
+        expect(hook).toBeUndefined();
+        await adapter.close();
+        return;
+      }
+      expect(hook?.matcher).toBe("Bash");
+      expect(
+        await hook?.hooks[0]?.(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "test",
+            transcript_path: "/tmp/test",
+            cwd: "/tmp",
+            tool_name: "Bash",
+            tool_input: { command: "printf PROBE" },
+            tool_use_id: "bash-1",
+          },
+          "bash-1",
+          { signal: new AbortController().signal },
+        ),
+      ).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: "Opensteer requires approval for shell commands",
         },
-        "bash-1",
-        { signal: new AbortController().signal },
-      ),
-    ).toEqual({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "ask",
-        permissionDecisionReason: "Opensteer requires approval for shell commands",
-      },
-    });
-    await adapter.close();
-  });
+      });
+      await adapter.close();
+    },
+  );
 
   it.each(
     (["approval-required", "auto-accept-edits", "auto", "full-access"] as const).flatMap(
@@ -2318,9 +2335,9 @@ describe("Claude Agent SDK harness", () => {
   it.each(["privacy-mod", null])(
     "fails promptly for a focused plugin pane (%s)",
     async (plugin) => {
-      const sdk = new FakeSdk((parameters) =>
-        scriptedQuery([
-          initMessage(providerSessionId(parameters.options)),
+      let closed = false;
+      const sdk = new FakeSdk((parameters) => {
+        const held = blockingQuery(
           message({
             type: "system",
             subtype: "ui_panes",
@@ -2328,19 +2345,59 @@ describe("Claude Agent SDK harness", () => {
             focus_requested_id: "confirmation",
             panes: [{ id: "confirmation", ...(plugin ? { plugin } : {}) }],
           }),
-        ]),
-      );
+        );
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield initMessage(providerSessionId(parameters.options));
+            yield* held;
+          },
+          close() {
+            closed = true;
+            held.close();
+          },
+          interrupt: () => new Promise<void>(() => {}),
+        };
+      });
       const { adapter, session } = await openSession(sdk);
       const observer = observe(session.events);
       await send(session, "Hello");
       const failure = await observer.waitFor("run.failed");
       expect(failure.data.message).toContain(plugin ?? "confirmation");
       expect(failure.data.message).toContain("Claude Code terminal");
+      expect(closed).toBe(true);
       await session.stop();
       await observer.done;
       await adapter.close();
     },
   );
+
+  it("keeps passive plugin panes running", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        message({
+          type: "system",
+          subtype: "ui_invalidate",
+          session_id: providerSessionId(parameters.options),
+        }),
+        initMessage(providerSessionId(parameters.options)),
+        message({
+          type: "system",
+          subtype: "ui_panes",
+          session_id: providerSessionId(parameters.options),
+          panes: [{ id: "status", plugin: "passive-mod" }],
+        }),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Hello");
+    await observer.waitFor("run.completed");
+    expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
 
   it("rejects a plugin impersonating the synthetic Opensteer plugin", async () => {
     const sdk = new FakeSdk((parameters) =>

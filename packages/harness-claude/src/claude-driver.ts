@@ -2003,8 +2003,10 @@ class ClaudeHarnessSession implements HarnessSession {
       allowedTools: [...new Set(["ToolSearch", ...opensteerTools, ...integrationTools])],
       canUseTool: this.#canUseTool(active),
       // Native safe-command rules can allow Bash before canUseTool is consulted.
-      // SDK hooks remain active while managed settings disable ambient hooks.
-      ...(this.#context.accessMode === "approval-required"
+      // SDK hooks remain active while our settings suppress ordinary ambient hooks.
+      // Organization-managed policy and hooks can override these settings.
+      ...(this.#context.accessMode === "approval-required" ||
+      this.#context.accessMode === "auto-accept-edits"
         ? {
             hooks: {
               PreToolUse: [
@@ -2378,6 +2380,8 @@ class ClaudeHarnessSession implements HarnessSession {
     // Mods can hold a tool call until someone interacts with a terminal pane.
     // Close the query via the failure path; interrupt may never be acknowledged.
     const subtype: unknown = Reflect.get(message, "subtype");
+    // Plugin UI redraw notifications may precede init and need no host action.
+    if (message.type === "system" && subtype === "ui_invalidate") return;
     if (message.type === "system" && subtype === "ui_panes") {
       const paneId: unknown = Reflect.get(message, "focus_requested_id");
       if (typeof paneId === "string" && paneId.trim()) {
