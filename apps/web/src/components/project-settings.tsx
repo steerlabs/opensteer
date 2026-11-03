@@ -26,7 +26,7 @@ import { workspaceHealth, WorkspaceIcon } from "./home-view.js";
 import { Icon, type IconName } from "./icon.js";
 import { LoadingRows } from "./loading-rows.js";
 import { PageTopbar } from "./page-header.js";
-import { useHostRead } from "./use-host-read.js";
+import { useHostRead } from "@opensteer/client/react";
 import { WorkspaceNotificationMute } from "./workspace-notification-mute.js";
 import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
 import { AreaLink, useAreaNavigate } from "./workspace/area-link.js";

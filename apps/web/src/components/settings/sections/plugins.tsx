@@ -17,7 +17,7 @@ import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
 import { useToast } from "../../toast.js";
-import { useHostRead } from "../../use-host-read.js";
+import { useHostRead } from "@opensteer/client/react";
 import { WorkspaceOrb } from "../../workspace-orb.js";
 import { SectionHeader, SettingsError, type SettingsView } from "../primitives.js";
 
