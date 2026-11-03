@@ -204,6 +204,7 @@ it("rechecks Workspace deletion after waiting for an app's publication lock", as
       throw new OpensteerError({
         code: "workspace_unavailable",
         message: "Workspace is awaiting deletion",
+        reason: "workspace-deleting",
       });
     return admission(...args);
   });
@@ -254,6 +255,7 @@ it.each(["deleted", "deleting"])(
         throw new OpensteerError({
           code: "workspace_unavailable",
           message: "Workspace is awaiting deletion",
+          reason: "workspace-deleting",
         });
       return null;
     });

@@ -303,9 +303,7 @@ export class AppService {
       // Workspace admission refuses deleted or deleting apps before a tunnel is opened.
       if (
         error instanceof OpensteerError &&
-        (error.code === "not_found" ||
-          (error.code === "workspace_unavailable" &&
-            error.message === "Workspace is awaiting deletion"))
+        (error.code === "not_found" || error.reason === "workspace-deleting")
       )
         return this.#errorResponse(
           404,
