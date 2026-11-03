@@ -2095,6 +2095,12 @@ export interface DatabaseSchema {
   triggerOccurrences: TriggerOccurrenceTable;
   providerSessions: ProviderSessionTable;
   commands: CommandTable;
+  agentToolOperations: {
+    key: string;
+    inputFingerprint: string;
+    result: JsonColumn<Record<string, unknown> | null>;
+    createdAt: Generated<Timestamp>;
+  };
   agentControlRequests: AgentControlRequestTable;
   triggerControlRequests: TriggerControlRequestTable;
   workspaceEvents: WorkspaceEventTable;

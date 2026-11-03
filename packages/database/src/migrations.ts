@@ -4697,6 +4697,7 @@ export function migrationProvider() {
         "0143_specialist_threads": specialistThreadsMigration,
         "0144_project_chats": projectChatsMigration,
         "0145_specialist_lifecycle": specialistLifecycleMigration,
+        "0146_agent_tool_operations": agentToolOperationsMigration,
       };
     },
   };
@@ -7054,6 +7055,14 @@ export const specialistLifecycleMigration: Migration = {
       ALTER TABLE specialists ADD FOREIGN KEY(plugin_id) REFERENCES plugins(id) ON DELETE RESTRICT;
       ALTER TABLE specialists DROP CONSTRAINT specialists_plugin_id_plugin_version_id_fkey;
       ALTER TABLE specialists ADD FOREIGN KEY(plugin_id, plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE RESTRICT`.execute(
+      database,
+    );
+  },
+};
+
+const agentToolOperationsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE agent_tool_operations (key text PRIMARY KEY, input_fingerprint text NOT NULL CHECK (input_fingerprint ~ '^[0-9a-f]{64}$'), result jsonb, created_at timestamptz NOT NULL DEFAULT now())`.execute(
       database,
     );
   },
