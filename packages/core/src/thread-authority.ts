@@ -3,7 +3,7 @@ import type { Thread } from "./models.js";
 
 export type ReachThread = Pick<
   Thread,
-  "capabilityProfileId" | "lineageRootThreadId" | "workspaceId"
+  "inheritsMain" | "specialistId" | "lineageRootThreadId" | "workspaceId"
 >;
 
 export type ThreadReachScope =
@@ -12,11 +12,11 @@ export type ThreadReachScope =
   | { kind: "lineage"; lineageRootThreadId: ThreadId };
 
 export function threadReachScope(actor: ReachThread): ThreadReachScope {
-  if (actor.capabilityProfileId === "main") return { kind: "user" };
-  if (actor.capabilityProfileId === "workspace") {
-    return { kind: "workspace", workspaceId: actor.workspaceId };
+  if (actor.specialistId) {
+    return { kind: "lineage", lineageRootThreadId: actor.lineageRootThreadId };
   }
-  return { kind: "lineage", lineageRootThreadId: actor.lineageRootThreadId };
+  if (actor.inheritsMain) return { kind: "user" };
+  return { kind: "workspace", workspaceId: actor.workspaceId };
 }
 
 export function threadInReach(actor: ReachThread, target: ReachThread): boolean {
@@ -32,8 +32,11 @@ export function threadInReach(actor: ReachThread, target: ReachThread): boolean 
 }
 
 export function lineageCompatibleForReuse(
-  callerInheritsMain: boolean,
-  targetInheritsMain: boolean,
+  caller: Pick<ReachThread, "inheritsMain" | "specialistId">,
+  target: Pick<ReachThread, "inheritsMain" | "specialistId">,
 ): boolean {
-  return callerInheritsMain || !targetInheritsMain;
+  return (
+    (caller.inheritsMain || !target.inheritsMain) &&
+    (!caller.specialistId || caller.specialistId === target.specialistId)
+  );
 }

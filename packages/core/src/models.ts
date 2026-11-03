@@ -188,15 +188,6 @@ export type WorkspaceBacking = z.infer<typeof WorkspaceBackingSchema>;
 
 export type LocalWorkspaceBacking = Extract<WorkspaceBacking, { readonly kind: "local-directory" }>;
 
-export const AgentCapabilityProfileIdSchema = z.enum([
-  "main",
-  "workspace",
-  "delegated",
-  "specialist",
-  "trigger",
-]);
-export type AgentCapabilityProfileId = z.infer<typeof AgentCapabilityProfileIdSchema>;
-
 export const WorkspaceSchema = z.object({
   slug: z
     .string()
@@ -440,7 +431,8 @@ export const ThreadSchema = z.object({
    * and durable Thread events carry no such field.
    */
   askedAt: IsoDateTimeSchema.optional(),
-  capabilityProfileId: AgentCapabilityProfileIdSchema,
+  /** Immutable consent inherited from the lineage root, including withheld Main access. */
+  inheritsMain: z.boolean(),
   continuationIdentity: ProviderContinuationIdentitySchema.nullable(),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
