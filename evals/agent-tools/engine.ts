@@ -1,6 +1,12 @@
 import { cp, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createId, ModelSelectionSchema, type ModelSelection } from "@opensteer/core";
+import {
+  createId,
+  harnessRuntimeExpectedVersion,
+  ThreadIdSchema,
+  ModelSelectionSchema,
+  type ModelSelection,
+} from "@opensteer/core";
 import { platformGuideForRun } from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
@@ -21,16 +27,18 @@ import {
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../../apps/runner/src/skills/workspace-skills.js";
-import type { EvalCase } from "./cases.js";
+import { inputForCaseTurn, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
 import { fingerprint } from "./report.js";
+
+const claudeExecutable = process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude";
 
 // Adding an engine is one factory, with no replay prompt or native-tool copy.
 export const drivers: Record<"claude" | "codex", () => HarnessDriver> = {
   claude: () =>
     new ClaudeHarnessDriver({
-      executable: process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude",
+      executable: claudeExecutable,
       sdk: claudeAgentSdk,
       inspectExecutable: inspectClaudeExecutable,
     }),
@@ -38,6 +46,14 @@ export const drivers: Record<"claude" | "codex", () => HarnessDriver> = {
     new CodexHarnessDriver({ launch: { executable: packagedCodexExecutable(), arguments: [] } }),
 };
 export type Engine = keyof typeof drivers;
+
+/** Codex ships with Opensteer; Claude Code is the person's own install. */
+export async function engineVersion(engine: Engine): Promise<string> {
+  if (engine === "codex") return harnessRuntimeExpectedVersion("codex");
+  const inspected = await inspectClaudeExecutable(claudeExecutable, process.env);
+  if (inspected.status !== "available") throw new Error(inspected.detail);
+  return inspected.version;
+}
 export async function prepareEngine(
   root: string,
   engine: Engine,
@@ -194,27 +210,19 @@ export async function runEngine(input: {
       await session.execute({
         context: {
           assignment:
-            c.profile === "delegated"
+            (c.assigned ?? c.profile === "delegated")
               ? {
                   id: createId("delegation"),
-                  objective: c.turns[0]!,
+                  objective: typeof c.turns[0] === "string" ? c.turns[0] : c.turns[0]!.text,
                   origin: "run",
-                  parentThreadId: createId("thread"),
+                  parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
         },
         environment: p.environment,
-        inputs: [
-          {
-            author: { kind: "human", displayName: "Eval user", principalId: "eval" },
-            content: [{ type: "text", text: turn }],
-            createdAt: new Date().toISOString(),
-            kind: "input",
-            messageId: createId("message"),
-          },
-        ],
+        inputs: [inputForCaseTurn(turn)],
         reports: { messages: [], omittedCount: 0, throughSequence: null },
         runId: createId("run"),
         requestedBy: host.scope.requestedBy,

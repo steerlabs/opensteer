@@ -125,10 +125,10 @@ import {
 } from "./machine-store.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
-  publishPersonNotification,
-  type PersonNotificationInput,
-  type PersonNotificationResult,
-} from "./person-notification-store.js";
+  publishPersonMessage,
+  type PersonMessageInput,
+  type PersonMessageResult,
+} from "./person-message-store.js";
 import { RequestStore } from "./request-store.js";
 import { listRunAttempts } from "./run-attempts.js";
 import { type RevokedRunGrant } from "./run-grants.js";
@@ -1345,6 +1345,20 @@ export class OpensteerStore {
     return threadStore.ownerThreadPageForOwner(this.#database, input);
   }
 
+  /** The task a Run works on, if any: who assigned it and whether it is still open. */
+  async runAssignment(
+    runId: RunId,
+  ): Promise<{ readonly assignerThreadId: ThreadId; readonly open: boolean } | null> {
+    const row = await this.#database
+      .selectFrom("runs")
+      .innerJoin("delegations", "delegations.id", "runs.assignmentId")
+      .select(["delegations.parentThreadId", "delegations.status"])
+      .where("runs.id", "=", runId)
+      .whereRef("delegations.childThreadId", "=", "runs.threadId")
+      .executeTakeFirst();
+    return row ? { assignerThreadId: row.parentThreadId, open: row.status === "open" } : null;
+  }
+
   async getAssignment(id: AssignmentId): Promise<AssignmentView | null> {
     return threadStore.getAssignment(this.#database, id);
   }
@@ -2076,8 +2090,8 @@ export class OpensteerStore {
     return snapshotStore.taskPageForUser(this.#database, this.notificationState, input);
   }
 
-  publishPersonNotification(input: PersonNotificationInput): Promise<PersonNotificationResult> {
-    return publishPersonNotification(this.#database, input);
+  publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
+    return publishPersonMessage(this.#database, input);
   }
 
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {

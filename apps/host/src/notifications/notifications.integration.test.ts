@@ -383,7 +383,7 @@ integration("Notifications", () => {
               "queue",
               "home",
               "Reminder: buy groceries " +
-                toolCall("person_notify", { message: "Groceries milestone ready." }) +
+                toolCall("person_message", { message: "Groceries milestone ready." }) +
                 " [[reply Reminder: buy groceries]]",
             ),
             toolContractVersion: 2,
@@ -416,7 +416,7 @@ integration("Notifications", () => {
       received,
       since,
       (notification) => notification.body === "Groceries milestone ready.",
-      "Trigger-seeded person notification",
+      "Trigger-seeded person message",
     );
     const milestoneMessage = await stack.host.store.database
       .selectFrom("messages")
@@ -488,14 +488,14 @@ integration("Notifications", () => {
     await record("automation failure", since);
   }, 120_000);
 
-  it("alerts once for delegated work, from Chat's relay of its result", async () => {
+  it("refuses delegated person messages and alerts only through Chat's relay", async () => {
     const since = received.length;
     const trigger = await createTrigger(stack, {
       anchorThreadId: chat,
       name: "Morning summary",
       program: `export default async function ({ opensteer }) {
         await opensteer.callTool("thread_delegate", {
-          task: ${JSON.stringify("Summarize the inbox. " + toolCall("person_notify", { message: "Inbox milestone ready." }) + " [[reply Inbox summary ready.]]")},
+          task: ${JSON.stringify("Summarize the inbox. " + toolCall("person_message", { message: "Inbox milestone ready." }) + " [[reply Inbox summary ready.]]")},
           title: "Inbox summary",
           workspaceId: ${JSON.stringify(stack.mainWorkspaceId)},
         });
@@ -503,25 +503,25 @@ integration("Notifications", () => {
       source: { kind: "webhook" },
     });
     await runTrigger(stack, trigger);
-    const taskReply = await waitForReplyIn(stack, "Inbox summary", "Inbox summary ready.");
-    const milestone = await waitForNotification(
-      received,
-      since,
-      (notification) => notification.body === "Inbox milestone ready.",
-      "delegated person notification",
-    );
-    const addressed = await stack.host.store.database
+    const taskReply = await waitForReplyIn(stack, "Inbox summary", "Tool person_message failed:");
+    const taskThread = await stack.host.store.database
       .selectFrom("messages")
-      .innerJoin("runs", "runs.id", "messages.runId")
-      .select(["messages.addressedToUserId", "runs.requestedBy", "runs.assignmentId"])
-      .where("messages.id", "=", milestone.messageId!)
+      .select("threadId")
+      .where("id", "=", taskReply)
       .executeTakeFirstOrThrow();
-    expect(addressed.assignmentId).not.toBeNull();
-    expect(addressed.addressedToUserId).toBe(addressed.requestedBy);
+    expect(
+      await stack.host.store.database
+        .selectFrom("messages")
+        .select("id")
+        .where("threadId", "=", taskThread.threadId)
+        .where("addressedToUserId", "is not", null)
+        .execute(),
+    ).toEqual([]);
+    expect(received.slice(since).filter((n) => n.body === "Inbox milestone ready.")).toEqual([]);
 
     // The task's result arrives in Chat as a continuation; Chat's reply to it
     // is the one alert, and the task's own reply alerts nobody.
-    const result = await waitForMessage(stack, chat, "Inbox summary ready.", 30_000);
+    const result = await waitForMessage(stack, chat, "Tool person_message failed:", 30_000);
     const relayRun = await waitFor(
       async () =>
         (

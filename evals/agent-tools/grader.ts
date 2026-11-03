@@ -29,6 +29,8 @@ export function grade(
   expect: EvalCase["expect"],
   calls: readonly RecordedCall[],
   finalText: string,
+  assistantText: string = finalText,
+  earlierText: string = "",
 ): Check[] {
   const valid = calls.filter((call) => call.valid);
   const checks: Check[] = [];
@@ -52,10 +54,13 @@ export function grade(
     add(`minCalls:${name}`, valid.filter((c) => toolMatches(c.tool, name)).length >= count);
   for (const [name, count] of Object.entries(expect.maxCalls))
     add(`maxCalls:${name}`, calls.filter((c) => toolMatches(c.tool, name)).length <= count);
+  if (expect.noAssistantText) add("noAssistantText", assistantText.length === 0);
   for (const pattern of expect.textMust)
     add(`textMust:${pattern}`, new RegExp(pattern, "u").test(finalText));
   for (const pattern of expect.textMustNot)
     add(`textMustNot:${pattern}`, !new RegExp(pattern, "u").test(finalText));
+  for (const pattern of expect.earlierTextMust)
+    add(`earlierTextMust:${pattern}`, new RegExp(pattern, "u").test(earlierText));
   add("maxInvalidCalls", calls.filter((c) => !c.valid).length <= expect.maxInvalidCalls);
   return checks;
 }

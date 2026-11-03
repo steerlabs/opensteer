@@ -17,7 +17,7 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
-  PersonNotifyMessageSchema,
+  PersonMessageSchema,
   PersonShowTargetSchema,
   PlaceContentPartSchema,
   RequestIdSchema,
@@ -220,9 +220,9 @@ const AgentControlRequestUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.message"),
   }),
   z.strictObject({
-    type: z.literal("person.notify"),
+    type: z.literal("person.message"),
     requestId: z.uuid(),
-    message: PersonNotifyMessageSchema,
+    message: PersonMessageSchema,
   }),
   z.strictObject({
     ...requestBase,
@@ -588,7 +588,7 @@ const AgentControlResponseUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.message.result"),
   }),
   z.strictObject({
-    type: z.literal("person.notify.result"),
+    type: z.literal("person.message.result"),
     requestId: z.uuid(),
     messageId: MessageIdSchema,
   }),
