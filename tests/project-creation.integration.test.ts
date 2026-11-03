@@ -1,4 +1,4 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { createTestWorkspace } from "../packages/database/src/workspace-fixture.test-support.js";
 import { mkdtemp, rm, mkdir, symlink, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

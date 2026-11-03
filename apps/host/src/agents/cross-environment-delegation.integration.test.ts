@@ -2911,9 +2911,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       readonly workspaceId?: WorkspaceId;
     },
   ) {
+    const workspace = input.workspaceId ? await store.getWorkspace(input.workspaceId) : null;
+    const environmentId = input.environmentId ?? workspace?.backing.ownerEnvironmentId;
     const response = await service.handle(token, {
       requestId: randomUUID(),
       type: "thread.delegate",
+      ...(environmentId ? { environmentId } : {}),
       ...input,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected a delegate result");
