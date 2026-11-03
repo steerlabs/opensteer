@@ -293,7 +293,12 @@ const ScheduleRow = memo(function ScheduleRow(props: ScheduleRowProps): ReactNod
   return (
     <Pressable
       accessibilityHint="Opens this schedule"
-      accessibilityLabel={[item.name, item.timing, when, `Runs in ${item.anchor.title}`]
+      accessibilityLabel={[
+        item.name,
+        item.timing,
+        when,
+        `Runs in ${item.systemRole ? "Findings through Chat" : item.anchor.title}`,
+      ]
         .filter((part) => part !== null)
         .join(". ")}
       accessibilityRole="button"
@@ -311,7 +316,11 @@ const ScheduleRow = memo(function ScheduleRow(props: ScheduleRowProps): ReactNod
       </View>
       <View style={styles.words}>
         <AppText numberOfLines={2} role="bodyMedium">
-          {item.name}
+          {item.systemRole === "memory-light"
+            ? "Light memory pass"
+            : item.systemRole === "memory-nightly"
+              ? "Nightly memory pass"
+              : item.name}
         </AppText>
         <AppText numberOfLines={2} role="caption" tone="muted">
           {item.timing}
@@ -329,7 +338,7 @@ const ScheduleRow = memo(function ScheduleRow(props: ScheduleRowProps): ReactNod
           )}
           <AnchorMark anchor={item.anchor} size={16} />
           <AppText numberOfLines={1} role="caption" style={styles.anchor} tone="muted">
-            {item.anchor.title}
+            {item.systemRole ? "Findings through Chat" : item.anchor.title}
           </AppText>
         </View>
       </View>
@@ -349,6 +358,7 @@ function sameRowProps(left: ScheduleRowProps, right: ScheduleRowProps): boolean 
     new Date(left.now).toDateString() === new Date(right.now).toDateString() &&
     a.id === b.id &&
     a.name === b.name &&
+    a.systemRole === b.systemRole &&
     a.status === b.status &&
     a.statusWord === b.statusWord &&
     a.pauseReason === b.pauseReason &&

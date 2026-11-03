@@ -194,6 +194,8 @@ function AutomationView({
   const navigate = useAreaNavigate();
   const toast = useToast();
   const { trigger } = detail;
+  const managed = trigger.systemRole != null;
+  const worker = detail.anchorThread;
   const summary = summaryOf(detail);
   const shape = automationShape(detail.revision.source);
   const archived = trigger.status === "archived";
@@ -312,22 +314,37 @@ function AutomationView({
 
   const canResume = trigger.status === "paused" && !(shape === "once" && elapsed);
   const canPause = trigger.status === "active" && shape !== "once";
-  const canRun = shape !== "watch";
+  const canRun = !managed && shape !== "watch";
 
   return (
     <>
       <PageHeader
         back={<BackToAutomations />}
-        description={statusSentence({ detail, machine, now, problem, shape })}
-        title={trigger.name}
+        description={
+          managed
+            ? trigger.systemRole === "memory-light"
+              ? "Checks what’s new and tells Chat when something matters."
+              : "Tidies memory and prepares tomorrow. Findings reach you through Chat."
+            : statusSentence({ detail, machine, now, problem, shape })
+        }
+        title={
+          managed
+            ? trigger.systemRole === "memory-light"
+              ? "Light memory pass"
+              : "Nightly memory pass"
+            : trigger.name
+        }
       />
 
+      {managed && trigger.pauseReason ? <p className="notice">{trigger.pauseReason}</p> : null}
       {webhook ? <WebhookReady webhook={webhook} /> : null}
 
-      {problem ? (
+      {problem && (!managed || worker || homeThreadId) ? (
         <ProblemNotice
-          conversation={conversation}
-          conversationTitle={conversationTitle}
+          conversation={
+            managed && homeThreadId ? conversationPath(homeThreadId, homeThreadId) : conversation
+          }
+          conversationTitle={managed && homeThreadId ? "Chat" : conversationTitle}
           detail={detail}
           problem={problem}
         />
@@ -344,6 +361,25 @@ function AutomationView({
               type="button"
             >
               <Icon name="clock" /> Change time
+            </button>
+          ) : null}
+          {managed && worker && (worker.doneAt || worker.inputQueuePaused) ? (
+            <button
+              className="btn btn--small"
+              disabled={pending}
+              type="button"
+              onClick={() =>
+                void act(async () => {
+                  if (worker.doneAt) await client.setTaskDone(worker.id, false);
+                  else await client.resumeThreadInputQueue(worker.id);
+                  await refresh();
+                  return worker.doneAt
+                    ? "Worker reopened. Resume the memory pass when ready."
+                    : "Worker resumed";
+                })
+              }
+            >
+              {worker.doneAt ? "Reopen worker" : "Resume worker"}
             </button>
           ) : null}
           {canResume ? (
@@ -376,16 +412,18 @@ function AutomationView({
               Pause
             </button>
           ) : null}
-          <button
-            aria-haspopup="dialog"
-            className="btn btn--small btn--ghost btn--danger"
-            disabled={pending}
-            onClick={() => setConfirmingDelete(true)}
-            ref={deleteRef}
-            type="button"
-          >
-            Delete
-          </button>
+          {managed ? null : (
+            <button
+              aria-haspopup="dialog"
+              className="btn btn--small btn--ghost btn--danger"
+              disabled={pending}
+              onClick={() => setConfirmingDelete(true)}
+              ref={deleteRef}
+              type="button"
+            >
+              Delete
+            </button>
+          )}
           {confirmingDelete && deleteRef.current ? (
             <Popover
               anchor={deleteRef.current}
@@ -441,11 +479,19 @@ function AutomationView({
         <div className="automation-facts__row">
           <dt>Conversation</dt>
           <dd>
-            <AreaLink className="automation-facts__link" to={conversation}>
-              <Icon name="message" />
-              {conversationTitle}
-            </AreaLink>
-            <span className="automation-facts__note">Where it runs and talks to you</span>
+            {!managed || worker ? (
+              <AreaLink className="automation-facts__link" to={conversation}>
+                <Icon name="message" />
+                {worker?.title ?? conversationTitle}
+              </AreaLink>
+            ) : (
+              <span>Worker unavailable</span>
+            )}
+            <span className="automation-facts__note">
+              {managed
+                ? "Runs here; findings reach you through Chat"
+                : "Where it runs and talks to you"}
+            </span>
           </dd>
         </div>
         {machine ? (
@@ -872,7 +918,7 @@ function Advanced({
             {revision.program.language === "typescript" ? "TypeScript" : "JavaScript"} program,
             version {revision.ordinal}
           </span>
-          {archived ? null : (
+          {archived || detail.trigger.systemRole != null ? null : (
             <AreaLink
               className="btn btn--small"
               to={`/automations/${encodeURIComponent(detail.trigger.id)}/edit`}
@@ -966,7 +1012,7 @@ export function triggerRunLifecycleSignature(
       .map(({ id, status, threadId }) => ({ id, status, threadId }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     threads: snapshot.threads
-      .map(({ id, status }) => ({ id, status }))
+      .map(({ id, status, doneAt, inputQueuePaused }) => ({ id, status, doneAt, inputQueuePaused }))
       .sort((left, right) => left.id.localeCompare(right.id)),
   });
 }

@@ -2,8 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId, type Request } from "@opensteer/core";
+import { createId, WaitingRequestSchema, type Request, type WaitingRequest } from "@opensteer/core";
 import { MemoryRouter } from "react-router";
+import { mockTmdbProposal } from "@opensteer/client/mock";
 import { InputSurface } from "./input-surface.js";
 
 const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
@@ -52,9 +53,11 @@ const shell = vi.hoisted(() => ({
       },
     ],
     browserSessions: [],
+    activeTasks: [],
+    workspaceTasks: {},
     threads: [{ id: "thread", workspaceId: "workspace" }],
     user: { id: "viewer", instanceRole: "administrator" },
-    waitingRequests: [],
+    waitingRequests: [] as WaitingRequest[],
     workspaceWindow: { hasMore: false, itemCount: 1 },
     workspaces: [{ id: "workspace", kind: "main", name: "Main" }],
   },
@@ -68,6 +71,7 @@ afterEach(() => {
   act(() => root.unmount());
   document.body.replaceChildren();
   shell.hostClient.dispatch.mockClear();
+  shell.snapshot.waitingRequests = [];
 });
 
 function request(presentation: Request["presentation"]): Request {
@@ -285,3 +289,67 @@ describe("request surface connectivity", () => {
     expect(field.value).toBe("Still my draft");
   });
 });
+
+it.each(["live", "durable"] as const)(
+  "docks an unassigned hidden worker’s %s Request on Chat and answers its Request",
+  async (mode) => {
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    const approval = {
+      ...request({
+        kind: "choice",
+        options: [{ id: "allow", hint: "allow-once", label: "Allow once" }],
+        risk: "medium",
+        title: "Read memory source?",
+      }),
+      mode,
+      ...(mode === "durable"
+        ? {
+            kind: "integration.install" as const,
+            payload: {
+              kind: "integration.install" as const,
+              reason: "Keep this source",
+              manifest: mockTmdbProposal.manifest,
+            },
+          }
+        : {}),
+    };
+    const chatId = createId("thread");
+    shell.snapshot.waitingRequests = [
+      WaitingRequestSchema.parse({
+        assignments: [],
+        subagent: null,
+        presentation: {
+          threadId: chatId,
+          workerThread: { id: approval.originatingThreadId, title: "Light memory worker" },
+        },
+        request: approval,
+      }),
+    ];
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Ask anything…"
+            requests={[]}
+            running={false}
+            threadId={chatId}
+          />
+        </MemoryRouter>,
+      ),
+    );
+    expect(node.textContent).toContain("Light memory worker");
+    expect(node.textContent).toContain("Read memory source?");
+    expect(node.querySelector(`a[href="/threads/${approval.originatingThreadId}"]`)).not.toBeNull();
+    await act(async () =>
+      [...node.querySelectorAll("button")]
+        .find((b) => b.textContent?.includes("Allow once"))!
+        .click(),
+    );
+    expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "request.respond", requestId: approval.id }),
+    );
+  },
+);

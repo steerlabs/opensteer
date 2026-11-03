@@ -31,6 +31,7 @@ import {
   mutationIdempotencyKey,
   requestsWaitingOn,
   waitingRequestSource,
+  waitingRequestPresentationSource,
   type HostSnapshot,
   type NodeEntry,
   type SurfaceModel,
@@ -236,14 +237,17 @@ export function useDockedRequests(
       const surface = deriveSurface([entry.request], user);
       if (!surface) continue;
       const task = waitingRequestSource(entry, threadId);
+      const worker = waitingRequestPresentationSource(entry, threadId);
       docked.push({
-        source: task
-          ? {
-              threadId: task.workerThread.id,
-              title: assignmentTitle(task, snapshot),
-              mark: threadMark(task.workerThread.id, snapshot),
-            }
-          : null,
+        source: worker
+          ? { threadId: worker.id, title: worker.title, mark: threadMark(worker.id, snapshot) }
+          : task
+            ? {
+                threadId: task.workerThread.id,
+                title: assignmentTitle(task, snapshot),
+                mark: threadMark(task.workerThread.id, snapshot),
+              }
+            : null,
         surface,
       });
     }
