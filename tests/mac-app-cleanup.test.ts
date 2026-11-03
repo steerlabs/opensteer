@@ -11,14 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { cleanupMacApp } from "../scripts/release-beta-mac.js";
+import { cleanupMacApp } from "../scripts/release-mac.js";
 import { acquireReleaseLock, runBounded } from "../scripts/command-runner.js";
 
 // Real filesystem and kernel-lock collaborators guard deletion boundaries;
 // Python startup makes these integration checks exceed the 100 ms unit budget.
 it("removes all owned copies only after success, preserves unknown names, and skips a live lock", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "opensteer-app-cleanup-"));
-  const app = path.join(root, "Opensteer Beta.app");
+  const app = path.join(root, "Opensteer.app");
   const revision = "a".repeat(40);
   const target = {
     id: "local",
@@ -51,10 +51,7 @@ it("removes all owned copies only after success, preserves unknown names, and sk
       await unlock();
     }
     await cleanupMacApp(target, context);
-    expect((await readdir(root)).sort()).toEqual([
-      "Opensteer Beta.app",
-      "Opensteer Beta.app.install.lock",
-    ]);
+    expect((await readdir(root)).sort()).toEqual(["Opensteer.app", "Opensteer.app.install.lock"]);
 
     const unknown = `${app}.${revision}.previous.kept`;
     await mkdir(unknown);

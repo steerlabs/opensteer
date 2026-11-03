@@ -69,8 +69,15 @@ APK receipts and release.json bind version to exact source.
 
 ### Stable promotion
 
-Stable rebuilds an already published insider's exact source with the same numeric
-version and its distinct stable bundle identity. Tag, target and release.json
+Promotion verifies every insider asset, launch evidence, signature, team, staple
+and Gatekeeper. It refuses versions at or below the published Stable head and
+binds publication to the independently verified insider ZIP hash. Matching drafts
+are reused; incomplete or mismatched drafts fail closed. Promotion has no signing
+environment or secrets.
+
+Stable promotes an already published insider by copying the byte-identical ZIP
+and blockmap without rebuilding, signing or notarizing again. The one app identity
+is `Opensteer.app` / `com.opensteer.opensteer` on both update channels. Tag, target and release.json
 must agree; exact-source push CI and the latest completed full main CI must be
 green and include the source on first-parent main. Tim approves only publication
 of the verified draft via the `publish` environment. Matching drafts are reused;
@@ -135,8 +142,7 @@ credential operations himself; agents never read or operate on key material.
 The environment variables are `APPLE_TEAM_ID=B47U2LLKHW` and
 `OPENSTEER_AGENT_PHONE_KEY_ALIAS=opensteer-agent-phone`. Update the alias only
 when re-exporting the same permanent signing key under a new alias. Passwords
-uses `com.opensteer.passwords` on both channels; neither Beta's main app nor the
-broker requires a separate Beta provisioning profile under the current
+uses `com.opensteer.passwords` on both channels; the main app does not require a channel-specific provisioning profile under the current
 entitlement contract.
 
 Tim prepares private files locally, then replaces secrets using stdin. These
@@ -171,7 +177,7 @@ printing it, and always deletes those files and its temporary keychain.
 
 ## Public Mac download
 
-Prepare verifies bundle/channel identity, source, numeric version, arm64 executable,
+Prepare verifies the channel-neutral bundle identity, source, numeric version, arm64 executable,
 Developer ID team/signature, notarization, Gatekeeper and embedded updater policy.
 Draft tags target the built source, never current main. Identical draft bytes may
 be reused; differing bytes fail. Publication verifies every asset before changing
@@ -195,6 +201,14 @@ be published to the public repository. YAML asset URLs remain filenames because
 the GitHub provider derives paths from its embedded host.
 
 ## Automatic updates
+
+Stable and Beta are settings in the same app, with the same Account and Connect
+capabilities at `accounts.opensteer.com` and portal `app.opensteer.com`. Fresh
+installs default to Stable, including insider downloads. Choose Beta in Settings
+to follow insiders. Switching back never downgrades: an installed newer version
+waits for Stable to pass it. With no Stable release the app says so explicitly.
+Channel selection is refused during download or staging and checks immediately
+after selection.
 
 Packaged Mac arm64 releases use electron-updater 6.8.11 with the GitHub
 provider. Stable uses channel `latest`, tag `desktop-vX.Y.Z`, and GitHub Latest;
@@ -254,26 +268,9 @@ secure timestamps, reviewed entitlements, accepted notarization and a validated
 staple/Gatekeeper assessment. Passwords also requires its matching provisioning
 profile; see [SIGNING.md](../apps/desktop/SIGNING.md#passwords-provisioning-and-distribution).
 
-## Stable channel without an Account
-
-The public stable Mac download is Opensteer (`com.opensteer.opensteer`). Its signed
-release policy sets `capabilities.connect: false` and omits `accountUrl` and
-`portalUrl`: the public Account service is not available yet. It must not contact
-`accounts.opensteer.com` or `accounts.beta.opensteer.com`. Beta keeps Connect and
-its staging Account unchanged.
-
-The app runs a Personal Host, agents, files, browser sessions and Passwords on the
-Mac without an Account. Private network HTTPS access and one-use pairing codes
-remain available, as does adding a self-hosted server with its own sign-in.
-Account sign-in, directory discovery/adoption, Opensteer Cloud, Connect and phone
-push from this Mac are unavailable. Desktop notifications still work. Managed
-integration OAuth and hosted callback relays are unavailable; API keys and your
-own OAuth apps work where the provider accepts the deployment's callback URL.
-OAuth release identity remains required for Host-native sign-in.
-
 ## Account service
 
-The Beta's Account service (`accounts.beta.opensteer.com`) ships from the `account`
+The Account service (`accounts.opensteer.com`) ships from the `account`
 job in [release.yml](../.github/workflows/release.yml) on every eligible main push,
 after the insider preflight and before that insider publishes, so a Beta never
 reaches people ahead of the Account it may depend on. A failed rollout blocks the

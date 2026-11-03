@@ -44,7 +44,7 @@ const targetSchema = z
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9@._-]*$/u)
       .optional(),
     stagingDirectory: absolutePath,
-    applicationPath: absolutePath.refine((value) => path.basename(value) === "Opensteer Beta.app"),
+    applicationPath: absolutePath.refine((value) => path.basename(value) === "Opensteer.app"),
     runtimeStatusUrl: z
       .url()
       .refine((value) => {
@@ -270,23 +270,23 @@ function onTarget(
     : execute(context, executable, args, timeoutMs);
 }
 function artifactPath(context: MacContext) {
-  return path.join(context.stateDirectory, "Opensteer Beta.zip");
+  return path.join(context.stateDirectory, "Opensteer.zip");
 }
 function artifactAppPath(context: MacContext) {
-  return path.join(context.stateDirectory, "signed-app", "Opensteer Beta.app");
+  return path.join(context.stateDirectory, "signed-app", "Opensteer.app");
 }
 function appManifestPath(context: MacContext) {
   return path.join(context.stateDirectory, "app-tree.json");
 }
 function submissionArchive(context: MacContext) {
-  return path.join(context.stateDirectory, "Opensteer Beta.submit.zip");
+  return path.join(context.stateDirectory, "Opensteer.submit.zip");
 }
 function appPath(config: BuildConfig, context: MacContext) {
   return path.join(
     context.sourceDirectory,
-    "apps/desktop/release/beta",
+    "apps/desktop/release",
     config.architecture === "arm64" ? "mac-arm64" : "mac",
-    "Opensteer Beta.app",
+    "Opensteer.app",
   );
 }
 function configDigest(config: BuildConfig) {
@@ -459,11 +459,7 @@ async function preflightBuild(config: BuildConfig, context: MacContext) {
   };
 }
 
-export async function buildSignedMac(
-  config: BuildConfig,
-  context: MacContext,
-  channel: "beta" | "stable" = "beta",
-) {
+export async function buildSignedMac(config: BuildConfig, context: MacContext) {
   const started = Date.now();
   await requireCoordinatorPackaging(context);
   if (
@@ -480,7 +476,6 @@ export async function buildSignedMac(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     OPENSTEER_DESKTOP_RELEASE: "1",
-    OPENSTEER_DESKTOP_RELEASE_CHANNEL: channel,
     OPENSTEER_DESKTOP_TARGET_ARCH: config.architecture,
     OPENSTEER_DESKTOP_DEFER_NOTARIZATION: "1",
     OPENSTEER_RELEASE_VERSION: context.identity.version,
@@ -615,10 +610,7 @@ export async function buildSignedMac(
     45 * 60_000,
     env,
   );
-  const builtApp =
-    channel === "beta"
-      ? appPath(config, context)
-      : path.join(context.sourceDirectory, "apps/desktop/release/mac-arm64/Opensteer.app");
+  const builtApp = appPath(config, context);
   const packagedRuntime = await readPersonalRuntimeRelease(
     path.join(builtApp, "Contents/Resources/personal-runtime"),
     { architecture: config.architecture, operatingSystem: "darwin" },
@@ -628,7 +620,7 @@ export async function buildSignedMac(
     (await hashFile(path.join(personalRuntimeSource, "release.json")))
   )
     throw new Error("Packaged Personal runtime differs from the built runtime");
-  await verifySignedBundle(config.targets[0], builtApp, config, context, channel);
+  await verifySignedBundle(config.targets[0], builtApp, config, context);
   const phone = z
     .object({ apkSha256: digest, manifestSha256: digest })
     .parse(
@@ -812,13 +804,9 @@ async function verifySignedBundle(
   app: string,
   config: BuildConfig,
   context: MacContext,
-  channel: "beta" | "stable" = "beta",
 ) {
   for (const [key, expected] of [
-    [
-      "CFBundleIdentifier",
-      channel === "beta" ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer",
-    ],
+    ["CFBundleIdentifier", "com.opensteer.opensteer"],
     ["CFBundleShortVersionString", context.identity.version],
     ["CFBundleVersion", context.identity.version],
     ["OpensteerSourceRevision", context.identity.sourceRevision],
@@ -965,14 +953,14 @@ async function stageArtifact(
     const directory = path.join(target.stagingDirectory, context.identity.sourceRevision);
     if (local && state.appTreeSha256) {
       await onTarget(context, target, "/bin/mkdir", ["-p", directory]);
-      const staged = path.join(directory, "Opensteer Beta.app");
+      const staged = path.join(directory, "Opensteer.app");
       await copyMacApp(artifactAppPath(context), staged, context);
       await verify(target, staged, config, context);
       if (!state.staged.includes(target.id)) state.staged.push(target.id);
       await save(context, state, local);
       continue;
     }
-    const zip = path.join(directory, "Opensteer Beta.zip");
+    const zip = path.join(directory, "Opensteer.zip");
     if (state.staged.includes(target.id)) {
       const stagedDigest = (await onTarget(context, target, "/usr/bin/shasum", ["-a", "256", zip]))
         .trim()
@@ -981,7 +969,7 @@ async function stageArtifact(
         throw new Error(
           `Previously staged archive digest differs on ${target.id}; retained for investigation`,
         );
-      await verify(target, path.join(directory, "Opensteer Beta.app"), config, context);
+      await verify(target, path.join(directory, "Opensteer.app"), config, context);
       continue;
     }
     await onTarget(context, target, "/bin/mkdir", ["-p", directory]);
@@ -1006,7 +994,7 @@ async function stageArtifact(
     )
       throw new Error(`Transferred archive digest differs on ${target.id}`);
     await onTarget(context, target, "/usr/bin/ditto", ["-x", "-k", zip, directory], 300_000);
-    await verify(target, path.join(directory, "Opensteer Beta.app"), config, context);
+    await verify(target, path.join(directory, "Opensteer.app"), config, context);
     if (!state.staged.includes(target.id)) state.staged.push(target.id);
     await save(context, state, local);
   }
@@ -1031,7 +1019,7 @@ async function recordRollback(target: Target, context: MacContext, state: Receip
   const output = await onTarget(context, target, "/bin/sh", [
     "-c",
     'set -eu; bundle=$1; if [ -d "$bundle" ] && [ ! -L "$bundle" ]; then printf "present\\n"; for key in CFBundleShortVersionString OpensteerSourceRevision; do value=; if [ -f "$bundle/Contents/Info.plist" ]; then value=$(/usr/libexec/PlistBuddy -c "Print :$key" "$bundle/Contents/Info.plist" 2>/dev/null) || value=; fi; printf "%s\\n" "$value"; done; fi',
-    "release-beta-rollback-identity",
+    "release-mac-rollback-identity",
     backup,
   ]);
   const [present, version, sourceRevision] = output.trimEnd().split("\n");
@@ -1061,7 +1049,7 @@ export async function cleanupMacApp(target: Target, context: MacContext) {
       [
         "-c",
         script,
-        "release-beta-cleanup",
+        "release-mac-cleanup",
         target.applicationPath,
         context.identity.sourceRevision,
         !target.sshHost && context.heldApplicationLock === `${target.applicationPath}.install.lock`
@@ -1122,7 +1110,7 @@ async function installTargets(config: BuildConfig, context: MacContext, local: b
     const staged = path.join(
       target.stagingDirectory,
       context.identity.sourceRevision,
-      "Opensteer Beta.app",
+      "Opensteer.app",
     );
     await verify(target, staged, config, context);
     const prepared = `${target.applicationPath}.${context.identity.sourceRevision}.next`;
@@ -1136,7 +1124,7 @@ async function installTargets(config: BuildConfig, context: MacContext, local: b
         [
           "-c",
           'set -eu; staged=$1; next=$2; if [ -L "$next" ]; then echo "Prepared application cannot be a symlink" >&2; exit 1; fi; if [ ! -e "$next" ]; then /usr/bin/ditto "$staged" "$next"; fi; test -d "$next"',
-          "release-beta-prepare",
+          "release-mac-prepare",
           staged,
           prepared,
         ],
@@ -1182,7 +1170,7 @@ async function installTargets(config: BuildConfig, context: MacContext, local: b
       );
       const reason = failure
         ? `Graceful quit failed: ${failure}`
-        : "Opensteer Beta did not quit within two minutes";
+        : "Opensteer did not quit within two minutes";
       throw new Error(
         `${reason} on ${target.id}; live PID(s): ${running.map((line) => line.trim().split(/\s/u)[0]).join(", ")}. The original app and prepared copy are retained. Diagnostics: ${diagnostic}`,
         { cause },
@@ -1210,7 +1198,7 @@ async function installTargets(config: BuildConfig, context: MacContext, local: b
         if (now() >= deadline) await quitFailure();
         if (!announced) {
           process.stdout.write(
-            `Waiting for Opensteer Beta to finish quitting on ${target.id}. The original installation is retained; waiting is bounded to two minutes.\n`,
+            `Waiting for Opensteer to finish quitting on ${target.id}. The original installation is retained; waiting is bounded to two minutes.\n`,
           );
           announced = true;
         }
@@ -1236,8 +1224,8 @@ async function installTargets(config: BuildConfig, context: MacContext, local: b
       "/bin/sh",
       [
         "-c",
-        'set -eu; app=$1; next=$2; backup=$3; test -d "$next"; test ! -L "$next"; test ! -L "$app"; test ! -L "$backup"; if /bin/ps -axo command= | /usr/bin/grep -F "$app/Contents/MacOS/" | /usr/bin/grep -v grep >/dev/null; then echo "Quit Opensteer Beta before installation" >&2; exit 1; fi; if [ -e "$app" ]; then if [ -e "$backup" ]; then echo "Retained backup and installed bundle both exist; reconcile installation before resume" >&2; exit 1; fi; /bin/mv "$app" "$backup"; fi; /bin/mv "$next" "$app"',
-        "release-beta-install",
+        'set -eu; app=$1; next=$2; backup=$3; test -d "$next"; test ! -L "$next"; test ! -L "$app"; test ! -L "$backup"; if /bin/ps -axo command= | /usr/bin/grep -F "$app/Contents/MacOS/" | /usr/bin/grep -v grep >/dev/null; then echo "Quit Opensteer before installation" >&2; exit 1; fi; if [ -e "$app" ]; then if [ -e "$backup" ]; then echo "Retained backup and installed bundle both exist; reconcile installation before resume" >&2; exit 1; fi; /bin/mv "$app" "$backup"; fi; /bin/mv "$next" "$app"',
+        "release-mac-install",
         target.applicationPath,
         prepared,
         backup,
@@ -1258,7 +1246,7 @@ async function installTargets(config: BuildConfig, context: MacContext, local: b
         [
           "-c",
           'set -eu; app=$1; next=$2; backup=$3; test ! -L "$app"; test ! -L "$next"; test ! -L "$backup"; if /bin/ps -axo command= | /usr/bin/grep -F "$app/Contents/MacOS/" | /usr/bin/grep -v grep >/dev/null; then echo "Application started; backup retained at $backup" >&2; exit 1; fi; if [ -d "$backup" ]; then test ! -e "$next"; /bin/mv "$app" "$next"; /bin/mv "$backup" "$app"; fi',
-          "release-beta-restore",
+          "release-mac-restore",
           target.applicationPath,
           prepared,
           backup,
@@ -1347,7 +1335,7 @@ async function verifyTargets(config: BuildConfig, context: MacContext, local: bo
       for (let attempt = 0; attempt < 6; attempt++) {
         try {
           const processes = await onTarget(context, target, "/bin/ps", ["-axo", "command="]);
-          const appExecutable = `${target.applicationPath}/Contents/MacOS/Opensteer Beta`;
+          const appExecutable = `${target.applicationPath}/Contents/MacOS/Opensteer`;
           const helperExecutable = `${target.applicationPath}/Contents/Resources/process-supervisor/opensteer-process-supervisor`;
           if (
             !processes

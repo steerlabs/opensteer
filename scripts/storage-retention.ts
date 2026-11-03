@@ -47,7 +47,7 @@ export async function retainHostStorage(options: {
       log(`Cannot identify main payload; keeping payloads: ${String(error)}`);
     }
     // This is the only installed-version source. Never inspect or alter the app's files otherwise.
-    const app = "/Applications/Opensteer Beta.app";
+    const app = "/Applications/Opensteer.app";
     const info = path.join(app, "Contents/Info.plist");
     try {
       if (lstatSync(app, { throwIfNoEntry: false }) === undefined) installedVersion = null;
@@ -64,7 +64,7 @@ export async function retainHostStorage(options: {
       }
     } catch (error) {
       options.signal?.throwIfAborted();
-      log(`Cannot read installed Beta version; keeping release artifacts: ${String(error)}`);
+      log(`Cannot read installed Opensteer version; keeping release artifacts: ${String(error)}`);
     }
     return {
       mainSha,
