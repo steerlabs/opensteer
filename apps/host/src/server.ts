@@ -79,6 +79,7 @@ import {
   TriggerRevisionIdSchema,
   WorkspaceIdSchema,
   deploymentSupportsSharing,
+  runnerAgentToolsFailure,
   unsupportedVersionReason,
   type AgentEvent,
   type AuthenticatedSession,
@@ -168,6 +169,7 @@ import {
   type RunnerAuxiliaryChallenge,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
+  type RunnerHarnessDriver,
   type RunnerModuleName,
   type ShellModuleEvent,
   type WorkspaceView,
@@ -1157,7 +1159,7 @@ export async function createHostServer(
           harnessCatalogs: storedCatalogs
             .filter((record) => record.environmentId === environment.id)
             .map((record) => ({ ...record.catalog, capturedAt: record.capturedAt.toISOString() })),
-          harnessDrivers: runner?.modules.agents?.harnessDrivers ?? [],
+          harnessDrivers: runner ? harnessDriversView(runner) : [],
           providerStateModes: runner?.modules.agents?.providerStateModes ?? [],
           status: connected ? "connected" : "disconnected",
           workspaceBackings: runner?.modules.agents?.workspaceBackings ?? [],
@@ -2768,6 +2770,19 @@ export async function createHostServer(
 
   dependencies.staticDistribution?.service.register(app);
   return app;
+}
+
+/** An engine on a Runner that cannot run agents is offered with the reason, never as ready. */
+function harnessDriversView(runner: RunnerIdentity): RunnerHarnessDriver[] {
+  const drivers = runner.modules.agents?.harnessDrivers ?? [];
+  const failure = runnerAgentToolsFailure(runner.capabilities);
+  if (!failure) return [...drivers];
+  return drivers.map((driver) => ({
+    driverKind: driver.driverKind,
+    ...(driver.installation ? { installation: driver.installation } : {}),
+    readiness: "unavailable",
+    reason: failure,
+  }));
 }
 
 export async function advertisedBootstrapMethods(

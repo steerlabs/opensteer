@@ -4,6 +4,7 @@ import {
   ModelSelectionSchema,
   OpensteerError,
   placeInputFailure,
+  runnerAgentToolsFailure,
   RequestIdSchema,
   RequestResponseSchema,
   RunIdSchema,
@@ -267,9 +268,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    if (!identity.capabilities.includes("agent-tools-plan-v1")) {
-      throw new CommandDispatchError("Update this computer to use Opensteer tools.", "failed");
-    }
+    const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
+    if (toolsFailure) throw new CommandDispatchError(toolsFailure, "failed");
     if (!identity.capabilities.includes("execution-plane-v2")) {
       throw new CommandDispatchError(
         "Update this Runner to the current execution protocol.",
@@ -726,9 +726,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       initial.revision.program.toolContractVersion,
     );
     if (incompatibility) throw new CommandDispatchError(incompatibility, "failed");
-    if (!identity.capabilities.includes("agent-tools-plan-v1")) {
-      throw new CommandDispatchError("Update this computer to use Opensteer tools.", "failed");
-    }
+    const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
+    if (toolsFailure) throw new CommandDispatchError(toolsFailure, "failed");
     if (!identity.capabilities.includes("execution-plane-v2")) {
       throw new CommandDispatchError(
         "Update this Runner to the current execution protocol.",

@@ -57,6 +57,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  threadPlacementOptions,
+  type EnvironmentSummary,
+  type HarnessSummary,
+} from "@opensteer/client/host";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 
@@ -2731,6 +2736,8 @@ describe("durable harness catalogs", () => {
     readonly inspectHarnesses?: () => Promise<readonly unknown[]>;
     readonly reconcileHarnesses?: () => Promise<readonly HarnessInstanceCatalog[]>;
     readonly harnessDrivers?: readonly TestRunnerHarnessDriver[];
+    /** What the Runner advertises; defaults to a current Runner. */
+    readonly runnerCapabilities?: readonly string[];
     /** Defaults to the Deployment administrator the older cases assume. */
     readonly instanceRole?: "administrator" | "user";
     /** A managed Runner outside this person's listing is not disclosed. */
@@ -2830,6 +2837,7 @@ describe("durable harness catalogs", () => {
       identityForEnvironment: () =>
         options.connected
           ? {
+              capabilities: options.runnerCapabilities ?? ["agent-tools-plan-v1"],
               modules: {
                 agents: {
                   harnessDrivers: options.harnessDrivers ?? [],
@@ -3386,6 +3394,55 @@ describe("durable harness catalogs", () => {
         ],
       });
       expect(listHarnessCatalogs).toHaveBeenCalledWith([environmentId]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("marks every engine on a Runner without the tool plan as needing an update", async () => {
+    const fixture = harnessCatalogServer({
+      catalog: readyCatalog,
+      connected: true,
+      environmentKind: "local",
+      harnessDrivers: [
+        {
+          accessModes: [...ThreadAccessModeSchema.options],
+          driverKind: "native",
+          readiness: "configured",
+          sources: [
+            {
+              fields: [],
+              kind: "first-party",
+              label: "Native",
+              quota: "none",
+              sourceId: "native",
+              stateKinds: ["ambient", "isolated"],
+            },
+          ],
+        },
+      ],
+      runnerCapabilities: [],
+      runnerOwner: ownerId,
+    });
+    const app = await fixture.server;
+    try {
+      const bootstrap = rpcData(await injectRpcRequest(app, "bootstrap.get", {})) as {
+        environments: EnvironmentSummary[];
+        harnesses: HarnessSummary[];
+      };
+      expect(bootstrap.environments[0]?.harnessDrivers).toEqual([
+        {
+          driverKind: "native",
+          readiness: "unavailable",
+          reason: "Update this computer to use Opensteer tools.",
+        },
+      ]);
+      // The shared client's picker says so before anything is sent.
+      const [placement] = threadPlacementOptions(bootstrap.environments, bootstrap.harnesses);
+      expect(placement).toMatchObject({
+        available: false,
+        detail: "Update this computer to use Opensteer tools.",
+      });
     } finally {
       await app.close();
     }

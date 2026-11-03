@@ -2,7 +2,12 @@ import {
   triggerProgramCompatibilityReason,
   type TriggerProgramRunnerStore,
 } from "./trigger-program-compatibility.js";
-import type { EnvironmentId, TriggerId, WorkspaceId } from "@opensteer/core";
+import {
+  runnerAgentToolsFailure,
+  type EnvironmentId,
+  type TriggerId,
+  type WorkspaceId,
+} from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
@@ -191,13 +196,13 @@ export class WatchService {
     }[] = [];
     let waitingForWorkspace = false;
     for (const context of snapshot.activations) {
-      const incompatibility = !identity.capabilities.includes("agent-tools-plan-v1")
-        ? "Update this computer to use Opensteer tools."
-        : await triggerProgramCompatibilityReason(
-            this.#runnerStore,
-            context.activation.environmentId,
-            context.toolContractVersion,
-          );
+      const incompatibility =
+        runnerAgentToolsFailure(identity.capabilities) ??
+        (await triggerProgramCompatibilityReason(
+          this.#runnerStore,
+          context.activation.environmentId,
+          context.toolContractVersion,
+        ));
       if (incompatibility) {
         unavailable.push({
           activationId: context.activation.id,

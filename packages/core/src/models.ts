@@ -289,6 +289,17 @@ export const RunnerCapabilitySchema = z.enum([
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
+/**
+ * Why this Runner cannot run agents at all, in the words every picker and
+ * refusal shows; null when it can. A Runner without the Host-built tool plan
+ * would run engines with no Opensteer tools.
+ */
+export function runnerAgentToolsFailure(capabilities: readonly string[]): string | null {
+  return capabilities.includes("agent-tools-plan-v1")
+    ? null
+    : "Update this computer to use Opensteer tools.";
+}
+
 export const ExecutionEnvironmentKindSchema = z.enum(["main", "local", "managed"]);
 export type ExecutionEnvironmentKind = z.infer<typeof ExecutionEnvironmentKindSchema>;
 
