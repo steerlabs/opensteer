@@ -1536,6 +1536,16 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     );
   }
 
+  async installedCatalogDefinitionIds(): Promise<readonly string[]> {
+    const rows = await this.database
+      .selectFrom("integrationInstallations")
+      .select("provenance")
+      .execute();
+    return rows.flatMap(({ provenance }) =>
+      typeof provenance.definitionId === "string" ? [provenance.definitionId] : [],
+    );
+  }
+
   async listInstallations(): Promise<readonly IntegrationInstallation[]> {
     const rows = await this.database
       .selectFrom("integrationInstallations")

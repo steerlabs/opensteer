@@ -17,34 +17,54 @@ export class PluginStore {
   }
 
   async list(workspaceId?: WorkspaceId) {
-    const plugins = await this.database.selectFrom("plugins").selectAll().execute();
-    return Promise.all(
-      plugins
-        .filter((p) => !workspaceId || p.scope === "deployment" || p.workspaceId === workspaceId)
-        .map(async (plugin) => ({
-          ...plugin,
-          versions: await this.database
-            .selectFrom("pluginVersions")
-            .selectAll()
-            .where("pluginId", "=", plugin.id)
-            .execute(),
-          activations: await this.database
-            .selectFrom("pluginActivations")
-            .selectAll()
-            .where("pluginId", "=", plugin.id)
-            .execute(),
-          servers: await this.database
-            .selectFrom("integrationServers")
-            .innerJoin(
-              "integrationInstallations",
-              "integrationInstallations.id",
-              "integrationServers.installationId",
-            )
-            .selectAll("integrationServers")
-            .where("integrationInstallations.pluginId", "=", plugin.id)
-            .execute(),
-        })),
-    );
+    let query = this.database.selectFrom("plugins").selectAll();
+    if (workspaceId)
+      query = query.where((eb) =>
+        eb.or([eb("scope", "=", "deployment"), eb("workspaceId", "=", workspaceId)]),
+      );
+    const plugins = await query.execute();
+    if (plugins.length === 0) return [];
+    const ids = plugins.map(({ id }) => id);
+    const [versions, activations, servers] = await Promise.all([
+      this.database.selectFrom("pluginVersions").selectAll().where("pluginId", "in", ids).execute(),
+      this.database
+        .selectFrom("pluginActivations")
+        .selectAll()
+        .where("pluginId", "in", ids)
+        .execute(),
+      this.database
+        .selectFrom("integrationServers")
+        .innerJoin(
+          "integrationInstallations",
+          "integrationInstallations.id",
+          "integrationServers.installationId",
+        )
+        .selectAll("integrationServers")
+        .select("integrationInstallations.pluginId")
+        .where("integrationInstallations.pluginId", "in", ids)
+        .execute(),
+    ]);
+    const byPlugin = <T extends { pluginId: string | null }>(rows: T[]) => {
+      const groups = new Map<string, T[]>();
+      for (const row of rows) {
+        if (row.pluginId === null) continue;
+        const group = groups.get(row.pluginId) ?? [];
+        group.push(row);
+        groups.set(row.pluginId, group);
+      }
+      return groups;
+    };
+    const versionGroups = byPlugin(versions);
+    const activationGroups = byPlugin(activations);
+    const serverGroups = byPlugin(servers);
+    return plugins.map((plugin) => ({
+      ...plugin,
+      versions: versionGroups.get(plugin.id) ?? [],
+      activations: activationGroups.get(plugin.id) ?? [],
+      servers: (serverGroups.get(plugin.id) ?? []).map(
+        ({ pluginId: _pluginId, ...server }) => server,
+      ),
+    }));
   }
 
   async listForUser(actorUserId: UserId, workspaceId?: WorkspaceId) {

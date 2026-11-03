@@ -1,3 +1,4 @@
+import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { OpensteerError } from "@opensteer/core";
 import { requireSession } from "../integrations/integration-rpc-context.js";
@@ -135,8 +136,15 @@ export function createHostApiHandlers(
   return {
     "plugins.overview.get": settingsUnavailable,
     "plugins.detail.get": settingsUnavailable,
-    "plugins.directory.get": settingsUnavailable,
-    "devices.overview.get": settingsUnavailable,
+    ...createSettingsReadHandlers({
+      catalog: () => integrationPlatform.platform.settingsCatalog(),
+      requests: (owner) =>
+        integrationPlatform.platform.store.requests.waitingOnUserPage({
+          userId: owner,
+          limit: 100,
+        }),
+      machines: coreHandlers["machines.list"],
+    }),
     "computer.app.windows": async (input, context) => {
       const owner = requireSession(context).user.id;
       if (!computerViews)

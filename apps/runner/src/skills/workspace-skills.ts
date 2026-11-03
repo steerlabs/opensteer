@@ -7,14 +7,18 @@ import {
   parseHarnessSkillMetadata,
   type HarnessSkill,
 } from "@opensteer/harness";
+import type { RunnerSkillMetadataReport } from "@opensteer/protocol";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 
+type CompleteInventory = Extract<RunnerSkillMetadataReport["result"], { status: "complete" }>;
 const maximumSkills = 64;
 const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
 export interface DiscoveredWorkspaceSkills {
   /** Identifies every discovered skill's SKILL.md, which an engine reads when it starts. */
   readonly digest: string;
+  readonly metadata: Readonly<CompleteInventory["skills"]>;
+  readonly warningCodes: Readonly<CompleteInventory["warnings"]>;
   readonly skills: readonly HarnessSkill[];
   readonly warnings: readonly string[];
 }
@@ -35,11 +39,14 @@ export async function discoverWorkspaceSkills(
   if (!rootStat.isDirectory()) return warned("The Workspace skills path is not a directory");
   const entries = await readdir(root, { withFileTypes: true });
   const skills: HarnessSkill[] = [];
+  const metadata: CompleteInventory["skills"] = [];
+  const warningCodes = new Set<CompleteInventory["warnings"][number]>();
   const digest = createHash("sha256");
   const warnings: string[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const name = entry.name;
     if (entry.isSymbolicLink()) {
+      warningCodes.add("symlink");
       warnings.push(`Workspace skill ${name} was skipped: it is a symlink`);
       continue;
     }
@@ -50,10 +57,12 @@ export async function discoverWorkspaceSkills(
     // A directory without SKILL.md is ordinary Workspace content, not a skill.
     if (!stat) continue;
     if (stat.isSymbolicLink() || !stat.isFile()) {
+      warningCodes.add(stat.isSymbolicLink() ? "symlink" : "invalid-metadata");
       warnings.push(`Workspace skill ${name} was skipped: SKILL.md is not a regular file`);
       continue;
     }
     if (skills.length >= maximumSkills) {
+      warningCodes.add("limit-exceeded");
       warnings.push(
         `Workspace skill ${name} was skipped: a Workspace may load at most ${maximumSkills} skills`,
       );
@@ -61,14 +70,22 @@ export async function discoverWorkspaceSkills(
     }
     const read = await readSkill(name, skillFile, stat.size);
     if ("problem" in read) {
+      warningCodes.add("invalid-metadata");
       warnings.push(`Workspace skill ${name} was skipped: ${read.problem}`);
       continue;
     }
+    metadata.push({
+      fullName: name,
+      description: read.description.slice(0, 320),
+      digest: createHash("sha256").update(read.content).digest("hex"),
+    });
     digest.update(`${name}\0${read.content}\0`);
     skills.push(Object.freeze({ plugin: null, localName: name, fullName: name, path }));
   }
   return Object.freeze({
     digest: digest.digest("base64url"),
+    metadata: Object.freeze(metadata),
+    warningCodes: Object.freeze([...warningCodes]),
     skills: Object.freeze(skills),
     warnings: Object.freeze(warnings),
   });
@@ -78,8 +95,10 @@ async function readSkill(
   name: string,
   skillFile: string,
   size: number,
-): Promise<{ readonly content: string } | { readonly problem: string }> {
-  if (!skillNamePattern.test(name))
+): Promise<
+  { readonly content: string; readonly description: string } | { readonly problem: string }
+> {
+  if (name.length > 120 || !skillNamePattern.test(name))
     return { problem: "the directory name is not a valid skill name" };
   if (size > maximumSkillBytes) {
     return { problem: `SKILL.md is larger than ${maximumSkillBytes} bytes` };
@@ -97,11 +116,11 @@ async function readSkill(
     return { problem: "SKILL.md could not be read safely" };
   }
   try {
-    parseHarnessSkillMetadata(content, name);
+    const metadata = parseHarnessSkillMetadata(content, name);
+    return { content, description: metadata.description };
   } catch {
     return { problem: "the SKILL.md frontmatter is invalid" };
   }
-  return { content };
 }
 
 async function optionalLstat(path: string): Promise<Stats | undefined> {
@@ -116,15 +135,22 @@ async function optionalLstat(path: string): Promise<Stats | undefined> {
 function empty(): DiscoveredWorkspaceSkills {
   return Object.freeze({
     digest: "none",
+    metadata: Object.freeze([]),
+    warningCodes: Object.freeze([]),
     skills: Object.freeze([]),
     warnings: Object.freeze([]),
   });
 }
 
 function warned(warning: string): DiscoveredWorkspaceSkills {
+  const code: CompleteInventory["warnings"][number] = warning.includes("symlink")
+    ? "symlink"
+    : "invalid-metadata";
   return Object.freeze({
     digest: "none",
+    metadata: Object.freeze([]),
     skills: Object.freeze([]),
     warnings: Object.freeze([warning]),
+    warningCodes: Object.freeze([code]),
   });
 }

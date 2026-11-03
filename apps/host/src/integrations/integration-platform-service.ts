@@ -449,6 +449,16 @@ export class IntegrationPlatformService {
     );
   }
 
+  async settingsCatalog() {
+    const added = new Set(await this.#store.installations.installedCatalogDefinitionIds());
+    return this.#definitions.map((definition) => ({
+      definitionId: definition.id,
+      title: definition.name,
+      description: definition.description,
+      added: added.has(definition.id),
+    }));
+  }
+
   get store(): IntegrationPlatformStore {
     return this.#store;
   }

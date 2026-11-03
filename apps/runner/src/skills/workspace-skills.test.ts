@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { discoverWorkspaceSkills } from "./workspace-skills.js";
 
 const temporaryDirectories: string[] = [];
@@ -13,6 +14,39 @@ afterEach(async () => {
 });
 
 describe("Workspace Agent Skills", () => {
+  it("returns bounded inventory from the same validated bytes as the Run plan", async () => {
+    const workspace = await workspaceDirectory();
+    const content = frontmatter("release-notes");
+    await writeSkill(workspace, "release-notes", content);
+    const discovered = await discoverWorkspaceSkills(workspace);
+    expect(discovered.metadata).toEqual([
+      {
+        fullName: "release-notes",
+        description: "Test skill.",
+        digest: createHash("sha256").update(content).digest("hex"),
+      },
+    ]);
+    expect(discovered.warningCodes).toEqual([]);
+    expect(JSON.stringify(discovered.metadata)).not.toContain(workspace);
+    await rm(join(workspace, "skills"), { recursive: true });
+    expect((await discoverWorkspaceSkills(workspace)).metadata).toEqual([]);
+  });
+
+  it("bounds inventory names and descriptions to the report contract", async () => {
+    const workspace = await workspaceDirectory();
+    const tooLong = "a".repeat(121);
+    await writeSkill(workspace, tooLong, frontmatter(tooLong));
+    await writeSkill(
+      workspace,
+      "long-description",
+      `---\nname: long-description\ndescription: ${"x".repeat(400)}\n---\nBody.\n`,
+    );
+    const discovered = await discoverWorkspaceSkills(workspace);
+    expect(discovered.skills.map(({ fullName }) => fullName)).toEqual(["long-description"]);
+    expect(discovered.metadata[0]?.description).toHaveLength(320);
+    expect(discovered.warningCodes).toEqual(["invalid-metadata"]);
+  });
+
   it("ignores directories that hold no SKILL.md", async () => {
     const workspace = await workspaceDirectory();
     await mkdir(join(workspace, "skills", "notes"), { recursive: true });
@@ -159,6 +193,8 @@ describe("Workspace Agent Skills", () => {
     const discovered = await discoverWorkspaceSkills(workspace);
 
     expect(discovered.skills).toHaveLength(64);
+    expect(discovered.metadata).toHaveLength(64);
+    expect(discovered.warningCodes).toEqual(["limit-exceeded"]);
     expect(discovered.skills.at(-1)?.fullName).toBe("skill-63");
     expect(discovered.warnings).toEqual([
       "Workspace skill skill-64 was skipped: a Workspace may load at most 64 skills",
