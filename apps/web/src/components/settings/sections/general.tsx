@@ -10,9 +10,15 @@ import {
 } from "../../../desktop/notifications.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
-import { settingsPlace, settingsWhatThisIs, settingsWhereItRuns } from "../copy.js";
+import { settingsPlace } from "../copy.js";
 import { useHomeComputer } from "./devices.js";
-import { SectionHeader, SettingsRow, StatusChip, type SettingsView } from "../primitives.js";
+import {
+  SectionHeader,
+  SettingsRow,
+  SettingsSwitch,
+  StatusChip,
+  type SettingsView,
+} from "../primitives.js";
 
 export function GeneralSection({ view }: { readonly view: SettingsView }) {
   const places = useDesktopPlaces();
@@ -27,21 +33,14 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
   });
   return (
     <>
-      <SectionHeader
-        lead="This Opensteer holds your agents, workspaces and conversations."
-        title={view.name}
-      />
+      <SectionHeader title="General" />
+      <h2>This Opensteer</h2>
       <div className="card">
         <SettingsRow
           action={<StatusChip info={view.statusInfo} />}
-          detail={settingsWhatThisIs({ facts: view.facts, kind: view.kind, name: view.name })}
+          detail={view.deployment?.onThisComputer ? "Running here" : place.detail}
           icon={place.icon}
-          title={settingsWhereItRuns({
-            facts: view.facts,
-            kind: view.kind,
-            name: view.name,
-            publicOrigin: snapshot.identityConfig?.publicOrigin,
-          })}
+          title={view.name}
         />
         {places ? (
           <SettingsRow
@@ -92,9 +91,6 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
  * Notifications
  * ------------------------------------------------------------------------- */
 
-const notificationsPurpose =
-  "Get a notification when Opensteer replies, needs your approval, or can't finish something.";
-
 /**
  * The browser's notification permission, asked for here and nowhere else.
  *
@@ -135,7 +131,7 @@ function NotificationsRow() {
   if (availability === "desktop") {
     return (
       <SettingsRow
-        detail={`${notificationsPurpose} Turn them off for Opensteer in your system settings.`}
+        detail="Managed in system settings"
         icon="activity"
         title={
           <>
@@ -149,7 +145,7 @@ function NotificationsRow() {
   if (availability === "unsupported") {
     return (
       <SettingsRow
-        detail="This app can't show notifications here. Replies still wait, unread, in their conversations."
+        detail=""
         icon="activity"
         title={
           <>
@@ -181,10 +177,10 @@ function NotificationsRow() {
       }
       detail={
         availability === "granted"
-          ? "While Opensteer is open in this browser, you get a notification when it replies, needs your approval, or can't finish something, unless you are already reading that conversation."
+          ? ""
           : availability === "denied"
-            ? "This browser is blocking notifications for Opensteer. Allow them in your browser's site settings to turn them back on."
-            : notificationsPurpose
+            ? "Allow in browser site settings"
+            : "Replies and requests for you"
       }
       icon="activity"
       title={
@@ -222,21 +218,16 @@ function SearchSuggestionsRow() {
     <SettingsRow
       icon="search"
       title="Show search suggestions"
-      detail="Suggest searches as you type. Sends search words to Google. Saved for you on this device."
+      detail="Uses Google"
       action={
-        <button
-          aria-label="Show search suggestions"
-          aria-checked={enabled}
-          role="switch"
-          className="btn btn--small"
-          type="button"
-          onClick={() => {
-            hostClient.browserPreferences.showSearchSuggestions = !enabled;
-            setEnabled(!enabled);
+        <SettingsSwitch
+          label="Show search suggestions"
+          checked={enabled}
+          onChange={(next) => {
+            hostClient.browserPreferences.showSearchSuggestions = next;
+            setEnabled(next);
           }}
-        >
-          {enabled ? "On" : "Off"}
-        </button>
+        />
       }
     />
   );

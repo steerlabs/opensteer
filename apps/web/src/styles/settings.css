@@ -820,3 +820,112 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   text-transform: none;
   letter-spacing: normal;
 }
+
+/* Compact Settings controls share the same geometry at every width. */
+.settings-section__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
+.settings-section__title-row h1 {
+  margin: 0;
+}
+.settings-content__inner .settings-section__title-row .btn {
+  min-height: 32px;
+  flex: none;
+}
+.settings-plugin-filters {
+  gap: var(--space-6);
+}
+.settings-plugin-filters .btn {
+  min-height: 30px;
+  border-radius: 999px;
+  padding: var(--space-4) var(--space-12);
+  font-size: var(--text-sm);
+}
+.settings-plugin-filters [aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--fill-plate-hover);
+}
+.settings-content__inner .card__row {
+  flex-wrap: nowrap;
+}
+.settings-content__inner .card__row-body {
+  flex: 1;
+  min-width: 0;
+}
+.settings-content__inner .card__row-detail {
+  color: var(--muted);
+}
+.settings-content__inner .intg-hero__name {
+  font-family: var(--font-sans);
+}
+.settings-content__inner .connected-apps__panel {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.settings-plugin-overview .intg-icon,
+.settings-directory .intg-icon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+.settings-plugin-overview details summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  list-style: none;
+}
+.settings-plugin-overview summary::-webkit-details-marker {
+  display: none;
+}
+.settings-off-preview {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-directory .card__row-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-add-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+.settings-add-sheet > p {
+  margin: 0;
+  color: var(--muted);
+}
+.settings-add-sheet > ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.settings-add-sheet > ul li {
+  padding: var(--space-10) var(--space-12);
+}
+.settings-add-sheet > ul li + li {
+  border-top: 1px solid var(--line);
+}
+.settings-add-sheet h3 {
+  font-size: var(--text-md);
+  margin: var(--space-8) 0 0;
+  color: var(--muted);
+}
+.settings-add-sheet > .btn--primary {
+  width: 100%;
+  margin-top: var(--space-12);
+}
+.settings-content__inner > .card__row,
+#plugin-placement .card__row {
+  justify-content: space-between;
+}
