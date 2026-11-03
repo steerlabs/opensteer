@@ -4,8 +4,7 @@ import {
   type AccountDeployment,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
-import { createId, DeploymentIdSchema } from "@opensteer/core";
-import { runInNewContext } from "node:vm";
+import { createId } from "@opensteer/core";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
@@ -52,78 +51,6 @@ describe("portal vhost identity", () => {
   });
 });
 
-describe("public portal routes", () => {
-  it("guards routes, renders safe links, and validates fragments against DeploymentId", async () => {
-    const router = createPortalRouter({
-      portalOrigin: new URL("https://portal.test"),
-      publicOrigin: new URL("https://accounts.test"),
-      auth: {} as never,
-      store: {} as never,
-      portalSessions: { read: vi.fn() } as never,
-      desktopDownloadUrl: "https://download.test/app",
-      iosAppUrl: "https://store.test/?a=1&b=2",
-      androidAppUrl: 'https://android.test/?q="hello"',
-    });
-    const app = Fastify();
-    router.register(app);
-    app.get("/", (request, reply) => router.home(request, reply));
-    for (const url of ["/open", "/mac"]) {
-      expect((await app.inject({ url, headers: { host: "other.test" } })).statusCode).toBe(404);
-    }
-    const headers = { host: "portal.test" };
-    const page = await app.inject({ url: "/open?d=server-content", headers });
-    expect(page.statusCode).toBe(200);
-    expect(page.headers["set-cookie"]).toBeUndefined();
-    expect(page.body).not.toContain("server-content");
-    expect(page.body).toContain("https://store.test/?a=1&amp;b=2");
-    expect(page.body).toContain("&quot;hello&quot;");
-    const script = page.body.match(/<script nonce="([^"]+)">([\s\S]*?)<\/script>/u);
-    expect(script).not.toBeNull();
-    expect(page.headers["content-security-policy"]).toContain(`script-src 'nonce-${script![1]}'`);
-    expect(page.headers["content-security-policy"]).not.toContain("script-src 'unsafe-inline'");
-    for (const fragment of [
-      `#d=${createId("deployment")}`,
-      "",
-      "#d=dep_invalid",
-      `#d=${createId("deployment")}&x=1`,
-      "#d=DEP_00000000-0000-4000-8000-000000000001",
-      "#d=dep_00000000-0000-0000-8000-000000000001",
-    ]) {
-      const button = { href: "", hidden: true };
-      const incomplete = { hidden: true };
-      const location = { hash: fragment, href: "" };
-      runInNewContext(script![2]!, {
-        location,
-        document: { getElementById: (id: string) => (id === "open-app" ? button : incomplete) },
-      });
-      const valid =
-        fragment.startsWith("#d=") && DeploymentIdSchema.safeParse(fragment.slice(3)).success;
-      expect(button.hidden).toBe(!valid);
-      expect(incomplete.hidden).toBe(valid);
-      expect(location.href).toBe(valid ? `com.opensteer.mobile:/open?d=${fragment.slice(3)}` : "");
-    }
-    expect((await app.inject({ url: "/mac", headers })).headers.location).toBe(
-      "https://download.test/app",
-    );
-    expect((await app.inject({ url: "/", headers })).body).toContain("Get the Desktop app");
-    await app.close();
-
-    const bare = Fastify();
-    createPortalRouter({
-      portalOrigin: new URL("https://portal.test"),
-      publicOrigin: new URL("https://accounts.test"),
-      auth: {} as never,
-      store: {} as never,
-      portalSessions: {} as never,
-    }).register(bare);
-    const noStores = await bare.inject({ url: "/open", headers });
-    expect(noStores.body).not.toContain("Get it for iPhone");
-    expect(noStores.body).not.toContain("Get it for Android");
-    expect((await bare.inject({ url: "/mac", headers })).headers.location).toBe("/");
-    await bare.close();
-  });
-});
-
 describe("portal Deployment cards", () => {
   it("links self-hosted Deployments to their canonical origins and reports status honestly", () => {
     const deployment = selfHostedDeployment();
@@ -131,19 +58,17 @@ describe("portal Deployment cards", () => {
       'href="https://server.opensteer.test"',
     );
     // The owner made this row and unmakes it where it runs; a hide is a member's move.
-    expect(deploymentCard(directoryDeployment(deployment), true)).not.toContain(
-      "Remove from Account list",
-    );
+    expect(deploymentCard(directoryDeployment(deployment), true)).not.toContain("from your list");
     const shared = directoryDeployment({ ...deployment, access: "member" });
     expect(deploymentCard(shared, true)).toContain(
       `action="${portalRemoveDeploymentPath(deployment.id)}"`,
     );
-    expect(deploymentCard(shared, true)).toContain("Remove from Account list");
+    expect(deploymentCard(shared, true)).toContain("from your list");
     for (const present of [true, false]) {
       const card = deploymentCard(directoryDeployment(deployment), present);
-      expect(card).not.toContain('class="chip');
-      expect(card).not.toContain('class="deployment-note');
-      expect(card).toContain('class="deployment-go');
+      expect(card).not.toContain('class="dot');
+      expect(card).not.toContain('class="place__note');
+      expect(card).toContain('class="place__go');
     }
     expect(deploymentCard(directoryDeployment(deployment), false)).toContain(
       'href="https://server.opensteer.test"',
@@ -156,7 +81,7 @@ describe("portal Deployment cards", () => {
     expect(card).toContain("Offline");
     expect(card).toContain("You no longer have access to this deployment.");
     expect(card).not.toContain('href="https://server.opensteer.test"');
-    expect(card).not.toContain('class="deployment-go');
+    expect(card).not.toContain('class="place__go');
   });
 
   it("mints the browser grant only after the portal card is posted", async () => {
@@ -259,7 +184,7 @@ describe("portal Deployment cards", () => {
       "Update Opensteer to use this deployment’s published connection details.",
     );
     expect(card).not.toContain("href=");
-    expect(card).not.toContain("deployment-go");
+    expect(card).not.toContain("place__go");
   });
 
   it("does not trust routed liveness carried by an invalid route envelope", () => {

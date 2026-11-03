@@ -1197,8 +1197,13 @@ integration("control-plane PostgreSQL boundary", () => {
       });
       expect(renderedConsent.statusCode, renderedConsent.body).toBe(200);
       expect(renderedConsent.headers["content-type"]).toContain("text/html");
-      expect(renderedConsent.body).toContain("Authorize Opensteer");
-      expect(renderedConsent.body).toContain("View your Opensteer deployments");
+      // The page names who is asking, which Account answers, and each grant.
+      expect(renderedConsent.body).toContain("Allow Opensteer Mobile?");
+      expect(renderedConsent.body).toContain("device--app");
+      expect(renderedConsent.body).toContain(`owner-${ownerId}@example.test`);
+      expect(renderedConsent.body).toContain("See your Opensteers");
+      expect(renderedConsent.body).toContain("Delete your Account");
+      expect(renderedConsent.headers["content-security-policy"]).toContain("font-src 'self'");
       const consent = await server.inject({
         headers: {
           "content-type": "application/x-www-form-urlencoded",

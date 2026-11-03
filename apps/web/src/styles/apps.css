@@ -1,33 +1,56 @@
+/* An Opensteer App in the transcript is a card like any other: a lit plate
+   whose header names it, opening into the whole window. */
 .app-card {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  overflow: hidden;
   width: 100%;
   min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
 }
+
 .app-card__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: var(--space-12);
+  min-height: calc(var(--control-height) + var(--space-12));
+  padding: var(--space-6) var(--space-6) var(--space-6) var(--space-14);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
 }
-.app-card > p {
-  padding: 12px 14px;
+
+.app-card__header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.app-card > p,
+.app-frame__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-14);
+  color: var(--muted);
+  font-size: var(--text-lg);
+}
+
 .app-frame {
   position: relative;
   min-width: 0;
 }
+
 .app-frame iframe {
   display: block;
   width: 100%;
   border: 0;
   background: transparent;
 }
-.app-frame__status {
-  padding: 12px 14px;
-}
+
 .app-card--full {
   position: fixed;
   inset: 0;
@@ -37,15 +60,21 @@
   border: 0;
   border-radius: 0;
   background: var(--ground);
+  box-shadow: none;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
+
 .app-card--full .app-card__header {
   flex-shrink: 0;
 }
+
 .app-frame--full {
   display: flex;
   flex: 1;
   min-height: 0;
 }
+
 .app-frame--full iframe {
   flex: 1;
   height: 100%;

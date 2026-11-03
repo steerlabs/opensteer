@@ -343,6 +343,30 @@ export class ControlPlaneStore {
     });
   }
 
+  /**
+   * Who a consent page says is asking. Only Opensteer's own apps are
+   * `official`; a Deployment's name is whatever its owner typed, so the page
+   * must not dress it in Opensteer's mark.
+   */
+  async oauthClientPresentation(
+    clientId: string,
+  ): Promise<{ readonly name: string | null; readonly official: boolean }> {
+    const client = await this.#database
+      .selectFrom("oauthClients")
+      .select(["name", "referenceId"])
+      .where("clientId", "=", clientId)
+      .where("disabled", "=", false)
+      .executeTakeFirst();
+    return {
+      // A Deployment's client is registered as "Opensteer Host: <name>" (below);
+      // the person knows it by its own name.
+      name: client?.name?.replace(/^Opensteer Host: /u, "").trim() || null,
+      official:
+        client !== undefined &&
+        (isOfficialNativeReference(client.referenceId) || client.referenceId === "official-portal"),
+    };
+  }
+
   async adoptExistingDeployment(
     ownerAccountId: ControlPlaneAccountId,
     input: AdoptExistingDeploymentRequest,

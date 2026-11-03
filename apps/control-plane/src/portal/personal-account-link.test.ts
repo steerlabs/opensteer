@@ -39,10 +39,16 @@ describe("Account linking from a Host browser", () => {
         headers,
       });
       expect(page.statusCode).toBe(200);
-      expect(page.body).toContain("Link to my Account");
+      expect(page.body).toContain("Link this computer");
+      expect(page.body).toContain("owner@example.test");
+      expect(page.body).toContain("computer.private.test");
       expect(page.body).toContain("event.source !== parent");
       expect(page.body).toContain("event.origin !== parameters.origin");
-      expect(page.body).toContain("document.getElementById('allow').onclick");
+      expect(page.body).toContain("allow.onclick");
+      const policy = String(page.headers["content-security-policy"]);
+      expect(policy).toMatch(/script-src 'nonce-[\w-]+'/u);
+      expect(policy).toContain("connect-src 'self'");
+      expect(policy).not.toContain("unsafe-eval");
       expect(issueLinkChallenge).not.toHaveBeenCalled();
       // Exercise the popup wire without a browser or a real Account credential.
       const script = page.body.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/u)?.[1];
@@ -50,8 +56,14 @@ describe("Account linking from a Host browser", () => {
       const callbacks = new Map<string, (event: unknown) => Promise<void>>();
       const elements: Record<
         string,
-        { disabled: boolean; textContent: string; onclick?: () => Promise<void> }
+        {
+          dataset: Record<string, string>;
+          disabled: boolean;
+          textContent: string;
+          onclick?: () => Promise<void>;
+        }
       > = {};
+      const parts = ["linked", "failed"].map((when) => ({ dataset: { when }, hidden: true }));
       const parent = { postMessage: vi.fn() };
       const issuedId = `phc_${crypto.randomUUID()}`;
       const fetch = vi.fn(async () => Response.json({ challengeId: issuedId }));
@@ -62,10 +74,14 @@ describe("Account linking from a Host browser", () => {
             callbacks.set(kind, callback),
         },
         document: {
-          getElementById: (id: string) => (elements[id] ??= { disabled: false, textContent: "" }),
+          getElementById: (id: string) =>
+            (elements[id] ??= { dataset: {}, disabled: id === "allow", textContent: "" }),
+          querySelectorAll: () => parts,
         },
         fetch,
+        setTimeout: vi.fn(),
       });
+      const state = () => elements.link?.dataset.state;
       const ready = parent.postMessage.mock.calls[0]?.[0] as { nonce: string };
       const receive = callbacks.get("message")!;
       await receive({
@@ -73,15 +89,20 @@ describe("Account linking from a Host browser", () => {
         origin: "https://computer.private.test",
         data: { nonce: ready.nonce, kind: "challenge", input: { name: "Wrong source" } },
       });
-      expect(elements.computer).toBeUndefined();
+      expect(elements.allow!.disabled).toBe(true);
+      expect(elements.title!.textContent).toBe("");
       await receive({
         source: parent,
         origin: "https://computer.private.test",
         data: { nonce: ready.nonce, kind: "challenge", input: { name: "My computer" } },
       });
       expect(fetch).not.toHaveBeenCalled();
+      expect(elements.title!.textContent).toBe("Link My computer");
+      expect(elements.allow!.disabled).toBe(false);
+      expect(state()).toBe("ready");
       await elements.allow!.onclick!();
       expect(fetch).toHaveBeenCalledOnce();
+      expect(state()).toBe("linking");
       const complete = (id: string) => ({
         source: parent,
         origin: "https://computer.private.test",
@@ -95,6 +116,9 @@ describe("Account linking from a Host browser", () => {
       expect(fetch).toHaveBeenCalledOnce();
       await receive(complete(issuedId));
       expect(fetch).toHaveBeenCalledTimes(2);
+      expect(state()).toBe("linked");
+      expect(parts.find((part) => part.dataset.when === "linked")?.hidden).toBe(false);
+      expect(parts.find((part) => part.dataset.when === "failed")?.hidden).toBe(true);
 
       for (const path of ["challenge", "complete"]) {
         for (const origin of [

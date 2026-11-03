@@ -317,7 +317,7 @@ export function OwnerView({
             className={shown ? "owner-view__state owner-view__state--over" : "owner-view__state"}
             role="status"
           >
-            {state.busy ? <span aria-hidden className="browser-waiting__spinner" /> : null}
+            {state.busy ? <span aria-hidden className="spinner" /> : null}
             <span>{state.words}</span>
             {state.reopen ? (
               <button

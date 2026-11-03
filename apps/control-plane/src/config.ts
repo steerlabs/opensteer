@@ -197,8 +197,6 @@ const AccountEnvironmentSchema = z
     OPENSTEER_HOSTED_OAUTH_SLACK_CLIENT_SECRET: z.string().min(1).optional(),
     OPENSTEER_HOSTED_OAUTH_SLACK_REVISION: z.coerce.number().int().positive().optional(),
     OPENSTEER_DESKTOP_DOWNLOAD_URL: z.url().optional(),
-    OPENSTEER_IOS_APP_URL: z.url().optional(),
-    OPENSTEER_ANDROID_APP_URL: z.url().optional(),
     OPENSTEER_CONNECT_DOMAIN: DeploymentDomainSchema,
     OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID: CloudflareIdentifierSchema,
     OPENSTEER_CONNECT_CLOUDFLARE_API_TOKEN: z.string().trim().min(20).max(2_048),
@@ -252,8 +250,6 @@ export interface ControlPlaneConfig {
    * Desktop app row.
    */
   readonly desktopDownloadUrl?: string;
-  readonly iosAppUrl?: string;
-  readonly androidAppUrl?: string;
   readonly connectCloudflare: {
     readonly accountId: string;
     readonly apiToken: string;
@@ -330,10 +326,6 @@ export function loadControlPlaneConfig(
     connectDomain: parsed.OPENSTEER_CONNECT_DOMAIN,
     ...(parsed.OPENSTEER_DESKTOP_DOWNLOAD_URL
       ? { desktopDownloadUrl: parsed.OPENSTEER_DESKTOP_DOWNLOAD_URL }
-      : {}),
-    ...(parsed.OPENSTEER_IOS_APP_URL ? { iosAppUrl: parsed.OPENSTEER_IOS_APP_URL } : {}),
-    ...(parsed.OPENSTEER_ANDROID_APP_URL
-      ? { androidAppUrl: parsed.OPENSTEER_ANDROID_APP_URL }
       : {}),
     connectCloudflare: {
       accountId: parsed.OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID,

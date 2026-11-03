@@ -416,7 +416,7 @@ function AddModelServerDialog({
             </span>
           </div>
         ) : connectable ? (
-          <p className="form-hint">Runs with {harnessDriverLabel(engine.driverKind)}.</p>
+          <p className="field__hint">Runs with {harnessDriverLabel(engine.driverKind)}.</p>
         ) : null}
       </form>
     </Dialog>
