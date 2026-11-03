@@ -1,6 +1,5 @@
 export const hostInternalRoutePaths = {
   appTunnel: "/internal/v1/apps/tunnel",
-  agentControl: "/internal/v1/agent-control",
   /** Runners that predate session addressing: follows the Run's latest session. */
   browserCdp: "/internal/v1/browser-cdp",
   browserSessionCdp: "/internal/v1/browser-cdp/:sessionId",
@@ -9,7 +8,6 @@ export const hostInternalRoutePaths = {
   browserSourceConnect: "/internal/v1/browser-sources/connect",
   computerUseDisplay: "/internal/v1/computer-use/display",
   egress: "/internal/v1/egress",
-  integrationMcp: "/internal/v1/integration-mcp",
   plugins: "/internal/v1/plugin-cache/:digest",
   computerPluginPackages: "/internal/v1/computer-plugin-packages/:digest",
   mcp: "/internal/v1/mcp",
