@@ -73,20 +73,3 @@ export async function lockConnectSession(
   const identity = connectSessionLockIdentity(deploymentId);
   await sql`select pg_advisory_xact_lock(hashtextextended(${identity}, 0))`.execute(transaction);
 }
-
-/** Cloud intent and provider effects share one pinned session lock across replicas. */
-export async function withCloudOperationLock<T>(
-  database: Kysely<ControlPlaneDatabaseSchema>,
-  operationId: string,
-  action: (connection: Kysely<ControlPlaneDatabaseSchema>) => Promise<T>,
-): Promise<T> {
-  return database.connection().execute(async (connection) => {
-    const identity = `opensteer-cloud:${operationId}`;
-    await sql`select pg_advisory_lock(hashtextextended(${identity}, 0))`.execute(connection);
-    try {
-      return await action(connection);
-    } finally {
-      await sql`select pg_advisory_unlock(hashtextextended(${identity}, 0))`.execute(connection);
-    }
-  });
-}

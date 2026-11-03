@@ -45,7 +45,7 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
     operationLeaseMilliseconds: 1_000,
   });
   const store = new ControlPlaneStore(database, publicOrigin, {
-    managedDeploymentDomain,
+    portalOrigin: new URL(`https://${managedDeploymentDomain}`),
   });
   const ownerAccountId = accountId();
   const otherAccountId = accountId();

@@ -60,21 +60,19 @@ export function registerControlPlaneRoutes(
   dependencies: {
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
-    readonly managedDeploymentDomain: string;
+    readonly portalOrigin: URL;
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
     readonly publicOrigin: URL;
     readonly store: ControlPlaneStore;
   },
 ): void {
-  const managedDeploymentDomain = normalizedBareDnsHostname(dependencies.managedDeploymentDomain);
   app.get("/v1/edge/tls-allow", async (request, reply) => {
     void reply.header("cache-control", "no-store");
     const { domain: input } = EdgeTlsAllowQuerySchema.parse(request.query);
     const domain = normalizedBareDnsHostname(input);
     const allowed =
       domain === dependencies.publicOrigin.hostname.toLowerCase() ||
-      domain === managedDeploymentDomain ||
-      (await dependencies.store.hasActiveDeploymentOrigin(`https://${domain}`));
+      domain === dependencies.portalOrigin.hostname.toLowerCase();
     if (!allowed) return reply.code(404).type("text/plain; charset=utf-8").send("not found");
     return reply.type("text/plain; charset=utf-8").send("ok");
   });

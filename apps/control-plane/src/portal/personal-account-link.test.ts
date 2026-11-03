@@ -12,7 +12,7 @@ describe("Account linking from a Host browser", () => {
     const completeLink = vi.fn();
     const router = createPortalRouter({
       auth: {} as never,
-      managedDeploymentDomain: "portal.test",
+      portalOrigin: new URL("https://portal.test"),
       publicOrigin: new URL("https://accounts.portal.test"),
       portalSessions: {
         read: async () => ({
@@ -97,13 +97,19 @@ describe("Account linking from a Host browser", () => {
       expect(fetch).toHaveBeenCalledTimes(2);
 
       for (const path of ["challenge", "complete"]) {
-        const rejected = await app.inject({
-          method: "POST",
-          url: `/personal-host-link/${path}`,
-          headers: { ...headers, origin: "https://hostile.test" },
-          payload: {},
-        });
-        expect(rejected.statusCode).toBe(403);
+        for (const origin of [
+          "https://hostile.test",
+          "https://accounts.portal.test",
+          "https://portal.test.evil.test",
+        ]) {
+          const rejected = await app.inject({
+            method: "POST",
+            url: `/personal-host-link/${path}`,
+            headers: { ...headers, origin },
+            payload: {},
+          });
+          expect(rejected.statusCode).toBe(403);
+        }
       }
       expect(completeLink).not.toHaveBeenCalled();
       const challenge = {

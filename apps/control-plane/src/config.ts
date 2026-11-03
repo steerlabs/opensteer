@@ -164,7 +164,7 @@ const CommonEnvironmentShape = {
   OPENSTEER_CONTROL_PLANE_DATABASE_URL: ControlPlaneDatabaseUrlSchema,
   OPENSTEER_CONTROL_PLANE_PUBLIC_URL: BareOriginSchema,
   OPENSTEER_CONTROL_PLANE_AUTH_SECRET: z.string().min(32),
-  OPENSTEER_MANAGED_DEPLOYMENT_DOMAIN: DeploymentDomainSchema,
+  OPENSTEER_PORTAL_ORIGIN: BareOriginSchema,
 } as const;
 
 const MigrationEnvironmentSchema = z
@@ -175,8 +175,6 @@ const AccountEnvironmentSchema = z
   .object({
     ...CommonEnvironmentShape,
     OPENSTEER_ADOPTION_OPERATION_KEY: Base64UrlKeySchema,
-    OPENSTEER_CLOUD_OPERATION_KEY: Base64UrlKeySchema.optional(),
-    OPENSTEER_CLOUD_TEMPLATE_PATH: z.string().min(1).optional(),
     OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY: Base64UrlKeySchema,
     OPENSTEER_GOOGLE_CLIENT_ID: z.string().min(1),
     OPENSTEER_GOOGLE_CLIENT_SECRET: z.string().min(1),
@@ -230,7 +228,6 @@ export interface ControlPlaneConfig {
   readonly publicOrigin: URL;
   readonly authSecret: string;
   readonly adoptionOperationKey: string;
-  readonly cloud?: { readonly operationKey: string; readonly templatePath: string };
   readonly personalAccountLinkOperationKey: string;
   readonly googleClientId: string;
   readonly googleClientSecret: string;
@@ -245,7 +242,7 @@ export interface ControlPlaneConfig {
       readonly revision: number;
     }[];
   };
-  readonly managedDeploymentDomain: string;
+  readonly portalOrigin: URL;
   readonly connectDomain: string;
   /**
    * Where the portal sends someone who wants a private, on-their-computer
@@ -309,21 +306,11 @@ export function loadControlPlaneConfig(
   ) {
     throw new Error("Adoption and Personal Account-link keys must be different");
   }
-  if (
-    Boolean(parsed.OPENSTEER_CLOUD_OPERATION_KEY) !== Boolean(parsed.OPENSTEER_CLOUD_TEMPLATE_PATH)
-  ) {
-    throw new Error(
-      "Cloud requires both OPENSTEER_CLOUD_OPERATION_KEY and OPENSTEER_CLOUD_TEMPLATE_PATH",
-    );
+  if (parsed.NODE_ENV !== "development" && parsed.OPENSTEER_PORTAL_ORIGIN.protocol !== "https:") {
+    throw new Error("OPENSTEER_PORTAL_ORIGIN must use HTTPS outside development");
   }
-  if (
-    parsed.OPENSTEER_CLOUD_OPERATION_KEY &&
-    [
-      parsed.OPENSTEER_ADOPTION_OPERATION_KEY,
-      parsed.OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY,
-    ].includes(parsed.OPENSTEER_CLOUD_OPERATION_KEY)
-  ) {
-    throw new Error("Cloud operation encryption requires its own key");
+  if (parsed.OPENSTEER_PORTAL_ORIGIN.origin === parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.origin) {
+    throw new Error("Account and portal origins must differ");
   }
   const config = {
     environment: parsed.NODE_ENV,
@@ -331,19 +318,11 @@ export function loadControlPlaneConfig(
     publicOrigin: parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL,
     authSecret: parsed.OPENSTEER_CONTROL_PLANE_AUTH_SECRET,
     adoptionOperationKey: parsed.OPENSTEER_ADOPTION_OPERATION_KEY,
-    ...(parsed.OPENSTEER_CLOUD_OPERATION_KEY && parsed.OPENSTEER_CLOUD_TEMPLATE_PATH
-      ? {
-          cloud: {
-            operationKey: parsed.OPENSTEER_CLOUD_OPERATION_KEY,
-            templatePath: parsed.OPENSTEER_CLOUD_TEMPLATE_PATH,
-          },
-        }
-      : {}),
     personalAccountLinkOperationKey: parsed.OPENSTEER_PERSONAL_ACCOUNT_LINK_OPERATION_KEY,
     googleClientId: parsed.OPENSTEER_GOOGLE_CLIENT_ID,
     googleClientSecret: parsed.OPENSTEER_GOOGLE_CLIENT_SECRET,
     ...(hostedOAuthConfig(parsed) ? { hostedOAuth: hostedOAuthConfig(parsed)! } : {}),
-    managedDeploymentDomain: parsed.OPENSTEER_MANAGED_DEPLOYMENT_DOMAIN,
+    portalOrigin: parsed.OPENSTEER_PORTAL_ORIGIN,
     connectDomain: parsed.OPENSTEER_CONNECT_DOMAIN,
     ...(parsed.OPENSTEER_DESKTOP_DOWNLOAD_URL
       ? { desktopDownloadUrl: parsed.OPENSTEER_DESKTOP_DOWNLOAD_URL }

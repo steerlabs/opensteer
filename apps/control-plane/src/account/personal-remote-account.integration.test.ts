@@ -103,7 +103,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
             proofId: input.proofId,
           }),
       },
-      managedDeploymentDomain: "connect.personal.test.invalid",
+      portalOrigin: new URL("https://connect.personal.test.invalid"),
     });
 
   beforeAll(async () => {
@@ -190,7 +190,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
         .executeTakeFirst();
       expect(deployment).toBeUndefined();
       const directory = new ControlPlaneStore(database, issuer, {
-        managedDeploymentDomain: "connect.personal.test.invalid",
+        portalOrigin: new URL("https://connect.personal.test.invalid"),
       });
       await expect(directory.listDeployments(ownerA)).resolves.toEqual([]);
       await expect(
@@ -220,7 +220,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
         authenticator: {} as never,
         connectLifecycle: {} as never,
         publicOrigin: issuer,
-        managedDeploymentDomain: "connect.personal.test.invalid",
+        portalOrigin: new URL("https://connect.personal.test.invalid"),
       });
       try {
         const courier = [challenge, request.proof, first, replay];
@@ -428,7 +428,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     await fillOwnedQuota(database, ownerA, maximumAccountDeployments - 1);
     const sharedHost = await linkedPersonalHost(service, ownerB);
     const directory = new ControlPlaneStore(database, issuer, {
-      managedDeploymentDomain: "connect.personal.test.invalid",
+      portalOrigin: new URL("https://connect.personal.test.invalid"),
     });
     const authority = await directory.authenticateHostCredential(
       `Bearer ${sharedHost.hostCredential}`,
@@ -671,7 +671,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       linkGeneration: completion.linkGeneration,
     });
     const directory = new ControlPlaneStore(database, issuer, {
-      managedDeploymentDomain: "connect.personal.test.invalid",
+      portalOrigin: new URL("https://connect.personal.test.invalid"),
     });
     await expect(directory.deleteAccount(ownerA)).resolves.toBeUndefined();
     await expect(
@@ -687,7 +687,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
       signedLinkRequest(firstChallenge, host.privateKey),
     );
     const directory = new ControlPlaneStore(database, issuer, {
-      managedDeploymentDomain: "connect.personal.test.invalid",
+      portalOrigin: new URL("https://connect.personal.test.invalid"),
     });
     const firstActivation = {
       challengeId: firstChallenge.challengeId,
@@ -832,7 +832,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     const otherHost = hostAuthority();
     const otherChallenge = await issueChallenge(service, ownerA, otherHost);
     const directory = new ControlPlaneStore(database, issuer, {
-      managedDeploymentDomain: "connect.personal.test.invalid",
+      portalOrigin: new URL("https://connect.personal.test.invalid"),
     });
     await expect(
       service.activateLink(`Bearer ${openCompletion(completion).hostCredential}`, {
