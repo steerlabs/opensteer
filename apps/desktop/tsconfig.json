@@ -10,6 +10,7 @@
   },
   "include": [
     "src",
+    "scripts/desktop-projects-journey.ts",
     "scripts/personal-database-snapshot-journey.ts",
     "scripts/viewer-clipboard-smoke.ts",
     "scripts/baseline-viewer-smoke.ts",
