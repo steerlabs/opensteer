@@ -8,13 +8,21 @@ export interface ConnectedAgentsSnapshot {
   readonly pending: string | null;
 }
 export class ConnectedAgentsClient {
-  readonly #client: Pick<HostClient, "rpc" | "dispatch" | "subscribe" | "getSnapshot">;
+  readonly #client: Pick<
+    HostClient,
+    "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+  >;
   readonly #listeners = new Set<() => void>();
   #state: ConnectedAgentsSnapshot = { connections: null, error: null, pending: null };
   #controller: AbortController | null = null;
   #read = 0;
   #owner: string | null = null;
-  constructor(client: Pick<HostClient, "rpc" | "dispatch" | "subscribe" | "getSnapshot">) {
+  constructor(
+    client: Pick<
+      HostClient,
+      "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+    >,
+  ) {
     this.#client = client;
   }
   getSnapshot = () => this.#state;
@@ -47,12 +55,14 @@ export class ConnectedAgentsClient {
       connection = snapshot.connection;
     };
     const unsubscribe = this.#client.subscribe(observe);
+    const detachChanges = this.#client.subscribeConnectionsChanged(() => void this.refresh());
     const previousOwner = this.#owner;
     observe();
     if (this.#owner && this.#owner === previousOwner) void this.refresh();
     return () => {
       controller.abort();
       unsubscribe();
+      detachChanges();
     };
   }
   refresh = async (): Promise<void> => {

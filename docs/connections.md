@@ -48,8 +48,9 @@ authority. See [MCP OAuth boundaries](host-boundaries.md#credentials-and-session
 
 Connected-agent Settings load only when opened, on web, desktop and both mobile
 platforms. Listing or revoking connections must add no attach round trip or
-bootstrap dependency. Opening Settings, reconnecting or explicitly refreshing
-reads current Host authority, including connections changed from another device.
+bootstrap dependency. Opening Settings, reconnecting, explicitly refreshing or
+the person's `host.connections-changed` notice (approval or revocation on any of
+their devices) rereads current Host authority.
 
 ## Remote administration
 

@@ -1088,6 +1088,7 @@ export class HttpHostClient {
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
   readonly #personalRemoteAccessListeners = new Set<() => void>();
+  readonly #connectionsListeners = new Set<() => void>();
   readonly #personShowListeners = new Set<(message: PersonShowMessage) => void>();
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
@@ -2539,6 +2540,11 @@ export class HttpHostClient {
   subscribePersonalRemoteAccess(listener: () => void): () => void {
     this.#personalRemoteAccessListeners.add(listener);
     return () => this.#personalRemoteAccessListeners.delete(listener);
+  }
+
+  subscribeConnectionsChanged(listener: () => void): () => void {
+    this.#connectionsListeners.add(listener);
+    return () => this.#connectionsListeners.delete(listener);
   }
 
   #invalidatePersonalRemoteAccess(): void {
@@ -4971,6 +4977,10 @@ export class HttpHostClient {
     }
     if (message.type === "host.personal-remote-access-changed") {
       this.#invalidatePersonalRemoteAccess();
+      return;
+    }
+    if (message.type === "host.connections-changed") {
+      for (const listener of this.#connectionsListeners) listener();
       return;
     }
     if (message.type === "host.requests-changed") {

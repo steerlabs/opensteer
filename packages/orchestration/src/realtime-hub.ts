@@ -928,6 +928,10 @@ export class RealtimeHub {
     this.#sendViewerMessage(userId, { type: "host.tasks-changed" });
   }
 
+  publishConnectionsChanged(userId: UserId): void {
+    this.#sendViewerMessage(userId, { type: "host.connections-changed" });
+  }
+
   publishNotificationPreference(userId: UserId, preference: WorkspaceNotificationPreference): void {
     this.#sendViewerMessage(userId, {
       type: "host.notification-preferences",

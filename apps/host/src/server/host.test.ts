@@ -760,6 +760,44 @@ describe("rpc envelope", () => {
     }
   });
 
+  it("tells the person's other devices when a connected agent is approved or revoked", async () => {
+    const ownerId = createId("user");
+    const connectionId = `mcn_${crypto.randomUUID()}`;
+    const revoke = vi.fn(async () => undefined);
+    const decide = vi.fn(async () => ({
+      type: "connection.authorize" as const,
+      completionPath: "/oauth/mcp/complete?request=r",
+    }));
+    const publishConnectionsChanged = vi.fn();
+    const app = await createHostServer({
+      authenticator: { authenticateUser: async () => ownerId, identity: testIdentity } as never,
+      connections: { close: () => undefined, decide, store: { revoke } } as never,
+      discovery: testDiscovery,
+      realtime: { broadcast: () => undefined, publishConnectionsChanged } as never,
+    });
+    try {
+      const revoked = await injectRpcRequest(app, "commands.dispatch", {
+        connectionId,
+        idempotencyKey: "revoke-agent",
+        type: "connection.revoke",
+      });
+      expect(revoked.statusCode, revoked.body).toBe(200);
+      expect(revoke).toHaveBeenCalledWith(ownerId, connectionId);
+      expect(publishConnectionsChanged).toHaveBeenCalledExactlyOnceWith(ownerId);
+      const approved = await injectRpcRequest(app, "commands.dispatch", {
+        decision: { kind: "approve", label: "Agent", accessMode: "auto", reach: { kind: "user" } },
+        idempotencyKey: "approve-agent",
+        requestId: "r".repeat(43),
+        type: "connection.authorize",
+      });
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect(publishConnectionsChanged).toHaveBeenCalledTimes(2);
+      expect(publishConnectionsChanged).toHaveBeenLastCalledWith(ownerId);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("publishes the terminal events for work the removed computer never claimed", async () => {
     const ownerId = createId("user");
     const runnerId = createId("runner");

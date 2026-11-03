@@ -106,6 +106,44 @@ describe("Settings connected agents", () => {
       host.dispose();
     }
   });
+  it("shows a connection approved and revoked on another device without reconnecting", async () => {
+    const row = connectionFixture();
+    let listed: AgentConnection[] = [];
+    let changed: (() => void) | undefined;
+    const list = vi.fn(async () => ({ ok: true as const, data: { connections: listed } }));
+    const snapshot = {
+      connection: "connected" as const,
+      session: "authenticated" as const,
+      user: { id: row.userId },
+    };
+    const host = {
+      rpc: { "connections.list": list },
+      dispatch: vi.fn(),
+      subscribe: () => () => undefined,
+      getSnapshot: () => snapshot,
+      subscribeConnectionsChanged: (listener: () => void) => {
+        changed = listener;
+        return () => {
+          changed = undefined;
+        };
+      },
+    } as unknown as ConstructorParameters<typeof ConnectedAgentsClient>[0];
+    const resource = new ConnectedAgentsClient(host);
+    const stop = resource.start();
+    try {
+      await vi.waitFor(() => expect(resource.getSnapshot().connections).toEqual([]));
+      listed = [row];
+      changed?.();
+      await vi.waitFor(() => expect(resource.getSnapshot().connections).toEqual([row]));
+      listed = [];
+      changed?.();
+      await vi.waitFor(() => expect(resource.getSnapshot().connections).toEqual([]));
+      expect(list).toHaveBeenCalledTimes(3);
+    } finally {
+      stop();
+    }
+    expect(changed).toBeUndefined();
+  });
   it("shows a failed list read without claiming there are no connections", async () => {
     const host = new MockHostClient({ latencyMs: 0 });
     Object.defineProperty(host.rpc, "connections.list", {

@@ -2792,9 +2792,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return unsupportedMockRpc();
     case "connection.revoke":
       client.revokeConnection(command.connectionId);
+      for (const listener of client.connectionsListeners) listener();
       return rpcSuccess({ type: command.type });
-    case "connection.authorize":
-      return rpcSuccess(client.authorizeConnection(command));
+    case "connection.authorize": {
+      const result = client.authorizeConnection(command);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess(result);
+    }
     case "session.revoke":
       await client.revokeSession(command.sessionId);
       return rpcSuccess({ type: command.type });
@@ -4414,6 +4418,11 @@ export class MockHostClient implements HostClient {
     return () => this.#state.remoteAdministrationListeners.delete(listener);
   }
 
+  subscribeConnectionsChanged(listener: () => void): () => void {
+    this.#state.connectionsListeners.add(listener);
+    return () => this.#state.connectionsListeners.delete(listener);
+  }
+
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
     return this.#state.subscribeNotifications(listener);
   }
@@ -5108,6 +5117,7 @@ class MockHostState {
   }
 
   readonly remoteAdministrationListeners = new Set<() => void>();
+  readonly connectionsListeners = new Set<() => void>();
   remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
     access: { accountLink: null, generation: 0, mode: "off", route: null, schemaVersion: 2 },
     accountIssuer: null,

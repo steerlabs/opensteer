@@ -1150,6 +1150,8 @@ export interface HostClient {
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void;
   /** Invalidates remote administration on Host changes and stream recovery. */
   subscribePersonalRemoteAccess(listener: () => void): () => void;
+  /** Told when this person approves or revokes a connected agent on any device. */
+  subscribeConnectionsChanged(listener: () => void): () => void;
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;
   /** Sets shared Done or reopens the task. */

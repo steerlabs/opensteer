@@ -1594,7 +1594,10 @@ export async function createHostServer(
           code: "not_found",
           message: "Agent connections are unavailable.",
         });
-      return handleConnectionCommand(dependencies.connections, command, context);
+      const result = await handleConnectionCommand(dependencies.connections, command, context);
+      // The person's other devices may be showing the list.
+      if (context.session) dependencies.realtime.publishConnectionsChanged(context.session.user.id);
+      return result;
     }
     const session = requireRpcSession(context);
     const userId = session.user.id;
