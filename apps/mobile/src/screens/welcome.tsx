@@ -1,11 +1,12 @@
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
-import type { ReactNode } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { useState, type ReactNode } from "react";
+import { ActivityIndicator, Pressable, Share, StyleSheet, View } from "react-native";
 import { color, material, controlFontScaleLimit, radius, space } from "../theme.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { accountDoorPresentation } from "./account-door.js";
 
 export function Welcome(props: {
+  readonly portalOrigin?: string | null;
   readonly account: DesktopAccountAuthState["account"];
   readonly failure: string | null;
   readonly onAccount: () => void;
@@ -13,6 +14,7 @@ export function Welcome(props: {
   readonly onServer: () => void;
   readonly signingIn: boolean;
 }): ReactNode {
+  const [otherWays, setOtherWays] = useState(false);
   const account = accountDoorPresentation(props.account, props.signingIn);
   const unavailable = !props.account.available;
   const accountFailure =
@@ -30,12 +32,12 @@ export function Welcome(props: {
       </View>
       <View style={styles.intro}>
         <AppText role="displayLarge" style={styles.centred}>
-          Opensteer
+          Opensteer runs on your computer
         </AppText>
         <AppText numberOfLines={2} role="secondary" style={styles.sentence} tone="soft">
           {unavailable
             ? "Account sign-in is unavailable. Add a server by address or pair a computer instead."
-            : "Steer the agents running on your computers and servers from your phone."}
+            : "Set it up on your Mac, then scan its code with this phone's camera."}
         </AppText>
       </View>
       {accountFailure === null ? null : (
@@ -56,19 +58,37 @@ export function Welcome(props: {
             role="action"
             style={{ color: color.inkOnEmber }}
           >
-            {account.title}
+            Sign in
           </AppText>
         </Pressable>
       )}
-      <View style={styles.doors}>
-        <WelcomeDoor label="Add a server by address" onPress={props.onServer} />
-        <WelcomeDoor label="Pair a computer" onPress={props.onPersonal} />
-      </View>
+      {props.portalOrigin ? (
+        <WelcomeDoor
+          label="Get Opensteer for Mac"
+          onPress={() => {
+            void Share.share({
+              message: `${props.portalOrigin}/mac`,
+              url: `${props.portalOrigin}/mac`,
+            }).catch(() => undefined);
+          }}
+        />
+      ) : null}
+      <WelcomeDoor quiet label="Other ways to connect" onPress={() => setOtherWays(!otherWays)} />
+      {otherWays ? (
+        <View style={styles.doors}>
+          <WelcomeDoor label="Add a server by address" onPress={props.onServer} />
+          <WelcomeDoor label="Pair a computer" onPress={props.onPersonal} />
+        </View>
+      ) : null}
     </View>
   );
 }
 
-function WelcomeDoor(props: { readonly label: string; readonly onPress: () => void }): ReactNode {
+function WelcomeDoor(props: {
+  readonly quiet?: boolean;
+  readonly label: string;
+  readonly onPress: () => void;
+}): ReactNode {
   return (
     <Pressable
       accessibilityRole="button"
@@ -78,8 +98,8 @@ function WelcomeDoor(props: { readonly label: string; readonly onPress: () => vo
       <AppText
         maxFontSizeMultiplier={controlFontScaleLimit}
         numberOfLines={2}
-        role="action"
-        tone="ember"
+        role={props.quiet ? "secondary" : "action"}
+        tone={props.quiet ? "soft" : "ember"}
       >
         {props.label}
       </AppText>
