@@ -1914,6 +1914,18 @@ const opensteerSteps = new Map<string, OpensteerStep>([
       }),
   ],
   ["project_list", said(["Looking up projects", "Looked up projects"], "folder")],
+  [
+    "plugin_install",
+    (_tool, args) =>
+      step({
+        activeLabel: "Installing a plugin",
+        hint: stringField(args, "directory") ?? "",
+        hintKind: "prose",
+        icon: "folder",
+        kind: "tool",
+        label: "Installed a plugin",
+      }),
+  ],
 ]);
 
 /** Every engine's name for each kind of step it shares with the others. */

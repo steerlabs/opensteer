@@ -218,21 +218,6 @@ const definitions = [
   },
   {
     annotations: {
-      title: "Install plugin",
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-      readOnlyHint: false,
-    },
-    description:
-      "Install an Agent Plugins 1.0 folder inside your own Workspace and activate its skills here. Use a relative path; symlinks are refused. Installing grants no connection access. Local MCP servers require the computer owner's approval.",
-    id: "plugin.install",
-    inputSchema: z.strictObject({ directory: z.string().min(1).max(4096) }),
-    name: "plugin_install",
-  },
-
-  {
-    annotations: {
       destructiveHint: false,
       idempotentHint: false,
       openWorldHint: false,
@@ -244,6 +229,20 @@ const definitions = [
     id: "project.create",
     inputSchema: WorkspaceCreateInputSchema,
     name: "project_create",
+  },
+  {
+    annotations: {
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      readOnlyHint: false,
+      title: "Install plugin",
+    },
+    description:
+      "Install an Agent Plugins 1.0 folder inside your own Workspace and activate its skills here. Use a relative path; symlinks are refused. Installing grants no connection access. Local MCP servers require the computer owner's approval.",
+    id: "plugin.install",
+    inputSchema: z.strictObject({ directory: z.string().min(1).max(4096) }),
+    name: "plugin_install",
   },
   {
     annotations: {
