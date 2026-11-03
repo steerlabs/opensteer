@@ -43,3 +43,12 @@ export const SettingsAccountScreen = (props: Props) => <Page {...props} page="ac
 export const SettingsDevicesScreen = (props: Props) => <Page {...props} page="devices" />;
 export const SettingsAIScreen = (props: Props) => <Page {...props} page="ai" />;
 export const SettingsSignInsScreen = (props: Props) => <Page {...props} page="sign-ins" />;
+
+export function SettingsRemoteAccessScreen({ route }: Props) {
+  const host = useAttachedHost(route.params.deploymentId);
+  return host ? <AccountSettingsController key={route.params.deploymentId} detail="remote" /> : <DeploymentGate deploymentId={route.params.deploymentId} />;
+}
+export function SettingsSessionDetailScreen({ route }: StaticScreenProps<{ readonly deploymentId: string; readonly sessionId: string }>) {
+  const host = useAttachedHost(route.params.deploymentId);
+  return host ? <AccountSettingsController key={route.params.deploymentId} detail="session" sessionId={route.params.sessionId} /> : <DeploymentGate deploymentId={route.params.deploymentId} />;
+}
