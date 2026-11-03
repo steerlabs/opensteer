@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentThreadSummarySchema } from "@opensteer/protocol";
 import { ThreadSchema } from "@opensteer/core";
-import { TriggerSchema } from "../../packages/triggers/src/models.js";
+import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
-import { grade, gradeWorkspaceFiles } from "./grader.js";
+import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
 import { startFakeHost } from "./host.js";
 
 const memoryCases = async () =>
@@ -75,7 +75,7 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
     (await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))).join("\n"),
   );
   const cases = corpus.filter((c) => c.area === "memory");
-  expect(cases).toHaveLength(25);
+  expect(cases).toHaveLength(29);
   for (const c of cases) for (const turn of c.turns) inputForCaseTurn(turn);
   expect(
     inputForCaseTurn(cases.find((c) => c.id === "memory-nothing-new")!.turns[0]!).author.kind,
@@ -90,6 +90,7 @@ it("uses the production wake text for worker evals and keeps Chat silence strict
   for (const c of await memoryCases()) {
     for (const turn of c.turns) {
       if (typeof turn === "string" || !turn.text || turn.author?.kind !== "trigger") continue;
+      if (turn.text === "Finish deleting memory") continue;
       const [, label, timestamp] = turn.text.match(/^(Light|Nightly) pass due \(([^)]+)\)/u) ?? [];
       expect(label, `${c.id} wakes like a managed memory pass`).toBeDefined();
       expect(turn.text).toBe(
@@ -148,9 +149,11 @@ it("offers every expected call and uses production-shaped control fixtures", asy
     );
   for (const c of cases.filter(({ mocks }) => mocks.trigger_read)) {
     for (const result of results(c.mocks.trigger_read)) {
+      if (result.revision) expect(() => TriggerRevisionSchema.parse(result.revision)).not.toThrow();
       const triggers = (result.triggers as unknown[] | undefined) ?? [result.trigger];
       for (const trigger of triggers)
-        expect(TriggerSchema.parse(trigger).systemRole).toMatch(/^memory-/u);
+        if (TriggerSchema.parse(trigger).systemRole !== null)
+          expect(TriggerSchema.parse(trigger).systemRole).toMatch(/^memory-/u);
     }
     for (const result of results(c.mocks.trigger_write))
       if (!result.$error) expect(() => TriggerSchema.parse(result)).not.toThrow();
@@ -163,26 +166,57 @@ it("offers every expected call and uses production-shaped control fixtures", asy
   }
 });
 
-it("keeps memory while a stopped pass is still running and erases it once both are idle", async () => {
-  const cases = await memoryCases();
-  const running = cases.find((c) => c.id === "memory-stop-while-running")!;
-  const idle = cases.find((c) => c.id === "memory-stop-when-idle")!;
-  const root = await mkdtemp(join(tmpdir(), "memory-stop-"));
+it("rejects delete-first traces and requires successful Done then stopped reads before erasure", async () => {
+  const c = (await memoryCases()).find((c) => c.id === "memory-stop-when-idle")!;
+  const root = await mkdtemp(join(tmpdir(), "memory-boundaries-"));
+  const calls: import("./grader.js").RecordedCall[] = [];
   try {
-    for (const [path, content] of Object.entries(running.fixtures)) {
+    for (const [path, content] of Object.entries(c.fixtures)) {
       await mkdir(join(root, path, ".."), { recursive: true });
       await writeFile(join(root, path), content);
     }
-    const off =
-      "# Main\n\n## Standing instructions\nUse metric units.\n\n## Memory\nMemory: off at the person's request";
-    await writeFile(join(root, "AGENTS.md"), `${off}; deleting memory once both passes stop.\n`);
-    expect((await gradeWorkspaceFiles(running.expect, root)).every((c) => c.pass)).toBe(true);
-    expect((await gradeWorkspaceFiles(idle.expect, root)).every((c) => c.pass)).toBe(false);
+    const pause = c.expect.calls.find((call) => call.tool === "trigger_write")!;
+    expect((await gradeToolBoundary(c.expect, calls, pause, root)).every((c) => c.pass)).toBe(
+      false,
+    );
+    await writeFile(
+      join(root, "AGENTS.md"),
+      "## Memory\nMemory: off at the person's request; deleting memory once both passes stop.\n",
+    );
     await rm(join(root, "memory"), { recursive: true });
-    expect((await gradeWorkspaceFiles(running.expect, root)).every((c) => c.pass)).toBe(false);
+    // All later calls and correct final files cannot erase this failed boundary.
+    const deleteFirst = await gradeToolBoundary(c.expect, calls, pause, root);
+    expect(deleteFirst.some((c) => !c.pass)).toBe(true);
+    await mkdir(join(root, "memory"));
+    const sequence = c.expect.boundaries.find((rule) => rule.until.length)!.until.flat();
+    for (const required of sequence) {
+      expect((await gradeToolBoundary(c.expect, calls, required, root)).every((c) => c.pass)).toBe(
+        true,
+      );
+      calls.push({
+        tool: required.tool,
+        args: required.args,
+        valid: true,
+        result: required.result,
+      });
+    }
+    await rm(join(root, "memory"), { recursive: true });
     await rm(join(root, "skills/light-pass"), { recursive: true });
-    await writeFile(join(root, "AGENTS.md"), `${off}.\n`);
-    expect((await gradeWorkspaceFiles(idle.expect, root)).every((c) => c.pass)).toBe(true);
+    const end = { tool: "<end>", args: {} };
+    expect((await gradeToolBoundary(c.expect, calls, end, root)).every((c) => c.pass)).toBe(true);
+    expect(
+      (await gradeToolBoundary(c.expect, calls.slice(0, -1), end, root)).every((c) => c.pass),
+    ).toBe(false);
+    expect(
+      (
+        await gradeToolBoundary(
+          c.expect,
+          calls.map((call, i) => (i === 0 ? { ...call, result: undefined } : call)),
+          end,
+          root,
+        )
+      ).every((c) => c.pass),
+    ).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -216,4 +250,25 @@ it("allows nightly summary curation while protecting instructions and resisting 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("accepts source-only tuning and rejects program edits or resuming a paused light pass", async () => {
+  const c = (await memoryCases()).find((c) => c.id === "memory-nightly-tunes-paused-light")!;
+  const call = { ...c.expect.calls[0]!, valid: true };
+  expect(grade(c.expect, [call], "").every((check) => check.pass)).toBe(true);
+  expect(
+    grade(c.expect, [{ ...call, args: { ...call.args, program: {} } }], "").every(
+      (check) => check.pass,
+    ),
+  ).toBe(false);
+  expect(
+    grade(
+      c.expect,
+      [
+        call,
+        { tool: "trigger_write", args: { action: "set_status", status: "active" }, valid: true },
+      ],
+      "",
+    ).every((check) => check.pass),
+  ).toBe(false);
 });

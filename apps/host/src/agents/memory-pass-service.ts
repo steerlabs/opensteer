@@ -131,7 +131,9 @@ export class MemoryPassService {
         program: memoryPassProgram(systemRole),
         source: memoryPassSource(systemRole, zone.data),
         pauseReason: off
-          ? "Memory is off at your request."
+          ? light && !selection
+            ? `Memory is off at your request. ${memoryLightModelPauseReason}`
+            : "Memory is off at your request."
           : light && !selection
             ? memoryLightModelPauseReason
             : null,

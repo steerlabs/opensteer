@@ -13,7 +13,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId } from "@opensteer/core";
 import { AgentControlRequestSchema } from "@opensteer/protocol";
 import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { partialMatch } from "./grader.js";
+import { partialMatch, gradeToolBoundary, type Check } from "./grader.js";
 import { AgentToolsMcpService } from "../../apps/host/src/agents/agent-tools-mcp-service.js";
 import { AgentControlTokenService } from "../../apps/host/src/agents/agent-control-service.js";
 import {
@@ -43,8 +43,9 @@ const bodySchema = z.looseObject({
   id: z.union([z.string(), z.number(), z.null()]).optional(),
 });
 
-export async function startFakeHost(testCase: EvalCase) {
+export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const calls: RecordedCall[] = [];
+  const boundaryChecks: Check[] = [];
   const secret = randomUUID();
   const scope = {
     bindingGeneration: 1,
@@ -253,6 +254,7 @@ export async function startFakeHost(testCase: EvalCase) {
                 content: [{ type: "text", text: result.$error }],
               };
             }
+            calls[index] = { tool: name, args, valid, result };
             return {
               content: [{ type: "text", text: JSON.stringify(result) }],
               ...(name !== "integration_describe" && isRecord(result)
@@ -271,6 +273,18 @@ export async function startFakeHost(testCase: EvalCase) {
             .looseObject({ name: z.string(), arguments: z.unknown().optional() })
             .safeParse(parsedBody.params);
           callKey = `${session.transport.sessionId}:${String(parsedBody.id)}`;
+          if (workspace && params.success)
+            boundaryChecks.push(
+              ...(await gradeToolBoundary(
+                testCase.expect,
+                calls,
+                {
+                  tool: params.data.name,
+                  args: params.data.arguments ?? {},
+                },
+                workspace,
+              )),
+            );
           activeCalls.set(callKey, calls.length);
           calls.push({
             tool: params.success ? params.data.name : "<invalid-name>",
@@ -289,7 +303,7 @@ export async function startFakeHost(testCase: EvalCase) {
         }
       });
     }
-    return { calls, scope, secret, url, endpoints, close };
+    return { calls, boundaryChecks, scope, secret, url, endpoints, close };
   } catch (error) {
     await close();
     throw error;

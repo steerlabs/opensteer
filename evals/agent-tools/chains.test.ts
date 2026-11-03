@@ -27,7 +27,17 @@ it("resolves the real memory chains and rejects missing or forward dependencies"
   const cases = parseCases(
     await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
   );
-  for (const c of cases.filter((c) => c.after))
+  expect(
+    caseChain(
+      cases.find((c) => c.id === "memory-reenable-after-erasure")!,
+      cases,
+    ).map((c) => c.id),
+  ).toEqual([
+    "memory-stop-while-running",
+    "memory-stop-continuation",
+    "memory-reenable-after-erasure",
+  ]);
+  for (const c of cases.filter((c) => c.after && c.id !== "memory-reenable-after-erasure"))
     expect(caseChain(c, cases).map((c) => c.id)).toEqual([c.after, c.id]);
   const c = cases[0]!;
   expect(() => parseCases(JSON.stringify({ ...c, after: "missing" }))).toThrow("earlier");

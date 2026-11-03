@@ -5,6 +5,7 @@ export interface RecordedCall {
   readonly tool: string;
   readonly args: unknown;
   readonly valid: boolean;
+  readonly result?: unknown;
 }
 export interface Check {
   readonly name: string;
@@ -43,6 +44,18 @@ export function grade(
     add(
       `calls[${i}]:${required.tool}`,
       valid.some((c) => toolMatches(c.tool, required.tool) && partialMatch(c.args, required.args)),
+    );
+  for (const [i, rule] of expect.callsOnlyKeys.entries())
+    add(
+      `callsOnlyKeys[${i}]`,
+      calls
+        .filter((c) => toolMatches(c.tool, rule.tool) && partialMatch(c.args, rule.args))
+        .every(
+          (c) =>
+            c.args !== null &&
+            typeof c.args === "object" &&
+            Object.keys(c.args).every((key) => rule.keys.includes(key)),
+        ),
     );
   for (const name of expect.notCalls)
     add(`notCalls:${name}`, !calls.some((c) => toolMatches(c.tool, name)));
@@ -107,6 +120,7 @@ export async function gradeWorkspaceFiles(
   const physicalWorkspace = await realpath(workspace);
   for (const [i, rule] of expect.files.entries()) {
     const contents: string[] = [];
+    let exists = false;
     async function visit(path: string): Promise<void> {
       if (rule.exclude.some((excluded) => join(workspace, excluded) === path)) return;
       let stat;
@@ -116,6 +130,7 @@ export async function gradeWorkspaceFiles(
         if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
         throw error;
       }
+      exists = true;
       if (
         stat.isSymbolicLink() ||
         relative(physicalWorkspace, await realpath(path)) !== relative(workspace, path)
@@ -128,6 +143,8 @@ export async function gradeWorkspaceFiles(
     }
     for (const path of typeof rule.path === "string" ? [rule.path] : rule.path)
       await visit(join(workspace, path));
+    if (rule.exists !== undefined)
+      checks.push({ name: `files[${i}]:exists`, pass: exists === rule.exists });
     for (const pattern of rule.textMust)
       checks.push({
         name: `files[${i}]:must:${pattern}`,
@@ -138,6 +155,49 @@ export async function gradeWorkspaceFiles(
         name: `files[${i}]:mustNot:${pattern}`,
         pass: contents.every((text) => !new RegExp(pattern, "u").test(text)),
       });
+  }
+  return checks;
+}
+
+export async function gradeToolBoundary(
+  expect: EvalCase["expect"],
+  previous: readonly RecordedCall[],
+  current: Pick<RecordedCall, "tool" | "args">,
+  workspace: string,
+): Promise<Check[]> {
+  const checks: Check[] = [];
+  for (const [i, rule] of expect.boundaries.entries()) {
+    if (
+      rule.call &&
+      (!toolMatches(current.tool, rule.call.tool) || !partialMatch(current.args, rule.call.args))
+    )
+      continue;
+    let cursor = -1;
+    const complete =
+      rule.until.length > 0 &&
+      rule.until.every((group) => {
+        const matches = group.map((required) =>
+          previous.findIndex(
+            (call, index) =>
+              index > cursor &&
+              call.valid &&
+              toolMatches(call.tool, required.tool) &&
+              partialMatch(call.args, required.args) &&
+              call.result !== undefined &&
+              partialMatch(call.result, required.result ?? {}),
+          ),
+        );
+        if (matches.some((index) => index < 0)) return false;
+        cursor = Math.max(...matches);
+        return true;
+      });
+    if (complete) continue;
+    checks.push(
+      ...(await gradeWorkspaceFiles({ ...expect, files: rule.files }, workspace)).map((check) => ({
+        ...check,
+        name: `boundary[${i}]:${check.name}`,
+      })),
+    );
   }
   return checks;
 }

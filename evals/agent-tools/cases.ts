@@ -48,6 +48,18 @@ const structuredTurn = z
       for (const issue of result.error.issues)
         ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
   });
+const fileRules = z
+  .array(
+    z.strictObject({
+      path: z.union([fixturePath, z.literal("."), z.array(fixturePath).min(1)]),
+      exists: z.boolean().optional(),
+      recursive: z.boolean().default(false),
+      exclude: z.array(fixturePath).default([]),
+      textMust: z.array(regex).default([]),
+      textMustNot: z.array(regex).default([]),
+    }),
+  )
+  .default([]);
 export const CaseSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
   after: z.string().optional(),
@@ -66,17 +78,18 @@ export const CaseSchema = z.strictObject({
   turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
-    files: z
+    files: fileRules,
+    /** Snapshot before matching calls, until ordered groups of successful results complete. */
+    boundaries: z
       .array(
         z.strictObject({
-          path: z.union([fixturePath, z.literal("."), z.array(fixturePath).min(1)]),
-          recursive: z.boolean().default(false),
-          exclude: z.array(fixturePath).default([]),
-          textMust: z.array(regex).default([]),
-          textMustNot: z.array(regex).default([]),
+          call: call.optional(),
+          until: z.array(z.array(call.extend({ result: z.json().optional() })).min(1)).default([]),
+          files: fileRules,
         }),
       )
       .default([]),
+    callsOnlyKeys: z.array(call.extend({ keys: z.array(z.string()) })).default([]),
     calls: z.array(call).default([]),
     notCalls: z.array(z.string()).default([]),
     notCallsWithArgs: z.array(call).default([]),

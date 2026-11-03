@@ -399,6 +399,33 @@ describeStore("managed memory passes", (it) => {
     );
   });
 
+  it("retains no-light guidance when provisioned off and nightly is re-enabled", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "off-no-light", { light: false });
+    const s = service(f, { off: true });
+    await s.instance.ensureForMain(base.workspace.id);
+    const light = await role(f, base.userId);
+    const nightly = await role(f, base.userId, "memory-nightly");
+    expect(light.trigger.pauseReason).toBe(
+      `Memory is off at your request. ${memoryLightModelPauseReason}`,
+    );
+    await f.triggers.setStatus({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: nightly.trigger.id,
+      status: "active",
+    });
+    await s.instance.ensureForMain(base.workspace.id);
+    expect((await role(f, base.userId)).trigger).toMatchObject({
+      id: light.trigger.id,
+      status: "paused",
+      nextFireAt: null,
+      pauseReason: light.trigger.pauseReason,
+    });
+    expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
+  });
+
   it("creates a no-light role paused with a visible reason in detail and list, leaving nightly active", async ({
     storeFixture: f,
   }) => {

@@ -1,4 +1,4 @@
-import { writeFile, mkdtemp, readFile } from "node:fs/promises";
+import { writeFile, mkdtemp, readFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -241,4 +241,33 @@ it("closes once when a chained sample's stage and final cleanup both close it", 
   const host = await startFakeHost(c);
   await host.close();
   await expect(host.close()).resolves.toBeUndefined();
+});
+
+it("retains ingress file failures even if the agent recreates memory before later calls", async () => {
+  const c = parseCases(
+    await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"),
+  ).find((c) => c.id === "memory-stop-when-idle")!;
+  const workspace = await mkdtemp(join(tmpdir(), "eval-boundary-"));
+  const host = await startFakeHost(c, workspace);
+  const client = new Client({ name: "eval-boundary", version: "1" });
+  try {
+    await mkdir(join(workspace, "skills/light-pass"), { recursive: true });
+    await writeFile(join(workspace, "AGENTS.md"), "Memory: off at the person's request.\n");
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const pause = c.expect.calls.find((call) => call.tool === "trigger_write")!;
+    await client.callTool({ name: pause.tool, arguments: pause.args });
+    expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
+    await mkdir(join(workspace, "memory"));
+    await client.callTool({ name: pause.tool, arguments: pause.args });
+    expect(host.calls.at(-1)?.result).toMatchObject({ status: "paused" });
+    expect(host.boundaryChecks.some((check) => !check.pass)).toBe(true);
+  } finally {
+    await client.close();
+    await host.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
 });

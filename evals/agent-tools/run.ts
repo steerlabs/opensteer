@@ -8,7 +8,7 @@ import { z } from "zod";
 import { ModelSelectionSchema } from "@opensteer/core";
 import { caseChain, copyWorkspace } from "./chains.js";
 import { parseCases } from "./cases.js";
-import { grade, gradeWorkspaceFiles, type Check } from "./grader.js";
+import { grade, gradeWorkspaceFiles, gradeToolBoundary, type Check } from "./grader.js";
 import {
   compareBaseline,
   fingerprint,
@@ -233,7 +233,7 @@ async function main() {
                   await mkdir(dirname(target), { recursive: true });
                   await writeFile(target, content);
                 }
-                host = await startFakeHost(stage);
+                host = await startFakeHost(stage, p.workspace);
                 const result = await runEngine({
                   prepared: p,
                   testCase: stage,
@@ -263,6 +263,13 @@ async function main() {
                 treatment = result.treatment;
                 const stageChecks = [
                   ...grade(stage.expect, host.calls, finalText, assistantText, earlierText),
+                  ...host.boundaryChecks,
+                  ...(await gradeToolBoundary(
+                    stage.expect,
+                    host.calls,
+                    { tool: "<end>", args: {} },
+                    p.workspace,
+                  )),
                   ...(await gradeWorkspaceFiles(stage.expect, p.workspace)),
                 ];
                 fileChecks.push(

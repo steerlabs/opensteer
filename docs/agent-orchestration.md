@@ -452,7 +452,10 @@ Chat Runs still notify. Requests retain their own notification rules.
 
 Done only requests a stop, so stopping memory writes the off line first, which
 the passes check when they wake, then pauses and marks both workers Done, and
-erases files only once neither is running or waiting. See
+erases files only once neither is running or waiting. A slow stop keeps deletion pending and
+Chat arranges a one-shot reminder to recheck; without access to create it, the person must ask
+Chat to finish deletion. Re-enabling reopens the same workers; a light pass paused for lack of a
+light model stays paused until the person chooses or accepts a model. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
 
 Main is not yet a private boundary: a shared channel routed into Main receives
