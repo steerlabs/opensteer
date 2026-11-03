@@ -65,6 +65,17 @@ export const CaseSchema = z.strictObject({
   turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
+    files: z
+      .array(
+        z.strictObject({
+          path: z.union([fixturePath, z.literal("."), z.array(fixturePath).min(1)]),
+          recursive: z.boolean().default(false),
+          exclude: z.array(fixturePath).default([]),
+          textMust: z.array(regex).default([]),
+          textMustNot: z.array(regex).default([]),
+        }),
+      )
+      .default([]),
     calls: z.array(call).default([]),
     notCalls: z.array(z.string()).default([]),
     notCallsWithArgs: z.array(call).default([]),
