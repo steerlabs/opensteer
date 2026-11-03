@@ -104,7 +104,7 @@ async function boot(input: Boot) {
     plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
-      directory: undefined,
+      directories: [],
       skills: [],
     }),
     maxConcurrentRuns: 1,

@@ -2487,7 +2487,7 @@ export class RunnerRuntime {
       const sandboxPlan = {
         ...(attachmentDirectory ? { attachmentDirectory } : {}),
         environment: baseEnvironment,
-        pluginCacheDirectory: runSkills.directory,
+        pluginCacheDirectories: runSkills.directories,
         providerState,
         threadStateDirectory,
         workspacePath: workspace.path,

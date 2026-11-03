@@ -1973,9 +1973,23 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     join(context.threadStateDirectory, "opencode", "instructions.md"),
     "utf8",
   );
+  expect(await readdir(join(context.threadStateDirectory, "opencode", "skills"))).toEqual(
+    expect.arrayContaining(skills.skills.map((skill) => encodeURIComponent(skill.fullName))),
+  );
+  expect(
+    (await readdir(join(context.threadStateDirectory, "opencode", "skills"))).every(
+      (name) => !name.includes(":"),
+    ),
+  ).toBe(true);
   for (const skill of skills.skills) {
     const delivered = await readFile(
-      join(context.threadStateDirectory, "opencode", "skills", skill.fullName, "SKILL.md"),
+      join(
+        context.threadStateDirectory,
+        "opencode",
+        "skills",
+        encodeURIComponent(skill.fullName),
+        "SKILL.md",
+      ),
       "utf8",
     );
     expect(delivered).toContain(`"name":"${skill.fullName}"`);

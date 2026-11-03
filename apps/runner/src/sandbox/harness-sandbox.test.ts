@@ -79,8 +79,11 @@ describe("harness sandbox mounts", () => {
 
   it("re-exposes only this profile's and this Thread's directories", async () => {
     const fixture = await createFixture();
+    const unrelated = join(fixture.pluginsRoot, "b".repeat(64));
+    await mkdir(unrelated, { recursive: true });
     const args = await mounts(fixture);
 
+    expect(args).not.toContain(unrelated);
     expect(segmentIndex(args, bind(fixture.providerHome))).toBeGreaterThanOrEqual(0);
     expect(segmentIndex(args, bind(fixture.storeDirectory))).toBeGreaterThanOrEqual(0);
     expect(segmentIndex(args, readOnlyBind(fixture.threadState))).toBeGreaterThanOrEqual(0);
@@ -530,7 +533,7 @@ async function createFixture(): Promise<Fixture> {
     providerState,
     run: {
       environment,
-      pluginCacheDirectory: plugins,
+      pluginCacheDirectories: [plugins],
       launchDirectory,
       providerState,
       threadStateDirectory: threadState,

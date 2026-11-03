@@ -239,7 +239,9 @@ browser consent additionally requires the grant creator's active membership.
 Connection ceilings and optional specialist restrictions can only narrow access.
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
 its own lineage has Main authority; start a new task instead. Cross-Workspace
-delegation still requires the caller's `main` profile. Reports grant no execution.
+delegation still requires the caller's `main` profile. A specialist may send only
+reports to Threads outside its own registration, even when it shares their Main
+lineage. Reports grant no execution.
 
 Every capability names the current attempt's grant. Tool admission needs an
 active grant, live binding, matching Runner boot and non-deleting Workspace;

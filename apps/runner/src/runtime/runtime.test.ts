@@ -102,7 +102,7 @@ const testServerDeploymentShape = {
 const noPlugins = async () => ({
   cleanup: async () => undefined,
   digest: "none",
-  directory: undefined,
+  directories: [],
   skills: [],
 });
 const projectContinuationIdentity = providerContinuationIdentityProjector(
@@ -3507,7 +3507,7 @@ describe("RunnerRuntime", () => {
       plugins: async () => ({
         cleanup: async () => undefined,
         digest: "example",
-        directory: "/state/plugin-cache/example",
+        directories: ["/state/plugin-cache/example"],
         skills: [
           {
             plugin: "example",

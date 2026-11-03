@@ -72,7 +72,7 @@ export interface HarnessSandboxRunPlan {
   /** Absent when this Run has no machine access. */
   readonly launchDirectory: string | undefined;
   /** Absent when no plugin skills were materialized for this Thread. */
-  readonly pluginCacheDirectory: string | undefined;
+  readonly pluginCacheDirectories: readonly string[];
   readonly providerState: HarnessProviderState;
   readonly threadStateDirectory: string;
   readonly workspacePath: string;
@@ -140,9 +140,7 @@ export async function harnessSandboxMounts(
       { mode: "--bind", path: providerHome },
       { mode: "--bind", path: run.providerState.store.directory },
       { mode: "--ro-bind", path: run.threadStateDirectory },
-      ...(run.pluginCacheDirectory
-        ? [{ mode: "--ro-bind" as const, path: run.pluginCacheDirectory }]
-        : []),
+      ...run.pluginCacheDirectories.map((path) => ({ mode: "--ro-bind" as const, path })),
     ],
     workspaceRoots: [run.workspacePath, ...run.writableRoots],
   });
@@ -438,7 +436,7 @@ export class HarnessSandbox implements HarnessProcessSandbox {
       const wrapper = await this.plan({
         ...(ownAttachmentDirectory ? { attachmentDirectory: ownAttachmentDirectory } : {}),
         environment: this.#environment,
-        pluginCacheDirectory: undefined,
+        pluginCacheDirectories: [],
         launchDirectory,
         providerState: {
           continuationKey: "sandbox-proof",

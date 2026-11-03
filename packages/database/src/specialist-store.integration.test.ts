@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
 import { createId, SpecialistManifestSchema } from "@opensteer/core";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
-import { resolveResourceAccess } from "./resource-access.js";
+import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
@@ -104,6 +104,27 @@ describeStore("specialist registration", (test) => {
       capabilityProfileId: "specialist",
       lineageRootThreadId: run.thread.lineageRootThreadId,
     });
+    await expect(
+      assertLineageCompatibleReuse(fixture.database, child.thread.id, run.thread.id),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const sourceRunId = child.run.id;
+    await fixture.database
+      .updateTable("runs")
+      .set({ status: "starting" })
+      .where("id", "=", sourceRunId)
+      .execute();
+    const send = (policy: "queue" | "steer" | "report") =>
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Result" }],
+        idempotencyKey: randomUUID(),
+        policy,
+        requestedBy: run.userId,
+        source: { kind: "agent", runId: sourceRunId },
+        threadId: run.thread.id,
+      });
+    await expect(send("report")).resolves.toBeDefined();
+    await expect(send("queue")).rejects.toMatchObject({ code: "forbidden" });
+    await expect(send("steer")).rejects.toMatchObject({ code: "forbidden" });
     const guarded = await resolveResourceAccess(fixture.database, {
       workspaceId: workspace.id,
       ownerUserId: run.userId,

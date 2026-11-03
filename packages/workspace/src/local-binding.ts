@@ -28,6 +28,25 @@ export function localWorkspaceBindingId(input: {
   readonly ownerEnvironmentId: EnvironmentId;
   readonly workspaceId: WorkspaceId;
 }): WorkspaceBindingId {
+  return hashLocalWorkspaceBindingId(input);
+}
+
+export function matchesLocalWorkspaceBindingId(
+  bindingId: WorkspaceBindingId,
+  input: Parameters<typeof localWorkspaceBindingId>[0],
+): boolean {
+  return (
+    bindingId === localWorkspaceBindingId(input) ||
+    (input.kind === "project" &&
+      bindingId === hashLocalWorkspaceBindingId({ ...input, kind: "specialized" }))
+  );
+}
+
+function hashLocalWorkspaceBindingId(
+  input: Omit<Parameters<typeof localWorkspaceBindingId>[0], "kind"> & {
+    readonly kind: WorkspaceKind | "specialized";
+  },
+): WorkspaceBindingId {
   const bytes = createHash("sha256")
     .update("opensteer:local-workspace-binding:v1\0", "utf8")
     .update(input.workspaceId, "utf8")
@@ -36,8 +55,7 @@ export function localWorkspaceBindingId(input: {
     .update("\0", "utf8")
     .update(input.createdBy, "utf8")
     .update("\0", "utf8")
-    // Keep the original hash vocabulary: changing it would orphan existing bindings.
-    .update(input.kind === "project" ? "project" : input.kind, "utf8")
+    .update(input.kind, "utf8")
     .update("\0", "utf8")
     .update(input.idempotencyKey, "utf8")
     .digest()

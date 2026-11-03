@@ -2160,7 +2160,7 @@ async function materializeOpencodeSkills(context: HarnessSessionContext): Promis
   await mkdir(directory, { mode: 0o700, recursive: true });
   assertUniqueSkillNames(context.skills?.skills ?? []);
   for (const skill of context.skills?.skills ?? []) {
-    const target = join(directory, skill.fullName);
+    const target = join(directory, encodeURIComponent(skill.fullName));
     await mkdir(target, { mode: 0o700 });
     for (const entry of await readdir(skill.path)) {
       if (entry === "SKILL.md") {

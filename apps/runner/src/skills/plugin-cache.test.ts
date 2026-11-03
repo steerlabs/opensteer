@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, readFile, rm, utimes, lstat } from "node:fs/promises";
+import { mkdtemp, realpath, readFile, rm, utimes, lstat, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -46,6 +46,17 @@ describe("plugin package cache", () => {
     await fetchPluginPackage({ ...f, fetchSnapshot });
     expect(fetchSnapshot).toHaveBeenCalledTimes(1);
   });
+  it("verifies an existing entry on first use in this process", async () => {
+    const f = await fixture();
+    const root = join(f.stateDirectory, "plugins", f.digest);
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "unapproved.cjs"), "tampered");
+    const fetchSnapshot = vi.fn(async () => f.snapshot);
+    await fetchPluginPackage({ ...f, fetchSnapshot });
+    expect(fetchSnapshot).toHaveBeenCalledTimes(1);
+    await expect(lstat(join(root, "unapproved.cjs"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(root, "scripts/test.sh"), "utf8")).toBe("echo test");
+  });
   it("rejects digest mismatches without publishing", async () => {
     const f = await fixture();
     await expect(fetchPluginPackage({ ...f, fetchSnapshot: async () => [] })).rejects.toThrow(
@@ -71,6 +82,7 @@ describe("plugin package cache", () => {
         versions: [{ pluginId: "p", name: "test", digest: f.digest }],
       },
     });
+    expect(run).toMatchObject({ directories: [join(f.stateDirectory, "plugins", f.digest)] });
     expect(run.skills[0]?.path).toBe(join(f.stateDirectory, "plugins", f.digest, "skills/test"));
     expect(await readFile(join(run.skills[0]!.path, "../../scripts/test.sh"), "utf8")).toBe(
       "echo test",
@@ -127,7 +139,15 @@ it("resolves an approved MCP launch entirely against this Runner's cached packag
     packageSource: { url: "https://host/package", token: "test" },
   } as Parameters<typeof mcp.open>[0];
   try {
+    const cached = await fetchPluginPackage({
+      stateDirectory: f.stateDirectory,
+      digest,
+      fetchSnapshot: async () => snapshot,
+    });
+    await writeFile(join(cached, "server.cjs"), 'throw new Error("tampered")');
     await mcp.open(frame);
+    expect(await readFile(join(cached, "server.cjs"), "utf8")).toBe(script.bytes.toString("utf8"));
+    expect(fetchSnapshot).toHaveBeenCalledTimes(1);
     expect(frames.at(-1)?.type).toBe("runner.integrations.mcp.opened");
     const data = join(f.stateDirectory, "plugin-data/test");
     await vi.waitFor(

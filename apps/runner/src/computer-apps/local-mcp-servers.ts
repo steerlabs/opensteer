@@ -116,6 +116,7 @@ export class LocalMcpServers {
         const root = await fetchPluginPackage({
           stateDirectory: this.#stateDirectory,
           digest: launch.packageDigest,
+          verify: true,
           fetchSnapshot: async () => {
             if (!frame.packageSource) throw new Error("Package source is unavailable");
             const response = await fetch(frame.packageSource.url, {

@@ -224,9 +224,18 @@ export async function assertLineageCompatibleReuse(
   const roots = await database
     .selectFrom("threads as asking")
     .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-    .select(["asking.id", "root.capabilityProfileId"])
+    .select(["asking.id", "asking.specialistId", "root.capabilityProfileId"])
     .where("asking.id", "in", [callerId, targetId])
     .execute();
+  const caller = roots.find((row) => row.id === callerId);
+  const target = roots.find((row) => row.id === targetId);
+  if (caller?.specialistId && caller.specialistId !== target?.specialistId) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message:
+        "Specialists may only send reports to Threads outside their registration. Start a new task instead.",
+    });
+  }
   const inherits = (id: ThreadId) =>
     roots.find((row) => row.id === id)?.capabilityProfileId === "main";
   if (!lineageCompatibleForReuse(inherits(callerId), inherits(targetId))) {

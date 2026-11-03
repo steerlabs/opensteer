@@ -151,7 +151,7 @@ it("records a successful Codex command with large inline arguments without faili
     plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",
-      directory: undefined,
+      directories: [],
       skills: [],
     }),
     bootId: "large-tool-arguments-test",

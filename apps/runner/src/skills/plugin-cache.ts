@@ -31,12 +31,13 @@ const snapshotSchema = z
   )
   .max(10_000);
 const pending = new Map<string, Promise<string>>();
+const verified = new Set<string>();
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
 
 export interface CachedRunPlugins {
   readonly cleanup: () => Promise<void>;
   readonly digest: string;
-  readonly directory: string | undefined;
+  readonly directories: readonly string[];
   readonly skills: readonly HarnessSkill[];
 }
 
@@ -44,6 +45,7 @@ export async function fetchPluginPackage(input: {
   readonly stateDirectory: string;
   readonly digest: string;
   readonly fetchSnapshot: () => Promise<unknown>;
+  readonly verify?: boolean;
 }): Promise<string> {
   if (!/^[a-f0-9]{64}$/u.test(input.digest)) throw new Error("Invalid plugin digest");
   const root = join(input.stateDirectory, "plugins", input.digest);
@@ -53,10 +55,16 @@ export async function fetchPluginPackage(input: {
       try {
         const stat = await lstat(root);
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Invalid cached package");
-        return root;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (!input.verify && verified.has(root)) return root;
+        if (pluginSnapshotDigest(await readPluginSnapshot(root)) === input.digest) {
+          verified.add(root);
+          return root;
+        }
+      } catch {
+        // Missing or invalid entries, including symlinks, are rebuilt below.
       }
+      verified.delete(root);
+      await rm(root, { recursive: true, force: true });
       const files = snapshotSchema
         .parse(await input.fetchSnapshot())
         .map(({ path, mode, content }) => ({ path, mode, bytes: Buffer.from(content, "base64") }));
@@ -88,12 +96,19 @@ export async function fetchPluginPackage(input: {
       } finally {
         await rm(stage, { recursive: true, force: true });
       }
+      if (pluginSnapshotDigest(await readPluginSnapshot(root)) !== input.digest)
+        throw new Error("Plugin package digest mismatch");
+      verified.add(root);
       return root;
     })();
     pending.set(root, operation);
     void operation.finally(() => pending.delete(root)).catch(() => undefined);
   }
   const result = await operation;
+  if (input.verify && pluginSnapshotDigest(await readPluginSnapshot(result)) !== input.digest) {
+    verified.delete(root);
+    throw new Error("Plugin package digest mismatch");
+  }
   const now = new Date();
   await utimes(root, now, now);
   return result;
@@ -193,6 +208,7 @@ async function pruneUnreferenced(stateDirectory: string, now: number): Promise<v
     )
       continue;
     await rm(path, { recursive: true, force: true });
+    verified.delete(path);
   }
 }
 
@@ -209,6 +225,7 @@ export async function cacheRunPlugins(input: {
   try {
     await prunePluginCache(input.stateDirectory);
     const skills: HarnessSkill[] = [];
+    const directories: string[] = [];
     for (const version of input.plan.versions) {
       const root = await fetchPluginPackage({
         ...input,
@@ -230,6 +247,7 @@ export async function cacheRunPlugins(input: {
           ) as unknown;
         },
       });
+      directories.push(root);
       for (const entry of await readdir(join(root, "skills"), { withFileTypes: true }).catch(
         (error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return [];
@@ -256,7 +274,7 @@ export async function cacheRunPlugins(input: {
       digest: JSON.stringify(
         [...input.plan.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
       ),
-      directory: join(input.stateDirectory, "plugins"),
+      directories: [...new Set(directories)],
       skills,
     };
   } catch (error) {

@@ -62,7 +62,7 @@ const testAgentSkills = {
 const noPlugins = async () => ({
   cleanup: async () => undefined,
   digest: "none",
-  directory: undefined,
+  directories: [],
   skills: [],
 });
 const projectContinuationIdentity = providerContinuationIdentityProjector(

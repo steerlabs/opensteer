@@ -735,7 +735,7 @@ async function startWithin(
       plugins: async () => ({
         cleanup: async () => undefined,
         digest: "none",
-        directory: undefined,
+        directories: [],
         skills: [],
       }),
       maxConcurrentRuns: options.maxConcurrentRuns ?? 1,

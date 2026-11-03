@@ -4,6 +4,8 @@ import {
   type StorageAuthorityId,
   type UserId,
 } from "@opensteer/core";
+import { createHash } from "node:crypto";
+import { WorkspaceBindingIdSchema } from "@opensteer/core";
 import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
 import {
   chmod,
@@ -721,3 +723,39 @@ async function overwriteRegistry(filePath: string, value: unknown): Promise<void
   await writeFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
   if (process.platform !== "win32") await chmod(filePath, 0o600);
 }
+
+it("retries a released specialized binding after the Project migration", async () => {
+  const fixture = await createFixture();
+  const request = await fixture.provisionRequest({});
+  const i = request.intent;
+  const bytes = createHash("sha256")
+    .update(
+      [
+        "opensteer:local-workspace-binding:v1",
+        i.workspaceId,
+        i.ownerEnvironmentId,
+        i.createdBy,
+        "specialized",
+        i.idempotencyKey,
+      ].join("\0"),
+    )
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const h = bytes.toString("hex");
+  const bindingId = WorkspaceBindingIdSchema.parse(
+    `wbd_${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`,
+  );
+  expect(bindingId).not.toBe(request.binding.bindingId);
+  const legacy = { ...request, binding: { ...request.binding, bindingId } };
+  const originalPath = await fixture.authority.provision(legacy);
+  const document = await readFile(fixture.registryFilePath, "utf8");
+  await writeFile(
+    fixture.registryFilePath,
+    document.replaceAll('"kind":"project"', '"kind":"specialized"'),
+  );
+  expect(await readFile(fixture.registryFilePath, "utf8")).toContain('"kind":"specialized"');
+  const upgraded = new LocalWorkspaceAuthority(fixture.options);
+  await expect(upgraded.provision(legacy)).resolves.toBe(originalPath);
+});

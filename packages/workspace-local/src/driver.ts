@@ -12,7 +12,7 @@ import type {
   WorkspaceLocalErrorCode,
   WorkspaceLocalFailure,
 } from "@opensteer/workspace";
-import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
+import { matchesLocalWorkspaceBindingId } from "@opensteer/workspace/local-binding";
 import { LocalWorkspaceError, LocalWorkspaceErrorCode } from "./errors.js";
 import {
   LocalWorkspaceRegistry,
@@ -137,14 +137,14 @@ export class LocalWorkspaceAuthority {
       ownerEnvironmentId: input.binding.ownerEnvironmentId,
       workspaceId: input.binding.workspaceId,
     };
-    const expected = localWorkspaceBindingId({
+    const matches = matchesLocalWorkspaceBindingId(input.binding.bindingId, {
       createdBy: fingerprint.createdBy,
       idempotencyKey: input.idempotencyKey,
       kind: fingerprint.kind,
       ownerEnvironmentId: fingerprint.ownerEnvironmentId,
       workspaceId: fingerprint.workspaceId,
     });
-    if (expected !== input.binding.bindingId) {
+    if (!matches) {
       throw new LocalWorkspaceError({
         code: LocalWorkspaceErrorCode.workspaceMismatch,
         message: "The local Workspace binding does not match its creation intent.",
