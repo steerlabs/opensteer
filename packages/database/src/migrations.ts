@@ -6837,7 +6837,9 @@ export const pluginsMigration: Migration = {
       ? `COALESCE((SELECT jsonb_agg(jsonb_build_object('name',s.name,'description',s.description,'digest',s.digest)) FROM integration_skills s WHERE s.installation_id=i.id AND s.status='active'),'[]'::jsonb)`
       : "'[]'::jsonb";
     // Multiple statements need the simple query protocol, so the text carries no parameters.
-    await sql.raw(`
+    await sql
+      .raw(
+        `
    INSERT INTO plugins(id,name,scope,source,installed_by,current_version_id,created_at,updated_at)
    SELECT id, CASE WHEN name = 'opensteer' THEN 'imported-opensteer' ELSE name END, 'deployment', provenance, created_by, id || '-v1',created_at,updated_at
    FROM integration_installations WHERE source_kind = 'agent-plugin';
@@ -6851,7 +6853,9 @@ export const pluginsMigration: Migration = {
      w.kind='main' OR EXISTS(SELECT 1 FROM integration_grants g WHERE g.installation_id=i.id AND g.workspace_id=w.id AND g.revoked_at IS NULL AND EXISTS(SELECT 1 FROM workspace_memberships m WHERE m.workspace_id=w.id AND m.user_id=g.owner_user_id AND m.state='active'))
    );
    UPDATE integration_installations SET source_kind='plugin',plugin_id=id WHERE source_kind='agent-plugin';
-  `).execute(database);
+  `,
+      )
+      .execute(database);
     if (hasSkills) await sql`drop table integration_skills`.execute(database);
   },
 };
