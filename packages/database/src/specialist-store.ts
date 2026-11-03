@@ -1,3 +1,4 @@
+import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -344,6 +345,27 @@ export class SpecialistStore {
         message: "Specialist registration was removed",
       });
     const registration = await this.refresh(id);
+    const workspace = await this.database
+      .selectFrom("workspaces")
+      .select("kind")
+      .where("id", "=", workspaceId)
+      .executeTakeFirstOrThrow();
+    const main = workspace.kind === "main";
+    if (
+      !(await pluginPolicyAllows(
+        this.database,
+        requester,
+        { kind: "specialist", pluginId: registration.pluginId, ownerUserId: requester },
+        main,
+      )) ||
+      !(await pluginPolicyAllows(
+        this.database,
+        requester,
+        { kind: "plugin", pluginId: registration.pluginId },
+        main,
+      ))
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Specialist is turned off here" });
     if (registration.ownerUserId !== requester)
       throw new OpensteerError({
         code: "forbidden",

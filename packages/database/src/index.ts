@@ -35,3 +35,5 @@ export * from "./specialist-store.js";
 export { readIntegrationAccountBinding } from "./integration-account-binding.js";
 
 export { requestSettlementActor } from "./request-settlement.js";
+
+export * from "./plugin-settings-store.js";

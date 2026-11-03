@@ -2153,6 +2153,17 @@ export interface DatabaseSchema {
   integrationServers: IntegrationServerTable;
   integrationTools: IntegrationToolTable;
   integrationToolDefinitions: IntegrationToolDefinitionsTable;
+  pluginOwnerSettings: {
+    ownerUserId: UserId;
+    targetKey: string;
+    target: JsonColumn<import("@opensteer/protocol").PluginTarget>;
+    enabled: boolean;
+    mainIncluded: boolean;
+    revision: number;
+    personalEverywhereAccounts: JsonColumn<
+      readonly { connectionId: IntegrationConnectionId; access: IntegrationAccess }[]
+    > | null;
+  };
   plugins: {
     id: string;
     name: string;

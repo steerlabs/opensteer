@@ -4699,6 +4699,7 @@ export function migrationProvider() {
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
+        "0148_plugin_owner_settings": pluginOwnerSettingsMigration,
       };
     },
   };
@@ -7085,5 +7086,20 @@ export const quietAssignmentResultsMigration: Migration = {
           or (result_status = 'undeliverable' and completed_at is not null
             and result_message_id is null and result_reason is not null));
     `.execute(database);
+  },
+};
+
+export const pluginOwnerSettingsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE plugin_owner_settings (
+      owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_key text NOT NULL, target jsonb NOT NULL,
+      enabled boolean NOT NULL DEFAULT true, main_included boolean NOT NULL DEFAULT true,
+      revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
+      personal_everywhere_accounts jsonb,
+      PRIMARY KEY(owner_user_id, target_key)
+    );
+    CREATE TRIGGER plugin_settings_authority AFTER INSERT OR UPDATE OR DELETE ON plugin_owner_settings
+    FOR EACH ROW EXECUTE FUNCTION opensteer_bump_integration_owner_authority()`.execute(database);
   },
 };

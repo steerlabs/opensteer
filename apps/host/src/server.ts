@@ -1598,13 +1598,19 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     switch (command.type) {
-      case "settings.plugin.enabled.set":
-      case "settings.plugin.placement.set":
-        throw new OpensteerError({
-          code: "conflict",
-          reason: "settings-unsupported",
-          message: "This Host does not support plugin Settings mutations yet.",
-        });
+      case "settings.plugin.enabled.set": {
+        const result = await dependencies.integrations.platform.store.settings.setEnabled(
+          userId,
+          command,
+        );
+        dependencies.realtime.sendToUsers([userId], { type: "host.plugins-changed" });
+        return result;
+      }
+      case "settings.plugin.placement.set": {
+        const result = await dependencies.integrations.platform.setPluginPlacement(userId, command);
+        dependencies.realtime.sendToUsers([userId], { type: "host.plugins-changed" });
+        return result;
+      }
       case "thread.read.mark": {
         const state = await dependencies.store.notificationState.markRead({
           threadId: command.threadId,
@@ -1821,6 +1827,9 @@ export async function createHostServer(
           workspaceId: command.workspaceId,
         });
         dependencies.realtime.publishViewerTasksChanged(changed.membership.userId);
+        dependencies.realtime.sendToUsers([changed.membership.userId], {
+          type: "host.plugins-changed",
+        });
         for (const event of changed.requestEvents) publishWorkspaceEvent(event);
         void dependencies.securityEffects
           .reconcile()
@@ -2928,8 +2937,12 @@ export async function createHostServer(
         ...identityRpcHandlers,
         "auth.invitation.accept": async (input, context) => {
           const result = await identityRpcHandlers["auth.invitation.accept"](input, context);
-          if (result.ok)
+          if (result.ok) {
             dependencies.realtime.publishViewerTasksChanged(result.data.membership.userId);
+            dependencies.realtime.sendToUsers([result.data.membership.userId], {
+              type: "host.plugins-changed",
+            });
+          }
           return result;
         },
       },

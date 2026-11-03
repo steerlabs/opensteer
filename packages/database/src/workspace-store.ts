@@ -1,3 +1,4 @@
+import { PluginStore } from "./plugin-store.js";
 import {
   type AgentEvent,
   createId,
@@ -208,6 +209,28 @@ export async function createWorkspace(
         workspaceId: id,
       })
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    if (kind === "project") {
+      const deployment = await transaction
+        .selectFrom("deployments")
+        .select("deploymentShape")
+        .executeTakeFirst();
+      if (deployment?.deploymentShape.kind === "personal") {
+        const consent = await transaction
+          .selectFrom("pluginOwnerSettings")
+          .select("target")
+          .where("ownerUserId", "=", input.createdBy)
+          .where("personalEverywhereAccounts", "is not", null)
+          .execute();
+        for (const { target } of consent)
+          if (target.kind === "plugin")
+            await new PluginStore(transaction).activateIn(
+              transaction,
+              target.pluginId,
+              id,
+              input.createdBy,
+            );
+      }
+    }
     await transaction
       .insertInto("securityAudit")
       .values({

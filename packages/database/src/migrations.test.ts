@@ -155,6 +155,7 @@ const releasedMigrationNames = [
   "0145_specialist_lifecycle",
   "0146_every_turn_shows",
   "0147_quiet_assignment_results",
+  "0148_plugin_owner_settings",
 ];
 
 describe("migration names", () => {

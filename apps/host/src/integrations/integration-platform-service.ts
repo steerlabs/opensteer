@@ -717,6 +717,19 @@ export class IntegrationPlatformService {
     return fulfilled;
   }
 
+  async setPluginPlacement(
+    owner: UserId,
+    command: import("zod").infer<
+      typeof import("@opensteer/protocol").SettingsPluginPlacementCommandSchema
+    >,
+  ) {
+    return this.#store.settings.setPlacement(
+      owner,
+      command,
+      await this.#authorizationSource.providerAuthorizations(owner),
+    );
+  }
+
   async createGrant(input: Omit<CreateIntegrationGrantInput, "providerAuthorizations">) {
     const providerAuthorizations = await this.#authorizationSource.providerAuthorizations(
       input.ownerUserId,

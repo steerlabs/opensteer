@@ -1866,8 +1866,8 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
-      pluginVersions: async (workspaceId) =>
-        (await integrationPlatformStore.plugins.current(workspaceId)).map(
+      pluginVersions: async (workspaceId, ownerUserId) =>
+        (await integrationPlatformStore.plugins.current(workspaceId, ownerUserId)).map(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),
         ),
       pluginsTokens,

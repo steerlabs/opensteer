@@ -113,14 +113,35 @@ export class PluginStore {
     }));
   }
 
-  async current(workspaceId: WorkspaceId) {
-    return this.database
+  async current(workspaceId: WorkspaceId, ownerUserId?: UserId) {
+    const rows = await this.database
       .selectFrom("pluginActivations")
       .innerJoin("plugins", "plugins.id", "pluginActivations.pluginId")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
       .select(["plugins.id", "plugins.name", "pluginVersions.digest", "pluginVersions.manifest"])
       .where("pluginActivations.workspaceId", "=", workspaceId)
       .execute();
+    if (!ownerUserId) return rows;
+    const [settings, workspace] = await Promise.all([
+      this.database
+        .selectFrom("pluginOwnerSettings")
+        .selectAll()
+        .where("ownerUserId", "=", ownerUserId)
+        .execute(),
+      this.database
+        .selectFrom("workspaces")
+        .select("kind")
+        .where("id", "=", workspaceId)
+        .executeTakeFirstOrThrow(),
+    ]);
+    const denied = new Set(
+      settings.flatMap((s) =>
+        s.target.kind === "plugin" && (!s.enabled || (workspace.kind === "main" && !s.mainIncluded))
+          ? [s.target.pluginId]
+          : [],
+      ),
+    );
+    return rows.filter((row) => !denied.has(row.id));
   }
 
   async install(

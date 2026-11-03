@@ -10,6 +10,7 @@ import {
   ThreadIdSchema,
   type AgentEvent,
   type WorkspaceId,
+  type UserId,
 } from "@opensteer/core";
 import type {
   AttachmentStore,
@@ -117,6 +118,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #integrationToolsUrl: string;
   readonly #pluginVersions: (
     workspaceId: WorkspaceId,
+    ownerUserId: UserId,
   ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
   readonly #pluginsTokens: PluginPackagesTokenService;
   readonly #pluginsUrl: string;
@@ -146,6 +148,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
     readonly pluginVersions: (
       workspaceId: WorkspaceId,
+      ownerUserId: UserId,
     ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
     readonly pluginsTokens: PluginPackagesTokenService;
     readonly integrationToolsTokens: IntegrationToolsTokenService;
@@ -506,7 +509,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       throw new Error("Specialist registration was removed");
     const pinnedPlugins = specialist
       ? [specialist]
-      : await this.#pluginVersions(context.workspace.id);
+      : await this.#pluginVersions(context.workspace.id, command.requestedBy);
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,

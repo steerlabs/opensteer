@@ -122,20 +122,18 @@ export function createHostApiHandlers(
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
 ): Omit<HostApiHandlers, "personal.remoteAccess.get"> {
-  const settingsUnavailable = async (
-    _input: unknown,
-    context: HostApiServerContext,
-  ): Promise<never> => {
-    requireSession(context);
-    throw new OpensteerError({
-      code: "conflict",
-      reason: "settings-unsupported",
-      message: "This Host does not support the new Settings views yet.",
-    });
-  };
   return {
-    "plugins.overview.get": settingsUnavailable,
-    "plugins.detail.get": settingsUnavailable,
+    "plugins.overview.get": async (_input, context) =>
+      rpcSuccess(
+        await integrationPlatform.platform.store.settings.overview(requireSession(context).user.id),
+      ),
+    "plugins.detail.get": async (input, context) =>
+      rpcSuccess(
+        await integrationPlatform.platform.store.settings.detail(
+          requireSession(context).user.id,
+          input.target,
+        ),
+      ),
     ...createSettingsReadHandlers({
       catalog: () => integrationPlatform.platform.settingsCatalog(),
       requests: (owner) =>
