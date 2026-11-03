@@ -4701,6 +4701,7 @@ export function migrationProvider() {
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
         "0148_plugin_owner_settings": pluginOwnerSettingsMigration,
         "0149_workspace_skill_inventory": workspaceSkillInventoryMigration,
+        "0150_plugin_settings_revisions": pluginSettingsRevisionsMigration,
       };
     },
   };
@@ -7118,5 +7119,51 @@ export const workspaceSkillInventoryMigration: Migration = {
       scan_status text not null check (scan_status in ('complete','failed')),
       metadata jsonb not null check (jsonb_typeof(metadata) = 'array')
     )`.execute(database);
+  },
+};
+
+export const pluginSettingsRevisionsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create function opensteer_advance_plugin_setting(consent_owner text, setting_target jsonb) returns void language plpgsql as $$
+      declare setting_key text;
+      begin
+        if not exists(select 1 from users where id = consent_owner) then return; end if;
+        setting_key := case setting_target->>'kind'
+          when 'plugin' then '["plugin",' || to_json(setting_target->>'pluginId')::text || ']'
+          when 'specialist' then '["specialist",' || to_json(setting_target->>'pluginId')::text || ',' || to_json(setting_target->>'ownerUserId')::text || ']'
+          else '[' || to_json(setting_target->>'kind')::text || ',' || to_json(setting_target->>'definitionId')::text || ']' end;
+        insert into plugin_owner_settings(owner_user_id,target_key,target,revision)
+          values(consent_owner,setting_key,setting_target,1)
+          on conflict(owner_user_id,target_key) do update set revision = plugin_owner_settings.revision + 1;
+      end $$;
+      create function opensteer_legacy_plugin_revision() returns trigger language plpgsql as $$
+      declare changed jsonb; consent_owner text; definition_id text; target_kind text;
+      begin
+        changed := case when TG_OP = 'DELETE' then to_jsonb(OLD) else to_jsonb(NEW) end;
+        if TG_OP = 'UPDATE' then
+          if TG_TABLE_NAME = 'specialists' then
+            if NEW.bindings is not distinct from OLD.bindings and NEW.plugin_version_id is not distinct from OLD.plugin_version_id and NEW.removed_at is not distinct from OLD.removed_at then return NEW; end if;
+          end if;
+          if TG_TABLE_NAME = 'integration_grants' and to_jsonb(NEW) is not distinct from to_jsonb(OLD) then return NEW; end if;
+        end if;
+        if TG_TABLE_NAME = 'plugin_activations' then
+          for consent_owner in select user_id from workspace_memberships where workspace_id = changed->>'workspace_id' and state = 'active' order by user_id loop
+            perform opensteer_advance_plugin_setting(consent_owner,jsonb_build_object('kind','plugin','pluginId',changed->>'plugin_id'));
+          end loop;
+        elsif TG_TABLE_NAME = 'specialists' then
+          perform opensteer_advance_plugin_setting(changed->>'owner_user_id',jsonb_build_object('kind','specialist','pluginId',changed->>'plugin_id','ownerUserId',changed->>'owner_user_id'));
+        else
+          select coalesce(manifest->'definition'->>'id',name) into definition_id from integration_installations where id = changed->>'installation_id';
+          target_kind := 'service';
+          if exists(select 1 from integration_connections where id = changed->>'connection_id' and connection_kind = 'computer') then target_kind := 'device-app'; end if;
+          if definition_id is not null then perform opensteer_advance_plugin_setting(changed->>'owner_user_id',jsonb_build_object('kind',target_kind,'definitionId',definition_id)); end if;
+        end if;
+        return null;
+      end $$;
+      create trigger plugin_activation_settings_revision after insert or update or delete on plugin_activations for each row execute function opensteer_legacy_plugin_revision();
+      create trigger specialist_settings_revision after insert or update or delete on specialists for each row execute function opensteer_legacy_plugin_revision();
+      create trigger integration_grant_settings_revision after insert or update or delete on integration_grants for each row execute function opensteer_legacy_plugin_revision();
+    `.execute(database);
   },
 };

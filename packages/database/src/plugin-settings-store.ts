@@ -1,3 +1,4 @@
+import { SpecialistStore } from "./specialist-store.js";
 import { listWorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
 import { PluginStore } from "./plugin-store.js";
 import {
@@ -26,7 +27,7 @@ import {
   type PluginTarget,
   type PluginRow,
 } from "@opensteer/protocol";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 export function pluginTargetKey(input: PluginTarget): string {
@@ -64,6 +65,28 @@ export class PluginSettingsStore {
   private readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
+  }
+
+  async affectedViewers(input: {
+    workspaceId?: import("@opensteer/core").WorkspaceId;
+    runnerId?: string;
+    installationId?: string;
+    pluginId?: string;
+  }): Promise<UserId[]> {
+    const result = await sql<{ userId: UserId }>`
+      select distinct m.user_id from workspace_memberships m
+      join workspaces w on w.id = m.workspace_id
+      left join execution_environments e on e.id = w.owner_environment_id
+      where m.state = 'active' and (
+        w.id = ${input.workspaceId ?? null}
+        or e.runner_id = ${input.runnerId ?? null}
+        or exists(select 1 from plugin_activations a where a.workspace_id = w.id and a.plugin_id = ${input.pluginId ?? null})
+        or exists(select 1 from specialists s where s.workspace_id = w.id and s.plugin_id = ${input.pluginId ?? null}))
+      union select c.owner_user_id from integration_connections c where c.runner_id = ${input.runnerId ?? null}
+        or exists(select 1 from integration_installations i where i.id = ${input.installationId ?? null} and coalesce(i.manifest->'definition'->>'id',i.name) = c.integration_definition_id)
+      union select g.owner_user_id from integration_grants g where g.installation_id = ${input.installationId ?? null}
+    `.execute(this.database);
+    return result.rows.map((r) => r.userId);
   }
 
   async workspaceSkillPolicy(workspaceId: import("@opensteer/core").WorkspaceId, owner: UserId) {
@@ -321,9 +344,14 @@ export class PluginSettingsStore {
         },
       });
       const packageRow = rows[rows.length - 1]!;
-      const owners = new Set(
-        specialists.filter((s) => s.pluginId === plugin.id).map((s) => s.ownerUserId),
-      );
+      const owners = new Set([
+        ...specialists.filter((s) => s.pluginId === plugin.id).map((s) => s.ownerUserId),
+        ...settings.flatMap((s) =>
+          s.target.kind === "specialist" && s.target.pluginId === plugin.id
+            ? [s.target.ownerUserId]
+            : [],
+        ),
+      ]);
       for (const registrationOwner of owners) {
         const target: PluginTarget = {
           kind: "specialist",
@@ -513,12 +541,52 @@ export class PluginSettingsStore {
             message: "Package placement does not grant accounts",
           });
         const target = command.target;
-        if (target.kind === "specialist")
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Use the specialist registration editor to change places",
-          });
-        if (target.kind === "plugin") {
+        if (target.kind === "specialist") {
+          const source = await tx
+            .selectFrom("plugins")
+            .select(["scope", "workspaceId"])
+            .where("id", "=", target.pluginId)
+            .executeTakeFirstOrThrow();
+          if (
+            source.scope === "workspace" &&
+            (command.personalEverywhere ||
+              command.projects.some((p) => p.workspaceId !== source.workspaceId))
+          )
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "This specialist belongs to its source Workspace",
+            });
+          if (
+            command.projects.some((p) => p.accounts.length) ||
+            command.personalEverywhere?.accounts.length
+          )
+            throw new OpensteerError({
+              code: "bad_request",
+              message: "Specialist placement does not grant accounts",
+            });
+          for (const place of detail.places.filter((p) => p.canSelect)) {
+            const selected =
+              place.kind === "main"
+                ? command.mainIncluded
+                : command.projects.some((p) => p.workspaceId === place.workspaceId);
+            const registration = detail.registrations.find(
+              (r) => r.workspaceId === place.workspaceId,
+            );
+            if (selected && !registration)
+              await new SpecialistStore(tx).addIn(tx, {
+                workspaceId: place.workspaceId,
+                pluginId: target.pluginId,
+                actorUserId: owner,
+              });
+            else if (!selected && registration && place.kind !== "main")
+              await tx
+                .updateTable("specialists")
+                .set({ removedAt: new Date(), status: "removing" })
+                .where("id", "=", registration.id)
+                .where("ownerUserId", "=", owner)
+                .execute();
+          }
+        } else if (target.kind === "plugin") {
           const plugin = await tx
             .selectFrom("plugins")
             .select(["scope", "workspaceId"])
@@ -614,7 +682,7 @@ export class PluginSettingsStore {
           personalEverywhere: template !== null,
         };
       }
-      await tx
+      const savedSetting = await tx
         .insertInto("pluginOwnerSettings")
         .values({
           ownerUserId: owner,
@@ -629,11 +697,13 @@ export class PluginSettingsStore {
           c.columns(["ownerUserId", "targetKey"]).doUpdateSet({
             enabled: placement.enabled,
             mainIncluded: placement.mainIncluded,
-            revision: placement.revision,
+            revision: sql<number>`greatest(plugin_owner_settings.revision + 1, ${placement.revision})`,
             personalEverywhereAccounts: template ? jsonValue(template) : null,
           }),
         )
-        .execute();
+        .returning("revision")
+        .executeTakeFirstOrThrow();
+      placement = { ...placement, revision: savedSetting.revision };
       await tx
         .insertInto("commands")
         .values({
@@ -691,7 +761,27 @@ export class PluginSettingsStore {
       ? connections.filter((c) => c.integrationDefinitionId === target.definitionId)
       : [];
     const accountIds = new Set(accounts.map((c) => c.id));
-    const publicGrants = grants.filter((g) => g.connectionId && accountIds.has(g.connectionId));
+    const serviceInstallationIds = new Set(
+      service
+        ? installations
+            .filter((i) => {
+              const definition = i.manifest.definition;
+              return (
+                i.name === target.definitionId ||
+                (typeof definition === "object" &&
+                  definition !== null &&
+                  "id" in definition &&
+                  definition.id === target.definitionId)
+              );
+            })
+            .map((i) => i.id)
+        : [],
+    );
+    const publicGrants = grants.filter(
+      (g) =>
+        serviceInstallationIds.has(g.installationId) &&
+        (!g.connectionId || accountIds.has(g.connectionId)),
+    );
     const plugin =
       target.kind === "plugin" || target.kind === "specialist"
         ? packages.find((p) => p.id === target.pluginId)
@@ -750,7 +840,7 @@ export class PluginSettingsStore {
               );
             })
             .map((i) => i.id)
-        : [],
+        : installationIds,
       grants: publicGrants.map((g) => ({
         ...g,
         createdAt: g.createdAt.toISOString(),
@@ -775,17 +865,22 @@ export class PluginSettingsStore {
         name: p.name,
         kind: p.kind,
         selected:
-          p.kind === "main"
-            ? row.placement.mainIncluded
-            : service
-              ? publicGrants.some((g) => g.workspaceId === p.id)
-              : target.kind === "specialist"
-                ? registrations.some((r) => r.workspaceId === p.id)
-                : activations.some((a) => a.pluginId === plugin?.id && a.workspaceId === p.id),
+          target.kind === "skill"
+            ? p.id === target.workspaceId
+            : p.kind === "main"
+              ? row.placement.mainIncluded
+              : service
+                ? publicGrants.some((g) => g.workspaceId === p.id)
+                : target.kind === "specialist"
+                  ? registrations.some((r) => r.workspaceId === p.id)
+                  : activations.some((a) => a.pluginId === plugin?.id && a.workspaceId === p.id),
         canSelect:
-          service ||
-          p.createdBy === owner ||
-          (p.kind !== "main" && viewer.instanceRole === "administrator"),
+          target.kind !== "skill" &&
+          (!plugin || plugin.scope !== "workspace" || plugin.workspaceId === p.id) &&
+          (target.kind !== "specialist" || target.ownerUserId === owner) &&
+          (service ||
+            p.createdBy === owner ||
+            (p.kind !== "main" && viewer.instanceRole === "administrator")),
         accounts: publicGrants
           .filter((g) => g.workspaceId === p.id && g.connectionId)
           .map((g) => ({ connectionId: g.connectionId!, access: g.access })),

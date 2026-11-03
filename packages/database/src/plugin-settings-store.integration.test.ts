@@ -104,6 +104,185 @@ describeStore("plugin Settings authority", (test) => {
     ).rejects.toThrow("unavailable");
   });
 
+  test("Off and Main exclusion invalidate cached connectionless tools", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.createRunFixture("settings-connectionless");
+    const platform = new IntegrationPlatformStore(f.database);
+    const installationId = createIntegrationId("installation");
+    await platform.install({
+      actorUserId: run.userId,
+      adapterSnapshot: null,
+      requestId: "install-connectionless",
+      installation: {
+        id: installationId,
+        name: "records-installation",
+        title: "Records",
+        description: "",
+        version: "1",
+        sourceKind: "built-in",
+        status: "active",
+        trust: "built-in",
+        manifest: { definition: { id: "records" } },
+        provenance: {},
+      },
+      servers: [
+        {
+          id: createIntegrationId("server"),
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          connectionRequirement: { kind: "none" },
+          transport: { type: "streamable-http", url: "https://records.example/mcp", headers: {} },
+          catalog: {
+            definitions: {},
+            tools: [
+              {
+                id: createIntegrationId("tool"),
+                name: "read",
+                title: "Read",
+                description: "",
+                annotations: { readOnlyHint: true },
+                connectionId: null,
+                inputSchema: { type: "object" },
+                outputSchema: null,
+                status: "active",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    await platform.createGrant({
+      access: "read",
+      alias: "records",
+      connectionId: null,
+      createdBy: run.userId,
+      installationId,
+      isDefault: true,
+      ownerUserId: run.userId,
+      providerAuthorizations: {},
+      workspaceId: run.workspace.id,
+    });
+    const scope = {
+      ownerUserId: run.userId,
+      workspaceId: run.workspace.id,
+      threadId: run.thread.id,
+      providerAuthorizations: {},
+    };
+    const cached = await platform.listCallableTools(scope);
+    expect(cached).toHaveLength(1);
+    const target = { kind: "service" as const, definitionId: "records" };
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: false,
+      idempotencyKey: "off-connectionless",
+    });
+    expect(await platform.listCallableTools(scope)).toEqual([]);
+    expect((await platform.settings.detail(run.userId, target)).grants).toHaveLength(1);
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: true,
+      idempotencyKey: "on-connectionless",
+    });
+    expect(await platform.listCallableTools(scope)).toHaveLength(1);
+    await platform.settings.setPlacement(
+      run.userId,
+      {
+        type: "settings.plugin.placement.set",
+        target,
+        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+          .revision,
+        mainIncluded: false,
+        projects: [],
+        personalEverywhere: null,
+        idempotencyKey: "exclude-main-connectionless",
+      },
+      {},
+    );
+    expect(await platform.listCallableTools(scope)).toEqual([]);
+  });
+  test("specialist placement preserves existing registrations and applies Personal future consent", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.createRunFixture("settings-specialist", {
+      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      workspaceBacking: "local-directory",
+    });
+    const platform = new IntegrationPlatformStore(f.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "specialist",
+      actorUserId: run.userId,
+      source: {},
+      digest: "a".repeat(64),
+      manifest: { name: "specialist" },
+      specialistManifest: {
+        version: 1,
+        fallback: "none",
+        models: [{ engine: "claude", model: "haiku" }],
+        access: [],
+      },
+    });
+    const registration = await platform.specialists.add({
+      workspaceId: run.workspace.id,
+      pluginId,
+      actorUserId: run.userId,
+    });
+    const target = { kind: "specialist" as const, pluginId, ownerUserId: run.userId };
+    await platform.settings.setPlacement(
+      run.userId,
+      {
+        type: "settings.plugin.placement.set",
+        target,
+        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+          .revision,
+        mainIncluded: true,
+        projects: [],
+        personalEverywhere: { accounts: [] },
+        idempotencyKey: "specialist-everywhere",
+      },
+      {},
+    );
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: false,
+      idempotencyKey: "specialist-off",
+    });
+    const project = await createTestWorkspace(f.store, {
+      backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+      createdBy: run.userId,
+      idempotencyKey: "future-specialist",
+      name: "Future",
+      kind: "project",
+      status: "ready",
+    });
+    const future = await platform.specialists.list(project.id, run.userId);
+    expect(future).toHaveLength(1);
+    await expect(
+      platform.specialists.assertRunnable(future[0]!.id, project.id, run.userId),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await platform.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
+      enabled: true,
+      idempotencyKey: "specialist-on",
+    });
+    expect((await platform.specialists.list(run.workspace.id, run.userId))[0]?.id).toBe(
+      registration.id,
+    );
+    expect(
+      (await platform.specialists.assertRunnable(future[0]!.id, project.id, run.userId)).id,
+    ).toBe(future[0]!.id);
+  });
   test("Off preserves activation, owner management and idempotent results while filtering the Run plan", async ({
     storeFixture: f,
   }) => {
@@ -120,15 +299,17 @@ describeStore("plugin Settings authority", (test) => {
       manifest: { name: "off-plugin", skills: [{ name: "summarize" }] },
     });
     const target = { kind: "plugin" as const, pluginId };
+    const initialRevision = (await platform.settings.detail(run.userId, target)).row.placement
+      .revision;
     const command = {
       type: "settings.plugin.enabled.set" as const,
       target,
-      expectedRevision: 0,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
       enabled: false,
       idempotencyKey: "disable-plugin",
     };
     expect(await platform.settings.setEnabled(run.userId, command)).toMatchObject({
-      placement: { enabled: false, revision: 1 },
+      placement: { enabled: false, revision: initialRevision + 1 },
     });
     expect(await platform.plugins.current(run.workspace.id, run.userId)).toEqual([]);
     expect(await platform.plugins.current(run.workspace.id)).toHaveLength(1);
@@ -138,7 +319,7 @@ describeStore("plugin Settings authority", (test) => {
       row: { permissions: { canUpdate: true }, placement: { enabled: false } },
     });
     expect(await platform.settings.setEnabled(run.userId, command)).toMatchObject({
-      placement: { revision: 1 },
+      placement: { revision: initialRevision + 1 },
     });
     await expect(
       platform.settings.setEnabled(run.userId, { ...command, enabled: true }),
@@ -146,11 +327,54 @@ describeStore("plugin Settings authority", (test) => {
     await platform.settings.setEnabled(run.userId, {
       ...command,
       enabled: true,
-      expectedRevision: 1,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
       idempotencyKey: "enable-plugin",
     });
     expect(await platform.plugins.current(run.workspace.id, run.userId)).toHaveLength(1);
     expect(pluginTargetKey(target)).toBe(pluginTargetKey({ pluginId, kind: "plugin" }));
+  });
+  test("legacy activation changes advance revisions and reject stale Settings consent", async ({
+    storeFixture: f,
+  }) => {
+    const run = await f.createRunFixture("settings-legacy-revision");
+    const platform = new IntegrationPlatformStore(f.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "legacy-revision",
+      actorUserId: run.userId,
+      source: {},
+      digest: "a".repeat(64),
+      manifest: { name: "legacy-revision" },
+    });
+    const target = { kind: "plugin" as const, pluginId };
+    const before = (await platform.settings.detail(run.userId, target)).row.placement.revision;
+    await platform.plugins.setActivation({
+      pluginId,
+      workspaceId: run.workspace.id,
+      actorUserId: run.userId,
+      active: true,
+    });
+    const after = (await platform.settings.detail(run.userId, target)).row.placement.revision;
+    expect(after).toBeGreaterThan(before);
+    await expect(
+      platform.settings.setEnabled(run.userId, {
+        type: "settings.plugin.enabled.set",
+        target,
+        expectedRevision: before,
+        enabled: false,
+        idempotencyKey: "stale-legacy",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await platform.plugins.setActivation({
+      pluginId,
+      workspaceId: run.workspace.id,
+      actorUserId: run.userId,
+      active: false,
+    });
+    expect(
+      (await platform.settings.detail(run.userId, target)).row.placement.revision,
+    ).toBeGreaterThan(after);
   });
   test("Main exclusion filters an explicit package activation without removing it", async ({
     storeFixture: f,
@@ -178,7 +402,8 @@ describeStore("plugin Settings authority", (test) => {
       {
         type: "settings.plugin.placement.set",
         target,
-        expectedRevision: 0,
+        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+          .revision,
         idempotencyKey: "exclude-main",
         mainIncluded: false,
         projects: [],
@@ -215,7 +440,7 @@ describeStore("plugin Settings authority", (test) => {
     const command = {
       type: "settings.plugin.placement.set" as const,
       target,
-      expectedRevision: 0,
+      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
       idempotencyKey: "everywhere",
       mainIncluded: true,
       projects: [],
@@ -239,7 +464,8 @@ describeStore("plugin Settings authority", (test) => {
       run.userId,
       {
         ...command,
-        expectedRevision: 1,
+        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+          .revision,
         idempotencyKey: "clear-future-consent",
         projects: [{ workspaceId: project.id, accounts: [] }],
         personalEverywhere: null,
@@ -277,7 +503,8 @@ describeStore("plugin Settings authority", (test) => {
         run.userId,
         {
           ...command,
-          expectedRevision: 2,
+          expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+            .revision,
           idempotencyKey: "server-everywhere",
           projects: [{ workspaceId: project.id, accounts: [] }],
         },
@@ -366,7 +593,8 @@ describeStore("plugin Settings authority", (test) => {
       {
         type: "settings.plugin.placement.set",
         target,
-        expectedRevision: 0,
+        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+          .revision,
         idempotencyKey: "account-everywhere",
         mainIncluded: true,
         projects: [],
@@ -427,7 +655,8 @@ describeStore("plugin Settings authority", (test) => {
       {
         type: "settings.plugin.placement.set",
         target,
-        expectedRevision: 1,
+        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+          .revision,
         idempotencyKey: "clear-revoked-consent",
         mainIncluded: true,
         projects: [],

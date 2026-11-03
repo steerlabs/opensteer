@@ -122,7 +122,7 @@ export async function resolveResourceAccess(
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
       .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
-    if (registration)
+    if (registration && (threadId || input.agentBindingId))
       specialistPolicyAllowed =
         (await pluginPolicyAllows(
           database,
@@ -223,7 +223,11 @@ export async function resolveResourceAccess(
     );
   }
   let policyAllowed = true;
-  if (input.resource && input.resource.type !== "browser-profile") {
+  if (
+    (threadId || input.agentBindingId) &&
+    input.resource &&
+    input.resource.type !== "browser-profile"
+  ) {
     const connection = await database
       .selectFrom("integrationConnections")
       .select(["integrationDefinitionId", "connectionKind"])

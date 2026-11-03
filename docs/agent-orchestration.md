@@ -243,7 +243,13 @@ always require explicit selection. Reads never create grants.
 Connection ceilings, owner Off/Main exclusions and optional specialist restrictions
 can only narrow access. Off retains credentials, grants, activations and specialist
 bindings; Main exclusion also blocks direct grants. Owner management and repair
-remain available while Off.
+remain available while Off. These ceilings govern managed discovery and new
+admission; they cannot erase instructions already in an engine's history or
+revoke files it can read. Loose-skill changes participate in Run planning and
+warm-engine reuse, and require a Runner advertising the Settings policy
+capability. Settings reads use membership-authorized cached skill metadata;
+refreshing Settings does not scan a computer's disk. Offline and failed scans
+retain the last complete inventory.
 A caller cannot reuse, queue work to, or steer a Thread with Main lineage unless
 its own lineage has Main authority; start a new task instead. Cross-Workspace
 delegation still requires the caller's `main` profile. A specialist may send only

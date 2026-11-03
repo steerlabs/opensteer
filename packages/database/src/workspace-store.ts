@@ -1,3 +1,4 @@
+import { SpecialistStore } from "./specialist-store.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
 import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
 import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
@@ -233,6 +234,12 @@ export async function createWorkspace(
               id,
               input.createdBy,
             );
+          else if (target.kind === "specialist")
+            await new SpecialistStore(transaction).addIn(transaction, {
+              workspaceId: id,
+              pluginId: target.pluginId,
+              actorUserId: input.createdBy,
+            });
           else if (target.kind === "service" || target.kind === "device-app") {
             const detail = await new PluginSettingsStore(transaction).detail(
               input.createdBy,

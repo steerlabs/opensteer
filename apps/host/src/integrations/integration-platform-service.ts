@@ -723,11 +723,15 @@ export class IntegrationPlatformService {
       typeof import("@opensteer/protocol").SettingsPluginPlacementCommandSchema
     >,
   ) {
-    return this.#store.settings.setPlacement(
+    const result = await this.#store.settings.setPlacement(
       owner,
       command,
       await this.#authorizationSource.providerAuthorizations(owner),
     );
+    if (command.target.kind === "specialist") {
+      await this.#store.specialists.finishPlacementRemovals(command.target.pluginId, owner);
+    }
+    return result;
   }
 
   async createGrant(input: Omit<CreateIntegrationGrantInput, "providerAuthorizations">) {

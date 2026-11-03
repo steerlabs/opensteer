@@ -1732,7 +1732,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       installations
         .filter(
           (row) =>
-            (!row.pluginId || !deniedPlugins.has(row.pluginId)) && !deniedDefinitions.has(row.name),
+            (!row.pluginId || !deniedPlugins.has(row.pluginId)) &&
+            !deniedDefinitions.has(installationDefinitionId(row)),
         )
         .map(async (row) => {
           const installation = installationFromRow(row);
@@ -3445,7 +3446,14 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       workspaceId: input.workspaceId,
     });
     return resolved.tools
-      .filter(({ tool }) => !blockedIds.has(byId.get(tool.id)!.joinedInstallationId))
+      .filter(({ tool }) => {
+        const installationId = byId.get(tool.id)!.joinedInstallationId;
+        const installation = installationById.get(installationId)!;
+        return (
+          !blockedIds.has(installationId) &&
+          !blockedDefinitions.has(installationDefinitionId(installation))
+        );
+      })
       .map(({ grant, tool }) => callableToolFromRow(byId.get(tool.id)!, grant));
   }
 }
@@ -4752,4 +4760,17 @@ export async function replaceServerToolsInTransaction(
     now: input.now,
     serverId: input.serverId,
   });
+}
+
+function installationDefinitionId(installation: {
+  name: string;
+  manifest: Record<string, unknown>;
+}): string {
+  const definition = installation.manifest.definition;
+  return typeof definition === "object" &&
+    definition !== null &&
+    "id" in definition &&
+    typeof definition.id === "string"
+    ? definition.id
+    : installation.name;
 }
