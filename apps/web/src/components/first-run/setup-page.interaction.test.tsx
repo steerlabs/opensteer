@@ -53,7 +53,7 @@ const codex = (overrides: Partial<ThreadPlacementOption> = {}) =>
     models: [
       { displayName: "GPT", isDefault: true, modelId: "gpt", options: [], providerId: "openai" },
     ] as never,
-    modelSelection: { modelId: "gpt", options: {}, providerId: "openai" },
+    modelSelection: { modelId: "gpt", options: {}, providerId: "openai" } as never,
     ...overrides,
   });
 
@@ -77,6 +77,7 @@ const shell = vi.hoisted(() => ({
   snapshot: {
     connection: "connected",
     deploymentId: "dep_01J0000000000000000000000",
+    environments: [{ harnessDrivers: [{ driverKind: "claude" }], kind: "main" }] as unknown[],
     homeThreadId: null as string | null,
     identityConfig: {
       deployment: { name: "Studio Mac" },
@@ -100,6 +101,7 @@ beforeEach(() => {
   shell.desktopDeployment = null;
   shell.deploymentAccess = null;
   shell.snapshot.homeThreadId = null;
+  shell.snapshot.environments = [{ harnessDrivers: [{ driverKind: "claude" }], kind: "main" }];
   shell.hostClient.rememberExecution.mockResolvedValue({});
   shell.hostClient.rpc["sessions.list"].mockResolvedValue({ data: { sessions: [] }, ok: true });
   shell.hostClient.subscribePersonalRemoteAccess.mockImplementation((listener: Listener) => {
@@ -121,9 +123,9 @@ async function mount() {
   root = createRoot(container);
   await act(async () =>
     root?.render(
-      <MemoryRouter initialEntries={["/setup"]}>
+      <MemoryRouter initialEntries={["/get-started"]}>
         <Routes>
-          <Route element={<SetupPage />} path="/setup" />
+          <Route element={<SetupPage />} path="/get-started" />
           <Route element={<p>Chat home</p>} path="/" />
           <Route element={<p>AI settings</p>} path="/settings/ai-engines" />
         </Routes>
@@ -156,6 +158,24 @@ it("fills in a ready AI and starts Chat on it with one press", async () => {
     },
   });
   expect(container.textContent).toContain("Chat home");
+});
+
+it("offers the first ready AI when several are ready and none was picked", async () => {
+  shell.placements = [codex(), placement({})];
+  await mount();
+  expect(container.textContent).not.toContain("Choose an AI");
+  expect(container.textContent).toContain("Codex");
+  await act(async () => button("Start").click());
+  expect(shell.hostClient.rememberExecution).toHaveBeenCalledWith({
+    selection: expect.objectContaining({ harnessInstanceId: "hin_codex" }),
+  });
+});
+
+it("explains an AI that cannot run when it is the only one", async () => {
+  shell.placements = [codex({ available: false, availability: "missing" })];
+  await mount();
+  expect(container.textContent).toContain("Not installed on this computer");
+  expect(container.textContent).toContain("Set up later");
 });
 
 it("lets the person switch to another ready AI before starting", async () => {
@@ -191,7 +211,8 @@ it("offers each AI's own fix when none can run yet, and a way to finish later", 
   await mount();
   expect(container.textContent).toContain("Choose an AI");
   expect(container.textContent).toContain("Not signed in");
-  expect(container.textContent).toContain("Not installed on this computer");
+  // An AI that cannot be used or fixed from here stays out of the way.
+  expect(container.textContent).not.toContain("Codex");
   expect(button("Start").disabled).toBe(true);
   await act(async () => button("Sign in").click());
   expect(shell.openHarnessAuthentication).toHaveBeenCalledWith(
@@ -205,6 +226,23 @@ it("offers each AI's own fix when none can run yet, and a way to finish later", 
   await act(async () => button("Set up later").click());
   expect(container.textContent).toContain("Chat home");
   expect(shell.hostClient.rememberExecution).not.toHaveBeenCalled();
+});
+
+it("waits for this computer to report its AIs instead of calling it empty", async () => {
+  shell.placements = [];
+  shell.snapshot.environments = [{ harnessDrivers: [], kind: "main" }];
+  await mount();
+  expect(container.textContent).toContain("Looking for AIs on this computer");
+  expect(container.textContent).not.toContain("No AI was found");
+  shell.snapshot.environments = [{ harnessDrivers: [{ driverKind: "claude" }], kind: "main" }];
+  await act(async () => root?.render(
+    <MemoryRouter initialEntries={["/get-started"]}>
+      <Routes>
+        <Route element={<SetupPage />} path="/get-started" />
+      </Routes>
+    </MemoryRouter>,
+  ));
+  expect(container.textContent).toContain("No AI was found on this computer");
 });
 
 it("keeps setup open with the reason when the choice cannot be saved", async () => {
@@ -302,9 +340,9 @@ it("adds a phone: links this computer, turns on Connect, shows the code, then na
     for (const listener of state.remoteListeners) listener();
   });
   await act(async () => root?.render(
-    <MemoryRouter initialEntries={["/setup"]}>
+    <MemoryRouter initialEntries={["/get-started"]}>
       <Routes>
-        <Route element={<SetupPage />} path="/setup" />
+        <Route element={<SetupPage />} path="/get-started" />
       </Routes>
     </MemoryRouter>,
   ));

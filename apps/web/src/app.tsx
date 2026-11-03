@@ -46,6 +46,7 @@ import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { consumeNativeOAuthQuery } from "./account/native-oauth-query.js";
 import { Icon } from "./components/icon.js";
 import { SetupOpening } from "./components/first-run/setup-opening.js";
+import { setupPath } from "./components/workspace/navigation.js";
 import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
@@ -93,6 +94,20 @@ export function App({
   // Captured once, during the first render, so the code leaves the URL before
   // anything can paint it or persist it in history.
   const [setupToken] = useState(takeSetupToken);
+  // Setup carries on into the app it just set up. The address is chosen before
+  // the router first reads it, so Chat never mounts underneath setup and a
+  // notification the window was opened for still wins.
+  useState(() => {
+    if (openSetup && window.location.pathname === "/" && notificationTarget === null) {
+      window.history.replaceState(window.history.state, "", setupPath + window.location.search);
+    }
+  });
+  const setupToAnnounce = useRef(openSetup);
+  useEffect(() => {
+    if (!setupToAnnounce.current) return;
+    setupToAnnounce.current = false;
+    onSetupOpened?.();
+  }, [onSetupOpened]);
   const [recoveryToken] = useState(takeRecoveryToken);
   const [nativeOAuthQuery] = useState(() =>
     consumeNativeOAuthQuery(window.location, (url) => window.history.replaceState(null, "", url)),
@@ -452,8 +467,6 @@ export function App({
                 loadError={loadError}
                 onNotificationTargetOpened={onNotificationTargetOpened}
                 notificationTarget={notificationTarget}
-                onSetupOpened={onSetupOpened}
-                openSetup={openSetup}
               />
             }
           >
@@ -462,7 +475,7 @@ export function App({
             <Route path="threads/:threadId" element={<ThreadRoute />} />
             <Route path="live" element={<LiveRedirect />} />
             <Route path="projects" element={<ProjectsPage />} />
-            <Route path="setup" element={<SetupPage />} />
+            <Route path="get-started" element={<SetupPage />} />
             <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
             <Route path="workspaces/:workspaceId/settings" element={<ProjectSettingsRoute />} />
             <Route

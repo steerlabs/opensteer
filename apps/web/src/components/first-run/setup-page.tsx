@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import type { AuthSessionSummary } from "@opensteer/core";
 import {
+  chatExecutionDecision,
   chatExecutionSelection,
   executionSelectionForPlacement,
   lastExecutionSelection,
@@ -46,6 +47,13 @@ export function SetupPage() {
   const computerName =
     desktopDeployment?.name ?? snapshot.identityConfig?.deployment.name ?? "This computer";
   const local = useMemo(() => setupPlacements(placements), [placements]);
+  // Right after this computer starts, its agents have not reported which AIs
+  // they found yet. That is a wait, not an empty computer.
+  const discovering =
+    local.length === 0 &&
+    snapshot.environments.some(
+      (environment) => environment.kind === "main" && environment.harnessDrivers.length === 0,
+    );
   const home = snapshot.threads.find(({ id }) => id === snapshot.homeThreadId);
   const existing = home
     ? {
@@ -55,12 +63,13 @@ export function SetupPage() {
       }
     : null;
   const [chosen, setChosen] = useState<ExecutionSelection | null>(null);
-  const selection = chatExecutionSelection({
-    chosen,
-    existing,
-    placements: local,
-    remembered: lastExecutionSelection(executionPreferences),
-  });
+  const remembered = lastExecutionSelection(executionPreferences);
+  const decided = chatExecutionDecision({ chosen, existing, remembered });
+  // With nothing decided yet, setup offers the first ready AI rather than a
+  // question: Start is then one press, and Change is right beside it.
+  const selection =
+    chatExecutionSelection({ chosen, existing, placements: local, remembered }) ??
+    (decided === null ? firstReadySelection(local) : null);
   const selected = selection ? (placementForSelection(local, selection) ?? null) : null;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +122,7 @@ export function SetupPage() {
             }
           />
           <AiRow
+            discovering={discovering}
             onAuthenticate={openHarnessAuthentication ?? undefined}
             onChoose={setChosen}
             onRefresh={refreshHarnessCatalog}
@@ -148,15 +158,20 @@ export function SetupPage() {
 }
 
 /**
- * The accounts this computer's own agents can use, runnable ones first. An
- * account that was turned off is a decision already made elsewhere, so it is
- * not offered again here.
+ * The accounts this computer's own agents can use, runnable ones first. Setup
+ * offers only what can be used or fixed from here — ready, waiting for a
+ * sign-in, or getting ready — and falls back to the rest only when nothing
+ * else exists, so the reason this computer has no AI is still visible. An
+ * account that was turned off is a decision already made elsewhere.
  */
 export function setupPlacements(
   placements: readonly ThreadPlacementOption[],
 ): ThreadPlacementOption[] {
-  return placements
-    .filter((placement) => placement.environmentKind === "main" && placement.availability !== "disabled")
+  const here = placements
+    .filter(
+      (placement) =>
+        placement.environmentKind === "main" && placement.availability !== "disabled",
+    )
     .map((placement, index) => ({ index, placement }))
     .sort(
       (left, right) =>
@@ -164,6 +179,21 @@ export function setupPlacements(
         left.index - right.index,
     )
     .map(({ placement }) => placement);
+  const usable = here.filter(
+    (placement) =>
+      placement.available ||
+      placement.availability === "authentication-required" ||
+      placement.availability === "preparing" ||
+      placement.availability === "runtime-check",
+  );
+  return usable.length > 0 ? usable : here;
+}
+
+function firstReadySelection(
+  placements: readonly ThreadPlacementOption[],
+): ExecutionSelection | null {
+  const ready = placements.find((placement) => placement.available);
+  return ready ? executionSelectionForPlacement(ready) : null;
 }
 
 /** One short phrase for an account that cannot run yet. */
@@ -181,17 +211,19 @@ export function placementStanding(placement: ThreadPlacementOption): string {
     case "disconnected":
       return "This computer is offline";
     default:
-      return placement.detail;
+      return "Can’t run right now";
   }
 }
 
 function AiRow({
+  discovering,
   onAuthenticate,
   onChoose,
   onRefresh,
   placements,
   selected,
 }: {
+  readonly discovering: boolean;
   readonly onAuthenticate: ((placement: ThreadPlacementOption) => void) | undefined;
   readonly onChoose: (selection: ExecutionSelection) => void;
   readonly onRefresh: (placement: ThreadPlacementOption) => Promise<void>;
@@ -199,6 +231,17 @@ function AiRow({
   readonly selected: ThreadPlacementOption | null;
 }) {
   const [choosing, setChoosing] = useState(false);
+  if (discovering) {
+    return (
+      <SetupRow
+        detail="Looking for AIs on this computer…"
+        icon={<Icon name="sparkles" />}
+        title="AI"
+        tone="waiting"
+        trailing={<SetupStatus label="Looking for AIs" state="working" />}
+      />
+    );
+  }
   if (selected?.available && !choosing) {
     return (
       <SetupRow
@@ -301,7 +344,7 @@ function AiChoice({
   const working =
     placement.availability === "preparing" || placement.availability === "runtime-check";
   return (
-    <div className="setup-choice">
+    <div className="setup-choice" title={placement.detail || undefined}>
       {mark}
       {name}
       {working ? (

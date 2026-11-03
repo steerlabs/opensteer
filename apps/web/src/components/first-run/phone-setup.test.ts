@@ -100,7 +100,7 @@ describe("phoneOpenUrl", () => {
 });
 
 describe("newestNewPhoneSession", () => {
-  const session = (overrides: Partial<AuthSessionSummary>): AuthSessionSummary =>
+  const session = (overrides: Partial<Record<keyof AuthSessionSummary, unknown>>) =>
     ({
       absoluteExpiresAt: "2026-12-01T00:00:00.000Z",
       createdAt: "2026-11-03T10:00:00.000Z",

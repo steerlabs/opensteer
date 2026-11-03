@@ -90,7 +90,6 @@ import {
   canonicalPlaceSearch,
   isSettingsPath,
   isSetupPath,
-  setupPath,
   placeSelection,
   rememberPlace,
   rememberedPlace,
@@ -290,8 +289,6 @@ export function AppShell({
   loadError,
   onNotificationTargetOpened,
   notificationTarget = null,
-  onSetupOpened,
-  openSetup = false,
 }: {
   deploymentAccess?: DeploymentAccessSnapshot | null;
   desktopBridge?: OpensteerDesktopBridge | null;
@@ -301,10 +298,6 @@ export function AppShell({
   onNotificationTargetOpened?: (() => void) | undefined;
   /** A clicked Desktop notification, for this Deployment, waiting to be opened. */
   notificationTarget?: DesktopNotificationTarget | null;
-  /** Told once setup has taken over the window. */
-  onSetupOpened?: (() => void) | undefined;
-  /** Open setup once, as this window first shows the app. */
-  openSetup?: boolean;
 }) {
   const snapshot = useHostSelector(hostClient, selectHostSnapshot, sameStableHostSnapshot);
   const attention = useHostSelector(hostClient, selectAttentionCount);
@@ -323,17 +316,6 @@ export function AppShell({
     [hostClient, nav, location.state],
   );
   const routerNavigate = useNavigate();
-  // Setup continues into the app it just started, once: a notification or
-  // link the window was opened for still wins, and leaving setup is final.
-  const setupOpened = useRef(false);
-  useEffect(() => {
-    if (!openSetup || setupOpened.current) return;
-    setupOpened.current = true;
-    if (location.pathname === "/" && notificationTarget === null) {
-      void routerNavigate(setupPath, { replace: true });
-    }
-    onSetupOpened?.();
-  }, [location.pathname, notificationTarget, onSetupOpened, openSetup, routerNavigate]);
   const { controller: dictation } = useDictation();
   const voicePlaces = useBrowserTabStrip(hostClient).ordered;
   const voice = useVoiceRuntime(
