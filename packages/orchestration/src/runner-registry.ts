@@ -2163,6 +2163,7 @@ export class RunnerRegistry {
       case "runner.workspace.local.provisioned":
       case "runner.workspace.local.relocated":
       case "runner.workspace.local.inspected":
+      case "runner.workspace.local.specialist.removed":
       case "runner.workspace.local.destroyed":
       case "runner.workspace.local.files.listed":
       case "runner.workspace.local.files.read":
