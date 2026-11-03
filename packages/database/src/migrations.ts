@@ -6828,13 +6828,22 @@ export const resourceAccessLevelsMigration: Migration = {
 export const pluginsMigration: Migration = {
   async up(database) {
     await sql.raw(PLUGIN_SCHEMA_SQL).execute(database);
-    await sql`
+    // Databases upgraded from releases before integration skills never had the table.
+    const skills = await sql<{
+      present: string | null;
+    }>`select to_regclass('public.integration_skills')::text as present`.execute(database);
+    const hasSkills = Boolean(skills.rows[0]?.present);
+    const skillsJson = hasSkills
+      ? `COALESCE((SELECT jsonb_agg(jsonb_build_object('name',s.name,'description',s.description,'digest',s.digest)) FROM integration_skills s WHERE s.installation_id=i.id AND s.status='active'),'[]'::jsonb)`
+      : "'[]'::jsonb";
+    // Multiple statements need the simple query protocol, so the text carries no parameters.
+    await sql.raw(`
    INSERT INTO plugins(id,name,scope,source,installed_by,current_version_id,created_at,updated_at)
    SELECT id, CASE WHEN name = 'opensteer' THEN 'imported-opensteer' ELSE name END, 'deployment', provenance, created_by, id || '-v1',created_at,updated_at
    FROM integration_installations WHERE source_kind = 'agent-plugin';
    INSERT INTO plugin_versions(id,plugin_id,digest,manifest,created_at)
    SELECT i.id || '-v1',i.id,i.provenance->>'snapshotDigest',
-    i.manifest || jsonb_build_object('skills', COALESCE((SELECT jsonb_agg(jsonb_build_object('name',s.name,'description',s.description,'digest',s.digest)) FROM integration_skills s WHERE s.installation_id=i.id AND s.status='active'),'[]'::jsonb)),i.created_at
+    i.manifest || jsonb_build_object('skills', ${skillsJson}),i.created_at
    FROM integration_installations i WHERE i.source_kind='agent-plugin';
    INSERT INTO plugin_activations(workspace_id,plugin_id,created_by)
    SELECT DISTINCT w.id,i.id,i.created_by FROM integration_installations i CROSS JOIN workspaces w
@@ -6842,7 +6851,7 @@ export const pluginsMigration: Migration = {
      w.kind='main' OR EXISTS(SELECT 1 FROM integration_grants g WHERE g.installation_id=i.id AND g.workspace_id=w.id AND g.revoked_at IS NULL AND EXISTS(SELECT 1 FROM workspace_memberships m WHERE m.workspace_id=w.id AND m.user_id=g.owner_user_id AND m.state='active'))
    );
    UPDATE integration_installations SET source_kind='plugin',plugin_id=id WHERE source_kind='agent-plugin';
-   DROP TABLE integration_skills;
-  `.execute(database);
+  `).execute(database);
+    if (hasSkills) await sql`drop table integration_skills`.execute(database);
   },
 };
