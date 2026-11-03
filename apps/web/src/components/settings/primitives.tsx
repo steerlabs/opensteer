@@ -148,16 +148,19 @@ export function SettingsGroup({
   note = null,
 }: {
   readonly children: ReactNode;
-  readonly heading: string;
+  /** Null when the card's only row already names the group. */
+  readonly heading: string | null;
   readonly headingId: string;
   /** The sentence under the card: what turning this off would take with it. */
   readonly note?: ReactNode;
 }) {
   return (
-    <section aria-labelledby={headingId} className="settings-group">
-      <h2 className="settings-group__title" id={headingId}>
-        {heading}
-      </h2>
+    <section aria-labelledby={heading ? headingId : undefined} className="settings-group">
+      {heading ? (
+        <h2 className="settings-group__title" id={headingId}>
+          {heading}
+        </h2>
+      ) : null}
       <div className="card">{children}</div>
       {note ? <p className="settings-footnote">{note}</p> : null}
     </section>

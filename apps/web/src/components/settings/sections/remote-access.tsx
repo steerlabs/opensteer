@@ -41,7 +41,7 @@ export function RemoteAccessSection({
   };
   return (
     <SettingsGroup
-      heading="Open Opensteer from anywhere"
+      heading={compact ? null : "Open Opensteer from anywhere"}
       headingId="settings-remote-access-heading"
     >
       <SettingsRow
@@ -57,7 +57,7 @@ export function RemoteAccessSection({
           access?.mode === "private"
             ? "Private network"
             : access?.mode === "connect"
-              ? "Connect · ready"
+              ? "Opensteer Connect"
               : "Off"
         }
         action={

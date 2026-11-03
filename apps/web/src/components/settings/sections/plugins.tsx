@@ -290,7 +290,9 @@ function OverviewRow({
           {state.label === "Waiting" ? <Icon name="clock" /> : null}
           {state.label !== "On"
             ? state.label === "Waiting"
-              ? `${waitingDevice ?? row.title} · waiting`
+              ? waitingDevice
+                ? `${waitingDevice} · waiting`
+                : "Waiting"
               : state.label
             : [
                 row.accountCount > 1 ? `${row.accountCount} accounts` : null,

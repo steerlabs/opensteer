@@ -71,8 +71,7 @@ describe("Device settings placement", () => {
     const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
 
     expect(html).toContain('href="/settings/account/remote-access"');
-    expect(html).toContain("This device");
-    expect(html).toContain("Loading this device");
+    expect(html).toContain("Loading devices");
     expect(
       renderSettings(placementFixtures()["personal-remote"], "/settings/account/remote-access"),
     ).toContain("Connection options");
@@ -96,7 +95,7 @@ describe("Device settings placement", () => {
     const html = renderSettings(context, "/settings/account");
 
     expect(html).toContain('href="/settings/account/remote-access"');
-    expect(html).toContain("This device");
+    expect(html).toContain("Where you’re signed in");
     expect(html).not.toContain("turn on remote access in the Opensteer app");
   });
 });
