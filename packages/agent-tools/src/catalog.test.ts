@@ -202,28 +202,28 @@ describe("agent tool catalog", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const description = tool(profileId, "thread_message").description;
       expect(description).toContain(
-        '"report" leaves passive context for that Thread\'s next turn; it starts no work and never alerts the person.',
+        "report saves context without starting work or alerting the person",
       );
-      expect(description).toContain("A task's updates go to the Thread that assigned it");
+      expect(description).toContain("Task updates go to the assigning Thread");
       expect(description).not.toMatch(/report"? to publish/u);
+      expect(description).toContain("Accepted does not mean read");
+      expect(description).toContain("cancelled means it will not run");
     }
     const conversation = platformGuideForRun({ capabilityProfileId: "main", role: "conversation" });
-    expect(conversation).toContain(
-      "end the turn without writing anything, not even an acknowledgement",
-    );
-    expect(conversation).toContain("Deliver results they are waiting for");
+    expect(conversation).toContain("without any assistant text");
+    expect(conversation).toContain("deliver awaited results");
     expect(platformGuideForRun({ capabilityProfileId: "delegated", role: "work" })).toContain(
-      "Reports never alert",
+      "report leaves context for its next turn",
     );
   });
 
   it("tells every role that a reply's file links open nothing", () => {
     for (const role of ["conversation", "work"] as const) {
       expect(platformGuideForRun({ capabilityProfileId: "main", role })).toContain(
-        "Your replies render as Markdown, and only web and email links open.",
+        "Web and email links open; local file links do not.",
       );
       expect(platformGuideForRun({ capabilityProfileId: "main", role })).toContain(
-        "A link to a file opens nothing, so write a file's location as a path in code formatting",
+        "Write file locations as code",
       );
     }
   });
@@ -237,28 +237,34 @@ describe("agent tool catalog", () => {
     const schema = JSON.stringify(write.inputSchema.toJSONSchema({ io: "input" }));
     expect(schema).not.toContain("Trigger programs execute as Node.js ESM modules");
     expect(schema).toContain('"toolContractVersion"');
-    for (const action of ["set_status", "set_next_fire", "run", "cancel"]) {
-      expect(write.description).toContain(`action "${action}" requires`);
+    for (const requirement of [
+      "Timing controls require anchor access no higher than yours",
+      "archiving require full access",
+      "set_status needs triggerId and status",
+      "set_next_fire needs triggerId and future ISO nextFireAt",
+      "run needs a non-archived schedule/webhook triggerId",
+      "cancel needs triggerId and optional occurrenceId",
+      "Started work keeps running",
+    ]) {
+      expect(write.description).toContain(requirement);
     }
   });
 
   it("keeps the platform guide bounded and explains Trigger execution", () => {
     expect(new TextEncoder().encode(opensteerPlatformGuide).byteLength).toBeLessThanOrEqual(2_048);
-    expect(opensteerPlatformGuide).toContain("runs as Node.js on its anchor Thread's Runner");
+    expect(opensteerPlatformGuide).toContain("run Node.js on their anchor Thread's Runner");
     expect(opensteerPlatformGuide).toContain(
-      "Load opensteer-triggers before writing or changing a program",
+      "read opensteer-triggers before writing or changing a program",
     );
     expect(platformGuideForCapabilityProfile("trigger")).toContain(
-      "runs as Node.js on its anchor Thread's Runner",
+      "run Node.js on their anchor Thread's Runner",
     );
     expect(opensteerPlatformGuide).toContain(
-      "A Request exists only after a request tool returns its requestId.",
+      "A Request exists only when a request tool returns requestId.",
     );
+    expect(opensteerPlatformGuide).toContain("Pending is not permission:");
     expect(opensteerPlatformGuide).toContain(
-      "A pending Request is durable work state, not permission. Do not poll or resubmit it.",
-    );
-    expect(opensteerPlatformGuide).toContain(
-      "Use request_list to inspect visible Requests and request_withdraw only when this Thread no longer needs a Request it originated.",
+      "Use request_list to inspect Requests and request_withdraw only for one this Thread originated and no longer needs.",
     );
   });
 
@@ -281,20 +287,39 @@ describe("agent tool catalog", () => {
   });
 
   it("routes known integration access directly instead of requiring discovery", () => {
-    for (const id of ["main", "workspace", "delegated"] as const) {
+    for (const id of ["main", "workspace"] as const) {
       const instructions = agentCapabilityProfile(id).instructions;
-      expect(instructions).toContain(
-        "integration_request for a known installed integration's access/setup",
-      );
+      expect(instructions).toContain("integration_request handles known access or setup");
       expect(instructions).not.toContain("use integration_search first");
     }
+  });
+
+  it("explains delegated sign-in authority without offering new approvals", () => {
+    const instructions = agentCapabilityProfile("delegated").instructions;
+    expect(instructions).toContain("sign_in for already-authorized sites");
+    expect(instructions).toContain("cannot open new sign-in approvals");
+    expect(instructions).toContain("needs-approval");
+    expect(instructions).toContain("withdraw one this Thread originated");
+    expect(instructions).not.toContain("integration_request handles");
+  });
+
+  it("names the history cursor input", () => {
+    for (const name of ["thread_read", "thread_list", "workspace_list"] as const) {
+      expect(tool("main", name).description).toContain("window.nextBefore as before");
+    }
+    expect(
+      tool("main", "thread_read").inputSchema.safeParse({
+        threadId: "thr_00000000-0000-4000-8000-000000000001",
+        before: "opaque",
+      }).success,
+    ).toBe(true);
   });
 
   it("routes each Run profile to Computer use exactly once", () => {
     for (const profileId of AgentCapabilityProfileIdSchema.options) {
       const instructions = agentCapabilityProfile(profileId).instructions;
       const cue =
-        "To see or operate an app on a person's Mac, or a whole Android phone, write JavaScript in the computer tool (opensteer-computer-use).";
+        "For Mac app interfaces or Android phones, read opensteer-computer-use and use the computer tool.";
       expect(instructions.split(cue).length - 1).toBe(profileId === "trigger" ? 0 : 1);
       expect(
         skillsForCapabilityProfile(profileId).some(({ name }) => name === "opensteer-computer-use"),
