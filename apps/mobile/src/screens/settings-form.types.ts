@@ -63,7 +63,16 @@ export interface RemoteAdministrationSettings {
   readonly onRefresh: () => void;
 }
 
+export interface ConnectedAgentsSettings {
+  readonly workspaces: readonly { id: string; name: string }[];
+  readonly connections: readonly import("@opensteer/protocol").AgentConnection[] | null;
+  readonly error: string | null;
+  readonly pending: string | null;
+  readonly onRefresh: () => void;
+  readonly onRevoke: (id: string) => void;
+}
 export interface SettingsFormProps extends SettingsFormActionHandlers {
+  readonly connectedAgents?: ConnectedAgentsSettings | undefined;
   readonly administration?: RemoteAdministrationSettings | undefined;
   /** Null in a build without an Account service. */
   readonly account: AccountSettingsModel | null;

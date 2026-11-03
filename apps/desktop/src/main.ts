@@ -1,3 +1,5 @@
+import { desktopBridgeChannels } from "./bridge/desktop-bridge-channels.js";
+import { McpAuthorizationLinks } from "./app/mcp-authorization-links.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { autoUpdater } from "electron-updater";
 import { DesktopUpdater } from "./app/desktop-updater.js";
@@ -158,6 +160,9 @@ const oauthDeepLinks = new OAuthDeepLinkBroker({
   ...embeddedRelease.oauth,
   application: "desktop",
 });
+const mcpAuthorizationLinks = new McpAuthorizationLinks(
+  new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
+);
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()
@@ -172,6 +177,11 @@ let activeMainProcess: DesktopMainProcess | null = null;
 let desktopLog: RotatingPersonalLog | null = null;
 const shutdown = new DesktopShutdown({ application: app, power: powerMonitor, log: reportEvent });
 app.on("open-url", (event, url) => {
+  if (mcpAuthorizationLinks.accept(url)) {
+    event.preventDefault();
+    if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
+    return;
+  }
   if (oauthDeepLinks.accept(url)) {
     event.preventDefault();
     return;
@@ -181,7 +191,8 @@ app.on("open-url", (event, url) => {
   event.preventDefault();
 });
 app.on("second-instance", (_event, argv) => {
-  for (const url of argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
+  for (const url of argv)
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, oauthDeepLinks, webLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -232,7 +243,8 @@ async function startDesktop(): Promise<void> {
   // Only a build that updates itself needs to live in Applications.
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
-  for (const url of process.argv) routeDesktopUrl(url, oauthDeepLinks, webLinks);
+  for (const url of process.argv)
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, oauthDeepLinks, webLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -935,6 +947,7 @@ async function runDesktop(
       restart: () => restartToUpdate(),
     },
     webLinks,
+    mcpAuthorizationLinks,
     isWorkspaceContents: (sender) => sender === workspaceContents,
     passkeys,
     localVisibility,
@@ -1019,6 +1032,15 @@ async function runDesktop(
   const mainWindows = new ElectronWindowFactory(loaded.config, {
     onCreated: (window) => {
       workspaceContents = window.webContents;
+      let detachMcpAuthorization = () => {};
+      window.webContents.on("did-finish-load", () => {
+        detachMcpAuthorization();
+        detachMcpAuthorization = mcpAuthorizationLinks.attach((target) => {
+          if (!window.webContents.isDestroyed())
+            window.webContents.send(desktopBridgeChannels.mcpAuthorization, target);
+        });
+      });
+      window.webContents.once("destroyed", () => detachMcpAuthorization());
       browserPresentation.attachWindow(window);
       passkeys.attachWindow(window);
       window.on("focus", () => {
@@ -1224,7 +1246,7 @@ async function runDesktop(
         process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin,
     }),
   });
-  if (webLinks.pending) mainProcess.focus();
+  if (webLinks.pending || mcpAuthorizationLinks.pending) mainProcess.focus();
 
   function handleAsyncFatal(error: unknown): void {
     if (shutdown.requested || fatal) return;

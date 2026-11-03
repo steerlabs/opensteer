@@ -60,7 +60,53 @@ vi.mock("../ui/primitives.js", () => ({
   SwitchRow: () => null,
 }));
 
+vi.mock("@expo/ui/swift-ui", () => {
+  const Box = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
+  return {
+    Host: Box,
+    Form: Box,
+    HStack: Box,
+    VStack: Box,
+    LabeledContent: Box,
+    Button: ({
+      children,
+      label,
+      onPress,
+    }: {
+      children?: ReactNode;
+      label?: string;
+      onPress?: () => void;
+    }) => <button onClick={onPress}>{label ?? children}</button>,
+    Section: ({ children, title }: { children?: ReactNode; title?: string }) => (
+      <section>
+        <h2>{title}</h2>
+        {children}
+      </section>
+    ),
+    Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+    Image: () => null,
+    Spacer: () => null,
+    Toggle: () => null,
+  };
+});
+vi.mock("@expo/ui/swift-ui/modifiers", () => {
+  const modifier = () => ({});
+  return {
+    accessibilityAddTraits: modifier,
+    accessibilityHidden: modifier,
+    accessibilityLabel: modifier,
+    background: modifier,
+    contentShape: modifier,
+    disabled: modifier,
+    font: modifier,
+    foregroundStyle: modifier,
+    frame: modifier,
+    listStyle: modifier,
+    shapes: { roundedRectangle: modifier, rectangle: modifier },
+  };
+});
 const { SettingsForm } = await import("./settings-form.js");
+const { SettingsForm: IosSettingsForm } = await import("./settings-form.ios.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -71,6 +117,82 @@ afterEach(() => {
 });
 
 describe("Settings on a phone", () => {
+  it("offers the same connected agent revocation in the native iOS form", async () => {
+    const onRevoke = vi.fn();
+    const id = `mcn_${crypto.randomUUID()}`;
+    await render(
+      {
+        connectedAgents: {
+          workspaces: [],
+          connections: [
+            {
+              id,
+              userId: createId("user"),
+              label: "iOS agent",
+              clientName: "Example",
+              accessMode: "full-access",
+              reach: { kind: "user" },
+              createdAt: "2026-11-01T00:00:00Z",
+              expiresAt: "2026-12-01T00:00:00Z",
+              lastUsedAt: null,
+            },
+          ],
+          error: null,
+          pending: null,
+          onRevoke,
+          onRefresh: vi.fn(),
+        },
+      },
+      IosSettingsForm,
+    );
+    expect(document.body.textContent).toContain("Connected agents");
+    expect(document.body.textContent).toContain("Full access");
+    expect(document.body.textContent).toContain("Everything you can access");
+    const revoke = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Revoke iOS agent",
+    );
+    expect(revoke).toBeDefined();
+    await act(async () => revoke?.click());
+    expect(onRevoke).toHaveBeenCalledExactlyOnceWith(id);
+  });
+  it("lists connected agents with their ceiling and reach and revokes the selected agent", async () => {
+    const onRevoke = vi.fn();
+    const onRefresh = vi.fn();
+    const id = `mcn_${crypto.randomUUID()}`;
+    await render({
+      connectedAgents: {
+        workspaces: [],
+        connections: [
+          {
+            id,
+            userId: createId("user"),
+            label: "Research agent",
+            clientName: "Example",
+            accessMode: "auto",
+            reach: { kind: "user" },
+            createdAt: "2026-11-01T00:00:00Z",
+            expiresAt: "2026-12-01T00:00:00Z",
+            lastUsedAt: null,
+          },
+        ],
+        error: null,
+        pending: null,
+        onRevoke,
+        onRefresh,
+      },
+    });
+    expect(document.body.textContent).toContain("Connected agents");
+    expect(document.body.textContent).toContain("Automatic");
+    expect(document.body.textContent).toContain("Everything you can access");
+    expect(document.body.textContent).toContain("Expires");
+    await act(async () => buttonLabelled("Revoke Research agent")?.click());
+    expect(onRevoke).toHaveBeenCalledExactlyOnceWith(id);
+    const refresh = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Refresh connected agents",
+    );
+    await act(async () => refresh?.click());
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
   it("offers Remove for the current session and other signed-in devices", async () => {
     const onRemove = vi.fn();
     const first = {
@@ -217,7 +339,7 @@ function buttonLabelled(label: string): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>(`button[aria-label="${CSS.escape(label)}"]`);
 }
 
-async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
+async function render(overrides: Partial<SettingsFormProps>, Form = SettingsForm): Promise<void> {
   const props: SettingsFormProps = {
     account: { action: null, detail: null, initial: null, subtitle: null, title: "Signed out" },
     accountError: null,
@@ -264,5 +386,5 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () => root.render(<SettingsForm {...props} />));
+  await act(async () => root.render(<Form {...props} />));
 }

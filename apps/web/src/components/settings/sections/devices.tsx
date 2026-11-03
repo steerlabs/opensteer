@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import type { AuthSessionSummary } from "@opensteer/core";
 import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
@@ -26,12 +26,20 @@ import {
 } from "../primitives.js";
 import { RemoteAccessSection } from "./remote-access.js";
 
+const ConnectedAgentsSection = lazy(() =>
+  import("./connected-agents.js").then((module) => ({ default: module.ConnectedAgentsSection })),
+);
+
 /** Every device administers the same Deployment and sees its own session inventory. */
 export function DevicesSettings({ view }: { readonly view: SettingsView }) {
+  const { hostClient } = useShell();
   return (
     <>
       {view.kind === "personal" && view.administrator ? <RemoteAccessSection view={view} /> : null}
       <SignedInDevicesSection view={view} />
+      <Suspense fallback={<p role="status">Loading connected agents…</p>}>
+        <ConnectedAgentsSection client={hostClient} />
+      </Suspense>
     </>
   );
 }

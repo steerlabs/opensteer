@@ -1,5 +1,5 @@
 import Constants from "expo-constants";
-import { useNavigation } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { harnessDriverLabel } from "@opensteer/core";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
@@ -19,7 +19,7 @@ import type { NotificationPreferences } from "../notifications/push-registration
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { space } from "../theme.js";
-import { usePersonalRemoteAccess } from "@opensteer/client/react";
+import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
 import { SecondaryButton } from "../ui/primitives.js";
 import { AppText } from "../ui/primitives.js";
@@ -44,6 +44,7 @@ import {
  */
 export function SettingsScreen(): ReactNode {
   const navigation = useNavigation();
+  const focused = useIsFocused();
   const client = useMobileClient();
   const notifications = useMobileNotifications();
   const registrationState = usePushRegistration();
@@ -62,6 +63,7 @@ export function SettingsScreen(): ReactNode {
   const notificationInFlight = useRef(false);
 
   const snapshot = useSettingsHost(selection.hostClient);
+  const connectedAgents = useConnectedAgents(focused ? selection.hostClient : null);
   const remote = usePersonalRemoteAccess(
     snapshot?.deploymentShape?.kind === "personal" &&
       selection.hostClient?.getSnapshot().user?.instanceRole === "administrator"
@@ -344,6 +346,22 @@ export function SettingsScreen(): ReactNode {
   return (
     <>
       <SettingsForm
+        connectedAgents={
+          selection.hostClient
+            ? {
+                workspaces: snapshot?.workspaces ?? [],
+                connections: connectedAgents.connections,
+                error: connectedAgents.error,
+                pending: connectedAgents.pending,
+                onRefresh: () => {
+                  void connectedAgents.refresh?.();
+                },
+                onRevoke: (id) => {
+                  void connectedAgents.revoke?.(id);
+                },
+              }
+            : undefined
+        }
         administration={administration}
         account={accountModel}
         accountError={accountError}
