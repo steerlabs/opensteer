@@ -77,6 +77,7 @@ import { providerContinuationIdentityProjector } from "@opensteer/runner-client"
 const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
+    "opensteer:memory": "/runner/agent-skills/skills/memory",
     "opensteer:integrations": "/runner/agent-skills/skills/integrations",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",

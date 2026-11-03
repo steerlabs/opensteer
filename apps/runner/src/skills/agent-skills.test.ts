@@ -29,6 +29,7 @@ describe("Runner Agent Skills", () => {
 
     expect(skillNames(bundle, "main")).toEqual([
       "opensteer:skills",
+      "opensteer:memory",
       "opensteer:integrations",
       "opensteer:computer-use",
       "opensteer:browser",
@@ -48,6 +49,7 @@ describe("Runner Agent Skills", () => {
     ]);
     expect(skillNames(bundle, "delegated")).toEqual([
       "opensteer:skills",
+      "opensteer:memory",
       "opensteer:integrations",
       "opensteer:computer-use",
       "opensteer:browser",

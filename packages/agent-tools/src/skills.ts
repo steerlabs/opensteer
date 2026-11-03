@@ -10,6 +10,7 @@ export const OpensteerAgentSkillNameSchema = z.enum([
   "opensteer:browser",
   "opensteer:computers",
   "opensteer:skills",
+  "opensteer:memory",
 ]);
 export type OpensteerAgentSkillName = z.infer<typeof OpensteerAgentSkillNameSchema>;
 
@@ -26,6 +27,14 @@ export const opensteerAgentSkills: readonly OpensteerAgentSkillDefinition[] = Ob
       AgentCapabilityProfileIdSchema.parse("workspace"),
       AgentCapabilityProfileIdSchema.parse("delegated"),
       AgentCapabilityProfileIdSchema.parse("specialist"),
+    ]),
+  }),
+  // Personal memory lives in Main; Project roots and specialists never receive it.
+  Object.freeze({
+    name: OpensteerAgentSkillNameSchema.parse("opensteer:memory"),
+    profiles: Object.freeze([
+      AgentCapabilityProfileIdSchema.parse("main"),
+      AgentCapabilityProfileIdSchema.parse("delegated"),
     ]),
   }),
   Object.freeze({
