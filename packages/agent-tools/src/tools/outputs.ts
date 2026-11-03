@@ -270,6 +270,9 @@ export const BrowserProfileListOutputSchema = z.object({
 export const SignInOutputSchema = z.object({
   status: z.string(),
   site: z.string().optional(),
+  // A login reference grants nothing by itself: each fill needs the Run's
+  // current authority over that surface, and saved-password sign-in needs it.
+  loginRef: z.string().optional(),
   account: z.string().optional(),
   profileName: z.string().nullable().optional(),
   sourceName: z.string().optional(),

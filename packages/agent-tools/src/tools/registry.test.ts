@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentTools, computer } from "./index.js";
+import { sign_in } from "./browser.js";
 import { person_message } from "./person.js";
 import { trigger_write } from "./triggers.js";
 
@@ -54,6 +55,15 @@ describe("Opensteer tool registry", () => {
         ],
       }),
     ).toEqual({ content: [image] });
+  });
+  it("returns a ready sign-in's login reference, which grants nothing without the Run's authority", () => {
+    const ready = {
+      status: "ready",
+      site: "https://example.com",
+      loginRef: `lgn_${"1".repeat(32)}`,
+      account: "a•••@example.com",
+    };
+    expect(sign_in.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
   });
   it("does not expose webhook credentials", () => {
     expect(

@@ -40,7 +40,7 @@ export const sign_in = defineAgentTool({
   name: "sign_in",
   title: "Sign In",
   description:
-    "Request an authorized sign-in or reuse Chrome sign-in. For a website, open its sign-in page and pass sessionId and site; for its genuine Mac or phone app, omit sessionId. Credentials and usable sign-in references stay on the Host. On pending, do independent work then end your turn for approval. Verify the intended account on the website or app after the person completes sign-in.",
+    "Authorize a saved login or reuse Chrome sign-in. For a website, open its sign-in page and pass sessionId and site; for its genuine Mac or phone app, omit sessionId. On ready, use loginRef with Browser Harness fillLogin or device typing by field reference (username, password or code); never read or reveal saved fields. On pending, do independent work then end your turn for approval. Verify the intended account after signing in.",
   input: z
     .strictObject({
       reason: z.string().trim().min(1).max(500),
