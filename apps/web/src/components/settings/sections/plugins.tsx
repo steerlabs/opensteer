@@ -593,6 +593,11 @@ export function PluginAddSheet({
         (item) => item.definition.id === definitionId,
       )
     : null;
+  const directory = useSettingsRead(
+    () => hostClient.rpc["plugins.directory.get"]({}).then(unwrapRpcResult),
+    `add-contents:${definitionId}`,
+  );
+  const catalogItem = directory.data?.catalog.find((item) => item.definitionId === definitionId);
   const definition = integration?.definition;
   function reviewedConsent(): PluginAddConsent {
     return (
@@ -674,21 +679,13 @@ export function PluginAddSheet({
           </div>
           <p>{definition?.description}</p>
           <h3>Comes with</h3>
-          {integration?.entry?.tools.length ? (
-            <ul>
-              {integration.entry.tools.slice(0, 3).map((tool) => (
-                <li key={tool.id}>{tool.title}</li>
-              ))}
-            </ul>
-          ) : definition?.computerApp ? (
-            <ul>
-              {definition.computerApp.operations.slice(0, 3).map((operation) => (
-                <li key={operation.name}>{operation.name.replaceAll("_", " ")}</li>
-              ))}
-            </ul>
-          ) : (
-            <p>Service tools become available after installation.</p>
-          )}
+          <ul>
+            {catalogItem?.contents?.map((item) => (
+              <li key={`${item.kind}:${item.name}`}>
+                {item.name} · {item.kind}
+              </li>
+            ))}
+          </ul>
           <h3>What it’ll access</h3>
           {definition?.computerApp ? (
             <p>

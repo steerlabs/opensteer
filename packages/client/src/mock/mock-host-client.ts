@@ -2075,6 +2075,13 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           title: item.definition.name,
           description: item.definition.description,
           added: item.installationId !== null,
+          contents: (item.definition.computerApp?.operations ?? []).map(({ name }) => ({
+            name,
+            kind: "tool" as const,
+          })),
+          access: item.definition.authMethods.flatMap((method) =>
+            method.kind === "oauth" ? method.oauth.scopes : [method.label],
+          ),
         })),
         requests: client
           .getSnapshot()

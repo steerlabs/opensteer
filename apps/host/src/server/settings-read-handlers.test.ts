@@ -7,7 +7,14 @@ import { testHostApiContext } from "./test-host-api-context.js";
 function fixture() {
   const owner = createId("user");
   const catalog = vi.fn(async () => [
-    { definitionId: "gmail", title: "Gmail", description: "Mail", added: true },
+    {
+      definitionId: "gmail",
+      title: "Gmail",
+      description: "Mail",
+      added: true,
+      contents: [{ name: "Search mail", kind: "tool" }],
+      access: ["Read mail"],
+    },
   ]);
   const requests = vi.fn(async (_owner: typeof owner) => ({
     requests: [] as WaitingRequest[],

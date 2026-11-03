@@ -597,12 +597,9 @@ function Plugins({
               {
                 key: "contents",
                 title: "Comes with",
-                rows: [
-                  text(
-                    "contents",
-                    "This catalog does not provide a pre-install contents inventory.",
-                  ),
-                ],
+                rows: (add.contents ?? []).map((item) =>
+                  text(`${item.kind}:${item.name}`, `${item.name} · ${item.kind}`),
+                ),
               },
               {
                 key: "access",
@@ -630,21 +627,19 @@ function Plugins({
                       ]
                     : []),
                   ...(!addEverywhere
-                    ? host
-                        .getSnapshot()
-                        .workspaces.map((place) => ({
-                          key: place.id,
-                          kind: "toggle" as const,
-                          label: place.name,
-                          value: addPlaces.includes(place.id),
-                          disabled: addInstalled || pending !== null,
-                          onChange: (selected: boolean) =>
-                            setAddPlaces((places) =>
-                              selected
-                                ? [...places, place.id]
-                                : places.filter((id) => id !== place.id),
-                            ),
-                        }))
+                    ? host.getSnapshot().workspaces.map((place) => ({
+                        key: place.id,
+                        kind: "toggle" as const,
+                        label: place.name,
+                        value: addPlaces.includes(place.id),
+                        disabled: addInstalled || pending !== null,
+                        onChange: (selected: boolean) =>
+                          setAddPlaces((places) =>
+                            selected
+                              ? [...places, place.id]
+                              : places.filter((id) => id !== place.id),
+                          ),
+                      }))
                     : []),
                 ],
               },

@@ -1,3 +1,4 @@
+import { catalogContents } from "@opensteer/integration-core";
 import { z } from "zod";
 import {
   ComputerReplService,
@@ -465,6 +466,7 @@ export class IntegrationPlatformService {
       title: definition.name,
       description: definition.description,
       added: added.has(definition.id),
+      ...catalogContents(definition),
     }));
   }
 

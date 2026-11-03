@@ -162,6 +162,8 @@ export const PluginsDirectoryViewSchema = z.object({
         title: name,
         description: z.string().max(320),
         added: z.boolean(),
+        contents: PluginDetailViewSchema.shape.contents.optional(),
+        access: z.array(z.string().max(512)).max(100).optional(),
       }),
     )
     .max(1000),
