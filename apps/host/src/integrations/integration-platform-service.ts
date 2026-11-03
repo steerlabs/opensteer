@@ -1084,6 +1084,7 @@ export class IntegrationPlatformService {
       requestId: input.requestId,
       servers,
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     const installation = this.#acceptInstallMutation(mutation);
     if (runnerId !== null) {
       await this.requestLocalServerApprovals();
@@ -1178,6 +1179,8 @@ export class IntegrationPlatformService {
       this.#discoveries.delete(serverId);
     }
     this.#onConnectionsChanged();
+    const server = await this.#store.localMcp.get(serverId);
+    if (server) await this.#onSettingsChanged({ installationId: server.installationId });
   }
 
   async #discoverOnce(serverId: IntegrationServerId): Promise<void> {
@@ -1277,6 +1280,7 @@ export class IntegrationPlatformService {
       requestId: input.requestId,
       servers: [server],
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     return this.#acceptInstallMutation(mutation);
   }
 
@@ -1339,7 +1343,6 @@ export class IntegrationPlatformService {
           : current.name;
       const definition = definitionsById.get(definitionId);
       if (!definition) {
-        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
         continue;
       }
@@ -1352,7 +1355,6 @@ export class IntegrationPlatformService {
         summary.data.authMethods.some(({ kind }) => kind === "api-key") &&
         summary.data.apiKey === null
       ) {
-        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
         continue;
       }
@@ -1362,7 +1364,6 @@ export class IntegrationPlatformService {
         current.provenance.definitionDigest === digest &&
         current.provenance.definitionId === definition.id
       ) {
-        await this.#onSettingsChanged({ installationId: current.id });
         installations.push(current);
         continue;
       }
@@ -1538,6 +1539,7 @@ export class IntegrationPlatformService {
       actorUserId: input.actorUserId,
       requestId: input.requestId,
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     return this.#acceptInstallMutation(mutation);
   }
 
@@ -1679,6 +1681,7 @@ export class IntegrationPlatformService {
       actorUserId: input.actorUserId,
       requestId: input.requestId,
     });
+    await this.#onSettingsChanged({ installationId: mutation.installation.id });
     return this.#acceptInstallMutation(mutation);
   }
 
