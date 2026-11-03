@@ -9,6 +9,7 @@ import {
   createId,
 } from "@opensteer/core";
 import {
+  HostAppRequestSchema,
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
@@ -2816,7 +2817,7 @@ it("routes correlated app requests only to the owning storage connection and can
     hooks: { authorize: async () => undefined, onEvent: async () => undefined },
   });
   const environmentId = createId("environment");
-  const identity = hello(createId("runner"), environmentId, "boot-1");
+  const identity = hello(createId("runner"), environmentId, `rbt_${crypto.randomUUID()}`);
   const authority = createId("storageAuthority");
   const peer = new MemoryRunnerPeer("app-runner");
   const spec = {
@@ -2887,7 +2888,7 @@ it("routes correlated app requests only to the owning storage connection and can
     const canceledId = crypto.randomUUID();
     const canceled = registry.requestApp(
       environmentId,
-      { type: "host.app.start", spec, requestId: canceledId },
+      { type: "host.app.connect", spec, requestId: canceledId, ticket: "one-use" },
       abort.signal,
     );
     const rejection = expect(canceled).rejects.toThrow();
@@ -2896,6 +2897,8 @@ it("routes correlated app requests only to the owning storage connection and can
     expect(peer.messages).toContainEqual(
       expect.objectContaining({ type: "host.app.cancel", requestId: canceledId }),
     );
+    const cancelMessage = peer.messages.findLast((message) => message.type === "host.app.cancel");
+    expect(HostAppRequestSchema.parse(cancelMessage).type).toBe("host.app.cancel");
     const lifetime = registry.appConnectionSignal(
       environmentId,
       registry.identityForEnvironment(environmentId)!.connectionId,
