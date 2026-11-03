@@ -50,6 +50,14 @@ describeStore("plugin Settings authority", (test) => {
     expect(JSON.stringify(overview)).not.toContain("/private/plugin-source");
     const outsider = await f.store.createUser("outsider");
     expect((await settings.overview(outsider)).rows).toEqual([]);
+    await f.database
+      .updateTable("users")
+      .set({ instanceRole: "administrator" })
+      .where("id", "=", outsider)
+      .execute();
+    expect((await settings.overview(outsider)).rows).toEqual([]);
+    const hidden = overview.rows[0]!.target;
+    await expect(settings.detail(outsider, hidden)).rejects.toMatchObject({ code: "forbidden" });
   });
 
   test("membership removal hides Workspace package rows and detail even from their installer", async ({
@@ -173,6 +181,9 @@ describeStore("plugin Settings authority", (test) => {
     const cached = await platform.listCallableTools(scope);
     expect(cached).toHaveLength(1);
     const target = { kind: "service" as const, definitionId: "records" };
+    expect(
+      (await platform.settings.detail(run.userId, target)).row.placement.revision,
+    ).toBeGreaterThan(0);
     await platform.settings.setEnabled(run.userId, {
       type: "settings.plugin.enabled.set",
       target,
@@ -205,6 +216,16 @@ describeStore("plugin Settings authority", (test) => {
       {},
     );
     expect(await platform.listCallableTools(scope)).toEqual([]);
+    const detail = await platform.settings.detail(run.userId, target);
+    await platform.revokeGrant({
+      grantId: detail.grants[0]!.id,
+      ownerUserId: run.userId,
+      workspaceId: run.workspace.id,
+      requestId: "legacy-revoke",
+    });
+    expect(
+      (await platform.settings.detail(run.userId, target)).row.placement.revision,
+    ).toBeGreaterThan(detail.row.placement.revision);
   });
   test("specialist placement preserves existing registrations and applies Personal future consent", async ({
     storeFixture: f,

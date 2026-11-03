@@ -156,6 +156,8 @@ const releasedMigrationNames = [
   "0146_every_turn_shows",
   "0147_quiet_assignment_results",
   "0148_plugin_owner_settings",
+  "0149_workspace_skill_inventory",
+  "0150_plugin_settings_revisions",
 ];
 
 describe("migration names", () => {
