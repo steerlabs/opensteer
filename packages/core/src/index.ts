@@ -33,3 +33,5 @@ export * from "./places.js";
 export * from "./person-show.js";
 
 export * from "./resource-access.js";
+
+export * from "./specialists.js";

@@ -2091,7 +2091,16 @@ export async function createHostRuntime(
               runnerId: scope.runnerId,
               requestId: randomUUID(),
             });
-            return { pluginId: result.installation.pluginId, issues: result.issues };
+            const pluginId = result.installation.pluginId;
+            const registration =
+              result.specialist && pluginId
+                ? await integrationPlatform.store.specialists.add({
+                    workspaceId: scope.workspaceId,
+                    pluginId,
+                    actorUserId: scope.requestedBy,
+                  })
+                : null;
+            return { pluginId, issues: result.issues, specialist: result.specialist, registration };
           },
         });
       },

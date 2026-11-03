@@ -6,7 +6,11 @@ import { validateHeaderName, validateHeaderValue } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isLoopbackHostname } from "@opensteer/core";
+import {
+  SpecialistManifestSchema,
+  type SpecialistManifest,
+  isLoopbackHostname,
+} from "@opensteer/core";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 
@@ -175,6 +179,7 @@ export interface AgentPluginIssue {
 }
 
 interface LoadedAgentPlugin {
+  readonly specialistManifest: SpecialistManifest | null;
   readonly issues: readonly AgentPluginIssue[];
   readonly manifest: z.infer<typeof PluginManifestSchema>;
   readonly root: string;
@@ -245,6 +250,23 @@ export async function loadAgentPlugin(input: {
     delete manifestInput.extensions;
   }
   const manifest = PluginManifestSchema.parse(manifestInput);
+  let specialistManifest: SpecialistManifest | null = null;
+  const specialistPath = join(root, "specialist.json");
+  if (await optionalLstat(specialistPath)) {
+    await requireContainedRegularFile(root, specialistPath, "specialist.json");
+    await requireContainedRegularFile(
+      root,
+      join(root, "INSTRUCTIONS.md"),
+      "Specialists require INSTRUCTIONS.md",
+    );
+    try {
+      specialistManifest = SpecialistManifestSchema.parse(await readJsonDocument(specialistPath));
+    } catch (error) {
+      throw new Error(
+        `Invalid specialist.json: ${error instanceof Error ? error.message : "invalid manifest"}`,
+      );
+    }
+  }
   if (!/^[a-zA-Z0-9_-]+(?:-[a-zA-Z0-9_-]+)*$/u.test(input.pluginId))
     throw new Error("Invalid plugin id");
   const pluginData = join(resolve(input.dataDirectory), input.pluginId);
@@ -266,6 +288,7 @@ export async function loadAgentPlugin(input: {
   return Object.freeze({
     issues: Object.freeze(issues),
     manifest: Object.freeze(manifest),
+    specialistManifest,
     root,
     sourceRoot,
     servers: Object.freeze(servers),

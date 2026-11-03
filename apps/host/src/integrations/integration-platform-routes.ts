@@ -29,6 +29,7 @@ export function createIntegrationPlatformRpcHandlers(
 ): Pick<
   HostApiHandlers,
   | "integration.grants.list"
+  | "specialist.list"
   | "plugin.list"
   | "integration.platform.get"
   | "integration.computer.apps.installed"
@@ -37,6 +38,13 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.computer.policy.get"
 > {
   return {
+    "specialist.list": async (input, context) =>
+      rpcSuccess({
+        specialists: await options.platform.store.specialists.list(
+          input.workspaceId,
+          requireSession(context).user.id,
+        ),
+      }),
     "plugin.list": async (input, context) => {
       requireAdministrator(context);
       return rpcSuccess({ plugins: await options.platform.store.plugins.list(input.workspaceId) });
@@ -101,6 +109,9 @@ export type IntegrationPlatformCommand = Extract<
       | "plugin.update"
       | "plugin.remove"
       | "plugin.activation.set"
+      | "specialist.add"
+      | "specialist.remove"
+      | "specialist.list"
       | "plugin.list"
       | "integration.catalog.install"
       | "integration.computer.setup.set"
@@ -193,6 +204,25 @@ export async function handleIntegrationPlatformCommand(
         requestId: context.requestId,
       });
       return { type: command.type };
+    case "specialist.add":
+      return {
+        type: command.type,
+        specialist: await options.platform.store.specialists.add({
+          ...command,
+          actorUserId: session.user.id,
+        }),
+      };
+    case "specialist.remove":
+      await options.platform.store.specialists.remove({ ...command, actorUserId: session.user.id });
+      return { type: command.type };
+    case "specialist.list":
+      return {
+        type: command.type,
+        specialists: await options.platform.store.specialists.list(
+          command.workspaceId,
+          session.user.id,
+        ),
+      };
     case "plugin.list":
       requireAdministrator(context);
       return {

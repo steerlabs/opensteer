@@ -2142,6 +2142,18 @@ export interface DatabaseSchema {
     createdAt: Timestamp;
     updatedAt: Timestamp;
   };
+  specialists: {
+    id: string;
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    pluginVersionId: string;
+    ownerUserId: UserId;
+    createdBy: UserId;
+    status: "pending" | "ready";
+    bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
   pluginVersions: {
     id: string;
     pluginId: string;

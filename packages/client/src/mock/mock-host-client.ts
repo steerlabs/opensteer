@@ -2083,6 +2083,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
     "integration.computer.setup.list": async () =>
       rpcSuccess({ requests: client.listComputerAppSetupRequests() }),
+    "specialist.list": async () => rpcSuccess({ specialists: client.listSpecialists() }),
     "plugin.list": async () => rpcSuccess({ plugins: client.listPlugins() }),
     "integration.platform.get": async () =>
       rpcSuccess(
@@ -2835,6 +2836,12 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess(await client.beginMcpAuthorization(command.input));
     case "integration.mcp.disconnect":
       await client.disconnectMcpConnection(command.connectionId);
+      return rpcSuccess({ type: command.type });
+    case "specialist.list":
+      return rpcSuccess({ type: command.type, specialists: client.listSpecialists() });
+    case "specialist.add":
+      throw new Error("Install a specialist package first");
+    case "specialist.remove":
       return rpcSuccess({ type: command.type });
     case "plugin.list":
       return rpcSuccess({ type: command.type, plugins: client.listPlugins() });
@@ -4674,6 +4681,9 @@ interface MockPlugin {
 }
 class MockHostState {
   private readonly plugins: MockPlugin[] = [];
+  listSpecialists(): Record<string, unknown>[] {
+    return [];
+  }
   listPlugins(): Record<string, unknown>[] {
     return this.plugins.map((p) => ({ ...p }));
   }

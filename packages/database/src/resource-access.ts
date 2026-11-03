@@ -1,4 +1,6 @@
 import {
+  SpecialistManifestSchema,
+  BrowserProfileIdSchema,
   RunIdSchema,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
@@ -22,7 +24,12 @@ export interface ResourceAccessInput {
   /** Explicit consent must already be filtered to its owner and active membership. */
   readonly explicitAccess?: ResourceAccessLevel | null;
   readonly connectionCeiling?: ResourceAccessLevel | null;
-  /** A later specialist registration can only narrow Workspace authority. */
+  readonly specialistId?: string;
+  readonly resource?: {
+    readonly type: "integration" | "browser-profile" | "computer-app" | "phone";
+    readonly id: string;
+  };
+  /** An additional ceiling supplied by a trusted caller. */
   readonly specialistAccess?: ResourceAccessLevel | null;
 }
 
@@ -89,12 +96,115 @@ export async function resolveResourceAccess(
     (root
       ? root.workspaceId === input.workspaceId && root.capabilityProfileId === "main"
       : !input.threadId && !input.agentBindingId);
+  let specialistAccess = input.specialistAccess;
+  if (input.specialistId) {
+    const registration = await database
+      .selectFrom("specialists")
+      .innerJoin("pluginVersions", "pluginVersions.id", "specialists.pluginVersionId")
+      .innerJoin(
+        "workspaceMemberships",
+        "workspaceMemberships.workspaceId",
+        "specialists.workspaceId",
+      )
+      .select(["specialists.status", "specialists.bindings", "pluginVersions.specialistManifest"])
+      .where("specialists.id", "=", input.specialistId)
+      .where("specialists.workspaceId", "=", input.workspaceId)
+      .where("specialists.ownerUserId", "=", input.ownerUserId)
+      .where("workspaceMemberships.userId", "=", input.ownerUserId)
+      .where("workspaceMemberships.state", "=", "active")
+      .executeTakeFirst();
+    const manifest = registration
+      ? SpecialistManifestSchema.parse(registration.specialistManifest)
+      : null;
+    const binding =
+      registration?.status === "ready" && input.resource
+        ? registration.bindings.find(
+            (binding) =>
+              binding.resourceId === input.resource?.id &&
+              manifest?.access?.[binding.requirement]?.type === input.resource.type,
+          )
+        : undefined;
+    let liveAccess: ResourceAccessLevel | null = null;
+    if (binding && input.resource?.type === "browser-profile") {
+      const profile = await database
+        .selectFrom("browserProfiles")
+        .select("id")
+        .where("id", "=", BrowserProfileIdSchema.parse(binding.resourceId))
+        .where("ownerId", "=", input.ownerUserId)
+        .where("archivedAt", "is", null)
+        .executeTakeFirst();
+      if (profile) {
+        const grants = await database
+          .selectFrom("browserProfileGrants")
+          .select("access")
+          .where("workspaceId", "=", input.workspaceId)
+          .where("createdBy", "=", input.ownerUserId)
+          .where("profileId", "=", profile.id)
+          .where("revokedAt", "is", null)
+          .execute();
+        liveAccess = inheritsMain
+          ? "read-write"
+          : grants.some((g) => g.access === "read-write")
+            ? "read-write"
+            : (grants[0]?.access ?? null);
+      }
+    } else if (binding && input.resource) {
+      const connection = await database
+        .selectFrom("integrationConnections")
+        .selectAll()
+        .where("id", "=", binding.resourceId as DatabaseSchema["integrationConnections"]["id"])
+        .where("ownerUserId", "=", input.ownerUserId)
+        .where("status", "=", "connected")
+        .where("computerBlockedAt", "is", null)
+        .executeTakeFirst();
+      const requirement = manifest?.access?.[binding.requirement];
+      const matches =
+        connection &&
+        requirement &&
+        (requirement.type === "integration"
+          ? connection.provider === requirement.service ||
+            connection.integrationDefinitionId === requirement.service
+          : requirement.type === "phone"
+            ? connection.integrationDefinitionId === "android-phone"
+            : requirement.type === "computer-app" &&
+              connection.integrationDefinitionId === "macos-app" &&
+              connection.computerAppKey === requirement.app.toLowerCase());
+      if (connection && matches) {
+        const grants = await database
+          .selectFrom("integrationGrants")
+          .innerJoin(
+            "integrationInstallations",
+            "integrationInstallations.id",
+            "integrationGrants.installationId",
+          )
+          .select("integrationGrants.access")
+          .where("integrationGrants.workspaceId", "=", input.workspaceId)
+          .where("integrationGrants.ownerUserId", "=", input.ownerUserId)
+          .where("integrationGrants.connectionId", "=", connection.id)
+          .where("integrationGrants.status", "=", "active")
+          .where("integrationGrants.revokedAt", "is", null)
+          .where("integrationInstallations.status", "=", "active")
+          .execute();
+        liveAccess = inheritsMain
+          ? "read-write"
+          : grants.some((g) => g.access === "read-write")
+            ? "read-write"
+            : (grants[0]?.access ?? null);
+        if (connection.connectionKind === "computer")
+          liveAccess = intersectResourceAccess(liveAccess, connection.computerAccess);
+      }
+    }
+    specialistAccess = intersectResourceAccess(
+      intersectResourceAccess(liveAccess, binding?.level ?? null),
+      specialistAccess,
+    );
+  }
   const access = intersectResourceAccess(
     intersectResourceAccess(
       inheritsMain ? "read-write" : (input.explicitAccess ?? null),
       input.connectionCeiling,
     ),
-    input.specialistAccess,
+    specialistAccess,
   );
   return {
     access,

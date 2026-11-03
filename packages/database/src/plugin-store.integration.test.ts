@@ -125,7 +125,7 @@ describeStore("plugin activation", (test) => {
     });
     await fixture.database.transaction().execute(async (tx) => {
       await sql`ALTER TABLE integration_installations DROP COLUMN plugin_id;
-        DROP TABLE plugin_activations; ALTER TABLE plugins DROP CONSTRAINT plugins_current_version;
+        DROP TABLE specialists; DROP TABLE plugin_activations; ALTER TABLE plugins DROP CONSTRAINT plugins_current_version;
         DROP TABLE plugin_versions; DROP TABLE plugins;
         CREATE TABLE integration_skills (id text, installation_id text, name text,description text,digest text,status text);
         `.execute(tx);

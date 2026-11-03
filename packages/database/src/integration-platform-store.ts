@@ -1,3 +1,4 @@
+import { SpecialistStore } from "./specialist-store.js";
 import { PluginStore } from "./plugin-store.js";
 import { ComputerOperationStore } from "./computer-operation-store.js";
 import type { Kysely } from "kysely";
@@ -68,9 +69,11 @@ export class IntegrationPlatformStore {
   readonly getToolSchemas: IntegrationGrantStore["getToolSchemas"];
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
   readonly plugins: PluginStore;
+  readonly specialists: SpecialistStore;
 
   constructor(database: Kysely<DatabaseSchema>) {
     this.plugins = new PluginStore(database);
+    this.specialists = new SpecialistStore(database);
     this.computerOperations = new ComputerOperationStore(database);
     this.connections = new IntegrationConnectionAuthStore(database);
     this.grants = new IntegrationGrantStore(database);

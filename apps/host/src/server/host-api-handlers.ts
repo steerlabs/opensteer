@@ -51,6 +51,7 @@ export function createHostApiHandlers(
   integrationPlatformHandlers: Pick<
     HostApiHandlers,
     | "integration.grants.list"
+    | "specialist.list"
     | "plugin.list"
     | "integration.platform.get"
     | "integration.computer.apps.installed"
@@ -237,6 +238,9 @@ function isIntegrationPlatformCommand(
     case "plugin.update":
     case "plugin.remove":
     case "plugin.activation.set":
+    case "specialist.add":
+    case "specialist.remove":
+    case "specialist.list":
     case "plugin.list":
     case "plugin.install":
     case "integration.catalog.install":

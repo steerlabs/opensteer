@@ -65,6 +65,7 @@ const hostApiScopes = {
   "integration.authorization.get": "session",
   "integration.grants.list": "session",
   "plugin.list": "session",
+  "specialist.list": "session",
   "integration.platform.get": "session",
   "integration.computer.setup.list": "session",
   "integration.computer.policy.get": "session",

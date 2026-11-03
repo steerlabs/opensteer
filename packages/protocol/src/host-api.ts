@@ -797,6 +797,23 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.add"),
+    workspaceId: WorkspaceIdSchema,
+    pluginId: z.string().min(1),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.remove"),
+    workspaceId: WorkspaceIdSchema,
+    specialistId: z.string().min(1),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("specialist.list"),
+    workspaceId: WorkspaceIdSchema,
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     input: InstallAgentPluginSchema,
     type: z.literal("plugin.install"),
   }),
@@ -1247,6 +1264,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("integration.mcp.disconnect") }),
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
+  z.object({ type: z.literal("specialist.add"), specialist: z.record(z.string(), z.unknown()) }),
+  z.object({ type: z.literal("specialist.remove") }),
+  z.object({
+    type: z.literal("specialist.list"),
+    specialists: z.array(z.record(z.string(), z.unknown())),
+  }),
   z.object({ type: z.literal("plugin.activation.set") }),
   z.object({ type: z.literal("plugin.list"), plugins: z.array(z.record(z.string(), z.unknown())) }),
   z.object({
@@ -1615,6 +1638,11 @@ export const hostApi = defineRpc({
       total: z.number().int().nonnegative(),
       unavailableReason: z.enum(["offline", "not-ready"]).optional(),
     }),
+  ),
+  "specialist.list": declaration(
+    "GET",
+    z.strictObject({ workspaceId: WorkspaceIdSchema }),
+    z.object({ specialists: z.array(z.record(z.string(), z.unknown())) }),
   ),
   "plugin.list": declaration(
     "GET",

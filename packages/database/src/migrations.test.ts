@@ -142,6 +142,7 @@ const releasedMigrationNames = [
   "0132_local_directory_only",
   "0133_resource_access_levels",
   "0134_plugins",
+  "0135_specialists",
 ];
 
 describe("migration names", () => {

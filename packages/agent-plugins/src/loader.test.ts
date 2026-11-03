@@ -142,3 +142,34 @@ describe("Agent Plugins 1.0 loader", () => {
     ).resolves.toContain("Original instructions");
   });
 });
+
+describe("specialist package", () => {
+  it("parses the snapshot manifest and requires instructions", async () => {
+    const { root, data } = await fixture();
+    await writeFile(
+      join(root, "specialist.json"),
+      JSON.stringify({ version: 1, models: [{ engine: "claude", model: "haiku" }] }),
+    );
+    await expect(
+      loadAgentPlugin({ pluginId: "specialist", dataDirectory: data, directory: root }),
+    ).rejects.toThrow("INSTRUCTIONS.md");
+    await writeFile(join(root, "INSTRUCTIONS.md"), "Find invoices.");
+    const plugin = await loadAgentPlugin({
+      pluginId: "specialist",
+      dataDirectory: data,
+      directory: root,
+    });
+    expect(plugin.specialistManifest).toEqual({
+      version: 1,
+      models: [{ engine: "claude", model: "haiku" }],
+      fallback: "none",
+    });
+    await writeFile(
+      join(root, "specialist.json"),
+      JSON.stringify({ version: 1, models: [], unknown: true }),
+    );
+    await expect(
+      loadAgentPlugin({ pluginId: "specialist", dataDirectory: data, directory: root }),
+    ).rejects.toThrow("Invalid specialist.json");
+  });
+});

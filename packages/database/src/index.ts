@@ -32,3 +32,5 @@ export type {
 export { withDatabaseOperationSignal, withoutDatabaseOperationSignal } from "./operation-budget.js";
 
 export * from "./resource-access.js";
+
+export * from "./specialist-store.js";

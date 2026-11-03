@@ -958,6 +958,7 @@ export class IntegrationPlatformService {
   }): Promise<{
     readonly installation: IntegrationInstallation;
     readonly issues: readonly unknown[];
+    readonly specialist: boolean;
   }> {
     const pluginId = input.pluginId ?? createIntegrationId("installation");
     const previous = input.pluginId
@@ -993,6 +994,7 @@ export class IntegrationPlatformService {
       ),
     );
     const version = {
+      specialistManifest: plugin.specialistManifest,
       digest: basename(plugin.root),
       manifest: {
         ...plugin.manifest,
@@ -1056,7 +1058,7 @@ export class IntegrationPlatformService {
       // is listed again now rather than when that computer next reconnects.
       this.#startApprovedServers((server) => server.installationId === installation.id);
     }
-    return { installation, issues: plugin.issues };
+    return { installation, issues: plugin.issues, specialist: plugin.specialistManifest !== null };
   }
 
   /** The computer a plugin's own servers run on: the one named, or the Main one. */

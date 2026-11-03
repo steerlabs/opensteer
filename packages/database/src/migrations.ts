@@ -4687,6 +4687,7 @@ export function migrationProvider() {
         "0132_local_directory_only": localDirectoryOnlyMigration,
         "0133_resource_access_levels": resourceAccessLevelsMigration,
         "0134_plugins": pluginsMigration,
+        "0135_specialists": specialistsMigration,
       };
     },
   };
@@ -6857,5 +6858,23 @@ export const pluginsMigration: Migration = {
       )
       .execute(database);
     if (hasSkills) await sql`drop table integration_skills`.execute(database);
+  },
+};
+
+export const specialistsMigration: Migration = {
+  async up(database) {
+    await sql`CREATE TABLE specialists (
+      id text PRIMARY KEY,
+      workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      plugin_id text NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+      plugin_version_id text NOT NULL,
+      owner_user_id text NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      created_by text NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      status text NOT NULL CHECK(status IN ('pending','ready')),
+      bindings jsonb NOT NULL CHECK(jsonb_typeof(bindings) = 'array'),
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(workspace_id,plugin_id),
+      FOREIGN KEY(plugin_id,plugin_version_id) REFERENCES plugin_versions(plugin_id,id) ON DELETE CASCADE
+    )`.execute(database);
   },
 };

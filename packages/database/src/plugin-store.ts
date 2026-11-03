@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { type Kysely, type Transaction } from "kysely";
-import { OpensteerError, type UserId, type WorkspaceId } from "@opensteer/core";
+import {
+  SpecialistManifestSchema,
+  type SpecialistManifest,
+  OpensteerError,
+  type UserId,
+  type WorkspaceId,
+} from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -58,6 +64,7 @@ export class PluginStore {
       workspaceId?: WorkspaceId;
       source: Readonly<Record<string, unknown>>;
       actorUserId: UserId;
+      specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
     },
@@ -92,7 +99,9 @@ export class PluginStore {
           pluginId: input.id,
           digest: input.digest,
           manifest: jsonValue(input.manifest),
-          specialistManifest: null,
+          specialistManifest: input.specialistManifest
+            ? jsonValue(SpecialistManifestSchema.parse(input.specialistManifest))
+            : null,
           createdAt: now,
         })
         .execute();
@@ -110,6 +119,7 @@ export class PluginStore {
   async update(
     input: {
       pluginId: string;
+      specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
     },
@@ -135,7 +145,9 @@ export class PluginStore {
           pluginId: plugin.id,
           digest: input.digest,
           manifest: jsonValue(input.manifest),
-          specialistManifest: null,
+          specialistManifest: input.specialistManifest
+            ? jsonValue(SpecialistManifestSchema.parse(input.specialistManifest))
+            : null,
           createdAt: new Date(),
         })
         .execute();
@@ -148,7 +160,7 @@ export class PluginStore {
     return transaction ? persist(transaction) : this.database.transaction().execute(persist);
   }
 
-  private async activateIn(
+  async activateIn(
     tx: Kysely<DatabaseSchema>,
     pluginId: string,
     workspaceId: WorkspaceId,
