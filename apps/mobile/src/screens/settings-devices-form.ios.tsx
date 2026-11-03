@@ -5,10 +5,17 @@ import { Chevron, Footer, Lines, Tile } from "./settings-form-primitives.ios.js"
 import type { SettingsFormProps } from "./settings-form.types.js";
 import { computersSettingsFooter } from "./settings-model.js";
 export function DevicesSettingsForm(
-  props: Pick<SettingsFormProps, "page" | "computers" | "onComputerAction">,
+  props: Pick<SettingsFormProps, "page" | "computers" | "onComputerAction"> & {
+    readonly onAddDevice?: () => void;
+  },
 ): ReactNode {
   return (
     <>
+      {props.onAddDevice ? (
+        <Section>
+          <Button label="Add device" onPress={props.onAddDevice} />
+        </Section>
+      ) : null}
       {props.computers.length === 0 ? null : (
         <Section footer={<Footer text={computersSettingsFooter} />} title="Computers">
           {props.computers.map((computer) => {

@@ -1,13 +1,18 @@
 import type { ReactNode } from "react";
-import { RowGroup } from "../ui/primitives.js";
+import { RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { LinkRow, Section, Tile } from "./settings-form-primitives.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
 import { computersSettingsFooter } from "./settings-model.js";
 export function DevicesSettingsForm(
-  props: Pick<SettingsFormProps, "page" | "computers" | "onComputerAction">,
+  props: Pick<SettingsFormProps, "page" | "computers" | "onComputerAction"> & {
+    readonly onAddDevice?: () => void;
+  },
 ): ReactNode {
   return (
     <>
+      {props.onAddDevice ? (
+        <SecondaryButton label="Add device" onPress={props.onAddDevice} />
+      ) : null}
       {props.computers.length === 0 ? null : (
         <Section footer={computersSettingsFooter} label="Computers">
           <RowGroup>

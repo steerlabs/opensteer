@@ -1,5 +1,7 @@
+import { Sheet } from "../ui/sheet.js";
+import { NativeSettingsPage } from "./native-settings-page.js";
 import { useNavigation } from "@react-navigation/native";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -9,6 +11,7 @@ import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";
 export function DevicesSettingsController(): ReactNode {
   const page = "devices";
+  const [adding, setAdding] = useState(false);
   const navigation = useNavigation();
   const { rows, selection } = useMobileState();
   const snapshot = useSettingsHost(selection.hostClient);
@@ -62,6 +65,7 @@ export function DevicesSettingsController(): ReactNode {
       <SettingsPageLayout>
         <DevicesSettingsForm
           page={page}
+          onAddDevice={() => setAdding(true)}
           computers={
             page === "devices"
               ? computers
@@ -87,6 +91,58 @@ export function DevicesSettingsController(): ReactNode {
           }}
         />
       </SettingsPageLayout>
+      <Sheet open={adding} title="Add device" onClose={() => setAdding(false)}>
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "computer",
+              title: "Computer",
+              rows: [
+                {
+                  key: "instructions",
+                  kind: "text",
+                  label:
+                    "Open this Opensteer on the computer you want to add, then choose Devices → Add computer.",
+                },
+              ],
+            },
+            {
+              key: "phone",
+              title: "Agent Phone",
+              rows: [
+                {
+                  key: "instructions",
+                  kind: "text",
+                  label:
+                    "Connect your Android phone by USB to an enrolled computer. Open Devices there and choose Set up Agent Phone.",
+                },
+              ],
+            },
+            ...(iphoneApps.snapshot.supported && snapshot?.iphoneAppsAvailable
+              ? [
+                  {
+                    key: "iphone",
+                    title: "This iPhone",
+                    rows: [
+                      {
+                        key: "share",
+                        kind: "button" as const,
+                        label: "Share this iPhone’s apps",
+                        onPress: () => {
+                          setAdding(false);
+                          if (selection.deploymentId)
+                            navigation.navigate("AddIphone", {
+                              deploymentId: selection.deploymentId,
+                            });
+                        },
+                      },
+                    ],
+                  },
+                ]
+              : []),
+          ]}
+        />
+      </Sheet>
     </>
   );
 }
