@@ -111,7 +111,13 @@ describe("Runner Agent Skills", () => {
     );
 
     // Check the skill's tool links against the actual catalog, not its prose.
-    const skill = await readFile(join(bundle.paths["opensteer-browser"], "SKILL.md"), "utf8");
+    const skill = (
+      await Promise.all(
+        ["SKILL.md", "references/identity.md", "references/tabs-and-show.md"].map((file) =>
+          readFile(join(bundle.paths["opensteer-browser"], file), "utf8"),
+        ),
+      )
+    ).join("\n");
     const toolNames = new Set(agentToolDefinitions.map(({ name }) => name as string));
     const references = [...skill.matchAll(/`((?:browser|request)_[a-z_]+)`/gu)].map(
       (match) => match[1],
@@ -142,13 +148,10 @@ describe("Runner Agent Skills", () => {
     const computerUseMetadata = parseHarnessSkillMetadata(computerUse, "opensteer-computer-use");
     const integrationMetadata = parseHarnessSkillMetadata(integrations, "opensteer-integrations");
     expect(computerMetadata.description).toContain(
-      "files, commands, repositories or ports, use SSH",
+      "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
-    expect(computerMetadata.description).toContain(
-      "To see or operate apps on a person's Mac, use the computer tool (opensteer-computer-use).",
-    );
-    expect(computerUseMetadata.description).toMatch(
-      /^See and operate apps on a person's Mac, or a whole Android phone dedicated to agents, by writing JavaScript in the `computer` tool\./u,
+    expect(computerUseMetadata.description).toBe(
+      "Operate Mac apps and Agent Phones through the computer tool when the task needs their interfaces.",
     );
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
@@ -158,12 +161,27 @@ describe("Runner Agent Skills", () => {
       expect(catalog).toContain(metadata.description);
     }
     expect(computers).toContain(
-      "Use this skill for another computer's files and shell; to see or operate apps on a person's Mac, use the computer tool (opensteer-computer-use).",
+      "Use opensteer-computer-use to see or operate Mac app interfaces and Agent Phones.",
     );
     expect(computerUse).toContain(
-      "never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic\nevents for that purpose.",
+      "never read an app's private data files or use AppleScript, `screencapture`, SSH or synthetic events for that purpose.",
     );
     expect(integrations).toContain("never with `integration_call`.");
+    const api = await readFile(
+      join(bundle.paths["opensteer-computer-use"], "references", "api.md"),
+      "utf8",
+    );
+    expect(api).toContain("`globalThis` persists between computer calls in this Run.");
+    expect(api).toContain(
+      "including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting.",
+    );
+    expect(api).toContain("Outside an Assignment, if `person_show` is listed");
+    const signIn = await readFile(
+      join(bundle.paths["opensteer-computer-use"], "references", "sign-in.md"),
+      "utf8",
+    );
+    expect(signIn).toContain("never reveal, read back or screenshot a typed saved field");
+    expect(signIn).toContain("Delegated tasks can use `sign_in` for already-authorized sites.");
   });
 
   it("teaches that a reply, never a report, is what reaches the person", async () => {
@@ -184,7 +202,7 @@ describe("Runner Agent Skills", () => {
 
   it("ships the machine access refusal sentences verbatim", async () => {
     const skill = await readFile(
-      join(bundleDirectory, "skills", "opensteer-computers", "SKILL.md"),
+      join(bundleDirectory, "skills", "opensteer-computers", "references", "access.md"),
       "utf8",
     );
 
@@ -211,11 +229,15 @@ describe("Runner Agent Skills", () => {
     expect(skill).toContain("the common refusals are:");
     expect(skill).not.toContain("and the only ones");
     expect(skill).not.toContain("is the alias you used");
+    expect(skill).toContain("If `machine_full_disk_access_request` is listed for this Run");
+    expect(skill).toContain(
+      "Otherwise return the exact Mac alias and access needed to your assigner.",
+    );
   });
 
   it("claims no more of machine access than it can keep", async () => {
     const skill = await readFile(
-      join(bundleDirectory, "skills", "opensteer-computers", "SKILL.md"),
+      join(bundleDirectory, "skills", "opensteer-computers", "references", "ssh.md"),
       "utf8",
     );
 
