@@ -1,3 +1,4 @@
+import { PluginSettingsStore } from "./plugin-settings-store.js";
 import { createId } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
@@ -74,6 +75,38 @@ describeStore("Workspace skill inventory", (it) => {
     };
     expect(await store.reportWorkspaceSkills(fence, report)).toBe(true);
     expect(await store.reportWorkspaceSkills(fence, report)).toBe(false);
+    const settings = new PluginSettingsStore(database);
+    expect(await settings.workspaceSkillPolicy(workspace.id, viewer)).toBeUndefined();
+    const target = { kind: "skill" as const, workspaceId: workspace.id, fullName: "release" };
+    expect((await settings.overview(stranger)).rows).toEqual([]);
+    expect((await settings.overview(viewer, new Set())).rows).toMatchObject([
+      { target, issues: ["waiting-device"] },
+    ]);
+    await settings.setEnabled(viewer, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: 0,
+      enabled: false,
+      idempotencyKey: "skill-off",
+    });
+    expect(await settings.workspaceSkillPolicy(workspace.id, viewer)).toEqual({
+      revision: 1,
+      disabledFullNames: ["release"],
+    });
+    expect(await settings.workspaceSkillPolicy(workspace.id, stranger)).toBeUndefined();
+    expect((await settings.detail(viewer, target)).row.placement.enabled).toBe(false);
+    await settings.setEnabled(viewer, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: 1,
+      enabled: true,
+      idempotencyKey: "skill-on",
+    });
+    expect(await settings.workspaceSkillPolicy(workspace.id, viewer)).toEqual({
+      revision: 2,
+      disabledFullNames: [],
+    });
+
     expect(await store.listWorkspaceSkillInventory(stranger, [workspace.id])).toEqual([]);
     expect((await store.listWorkspaceSkillInventory(viewer, [workspace.id]))[0]?.skills).toEqual(
       report.result.status === "complete" ? report.result.skills : [],

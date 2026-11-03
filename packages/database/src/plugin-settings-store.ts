@@ -1,3 +1,4 @@
+import { listWorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
 import { PluginStore } from "./plugin-store.js";
 import {
   writeIntegrationGrantInTransaction,
@@ -65,7 +66,35 @@ export class PluginSettingsStore {
     this.database = database;
   }
 
-  private async snapshot(owner: UserId) {
+  async workspaceSkillPolicy(workspaceId: import("@opensteer/core").WorkspaceId, owner: UserId) {
+    const settings = await this.database
+      .selectFrom("pluginOwnerSettings")
+      .selectAll()
+      .where("ownerUserId", "=", owner)
+      .execute();
+    const overrides = settings.filter(
+      (s) => s.target.kind === "skill" && s.target.workspaceId === workspaceId,
+    );
+    if (!overrides.length) return undefined;
+    const workspace = await this.database
+      .selectFrom("workspaces")
+      .select("kind")
+      .where("id", "=", workspaceId)
+      .executeTakeFirstOrThrow();
+    return {
+      revision: overrides.reduce((total, s) => total + s.revision, 0),
+      disabledFullNames: overrides
+        .flatMap((s) =>
+          s.target.kind === "skill" &&
+          (!s.enabled || (workspace.kind === "main" && !s.mainIncluded))
+            ? [s.target.fullName]
+            : [],
+        )
+        .sort(),
+    };
+  }
+
+  private async snapshot(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
     const memberWorkspaces = this.database
       .selectFrom("workspaceMemberships")
       .select("workspaceId")
@@ -323,7 +352,25 @@ export class PluginSettingsStore {
         });
       }
     }
+    const inventory = await listWorkspaceSkillInventory(
+      this.database,
+      owner,
+      places.map((p) => p.id),
+    );
+    rows.push(
+      ...projectLooseSkillRows(
+        inventory.map((scan) => ({
+          ...scan,
+          stale:
+            scan.stale ||
+            (availableRunnerIds !== undefined &&
+              (!scan.ownerRunnerId || !availableRunnerIds.has(scan.ownerRunnerId))),
+        })),
+        settings,
+      ),
+    );
     return {
+      inventory,
       rows,
       places,
       settings,
@@ -611,8 +658,10 @@ export class PluginSettingsStore {
     });
   }
 
-  async overview(owner: UserId) {
-    return PluginsOverviewViewSchema.parse({ rows: (await this.snapshot(owner)).rows });
+  async overview(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
+    return PluginsOverviewViewSchema.parse({
+      rows: (await this.snapshot(owner, availableRunnerIds)).rows,
+    });
   }
 
   async detail(owner: UserId, target: PluginTarget) {
@@ -770,7 +819,7 @@ export class PluginSettingsStore {
           state: g.status === "active" ? "allowed" : "denied",
         })),
       ],
-      contents,
+      contents: target.kind === "skill" ? [{ name: target.fullName, kind: "skill" }] : contents,
       sourceFolder:
         plugin?.installedBy === owner && typeof plugin.source.directory === "string"
           ? plugin.source.directory
@@ -784,6 +833,7 @@ export function projectLooseSkillRows(
   inventory: readonly {
     workspaceId: import("@opensteer/core").WorkspaceId;
     stale: boolean;
+    scanStatus?: "complete" | "failed";
     skills: readonly { fullName: string; description: string; digest: string }[];
   }[],
   settings: readonly {
@@ -815,7 +865,12 @@ export function projectLooseSkillRows(
           personalEverywhere: false,
         },
         accountCount: 0,
-        issues: scan.stale ? ["waiting-device" as const] : [],
+        issues:
+          scan.scanStatus === "failed"
+            ? ["waiting-setup" as const]
+            : scan.stale
+              ? ["waiting-device" as const]
+              : [],
         contents: { skills: 1, tools: 0, specialists: 0 },
         permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
       };

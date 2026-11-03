@@ -1542,7 +1542,7 @@ export async function createHostRuntime(
         onSkillReport: async (identity, report) => {
           const storage = identity.modules.agents?.localStorage;
           if (!storage || !identity.environmentIds.includes(report.environmentId)) return;
-          await store.reportWorkspaceSkills(
+          const changed = await store.reportWorkspaceSkills(
             {
               ...identity.fence,
               environmentId: report.environmentId,
@@ -1550,6 +1550,18 @@ export async function createHostRuntime(
             },
             report,
           );
+          if (changed) {
+            const viewers = await store.database
+              .selectFrom("workspaceMemberships")
+              .select("userId")
+              .where("workspaceId", "=", report.binding.workspaceId)
+              .where("state", "=", "active")
+              .execute();
+            realtime.sendToUsers(
+              viewers.map((v) => v.userId),
+              { type: "host.plugins-changed" },
+            );
+          }
         },
         onThreadTitle: async (_identity, report) => {
           const result = await store.applyGeneratedThreadName(report);
@@ -1879,6 +1891,8 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
+      workspaceSkillPolicy: (workspaceId, ownerUserId) =>
+        integrationPlatformStore.settings.workspaceSkillPolicy(workspaceId, ownerUserId),
       pluginVersions: async (workspaceId, ownerUserId) =>
         (await integrationPlatformStore.plugins.current(workspaceId, ownerUserId)).map(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),

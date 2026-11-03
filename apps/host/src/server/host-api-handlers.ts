@@ -123,10 +123,20 @@ export function createHostApiHandlers(
   computerViews?: ComputerViewService,
 ): Omit<HostApiHandlers, "personal.remoteAccess.get"> {
   return {
-    "plugins.overview.get": async (_input, context) =>
-      rpcSuccess(
-        await integrationPlatform.platform.store.settings.overview(requireSession(context).user.id),
-      ),
+    "plugins.overview.get": async (_input, context) => {
+      const machines = await coreHandlers["machines.list"]({}, context);
+      if (!machines.ok) return machines;
+      return rpcSuccess(
+        await integrationPlatform.platform.store.settings.overview(
+          requireSession(context).user.id,
+          new Set(
+            machines.data.machines
+              .filter((machine) => machine.status === "online")
+              .map((machine) => machine.id),
+          ),
+        ),
+      );
+    },
     "plugins.detail.get": async (input, context) => {
       const detail = await integrationPlatform.platform.store.settings.detail(
         requireSession(context).user.id,

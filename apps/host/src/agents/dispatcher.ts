@@ -124,6 +124,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #pluginsUrl: string;
   readonly #workspaceSkillPolicy: (
     workspaceId: WorkspaceId,
+    ownerUserId: UserId,
   ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
 
   readonly #integrationToolsTokens: IntegrationToolsTokenService;
@@ -158,6 +159,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
      * The Settings domain owner supplies this adapter; undefined means no override exists. */
     readonly workspaceSkillPolicy?: (
       workspaceId: WorkspaceId,
+      ownerUserId: UserId,
     ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
     readonly pluginsTokens: PluginPackagesTokenService;
     readonly integrationToolsTokens: IntegrationToolsTokenService;
@@ -517,7 +519,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       : null;
     if (context.thread.specialistId && !specialist)
       throw new Error("Specialist registration was removed");
-    const workspaceSkillPolicy = await this.#workspaceSkillPolicy(context.workspace.id);
+    const workspaceSkillPolicy = await this.#workspaceSkillPolicy(
+      context.workspace.id,
+      command.requestedBy,
+    );
     if (workspaceSkillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
       throw new CommandDispatchError(
         "Update this Runner to enforce Workspace skill settings.",
