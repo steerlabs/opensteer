@@ -18,6 +18,7 @@ export async function measureMcpContext(profileId: AgentCapabilityProfileId) {
     },
   );
   const product = new AgentToolsMcpService({
+    apps: unavailable as AgentOptions["apps"],
     agentControl: unavailable as AgentOptions["agentControl"],
     publicUrl: new URL("http://localhost"),
     store: unavailable as AgentOptions["store"],

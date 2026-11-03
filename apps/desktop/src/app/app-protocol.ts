@@ -1,3 +1,4 @@
+import { appFrameScheme } from "@opensteer/shared/appFrame";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { Protocol } from "electron";
@@ -18,7 +19,7 @@ const contentSecurityPolicy = [
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-  "frame-src 'none'",
+  `frame-src ${appFrameScheme}://view`,
   // The HEIC photo decoder runs in a worker it creates from its own code; it
   // needs neither eval nor WebAssembly (see attachments/upload-file.ts).
   "worker-src blob:",
@@ -35,6 +36,16 @@ export interface DesktopProtocolRegistrar {
 
 export function registerDesktopAppScheme(protocol: DesktopProtocolRegistrar): void {
   protocol.registerSchemesAsPrivileged([
+    {
+      scheme: appFrameScheme,
+      privileges: {
+        secure: true,
+        standard: true,
+        bypassCSP: false,
+        corsEnabled: true,
+        supportFetchAPI: true,
+      },
+    },
     {
       privileges: {
         bypassCSP: false,

@@ -70,11 +70,25 @@ describe("test tiers", () => {
       if (!/\.integration\.test\.tsx?$/u.test(file)) return false;
       const text = source(file);
       if (databaseUrl.test(text)) return false;
-      const supportImports = [...text.matchAll(/from ["'](\.[^"']*test-support)\.js["']/gu)];
-      return !supportImports.some((match) => {
-        const support = resolve(root, dirname(file), `${match[1]}.ts`);
-        return existsSync(support) && databaseUrl.test(readFileSync(support, "utf8"));
-      });
+      const supports = [
+        ...[...text.matchAll(/from ["'](\.[^"']*test-support)\.js["']/gu)].map((match) =>
+          resolve(root, dirname(file), `${match[1]}.ts`),
+        ),
+        ...[...text.matchAll(/from ["']@opensteer\/([^/"']+)(\/test-support\/[^"']+)["']/gu)].map(
+          ([, name, subpath]) => {
+            const directory = resolve(root, "packages", name!);
+            const manifest = resolve(directory, "package.json");
+            const exports: Record<string, string> = existsSync(manifest)
+              ? (JSON.parse(readFileSync(manifest, "utf8")).exports ?? {})
+              : {};
+            const target = exports[`.${subpath}`];
+            return target ? resolve(directory, target) : "";
+          },
+        ),
+      ];
+      return !supports.some(
+        (support) => existsSync(support) && databaseUrl.test(readFileSync(support, "utf8")),
+      );
     });
     expect(ungated).toEqual([]);
   });

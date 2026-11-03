@@ -435,6 +435,7 @@ for (const path of [
   "/internal/v1/integration-skills",
   "/internal/v1/mcp",
   "/internal/v1/mount-grants/exchange",
+  "/internal/v1/apps/tunnel",
   "/internal/v1/runners",
   "/internal/v1/runners/auxiliary/*",
   "/internal/v1/trigger-cdp",

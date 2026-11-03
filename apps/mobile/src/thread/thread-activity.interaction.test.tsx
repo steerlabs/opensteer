@@ -30,6 +30,7 @@ vi.mock("react-native-reanimated", () => ({
   LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined, exit: undefined }));
+vi.mock("./app-card.js", () => ({ AppCard: () => null }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,

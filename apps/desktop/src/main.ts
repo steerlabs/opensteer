@@ -45,6 +45,7 @@ import { passwordsBrokerLatestProtocolVersion } from "@opensteer/protocol/passwo
 import { DeploymentIdSchema } from "@opensteer/core";
 import { AccountDeploymentDirectoryService } from "@opensteer/client/connections";
 import { AccountDirectoryRefreshService } from "@opensteer/client/connections";
+import { installPublishedAppProtocol } from "./app/published-app-protocol.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "./app/app-protocol.js";
 import {
   desktopApplicationName,
@@ -534,6 +535,7 @@ async function runDesktop(
     projection: accessProjection,
     sessions: hostSessions,
   });
+  const uninstallPublishedAppProtocol = installPublishedAppProtocol(protocol, hostTransport);
   const nativePasskeys = createMacosNativePasskeys();
   const browserPresentation = new DesktopBrowserPresentationManager({
     transport: hostTransport,
@@ -1221,6 +1223,7 @@ async function runDesktop(
       if (activeMainProcess === mainProcess) activeMainProcess = null;
       detachOAuthDeepLinks();
       nativeAuth.dispose();
+      uninstallPublishedAppProtocol();
       uninstallAppProtocol();
       localRunner.dispose();
     },

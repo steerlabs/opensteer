@@ -28,6 +28,16 @@ describe("Desktop app protocol", () => {
     });
     expect(registerSchemesAsPrivileged).toHaveBeenCalledWith([
       {
+        scheme: "opensteer-app",
+        privileges: {
+          secure: true,
+          standard: true,
+          bypassCSP: false,
+          corsEnabled: true,
+          supportFetchAPI: true,
+        },
+      },
+      {
         privileges: expect.objectContaining({
           bypassCSP: false,
           corsEnabled: false,
@@ -51,6 +61,9 @@ describe("Desktop app protocol", () => {
     expect(document.status).toBe(200);
     expect(await document.text()).toContain("id=root");
     expect(document.headers.get("content-security-policy")).toContain("connect-src 'none'");
+    expect(document.headers.get("content-security-policy")).toContain(
+      "frame-src opensteer-app://view",
+    );
     expect(document.headers.get("content-security-policy")).toContain("object-src 'none'");
     expect(document.headers.get("content-security-policy")).toContain("media-src 'none'");
     expect(document.headers.get("permissions-policy")).toContain("microphone=(self)");

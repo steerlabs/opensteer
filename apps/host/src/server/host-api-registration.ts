@@ -19,6 +19,8 @@ import { errorStatus, normalizeHostError } from "./http-errors.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 const hostApiScopes = {
+  "apps.get": "session",
+  "apps.view": "mutation",
   "agentPhone.target.get": "session",
   "assignment.get": "session",
   "thread.assignments.list": "session",

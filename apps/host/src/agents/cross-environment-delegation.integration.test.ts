@@ -2688,6 +2688,15 @@ integration("cross-environment delegation reaches the Runner", () => {
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
     service = new AgentToolsMcpService({
+      apps: {
+        list: async () => ({ apps: [] }),
+        fetch: async () => {
+          throw new Error("Unexpected app fetch in fixture");
+        },
+        publish: async () => {
+          throw new Error("Unexpected app publication in fixture");
+        },
+      },
       agentControl: controlService,
       runnerCapabilities: async () => [
         "browser-profile-create-v1",

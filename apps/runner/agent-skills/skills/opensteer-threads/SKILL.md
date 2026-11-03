@@ -25,3 +25,4 @@ to the assigner when the person needs to see something.
 - Read [lifecycle](references/lifecycle.md) when handling results, blockers, pending work or cancellation.
 - Read [showing places](references/show.md) when the person asks to see a Thread, page or current place.
 - Read [Chat and history](references/chat.md) when reaching the person or recovering earlier context.
+- Read [apps](references/apps.md) when publishing a chart, diagram or interactive page, or calling a published app.

@@ -1,3 +1,4 @@
+import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
 import { isCodexVoiceAdapter } from "@opensteer/harness-codex";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
@@ -143,6 +144,9 @@ export interface RunnerRuntimeOptions {
   readonly executionClock?: Clock;
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
+  readonly resolveAppWorkspaceRoot?: ConstructorParameters<
+    typeof AppServerManager
+  >[0]["resolveRoot"];
   readonly attachmentCache?: AttachmentCache;
   readonly agentSkills: AgentSkillBundle;
   readonly browserHarnessExecutable: string;
@@ -337,6 +341,7 @@ const terminalEventTypes = new Set<HarnessDurableEvent["type"]>([
 ]);
 
 export class RunnerRuntime {
+  readonly appServers: AppServerManager;
   readonly #attachmentCache: AttachmentCache | undefined;
   readonly #agentSkills: AgentSkillBundle;
   readonly #browserHarnessExecutable: string;
@@ -511,6 +516,16 @@ export class RunnerRuntime {
     this.#containment =
       options.containment ??
       new ExecutionContainment({ bootId: options.bootId, dataDirectory: options.dataDirectory });
+    this.appServers = new AppServerManager({
+      privateDirectory: join(options.dataDirectory, "private", "app-servers"),
+      resolveRoot:
+        options.resolveAppWorkspaceRoot ??
+        (async () => {
+          throw new Error("App servers need a local Workspace");
+        }),
+      planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
+      terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
+    });
     this.#warm = new WarmEnginePool({ retire: (engine) => this.#retireWarmEngine(engine) });
   }
 
@@ -1851,12 +1866,14 @@ export class RunnerRuntime {
       if (active.task) tasks.push(active.task);
     }
     tasks.push(this.#watchSupervisor.connectionLost(sink));
+    tasks.push(this.appServers.stopAll());
     await Promise.allSettled(tasks);
   }
 
   async close(): Promise<void> {
     this.#draining = true;
     const voiceClosed = this.#voice.close();
+    const appsClosed = this.appServers.stopAll();
     this.#stopLeaseWatchdog?.();
     this.#stopLeaseWatchdog = undefined;
     this.#harnessAuthenticationLifetime.abort(new Error("Runner is shutting down"));
@@ -1871,6 +1888,7 @@ export class RunnerRuntime {
     }
     await Promise.allSettled([
       voiceClosed,
+      appsClosed,
       ...[...this.#runs.values(), ...this.#triggerPrograms.values()].flatMap((active) =>
         active.task ? [active.task] : [],
       ),

@@ -21,7 +21,7 @@ import { attachmentKey, type ComposerAttachment } from "./draft-attachments.js";
  * The Thread's own client, which a transcript's rows read the files messages
  * carry through on demand. Without one the files are named but cannot be opened.
  */
-export const AttachmentReader = createContext<HostClient | null>(null);
+export const TranscriptHostClientContext = createContext<HostClient | null>(null);
 
 const inlineImageTypes: ReadonlySet<string> = new Set(attachmentNativeImageMediaTypes);
 
@@ -152,7 +152,7 @@ function StagedChip(props: {
 export function MessageAttachments(props: {
   readonly attachments: readonly ArtifactContentPart[];
 }): ReactNode {
-  const client = useContext(AttachmentReader);
+  const client = useContext(TranscriptHostClientContext);
   if (props.attachments.length === 0) return null;
   return (
     <View style={styles.sent}>

@@ -17,11 +17,12 @@ export class ElectronHostNetwork implements HostNetwork {
     const headers = requestHeaders(input);
     return this.#session(input.deploymentId).fetch(input.url, {
       ...(input.request.body === undefined ? {} : { body: input.request.body }),
+      ...(input.request.body instanceof ReadableStream ? { duplex: "half" } : {}),
       cache: "no-store",
-      credentials: "include",
+      credentials: input.request.credentials ?? "include",
       headers,
       method: input.request.method,
-      redirect: "error",
+      redirect: input.request.redirect ?? "error",
       referrerPolicy: "no-referrer",
       signal: input.signal,
     });
@@ -101,7 +102,11 @@ export class ElectronHostNetwork implements HostNetwork {
 
 function requestHeaders(input: HostNetworkRequest): Record<string, string> {
   const headers: Record<string, string> = {
-    accept: input.request.headers.accept ?? "application/json",
+    ...input.request.headers.additional,
+    accept:
+      input.request.headers.accept ??
+      input.request.headers.additional?.accept ??
+      "application/json",
     origin: input.requestOrigin,
   };
   if (input.authorization) headers.authorization = input.authorization;

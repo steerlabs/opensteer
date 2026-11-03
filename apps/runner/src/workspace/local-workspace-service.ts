@@ -14,6 +14,7 @@ import {
   type LocalWorkspaceBindingRequest,
   type NativeWorkspaceFilesAuthority,
 } from "@opensteer/workspace-local";
+import type { AppServerManager } from "../apps/app-server-manager.js";
 
 /** What this Runner believes about itself while one connection is live. */
 export interface LocalWorkspaceIdentity {
@@ -33,13 +34,16 @@ export interface LocalWorkspaceIdentity {
  * request may already have been reissued to a replacement connection.
  */
 export class LocalWorkspaceService {
+  readonly #appServers: Pick<AppServerManager, "stopBinding">;
   readonly #authority: LocalWorkspaceAuthority;
   readonly #filesystem: NativeWorkspaceFilesAuthority;
 
   constructor(options: {
+    readonly appServers: Pick<AppServerManager, "stopBinding">;
     readonly authority: LocalWorkspaceAuthority;
     readonly filesystem: NativeWorkspaceFilesAuthority;
   }) {
+    this.#appServers = options.appServers;
     this.#authority = options.authority;
     this.#filesystem = options.filesystem;
   }
@@ -92,6 +96,7 @@ export class LocalWorkspaceService {
           };
         }
         case "host.workspace.local.destroy": {
+          await this.#appServers.stopBinding(request.binding);
           const receipt = await this.#authority.destroy(binding, signal);
           return {
             ...echo,
@@ -155,7 +160,7 @@ export class LocalWorkspaceService {
   }
 }
 
-function fenceMismatch(
+export function fenceMismatch(
   fence: WorkspaceStorageFence,
   identity: LocalWorkspaceIdentity,
 ): WorkspaceLocalFailure | undefined {
