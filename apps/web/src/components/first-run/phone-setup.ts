@@ -167,7 +167,9 @@ export function usePhoneSetup(input: {
       void link.link().then(
         (outcome) => {
           if (attempt.current !== current) return;
-          setPhase(outcome.succeeded ? { kind: "idle" } : { kind: "failed", message: outcome.message });
+          setPhase(
+            outcome.succeeded ? { kind: "idle" } : { kind: "failed", message: outcome.message },
+          );
         },
         (reason: unknown) => {
           if (attempt.current !== current) return;
@@ -284,7 +286,9 @@ export function newestNewPhoneSession(
 ): AuthSessionSummary | null {
   return (
     sessions
-      .filter((session) => !session.current && session.form === "mobile" && !baseline.has(session.id))
+      .filter(
+        (session) => !session.current && session.form === "mobile" && !baseline.has(session.id),
+      )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null
   );
 }

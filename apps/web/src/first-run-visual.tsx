@@ -61,20 +61,16 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     kind: "setup",
     link: "unlinked",
     pick: (all) => [
-      ...firstOf("claude", all).map(
-        (placement): ThreadPlacementOption => ({
-          ...placement,
-          available: false,
-          availability: "authentication-required",
-        }),
-      ),
-      ...firstOf("codex", all).map(
-        (placement): ThreadPlacementOption => ({
-          ...placement,
-          available: false,
-          availability: "preparing",
-        }),
-      ),
+      ...firstOf("claude", all).map((placement): ThreadPlacementOption => ({
+        ...placement,
+        available: false,
+        availability: "authentication-required",
+      })),
+      ...firstOf("codex", all).map((placement): ThreadPlacementOption => ({
+        ...placement,
+        available: false,
+        availability: "preparing",
+      })),
     ],
   },
   phone: { kind: "setup", link: "linked", pick: (all) => firstOf("claude", all) },

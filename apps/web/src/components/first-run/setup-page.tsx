@@ -169,8 +169,7 @@ export function setupPlacements(
 ): ThreadPlacementOption[] {
   const here = placements
     .filter(
-      (placement) =>
-        placement.environmentKind === "main" && placement.availability !== "disabled",
+      (placement) => placement.environmentKind === "main" && placement.availability !== "disabled",
     )
     .map((placement, index) => ({ index, placement }))
     .sort(
@@ -491,7 +490,10 @@ function PhoneRow({ hostClient }: { readonly hostClient: HostClient }) {
 }
 
 /** What the phone row is doing, while it is doing it. */
-export function phoneStepDetail(phone: Pick<PhoneSetup, "phase" | "reach">, account: string | null) {
+export function phoneStepDetail(
+  phone: Pick<PhoneSetup, "phase" | "reach">,
+  account: string | null,
+) {
   if (phone.phase.kind === "linking" || phone.reach.kind === "needs-link") {
     return account === "authorizing"
       ? "Finish signing in in your browser"

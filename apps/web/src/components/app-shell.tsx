@@ -1016,10 +1016,10 @@ export function AppShell({
   const shellClassName = setupMode
     ? "app-shell app-shell--settings app-shell--setup"
     : fullWindow
-    ? "app-shell app-shell--settings"
-    : sidebarCollapsed
-      ? "app-shell app-shell--sidebar-collapsed"
-      : "app-shell";
+      ? "app-shell app-shell--settings"
+      : sidebarCollapsed
+        ? "app-shell app-shell--sidebar-collapsed"
+        : "app-shell";
   const chromeEnvironment = useChromeConnectEnvironment({
     desktopBridge: localBridge,
     hostHere: localBridge

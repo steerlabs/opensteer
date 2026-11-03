@@ -52,9 +52,9 @@ describe("phoneReach", () => {
     expect(phoneReach(facts({ deploymentId: null })).kind).toBe("unavailable");
     expect(phoneReach(facts({ remote: null, remoteUnreadable: true })).kind).toBe("unavailable");
     expect(phoneReach(facts({ link: "unavailable" })).kind).toBe("unavailable");
-    expect(
-      phoneReach(facts({ remote: remote({}, { accountIssuer: null }) })).kind,
-    ).toBe("unavailable");
+    expect(phoneReach(facts({ remote: remote({}, { accountIssuer: null }) })).kind).toBe(
+      "unavailable",
+    );
   });
 
   it("waits while the status is still being read", () => {
@@ -64,9 +64,9 @@ describe("phoneReach", () => {
   });
 
   it("names the next missing step from live state, skipping what is already done", () => {
-    expect(phoneReach(facts({ link: "unlinked", remote: remote({ accountLink: null }) })).kind).toBe(
-      "needs-link",
-    );
+    expect(
+      phoneReach(facts({ link: "unlinked", remote: remote({ accountLink: null }) })).kind,
+    ).toBe("needs-link");
     // A link the Host committed but the Account has not activated still needs finishing.
     expect(phoneReach(facts({ link: "activating" })).kind).toBe("needs-link");
     expect(

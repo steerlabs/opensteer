@@ -386,7 +386,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         ? () => {
             setScreen(null);
             setSettingUpHere(true);
-                  runBridgeOperation(bridge.createPersonalDeployment());
+            runBridgeOperation(bridge.createPersonalDeployment());
           }
         : null;
       if (snapshot.deployments.length === 0 && snapshot.unavailable.length === 0) {

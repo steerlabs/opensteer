@@ -31,7 +31,13 @@ function placement(overrides: Partial<ThreadPlacementOption>): ThreadPlacementOp
     harnessAuthenticationAllowed: true,
     harnessInstanceId: "hin_claude",
     models: [
-      { displayName: "Model", isDefault: true, modelId: "model", options: [], providerId: "anthropic" },
+      {
+        displayName: "Model",
+        isDefault: true,
+        modelId: "model",
+        options: [],
+        providerId: "anthropic",
+      },
     ],
     modelSelection,
     observedConnections: [],
@@ -235,13 +241,15 @@ it("waits for this computer to report its AIs instead of calling it empty", asyn
   expect(container.textContent).toContain("Looking for AIs on this computer");
   expect(container.textContent).not.toContain("No AI was found");
   shell.snapshot.environments = [{ harnessDrivers: [{ driverKind: "claude" }], kind: "main" }];
-  await act(async () => root?.render(
-    <MemoryRouter initialEntries={["/get-started"]}>
-      <Routes>
-        <Route element={<SetupPage />} path="/get-started" />
-      </Routes>
-    </MemoryRouter>,
-  ));
+  await act(async () =>
+    root?.render(
+      <MemoryRouter initialEntries={["/get-started"]}>
+        <Routes>
+          <Route element={<SetupPage />} path="/get-started" />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
   expect(container.textContent).toContain("No AI was found on this computer");
 });
 
@@ -254,7 +262,10 @@ it("keeps setup open with the reason when the choice cannot be saved", async () 
 });
 
 it("names a remembered AI that can no longer run instead of quietly using another", async () => {
-  shell.placements = [placement({}), codex({ available: false, availability: "authentication-required" })];
+  shell.placements = [
+    placement({}),
+    codex({ available: false, availability: "authentication-required" }),
+  ];
   shell.executionPreferences = {
     accessMode: "approval-required",
     history: [
@@ -339,13 +350,15 @@ it("adds a phone: links this computer, turns on Connect, shows the code, then na
     for (const listener of state.accessListeners) listener(linked);
     for (const listener of state.remoteListeners) listener();
   });
-  await act(async () => root?.render(
-    <MemoryRouter initialEntries={["/get-started"]}>
-      <Routes>
-        <Route element={<SetupPage />} path="/get-started" />
-      </Routes>
-    </MemoryRouter>,
-  ));
+  await act(async () =>
+    root?.render(
+      <MemoryRouter initialEntries={["/get-started"]}>
+        <Routes>
+          <Route element={<SetupPage />} path="/get-started" />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
   expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
     expect.objectContaining({
       intent: { action: "configure", mode: "connect", privateOrigin: null },
@@ -370,7 +383,10 @@ it("adds a phone: links this computer, turns on Connect, shows the code, then na
   expect(container.textContent).toContain("Waiting for your phone");
 
   // A phone signs in after the code appeared.
-  shell.hostClient.rpc["sessions.list"].mockResolvedValue({ data: { sessions: [phone] }, ok: true });
+  shell.hostClient.rpc["sessions.list"].mockResolvedValue({
+    data: { sessions: [phone] },
+    ok: true,
+  });
   await act(async () => vi.advanceTimersByTimeAsync(4_000));
   expect(container.textContent).toContain("Opensteer on iPhone");
   expect(container.textContent).toContain("Signed in");
@@ -392,7 +408,13 @@ it("shows why remote access failed and lets the person try again", async () => {
   shell.deploymentAccess = access;
   const operationId = "8f0b6c6e-2a4b-4f6d-9e1a-333333333333";
   let remoteStatus: Record<string, unknown> = {
-    access: { accountLink: { state: "active" }, generation: 1, mode: "off", route: null, schemaVersion: 2 },
+    access: {
+      accountLink: { state: "active" },
+      generation: 1,
+      mode: "off",
+      route: null,
+      schemaVersion: 2,
+    },
     accountIssuer: "https://accounts.opensteer.test",
     executorConnected: true,
     operation: null,

@@ -231,7 +231,6 @@ export function DesktopPersonalSetup({
   );
 }
 
-
 export function DesktopLoadingScreen({
   error = null,
   onCancel = null,

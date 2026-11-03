@@ -63,7 +63,12 @@ it("lets a connecting place go back and shows cancellation failures", async () =
 it("carries setup from creating this computer straight into the app it opens", async () => {
   let access = snapshot({
     account: { available: false, status: "signed-out" },
-    personalSetup: personalStatus({ canStart: true, deploymentId: null, state: "stopped", step: null }),
+    personalSetup: personalStatus({
+      canStart: true,
+      deploymentId: null,
+      state: "stopped",
+      step: null,
+    }),
   });
   const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
   const emit = (next: DeploymentAccessSnapshot) => {
