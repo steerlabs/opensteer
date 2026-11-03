@@ -31,6 +31,10 @@ it("retains the exact account command across an uncertain commit", async () => {
     await completePluginConsent(client, consent, account.connectionId, (next) => {
       consent = next;
     });
+    await expect(
+      completePluginConsent(client, consent, "different-connection", () => undefined),
+    ).rejects.toThrow("different connection");
+    expect(spy).toHaveBeenCalledTimes(2);
     expect(spy.mock.calls[1]![0]).toEqual(spy.mock.calls[0]![0]);
     expect(consent.command?.personalEverywhere?.accounts).toEqual([
       { connectionId: account.connectionId, access: "read" },

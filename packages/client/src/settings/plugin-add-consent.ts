@@ -8,6 +8,7 @@ export const PluginAddConsentSchema = z.strictObject({
   access: z.enum(["read", "read-write"]),
   idempotencyKey: z.string().min(1),
   command: SettingsPluginPlacementCommandSchema.nullable(),
+  connectionId: z.string().min(1).optional(),
 });
 export type PluginAddConsent = z.infer<typeof PluginAddConsentSchema>;
 
@@ -18,6 +19,8 @@ export async function completePluginConsent(
   remember: (consent: PluginAddConsent) => void,
 ) {
   let command = consent.command;
+  if (consent.connectionId && consent.connectionId !== connectionId)
+    throw new Error("This placement belongs to a different connection. Review placement again.");
   if (!command) {
     const detail = unwrapRpcResult(
       await client.rpc["plugins.detail.get"]({ target: consent.target }),
@@ -45,7 +48,7 @@ export async function completePluginConsent(
         .map((place) => ({ workspaceId: place.workspaceId, accounts })),
       personalEverywhere: consent.everywhere ? { accounts } : null,
     });
-    remember({ ...consent, command });
+    remember({ ...consent, command, connectionId });
   }
   try {
     await client.dispatch(command);
