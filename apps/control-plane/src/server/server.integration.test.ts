@@ -147,6 +147,32 @@ integration("Opensteer Account host", () => {
     expect(invalidPost.body).toContain("Start authorization again");
   });
 
+  it("answers a browser with a page and an API client with JSON when a request fails", async () => {
+    const page = await server.inject({
+      headers: { "sec-fetch-mode": "navigate" },
+      method: "GET",
+      url: "/no-such-page",
+    });
+    expect(page.statusCode).toBe(404);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain("Nothing here");
+    expect(page.headers["content-security-policy"]).toContain("default-src 'none'");
+
+    const api = await server.inject({ method: "GET", url: "/no-such-page" });
+    expect(api.statusCode).toBe(404);
+    expect(api.json()).toMatchObject({ error: "Not Found", statusCode: 404 });
+
+    const font = page.body.match(/href="(\/fonts\/sans-[0-9a-f]{16}\.woff2)"/u)?.[1];
+    if (!font) throw new Error("The page does not preload its font");
+    const served = await server.inject({ method: "GET", url: font });
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["content-type"]).toBe("font/woff2");
+    expect(served.headers["cache-control"]).toContain("immutable");
+    expect(served.rawPayload.subarray(0, 4).toString("latin1")).toBe("wOF2");
+    const unknown = await server.inject({ method: "GET", url: "/fonts/sans-0.woff2" });
+    expect(unknown.statusCode).toBe(404);
+  });
+
   it("forwards sign-out cookies and redirects to the front door", async () => {
     const response = await server.inject({
       headers: {

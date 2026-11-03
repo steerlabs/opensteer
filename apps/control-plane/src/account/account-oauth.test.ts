@@ -8,12 +8,12 @@ describe("Account OAuth consent presentation", () => {
     const query = consentQuery();
 
     expect(accountConsentPresentation(query.toString(), now)).toEqual({
-      permissions: [
-        "Use your Opensteer account identity",
-        "Use your account email address",
-        "Stay signed in until you sign out",
-        "View your Opensteer deployments",
-        "Create and manage your Opensteer deployments",
+      clientId: "opensteer-desktop",
+      grants: [
+        { icon: "person", text: "Your email address" },
+        { icon: "key", text: "Stay signed in until you sign out" },
+        { icon: "stack", text: "See your Opensteers" },
+        { icon: "plus", text: "Add and change your Opensteers" },
       ],
     });
   });
@@ -45,8 +45,15 @@ describe("Account OAuth consent presentation", () => {
     query.set("scope", "openid attacker:controlled");
 
     expect(accountConsentPresentation(query.toString(), now)).toEqual({
-      permissions: ["Use your Opensteer account identity", "Use additional Opensteer permissions"],
+      clientId: "opensteer-desktop",
+      grants: [
+        { icon: "person", text: "Who you are" },
+        { icon: "shield", text: "Other Opensteer permissions" },
+      ],
     });
+    expect(JSON.stringify(accountConsentPresentation(query.toString(), now))).not.toContain(
+      "attacker",
+    );
   });
 });
 

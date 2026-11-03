@@ -19,12 +19,12 @@ import {
   deploymentStatusTone,
   type DeploymentStatusInfo,
 } from "@opensteer/protocol/deployment-status";
+import type { BrowserPageFonts } from "@opensteer/shared/browserPage";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { z } from "zod";
 import { controlPlaneAuthPath, type ControlPlaneAuth } from "../auth/auth.js";
 import {
   appendSetCookie,
-  escapeHtml,
   expiredCookie,
   readCookie,
   requireExactOrigin,
@@ -33,11 +33,15 @@ import {
 import { ControlPlaneError } from "../server/errors.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import {
-  brandLockup,
-  brandMark,
-  browserPageContentSecurityPolicy,
-  renderBrowserPage,
-} from "./page-shell.js";
+  browserPagePolicyWithScript,
+  personalHandoffBody,
+  personalLinkBody,
+  placeRow,
+  portalHomeBody,
+  portalRestartBody,
+  sendBrowserPage,
+  signedOutBody,
+} from "./pages.js";
 import { type PortalSession, type PortalSessionStore } from "./portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 
@@ -87,8 +91,10 @@ type PortalFlow = z.infer<typeof FlowSchema>;
 
 interface PortalDependencies {
   readonly auth: ControlPlaneAuth;
-  /** Where "Get the Desktop app" points; without it the row is absent. */
+  /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
+  /** The app's typefaces, when this process serves them. */
+  readonly fonts?: BrowserPageFonts;
   readonly portalOrigin: URL;
   readonly portalSessions: PortalSessionStore;
   readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -119,7 +125,7 @@ export interface PortalRouter {
  */
 export function createPortalRouter(dependencies: PortalDependencies): PortalRouter {
   const origin = dependencies.portalOrigin;
-  const { auth, portalSessions, publicOrigin, store } = dependencies;
+  const { auth, fonts, portalSessions, publicOrigin, store } = dependencies;
   const secure = origin.protocol === "https:";
   const sessionCookieName = secure ? "__Host-opensteer.portal" : "opensteer.portal";
   const flowCookieName = secure ? "__Host-opensteer.portal-flow" : "opensteer.portal-flow";
@@ -164,17 +170,17 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         store.isDeploymentPresentForAccount(accountId, deployment.id),
       ),
     );
-    const empty = deployments.length === 0;
-    const rows = deployments.map((deployment, index) =>
-      deploymentCard(deployment, presence[index] === true),
-    );
-    if (dependencies.desktopDownloadUrl) rows.push(desktopAppRow(dependencies.desktopDownloadUrl));
-    return sendPortalPage(reply, {
-      account: session.email,
-      content: `${empty ? `<p class="lead">Create your first Opensteer, or open one you already have.</p>` : ""}
-        ${rows.length > 0 ? `<nav aria-label="Your Opensteers"><ul class="deployments">${rows.join("")}</ul></nav>` : ""}`,
-      eyebrow: "Your Opensteers",
-      heading: empty ? "Set up Opensteer" : "Choose an Opensteer",
+    return sendBrowserPage(reply, {
+      body: portalHomeBody({
+        account: { displayName: session.displayName || null, email: session.email },
+        desktopDownloadUrl: dependencies.desktopDownloadUrl ?? null,
+        rows: deployments.map((deployment, index) =>
+          deploymentCard(deployment, presence[index] === true),
+        ),
+        signOutAction: portalSignOutPath,
+      }),
+      fonts,
+      layout: "app",
       title: "Your Opensteers",
     });
   }
@@ -189,28 +195,21 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     reply: FastifyReply,
     options: { readonly ended?: boolean } = {},
   ): string {
-    const lead = options.ended
-      ? "You’re signed out. Sign in again to reach your Opensteers."
-      : "Your Opensteer Account keeps your identity and Deployments connected.";
-    return sendPortalPage(reply, {
-      content: `<p class="lead">${lead}</p>
-        <a class="btn btn--primary btn--wide" href="${escapeHtml(portalSignInPath)}">Sign in</a>
-        <p class="fine">Every Opensteer keeps its own data.</p>`,
-      eyebrow: "Opensteer Account",
-      heading: "Opensteer",
-      layout: "centered",
+    return sendBrowserPage(reply, {
+      body: signedOutBody({ ended: options.ended === true, signInHref: portalSignInPath }),
+      fonts,
+      layout: "card",
       preconnect: publicOrigin.origin,
       title: "Opensteer",
     });
   }
 
   function renderRestart(reply: FastifyReply): string {
-    return sendPortalPage(reply.code(400), {
-      content: `<p class="lead">That sign-in didn’t finish. The request was missing, expired, or meant for a different browser.</p>
-        <a class="btn btn--primary btn--wide" href="${escapeHtml(portalSignInPath)}">Start again</a>`,
-      heading: "Start sign-in again",
-      layout: "centered",
-      title: "Start sign-in again",
+    return sendBrowserPage(reply.code(400), {
+      body: portalRestartBody(portalSignInPath),
+      fonts,
+      layout: "plain",
+      title: "Start sign-in again · Opensteer",
     });
   }
 
@@ -301,49 +300,19 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
             302,
           );
         const nonce = randomBytes(18).toString("base64url");
-        const parameters = JSON.stringify(query).replace(/</gu, "\\u003c");
-        return reply
-          .type("text/html; charset=utf-8")
-          .header("cache-control", "no-store")
-          .header("referrer-policy", "no-referrer")
-          .header(
-            "content-security-policy",
-            `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'`,
-          )
-          .send(`<!doctype html><html><head><title>Link Opensteer Account</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main><h1>Link Opensteer Account</h1><p>Signed in as ${escapeHtml(session.email)}</p><p id="computer">Waiting for your computer…</p><button id="allow" disabled>Link to my Account</button><p id="status"></p></main><script nonce="${nonce}">
-          const parameters = ${parameters};
-          const parent = window.opener;
-          let challenge = null;
-          let accepted = false;
-          let issuedChallengeId = null;
-          let completed = false;
-          const tell = (kind, result, error) => parent.postMessage({ kind, result, error, nonce: parameters.nonce }, parameters.origin);
-          const post = async (path, input) => {
-            const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), redirect: 'error' });
-            if (!response.ok) throw new Error('Account linking did not finish.');
-            return response.json();
-          };
-          window.addEventListener('message', async (event) => {
-            if (event.source !== parent || event.origin !== parameters.origin || event.data?.nonce !== parameters.nonce) return;
-            if (event.data.kind === 'challenge' && !accepted && !challenge) {
-              challenge = event.data.input;
-              document.getElementById('computer').textContent = 'Link ' + challenge.name + ' from ' + parameters.origin + '?';
-              document.getElementById('allow').disabled = false;
-            } else if (event.data.kind === 'complete' && accepted && issuedChallengeId && event.data.input?.proof?.document?.challenge?.id === issuedChallengeId) {
-              try { const result = await post('/personal-host-link/complete', event.data.input); completed = true; tell('complete', result); document.getElementById('status').textContent = 'Account linked. You can close this window.'; }
-              catch { tell('complete', null, true); }
-            }
-          });
-          document.getElementById('allow').onclick = async () => {
-            if (!challenge || accepted) return;
-            accepted = true;
-            document.getElementById('allow').disabled = true;
-            try { const result = await post('/personal-host-link/challenge', challenge); issuedChallengeId = result.challengeId; tell('challenge', result); document.getElementById('status').textContent = 'Linking…'; }
-            catch { tell('challenge', null, true); }
-          };
-          window.addEventListener('pagehide', () => { if (parent && !completed) tell('cancelled'); });
-          if (parent) tell('ready');
-        </script></body></html>`);
+        void reply.header("referrer-policy", "no-referrer");
+        return sendBrowserPage(reply, {
+          body: personalLinkBody({
+            account: { displayName: session.displayName || null, email: session.email },
+            computerOrigin: query.origin,
+            nonce,
+            script: personalLinkScript(JSON.stringify(query).replace(/</gu, "\\u003c")),
+          }),
+          fonts,
+          layout: "card",
+          policy: browserPagePolicyWithScript(nonce, ["connect-src 'self'"]),
+          title: "Link this computer · Opensteer",
+        });
       });
       app.post("/personal-host-link/challenge", async (request, reply) => {
         guard(request);
@@ -466,7 +435,10 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           !deployment.connectRoute ||
           personalConnectStatus(deployment).status !== "ready"
         ) {
-          throw new ControlPlaneError("conflict", "Personal Host is not ready for remote access");
+          throw new ControlPlaneError(
+            "conflict",
+            "That computer can’t be reached right now. Make sure it’s awake with Opensteer open, then try again.",
+          );
         }
         const issued = IssueAccountHostSessionGrantResponseSchema.parse(
           await service.issueSessionGrant(accountId, deployment.id, {
@@ -479,6 +451,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         );
         return sendPersonalConnectHandoff(reply, {
           deploymentName: deployment.name,
+          fonts,
           grant: issued.grant,
           routeOrigin: deployment.connectRoute.document.route.origin,
         });
@@ -547,12 +520,9 @@ function normalizedApexDomain(value: string): string {
 }
 
 /**
- * The portal renders the same Directory row as the Desktop app: the place's
- * letter mark, its name, what it is, the honest explanation when it cannot be
- * opened, and a status chip only when the directory has evidence for one.
- * The link covers the row so the whole tile is clickable, while the accessible
- * name stays the Deployment's own name rather than a pile of status text read
- * out on every tab stop.
+ * The portal renders the same Directory row as the Desktop app: what the place
+ * runs on, its name, the honest explanation when it cannot be opened, and a
+ * status only when the directory has evidence for one.
  */
 export function deploymentCard(
   deployment: AccountDeploymentDirectoryEntry,
@@ -560,30 +530,32 @@ export function deploymentCard(
 ): string {
   const current = currentAccountDeployment(deployment);
   const statusInfo = accountDeploymentStatus(deployment, present, current !== null);
-  const name = escapeHtml(deployment.name);
   const selectable =
     current !== null &&
     (statusInfo === null || deploymentStatusSelectable(statusInfo.status)) &&
     deployment.lifecycle === "active";
-  const control =
-    selectable && deployment.reachability === "routed"
-      ? statusInfo?.status === "ready"
-        ? `<form method="post" action="${escapeHtml(portalPersonalConnectPath(deployment.id))}"><button class="deployment-name" type="submit">${name}</button></form>`
-        : `<span class="deployment-name">${name}</span>`
-      : selectable
-        ? `<a class="deployment-name" href="${escapeHtml(deploymentOrigin(deployment.authority.canonicalOrigin))}">${name}</a>`
-        : `<span class="deployment-name">${name}</span>`;
-  const kind = deploymentKindLabel(
-    deployment.reachability === "routed" ? "personal" : "self-hosted",
-  );
-  return directoryRow({
-    control,
-    explanation: statusInfo?.reason ?? null,
-    kind,
-    mark: letterMark(deployment.name),
-    secondaryControl: `${deployment.access === "member" ? `<form class="deployment-remove" method="post" action="${escapeHtml(portalRemoveDeploymentPath(deployment.id))}"><button type="submit">Remove from Account list</button></form>` : ""}`,
-    selectable,
-    status: statusInfo?.status ?? null,
+  const personal = deployment.reachability === "routed";
+  return placeRow({
+    control: !selectable
+      ? { kind: "none" }
+      : personal
+        ? statusInfo?.status === "ready"
+          ? { action: portalPersonalConnectPath(deployment.id), kind: "post" }
+          : { kind: "none" }
+        : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
+    id: deployment.id,
+    kind: personal ? "personal" : "self-hosted",
+    kindLabel: deploymentKindLabel(personal ? "personal" : "self-hosted"),
+    name: deployment.name,
+    remove:
+      deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,
+    status: statusInfo
+      ? {
+          label: deploymentStatusLabel(statusInfo.status),
+          reason: statusInfo.reason,
+          tone: deploymentStatusTone(statusInfo.status),
+        }
+      : null,
   });
 }
 
@@ -626,78 +598,29 @@ function personalConnectStatus(deployment: {
   });
 }
 
-function desktopAppRow(downloadUrl: string): string {
-  return directoryRow({
-    action: true,
-    control: `<a class="deployment-name" href="${escapeHtml(downloadUrl)}">Get the Desktop app</a>`,
-    explanation: null,
-    kind: "Create a private Opensteer on your own computer.",
-    mark: "↓",
-    secondaryControl: null,
-    selectable: true,
-    status: null,
-  });
-}
-
-function directoryRow(row: {
-  readonly action?: boolean;
-  readonly control: string;
-  readonly explanation: string | null;
-  readonly kind: string;
-  readonly mark: string;
-  readonly secondaryControl: string | null;
-  readonly selectable: boolean;
-  readonly status: DeploymentStatusInfo["status"] | null;
-}): string {
-  const chip = row.status
-    ? `<span class="chip chip--${deploymentStatusTone(row.status)}"><span class="chip-dot" aria-hidden="true"></span>${escapeHtml(deploymentStatusLabel(row.status))}</span>`
-    : "";
-  return `<li class="deployment${row.action ? " deployment--action" : ""}${row.selectable ? "" : " deployment--still"}">
-    <span class="deployment-mark${row.action ? " deployment-mark--action" : ""}" aria-hidden="true">${escapeHtml(row.mark)}</span>
-    <span class="deployment-copy">
-      ${row.control}
-      <span class="deployment-kind">${escapeHtml(row.kind)}</span>
-      ${row.explanation ? `<span class="deployment-note">${escapeHtml(row.explanation)}</span>` : ""}
-      ${row.secondaryControl ?? ""}
-    </span>
-    ${chip}
-    ${row.selectable ? `<span class="deployment-go" aria-hidden="true"></span>` : ""}
-  </li>`;
-}
-
-function letterMark(name: string): string {
-  const first = [...name.trim()][0];
-  return first ? first.toLocaleUpperCase() : "O";
-}
-
 function sendPersonalConnectHandoff(
   reply: FastifyReply,
-  input: { readonly deploymentName: string; readonly grant: string; readonly routeOrigin: string },
+  input: {
+    readonly deploymentName: string;
+    readonly fonts: BrowserPageFonts | undefined;
+    readonly grant: string;
+    readonly routeOrigin: string;
+  },
 ): string {
   const nonce = randomBytes(18).toString("base64url");
-  const action = new URL(sessionExchangePath, input.routeOrigin).toString();
-  void reply
-    .header("cache-control", "no-store")
-    .header(
-      "content-security-policy",
-      `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action ${input.routeOrigin}; base-uri 'none'; frame-ancestors 'none'`,
-    )
-    .header("referrer-policy", "no-referrer")
-    .type("text/html; charset=utf-8");
-  return renderBrowserPage({
-    body: `${brandMark({ large: true })}<main><p class="eyebrow">${escapeHtml(deploymentKindLabel("personal"))}</p><h1>Opening ${escapeHtml(input.deploymentName)}…</h1>
-      <p class="lead">Signing you in at this Opensteer.</p>
-      <form id="personal-connect-handoff" method="post" action="${escapeHtml(action)}">
-        <input type="hidden" name="grant" value="${escapeHtml(input.grant)}">
-        <button class="btn btn--primary btn--wide" type="submit">Continue</button>
-      </form></main><script nonce="${nonce}">document.getElementById("personal-connect-handoff").submit()</script>`,
-    layout: "centered",
+  void reply.header("referrer-policy", "no-referrer");
+  return sendBrowserPage(reply, {
+    body: personalHandoffBody({
+      action: new URL(sessionExchangePath, input.routeOrigin).toString(),
+      deploymentName: input.deploymentName,
+      grant: input.grant,
+      nonce,
+    }),
+    fonts: input.fonts,
+    layout: "card",
+    policy: browserPagePolicyWithScript(nonce, [`form-action ${input.routeOrigin}`]),
     title: `Opening ${input.deploymentName}`,
   });
-}
-
-function signOutForm(): string {
-  return `<form method="post" action="${escapeHtml(portalSignOutPath)}"><button class="btn btn--quiet" type="submit">Sign out</button></form>`;
 }
 
 function deploymentOrigin(value: string): string {
@@ -721,42 +644,56 @@ function deploymentOrigin(value: string): string {
   return url.origin;
 }
 
-interface PortalPage {
-  /** Shown beside the sign-out control; the app layout only. */
-  readonly account?: string;
-  readonly content: string;
-  readonly eyebrow?: string;
-  readonly heading: string;
-  /** `centered` is the auth-moment card: brand orb, one sentence, one action. */
-  readonly layout?: "app" | "centered";
-  readonly preconnect?: string;
-  readonly title: string;
-}
-
-function sendPortalPage(reply: FastifyReply, page: PortalPage): string {
-  void reply
-    .header("cache-control", "no-store")
-    .header("content-security-policy", browserPageContentSecurityPolicy)
-    .type("text/html; charset=utf-8");
-  return portalPage(page);
-}
-
-function portalPage(page: PortalPage): string {
-  const centered = page.layout === "centered";
-  const header = centered
-    ? brandMark({ large: true })
-    : `<header class="masthead">${brandLockup()}${accountControls(page.account)}</header>`;
-  const eyebrow = page.eyebrow ? `<p class="eyebrow">${escapeHtml(page.eyebrow)}</p>` : "";
-  return renderBrowserPage({
-    body: `${header}<main><div class="page-head">${eyebrow}<h1>${escapeHtml(page.heading)}</h1></div>${page.content}</main>`,
-    ...(centered ? { layout: "centered" as const } : {}),
-    ...(page.preconnect ? { preconnect: page.preconnect } : {}),
-    title: page.title,
+/**
+ * The popup's half of linking a Personal Host. It trusts only messages from
+ * the window that opened it, at the origin that window named, carrying the
+ * nonce it was opened with; it asks the Account to issue a challenge only
+ * after the person presses Link, and completes only the challenge it issued.
+ */
+function personalLinkScript(parameters: string): string {
+  return `
+  const parameters = ${parameters};
+  const parent = window.opener;
+  const root = document.getElementById('link');
+  const title = document.getElementById('title');
+  const allow = document.getElementById('allow');
+  const titles = { linked: 'Linked', failed: 'Couldn\u2019t link', orphan: 'Link this computer' };
+  let challenge = null;
+  let accepted = false;
+  let issuedChallengeId = null;
+  let completed = false;
+  const show = (state) => {
+    root.dataset.state = state;
+    for (const part of document.querySelectorAll('[data-when]')) part.hidden = !part.dataset.when.split(' ').includes(state);
+    if (titles[state]) title.textContent = titles[state];
+  };
+  const tell = (kind, result, error) => parent.postMessage({ kind, result, error, nonce: parameters.nonce }, parameters.origin);
+  const post = async (path, input) => {
+    const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), redirect: 'error' });
+    if (!response.ok) throw new Error('Account linking did not finish.');
+    return response.json();
+  };
+  window.addEventListener('message', async (event) => {
+    if (event.source !== parent || event.origin !== parameters.origin || event.data?.nonce !== parameters.nonce) return;
+    if (event.data.kind === 'challenge' && !accepted && !challenge) {
+      challenge = event.data.input;
+      title.textContent = 'Link ' + challenge.name;
+      allow.disabled = false;
+      show('ready');
+    } else if (event.data.kind === 'complete' && accepted && issuedChallengeId && event.data.input?.proof?.document?.challenge?.id === issuedChallengeId) {
+      try { const result = await post('/personal-host-link/complete', event.data.input); completed = true; tell('complete', result); show('linked'); setTimeout(() => window.close(), 1500); }
+      catch { tell('complete', null, true); show('failed'); }
+    }
   });
-}
-
-function accountControls(account: string | undefined): string {
-  if (!account) return "";
-  const escaped = escapeHtml(account);
-  return `<div class="session"><span class="session-account" title="${escaped}">${escaped}</span>${signOutForm()}</div>`;
+  allow.onclick = async () => {
+    if (!challenge || accepted) return;
+    accepted = true;
+    allow.disabled = true;
+    show('linking');
+    try { const result = await post('/personal-host-link/challenge', challenge); issuedChallengeId = result.challengeId; tell('challenge', result); }
+    catch { tell('challenge', null, true); show('failed'); }
+  };
+  window.addEventListener('pagehide', () => { if (parent && !completed) tell('cancelled'); });
+  if (parent) tell('ready'); else show('orphan');
+`;
 }

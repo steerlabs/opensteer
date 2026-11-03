@@ -117,7 +117,7 @@ export function AddAccountDialog({
       <form className="add-account" id="add-account-form" onSubmit={submit} ref={formRef}>
         {sources.length > 1 ? (
           <fieldset className="settings-choice-group add-account__sources">
-            <legend className="form-hint">Who should this account talk to?</legend>
+            <legend className="field__hint">Who should this account talk to?</legend>
             {sources.map((candidate) => (
               <label
                 className={`settings-choice${candidate.sourceId === source?.sourceId ? " is-selected" : ""}`}
@@ -146,7 +146,7 @@ export function AddAccountDialog({
             ))}
           </fieldset>
         ) : source?.detail ? (
-          <p className="form-hint">{source.detail}</p>
+          <p className="field__hint">{source.detail}</p>
         ) : null}
         {source?.fields.map((field) => {
           const shown = touched.has(field.id) && trimmed(field) !== "";
@@ -216,7 +216,7 @@ export function AddAccountDialog({
           );
         })}
         {server ? null : (
-          <p className="form-hint">
+          <p className="field__hint">
             Sign-in comes next. Whatever you sign in with stays on {whereLabel}.
           </p>
         )}

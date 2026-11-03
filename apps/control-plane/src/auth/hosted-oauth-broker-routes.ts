@@ -11,6 +11,7 @@ import {
   OAuthBrokerProviderSchema,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance } from "fastify";
+import { statusPageBody, type BrowserPageFonts } from "@opensteer/shared/browserPage";
 import { z } from "zod";
 import type { ControlPlaneAuthenticator } from "./auth.js";
 import { ControlPlaneError } from "../server/errors.js";
@@ -20,6 +21,7 @@ import {
 } from "./hosted-oauth-broker-service.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
+import { sendBrowserPage } from "../portal/pages.js";
 
 const AttemptParamsSchema = z.strictObject({ attemptId: HostedOAuthAttemptIdSchema });
 const RefreshParamsSchema = z.strictObject({
@@ -36,6 +38,7 @@ export function registerHostedOAuthBrokerRoutes(
   dependencies: {
     readonly authenticator: ControlPlaneAuthenticator;
     readonly broker: HostedOAuthBrokerService;
+    readonly fonts?: BrowserPageFonts;
     readonly store: ControlPlaneStore;
   },
 ): void {
@@ -145,14 +148,15 @@ export function registerHostedOAuthBrokerRoutes(
       } catch {
         request.log.warn({ provider }, "Hosted OAuth authorization callback was rejected");
       }
-      return reply
-        .code(completed ? 200 : 400)
-        .header("cache-control", "no-store")
-        .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
-        .header("content-type", "text/html; charset=utf-8")
-        .header("referrer-policy", "no-referrer")
-        .header("x-content-type-options", "nosniff")
-        .send(callbackPage(completed));
+      void reply.code(completed ? 200 : 400).header("referrer-policy", "no-referrer");
+      return reply.send(
+        sendBrowserPage(reply, {
+          body: callbackPageBody(completed),
+          fonts: dependencies.fonts,
+          layout: "plain",
+          title: completed ? "Signed in · Opensteer" : "Sign-in didn’t finish · Opensteer",
+        }),
+      );
     },
   );
 
@@ -314,13 +318,20 @@ function firstHeader(value: string | readonly string[] | undefined): string | un
  * connection: the Host commits it when Opensteer next checks the attempt, so
  * the page sends the person back rather than announcing an account.
  */
-function callbackPage(completed: boolean): string {
-  const title = completed ? "You’re signed in" : "Sign-in didn’t finish";
-  const detail = completed
-    ? "Go back to Opensteer to finish connecting. You can close this tab."
-    : "Go back to Opensteer to try again. You can close this tab.";
-  const mark = completed
-    ? '<path d="M7 12.5l3.2 3.2L17 9" stroke="#71c6a5"/>'
-    : '<path d="M12 7.5v5.5M12 16.5v.01" stroke="#dfb36b"/>';
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html{color-scheme:dark;background:#080808;color:#f5f4f2;font:15px/1.5 system-ui,sans-serif}main{max-width:22rem;margin:22vh auto 0;padding:0 1.5rem;text-align:center}svg{width:44px;height:44px;margin-bottom:1rem}h1{font-size:1.35rem;font-weight:600;margin:0 0 .4rem}p{color:#8e8a86;margin:0}</style></head><body><main><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10.5" stroke="#2a2a2a"/>${mark}</svg><h1>${title}</h1><p>${detail}</p></main></body></html>`;
+function callbackPageBody(completed: boolean): string {
+  return statusPageBody(
+    completed
+      ? {
+          detail: "Go back to Opensteer to finish connecting. You can close this tab.",
+          mark: "check",
+          title: "You’re signed in",
+          tone: "ok",
+        }
+      : {
+          detail: "Go back to Opensteer to try again. You can close this tab.",
+          mark: "alert",
+          title: "Sign-in didn’t finish",
+          tone: "warn",
+        },
+  );
 }

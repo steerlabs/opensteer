@@ -1,3 +1,4 @@
+import { renderBrowserPage, statusPageBody } from "@opensteer/shared/browserPage";
 import {
   integrationAuthorizationBrowserReturn,
   IntegrationAuthorizationAttemptIdSchema,
@@ -330,20 +331,38 @@ function authorizationBindingCookieName(attemptId: string): string {
   return `opensteer_integration_authorization_${attemptId.replaceAll("-", "_")}`;
 }
 
+/**
+ * Where a provider sign-in that cannot return to the app ends: in the same
+ * skin as the Account's pages. This Host does not serve the app's fonts here,
+ * so the page wears the platform's own.
+ */
 function resultPage(
   completed: boolean,
   failureCode: "provider-identity-already-connected" | null = null,
 ): string {
-  const title = completed ? "Connection complete" : "Connection not completed";
-  const detail = completed
-    ? "Return to Opensteer. You can close this tab."
-    : failureCode === "provider-identity-already-connected"
-      ? "This account is already connected by another user. Ask them to disconnect it, or return to Opensteer and connect with your own provider app."
-      : "Return to Opensteer for details or to try again. You can close this tab.";
-  const mark = completed
-    ? '<path d="M7 12.5l3.2 3.2L17 9" stroke="#71c6a5"/>'
-    : '<path d="M12 7.5v5.5M12 16.5v.01" stroke="#dfb36b"/>';
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>html{color-scheme:dark;background:#080808;color:#f5f4f2;font:15px/1.5 system-ui,sans-serif}main{max-width:22rem;margin:22vh auto 0;padding:0 1.5rem;text-align:center}svg{width:44px;height:44px;margin-bottom:1rem}h1{font-size:1.35rem;font-weight:600;margin:0 0 .4rem}p{color:#8e8a86;margin:0}</style></head><body><main><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10.5" stroke="#2a2a2a"/>${mark}</svg><h1>${title}</h1><p>${detail}</p></main></body></html>`;
+  const title = completed ? "Connected" : "Not connected";
+  return renderBrowserPage({
+    body: statusPageBody(
+      completed
+        ? {
+            detail: "Go back to Opensteer. You can close this tab.",
+            mark: "check",
+            title,
+            tone: "ok",
+          }
+        : {
+            detail:
+              failureCode === "provider-identity-already-connected"
+                ? "This account is already connected by another user. Ask them to disconnect it, or go back to Opensteer and connect with your own provider app."
+                : "Go back to Opensteer to see why or try again. You can close this tab.",
+            mark: "alert",
+            title,
+            tone: "warn",
+          },
+    ),
+    layout: "plain",
+    title: `${title} · Opensteer`,
+  });
 }
 
 function requireOwner(context: HostApiServerContext) {

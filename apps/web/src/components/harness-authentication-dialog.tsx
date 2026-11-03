@@ -478,14 +478,14 @@ export function HarnessAuthenticationDialog({
           : `Sign in to ${placement.engineName}`
       }
     >
-      <p className="form-hint harness-authentication__account">
+      <p className="field__hint harness-authentication__account">
         {placement.accountName === placement.engineName
           ? `${placement.source?.label ?? placement.engineName} on ${placement.whereLabel}.`
           : `The account “${placement.accountName}” (${placement.source?.label ?? placement.engineName}) on ${placement.whereLabel}.`}
       </p>
       {!selectedMethod ? (
         <div aria-label="Choose how to connect" className="settings-choice-group" role="group">
-          <p className="form-hint">Choose how to connect.</p>
+          <p className="field__hint">Choose how to connect.</p>
           {interactiveMethods.map((method) => (
             <button
               className="settings-choice settings-choice--button"
@@ -603,7 +603,7 @@ export function HarnessAuthenticationBody({
               above.
             </div>
           ) : null}
-          <p className="form-hint" role="status">
+          <p className="field__hint" role="status">
             Waiting for sign-in…
           </p>
         </>
@@ -623,22 +623,22 @@ export function HarnessAuthenticationBody({
       );
     case "ready":
       return (
-        <p className="form-hint" role="status">
+        <p className="field__hint" role="status">
           Signed in.
         </p>
       );
     case "starting":
       return (
-        <div className="empty-state" role="status">
+        <div className="card__empty card__empty--loading" role="status">
           <span className="spinner" />
-          <p>Starting sign-in on this work location…</p>
+          <span>Starting sign-in on this work location…</span>
         </div>
       );
     default:
       return (
-        <div className="empty-state" role="status">
+        <div className="card__empty card__empty--loading" role="status">
           <span className="spinner" />
-          <p>Preparing secure sign-in…</p>
+          <span>Preparing secure sign-in…</span>
         </div>
       );
   }

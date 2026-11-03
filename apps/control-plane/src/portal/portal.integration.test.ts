@@ -316,7 +316,7 @@ integration("Opensteer web portal", () => {
     });
     expect(empty.statusCode).toBe(200);
     expect(empty.body).toContain("Set up Opensteer");
-    expect(empty.body).toContain("Create your first Opensteer, or open one you already have.");
+    expect(empty.body).toContain("Opensteers you set up or join show up here.");
 
     const ready = await registerDeployment("First <Server>", "first-server");
     await publishPresence(ready);

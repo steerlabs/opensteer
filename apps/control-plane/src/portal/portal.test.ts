@@ -58,19 +58,17 @@ describe("portal Deployment cards", () => {
       'href="https://server.opensteer.test"',
     );
     // The owner made this row and unmakes it where it runs; a hide is a member's move.
-    expect(deploymentCard(directoryDeployment(deployment), true)).not.toContain(
-      "Remove from Account list",
-    );
+    expect(deploymentCard(directoryDeployment(deployment), true)).not.toContain("from your list");
     const shared = directoryDeployment({ ...deployment, access: "member" });
     expect(deploymentCard(shared, true)).toContain(
       `action="${portalRemoveDeploymentPath(deployment.id)}"`,
     );
-    expect(deploymentCard(shared, true)).toContain("Remove from Account list");
+    expect(deploymentCard(shared, true)).toContain("from your list");
     for (const present of [true, false]) {
       const card = deploymentCard(directoryDeployment(deployment), present);
-      expect(card).not.toContain('class="chip');
-      expect(card).not.toContain('class="deployment-note');
-      expect(card).toContain('class="deployment-go');
+      expect(card).not.toContain('class="dot');
+      expect(card).not.toContain('class="place__note');
+      expect(card).toContain('class="place__go');
     }
     expect(deploymentCard(directoryDeployment(deployment), false)).toContain(
       'href="https://server.opensteer.test"',
@@ -83,7 +81,7 @@ describe("portal Deployment cards", () => {
     expect(card).toContain("Offline");
     expect(card).toContain("You no longer have access to this deployment.");
     expect(card).not.toContain('href="https://server.opensteer.test"');
-    expect(card).not.toContain('class="deployment-go');
+    expect(card).not.toContain('class="place__go');
   });
 
   it("mints the browser grant only after the portal card is posted", async () => {
@@ -186,7 +184,7 @@ describe("portal Deployment cards", () => {
       "Update Opensteer to use this deployment’s published connection details.",
     );
     expect(card).not.toContain("href=");
-    expect(card).not.toContain("deployment-go");
+    expect(card).not.toContain("place__go");
   });
 
   it("does not trust routed liveness carried by an invalid route envelope", () => {
