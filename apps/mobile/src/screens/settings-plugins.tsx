@@ -265,7 +265,7 @@ function Plugins({
           ),
         ),
         ...(row.permissions.canRemove
-          ? [button("remove", "Remove plugin", () => remove(detail))]
+          ? [{ ...button("remove", "Remove plugin", () => remove(detail)), destructive: true }]
           : []),
         button("installed", "Manage installed plugin", () =>
           navigation.navigate("Plugins", { deploymentId }),
@@ -325,45 +325,52 @@ function Plugins({
         ),
       ]),
     });
-    sections.push({
-      key: "install",
-      title: "Install from a folder or link",
-      rows: [
-        {
-          key: "folder",
-          kind: "input",
-          label: "Folder on your computer",
-          value: folder,
-          onChange: setFolder,
-        },
-        button("install", "Install plugin", () =>
-          command("install", {
-            type: "plugin.install",
-            input: { directory: folder.trim() },
-            idempotencyKey: mutationIdempotencyKey("plugin-install"),
-          }),
-        ),
-        { key: "url", kind: "input", label: "Remote MCP URL", value: mcpUrl, onChange: setMcpUrl },
-        {
-          key: "mcp-title",
-          kind: "input",
-          label: "MCP name",
-          value: mcpTitle,
-          onChange: setMcpTitle,
-        },
-        button("mcp", "Add remote MCP", () =>
-          command("mcp", {
-            type: "integration.remoteMcp.install",
-            input: {
-              name: mcpTitle.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
-              title: mcpTitle,
-              url: mcpUrl,
-            },
-            idempotencyKey: mutationIdempotencyKey("remote-mcp-install"),
-          }),
-        ),
-      ],
-    });
+    if (host.getSnapshot().user?.instanceRole === "administrator")
+      sections.push({
+        key: "install",
+        title: "Install from a folder or link",
+        rows: [
+          {
+            key: "folder",
+            kind: "input",
+            label: "Folder on your computer",
+            value: folder,
+            onChange: setFolder,
+          },
+          button("install", "Install plugin", () =>
+            command("install", {
+              type: "plugin.install",
+              input: { directory: folder.trim() },
+              idempotencyKey: mutationIdempotencyKey("plugin-install"),
+            }),
+          ),
+          {
+            key: "url",
+            kind: "input",
+            label: "Remote MCP URL",
+            value: mcpUrl,
+            onChange: setMcpUrl,
+          },
+          {
+            key: "mcp-title",
+            kind: "input",
+            label: "MCP name",
+            value: mcpTitle,
+            onChange: setMcpTitle,
+          },
+          button("mcp", "Add remote MCP", () =>
+            command("mcp", {
+              type: "integration.remoteMcp.install",
+              input: {
+                name: mcpTitle.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
+                title: mcpTitle,
+                url: mcpUrl,
+              },
+              idempotencyKey: mutationIdempotencyKey("remote-mcp-install"),
+            }),
+          ),
+        ],
+      });
   } else {
     sections.push({
       key: "actions",
@@ -412,8 +419,8 @@ function Plugins({
           ...button(key, row.title === "Apple Messages" ? "iMessage" : row.title, () =>
             navigation.navigate("SettingsPluginDetail", { deploymentId, target: row.target }),
           ),
-          actions:
-            row.placement.enabled && row.permissions.canEnable
+          actions: [
+            ...(row.placement.enabled && row.permissions.canEnable
               ? [
                   {
                     label: "Turn off",
@@ -427,7 +434,23 @@ function Plugins({
                       }),
                   },
                 ]
-              : [],
+              : []),
+            ...(row.permissions.canRemove
+              ? [
+                  {
+                    label: "Remove",
+                    destructive: true,
+                    onPress: () =>
+                      run(key, async () => {
+                        const value = unwrapRpcResult(
+                          await host.rpc["plugins.detail.get"]({ target: row.target }),
+                        );
+                        if (isCurrent()) remove(value);
+                      }),
+                  },
+                ]
+              : []),
+          ],
         });
         items.push(
           text(

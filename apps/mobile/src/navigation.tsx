@@ -1,4 +1,3 @@
-import { Platform } from "react-native";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { createStaticNavigation, DarkTheme, type Theme } from "@react-navigation/native";
@@ -6,58 +5,54 @@ import {
   createNativeStackNavigator,
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
+import { Platform } from "react-native";
+import type { SurfacesRoute } from "./browser/surface-route.js";
 import type { ThreadDraftQuote } from "./client/thread-drafts.js";
+import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
 import { headerActions, stackScreenOptions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
+import { BrowserHistoryScreen, type BrowserHistoryDestination } from "./screens/browser-history.js";
 import {
   BrowserProfilesScreen,
   type BrowserProfilesDestination,
 } from "./screens/browser-profiles.js";
-import { BrowserHistoryScreen, type BrowserHistoryDestination } from "./screens/browser-history.js";
 import { BrowserTabsScreen } from "./screens/browser-tabs.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
-import {
-  ConnectedAppsScreen,
-  type ConnectedAppsDestination,
-} from "./screens/settings-plugin-accounts.js";
-import type { SurfacesRoute } from "./browser/surface-route.js";
-import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
 import { ComputerScreen } from "./screens/computer.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
-import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { HomeScreen } from "./screens/home.js";
 import { NewProjectScreen } from "./screens/new-project.js";
 import { NewTaskScreen } from "./screens/new-task.js";
 import { OpenAppScreen } from "./screens/open-app.js";
+import { ProjectSettingsScreen } from "./screens/project-settings.js";
+import { ProjectScreen } from "./screens/project.js";
+import { ProjectsScreen } from "./screens/projects.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
 import {
-  SettingsScreen,
-  SettingsGeneralScreen,
   SettingsAccountScreen,
-  SettingsDevicesScreen,
   SettingsAIScreen,
+  SettingsDevicesScreen,
+  SettingsGeneralScreen,
+  SettingsScreen,
   SettingsSignInsScreen,
 } from "./screens/settings-home.js";
 import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
-import { PluginsScreen, type PluginsDestination } from "./screens/plugins.js";
-import { ProjectScreen } from "./screens/project.js";
-import { ProjectSettingsScreen } from "./screens/project-settings.js";
-import { ProjectsScreen } from "./screens/projects.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
-import { ThreadScreen } from "./screens/thread.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
-import { HomeScreen } from "./screens/home.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
-import { AroundScreen } from "./thread/around-sheet.js";
+import { ThreadScreen } from "./screens/thread.js";
+import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
-import { Pane } from "./ui/pane.js";
 import { color } from "./theme.js";
+import { AroundScreen } from "./thread/around-sheet.js";
+import { Pane } from "./ui/pane.js";
 
 /**
  * The whole route table, written out.
@@ -340,24 +335,26 @@ const RootStack = createNativeStackNavigator({
     // The accounts agents use, a modal over Settings like Chrome: a sign-in it
     // starts finishes in the system browser sheet and returns here.
     ConnectedApps: {
-      screen: ConnectedAppsScreen,
+      screen: SettingsPluginsScreen,
       options: ({ navigation }) => ({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
         presentation: "modal",
-        title: "Connections",
+        headerShown: Platform.OS !== "ios",
+        title: "Plugins",
       }),
     },
     // Plugins, a modal over Settings like Connections, or over a project's
     // settings from its Plugins section.
     Plugins: {
-      screen: PluginsScreen,
+      screen: SettingsPluginsScreen,
       options: ({ navigation }) => ({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
         presentation: "modal",
+        headerShown: Platform.OS !== "ios",
         title: "Plugins",
       }),
     },
@@ -455,7 +452,7 @@ type OpensteerRootParamList = {
   readonly Chrome: ChromeDestination;
   readonly BrowserProfiles: BrowserProfilesDestination;
   readonly BrowserHistory: BrowserHistoryDestination;
-  readonly ConnectedApps: ConnectedAppsDestination;
+  readonly ConnectedApps: { readonly deploymentId: string };
   readonly Computer: { readonly deploymentId: string; readonly machineId: string };
   readonly ConversationActivity: {
     readonly deploymentId: string;
@@ -501,7 +498,7 @@ type OpensteerRootParamList = {
   readonly SettingsDeviceDetail: { readonly deploymentId: string; readonly machineId: string };
   readonly SettingsSignIns: { readonly deploymentId: string };
   readonly Settings: undefined;
-  readonly Plugins: PluginsDestination;
+  readonly Plugins: { readonly deploymentId: string };
   readonly Project: { readonly deploymentId: string; readonly workspaceId: string };
   readonly ProjectSettings: { readonly deploymentId: string; readonly workspaceId: string };
   readonly Projects: { readonly deploymentId: string };

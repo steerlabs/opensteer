@@ -11,7 +11,7 @@ const state = vi.hoisted(() => ({
   alert: null as null | { buttons: { onPress?: () => void; text: string }[]; title: string },
   appState: (_next: string) => undefined as void,
   begin: null as unknown,
-  hostClient: null as unknown,
+  hostClient: null as MockHostClient | null,
   openURL: null as unknown,
 }));
 
@@ -104,7 +104,7 @@ vi.mock("../ui/primitives.js", () => ({
   StatusDot: () => null,
 }));
 
-const { ConnectedAppsScreen } = await import("./settings-plugin-accounts.js");
+const { PluginAccounts } = await import("./settings-plugin-accounts.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const roots: Root[] = [];
@@ -224,9 +224,7 @@ async function render(): Promise<HTMLElement> {
   const root = createRoot(container);
   roots.push(root);
   await act(async () =>
-    root.render(
-      <ConnectedAppsScreen route={{ params: { deploymentId: "deployment-a" } } as never} />,
-    ),
+    root.render(<PluginAccounts hostClient={state.hostClient!} hostName="Tim’s MacBook Pro" />),
   );
   return container;
 }

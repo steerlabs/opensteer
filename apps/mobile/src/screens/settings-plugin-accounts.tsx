@@ -12,7 +12,7 @@ import {
   type IntegrationOAuthApplicationSource,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
-import { useIsFocused, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
@@ -27,7 +27,7 @@ import {
 import { operationDetail } from "../client/mobile-client.js";
 import { color, space, touchTarget } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import {
@@ -35,37 +35,6 @@ import {
   type ConnectedAccountRow,
   type ConnectedAppModel,
 } from "./connected-apps-model.js";
-
-export type ConnectedAppsDestination = { readonly deploymentId: string };
-
-/**
- * The accounts agents use, from the phone: each one's state, a sign-in that
- * repairs or adds one, and the way to remove one. A sign-in that returns to the
- * Account service finishes in the phone's own browser sheet.
- */
-export function ConnectedAppsScreen({
-  route,
-}: StaticScreenProps<ConnectedAppsDestination>): ReactNode {
-  const { deploymentId } = route.params;
-  const { rows, selection } = useMobileState();
-  const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
-  const hostClient =
-    selection.deploymentId === deploymentId && row?.signIn === null ? selection.hostClient : null;
-  if (hostClient === null || row === undefined) {
-    return (
-      <Screen>
-        <View style={styles.away}>
-          <AppText role="secondary" tone="muted">
-            {row === undefined
-              ? "This deployment is no longer on this phone."
-              : `Open ${row.name} to manage its connections.`}
-          </AppText>
-        </View>
-      </Screen>
-    );
-  }
-  return <PluginAccounts hostClient={hostClient} hostName={row.name} />;
-}
 
 /** Keyed by who is signed in, so a changed account never sees the last one's apps. */
 export function PluginAccounts(props: {

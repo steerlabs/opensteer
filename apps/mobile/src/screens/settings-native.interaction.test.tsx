@@ -386,3 +386,51 @@ it("pushes validated plugin identity so Back returns to the searchable list", as
     target: plugin.target,
   });
 });
+
+it("installs a folder, places it in Main and removes only after confirmation", async () => {
+  await open("plugins");
+  const dispatch = vi.spyOn(host, "dispatch");
+  await press("Add plugins");
+  await input("Folder on your computer", "/Users/me/plugins/notes");
+  await press("Install plugin");
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "plugin.install",
+      input: { directory: "/Users/me/plugins/notes" },
+    }),
+  );
+  const overview = await host.rpc["plugins.overview.get"]({});
+  if (!overview.ok) throw new Error("Missing overview");
+  const plugin = overview.data.rows.find((row) => row.title === "notes")!;
+  expect(plugin).toBeDefined();
+  await act(async () =>
+    root!.render(
+      <SettingsPluginsScreen
+        route={{ params: { deploymentId: "deployment", target: plugin.target } }}
+      />,
+    ),
+  );
+  const place = rows().find((row) => row.kind === "toggle" && row.label === "Main");
+  expect(place?.kind).toBe("toggle");
+  if (place?.kind !== "toggle") throw new Error("Missing Main");
+  await act(async () => place.onChange(true));
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "settings.plugin.placement.set", mainIncluded: true }),
+  );
+  await press("Remove plugin");
+  const { Alert } = await import("react-native");
+  const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
+  expect(dispatch.mock.calls.some(([command]) => command.type === "plugin.remove")).toBe(false);
+  await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
+  expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "plugin.remove" }));
+});
+it("withholds folder install from non-administrators", async () => {
+  await open("plugins");
+  const original = host.getSnapshot.bind(host);
+  vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
+    ...original(),
+    user: { ...original().user!, instanceRole: "user" },
+  }));
+  await press("Add plugins");
+  expect(rows().some((row) => row.label === "Folder on your computer")).toBe(false);
+});
