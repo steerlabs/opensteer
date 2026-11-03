@@ -156,6 +156,8 @@ integration("Opensteer Account host", () => {
     expect(page.statusCode).toBe(404);
     expect(page.headers["content-type"]).toContain("text/html");
     expect(page.body).toContain("Nothing here");
+    // An Account-host failure still offers a way on, to the portal.
+    expect(page.body).toContain(`href="https://${testDomain}/"`);
     expect(page.headers["content-security-policy"]).toContain("default-src 'none'");
 
     const api = await server.inject({ method: "GET", url: "/no-such-page" });

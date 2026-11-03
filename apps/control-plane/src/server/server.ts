@@ -98,7 +98,14 @@ export async function createControlPlaneServer(
     failure: { readonly message: string; readonly status: number },
   ) => {
     const page = errorPageBody({
-      back: portal?.ownsRequest(request) ? { href: "/", label: "Back to your Opensteers" } : null,
+      // Every failure has a way on: the portal when this process runs one,
+      // otherwise the Account's own front door.
+      back: portal
+        ? {
+            href: portal.ownsRequest(request) ? "/" : `${portal.origin.origin}/`,
+            label: "Go to your Opensteers",
+          }
+        : { href: "/", label: "Go to Opensteer Account" },
       ...failure,
     });
     void reply

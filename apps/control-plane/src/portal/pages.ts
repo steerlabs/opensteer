@@ -296,7 +296,7 @@ export function personalLinkBody(input: {
  * conflict's own message is already written for them.
  */
 export function errorPageBody(input: {
-  readonly back: { readonly href: string; readonly label: string } | null;
+  readonly back: { readonly href: string; readonly label: string };
   readonly message: string;
   readonly status: number;
 }): { readonly body: string; readonly title: string } {
@@ -320,7 +320,7 @@ export function errorPageBody(input: {
       mark: "alert",
       title: words.title,
       tone: "warn",
-      ...(input.back ? { action: input.back } : {}),
+      action: input.back,
     }),
     title: words.title,
   };
