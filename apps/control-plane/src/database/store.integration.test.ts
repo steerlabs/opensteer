@@ -57,7 +57,7 @@ import {
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://accounts.test.opensteer.invalid");
-const managedDeploymentDomain = "connect.test.opensteer.invalid";
+const testDomain = "connect.test.opensteer.invalid";
 const config: ControlPlaneConfig = {
   adoptionOperationKey: "A".repeat(43),
   personalAccountLinkOperationKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
@@ -67,7 +67,7 @@ const config: ControlPlaneConfig = {
   authSecret: "test-control-plane-secret-with-at-least-32-bytes",
   googleClientId: "test-google-client",
   googleClientSecret: "test-google-secret",
-  portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+  portalOrigin: new URL(`https://${testDomain}`),
   connectDomain: "connect.store.test.invalid",
   connectCloudflare: {
     accountId: "a".repeat(32),
@@ -93,7 +93,7 @@ integration("control-plane PostgreSQL boundary", () => {
       return { database, close: () => database.destroy() };
     });
     const store = new ControlPlaneStore(database, publicOrigin, {
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
     });
     const connectLifecycle = new ConnectLifecycleService(database, {
       delete: async () => undefined,
@@ -164,7 +164,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -262,7 +262,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -313,7 +313,7 @@ integration("control-plane PostgreSQL boundary", () => {
       ),
       adoptionOperationCipher: new AdoptionOperationCipher(config.adoptionOperationKey),
       adoptionProofVerifier: { verify },
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
     });
     await expect(
       adoptionStore.adoptExistingDeployment(ownerId, adoptionRequest()),
@@ -378,7 +378,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -455,14 +455,14 @@ integration("control-plane PostgreSQL boundary", () => {
       adoptionCompletionGrantIssuer: completionGrantIssuer,
       adoptionOperationCipher: new AdoptionOperationCipher(config.adoptionOperationKey),
       adoptionProofVerifier: { verify },
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
     });
 
     const server = await createControlPlaneServer({
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store: adoptionStore,
     });
@@ -599,7 +599,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store: adoptionStore,
     });
@@ -981,7 +981,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -1061,7 +1061,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -1158,7 +1158,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -1309,7 +1309,7 @@ integration("control-plane PostgreSQL boundary", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       publicOrigin,
       store,
     });
@@ -1611,7 +1611,7 @@ function newAdoptionProof() {
 }
 
 function managedOrigin(deploymentId: string): string {
-  return `https://d-${deploymentId.slice("dep_".length)}.${managedDeploymentDomain}`;
+  return `https://d-${deploymentId.slice("dep_".length)}.${testDomain}`;
 }
 
 async function authorizeNativeClient(

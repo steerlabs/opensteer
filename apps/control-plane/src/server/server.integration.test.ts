@@ -29,7 +29,7 @@ import { ControlPlaneError } from "./errors.js";
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://beta.front-door.test.invalid");
-const managedDeploymentDomain = "managed.front-door.test.invalid";
+const testDomain = "managed.front-door.test.invalid";
 const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
 const config: ControlPlaneConfig = {
   adoptionOperationKey: "A".repeat(43),
@@ -49,7 +49,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+  portalOrigin: new URL(`https://${testDomain}`),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -60,7 +60,7 @@ integration("Opensteer Account host", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, {
-    portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+    portalOrigin: new URL(`https://${testDomain}`),
   });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
@@ -79,7 +79,7 @@ integration("Opensteer Account host", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       portalSessions,
       publicOrigin,
       store,
@@ -111,7 +111,7 @@ integration("Opensteer Account host", () => {
   it("sends the front door to the portal instead of serving one", async () => {
     const signedOut = await server.inject({ method: "GET", url: "/" });
     expect(signedOut.statusCode).toBe(302);
-    expect(signedOut.headers.location).toBe(`https://${managedDeploymentDomain}/`);
+    expect(signedOut.headers.location).toBe(`https://${testDomain}/`);
 
     const signedIn = await server.inject({
       headers: { cookie: await signedSessionCookie(auth, accountId) },
@@ -119,7 +119,7 @@ integration("Opensteer Account host", () => {
       url: "/",
     });
     expect(signedIn.statusCode).toBe(302);
-    expect(signedIn.headers.location).toBe(`https://${managedDeploymentDomain}/`);
+    expect(signedIn.headers.location).toBe(`https://${testDomain}/`);
     expect(signedIn.headers["cache-control"]).toBe("no-store");
     expect(signedIn.headers["strict-transport-security"]).toBe(
       "max-age=31536000; includeSubDomains",
@@ -157,7 +157,7 @@ integration("Opensteer Account host", () => {
 
     const edgeRoot = await server.inject({
       method: "GET",
-      url: `/v1/edge/tls-allow?domain=${managedDeploymentDomain.toUpperCase()}.`,
+      url: `/v1/edge/tls-allow?domain=${testDomain.toUpperCase()}.`,
     });
     expect(edgeRoot.statusCode).toBe(200);
     expect(edgeRoot.body).toBe("ok");

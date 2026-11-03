@@ -125,7 +125,7 @@ describe("explicit signing keychain boundary", () => {
   });
 
   it("identity discovery uses the configured file rather than the search list", () => {
-    for (const file of ["native-build-cache.ts", "../../../scripts/release-beta-mac.ts"]) {
+    for (const file of ["native-build-cache.ts", "../../../scripts/release-mac.ts"]) {
       const root = source(file);
       const start = root.indexOf('"find-identity"');
       const argsExpression = balanced(root, root.lastIndexOf("[", start), "[", "]");
@@ -154,7 +154,7 @@ describe("explicit signing keychain boundary", () => {
       expected: "reject",
     },
   ])("coordinator keychain compatibility: $name", ({ json, legacy, expected }) => {
-    const root = source("../../../scripts/release-beta-mac.ts");
+    const root = source("../../../scripts/release-mac.ts");
     const signingInput = root.match(/function signingInput\([\s\S]*?\n\}/u)![0];
     const signing = { ...fixture, ...(json === undefined ? {} : { keychain: json }) };
     const expression = `(${signingInput})(config)`;
@@ -174,7 +174,7 @@ describe("explicit signing keychain boundary", () => {
   });
 
   it("all release notary calls use the validated input's keychain", () => {
-    const root = source("../../../scripts/release-beta-mac.ts");
+    const root = source("../../../scripts/release-mac.ts");
     const credentials = root.match(/function credentials\([\s\S]*?\n\}/u)![0];
     for (const configured of [false, true]) {
       const signing = {

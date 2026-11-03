@@ -39,7 +39,7 @@ import { ControlPlaneStore } from "../database/store.js";
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://accounts.portal.test.invalid");
-const managedDeploymentDomain = "portal.test.invalid";
+const testDomain = "portal.test.invalid";
 const accountHost = publicOrigin.host;
 const portalSessionCookieName = "__Host-opensteer.portal";
 const portalFlowCookieName = "__Host-opensteer.portal-flow";
@@ -62,7 +62,7 @@ const config: ControlPlaneConfig = {
   googleClientSecret: "test-google-secret",
   listenHost: "127.0.0.1",
   listenPort: 41_142,
-  portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+  portalOrigin: new URL(`https://${testDomain}`),
   nativeOAuthClients: opensteerAccountNativeOAuthClients,
   publicOrigin,
 };
@@ -73,7 +73,7 @@ integration("Opensteer web portal", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, {
-    portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+    portalOrigin: new URL(`https://${testDomain}`),
   });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
@@ -92,7 +92,7 @@ integration("Opensteer web portal", () => {
       auth,
       authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
       connectLifecycle,
-      portalOrigin: new URL(`https://${managedDeploymentDomain}`),
+      portalOrigin: new URL(`https://${testDomain}`),
       portalSessions,
       publicOrigin,
       store,
@@ -106,7 +106,7 @@ integration("Opensteer web portal", () => {
     await sql`truncate table users cascade`.execute(database);
     await store.ensureOfficialPortalClient({
       clientId: portalOAuthClientId,
-      redirectUri: portalCallbackUri(new URL(`https://${managedDeploymentDomain}`)),
+      redirectUri: portalCallbackUri(new URL(`https://${testDomain}`)),
       scopes: portalOAuthScopes,
     });
     const now = new Date();
@@ -175,7 +175,7 @@ integration("Opensteer web portal", () => {
       url: "/",
     });
     expect(accountRoot.statusCode).toBe(302);
-    expect(accountRoot.headers.location).toBe(`https://${managedDeploymentDomain}/`);
+    expect(accountRoot.headers.location).toBe(`https://${testDomain}/`);
 
     const signInOnApex = await server.inject({
       headers: portalHeaders(),
@@ -329,7 +329,7 @@ integration("Opensteer web portal", () => {
     expect(listed.statusCode).toBe(200);
     expect(listed.body).toContain("First &lt;Server&gt;");
     expect(listed.body).not.toContain("First <Server>");
-    expect(listed.body).toContain(`https://second-server.${managedDeploymentDomain}`);
+    expect(listed.body).toContain(`https://second-server.${testDomain}`);
     expect(listed.body).not.toContain(">Needs attention<");
     expect(listed.body).not.toContain(">Ready<");
     expect(listed.body).not.toContain("Open this deployment to check");
@@ -348,7 +348,7 @@ integration("Opensteer web portal", () => {
     expect(crossOrigin.statusCode).toBe(403);
 
     const signedOut = await server.inject({
-      headers: portalHeaders({ cookie, origin: `https://${managedDeploymentDomain}` }),
+      headers: portalHeaders({ cookie, origin: `https://${testDomain}` }),
       method: "POST",
       url: portalSignOutPath,
     });
@@ -397,7 +397,7 @@ integration("Opensteer web portal", () => {
     const authorizeUrl = new URL(location(signIn));
     expect(authorizeUrl.origin).toBe(publicOrigin.origin);
     expect(authorizeUrl.searchParams.get("redirect_uri")).toBe(
-      `https://${managedDeploymentDomain}/auth/callback`,
+      `https://${testDomain}/auth/callback`,
     );
     expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
 
@@ -410,7 +410,7 @@ integration("Opensteer web portal", () => {
       url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
     });
     const callbackUrl = new URL(location(authorize));
-    expect(callbackUrl.origin).toBe(`https://${managedDeploymentDomain}`);
+    expect(callbackUrl.origin).toBe(`https://${testDomain}`);
     const callback = await server.inject({
       headers: portalHeaders({ cookie: flowCookie }),
       method: "GET",
@@ -446,7 +446,7 @@ integration("Opensteer web portal", () => {
     const hostKeyFingerprint = HostKeyFingerprintSchema.parse(
       `sha256:${createHash("sha256").update(hostSpki).digest("base64url")}`,
     );
-    const canonicalOrigin = `https://${slug}.${managedDeploymentDomain}`;
+    const canonicalOrigin = `https://${slug}.${testDomain}`;
     const authority = {
       canonicalOrigin,
       deploymentId,
@@ -518,7 +518,7 @@ function portalHeaders(
   extra: { readonly cookie?: string; readonly origin?: string } = {},
 ): Record<string, string> {
   return {
-    host: managedDeploymentDomain,
+    host: testDomain,
     ...(extra.cookie === undefined ? {} : { cookie: extra.cookie }),
     ...(extra.origin === undefined ? {} : { origin: extra.origin }),
   };

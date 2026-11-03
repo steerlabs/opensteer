@@ -407,8 +407,8 @@ integration("IdentityService", () => {
         nativeOAuth: {
           clients: [
             nativeClient({
-              clientId: "opensteer-desktop-beta",
-              redirectUris: ["com.steerlabs.opensteer.beta:/oauth/host-callback"],
+              clientId: "opensteer-desktop",
+              redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
             }),
           ],
         },
@@ -417,7 +417,7 @@ integration("IdentityService", () => {
       });
       await identity.initialize();
       const nativeAuthorization = new URL("/v1/auth/native/oauth2/authorize", publicOrigin);
-      nativeAuthorization.searchParams.set("client_id", "opensteer-desktop-beta");
+      nativeAuthorization.searchParams.set("client_id", "opensteer-desktop");
       nativeAuthorization.searchParams.set(
         "code_challenge",
         createHash("sha256")
@@ -427,7 +427,7 @@ integration("IdentityService", () => {
       nativeAuthorization.searchParams.set("code_challenge_method", "S256");
       nativeAuthorization.searchParams.set(
         "redirect_uri",
-        "com.steerlabs.opensteer.beta:/oauth/host-callback",
+        "com.opensteer.opensteer:/oauth/host-callback",
       );
       nativeAuthorization.searchParams.set("response_type", "code");
       nativeAuthorization.searchParams.set(
@@ -481,7 +481,7 @@ integration("IdentityService", () => {
       expect(nativeConsentUrl.origin).toBe(publicOrigin);
       expect(nativeConsentUrl.pathname).toBe("/");
       expect(nativeConsentUrl.searchParams.get("sig")).toBeTruthy();
-      expect(nativeConsentUrl.searchParams.get("client_id")).toBe("opensteer-desktop-beta");
+      expect(nativeConsentUrl.searchParams.get("client_id")).toBe("opensteer-desktop");
       expect(tokenRequest?.authorization).toBe(
         `Basic ${Buffer.from("opensteer-test-client:opensteer-test-client-secret").toString("base64")}`,
       );
@@ -1366,49 +1366,44 @@ integration("IdentityService", () => {
     ).resolves.toMatchObject({ application: "desktop", clientId: desktop.clientId });
   });
 
-  it("registers a release-isolated reverse-domain native OAuth callback", async () => {
-    const stableIdentity = identityService({
+  it("disables a native OAuth client removed from the release registry", async () => {
+    const retiredIdentity = identityService({
       nativeOAuth: {
         clients: [
           nativeClient({
-            clientId: "opensteer-desktop",
-            redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
+            clientId: "retired-desktop",
+            redirectUris: ["com.example.retired:/oauth/host-callback"],
           }),
         ],
       },
       signupPolicy: "open",
     });
-    await stableIdentity.initialize();
+    await retiredIdentity.initialize();
 
-    const redirectUri = "com.steerlabs.opensteer.beta:/oauth/host-callback";
-    const betaIdentity = identityService({
+    const redirectUri = "com.opensteer.opensteer:/oauth/host-callback";
+    const currentIdentity = identityService({
       nativeOAuth: {
-        clients: [
-          nativeClient({ clientId: "opensteer-desktop-beta", redirectUris: [redirectUri] }),
-        ],
+        clients: [nativeClient({ clientId: "opensteer-desktop", redirectUris: [redirectUri] })],
       },
       signupPolicy: "open",
     });
-    await betaIdentity.initialize();
+    await currentIdentity.initialize();
 
     await expect(
       database
         .selectFrom("hostOAuthClients")
         .select(["clientId", "disabled", "redirectUris", "referenceId"])
-        .where("clientId", "in", ["opensteer-desktop", "opensteer-desktop-beta"])
+        .where("clientId", "in", ["opensteer-desktop", "retired-desktop"])
         .orderBy("clientId")
         .execute(),
     ).resolves.toEqual([
       expect.objectContaining({
         clientId: "opensteer-desktop",
-        disabled: true,
-      }),
-      expect.objectContaining({
-        clientId: "opensteer-desktop-beta",
         disabled: false,
         redirectUris: [redirectUri],
-        referenceId: "opensteer-native-client:opensteer-desktop-beta",
+        referenceId: "opensteer-native-client:opensteer-desktop",
       }),
+      expect.objectContaining({ clientId: "retired-desktop", disabled: true }),
     ]);
   });
 
