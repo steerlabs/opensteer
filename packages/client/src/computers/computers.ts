@@ -31,7 +31,6 @@ export type ComputersHome =
       readonly machine: MachineSummary | null;
       readonly name: string;
     }
-  | { readonly kind: "cloud" }
   | { readonly kind: "server"; readonly address: string };
 
 export type ComputerGroupId = "others" | "shared" | "yours" | "teammates";
@@ -52,8 +51,6 @@ export interface ComputersOverview {
 }
 
 export function computersOverview(input: {
-  /** Whether Opensteer Cloud runs this Deployment. */
-  readonly cloud: boolean;
   readonly deploymentKind: DeploymentKind | null;
   readonly deploymentName: string;
   /** The machine the reader is sitting at, when a desktop can say so. */
@@ -101,9 +98,7 @@ export function computersOverview(input: {
         title: "Teammates’ computers",
       },
     ],
-    home: input.cloud
-      ? { kind: "cloud" }
-      : { kind: "server", address: originAddress(input.publicOrigin) ?? input.deploymentName },
+    home: { kind: "server", address: originAddress(input.publicOrigin) ?? input.deploymentName },
     services,
   };
 }

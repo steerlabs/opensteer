@@ -99,7 +99,6 @@ describe("computersOverview", () => {
 
   it("puts the Mac a Personal Opensteer runs on at the top, never among the others", () => {
     const overview = computersOverview({
-      cloud: false,
       deploymentKind: "personal",
       deploymentName: "Mac mini",
       hereId: null,
@@ -117,7 +116,6 @@ describe("computersOverview", () => {
   it("names a Personal Opensteer whose Mac has not connected by the Opensteer's name", () => {
     expect(
       computersOverview({
-        cloud: false,
         deploymentKind: "personal",
         deploymentName: "Studio",
         hereId: null,
@@ -135,7 +133,6 @@ describe("computersOverview", () => {
     });
     const theirs = machine({ id: "rnr_theirs", ownerName: "Sam", ownership: "other" });
     const overview = computersOverview({
-      cloud: false,
       deploymentKind: "server",
       deploymentName: "Acme",
       hereId: null,
@@ -152,16 +149,6 @@ describe("computersOverview", () => {
         ["teammates", ["rnr_theirs"]],
       ],
     );
-    expect(
-      computersOverview({
-        cloud: true,
-        deploymentKind: "server",
-        deploymentName: "Acme",
-        hereId: null,
-        machines: [],
-        publicOrigin: "https://acme.opensteer.cloud",
-      }).home,
-    ).toEqual({ kind: "cloud" });
   });
 });
 

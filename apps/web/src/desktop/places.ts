@@ -13,7 +13,7 @@ import { deploymentConnectionStatusInfo } from "./desktop-deployment-selection.j
  * opens when no place is open — said the same way in both.
  *
  * A row is named by what a person calls the place and described relative to
- * them: this Mac, a computer of theirs, one shared with them, Opensteer Cloud,
+ * them: this Mac, a computer of theirs, one shared with them,
  * a server's address. Nothing here is a category of software.
  */
 export interface PlaceRow {
@@ -30,8 +30,6 @@ export interface PlaceRow {
 }
 
 export interface PlaceRowContext {
-  /** Deployments the Account created in Opensteer Cloud, by id. */
-  readonly cloudDeploymentIds: ReadonlySet<string>;
   /** What this computer is called from itself: "This Mac" on macOS. */
   readonly thisComputer: string;
 }
@@ -48,7 +46,7 @@ export function placeRows(
 ): readonly PlaceRow[] {
   const signedIn = snapshot.account.status === "signed-in";
   const ranked = snapshot.deployments.map((deployment) => ({
-    rank: placeRank(deployment, context),
+    rank: placeRank(deployment),
     row: placeRow(deployment, snapshot.selectedDeploymentId, signedIn, context),
   }));
   const listed = new Set(snapshot.deployments.map(({ id }) => id));
@@ -73,18 +71,15 @@ function placeRow(
   context: PlaceRowContext,
 ): PlaceRow {
   const current = deployment.id === selectedDeploymentId;
-  const cloud = context.cloudDeploymentIds.has(deployment.id);
   return {
     current,
-    detail: placeDetail(deployment, cloud, context),
+    detail: placeDetail(deployment, context),
     icon:
       deployment.kind === "personal"
         ? "laptop"
         : deployment.kind === "development"
           ? "code"
-          : cloud
-            ? "cloud"
-            : "server",
+          : "server",
     id: deployment.id,
     name: deployment.name,
     opens: current || deployment.availableActions.includes("select"),
@@ -102,25 +97,19 @@ function placeRow(
   };
 }
 
-function placeDetail(
-  deployment: DeploymentAccessDeployment,
-  cloud: boolean,
-  context: PlaceRowContext,
-): string {
+function placeDetail(deployment: DeploymentAccessDeployment, context: PlaceRowContext): string {
   if (deployment.onThisComputer) return context.thisComputer;
   if (deployment.kind === "development") return "Development";
   if (deployment.accountAccess === "member") return "Shared with you";
   if (deployment.kind === "personal") {
     return deployment.source === "account" ? "Your computer" : "Computer · added here";
   }
-  if (cloud) return "Opensteer Cloud";
   return originHost(deployment.canonicalOrigin);
 }
 
-function placeRank(deployment: DeploymentAccessDeployment, context: PlaceRowContext): number {
+function placeRank(deployment: DeploymentAccessDeployment): number {
   if (deployment.onThisComputer) return 0;
   if (deployment.kind === "personal") return deployment.source === "account" ? 1 : 5;
-  if (context.cloudDeploymentIds.has(deployment.id)) return 2;
   return deployment.source === "account" ? 3 : 6;
 }
 

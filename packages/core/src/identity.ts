@@ -112,11 +112,6 @@ export type DeploymentDisplayKind = z.infer<typeof DeploymentDisplayKindSchema>;
  * for a self-hosted server, and null when nobody has named it yet.
  */
 export const DeploymentPresentationSchema = z.strictObject({
-  /**
-   * Opensteer Cloud runs this Deployment. It is a server like any other to
-   * every rule; only what people are told about where it lives differs.
-   */
-  cloud: z.boolean(),
   kind: DeploymentDisplayKindSchema,
   name: z.string().trim().min(1).max(120).nullable(),
 });

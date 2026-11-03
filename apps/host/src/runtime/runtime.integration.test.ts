@@ -645,7 +645,7 @@ integration("Host vertical slice", () => {
     // reports none and the web UI renders no way "up" out of a self-hosted
     // Deployment.
     expect(bootstrap.identityConfig).toMatchObject({
-      deployment: { cloud: false, kind: "self-hosted", name: null },
+      deployment: { kind: "self-hosted", name: null },
       portalOrigin: null,
     });
     expect(bootstrap.homeWorkspace).toMatchObject({ kind: "main" });

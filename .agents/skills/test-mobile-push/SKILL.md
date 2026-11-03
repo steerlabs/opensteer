@@ -9,7 +9,9 @@ Use the reserved device workflow in `docs/testing.md`; do not drive the host scr
 Use a physical device for provider tokens, entitlements and cellular handover.
 A simulator or Metro export does not prove them. Keep credentials and device IDs private.
 
-1. Build a custom client using `apps/mobile/README.md`. For Android, supply
+1. Set `EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN=https://accounts.opensteer.com`
+   (the `accountUrl` in `apps/desktop/src/releases/desktop-release.json`) for both
+   iOS and Android builds. Build a custom client using `apps/mobile/README.md`. For Android, supply
    `OPENSTEER_MOBILE_GOOGLE_SERVICES_FILE=/absolute/path/google-services.json`
    at prebuild; never commit the file. Inspect configuration with
    `pnpm --filter @opensteer/mobile exec expo config --type introspect`.

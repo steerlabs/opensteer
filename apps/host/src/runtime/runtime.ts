@@ -520,7 +520,6 @@ export async function createHostRuntime(
       undefined;
     const identity = new IdentityService(database, {
       deployment: {
-        cloud: config.account?.provisioningMode === "managed",
         kind:
           config.workspace.shape.kind === "personal"
             ? "personal"

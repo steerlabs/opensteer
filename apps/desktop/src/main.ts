@@ -958,7 +958,6 @@ async function runDesktop(
         ),
     },
     bridgeToken,
-    cloud: accountConnect,
     accountLinkCourier: accountDirectory,
     fullDiskAccess: {
       check: () => probeFullDiskAccess(loaded.config.localExecution.nativeFsHelperBinary),

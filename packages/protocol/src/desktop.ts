@@ -35,14 +35,6 @@ import {
   ComputerUseDataAppIdSchema,
   ComputerUseDataGrantSchema,
 } from "./computer-use.js";
-import {
-  CloudDeploymentOperationIdSchema,
-  DeleteCloudDeploymentRequestSchema,
-  type CloudDeploymentOperation,
-  type CreateCloudDeploymentRequest,
-  type ListCloudDeploymentsResponse,
-} from "@opensteer/control-plane-protocol";
-export type { CloudDeploymentOperation } from "@opensteer/control-plane-protocol";
 import { AgentPhoneArtifactManifestSchema, agentPhoneApkMaxBytes } from "./android-phone.js";
 import { PersonalPairingCodeSchema } from "./personal-remote-access.js";
 
@@ -1608,12 +1600,7 @@ export interface OpensteerDesktopBridge {
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
   createPersonalDeployment(): Promise<void>;
-  createCloudDeployment(input: CreateCloudDeploymentRequest): Promise<CloudDeploymentOperation>;
-  deleteCloudDeployment(
-    input: DesktopDeleteCloudDeploymentInput,
-  ): Promise<CloudDeploymentOperation>;
   getDeploymentAccessSnapshot(): Promise<DeploymentAccessSnapshot>;
-  listCloudDeployments(): Promise<ListCloudDeploymentsResponse>;
   getLocalExecutionStatus(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   hostRequest(input: DesktopHostHttpRequest): Promise<DesktopHostResult<DesktopHostHttpResponse>>;
   hostBinaryOpen(
@@ -1671,9 +1658,6 @@ export interface OpensteerDesktopBridge {
   /** Discards an unusable Account-link journal so a needs-repair Personal Host
    * can be linked or unlinked again. Refused unless repair is actually needed. */
   retry(): Promise<void>;
-  retryCloudDeployment(
-    input: DesktopCloudDeploymentOperationInput,
-  ): Promise<CloudDeploymentOperation>;
   select(input: DesktopSelectDeploymentInput): Promise<void>;
   sendHostWebSocket(input: DesktopHostWebSocketCommand): Promise<void>;
   signIn(): Promise<void>;
@@ -1682,17 +1666,3 @@ export interface OpensteerDesktopBridge {
   stopLocalRunner(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   unlinkPersonal(): Promise<void>;
 }
-
-export const DesktopCloudDeploymentOperationInputSchema = z.strictObject({
-  operationId: CloudDeploymentOperationIdSchema,
-});
-export type DesktopCloudDeploymentOperationInput = z.infer<
-  typeof DesktopCloudDeploymentOperationInputSchema
->;
-export const DesktopDeleteCloudDeploymentInputSchema =
-  DesktopCloudDeploymentOperationInputSchema.extend(
-    DeleteCloudDeploymentRequestSchema.shape,
-  ).strict();
-export type DesktopDeleteCloudDeploymentInput = z.infer<
-  typeof DesktopDeleteCloudDeploymentInputSchema
->;
