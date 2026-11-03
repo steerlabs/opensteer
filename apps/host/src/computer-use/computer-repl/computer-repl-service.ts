@@ -3,6 +3,7 @@ import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import { Worker } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
+import { hostWorkerUrl } from "../../process-entries.js";
 import {
   computerReplLimits as limits,
   boundedReplFailure,
@@ -171,13 +172,10 @@ export class ComputerReplService {
   #ensureWorker(): void {
     if (this.#worker) return;
     const source = import.meta.url.endsWith(".ts");
-    const worker = new Worker(
-      new URL(source ? "./computer-repl-worker.ts" : "./computer-repl-worker.js", import.meta.url),
-      {
-        resourceLimits: { maxOldGenerationSizeMb: 512 },
-        ...(source ? { execArgv: ["--import", "tsx"] } : {}),
-      },
-    );
+    const worker = new Worker(hostWorkerUrl("computer-repl-worker", import.meta.url), {
+      resourceLimits: { maxOldGenerationSizeMb: 512 },
+      ...(source ? { execArgv: ["--import", "tsx"] } : {}),
+    });
     this.#worker = worker;
     worker.on("message", (message: unknown) => {
       void this.#message(message).catch((error) => this.#failWorker(error));
