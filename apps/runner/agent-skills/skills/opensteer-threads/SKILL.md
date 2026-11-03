@@ -169,3 +169,5 @@ boolean options stay booleans. For more models, focus `harnessInstanceId` and
 follow `modelsNextCursor` with `cursor`, retaining the query. A changed catalog
 invalidates that cursor; restart the focused listing. Follow the environment and
 profile directory cursors to see every authorized target.
+
+Use `app_publish` when a chart, diagram or interactive page explains the result better than prose. Publish a self-contained HTML file, or a Workspace-relative folder plus `start` for a server app. Server apps require full access and a local-directory Workspace; listen on `127.0.0.1:$PORT`, use relative URLs (or the `x-forwarded-prefix` base path), and keep data and an API README in the folder. Use `app_list` to discover reachable apps and `app_fetch` to call their APIs from a full-access Run. Redirect server output in `start` for persistent logs; Opensteer keeps only a short in-memory tail. Design for phone width and light/dark themes. Republish with the returned appId to update every card; publishing HTML stops a server. Don't repeat an app's contents in your reply.

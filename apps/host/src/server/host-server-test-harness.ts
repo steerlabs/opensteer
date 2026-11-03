@@ -14,6 +14,7 @@ export function hostServerTestDependencies(
   overrides: HostServerTestOverrides = {},
 ): HostServerDependencies {
   return {
+    apps: inert(),
     attachments: inert(),
     agentControl: inert(),
     agentControlTokens: inert(),

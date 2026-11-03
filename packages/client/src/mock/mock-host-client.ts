@@ -1884,6 +1884,8 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
+    "apps.get": unsupportedMockRpc,
+    "apps.view": unsupportedMockRpc,
     "attachment.get": async ({ attachmentId }) => rpcSuccess(client.getAttachment(attachmentId)),
     "attachment.upload": async ({ attachmentId }, context) =>
       rpcSuccess(await client.uploadAttachment(attachmentId, context.binaryBody)),
@@ -4093,6 +4095,14 @@ export class MockHostClient implements HostClient {
       binaryChunks(input.source, input.signal),
     );
   }
+  async viewApp(
+    _appId: string,
+    _theme: "light" | "dark",
+    _signal?: AbortSignal,
+  ): Promise<{ app: import("@opensteer/core").OpensteerApp; url: string }> {
+    throw new Error("Published apps are unavailable in this preview.");
+  }
+
   async getAttachment(attachmentId: string): Promise<Attachment> {
     return this.#state.getAttachment(attachmentId);
   }

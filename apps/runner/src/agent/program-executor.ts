@@ -1,3 +1,4 @@
+import { programEnvironment } from "@opensteer/harness";
 import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -180,21 +181,7 @@ function triggerEnvironment(
   endpoints: ProgramEndpoints,
   eventFile: string,
 ): Record<string, string> {
-  const environment: Record<string, string> = {};
-  for (const name of [
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "NODE_EXTRA_CA_CERTS",
-    "PATH",
-    "SHELL",
-    "TERM",
-    "TMPDIR",
-    "USER",
-  ] as const) {
-    const value = process.env[name];
-    if (value) environment[name] = value;
-  }
+  const environment = programEnvironment();
   environment.OPENSTEER_EVENT_PATH = eventFile;
   environment.OPENSTEER_MCP_URL = endpoints.mcp.url;
   environment.OPENSTEER_MCP_TOKEN = endpoints.mcp.token;

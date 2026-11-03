@@ -27,3 +27,5 @@ export * from "./title-process.js";
 export * from "./tool-identity.js";
 export * from "./turn-publisher.js";
 export * from "./types.js";
+
+export { programEnvironment } from "./program-environment.js";

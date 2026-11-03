@@ -354,3 +354,11 @@ interface SeccompProfile {
 function syscalls(profile: SeccompProfile): string[] {
   return profile.syscalls.flatMap(({ names }) => names);
 }
+
+it("lets Host app frame headers and streaming responses pass through the gateway", async () => {
+  const caddy = await readFile(resolve("deploy/gateway/Caddyfile"), "utf8");
+  expect(caddy).toContain("@outside_apps not path /v1/apps/*");
+  expect(caddy).toContain("encode @outside_apps zstd gzip");
+  expect(caddy).toContain("header @outside_apps {");
+  expect(caddy).not.toMatch(/^\s*encode zstd gzip$/mu);
+});

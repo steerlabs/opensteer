@@ -1,4 +1,5 @@
 export const hostInternalRoutePaths = {
+  appTunnel: "/internal/v1/apps/tunnel",
   agentControl: "/internal/v1/agent-control",
   /** Runners that predate session addressing: follows the Run's latest session. */
   browserCdp: "/internal/v1/browser-cdp",

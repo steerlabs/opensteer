@@ -1,3 +1,4 @@
+import { AppIdSchema, AppTitleSchema } from "./apps.js";
 import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
 import { z } from "zod";
 import {
@@ -166,6 +167,11 @@ const placeSiteSchema = z
   }, "Site must be an origin");
 
 const eventDataSchemas = {
+  "app.published": z.strictObject({
+    appId: AppIdSchema,
+    version: z.number().int().positive(),
+    title: AppTitleSchema,
+  }),
   "place.entered": z.strictObject({
     place: PlaceIdentitySchema,
     title: z.string().max(256),
@@ -384,7 +390,11 @@ const eventDataSchemas = {
  * the Host holds.
  */
 // Place entries are exclusively Host-authored.
-const { "place.entered": _hostPlaceEntered, ...runnerWritableEventDataSchemas } = eventDataSchemas;
+const {
+  "place.entered": _hostPlaceEntered,
+  "app.published": _hostAppPublished,
+  ...runnerWritableEventDataSchemas
+} = eventDataSchemas;
 const runnerEventDataSchemas = {
   ...runnerWritableEventDataSchemas,
   "run.completed": eventDataSchemas["run.completed"].omit({
@@ -428,6 +438,7 @@ const runnerEventDataSchemas = {
 } as const;
 
 const eventDataViewSchemas = {
+  "app.published": z.object(eventDataSchemas["app.published"].shape),
   "place.entered": z.object({
     ...eventDataSchemas["place.entered"].shape,
     place: PlaceIdentityViewSchema,
@@ -589,6 +600,7 @@ export const AgentEventSchema = z
     makeEventVariant("thread.continuation-established"),
     makeEventVariant("thread.access-mode-updated"),
     makeEventVariant("place.entered").extend({ runId: RunIdSchema }),
+    makeEventVariant("app.published").extend({ runId: RunIdSchema }),
   ])
   .refine(
     (event) =>
@@ -639,6 +651,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("thread.continuation-established"),
     makeEventViewVariant("thread.access-mode-updated"),
     PlaceEnteredEventViewSchema,
+    makeEventViewVariant("app.published").extend({ runId: RunIdSchema }),
   ])
   .refine(
     (event) =>

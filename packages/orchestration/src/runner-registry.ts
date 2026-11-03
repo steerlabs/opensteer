@@ -19,6 +19,8 @@ import type {
 } from "@opensteer/core";
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
+  type HostAppRequest,
+  type RunnerAppResult,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
   CorrelationIdSchema,
@@ -347,6 +349,7 @@ interface RunnerConnection {
    */
   readonly revokedRunIds: Set<RunId>;
   readonly disconnected: {
+    readonly controller: AbortController;
     readonly promise: Promise<void>;
     readonly resolve: () => void;
   };
@@ -362,6 +365,10 @@ interface RunnerConnection {
   readonly pendingModelServers: Map<string, PendingModelServers>;
   readonly pendingTriggerPrograms: Map<TriggerOccurrenceId, PendingTriggerProgram>;
   readonly pendingWorkspaceLocal: Map<string, PendingWorkspaceLocal>;
+  readonly pendingApps: Map<
+    string,
+    { appId: string; resolve: (result: RunnerAppResult) => void; reject: (error: unknown) => void }
+  >;
   /**
    * Work that may have crossed the transport boundary on this exact socket.
    * An acknowledgement can be lost after the Runner accepted a command. The Host must retain ownership
@@ -552,7 +559,11 @@ export class RunnerRegistry {
       eventAckTimer: undefined,
       eventAcks: new Map(),
       authenticatedAt: now,
-      disconnected: { promise: settled.promise, resolve: () => settled.resolve() },
+      disconnected: {
+        controller: new AbortController(),
+        promise: settled.promise,
+        resolve: () => settled.resolve(),
+      },
       identity,
       inFlightCatalogs: new Map(),
       catalogCache: new Map(),
@@ -574,6 +585,7 @@ export class RunnerRegistry {
       pendingVoice: new Map(),
       pendingTriggerPrograms: new Map(),
       pendingWorkspaceLocal: new Map(),
+      pendingApps: new Map(),
       ownedRunIds: new Set(),
       ownedRunBindings: new Map(),
       ownedTriggerOccurrenceIds: new Set(),
@@ -1425,6 +1437,81 @@ export class RunnerRegistry {
    * exact connection and storage authority it was written for, and the answer
    * is refused unless it echoes both back.
    */
+  async requestApp(
+    environmentId: EnvironmentId,
+    request: DistributiveOmit<HostAppRequest, "fence">,
+    signal: AbortSignal,
+  ): Promise<RunnerAppResult> {
+    const connection = this.#byEnvironment.get(environmentId);
+    const authority = connection?.identity.modules.agents?.localStorage?.storageAuthorityId;
+    if (!connection || !authority)
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: "The app's computer is not connected with local storage",
+      });
+    if (
+      authority !== request.spec.binding.storageAuthorityId ||
+      environmentId !== request.spec.binding.ownerEnvironmentId
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The app's Workspace belongs to another disk",
+      });
+    const fence: WorkspaceStorageFence = {
+      ...connection.identity.fence,
+      environmentId,
+      storageAuthorityId: authority,
+    };
+    const pending = deferred<RunnerAppResult>();
+    connection.pendingApps.set(request.requestId, {
+      appId: request.spec.appId,
+      resolve: pending.resolve,
+      reject: pending.reject,
+    });
+    let canceled = false;
+    const cancel = () => {
+      if (canceled) return;
+      canceled = true;
+      void connection.peer
+        .send({ ...request, type: "host.app.cancel", fence })
+        .catch(() => undefined);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      signal.throwIfAborted();
+      await connection.peer.send({ ...request, fence });
+      const result = await withDeadline(
+        pending.promise,
+        30_000,
+        signal,
+        "App server did not answer in time",
+      );
+      if (
+        !sameRunnerConnectionFence(result.fence, fence) ||
+        result.fence.storageAuthorityId !== authority ||
+        result.fence.environmentId !== environmentId
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "App response belongs to another connection or disk",
+        });
+      return result;
+    } catch (error) {
+      cancel();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      connection.pendingApps.delete(request.requestId);
+    }
+  }
+
+  appConnectionSignal(environmentId: EnvironmentId, connectionId: RunnerConnectionId): AbortSignal {
+    const connection = this.#byEnvironment.get(environmentId);
+    return connection?.identity.connectionId === connectionId
+      ? connection.disconnected.controller.signal
+      : AbortSignal.abort(new Error("App connection was lost"));
+  }
+
   async requestWorkspaceLocal(
     environmentId: EnvironmentId,
     request: WorkspaceLocalRequest,
@@ -2063,6 +2150,16 @@ export class RunnerRegistry {
         else pending.reject(new OpensteerError({ code: "conflict", message: message.error }));
         break;
       }
+      case "runner.app.result": {
+        const pending = connection.pendingApps.get(message.requestId);
+        if (pending && pending.appId !== message.appId)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "App response correlation mismatch",
+          });
+        pending?.resolve(message);
+        break;
+      }
       case "runner.workspace.local.provisioned":
       case "runner.workspace.local.inspected":
       case "runner.workspace.local.destroyed":
@@ -2360,6 +2457,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingVoice.values()) pending.reject(error);
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingWorkspaceLocal.values()) pending.reject(error);
+    for (const pending of connection.pendingApps.values()) pending.reject(error);
     connection.pendingAcks.clear();
     connection.pendingCatalogs.clear();
     connection.pendingHarnessAuthentications.clear();
@@ -2367,12 +2465,14 @@ export class RunnerRegistry {
     connection.pendingVoice.clear();
     connection.pendingTriggerPrograms.clear();
     connection.pendingWorkspaceLocal.clear();
+    connection.pendingApps.clear();
     connection.ownedRunIds.clear();
     connection.ownedRunBindings.clear();
     connection.ownedTriggerOccurrenceIds.clear();
     connection.observedRunIds.clear();
     connection.observedTriggerOccurrenceIds.clear();
     connection.peer.close(code, error.message);
+    connection.disconnected.controller.abort(new Error("App connection was lost"));
     connection.disconnected.resolve();
     if (this.#hooks.onDisconnect) {
       await this.#runHook(() => this.#recoverDisconnect(connection.identity, scope));

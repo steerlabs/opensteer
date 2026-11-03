@@ -15,10 +15,10 @@ import { Icon } from "../icon.js";
 import { attachmentDetail, isInlineImage } from "./attachment-parts.js";
 
 /**
- * The client a transcript reads attachment bytes through. Without one, as in
- * a transcript drawn for a screenshot, attachments show as names only.
+ * The HostClient available to transcript content. Without one, attachments
+ * show as names and apps are unavailable.
  */
-export const AttachmentReader = createContext<HostClient | null>(null);
+export const TranscriptHostClientContext = createContext<HostClient | null>(null);
 
 /**
  * How long a download's object URL outlives the click. The browser copies the
@@ -32,7 +32,7 @@ export function MessageAttachments({
 }: {
   readonly attachments: readonly ArtifactContentPart[];
 }) {
-  const client = useContext(AttachmentReader);
+  const client = useContext(TranscriptHostClientContext);
   if (attachments.length === 0) return null;
   return (
     <ul aria-label="Attachments" className="message-attachments">

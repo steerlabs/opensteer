@@ -136,6 +136,7 @@ const releasedMigrationNames = [
   "0126_run_visibility",
   "0127_person_show",
   "0128_person_message",
+  "0129_apps",
 ];
 
 describe("migration names", () => {

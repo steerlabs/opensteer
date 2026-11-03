@@ -13,14 +13,15 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
   },
   "dependencies": {
+    "@config-plugins/react-native-webrtc": "catalog:",
     "@expo/ui": "~58.0.23",
+    "@opensteer/apple-data": "workspace:*",
     "@opensteer/client": "workspace:*",
     "@opensteer/control-plane-protocol": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
-    "@opensteer/apple-data": "workspace:*",
     "@react-navigation/elements": "2.9.40",
     "@react-navigation/native": "7.3.18",
     "@react-navigation/native-stack": "7.18.10",
@@ -35,6 +36,7 @@
     "expo-glass-effect": "~58.0.5",
     "expo-haptics": "~58.0.7",
     "expo-image-picker": "~58.0.10",
+    "expo-keep-awake": "~58.0.3",
     "expo-linking": "~58.0.14",
     "expo-network": "~58.0.4",
     "expo-notifications": "~58.1.6",
@@ -54,11 +56,10 @@
     "react-native-safe-area-context": "~5.10.1",
     "react-native-screens": "~4.30.0",
     "react-native-svg": "15.16.0",
-    "react-native-worklets": "0.13.0",
-    "zod": "catalog:",
     "react-native-webrtc": "catalog:",
-    "@config-plugins/react-native-webrtc": "catalog:",
-    "expo-keep-awake": "~58.0.3"
+    "react-native-webview": "14.0.1",
+    "react-native-worklets": "0.13.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@babel/core": "7.29.7",

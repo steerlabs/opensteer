@@ -1,3 +1,5 @@
+import type { AppService } from "./apps/app-service.js";
+import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
 import {
@@ -356,6 +358,7 @@ export interface HostServerDependencies {
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
+  readonly apps: AppService;
   readonly requestResponseVault: RequestResponseVault;
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
@@ -508,6 +511,7 @@ export async function createHostServer(
   const workspaceSharingAvailable = deploymentSupportsSharing(
     dependencies.discovery.document.deploymentShape,
   );
+  registerAppRoutes(app, dependencies.apps);
   registerIdentityRoutes(app, dependencies.authenticator, {
     ...(dependencies.accountAdoption
       ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
@@ -1085,6 +1089,7 @@ export async function createHostServer(
         hostApi["agentPhone.target.get"].success.parse(await agentPhoneHostTarget(dependencies)),
       );
     },
+    ...createAppHandlers(dependencies.apps),
     "attachment.get": async (input, context) =>
       rpcSuccess(
         await dependencies.attachments.get(input.attachmentId, requireRpcSession(context).user.id),
@@ -1551,6 +1556,8 @@ export async function createHostServer(
     | "browser.history.get"
     | "browser.history.icons.get"
     | "thread.browserUsage.get"
+    | "apps.get"
+    | "apps.view"
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"
@@ -1741,6 +1748,7 @@ export async function createHostServer(
           command.workspaceId,
           userId,
         );
+        await dependencies.apps.stopWorkspace(command.workspaceId);
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),

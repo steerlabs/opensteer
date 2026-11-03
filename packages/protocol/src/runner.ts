@@ -1,3 +1,4 @@
+import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
@@ -1769,6 +1770,7 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+  RunnerAppResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({
     ...fencedMessageBase,
@@ -1997,6 +1999,7 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   RunnerChallengeSchema,
   ...HostWorkspaceLocalRequestSchema.options,
+  ...HostAppRequestSchema.options,
   z.strictObject({
     ...fencedMessageBase,
     /**

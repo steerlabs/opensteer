@@ -115,6 +115,7 @@ const harness = vi.hoisted(() => ({
 type Children = { readonly children?: ReactNode };
 
 const dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
+vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
 vi.mock("react-native", async () => {
@@ -554,7 +555,7 @@ vi.mock("../thread/message-menu.js", () => ({ MessageMenu: () => null }));
 vi.mock("../thread/attachment-views.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {
-    AttachmentReader: React.createContext<HostClient | null>(null),
+    TranscriptHostClientContext: React.createContext<HostClient | null>(null),
     AttachmentStrip: () => null,
     MessageAttachments: () => null,
   };

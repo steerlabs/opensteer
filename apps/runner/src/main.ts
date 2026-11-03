@@ -380,6 +380,24 @@ async function startAgentsRunner(input: {
   }
   const runtime = new RunnerRuntime({
     agentSkills,
+    ...(localWorkspace
+      ? {
+          resolveAppWorkspaceRoot: async (binding, signal) => {
+            const read = await localWorkspace.authority.resolveReadAuthority(binding, signal);
+            const identity = await localWorkspace.filesystem.directoryIdentity(
+              { root: read.root, path: read.root },
+              signal,
+            );
+            if (
+              identity.kind !== read.rootIdentity.kind ||
+              identity.volumeId !== read.rootIdentity.volumeId ||
+              identity.fileId !== read.rootIdentity.fileId
+            )
+              throw new Error("The Workspace root was replaced");
+            return read.root;
+          },
+        }
+      : {}),
     attachmentCache,
     browserHarnessExecutable: execution.browserHarnessExecutable,
     bootId,
@@ -416,6 +434,7 @@ async function startAgentsRunner(input: {
               // what the disk holds now rather than what it held at startup.
               inventory: () => localWorkspace.authority.inventory(signal),
               service: new LocalWorkspaceService({
+                appServers: runtime.appServers,
                 authority: localWorkspace.authority,
                 filesystem: localWorkspace.filesystem,
               }),
