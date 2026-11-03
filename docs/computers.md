@@ -143,7 +143,8 @@ variables its owner must supply in `plugin.json` under `extensions["com.openstee
 (see [the loader](../packages/agent-plugins/src/loader.ts)). Only names and labels are part
 of the launch and its digest. The computer's owner enters the values when allowing it and
 can change them later without new consent; a new launch keeps values for names it still
-declares. Values are sealed per server in a table of their own, so no server listing,
+declares. Consent and values belong to one computer: a server moved to another is asked
+there again, with nothing kept. Values are sealed per server in a table of their own, so no server listing,
 Request event or snapshot carries them, and are opened only to start that server: the Host
 adds them to the launch it sends, which leaves the Runner's wire unchanged. They keep secrets
 out of chat, manifests and agent context, not from the program or a same-user shell.

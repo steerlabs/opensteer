@@ -1759,6 +1759,8 @@ export interface IntegrationServerTable {
 /** One server's secrets, as its computer's owner entered them; see `LocalMcpServerStore`. */
 export interface IntegrationServerSecretTable {
   serverId: IntegrationServerId;
+  /** The computer they were entered for. */
+  runnerId: RunnerId;
   encryptedPayload: Buffer;
   updatedAt: Timestamp;
 }

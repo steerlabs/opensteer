@@ -7092,7 +7092,8 @@ export const quietAssignmentResultsMigration: Migration = {
 /**
  * What the owner of the computer that runs an MCP server entered for the
  * secrets its launch declares, sealed as one envelope. A table of its own, so
- * no listing of servers carries it, and it goes with its server.
+ * no listing of servers carries it, and it goes with its server. It is for
+ * the computer it was entered for: one the server moves to is asked again.
  */
 export const localMcpServerSecretsMigration: Migration = {
   async up(database) {
@@ -7100,6 +7101,7 @@ export const localMcpServerSecretsMigration: Migration = {
       create table public.integration_server_secrets (
         server_id text primary key
           references public.integration_servers(id) on delete cascade,
+        runner_id text not null references public.runners(id) on delete cascade,
         encrypted_payload bytea not null check (
           octet_length(encrypted_payload) between 1 and 1048576
         ),

@@ -3312,7 +3312,7 @@ export class IntegrationPlatformService {
       const secrets = await this.#localSecrets.values(
         server.id,
         transport.launch,
-        await this.#store.localMcp.secrets(server.id),
+        await this.#store.localMcp.secrets(server.id, transport.runnerId),
       );
       signal?.throwIfAborted();
       computer = new ComputerMcpTransport(this.#computerApps, {

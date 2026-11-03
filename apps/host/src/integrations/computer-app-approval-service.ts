@@ -283,7 +283,7 @@ export class ComputerAppApprovalService {
       savedSecrets: await this.#localMcpSecrets.saved(
         serverId,
         launch,
-        await this.#store.localMcp.secrets(serverId),
+        await this.#store.localMcp.secrets(serverId, request.runnerId),
       ),
     };
   }

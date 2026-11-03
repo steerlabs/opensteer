@@ -214,7 +214,7 @@ export class LocalMcpServerStore {
         })
         .where("id", "=", server.id)
         .execute();
-      await replaceSecrets(transaction, server.id, input.secrets, now);
+      await replaceSecrets(transaction, server.id, input.runnerId, input.secrets, now);
       await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
       return { launchDigest: server.launchDigest, serverId: server.id };
     });
@@ -265,17 +265,18 @@ export class LocalMcpServerStore {
           message: "Its plugin changed just now. Try again.",
         });
       }
-      await replaceSecrets(transaction, server.id, input.secrets, now);
+      await replaceSecrets(transaction, server.id, runnerId, input.secrets, now);
       return { runnerId };
     });
   }
 
-  /** One server's sealed secrets, or null when it has none. */
-  async secrets(serverId: IntegrationServerId): Promise<Buffer | null> {
+  /** One server's sealed secrets for the computer that runs it, or null when it has none there. */
+  async secrets(serverId: IntegrationServerId, runnerId: RunnerId): Promise<Buffer | null> {
     const row = await this.#database
       .selectFrom("integrationServerSecrets")
       .select("encryptedPayload")
       .where("serverId", "=", serverId)
+      .where("runnerId", "=", runnerId)
       .executeTakeFirst();
     return row?.encryptedPayload ?? null;
   }
@@ -537,18 +538,20 @@ async function lockedApproved(
     : null;
 }
 
+/** What was entered for another computer is not kept for this one. */
 async function replaceSecrets(
   transaction: Transaction<DatabaseSchema>,
   serverId: IntegrationServerId,
+  runnerId: RunnerId,
   update: LocalMcpSecretsUpdate,
   now: Date,
 ): Promise<void> {
   const current = await transaction
     .selectFrom("integrationServerSecrets")
-    .select("encryptedPayload")
+    .select(["encryptedPayload", "runnerId"])
     .where("serverId", "=", serverId)
     .executeTakeFirst();
-  const next = await update(current?.encryptedPayload ?? null);
+  const next = await update(current?.runnerId === runnerId ? current.encryptedPayload : null);
   if (next === null) {
     if (current) {
       await transaction
@@ -560,9 +563,9 @@ async function replaceSecrets(
   }
   await transaction
     .insertInto("integrationServerSecrets")
-    .values({ encryptedPayload: next, serverId, updatedAt: now })
+    .values({ encryptedPayload: next, runnerId, serverId, updatedAt: now })
     .onConflict((conflict) =>
-      conflict.column("serverId").doUpdateSet({ encryptedPayload: next, updatedAt: now }),
+      conflict.column("serverId").doUpdateSet({ encryptedPayload: next, runnerId, updatedAt: now }),
     )
     .execute();
 }
