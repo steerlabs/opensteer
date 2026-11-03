@@ -1,21 +1,21 @@
 import type { HostConfig } from "@opensteer/config";
 import { createId } from "@opensteer/core";
-import { createDatabase,migrateToLatest } from "@opensteer/database";
+import { createDatabase, migrateToLatest } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-BrowserServerMessageSchema,
-decodeBrowserFrameEnvelope,
-hostApiVersionHeader,
+  BrowserServerMessageSchema,
+  decodeBrowserFrameEnvelope,
+  hostApiVersionHeader,
 } from "@opensteer/protocol";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { sql } from "kysely";
-import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach,beforeEach,describe,expect,it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { createHostRuntime,type HostRuntime } from "../runtime/runtime.js";
-import { testRpcData,testRpcRequest } from "../server/test-host-api-request.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;

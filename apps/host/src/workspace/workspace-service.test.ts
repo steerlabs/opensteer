@@ -1,15 +1,15 @@
 import {
-createId,
-type EnvironmentId,
-type Workspace,
-type WorkspaceId,
-type WorkspaceStorageIssue,
+  createId,
+  type EnvironmentId,
+  type Workspace,
+  type WorkspaceId,
+  type WorkspaceStorageIssue,
 } from "@opensteer/core";
 import {
-WorkspaceAuthorityUnreachableError,
-type WorkspaceBackingLifecycleDriver
+  WorkspaceAuthorityUnreachableError,
+  type WorkspaceBackingLifecycleDriver,
 } from "@opensteer/workspace";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WorkspaceService } from "./workspace-service.js";
 
 const retryableIssue: WorkspaceStorageIssue = {
@@ -19,6 +19,29 @@ const retryableIssue: WorkspaceStorageIssue = {
   retryable: true,
 };
 describe("WorkspaceService with a machine that owns its own directories", () => {
+  it("preserves unsupported stored backing data and requires relocation without calling a driver", async () => {
+    const legacy = {
+      ...localWorkspace(),
+      backing: { kind: "retired-storage", volumeId: "keep-user-data" },
+    } as never as Workspace;
+    const harness = createStore([legacy]);
+    const inspect = vi.fn();
+    const provision = vi.fn();
+    const service = localService(harness.store, { inspect, provision });
+    await service.reconcile();
+    const current = harness.workspaces[0]!;
+    expect(current).toMatchObject({
+      backing: legacy.backing,
+      status: "failed",
+      storageIssue: { code: "relocation-required", retryable: false },
+    });
+    await expect(service.ensureExecutionReady(current)).rejects.toMatchObject({
+      code: "workspace_unavailable",
+    });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(provision).not.toHaveBeenCalled();
+  });
+
   it("leaves every Workspace alone while its machine is unreachable", async () => {
     const ready = localWorkspace({ status: "ready" });
     const harness = createStore([ready]);
@@ -317,4 +340,3 @@ function createStore(
     workspaces,
   };
 }
-

@@ -4,12 +4,12 @@ import { failDatabaseContainment } from "@opensteer/database/test-support/databa
 import { sql } from "kysely";
 import { Migrator } from "kysely/migration";
 import { randomUUID } from "node:crypto";
-import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
-import { describe,expect,it,type TestContext } from "vitest";
-import { freePort,machineAccessHostConfig } from "./machine-access.test-support.js";
+import { describe, expect, it, type TestContext } from "vitest";
+import { freePort, machineAccessHostConfig } from "./machine-access.test-support.js";
 import { createHostRuntime } from "./runtime.js";
 
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;

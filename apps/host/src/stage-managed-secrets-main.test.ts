@@ -1,7 +1,7 @@
-import { mkdir,mkdtemp,readFile,stat,symlink,writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe,expect,it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { stageManagedSecrets } from "./stage-managed-secrets-main.js";
 
 const names = [

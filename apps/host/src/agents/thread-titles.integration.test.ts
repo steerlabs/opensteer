@@ -1,48 +1,54 @@
 import {
-AgentEventSchema,
-createId,
-HarnessIdSchema,
-markColorAllocationOrder,
-ModelSelectionSchema,
-nextMarkColor,
-provisionalThreadTitle,
-ThreadAccessModeSchema,
-threadTitleRequestMaxLength,
-zeroSequence,
-type AgentEvent,
-type ContentPart,
-type ThreadId,
+  AgentEventSchema,
+  createId,
+  HarnessIdSchema,
+  markColorAllocationOrder,
+  ModelSelectionSchema,
+  nextMarkColor,
+  provisionalThreadTitle,
+  ThreadAccessModeSchema,
+  threadTitleRequestMaxLength,
+  zeroSequence,
+  type AgentEvent,
+  type ContentPart,
+  type ThreadId,
 } from "@opensteer/core";
 import {
-AttachmentStore,createDatabase,mayNotify,migrateToLatest,
-OpensteerStore,taskMarksMigration,threadTitleSourceMigration,TriggerStore
+  AttachmentStore,
+  createDatabase,
+  mayNotify,
+  migrateToLatest,
+  OpensteerStore,
+  taskMarksMigration,
+  threadTitleSourceMigration,
+  TriggerStore,
 } from "@opensteer/database";
 import {
-CommandService,
-KeyedAdmissionQueue,
-RunnerRegistry,
-type RunnerPeer,
+  CommandService,
+  KeyedAdmissionQueue,
+  RunnerRegistry,
+  type RunnerPeer,
 } from "@opensteer/orchestration";
 import {
-hostApi,
-PendingAgentEventSchema,
-RunnerConnectionFenceSchema,
-type HostToRunnerMessage,
-type RunnerDescriptor,
+  hostApi,
+  PendingAgentEventSchema,
+  RunnerConnectionFenceSchema,
+  type HostToRunnerMessage,
+  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
-import { mkdir,writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll,afterEach,beforeAll,beforeEach,describe,expect,it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 // Design failures 1–5, 14–16, 19–21 and 23: real committed rows and events,
 // including retries, concurrent CAS, authorization and a first input outside history.
 import {
-TriggerControlService,
-type TriggerControlScope,
-type TriggerControlTokenService,
+  TriggerControlService,
+  type TriggerControlScope,
+  type TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
 import type { WatchControlScope } from "../triggers/watch-capability.js";
 import { WatchControlService } from "../triggers/watch-control-service.js";
@@ -188,12 +194,14 @@ integration.sequential("Thread title lifecycle", () => {
       publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
     });
     const workspace = await store.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: userId,
       idempotencyKey: randomUUID(),
       name: "Title workspace",
@@ -794,7 +802,13 @@ integration.sequential("Thread title lifecycle", () => {
             create: async (input) =>
               store.createWorkspace({
                 ...input,
-                backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+                backing: {
+                  kind: "local-directory",
+                  generation: 1,
+                  bindingId: createId("workspaceBinding"),
+                  ownerEnvironmentId: createId("environment"),
+                  storageAuthorityId: createId("storageAuthority"),
+                },
                 capacityPolicy: {
                   kind: "hard-quota",
                   blockHardLimitBytes: 10_000_000,
@@ -982,7 +996,13 @@ integration.sequential("Thread title lifecycle", () => {
         kind: "project",
         name: `Specialist ${index}`,
         status: "ready",
-        backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+        backing: {
+          kind: "local-directory",
+          generation: 1,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
+        },
         capacityPolicy: f.workspace.capacityPolicy,
       });
     }
@@ -1204,7 +1224,13 @@ integration.sequential("Thread title lifecycle", () => {
   it("allocates Workspace colours, fingerprints explicit picks, and enforces owner edit rules", async () => {
     const f = await fixture();
     const input = {
-      backing: { kind: "local-directory" as const, generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+      backing: {
+        kind: "local-directory" as const,
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
+      },
       capacityPolicy: f.workspace.capacityPolicy,
       createdBy: f.userId,
       idempotencyKey: randomUUID(),

@@ -1,16 +1,16 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId,type AgentCapabilityProfileId,type Request } from "@opensteer/core";
-import { AgentControlRequestSchema,createBrowserSessionId } from "@opensteer/protocol";
+import { createId, type AgentCapabilityProfileId, type Request } from "@opensteer/core";
+import { AgentControlRequestSchema, createBrowserSessionId } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { createServer,type Server } from "node:http";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-TriggerControlService,
-TriggerControlTokenService,
+  TriggerControlService,
+  TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
-import { AgentControlService,type AgentControlTokenService } from "./agent-control-service.js";
+import { AgentControlService, type AgentControlTokenService } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 
 const servers: Server[] = [];
@@ -377,7 +377,11 @@ describe("AgentToolsMcpService", () => {
       }),
     );
     const misplacedMachine = await client.callTool({
-      arguments: { backing: "local-directory", environmentId: createId("environment"), name: "Travel" },
+      arguments: {
+        backing: "local-directory",
+        environmentId: createId("environment"),
+        name: "Travel",
+      },
       name: "project_create",
     });
     expect(misplacedMachine.isError).toBe(true);

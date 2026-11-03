@@ -1,17 +1,17 @@
-import { WorkspaceSchema,createId,type EnvironmentId,type WorkspaceId } from "@opensteer/core";
+import { WorkspaceSchema, createId, type EnvironmentId, type WorkspaceId } from "@opensteer/core";
 import type { WatchActivationContext } from "@opensteer/database";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import {
-RunnerBootIdSchema,
-RunnerConnectionIdSchema,
-RunnerConnectionLeaseIdSchema,
-RunnerDescriptorSchema,
-runnerEnvironmentIds,
+  RunnerBootIdSchema,
+  RunnerConnectionIdSchema,
+  RunnerConnectionLeaseIdSchema,
+  RunnerDescriptorSchema,
+  runnerEnvironmentIds,
 } from "@opensteer/protocol";
 import { TriggerWatchActivationSchema } from "@opensteer/triggers";
 import { randomUUID } from "node:crypto";
-import { describe,expect,it,vi } from "vitest";
-import { WatchService,type WatchServiceOptions } from "./watch-service.js";
+import { describe, expect, it, vi } from "vitest";
+import { WatchService, type WatchServiceOptions } from "./watch-service.js";
 
 describe("WatchService", () => {
   it("never activates an unsupported v3 Watch and records the actionable failure", async () => {
@@ -132,12 +132,14 @@ describe("WatchService", () => {
       }),
       workspace: WorkspaceSchema.parse({
         ...fixture.context.workspace,
-        backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
+        backing: {
+          kind: "local-directory",
+          generation: 1,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
         },
+        capacityPolicy: { kind: "host-filesystem" as const },
         id: sharedWorkspaceId,
       }),
     };
@@ -147,12 +149,12 @@ describe("WatchService", () => {
     const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
       async () => ({
         ...sharedContext.activation,
-        lastError: "Runner does not support local-storage Workspace access",
+        lastError: "Runner does not support Workspace access",
         observed: "backoff",
       }),
     );
     const plan = vi.fn<WatchServiceOptions["workspaceAccess"]["plan"]>(async ({ workspace }) => {
-      if (workspace.backing.kind !== "local-directory") {
+      if (workspace.id === sharedWorkspaceId || workspace.backing.kind !== "local-directory") {
         throw new Error("Runner does not support Workspace access");
       }
       if (workspace.backing.storageAuthorityId === null) {
@@ -185,7 +187,7 @@ describe("WatchService", () => {
       expect(recordWatchUnavailable).toHaveBeenCalledWith(
         expect.objectContaining({
           activationId: sharedContext.activation.id,
-          reason: "Runner does not support local-storage Workspace access",
+          reason: "Runner does not support Workspace access",
         }),
       );
     } finally {

@@ -1,7 +1,7 @@
-import { createId,type AgentEvent } from "@opensteer/core";
+import { createId, type AgentEvent } from "@opensteer/core";
 import type { SecurityEffectRecord } from "@opensteer/database";
 import type { RunnerIdentity } from "@opensteer/orchestration";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SecurityEffectService } from "./security-effect-service.js";
 
 describe("SecurityEffectService", () => {

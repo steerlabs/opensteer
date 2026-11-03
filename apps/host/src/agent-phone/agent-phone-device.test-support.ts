@@ -15,69 +15,69 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-AgentPhoneEnrollments,
-agentPhoneAdb,
-agentPhoneSetupHost,
-setupAgentPhone,
-type AgentPhoneArtifact,
-type AgentPhoneSetupHostPort,
-type AgentPhoneSetupResult,
-type AgentPhoneSetupStep,
+  AgentPhoneEnrollments,
+  agentPhoneAdb,
+  agentPhoneSetupHost,
+  setupAgentPhone,
+  type AgentPhoneArtifact,
+  type AgentPhoneSetupHostPort,
+  type AgentPhoneSetupResult,
+  type AgentPhoneSetupStep,
 } from "@opensteer/agent-phone-setup";
 import { HttpHostClient } from "@opensteer/client/host";
-import { DeploymentIdSchema,type RunnerId,type WorkspaceId } from "@opensteer/core";
+import { DeploymentIdSchema, type RunnerId, type WorkspaceId } from "@opensteer/core";
 import {
-AgentPhoneArtifactManifestSchema,
-AgentPhoneHostTargetSchema,
-AgentPhoneSetupStatusSchema,
-HostIntegrationsComputerViewSchema,
-HostIntegrationsDisplayPowerSchema,
-HostIntegrationsDisplayStartSchema,
-RunnerAuxiliaryFrameFenceSchema,
-RunnerAuxiliaryWelcomeSchema,
-RunnerIntegrationsComputerViewResultSchema,
-agentPhonePackageName,
-agentPhonePairingExtra,
-agentPhoneSetupActions,
-agentPhoneSetupReceiver,
-androidPhoneDefinitionId,
-type AgentPhoneArtifactManifest,
-type AgentPhoneHostTarget,
-type AgentPhoneSetupStatus,
-type ComputerViewNativeResult,
-type HostIntegrationsComputerView,
-type HostIntegrationsDisplayStart,
-type RunnerAuxiliaryFrameFence,
+  AgentPhoneArtifactManifestSchema,
+  AgentPhoneHostTargetSchema,
+  AgentPhoneSetupStatusSchema,
+  HostIntegrationsComputerViewSchema,
+  HostIntegrationsDisplayPowerSchema,
+  HostIntegrationsDisplayStartSchema,
+  RunnerAuxiliaryFrameFenceSchema,
+  RunnerAuxiliaryWelcomeSchema,
+  RunnerIntegrationsComputerViewResultSchema,
+  agentPhonePackageName,
+  agentPhonePairingExtra,
+  agentPhoneSetupActions,
+  agentPhoneSetupReceiver,
+  androidPhoneDefinitionId,
+  type AgentPhoneArtifactManifest,
+  type AgentPhoneHostTarget,
+  type AgentPhoneSetupStatus,
+  type ComputerViewNativeResult,
+  type HostIntegrationsComputerView,
+  type HostIntegrationsDisplayStart,
+  type RunnerAuxiliaryFrameFence,
 } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
-import { AdbServerClient,type Adb } from "@yume-chan/adb";
+import { AdbServerClient, type Adb } from "@yume-chan/adb";
 import { AdbServerNodeTcpConnector } from "@yume-chan/adb-server-node-tcp";
-import { execFile,spawn,type ChildProcess } from "node:child_process";
-import { createHash,randomBytes,randomUUID } from "node:crypto";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { closeSync,openSync } from "node:fs";
-import { mkdtemp,readFile,readdir,rm,stat,writeFile } from "node:fs/promises";
-import { request as httpRequest,type IncomingMessage } from "node:http";
+import { closeSync, openSync } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { request as httpRequest, type IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
-import { connect as connectTcp,type Socket } from "node:net";
-import { homedir,networkInterfaces,tmpdir } from "node:os";
+import { connect as connectTcp, type Socket } from "node:net";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { Transform,Writable } from "node:stream";
-import { createServer as createTlsServer,type Server as TlsServer } from "node:tls";
+import { Transform, Writable } from "node:stream";
+import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
-connectCallerMachine,
-dispatchCallerRun,
-enrollmentToken,
-establishOwner,
-freePort,
-machineAccessHostConfig,
-type CallerMachine,
-type CallerRun,
-type MachineAccessHost,
+  connectCallerMachine,
+  dispatchCallerRun,
+  enrollmentToken,
+  establishOwner,
+  freePort,
+  machineAccessHostConfig,
+  type CallerMachine,
+  type CallerRun,
+  type MachineAccessHost,
 } from "../runtime/machine-access.test-support.js";
-import { createHostRuntime,type HostRuntime } from "../runtime/runtime.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 
 // ws exposes Receiver at runtime but omits it from its public TypeScript declarations.

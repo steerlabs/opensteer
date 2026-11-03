@@ -262,7 +262,7 @@ describe.skipIf(!enabled)(`Agent Phone actual baseline cutover on API ${api}`, (
           const config = machineAccessHostConfig(
             info.hostPort,
             info.dataDirectory,
-            new URL(info.managerUrl),
+            new URL("http://127.0.0.1:9"),
             info.databaseUrl,
             "invite-only",
             new URL(info.publicOrigin),

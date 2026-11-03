@@ -1,11 +1,11 @@
 import {
-AccountLinkGenerationSchema,
-PersonalHostAccessRouteEnvelopeSchema,
-PersonalHostAccountLinkChallengeIdSchema,
+  AccountLinkGenerationSchema,
+  PersonalHostAccessRouteEnvelopeSchema,
+  PersonalHostAccountLinkChallengeIdSchema,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import { HostDiscoveryEnvelopeSchema } from "@opensteer/deployment-authority";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AccountDirectoryClient as NativeAccountDirectoryClient } from "./account-directory-client.js";
 
 const deployment = {

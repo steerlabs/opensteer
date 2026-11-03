@@ -2,90 +2,99 @@ import { describe } from "vitest";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import type { HostConfig } from "@opensteer/config";
 import {
-ControlPlaneAccountIdSchema,
-DirectoryProjectionRequestSchema,
-PublishHostAuthorityRequestSchema,
-personalHostAccessRouteEnvelopeSha256,
+  ControlPlaneAccountIdSchema,
+  DirectoryProjectionRequestSchema,
+  PublishHostAuthorityRequestSchema,
+  personalHostAccessRouteEnvelopeSha256,
 } from "@opensteer/control-plane-protocol";
 import {
-AgentEventSchema,
-EnvironmentIdSchema,
-HarnessIdSchema,
-ModelSelectionSchema,
-ThreadAccessModeSchema,
-WorkspaceIdSchema,
-createId,
-zeroSequence,
-type EnvironmentId,
-type MessageId,
-type WorkspaceIconName,
+  AgentEventSchema,
+  EnvironmentIdSchema,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  ThreadAccessModeSchema,
+  WorkspaceIdSchema,
+  createId,
+  zeroSequence,
+  type EnvironmentId,
+  type MessageId,
+  type WorkspaceIconName,
 } from "@opensteer/core";
 import {
-AccountDirectoryStore,
-OpensteerStore,
-createDatabase,
-migrateToLatest,
+  AccountDirectoryStore,
+  OpensteerStore,
+  createDatabase,
+  migrateToLatest,
 } from "@opensteer/database";
 import {
-HostDescriptorSchema,
-hostApiVersion,
-hostKeyFingerprint,
+  HostDescriptorSchema,
+  hostApiVersion,
+  hostKeyFingerprint,
 } from "@opensteer/deployment-authority";
 import {
-HarnessInstanceCatalogSchema,
-PendingAgentEventSchema,
-PersonalHostAccessRouteEnvelopeSchema,
-PersonalRemoteAccessStatusSchema,
-RunnerAuxiliaryChallengeSchema,
-RunnerAuxiliaryWelcomeSchema,
-RunnerBootIdSchema,
-RunnerChallengeSchema,
-RunnerDescriptorSchema,
-RunnerEnrollmentCredentialSchema,
-SessionExchangeResponseSchema,
-createBrowserSessionId,
-hostApiVersionHeader,
-sessionExchangePath,
-type HostToRunnerMessage,
-type RunnerAuxiliaryChallenge,
-type RunnerConnectionFence,
-type RunnerDescriptor,
+  HarnessInstanceCatalogSchema,
+  PendingAgentEventSchema,
+  PersonalHostAccessRouteEnvelopeSchema,
+  PersonalRemoteAccessStatusSchema,
+  RunnerAuxiliaryChallengeSchema,
+  RunnerAuxiliaryWelcomeSchema,
+  RunnerBootIdSchema,
+  RunnerChallengeSchema,
+  RunnerDescriptorSchema,
+  RunnerEnrollmentCredentialSchema,
+  SessionExchangeResponseSchema,
+  createBrowserSessionId,
+  hostApiVersionHeader,
+  sessionExchangePath,
+  type HostToRunnerMessage,
+  type RunnerAuxiliaryChallenge,
+  type RunnerConnectionFence,
+  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
-canonicalRunnerPublicKeyPem,
-createRunnerAuthenticationSignature,
-createRunnerAuxiliarySignature,
-createRunnerEnrollmentSignature,
-hashRunnerEnrollmentToken,
-runnerPublicKeyFingerprint,
+  canonicalRunnerPublicKeyPem,
+  createRunnerAuthenticationSignature,
+  createRunnerAuxiliarySignature,
+  createRunnerEnrollmentSignature,
+  hashRunnerEnrollmentToken,
+  runnerPublicKeyFingerprint,
 } from "@opensteer/runner-auth";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { gate } from "@opensteer/shared/test-support/observation";
-import { SignJWT,exportJWK } from "jose";
+import { SignJWT, exportJWK } from "jose";
 import { sql } from "kysely";
-import { generateKeyPairSync,randomUUID,type KeyObject } from "node:crypto";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir,mkdtemp,realpath,rm,writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach,beforeAll,beforeEach,expect,it,vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
 import {
-advanceExecutionClock,
-executionLeaseExpiresAt,
+  advanceExecutionClock,
+  executionLeaseExpiresAt,
 } from "../agents/execution-clock.test-support.js";
 import {
-runnerReady,
-type RunnerReadinessSnapshot,
+  runnerReady,
+  type RunnerReadinessSnapshot,
 } from "../agents/runner-readiness.test-support.js";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
-import { testRpcData,testRpcRequest } from "../server/test-host-api-request.js";
-import { connectLocalWorkspaceRunner } from "../workspace/runner-local-workspace.test-support.js";
-import { createHostRuntime,ensureDefaultHarnesses,type HostRuntime } from "./runtime.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
+import {
+  attachLocalWorkspaceDisk,
+  connectLocalWorkspaceRunner,
+} from "../workspace/runner-local-workspace.test-support.js";
+import { createHostRuntime, ensureDefaultHarnesses, type HostRuntime } from "./runtime.js";
 
+const runtimeTestDisk = {
+  storageAuthorityId: createId("storageAuthority"),
+  bindings: [] as import("@opensteer/protocol").RunnerLocalStorageInventory["bindings"],
+  truncated: false,
+};
+const diskBySocket = new WeakMap<WebSocket, ReturnType<typeof attachLocalWorkspaceDisk>>();
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 
@@ -135,6 +144,7 @@ integration("Host vertical slice", () => {
   });
 
   beforeEach(async () => {
+    runtimeTestDisk.bindings.length = 0;
     ownerSessionHeaders = undefined;
     runnerToken = "";
     const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
@@ -208,23 +218,10 @@ integration("Host vertical slice", () => {
       dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-title-runtime-"));
       const hostPort = await freePort();
       const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
-      runtime = await createHostRuntime(config, {
-      });
+      runtime = await createHostRuntime(config, {});
       await runtime.listen();
       const origin = config.runtimeOrigin.origin;
       await initializeOwnerSession(origin);
-      const bootstrap = await testRpcData(
-        origin,
-        "bootstrap.get",
-        {},
-        { headers: authorization(accessToken) },
-      );
-      if (!bootstrap.homeWorkspace) throw new Error("Missing Main Workspace");
-      const workspaceId = bootstrap.homeWorkspace.id;
-      expect(bootstrap.homeWorkspace.color).toBeDefined();
-      expect(bootstrap.workspaces.find((workspace) => workspace.id === workspaceId)?.color).toBe(
-        bootstrap.homeWorkspace.color,
-      );
       const runnerId = createId("runner");
       const environmentId = createId("environment");
       const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
@@ -269,6 +266,18 @@ integration("Host vertical slice", () => {
           ],
           type: "runner.modules.report",
         }),
+      );
+      const bootstrap = await testRpcData(
+        origin,
+        "bootstrap.get",
+        {},
+        { headers: authorization(accessToken) },
+      );
+      if (!bootstrap.homeWorkspace) throw new Error("Missing Main Workspace");
+      const workspaceId = bootstrap.homeWorkspace.id;
+      expect(bootstrap.homeWorkspace.color).toBeDefined();
+      expect(bootstrap.workspaces.find((workspace) => workspace.id === workspaceId)?.color).toBe(
+        bootstrap.homeWorkspace.color,
       );
       let harnessInstanceId = "";
       await waitForCondition(async () => {
@@ -552,114 +561,21 @@ integration("Host vertical slice", () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-integration-"));
     const hostPort = await freePort();
     const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
-    runtime = await createHostRuntime(config, {
-    });
+    runtime = await createHostRuntime(config, {});
     await runtime.listen();
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
 
     const unauthorized = await testRpcRequest(origin, "bootstrap.get", {});
     expect(unauthorized.status).toBe(401);
-    const bootstrap = await testRpcData(
+    const withoutComputer = await testRpcData(
       origin,
       "bootstrap.get",
       {},
-      {
-        headers: authorization(accessToken),
-      },
-    );
-    expect(bootstrap.user.displayName).toBe("Alex");
-    // This Host names no apex portal, so the config every client reads on boot
-    // reports none and the web UI renders no way "up" out of a self-hosted
-    // Deployment.
-    expect(bootstrap.identityConfig).toMatchObject({
-      deployment: { cloud: false, kind: "self-hosted", name: null },
-      portalOrigin: null,
-    });
-    expect(bootstrap.harnesses).toEqual([]);
-    expect(bootstrap.homeWorkspace).toMatchObject({ kind: "main" });
-    if (!bootstrap.homeWorkspace) throw new Error("Main Workspace is missing.");
-    const homeWorkspaceId = bootstrap.homeWorkspace.id;
-    let harnessInstanceId = "";
-
-    const localEnrollment = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["agents"],
-        idempotencyKey: "enroll-example-mac-1",
-        name: "Alex's Mac",
-        type: "runner.enrollment.createLocal",
-      },
       { headers: authorization(accessToken) },
     );
-    const localEnrollmentReplay = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["agents"],
-        idempotencyKey: "enroll-example-mac-1",
-        name: "Alex's Mac",
-        type: "runner.enrollment.createLocal",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (
-      localEnrollment.type !== "runner.enrollment.createLocal" ||
-      localEnrollmentReplay.type !== "runner.enrollment.createLocal"
-    ) {
-      throw new Error("Runner enrollment command mismatch.");
-    }
-    expect(localEnrollmentReplay).toEqual(localEnrollment);
-    expect(localEnrollment.token).toHaveLength(86);
-    const created = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "workspace-1",
-        name: "Client workspace",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(created.workspace.status).toBe("ready");
-    // Main was provisioned by the first bootstrap; this is the second volume.
-    expect(created.workspace.kind).toBe("project");
-    const bootstrapAfterProjectWorkspace = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      {
-        headers: authorization(accessToken),
-      },
-    );
-    expect(bootstrapAfterProjectWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
-    expect(bootstrapAfterProjectWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
-    const duplicate = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "workspace-1",
-        name: "Client workspace",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (duplicate.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(duplicate.workspace.id).toBe(created.workspace.id);
-    const conflictingWorkspaceRetry = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "workspace-1",
-        name: "Different workspace",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    expect(conflictingWorkspaceRetry.status).toBe(409);
-
+    expect(withoutComputer.harnesses).toEqual([]);
+    expect(withoutComputer.homeWorkspace).toBeNull();
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const runnerConnection = await openRunnerSocket(
@@ -711,6 +627,105 @@ integration("Host vertical slice", () => {
         type: "runner.modules.report",
       }),
     );
+    const bootstrap = await testRpcData(
+      origin,
+      "bootstrap.get",
+      {},
+      {
+        headers: authorization(accessToken),
+      },
+    );
+    expect(bootstrap.user.displayName).toBe("Alex");
+    // This Host names no apex portal, so the config every client reads on boot
+    // reports none and the web UI renders no way "up" out of a self-hosted
+    // Deployment.
+    expect(bootstrap.identityConfig).toMatchObject({
+      deployment: { cloud: false, kind: "self-hosted", name: null },
+      portalOrigin: null,
+    });
+    expect(bootstrap.homeWorkspace).toMatchObject({ kind: "main" });
+    if (!bootstrap.homeWorkspace) throw new Error("Main Workspace is missing.");
+    const homeWorkspaceId = bootstrap.homeWorkspace.id;
+    let harnessInstanceId = "";
+
+    const localEnrollment = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        allowedModules: ["agents"],
+        idempotencyKey: "enroll-example-mac-1",
+        name: "Alex's Mac",
+        type: "runner.enrollment.createLocal",
+      },
+      { headers: authorization(accessToken) },
+    );
+    const localEnrollmentReplay = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        allowedModules: ["agents"],
+        idempotencyKey: "enroll-example-mac-1",
+        name: "Alex's Mac",
+        type: "runner.enrollment.createLocal",
+      },
+      { headers: authorization(accessToken) },
+    );
+    if (
+      localEnrollment.type !== "runner.enrollment.createLocal" ||
+      localEnrollmentReplay.type !== "runner.enrollment.createLocal"
+    ) {
+      throw new Error("Runner enrollment command mismatch.");
+    }
+    expect(localEnrollmentReplay).toEqual(localEnrollment);
+    expect(localEnrollment.token).toHaveLength(86);
+    const created = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        idempotencyKey: "workspace-1",
+        name: "Client workspace",
+        type: "workspace.create",
+      },
+      { headers: authorization(accessToken) },
+    );
+    if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
+    expect(created.workspace.status).toBe("ready");
+    // The Project is provisioned beneath Main.
+    expect(created.workspace.kind).toBe("project");
+    const bootstrapAfterProjectWorkspace = await testRpcData(
+      origin,
+      "bootstrap.get",
+      {},
+      {
+        headers: authorization(accessToken),
+      },
+    );
+    expect(bootstrapAfterProjectWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
+    expect(bootstrapAfterProjectWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
+    const duplicate = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        idempotencyKey: "workspace-1",
+        name: "Client workspace",
+        type: "workspace.create",
+      },
+      { headers: authorization(accessToken) },
+    );
+    if (duplicate.type !== "workspace.create") throw new Error("Workspace command mismatch.");
+    expect(duplicate.workspace.id).toBe(created.workspace.id);
+    const conflictingWorkspaceRetry = await testRpcRequest(
+      origin,
+      "commands.dispatch",
+      {
+        idempotencyKey: "workspace-1",
+        name: "Different workspace",
+        type: "workspace.create",
+      },
+      { headers: authorization(accessToken) },
+    );
+    expect(conflictingWorkspaceRetry.status).toBe(409);
+
     await waitForCondition(async () => {
       const connectedBootstrap = await testRpcData(
         origin,
@@ -1080,6 +1095,15 @@ integration("Host vertical slice", () => {
     await runtime.listen();
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
+    const storageRunner = await connectLocalWorkspaceRunner({
+      origin,
+      enrollmentToken: runnerToken,
+      environmentId: createId("environment"),
+      name: "Project storage",
+      runnerKind: "local",
+    });
+    runnerSocket = storageRunner.socket;
+
     const workspaceResult = await testRpcData(
       origin,
       "commands.dispatch",
@@ -1447,7 +1471,9 @@ integration("Host vertical slice", () => {
   it("restarts Host and local Runner identity without the enrollment token", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-token-removal-"));
     const firstPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(firstPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(firstPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${firstPort}`);
     const runnerId = createId("runner");
@@ -1531,7 +1557,9 @@ integration("Host vertical slice", () => {
   it("converges after Runner invalidation's first catalog recapture fails", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-invalidation-recovery-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
     const environmentId = createId("environment");
@@ -1673,7 +1701,9 @@ integration("Host vertical slice", () => {
   it("returns a structured authentication rejection before closing a Runner socket", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-auth-rejection-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
 
     const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
@@ -1730,7 +1760,9 @@ integration("Host vertical slice", () => {
   it("advertises AI-engine readiness and admits only compatible new Thread placements", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-placement-integration-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     const origin = `http://127.0.0.1:${hostPort}`;
     await initializeOwnerSession(origin);
@@ -1810,17 +1842,26 @@ integration("Host vertical slice", () => {
     );
     const ownerId = await administratorId(runtime.store);
     const workspace = await runtime.store.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: ownerId,
       idempotencyKey: "placement-runtime-workspace",
       name: "Placement workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     // A driver the Runner reports as unavailable is not seeded a default
     // profile, and adding one is refused: an engine the Runner cannot run has
     // no source to validate against. This case's unavailable account is one
@@ -2122,7 +2163,9 @@ integration("Host vertical slice", () => {
   it("keeps a removed existing-CLI profile removed across the next Runner connect", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-ambient-removal-integration-"));
     const hostPort = await freePort();
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     const origin = `http://127.0.0.1:${hostPort}`;
     await initializeOwnerSession(origin);
@@ -2213,19 +2256,22 @@ integration("Host vertical slice", () => {
     const bootId = `rbt_${randomUUID()}`;
     const committed = new EventEmitter();
     let snapshot: RunnerReadinessSnapshot | undefined;
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")), {
-      onRunnerCatalogsCommitted: (identity, environmentId, catalogs) => {
-        snapshot = {
-          bootId: identity.bootId,
-          connectionId: identity.connectionId,
-          currentConnectionId: identity.connectionId,
-          environmentId,
-          connected: true,
-          catalogs,
-        };
-        committed.emit("update");
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+      {
+        onRunnerCatalogsCommitted: (identity, environmentId, catalogs) => {
+          snapshot = {
+            bootId: identity.bootId,
+            connectionId: identity.connectionId,
+            currentConnectionId: identity.connectionId,
+            environmentId,
+            connected: true,
+            catalogs,
+          };
+          committed.emit("update");
+        },
       },
-    });
+    );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
 
@@ -2273,17 +2319,26 @@ integration("Host vertical slice", () => {
     try {
       const ownerId = await administratorId(runtime.store);
       const workspace = await runtime.store.createWorkspace({
-        backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
+        backing: {
+          kind: "local-directory",
+          generation: 1,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+          storageAuthorityId: runtimeTestDisk.storageAuthorityId,
         },
+        capacityPolicy: { kind: "host-filesystem" as const },
         createdBy: ownerId,
         idempotencyKey: "rejection-runtime-workspace",
         name: "Rejected dispatch workspace",
         status: "ready",
       });
+      if (workspace.backing.kind === "local-directory")
+        runtimeTestDisk.bindings.push({
+          bindingId: workspace.backing.bindingId,
+          generation: workspace.backing.generation,
+          workspaceId: workspace.id,
+          state: "ready",
+        });
       await publication.entered;
       const harnesses = await runtime.store.listHarnessInstances({
         environmentIds: [environmentId],
@@ -2479,17 +2534,26 @@ integration("Host vertical slice", () => {
 
     const ownerId = await administratorId(runtime.store);
     const workspace = await runtime.store.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: ownerId,
       idempotencyKey: "disconnect-runtime-workspace",
       name: "Disconnect workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
       createdBy: ownerId,
@@ -2704,17 +2768,26 @@ integration("Host vertical slice", () => {
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
     const workspace = await seedStore.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: ownerId,
       idempotencyKey: "restart-runtime-workspace",
       name: "Restart workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -2798,7 +2871,9 @@ integration("Host vertical slice", () => {
     );
     await seedDatabase.destroy();
 
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await expect(runtime.store.getThreadForOwner(idleThread.id, ownerId)).resolves.toMatchObject({
       pendingRequests: 0,
     });
@@ -2951,17 +3026,26 @@ integration("Host vertical slice", () => {
       publicKeyPem: canonicalRunnerPublicKeyPem(runnerKeys.publicKey),
     });
     const workspace = await seedStore.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
+        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: ownerId,
       idempotencyKey: "steer-answer-workspace",
       name: "Steer answer workspace",
       status: "ready",
     });
+    if (workspace.backing.kind === "local-directory")
+      runtimeTestDisk.bindings.push({
+        bindingId: workspace.backing.bindingId,
+        generation: workspace.backing.generation,
+        workspaceId: workspace.id,
+        state: "ready",
+      });
     const harness = await seedStore.createHarnessInstance({
       config: {},
       driverKind: HarnessIdSchema.parse("codex"),
@@ -3059,7 +3143,9 @@ integration("Host vertical slice", () => {
     await seedDatabase.destroy();
 
     // The Host is upgraded; the same Runner boot reconnects and states its reply.
-    runtime = await createHostRuntime(testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")));
+    runtime = await createHostRuntime(
+      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
+    );
     await runtime.listen();
     const connect = async (descriptor: RunnerDescriptor) => {
       const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
@@ -4915,11 +5001,7 @@ integration("Host vertical slice", () => {
   });
 });
 
-function testHostConfig(
-  hostPort: number,
-  hostDataDirectory: string,
-  _storageUrl: URL,
-): HostConfig {
+function testHostConfig(hostPort: number, hostDataDirectory: string, _storageUrl: URL): HostConfig {
   return {
     acceptsExternalRunners: true,
     authSecret: "runtime-auth-secret".padEnd(40, "x"),
@@ -5156,7 +5238,7 @@ function agentsRunnerDescriptor(input: {
   readonly workspaceBackings?: readonly string[];
   readonly workspaceMounts?: readonly unknown[];
 }): RunnerDescriptor {
-  return RunnerDescriptorSchema.parse({
+  const descriptor = RunnerDescriptorSchema.parse({
     bootId: input.bootId,
     capabilities: [
       ...new Set([
@@ -5175,7 +5257,11 @@ function agentsRunnerDescriptor(input: {
       agents: {
         environmentIds: input.environmentIds,
         harnessDrivers: input.harnessDrivers,
-        localStorage: input.localStorage ?? null,
+        localStorage: input.localStorage ?? {
+          storageAuthorityId: runtimeTestDisk.storageAuthorityId,
+          bindings: [],
+          truncated: false,
+        },
         maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
         providerStateModes: input.providerStateModes ?? ["ambient", "isolated"],
         workspaceBackings: input.workspaceBackings ?? ["local-directory"],
@@ -5187,6 +5273,9 @@ function agentsRunnerDescriptor(input: {
     runnerKind: input.runnerKind,
     runtimeVersion: input.runtimeVersion,
   });
+  if (input.localStorage == null && descriptor.modules.agents)
+    descriptor.modules.agents.localStorage = runtimeTestDisk;
+  return descriptor;
 }
 
 async function enrollRunnerSocket(
@@ -5200,6 +5289,14 @@ async function enrollRunnerSocket(
   readonly publicKey: KeyObject;
 }> {
   const challenge = RunnerChallengeSchema.parse(challengeInput);
+  const storageAuthorityId = descriptor.modules.agents?.localStorage?.storageAuthorityId;
+  if (storageAuthorityId) {
+    diskBySocket.get(socket)?.stop();
+    diskBySocket.set(
+      socket,
+      attachLocalWorkspaceDisk(socket, { inventory: descriptor.modules.agents!.localStorage! }),
+    );
+  }
   const pair = generateKeyPairSync("ed25519");
   const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
   const credential = RunnerEnrollmentCredentialSchema.parse({
@@ -5243,6 +5340,7 @@ async function openRunnerSocket(url: string): Promise<{
   readonly socket: WebSocket;
 }> {
   const socket = new WebSocket(url);
+  diskBySocket.set(socket, attachLocalWorkspaceDisk(socket, { inventory: runtimeTestDisk }));
   const challenge = waitForMessage(socket, (message) => message.type === "host.challenge");
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);

@@ -1,14 +1,14 @@
-import { createId,OpensteerError } from "@opensteer/core";
+import { createId, OpensteerError } from "@opensteer/core";
 import { RunnerBootIdSchema } from "@opensteer/protocol";
 import {
-createRunnerAuthenticationSignature,
-createRunnerAuxiliarySignature,
-createRunnerEnrollmentSignature,
-hashRunnerEnrollmentToken,
-runnerPublicKeyFingerprint,
+  createRunnerAuthenticationSignature,
+  createRunnerAuxiliarySignature,
+  createRunnerEnrollmentSignature,
+  hashRunnerEnrollmentToken,
+  runnerPublicKeyFingerprint,
 } from "@opensteer/runner-auth";
 import { generateKeyPairSync } from "node:crypto";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RunnerAuthenticator } from "./runner-authenticator.js";
 
 describe("Runner v2 wire admission", () => {
@@ -333,7 +333,11 @@ describe("RunnerAuthenticator identity refusals", () => {
         agents: {
           environmentIds: [environmentId],
           harnessDrivers: [],
-          localStorage: null,
+          localStorage: {
+            storageAuthorityId: createId("storageAuthority"),
+            bindings: [],
+            truncated: false,
+          },
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],

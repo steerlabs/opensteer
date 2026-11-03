@@ -10,7 +10,6 @@ import {
   RunnerChallengeSchema,
   RunnerDescriptorSchema,
   RunnerEnrollmentCredentialSchema,
-  RunnerLocalStorageInventorySchema,
   runnerProofFormatVersion,
   type RunnerLocalStorageInventory,
   type RunnerProof,
@@ -40,9 +39,20 @@ export interface LocalWorkspaceDiskFake {
 
 export function attachLocalWorkspaceDisk(
   socket: WebSocket,
-  options: { readonly storageAuthorityId?: StorageAuthorityId } = {},
+  options: {
+    readonly storageAuthorityId?: StorageAuthorityId;
+    readonly inventory?: RunnerLocalStorageInventory;
+  } = {},
 ): LocalWorkspaceDiskFake {
-  const storageAuthorityId = options.storageAuthorityId ?? createId("storageAuthority");
+  const storageAuthorityId =
+    options.inventory?.storageAuthorityId ??
+    options.storageAuthorityId ??
+    createId("storageAuthority");
+  const inventory: RunnerLocalStorageInventory = options.inventory ?? {
+    bindings: [],
+    storageAuthorityId,
+    truncated: false,
+  };
   const provisioned: WorkspaceId[] = [];
   const destroyed: WorkspaceId[] = [];
 
@@ -57,8 +67,19 @@ export function attachLocalWorkspaceDisk(
       requestId: request.requestId,
     };
     switch (request.type) {
+      case "host.workspace.local.relocate": {
+        socket.send(JSON.stringify({ ...answered, type: "runner.workspace.local.relocated" }));
+        return;
+      }
       case "host.workspace.local.provision": {
         provisioned.push(request.binding.workspaceId);
+        if (!inventory.bindings.some((binding) => binding.bindingId === request.binding.bindingId))
+          inventory.bindings.push({
+            bindingId: request.binding.bindingId,
+            workspaceId: request.binding.workspaceId,
+            generation: request.binding.generation,
+            state: "ready",
+          });
         socket.send(
           JSON.stringify({
             ...answered,
@@ -115,11 +136,7 @@ export function attachLocalWorkspaceDisk(
   socket.on("message", receive);
   return {
     destroyed,
-    inventory: RunnerLocalStorageInventorySchema.parse({
-      bindings: [],
-      storageAuthorityId,
-      truncated: false,
-    }),
+    inventory,
     provisioned,
     stop: () => socket.off("message", receive),
     storageAuthorityId,

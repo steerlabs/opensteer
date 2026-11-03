@@ -1,5 +1,5 @@
-import { migrateToLatest,type DatabaseSchema } from "@opensteer/database";
-import { sql,type Kysely } from "kysely";
+import { migrateToLatest, type DatabaseSchema } from "@opensteer/database";
+import { sql, type Kysely } from "kysely";
 
 /** Teardown uses the current Host image even when the stopped Host never upgraded. */
 export async function prepareManagedDestructionDatabase(
@@ -43,4 +43,3 @@ export async function isPristineUnmigratedDatabase(
   `.execute(database);
   return recorded.rows.length === 1 && recorded.rows[0]?.count === "0";
 }
-

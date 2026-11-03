@@ -1,15 +1,15 @@
-import { ModelSelectionSchema,createId,type ThreadId } from "@opensteer/core";
-import { HarnessRegistry,isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { ModelSelectionSchema, createId, type ThreadId } from "@opensteer/core";
+import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { hostApiVersionHeader } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { mkdir,writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll,beforeAll,describe,expect,it,vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { startVerticalStack,type VerticalStack } from "./vertical-stack.test-support.js";
+import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 /*
  * A desktop app attached to a Deployment through a route — the Connect tunnel,

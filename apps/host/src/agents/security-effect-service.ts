@@ -1,13 +1,13 @@
 import {
-createId,
-type AgentEvent,
-type RunId,
-type RunnerId,
-type WorkspaceId,
+  createId,
+  type AgentEvent,
+  type RunId,
+  type RunnerId,
+  type WorkspaceId,
 } from "@opensteer/core";
-import type { OpensteerStore,SecurityEffectRecord,TriggerStore } from "@opensteer/database";
-import type { RealtimeHub,RunnerRegistry } from "@opensteer/orchestration";
-import { CorrelationIdSchema,type RunnerCommand } from "@opensteer/protocol";
+import type { OpensteerStore, SecurityEffectRecord, TriggerStore } from "@opensteer/database";
+import type { RealtimeHub, RunnerRegistry } from "@opensteer/orchestration";
+import { CorrelationIdSchema, type RunnerCommand } from "@opensteer/protocol";
 import type { BrowserService } from "../browser/browser-service.js";
 
 const claimLimit = 32;

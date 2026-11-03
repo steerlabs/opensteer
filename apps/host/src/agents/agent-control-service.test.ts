@@ -1,34 +1,34 @@
 import {
-createId,
-HarnessIdSchema,
-ModelSelectionSchema,
-OpensteerError,
-PendingRequestSchema,
-type AgentEvent,
-type EnvironmentId,
-type HarnessInstanceId,
-type Message,
-type Run,
-type Thread,
-type ThreadInput,
-type Workspace,
+  createId,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  OpensteerError,
+  PendingRequestSchema,
+  type AgentEvent,
+  type EnvironmentId,
+  type HarnessInstanceId,
+  type Message,
+  type Run,
+  type Thread,
+  type ThreadInput,
+  type Workspace,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import {
-AgentControlRequestSchema,
-createBrowserSessionId,
-HarnessInstanceCatalogSchema,
-type HarnessInstanceCatalog,
+  AgentControlRequestSchema,
+  createBrowserSessionId,
+  HarnessInstanceCatalogSchema,
+  type HarnessInstanceCatalog,
 } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import {
-AgentControlService,
-type AgentControlTokenService,
-type AgentTriggerManager,
-type AgentWorkspaceMountService,
+  AgentControlService,
+  type AgentControlTokenService,
+  type AgentTriggerManager,
+  type AgentWorkspaceMountService,
 } from "./agent-control-service.js";
 
 const now = "2026-08-09T09:00:00.000Z";
@@ -185,9 +185,9 @@ describe("AgentControlService", () => {
       slug: "analysis",
       path: `/main/Projects/${created.slug}`,
       workspace: {
-        capacity: { kind: "managed-quota" },
+        capacity: { kind: "host-filesystem" },
         id: created.id,
-        location: { kind: "shared-storage" },
+        location: { kind: "machine" },
         name: created.name,
       },
     });
@@ -656,7 +656,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
 
@@ -711,7 +711,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
     await expect(
@@ -733,7 +733,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
     await expect(
@@ -807,7 +807,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     });
 
@@ -839,7 +839,7 @@ describe("AgentControlService", () => {
       threads: [current],
       workspaces: [
         workspace(workspaceId, "Main workspace"),
-        workspace(targetWorkspaceId, "Client"),
+        workspace(targetWorkspaceId, "Client", ownerId, targetEnvironmentId),
       ],
     };
     const request = {
@@ -2042,14 +2042,17 @@ function workspace(
   id: Workspace["id"],
   name: string,
   createdBy: Workspace["createdBy"] = ownerId,
+  ownerEnvironmentId = environmentId,
 ): Workspace {
   return {
-    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-    capacityPolicy: {
-      blockHardLimitBytes: 10_000_000,
-      inodeHardLimit: 10_000,
-      kind: "hard-quota",
+    backing: {
+      kind: "local-directory",
+      generation: 1,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId,
+      storageAuthorityId: createId("storageAuthority"),
     },
+    capacityPolicy: { kind: "host-filesystem" as const },
     createdAt: now,
     createdBy,
     homeThreadId: null,

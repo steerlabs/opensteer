@@ -1,29 +1,29 @@
 import type { HostConfig } from "@opensteer/config";
 import { createId } from "@opensteer/core";
-import { createDatabase,migrateToLatest } from "@opensteer/database";
+import { createDatabase, migrateToLatest } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-BrowserServerMessageSchema,
-decodeBrowserFrameEnvelope,
-hostApiVersionHeader,
-type BrowserClientMessage,
-type BrowserServerMessage,
+  BrowserServerMessageSchema,
+  decodeBrowserFrameEnvelope,
+  hostApiVersionHeader,
+  type BrowserClientMessage,
+  type BrowserServerMessage,
 } from "@opensteer/protocol";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { sql } from "kysely";
-import { fork,type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir,mkdtemp,rm,writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach,beforeEach,describe,expect,it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { ownChild } from "../agents/owned-child.test-support.js";
-import { createHostRuntime,type HostRuntime } from "../runtime/runtime.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 

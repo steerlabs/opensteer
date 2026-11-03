@@ -1,16 +1,16 @@
-import { createId,type Workspace,type WorkspaceMembershipId } from "@opensteer/core";
+import { createId, type Workspace, type WorkspaceMembershipId } from "@opensteer/core";
 import type {
-WorkspaceFilesAdmission,
-WorkspaceMembershipChangeListener,
-WorkspaceMembershipRecord,
+  WorkspaceFilesAdmission,
+  WorkspaceMembershipChangeListener,
+  WorkspaceMembershipRecord,
 } from "@opensteer/database";
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { signHostDiscovery } from "../../identity/host-keys.js";
 import { createHostServer as createProductionHostServer } from "../../server.js";
 import {
-hostServerTestDependencies,
-type HostServerTestOverrides,
+  hostServerTestDependencies,
+  type HostServerTestOverrides,
 } from "../../server/host-server-test-harness.js";
 import { WorkspaceFilesService } from "./workspace-files-service.js";
 
@@ -174,7 +174,13 @@ function readyWorkspace(backingKind: "local-directory" | "local-directory"): Wor
             ownerEnvironmentId: createId("environment"),
             storageAuthorityId: createId("storageAuthority"),
           }
-        : { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+        : {
+            kind: "local-directory",
+            generation: 1,
+            bindingId: createId("workspaceBinding"),
+            ownerEnvironmentId: createId("environment"),
+            storageAuthorityId: createId("storageAuthority"),
+          },
     capacityPolicy:
       backingKind === "local-directory"
         ? { kind: "host-filesystem" }

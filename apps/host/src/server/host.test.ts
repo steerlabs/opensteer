@@ -1,59 +1,59 @@
 import {
-createId,
-emptyExecutionPreferences,
-OpensteerError,
-personalRemoteAuthorizationScheme,
-rememberExecutionChoice,
-ThreadAccessModeSchema,
-type AuthenticatedSession,
-type EnvironmentId,
-type ExecutionChoice,
-type ExecutionPreferences,
-type Request as OpensteerRequest,
-type RunnerId,
-type ThreadAccessMode,
-type UserId,
-type Workspace,
+  createId,
+  emptyExecutionPreferences,
+  OpensteerError,
+  personalRemoteAuthorizationScheme,
+  rememberExecutionChoice,
+  ThreadAccessModeSchema,
+  type AuthenticatedSession,
+  type EnvironmentId,
+  type ExecutionChoice,
+  type ExecutionPreferences,
+  type Request as OpensteerRequest,
+  type RunnerId,
+  type ThreadAccessMode,
+  type UserId,
+  type Workspace,
 } from "@opensteer/core";
-import type { OpensteerStore,WorkspaceFilesAdmission } from "@opensteer/database";
+import type { OpensteerStore, WorkspaceFilesAdmission } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
-agentToolPayloadMaxSerializedBytes,
-HarnessInstanceCatalogSchema,
-hostApiVersionHeader,
-ShellSessionIdSchema,
-type HarnessAuthenticationState,
-type HarnessInstanceCatalog,
-type RunnerHarnessDriver,
+  agentToolPayloadMaxSerializedBytes,
+  HarnessInstanceCatalogSchema,
+  hostApiVersionHeader,
+  ShellSessionIdSchema,
+  type HarnessAuthenticationState,
+  type HarnessInstanceCatalog,
+  type RunnerHarnessDriver,
 } from "@opensteer/protocol";
 import {
-bootstrapDiagnosticHeader,
-BootstrapNoticeDiagnostics,
+  bootstrapDiagnosticHeader,
+  BootstrapNoticeDiagnostics,
 } from "@opensteer/shared/bootstrapDiagnostics";
-import type { FastifyInstance,LightMyRequestResponse } from "fastify";
+import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp,readFile,rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import {
-loadOrCreateHostKeys,
-SignedTokenClaimsSchema,
-SignedTokenService,
-signHostDiscovery,
+  loadOrCreateHostKeys,
+  SignedTokenClaimsSchema,
+  SignedTokenService,
+  signHostDiscovery,
 } from "../identity/host-keys.js";
 import {
-advertisedCapabilities,
-createHostServer as createProductionHostServer,
-RunnerChallengeAdmission,
+  advertisedCapabilities,
+  createHostServer as createProductionHostServer,
+  RunnerChallengeAdmission,
 } from "../server.js";
 import { unroutedShellControlStream } from "../shell/shell-control-stream.test-support.js";
 import {
-hostServerTestDependencies,
-type HostServerTestOverrides,
+  hostServerTestDependencies,
+  type HostServerTestOverrides,
 } from "./host-server-test-harness.js";
 import { hostInternalRoutePaths } from "./internal-routes.js";
 import { injectRpcRequest } from "./test-host-api-request.js";
@@ -1868,9 +1868,9 @@ describe("Workspace route projections", () => {
       expect(response.statusCode).toBe(200);
       const payload = rpcData(response) as { workspace: Record<string, unknown> };
       expect(payload.workspace).toMatchObject({
-        capacity: { kind: "managed-quota" },
+        capacity: { kind: "host-filesystem" },
         id: workspace.id,
-        location: { kind: "shared-storage" },
+        location: { kind: "machine" },
       });
       expect(payload.workspace).not.toHaveProperty("backing");
       expect(payload.workspace).not.toHaveProperty("capacityPolicy");
@@ -4279,12 +4279,14 @@ function projectWorkspace(ownerId: Workspace["createdBy"]): Workspace {
   const now = new Date().toISOString();
   const id = createId("workspace");
   return {
-    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-    capacityPolicy: {
-      blockHardLimitBytes: 512 * 1_024 * 1_024,
-      inodeHardLimit: 50_000,
-      kind: "hard-quota",
+    backing: {
+      kind: "local-directory",
+      generation: 1,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId: createId("environment"),
+      storageAuthorityId: createId("storageAuthority"),
     },
+    capacityPolicy: { kind: "host-filesystem" as const },
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,
@@ -4312,12 +4314,14 @@ function localWorkspaceFixture(
 ): Workspace {
   const now = new Date().toISOString();
   return {
-    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-    capacityPolicy: {
-      blockHardLimitBytes: 512 * 1_024 * 1_024,
-      inodeHardLimit: 50_000,
-      kind: "hard-quota",
+    backing: {
+      kind: "local-directory",
+      generation: 1,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId: createId("environment"),
+      storageAuthorityId: createId("storageAuthority"),
     },
+    capacityPolicy: { kind: "host-filesystem" as const },
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,

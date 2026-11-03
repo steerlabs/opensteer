@@ -91,6 +91,7 @@ integration("API-key reconnect incident", () => {
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "API-key incident agent",
+        localDirectory: true,
         token: await enrollmentToken(host, {
           allowedModules: ["agents"],
           idempotencyKey: "api-key-reconnect-caller",

@@ -1,6 +1,6 @@
-import type { AgentEvent,UserId,Workspace,WorkspaceId } from "@opensteer/core";
+import type { AgentEvent, UserId, Workspace, WorkspaceId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { type WorkspaceBackingLifecycleDriver,workspaceUsesBacking } from "@opensteer/workspace";
+import { type WorkspaceBackingLifecycleDriver, workspaceUsesBacking } from "@opensteer/workspace";
 
 const purgePageSize = 100;
 const millisecondsPerDay = 24 * 60 * 60 * 1_000;
@@ -39,6 +39,8 @@ export class WorkspaceDeletionService {
       throw new TypeError("Workspace deletion retention days must be a nonnegative integer");
     }
 
+    if (!options.drivers.local)
+      throw new TypeError("Workspace deletion requires a local storage driver");
     this.#drivers = options.drivers;
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError;

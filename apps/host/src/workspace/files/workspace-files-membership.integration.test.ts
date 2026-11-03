@@ -1,7 +1,7 @@
-import { createId,type Workspace } from "@opensteer/core";
-import { createDatabase,migrateToLatest,OpensteerStore } from "@opensteer/database";
+import { createId, type Workspace } from "@opensteer/core";
+import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
 import { sql } from "kysely";
-import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceFilesService } from "./workspace-files-service.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -52,7 +52,13 @@ integration("Workspace Files membership generation", () => {
                 ownerEnvironmentId,
                 storageAuthorityId: createId("storageAuthority"),
               }
-            : { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+            : {
+                kind: "local-directory",
+                generation: 1,
+                bindingId: createId("workspaceBinding"),
+                ownerEnvironmentId: createId("environment"),
+                storageAuthorityId: createId("storageAuthority"),
+              },
         capacityPolicy:
           backingKind === "local-directory"
             ? { kind: "host-filesystem" }

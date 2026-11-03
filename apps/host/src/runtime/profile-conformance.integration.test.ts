@@ -1,55 +1,55 @@
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import type { HostConfig } from "@opensteer/config";
 import {
-ModelSelectionSchema,
-WorkspaceIdSchema,
-createId,
-deploymentSupportsSharing,
-type DeploymentDisplayKind,
-type DeploymentShape,
-type EnvironmentId,
-type HostExposure,
+  ModelSelectionSchema,
+  WorkspaceIdSchema,
+  createId,
+  deploymentSupportsSharing,
+  type DeploymentDisplayKind,
+  type DeploymentShape,
+  type EnvironmentId,
+  type HostExposure,
 } from "@opensteer/core";
-import { createDatabase,migrateToLatest } from "@opensteer/database";
+import { createDatabase, migrateToLatest } from "@opensteer/database";
 import {
-HostDescriptorSchema,
-hostApiVersion,
-verifyHostDiscoveryEnvelope,
+  HostDescriptorSchema,
+  hostApiVersion,
+  verifyHostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
 import {
-HarnessInstanceCatalogSchema,
-PersonalHostAccessRouteEnvelopeSchema,
-RunnerChallengeSchema,
-RunnerDescriptorSchema,
-RunnerEnrollmentCredentialSchema,
-SessionExchangeCredentialKindSchema,
-SessionExchangeResponseSchema,
-hostApiVersionHeader,
-sessionExchangePath,
-type HostToRunnerMessage,
-type RunnerConnectionFence,
-type RunnerLocalStorageInventory,
-type RunnerOperationalMessage,
-type SessionExchangeCredentialKind,
+  HarnessInstanceCatalogSchema,
+  PersonalHostAccessRouteEnvelopeSchema,
+  RunnerChallengeSchema,
+  RunnerDescriptorSchema,
+  RunnerEnrollmentCredentialSchema,
+  SessionExchangeCredentialKindSchema,
+  SessionExchangeResponseSchema,
+  hostApiVersionHeader,
+  sessionExchangePath,
+  type HostToRunnerMessage,
+  type RunnerConnectionFence,
+  type RunnerLocalStorageInventory,
+  type RunnerOperationalMessage,
+  type SessionExchangeCredentialKind,
 } from "@opensteer/protocol";
 import {
-createRunnerAuthenticationSignature,
-createRunnerEnrollmentSignature,
+  createRunnerAuthenticationSignature,
+  createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import type { HTTPMethods } from "fastify";
 import { exportJWK } from "jose";
 import { sql } from "kysely";
-import { generateKeyPairSync,randomUUID,type KeyObject } from "node:crypto";
-import { mkdtemp,realpath,rm } from "node:fs/promises";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll,beforeAll,describe,expect,it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
-import { testRpcData,testRpcRequest } from "../server/test-host-api-request.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
-import { createHostRuntime,type HostRuntime } from "./runtime.js";
+import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -111,9 +111,7 @@ const noPersonalRemoteAccessRoutes = {
 } as const;
 
 interface ConfigurationPlan {
-  /** Whether this configuration lets somebody lend it a machine from outside
-   * its own network. local storage exists for exactly that, and a Personal
-   * Deployment is single-user, so the two are never the same answer. */
+  /** Whether a person can enroll an external Runner. */
   readonly acceptsExternalRunners: boolean;
   readonly displayKind: DeploymentDisplayKind;
   readonly exposure: HostExposure;
@@ -123,12 +121,7 @@ interface ConfigurationPlan {
   readonly sharingAvailable: boolean;
 }
 
-const shippedConfigurations = [
-  "personal",
-  "dev",
-  "self-host-local",
-  "self-host-external",
-] as const;
+const shippedConfigurations = ["personal", "dev", "self-host-local", "self-host-external"] as const;
 type ShippedConfiguration = (typeof shippedConfigurations)[number];
 
 const conformancePlans = {
@@ -441,13 +434,8 @@ function describeConfigurationConformance(
       // capabilities of its real Runner, never globally before one connects.
       expect(machinelessBootstrap.harnesses).toEqual([]);
       // A local directory is a fact about one machine's disk, so not even Main
-      // can exist before that machine does. local storage is Host-managed and is
-      // there the moment the owner is.
-      expect(machinelessBootstrap.homeWorkspace).toEqual(
-        shape.defaultWorkspaceBacking === "local-directory"
-          ? null
-          : expect.objectContaining({ kind: "main" }),
-      );
+      // can exist before that machine does.
+      expect(machinelessBootstrap.homeWorkspace).toBeNull();
     });
 
     it("serves a verifiable discovery document with the required public axes", async () => {
@@ -794,12 +782,6 @@ interface HostComposition {
   readonly runtime: HostRuntime;
 }
 
-/**
- * Builds the single-process approximation of each configuration: the same
- * Host code and fakes only where the
- * Deployment genuinely talks to something outside itself (the local storage
- * Manager and the Account issuer's JWKS for Personal Connect).
- */
 async function composeHost(
   configuration: ShippedConfiguration,
   plan: ConfigurationPlan,
@@ -820,10 +802,9 @@ async function composeHost(
       : new URL(`https://${configuration}.conformance.opensteer.test`);
   // A local storage Deployment mints every Runner capability URL from its
   // canonical origin, which is the same rule config parsing enforces.
-  const runtimeOrigin =
-    plan.acceptsExternalRunners
-      ? canonicalOrigin
-      : new URL(`http://127.0.0.1:${port}`);
+  const runtimeOrigin = plan.acceptsExternalRunners
+    ? canonicalOrigin
+    : new URL(`http://127.0.0.1:${port}`);
   const personalAccountKeys =
     shape.kind === "personal" ? generateKeyPairSync("ed25519") : undefined;
 
@@ -875,11 +856,9 @@ async function composeHost(
     },
   };
 
-  const runtimeOptions = {
-    ...(personalAccountKeys
-      ? { personalAccountGrantFetch: accountJwksFetch(personalAccountKeys.publicKey) }
-      : {}),
-  };
+  const runtimeOptions = personalAccountKeys
+    ? { personalAccountGrantFetch: accountJwksFetch(personalAccountKeys.publicKey) }
+    : {};
 
   const cleanup = async (runtime: HostRuntime | undefined) => {
     await runtime?.close();

@@ -1,85 +1,85 @@
 import {
-AesGcmSecretVault,
-createPublicHttpsFetch,
-StaticEncryptionKeyProvider,
+  AesGcmSecretVault,
+  createPublicHttpsFetch,
+  StaticEncryptionKeyProvider,
 } from "@opensteer/access/host";
-import { assertHostConfigInvariants,type HostConfig } from "@opensteer/config";
+import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
 import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
 import {
-harnessDriverLabel,
-HarnessIdSchema,
-OpensteerError,
-sameStringSet,
-type AgentEvent,
-type AssignmentId,
-type Deployment,
-type EnvironmentId,
-type RunId,
-type RunnerId,
-type UserId,
-type Workspace,
+  harnessDriverLabel,
+  HarnessIdSchema,
+  OpensteerError,
+  sameStringSet,
+  type AgentEvent,
+  type AssignmentId,
+  type Deployment,
+  type EnvironmentId,
+  type RunId,
+  type RunnerId,
+  type UserId,
+  type Workspace,
 } from "@opensteer/core";
 import {
-AccountDirectoryStore,
-acquireDeploymentAuthorityLease,
-AttachmentStore,
-AutomationFailureStore,
-BrowserSourceStore,
-BrowserTabGroupStore,
-ChannelStore,
-createDatabase,
-databaseShutdownDetails,
-IntegrationAuthAttemptStore,
-IntegrationPlatformStore,
-IntegrationStore,
-isTransactionConflict,
-migrateToLatest,
-NotificationPreviewKeyStore,
-NotificationStore,
-OpensteerStore,
-personalRemoteAccessRefusedReason,
-personalRemoteAccessRequiredRefusal,
-runnerAdvertisesItsEnvironmentBinding,
-TriggerStore,
-WorkspaceTabStore,
-type DeploymentAuthorityLease,
+  AccountDirectoryStore,
+  acquireDeploymentAuthorityLease,
+  AttachmentStore,
+  AutomationFailureStore,
+  BrowserSourceStore,
+  BrowserTabGroupStore,
+  ChannelStore,
+  createDatabase,
+  databaseShutdownDetails,
+  IntegrationAuthAttemptStore,
+  IntegrationPlatformStore,
+  IntegrationStore,
+  isTransactionConflict,
+  migrateToLatest,
+  NotificationPreviewKeyStore,
+  NotificationStore,
+  OpensteerStore,
+  personalRemoteAccessRefusedReason,
+  personalRemoteAccessRequiredRefusal,
+  runnerAdvertisesItsEnvironmentBinding,
+  TriggerStore,
+  WorkspaceTabStore,
+  type DeploymentAuthorityLease,
 } from "@opensteer/database";
 import { hostKeyFingerprint as fingerprintForSpki } from "@opensteer/deployment-authority";
 import {
-deriveLocalSetupToken,
-IdentityService,
-loadOidcProvidersFromFile,
-oidcIdentityProviderId,
-type OidcProviderConfiguration,
+  deriveLocalSetupToken,
+  IdentityService,
+  loadOidcProvidersFromFile,
+  oidcIdentityProviderId,
+  type OidcProviderConfiguration,
 } from "@opensteer/identity";
 import {
-createGraphqlAdapter,
-createMcpAdapter,
-createOpenApiAdapter,
+  createGraphqlAdapter,
+  createMcpAdapter,
+  createOpenApiAdapter,
 } from "@opensteer/integration-adapters";
 import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
-import { computerAppIntegrations,integrationDefinitions } from "@opensteer/integration-catalog";
+import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
 import {
-resolveIntegrationDeploymentPosture,
-type ComputerAppPlatform,
-type IntegrationConnectionId,
+  resolveIntegrationDeploymentPosture,
+  type ComputerAppPlatform,
+  type IntegrationConnectionId,
 } from "@opensteer/integration-core";
 import {
-CommandService,
-ExecutionCoordinator,
-KeyedAdmissionQueue,
-LiveRunRegistry,
-RealtimeHub,
-RunnerRegistry,
-type RunnerIdentity,
-type RunnerStreamLossReason,
+  CommandService,
+  ExecutionCoordinator,
+  KeyedAdmissionQueue,
+  LiveRunRegistry,
+  RealtimeHub,
+  RunnerRegistry,
+  type RunnerIdentity,
+  type RunnerStreamLossReason,
 } from "@opensteer/orchestration";
 import {
-personalWebBuildId,
-type HarnessInstanceCatalog,
-type PendingAgentEvent,
-type RunnerAuxiliaryModule,
-type ShellSessionId
+  personalWebBuildId,
+  type HarnessInstanceCatalog,
+  type PendingAgentEvent,
+  type RunnerAuxiliaryModule,
+  type ShellSessionId,
 } from "@opensteer/protocol";
 import type { FastifyInstance } from "fastify";
 import { sign } from "node:crypto";
@@ -93,27 +93,27 @@ import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
 import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
-import { AgentControlService,AgentControlTokenService } from "../agents/agent-control-service.js";
+import { AgentControlService, AgentControlTokenService } from "../agents/agent-control-service.js";
 import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import {
-harnessInspectionDefinition,
-inspectAndRecordInvalidatedHarnessCatalog,
-inspectHarnessCatalogsAfterUsageLimit,
-reconcileAndRecordHarnessCatalogs,
-reconcileHarnessCatalogs,
+  harnessInspectionDefinition,
+  inspectAndRecordInvalidatedHarnessCatalog,
+  inspectHarnessCatalogsAfterUsageLimit,
+  reconcileAndRecordHarnessCatalogs,
+  reconcileHarnessCatalogs,
 } from "../agents/harness-catalogs.js";
 import { RunCapabilityTokenService } from "../agents/run-capability.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { SecurityEffectService } from "../agents/security-effect-service.js";
 import {
-AttachmentService,
-RunAttachmentsTokenService,
+  AttachmentService,
+  RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
-import { announceBrowserUsage,browserPresencePublisher } from "../browser/browser-presence.js";
+import { announceBrowserUsage, browserPresencePublisher } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
@@ -129,13 +129,13 @@ import { ComputerViewService } from "../computer-use/computer-view-service.js";
 import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
 import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
-import { CredentialService,loadOrCreateCredentialKey } from "../identity/credential-service.js";
+import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
-loadOrCreateHostKeys,
-SignedTokenService,
-signHostDiscovery,
+  loadOrCreateHostKeys,
+  SignedTokenService,
+  signHostDiscovery,
 } from "../identity/host-keys.js";
 import { resolveIntegrationAccountBinding } from "../integrations/integration-account-binding.js";
 import { DefaultIntegrationAuthAttemptLifecycle } from "../integrations/integration-auth-attempt-service.js";
@@ -143,8 +143,8 @@ import { integrationCallSubject } from "../integrations/integration-call-subject
 import { IntegrationDashboardService } from "../integrations/integration-dashboard-service.js";
 import { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
 import {
-IntegrationService,
-type IntegrationConnectionConnected,
+  IntegrationService,
+  type IntegrationConnectionConnected,
 } from "../integrations/integration-service.js";
 import { IntegrationSkillBundleService } from "../integrations/integration-skill-bundle-service.js";
 import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
@@ -152,38 +152,41 @@ import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
 import {
-NotificationPublicationClient,
-type NotificationPublicationTarget,
+  NotificationPublicationClient,
+  type NotificationPublicationTarget,
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
 import { EgressService } from "../server/egress-service.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
 import {
-machineAccessNotifier,
-notifyComputerPresence,
-notifyMachinesChanged,
+  machineAccessNotifier,
+  notifyComputerPresence,
+  notifyMachinesChanged,
 } from "../shell/machine-access-events.js";
 import { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
 import { ShellHub } from "../shell/shell-hub.js";
 import { AutomationFailureService } from "../triggers/automation-failure-service.js";
 import {
-TriggerCapabilityTokenService,
-TriggerControlService,
-TriggerControlTokenService,
+  TriggerCapabilityTokenService,
+  TriggerControlService,
+  TriggerControlTokenService,
 } from "../triggers/trigger-control-service.js";
-import { TriggerScheduleLoop,TriggerService } from "../triggers/trigger-service.js";
+import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
 import {
-WatchCapabilityTokenService,
-WatchControlTokenService,
+  WatchCapabilityTokenService,
+  WatchControlTokenService,
 } from "../triggers/watch-capability.js";
 import { WatchControlService } from "../triggers/watch-control-service.js";
 import { WatchProgramService } from "../triggers/watch-program-service.js";
 import { WatchService } from "../triggers/watch-service.js";
-import { RunnerLocalWorkspaceFilesDriver,WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
+import {
+  RunnerLocalWorkspaceFilesDriver,
+  WorkspaceFilesService,
+} from "../workspace/files/workspace-files-service.js";
 import { reconcileRunnerLocalStorage } from "../workspace/runner-local-storage-reconciliation.js";
 import {
-RunnerLocalWorkspaceDriver,
-type RunnerStorageRegistry,
+  RunnerLocalWorkspaceDriver,
+  type RunnerStorageRegistry,
 } from "../workspace/runner-local-workspace-driver.js";
 import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
@@ -1038,10 +1041,18 @@ export async function createHostRuntime(
       drivers: { local: localWorkspaceDriver },
       shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
       resolveOwnerEnvironmentId: async (ownerId) => {
-        if (storage.kind === "local-directory") return storage.ownerEnvironmentId;
+        if (config.workspace.shape.kind === "personal" && storage.kind === "local-directory")
+          return storage.ownerEnvironmentId;
         const environments = await store.listEnvironmentsForUser(ownerId);
-        const environment = environments.find((entry) => runnerStorage.identityForEnvironment(entry.id)?.modules.agents?.localStorage);
-        if (!environment) throw new Error("Connect a computer to create Main storage");
+        const environment = environments.find(
+          (entry) => runnerStorage.identityForEnvironment(entry.id)?.modules.agents?.localStorage,
+        );
+        if (!environment)
+          throw new OpensteerError({
+            code: "workspace_unavailable",
+            message: "Connect a computer to create Main storage",
+            retryable: true,
+          });
         return environment.id;
       },
       store,
@@ -2352,7 +2363,7 @@ export async function createHostRuntime(
             retryable: result.issue?.retryable,
           },
           result.available
-            ? "Workspace storage capacity requires operator attention; pending volume creates are paused"
+            ? "Workspace storage requires operator attention"
             : "Workspace storage requires operator attention; new Workspace Runs are paused",
         );
         return;
@@ -2616,7 +2627,6 @@ function isTerminalRunEvent(event: AgentEvent): boolean {
     event.type === "run.interrupted"
   );
 }
-
 
 function requiredService<Value>(value: Value | undefined, label: string): Value {
   if (value === undefined) throw new Error(`${label} is not configured`);

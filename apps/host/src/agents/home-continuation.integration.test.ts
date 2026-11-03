@@ -1,38 +1,38 @@
 import {
-AgentEventSchema,
-createId,
-HarnessIdSchema,
-ModelSelectionSchema,
-ThreadAccessModeSchema,
-type AssignmentId,
-type RunId,
-type ThreadId,
-type UserId,
+  AgentEventSchema,
+  createId,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  ThreadAccessModeSchema,
+  type AssignmentId,
+  type RunId,
+  type ThreadId,
+  type UserId,
 } from "@opensteer/core";
 import { NotificationStore } from "@opensteer/database";
 import {
-HarnessRegistry,
-isolatedServiceHarnessRuntimeBoundary,
-type HarnessInspectionContext,
-type HarnessInspectionResult,
+  HarnessRegistry,
+  isolatedServiceHarnessRuntimeBoundary,
+  type HarnessInspectionContext,
+  type HarnessInspectionResult,
 } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { CommandService,KeyedAdmissionQueue } from "@opensteer/orchestration";
-import { PendingAgentEventSchema,type RunnerDescriptor } from "@opensteer/protocol";
+import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
+import { PendingAgentEventSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
-import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
-import { mkdir,mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { testRpcRequest } from "../server/test-host-api-request.js";
 import {
-AgentControlService,
-type AgentControlRunScope,
-type AgentControlTokenService,
+  AgentControlService,
+  type AgentControlRunScope,
+  type AgentControlTokenService,
 } from "./agent-control-service.js";
-import { startVerticalStack,type VerticalStack } from "./vertical-stack.test-support.js";
+import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -923,12 +923,14 @@ integration("durable Thread changes native continuation", () => {
     const foreignUserId = await stack.host.store.createUser("Other owner");
     const foreignPlacement = await createForeignPlacement(stack, foreignUserId);
     const foreignWorkspace = await stack.host.store.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: foreignUserId,
       idempotencyKey: `foreign-home-workspace-${randomUUID()}`,
       name: "Other Main",

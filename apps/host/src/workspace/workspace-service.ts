@@ -1,31 +1,31 @@
 import {
-OpensteerError,
-WorkspaceIdSchema,
-type DeploymentShape,
-type EnvironmentId,
-type MarkColor,
-type UserId,
-type Workspace,
-type WorkspaceCapacityPolicy,
-type WorkspaceIconName,
-type WorkspaceId,
-type WorkspaceKind,
+  OpensteerError,
+  WorkspaceIdSchema,
+  type DeploymentShape,
+  type EnvironmentId,
+  type MarkColor,
+  type UserId,
+  type Workspace,
+  type WorkspaceCapacityPolicy,
+  type WorkspaceIconName,
+  type WorkspaceId,
+  type WorkspaceKind,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import {
-WorkspaceViewSchema,
-workspaceViewFromWorkspace,
-type WorkspaceView,
+  WorkspaceViewSchema,
+  workspaceViewFromWorkspace,
+  type WorkspaceView,
 } from "@opensteer/protocol";
 import {
-WorkspaceAuthorityUnreachableError,
-assertBackingAllowedByDeployment,
-workspaceUsesBacking,
-type WorkspaceBackingHealth,
-type WorkspaceBackingLifecycleDriver,
+  WorkspaceAuthorityUnreachableError,
+  assertBackingAllowedByDeployment,
+  workspaceUsesBacking,
+  type WorkspaceBackingHealth,
+  type WorkspaceBackingLifecycleDriver,
 } from "@opensteer/workspace";
 import { createHash } from "node:crypto";
-import { posix,win32 } from "node:path";
+import { posix, win32 } from "node:path";
 
 const mainWorkspaceName = "Main";
 
@@ -62,7 +62,6 @@ export class WorkspaceService {
   readonly #active = new Map<WorkspaceId, Promise<Workspace>>();
   readonly #drivers: WorkspaceLifecycleDrivers;
   readonly #shape: DeploymentShape;
-  readonly #restoreProgress = new Map<WorkspaceId, number>();
   readonly #resolveOwnerEnvironmentId: ((ownerId: UserId) => Promise<EnvironmentId>) | undefined;
   readonly #store: WorkspaceStore;
 
@@ -133,8 +132,12 @@ export class WorkspaceService {
       workspaceId: id,
     } as const;
     const backing = this.#requiredLocal().initialBacking({
-      ...base, backingKind: "local-directory",
-      ownerEnvironmentId: main?.backing.kind === "local-directory" ? main.backing.ownerEnvironmentId : await this.#ownerEnvironmentId(input.createdBy),
+      ...base,
+      backingKind: "local-directory",
+      ownerEnvironmentId:
+        main?.backing.kind === "local-directory"
+          ? main.backing.ownerEnvironmentId
+          : await this.#ownerEnvironmentId(input.createdBy),
     });
     if (
       main?.backing.kind === "local-directory" &&
@@ -301,7 +304,7 @@ export class WorkspaceService {
         code: "workspace_unavailable",
         message: workspace.storageIssue.message,
       });
-    this.#assertWorkspace(workspace);
+    if (workspace.backing.kind === "local-directory") this.#assertWorkspace(workspace);
     let health: WorkspaceBackingHealth;
     try {
       health = await this.#inspect(workspace);
@@ -341,13 +344,10 @@ export class WorkspaceService {
   }
 
   /**
-   * The single place a Workspace view acquires what only the Host knows: how
-   * far a restore has got, and the name of the computer that holds a local
-   * directory. The environment name is kept in step with its Runner's, so it
+   * Adds the name of the computer that holds the directory. The environment name is kept in step with its Runner's, so it
    * is the machine name a reader recognises.
    */
   async decorateWorkspaceView(view: WorkspaceView): Promise<WorkspaceView> {
-    const restoreProgressPermille = this.#restoreProgress.get(view.id);
     const name =
       view.location.kind === "machine"
         ? ((await this.#store.getEnvironment(view.location.environmentId))?.name ?? null)
@@ -355,11 +355,16 @@ export class WorkspaceService {
     return WorkspaceViewSchema.parse({
       ...view,
       ...(view.location.kind === "machine" ? { location: { ...view.location, name } } : {}),
-      ...(restoreProgressPermille === undefined ? {} : { restoreProgressPermille }),
     });
   }
 
   provision(workspace: Workspace): Promise<Workspace> {
+    if (workspace.backing.kind !== "local-directory")
+      return this.#store.setWorkspaceStorageState({
+        workspaceId: workspace.id,
+        status: "failed",
+        issue: relocationIssue(),
+      });
     this.#assertWorkspace(workspace);
     const existing = this.#active.get(workspace.id);
     if (existing) return existing;
@@ -372,8 +377,16 @@ export class WorkspaceService {
 
   async validateDeploymentCompatibility(): Promise<void> {
     for (const workspace of await this.#store.listWorkspaces()) {
-      if (workspace.backing.kind !== "local-directory" && !["deleting", "deleted"].includes(workspace.status)) {
-        await this.#store.setWorkspaceStorageState({ workspaceId: workspace.id, status: "failed", issue: relocationIssue() });
+      if (
+        workspace.backing.kind !== "local-directory" &&
+        !["deleting", "deleted"].includes(workspace.status) &&
+        workspace.storageIssue?.code !== "relocation-required"
+      ) {
+        await this.#store.setWorkspaceStorageState({
+          workspaceId: workspace.id,
+          status: "failed",
+          issue: relocationIssue(),
+        });
       }
     }
   }
@@ -415,11 +428,7 @@ export class WorkspaceService {
         return this.provision(workspace);
       });
     }
-    // `archiving` is inspected alongside `ready` because it is the one status
-    // whose next state lives entirely at the storage authority: the archive
-    // cycle seals into `archived`, or a wake cancels it back to `ready`, and
-    // neither transition reports itself to the Host.
-    for (const status of ["archiving", "ready"] as const) {
+    for (const status of ["ready"] as const) {
       await this.#forEachStatus(status, async (workspace) => {
         let health: WorkspaceBackingHealth;
         try {
@@ -444,7 +453,6 @@ export class WorkspaceService {
   async #provision(workspace: Workspace): Promise<Workspace> {
     try {
       const result = await this.#provisionWithDriver(workspace);
-      this.#recordRestoreProgress(workspace.id, result.restoreProgressPermille);
       return this.#store.setWorkspaceProvisioningResult({
         backing: result.backing,
         expectedBacking: workspace.backing,
@@ -478,7 +486,8 @@ export class WorkspaceService {
 
   async #inspect(workspace: Workspace): Promise<WorkspaceBackingHealth> {
     let health: WorkspaceBackingHealth;
-    if (workspace.backing.kind !== "local-directory") return { status: "failed", issue: relocationIssue() };
+    if (workspace.backing.kind !== "local-directory")
+      return { status: "failed", issue: relocationIssue() };
     if (workspace.storageIssue?.code === "relocation-required")
       return { status: "failed", issue: workspace.storageIssue };
     if (workspace.kind === "project" && workspace.slug) {
@@ -529,7 +538,6 @@ export class WorkspaceService {
     } else {
       throw new Error("Workspace backing does not match the configured driver");
     }
-    this.#recordRestoreProgress(workspace.id, health.restoreProgressPermille);
     return health;
   }
 
@@ -548,20 +556,21 @@ export class WorkspaceService {
     });
   }
 
-  #recordRestoreProgress(workspaceId: WorkspaceId, progress: number | undefined): void {
-    if (progress === undefined) this.#restoreProgress.delete(workspaceId);
-    else this.#restoreProgress.set(workspaceId, progress);
-  }
-
   #assertWorkspace(workspace: Workspace): void {
     assertBackingAllowedByDeployment(this.#shape, workspace.backing);
     if (workspace.backing.kind === "local-directory") this.#requiredLocal();
-
   }
 
-  #effectiveCapacityPolicy(_backingKind: "local-directory", override: WorkspaceCapacityPolicy | undefined): WorkspaceCapacityPolicy {
-    if (override && override.kind !== "host-filesystem") throw new OpensteerError({code: "bad_request", message: "A Workspace on a machine's own disk cannot carry a storage quota"});
-    return {kind: "host-filesystem"};
+  #effectiveCapacityPolicy(
+    _backingKind: "local-directory",
+    override: WorkspaceCapacityPolicy | undefined,
+  ): WorkspaceCapacityPolicy {
+    if (override && override.kind !== "host-filesystem")
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "A Workspace on a machine's own disk cannot carry a storage quota",
+      });
+    return { kind: "host-filesystem" };
   }
 
   async #ownerEnvironmentId(ownerId: UserId): Promise<EnvironmentId> {
@@ -571,7 +580,7 @@ export class WorkspaceService {
   }
 
   async #forEachStatus(
-    status: "archiving" | "provisioning" | "ready" | "unavailable",
+    status: "provisioning" | "ready" | "unavailable",
     operation: (workspace: Workspace) => Promise<unknown>,
   ): Promise<void> {
     let after: { readonly createdAt: string; readonly id: WorkspaceId } | undefined;
@@ -589,7 +598,12 @@ export class WorkspaceService {
 }
 
 function relocationIssue(): NonNullable<Workspace["storageIssue"]> {
-  return { code: "relocation-required", message: "Move this Workspace to a local directory before using it.", occurredAt: new Date().toISOString(), retryable: false };
+  return {
+    code: "relocation-required",
+    message: "Move this Workspace to a local directory before using it.",
+    occurredAt: new Date().toISOString(),
+    retryable: false,
+  };
 }
 
 function workspaceProvisioningKey(workspaceId: WorkspaceId): string {

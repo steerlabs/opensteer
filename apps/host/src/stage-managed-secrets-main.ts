@@ -1,6 +1,6 @@
 import {
-replacePrivateFileAtomically,
-securePrivateDirectory,
+  replacePrivateFileAtomically,
+  securePrivateDirectory,
 } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 import { realpath } from "node:fs/promises";

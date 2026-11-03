@@ -1,66 +1,66 @@
 import type { HostConfig } from "@opensteer/config";
 import {
-createId,
-PendingRequestSchema,
-zeroSequence,
-type EnvironmentId,
-type RequestId,
-type RunId,
-type RunnerId,
-type ThreadId,
-type UserId,
-type WorkspaceId,
+  createId,
+  PendingRequestSchema,
+  zeroSequence,
+  type EnvironmentId,
+  type RequestId,
+  type RunId,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
+  type WorkspaceId,
 } from "@opensteer/core";
-import { createDatabase,migrateToLatest,type OpensteerStore } from "@opensteer/database";
+import { createDatabase, migrateToLatest, type OpensteerStore } from "@opensteer/database";
 import {
-cloneTestDatabase,
-failDatabaseContainment,
-ownTestDatabaseProducer,
+  cloneTestDatabase,
+  failDatabaseContainment,
+  ownTestDatabaseProducer,
 } from "@opensteer/database/test-support/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import {
-HarnessInstanceCatalogSchema,
-hostApiVersionHeader,
-RunnerAuxiliaryChallengeSchema,
-RunnerAuxiliaryWelcomeSchema,
-RunnerBootIdSchema,
-RunnerChallengeSchema,
-RunnerDescriptorSchema,
-RunnerEnrollmentCredentialSchema,
-runnerProofFormatVersion,
-ShellSessionIdSchema,
-type HostToRunnerMessage,
-type MachineAccessPolicy,
-type MachineAccessRunContext,
-type RunnerBootId,
-type RunnerConnectionFence,
-type RunnerDescriptor,
-type RunnerModuleName,
-type RunnerProof,
+  HarnessInstanceCatalogSchema,
+  hostApiVersionHeader,
+  RunnerAuxiliaryChallengeSchema,
+  RunnerAuxiliaryWelcomeSchema,
+  RunnerBootIdSchema,
+  RunnerChallengeSchema,
+  RunnerDescriptorSchema,
+  RunnerEnrollmentCredentialSchema,
+  runnerProofFormatVersion,
+  ShellSessionIdSchema,
+  type HostToRunnerMessage,
+  type MachineAccessPolicy,
+  type MachineAccessRunContext,
+  type RunnerBootId,
+  type RunnerConnectionFence,
+  type RunnerDescriptor,
+  type RunnerModuleName,
+  type RunnerProof,
 } from "@opensteer/protocol";
 import {
-isMachineAccessRoutes,
-isMachineAccessSetup,
-machineAccessTargets,
-planMachineAccess,
-prepareShellModule,
-setupMachineAccess,
-ShellModuleHandler,
-type MachineAccessSetup,
-type PreparedShellModule,
+  isMachineAccessRoutes,
+  isMachineAccessSetup,
+  machineAccessTargets,
+  planMachineAccess,
+  prepareShellModule,
+  setupMachineAccess,
+  ShellModuleHandler,
+  type MachineAccessSetup,
+  type PreparedShellModule,
 } from "@opensteer/runner";
 import {
-createRunnerAuthenticationSignature,
-createRunnerAuxiliarySignature,
-createRunnerEnrollmentSignature,
+  createRunnerAuthenticationSignature,
+  createRunnerAuxiliarySignature,
+  createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
-import { execFile,spawn } from "node:child_process";
-import { generateKeyPairSync,randomUUID,type KeyObject } from "node:crypto";
-import { mkdtemp,rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,7 +68,7 @@ import { promisify } from "node:util";
 import WebSocket from "ws";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
-import { createHostRuntime,type HostRuntime } from "./runtime.js";
+import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const executeFile = promisify(execFile);
 
@@ -1057,7 +1057,7 @@ export async function connectCallerMachine(
   const runnerId = createId("runner");
   const environmentId = input.environmentId ?? createId("environment");
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
-  const disk = input.localDirectory ? attachLocalWorkspaceDisk(socket) : undefined;
+  const disk = input.localDirectory !== false ? attachLocalWorkspaceDisk(socket) : undefined;
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
@@ -1100,7 +1100,7 @@ export async function connectCallerMachine(
         localStorage: disk?.inventory ?? null,
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
         providerStateModes: ["ambient", "isolated"],
-        workspaceBackings: disk ? ["local-directory"] : ["local-directory"],
+        workspaceBackings: disk ? ["local-directory"] : [],
         workspaceMounts: [],
       },
     },

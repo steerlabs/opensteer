@@ -1,21 +1,21 @@
 import {
-createId,
-ModelSelectionSchema,
-OpensteerError,
-type EnvironmentId,
-type Message,
-type Run,
-type Thread,
-type ThreadInput,
-type Workspace,
+  createId,
+  ModelSelectionSchema,
+  OpensteerError,
+  type EnvironmentId,
+  type Message,
+  type Run,
+  type Thread,
+  type ThreadInput,
+  type Workspace,
 } from "@opensteer/core";
-import type { OpensteerStore,TriggerControlAdmissionResult } from "@opensteer/database";
+import type { OpensteerStore, TriggerControlAdmissionResult } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import type { TriggerControlInput } from "@opensteer/triggers";
-import { describe,expect,it,vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-TriggerControlService,
-type TriggerControlTokenService,
+  TriggerControlService,
+  type TriggerControlTokenService,
 } from "./trigger-control-service.js";
 
 const now = "2026-08-12T12:00:00.000Z";
@@ -148,12 +148,14 @@ describe("TriggerControlService", () => {
     const selectedHarnessId = createId("harnessInstance");
     const targetWorkspace = {
       ...workspace(workspaceId, "Portable workspace"),
-      backing: { kind: "local-directory" as const, generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota" as const,
+      backing: {
+        kind: "local-directory" as const,
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: targetEnvironmentId,
+        storageAuthorityId: createId("storageAuthority"),
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
     };
     const delegateThread = vi.fn(async () => {
       throw new Error("Delegation reached the selected environment");

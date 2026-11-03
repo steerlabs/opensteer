@@ -1,50 +1,53 @@
 import {
-ModelSelectionSchema,
-OpensteerError,
-placeInputFailure,
-RequestIdSchema,
-RequestResponseSchema,
-RunIdSchema,
-SequenceSchema,
-ThreadIdSchema,
-type AgentEvent,
-type WorkspaceId
+  ModelSelectionSchema,
+  OpensteerError,
+  placeInputFailure,
+  RequestIdSchema,
+  RequestResponseSchema,
+  RunIdSchema,
+  SequenceSchema,
+  ThreadIdSchema,
+  type AgentEvent,
+  type WorkspaceId,
 } from "@opensteer/core";
 import type {
-AttachmentStore,
-CommandRow,
-OpensteerStore,
-PendingCommandRow,
-TriggerStore,
+  AttachmentStore,
+  CommandRow,
+  OpensteerStore,
+  PendingCommandRow,
+  TriggerStore,
 } from "@opensteer/database";
 import {
-initialContinuationContextFits,
-initialContinuationHistoryBudget,
-isRetryableHarnessCatalogStatus,
-selectInitialContinuationContext,
+  initialContinuationContextFits,
+  initialContinuationHistoryBudget,
+  isRetryableHarnessCatalogStatus,
+  selectInitialContinuationContext,
 } from "@opensteer/harness";
 import {
-CommandDispatchError,
-type DurableCommandDispatcher,
-type RunnerRegistry,
+  CommandDispatchError,
+  type DurableCommandDispatcher,
+  type RunnerRegistry,
 } from "@opensteer/orchestration";
 import {
-CorrelationIdSchema,
-HarnessInputSchema,
-RunInitialContextSchema,
-type HarnessInstanceCatalog,
-type MachineAccessRunContext,
-type RunnerCommand,
+  CorrelationIdSchema,
+  HarnessInputSchema,
+  RunInitialContextSchema,
+  type HarnessInstanceCatalog,
+  type MachineAccessRunContext,
+  type RunnerCommand,
 } from "@opensteer/protocol";
-import { createHash,randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { BrowserService } from "../browser/browser-service.js";
 import {
-openRequestResponse,
-type RequestResponseVault,
+  openRequestResponse,
+  type RequestResponseVault,
 } from "../identity/request-response-vault.js";
 import type { IntegrationSkillsTokenService } from "../integrations/integration-skill-bundle-service.js";
-import type { IntegrationToolsTokenService,TriggerIntegrationToolsTokenService } from "../integrations/integration-tools-mcp-service.js";
+import type {
+  IntegrationToolsTokenService,
+  TriggerIntegrationToolsTokenService,
+} from "../integrations/integration-tools-mcp-service.js";
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
@@ -53,13 +56,13 @@ import type { WorkspaceExecutionAccessService } from "../workspace/workspace-exe
 import type { WorkspaceService } from "../workspace/workspace-service.js";
 import type { AgentControlTokenService } from "./agent-control-service.js";
 import {
-harnessInspectionDefinition,
-inspectAndRecordHarnessCatalogs,
+  harnessInspectionDefinition,
+  inspectAndRecordHarnessCatalogs,
 } from "./harness-catalogs.js";
 import {
-matchModelSelection,
-modelOptionUnavailableMessage,
-runModelSelection,
+  matchModelSelection,
+  modelOptionUnavailableMessage,
+  runModelSelection,
 } from "./model-selection.js";
 import type { RunCapabilityTokenService } from "./run-capability.js";
 

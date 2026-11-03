@@ -1,47 +1,47 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
-createId,
-HarnessIdSchema,
-ModelSelectionSchema,
-OpensteerError,
-provisionalThreadTitle,
-SequenceSchema,
-ThreadAccessModeSchema,
-type AgentEvent,
-type Message,
-type Run,
-type Thread,
-type UserId,
+  createId,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  OpensteerError,
+  provisionalThreadTitle,
+  SequenceSchema,
+  ThreadAccessModeSchema,
+  type AgentEvent,
+  type Message,
+  type Run,
+  type Thread,
+  type UserId,
 } from "@opensteer/core";
 import {
-BrowserTabGroupStore,
-createDatabase,
-migrateToLatest,
-OpensteerStore,
-WorkspaceTabStore,
+  BrowserTabGroupStore,
+  createDatabase,
+  migrateToLatest,
+  OpensteerStore,
+  WorkspaceTabStore,
 } from "@opensteer/database";
-import { CommandService,KeyedAdmissionQueue,RealtimeHub } from "@opensteer/orchestration";
+import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
-BrowserSurfaceIdSchema,
-ComputerUseSessionSummarySchema,
-createBrowserSessionId,
-HarnessInputSchema,
-mintComputerUseSessionId,
-type RunnerDescriptor,
+  BrowserSurfaceIdSchema,
+  ComputerUseSessionSummarySchema,
+  createBrowserSessionId,
+  HarnessInputSchema,
+  mintComputerUseSessionId,
+  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
-import { mkdir,writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import {
-AgentControlService,
-type AgentControlRunScope,
-type AgentControlTokenService,
+  AgentControlService,
+  type AgentControlRunScope,
+  type AgentControlTokenService,
 } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 
@@ -139,7 +139,13 @@ integration("agent-to-agent messaging round trip", () => {
       create: async (input) =>
         store.createWorkspace({
           ...input,
-          backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+          backing: {
+            kind: "local-directory",
+            generation: 1,
+            bindingId: createId("workspaceBinding"),
+            ownerEnvironmentId: createId("environment"),
+            storageAuthorityId: createId("storageAuthority"),
+          },
           capacityPolicy: {
             kind: "hard-quota",
             blockHardLimitBytes: 10_000_000,
@@ -194,7 +200,13 @@ integration("agent-to-agent messaging round trip", () => {
       idempotencyKey: randomUUID(),
       name: "Private",
       status: "ready",
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
+      },
       capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 1000000, inodeHardLimit: 1000 },
     });
     const otherThreadId = createId("thread");
@@ -957,12 +969,14 @@ integration("agent-to-agent messaging round trip", () => {
     async (mode) => {
       const fixture = await createMessagingFixture();
       const workspace = await store.createWorkspace({
-        backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
+        backing: {
+          kind: "local-directory",
+          generation: 1,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
         },
+        capacityPolicy: { kind: "host-filesystem" as const },
         createdBy: fixture.userId,
         idempotencyKey: randomUUID(),
         name: "Worker workspace",
@@ -1296,12 +1310,14 @@ integration("agent-to-agent messaging round trip", () => {
     const environmentId = createId("environment");
     await enrollTestRunner({ createdBy: userId, environmentId, runnerId });
     const mainWorkspace = await store.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: userId,
       idempotencyKey: `messaging-main-${randomUUID()}`,
       name: "Main workspace",

@@ -1,69 +1,69 @@
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId } from "@opensteer/core";
-import { createDatabase,iphoneDeviceProfileMigration } from "@opensteer/database";
+import { createDatabase, iphoneDeviceProfileMigration } from "@opensteer/database";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import {
-isComputerAppDefinition,
-type ComputerAppSetupRequest,
-type IntegrationAccess,
+  isComputerAppDefinition,
+  type ComputerAppSetupRequest,
+  type IntegrationAccess,
 } from "@opensteer/integration-core";
 import {
-HostIntegrationsComputerAppApprovalKeyChallengeSchema,
-HostIntegrationsInvokeSchema,
-RunnerChallengeSchema,
-RunnerDescriptorSchema,
-hostApi,
-type ComputerAppApprovalAnswer,
-type ComputerAppApprovalKeyChallenge,
-type ComputerAppApprovalOutcome,
-type ComputerAppStatusEntry,
-type RunnerDescriptor,
+  HostIntegrationsComputerAppApprovalKeyChallengeSchema,
+  HostIntegrationsInvokeSchema,
+  RunnerChallengeSchema,
+  RunnerDescriptorSchema,
+  hostApi,
+  type ComputerAppApprovalAnswer,
+  type ComputerAppApprovalKeyChallenge,
+  type ComputerAppApprovalOutcome,
+  type ComputerAppStatusEntry,
+  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
-computerAppApprovalKeyId,
-createComputerAppApproval,
-createRunnerAuthenticationSignature,
-createRunnerEnrollmentSignature,
-signComputerAppApprovalKeyChallenge,
+  computerAppApprovalKeyId,
+  createComputerAppApproval,
+  createRunnerAuthenticationSignature,
+  createRunnerEnrollmentSignature,
+  signComputerAppApprovalKeyChallenge,
 } from "@opensteer/runner-auth";
 import { sql } from "kysely";
-import { createPublicKey,generateKeyPairSync,randomUUID,type KeyObject } from "node:crypto";
-import { mkdir,mkdtemp,writeFile } from "node:fs/promises";
+import { createPublicKey, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll,afterEach,beforeAll,beforeEach,describe,expect,it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
-import { testRpcData,testRpcRequest } from "../server/test-host-api-request.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import {
-connectComputerAppMachine,
-integrationGateway,
-openAuxiliaryStream,
-operation,
-operations,
-requestComputerAppSetup,
-setComputerApp,
-toolReadiness,
-toolText,
-waitForClose,
-waitForMessage,
+  connectComputerAppMachine,
+  integrationGateway,
+  openAuxiliaryStream,
+  operation,
+  operations,
+  requestComputerAppSetup,
+  setComputerApp,
+  toolReadiness,
+  toolText,
+  waitForClose,
+  waitForMessage,
 } from "./computer-apps.test-support.js";
 import {
-closed,
-configurePersonalRemoteAccess,
-connectCallerMachine,
-connectPrimary,
-createMachineAccessDatabase,
-dispatchCallerRun,
-enrollmentToken,
-openRealtime,
-resetMachineAccessDatabase,
-revokeMachine,
-signUpUser,
-startMachineAccessHost,
-startPersonalMachineAccessHost,
-waitForCondition,
-type MachineAccessHost,
+  closed,
+  configurePersonalRemoteAccess,
+  connectCallerMachine,
+  connectPrimary,
+  createMachineAccessDatabase,
+  dispatchCallerRun,
+  enrollmentToken,
+  openRealtime,
+  resetMachineAccessDatabase,
+  revokeMachine,
+  signUpUser,
+  startMachineAccessHost,
+  startPersonalMachineAccessHost,
+  waitForCondition,
+  type MachineAccessHost,
 } from "./machine-access.test-support.js";
 import { createHostRuntime } from "./runtime.js";
 

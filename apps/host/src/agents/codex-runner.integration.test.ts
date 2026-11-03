@@ -1,26 +1,26 @@
-import { ModelSelectionSchema,type RunId } from "@opensteer/core";
+import { ModelSelectionSchema, type RunId } from "@opensteer/core";
 import {
-HarnessRegistry,
-isolatedServiceHarnessRuntimeBoundary,
-nativeUserHarnessRuntimeBoundary,
+  HarnessRegistry,
+  isolatedServiceHarnessRuntimeBoundary,
+  nativeUserHarnessRuntimeBoundary,
 } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { mkdtemp,writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll,afterEach,describe,expect,it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
-codexThreadOf,
-codexUsageFrames,
-expectRecordedUsage,
-expectedUsage,
-recordedUsage,
-usageRecord,
-type UsageRecord,
+  codexThreadOf,
+  codexUsageFrames,
+  expectRecordedUsage,
+  expectedUsage,
+  recordedUsage,
+  usageRecord,
+  type UsageRecord,
 } from "./codex-usage.test-support.js";
-import { startVerticalStack,type VerticalStack } from "./vertical-stack.test-support.js";
+import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
 const configuredDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = configuredDatabaseUrl ? describe : describe.skip;
@@ -214,7 +214,10 @@ integration("Host, Runner, and Codex harness integration", () => {
     expect(await host.store.listWorkspaces()).toHaveLength(2);
     expect(workspace.kind).toBe("project");
     expect(mountCalls).toHaveLength(1);
-    expect(mountCalls[0]?.plan).toMatchObject({ ...(await host.store.getWorkspace(workspace.id))?.backing, workspaceId: workspace.id });
+    expect(mountCalls[0]?.plan).toMatchObject({
+      ...(await host.store.getWorkspace(workspace.id))?.backing,
+      workspaceId: workspace.id,
+    });
     expect(stack.mountCleanupCalls()).toBe(0);
   });
 

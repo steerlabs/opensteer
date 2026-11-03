@@ -1,21 +1,20 @@
-import {
-createId,
-type LocalWorkspaceBacking,
-type Workspace
-} from "@opensteer/core";
+import { createId, type LocalWorkspaceBacking, type Workspace } from "@opensteer/core";
 import type {
-WorkspaceFilesAdmission,
-WorkspaceMembershipChangeListener,
-WorkspaceMembershipRecord,
+  WorkspaceFilesAdmission,
+  WorkspaceMembershipChangeListener,
+  WorkspaceMembershipRecord,
 } from "@opensteer/database";
-import { afterEach,describe,expect,it,vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceFilesService } from "./workspace-files-service.js";
 
 afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceFilesService", () => {
   it("fails closed when a Workspace backing has no configured driver", async () => {
-    const unavailable = membershipFixture({ ...localWorkspace(), backing: { kind: "unsupported" } } as never);
+    const unavailable = membershipFixture({
+      ...localWorkspace(),
+      backing: { kind: "unsupported" },
+    } as never);
     const service = new WorkspaceFilesService({
       local: { list: vi.fn() } as never,
       memberships: unavailable.repository,

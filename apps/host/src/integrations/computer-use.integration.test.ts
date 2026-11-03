@@ -1,33 +1,33 @@
 import {
-createId,
-HarnessIdSchema,
-ModelSelectionSchema,
-ThreadAccessModeSchema,
+  createId,
+  HarnessIdSchema,
+  ModelSelectionSchema,
+  ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
-createDatabase,
-IntegrationPlatformStore,
-IntegrationStore,
-OpensteerStore,
+  createDatabase,
+  IntegrationPlatformStore,
+  IntegrationStore,
+  OpensteerStore,
 } from "@opensteer/database";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
-import type { PendingAgentEvent,RunnerDescriptor } from "@opensteer/protocol";
+import type { PendingAgentEvent, RunnerDescriptor } from "@opensteer/protocol";
 import { createComputerAppApproval } from "@opensteer/runner-auth";
 import { sql } from "kysely";
-import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
-import { mkdtemp,rm } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-createMachineAccessDatabase,
-resetMachineAccessDatabase,
+  createMachineAccessDatabase,
+  resetMachineAccessDatabase,
 } from "../runtime/machine-access.test-support.js";
 import { integrationCallSubject } from "./integration-call-subject.js";
 import {
-IntegrationPlatformService,
-type ComputerUseGateway,
+  IntegrationPlatformService,
+  type ComputerUseGateway,
 } from "./integration-platform-service.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -606,12 +606,14 @@ async function createWorkspace(
   kind?: "main" | "project",
 ) {
   return store.createWorkspace({
-    backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-    capacityPolicy: {
-      blockHardLimitBytes: 10_000_000,
-      inodeHardLimit: 10_000,
-      kind: "hard-quota",
+    backing: {
+      kind: "local-directory",
+      generation: 1,
+      bindingId: createId("workspaceBinding"),
+      ownerEnvironmentId: createId("environment"),
+      storageAuthorityId: createId("storageAuthority"),
     },
+    capacityPolicy: { kind: "host-filesystem" as const },
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
     ...(kind === undefined ? {} : { kind }),

@@ -1,9 +1,10 @@
-import type { DeploymentShape,EnvironmentId,UserId,Workspace } from "@opensteer/core";
+import { OpensteerError } from "@opensteer/core";
+import type { DeploymentShape, EnvironmentId, UserId, Workspace } from "@opensteer/core";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import {
-assertExecutionAllowedByDeployment,
-workspaceUsesBacking,
-type WorkspaceExecutionAccessPlan,
+  assertExecutionAllowedByDeployment,
+  workspaceUsesBacking,
+  type WorkspaceExecutionAccessPlan,
 } from "@opensteer/workspace";
 import type { RunnerLocalWorkspaceDriver } from "./runner-local-workspace-driver.js";
 
@@ -27,6 +28,11 @@ export class WorkspaceExecutionAccessService {
     readonly runnerIdentity: RunnerIdentity;
     readonly workspace: Workspace;
   }): Promise<WorkspaceExecutionAccessPlan> {
+    if (input.workspace.backing.kind !== "local-directory")
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        message: "Workspace storage requires relocation to a local directory",
+      });
     const agents = input.runnerIdentity.modules.agents;
     if (!agents?.workspaceBackings.includes(input.workspace.backing.kind)) {
       throw new Error(`Runner does not support ${input.workspace.backing.kind} Workspace access`);

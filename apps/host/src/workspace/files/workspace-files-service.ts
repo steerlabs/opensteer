@@ -1,13 +1,13 @@
-import { OpensteerError,type LocalWorkspaceBacking,type Workspace } from "@opensteer/core";
+import { OpensteerError, type LocalWorkspaceBacking, type Workspace } from "@opensteer/core";
 import type {
-OpensteerStore,
-WorkspaceFilesAdmission,
-WorkspaceMembershipRecord,
+  OpensteerStore,
+  WorkspaceFilesAdmission,
+  WorkspaceMembershipRecord,
 } from "@opensteer/database";
 import type { WorkspaceDirectoryPage } from "@opensteer/protocol";
 import type { WorkspaceActivityService } from "../workspace-activity.js";
 import type { RunnerLocalWorkspaceFilesDriver } from "./workspace-files-runner-local-driver.js";
-import type { WorkspaceFileListInput,WorkspaceFilePreview } from "./workspace-files-types.js";
+import type { WorkspaceFileListInput, WorkspaceFilePreview } from "./workspace-files-types.js";
 
 const membershipRevalidationByteInterval = 1 * 1_024 * 1_024;
 const membershipRevalidationTimeIntervalMs = 250;
@@ -19,9 +19,7 @@ type WorkspaceMembershipRepository = Pick<
 >;
 
 /**
- * Product-facing Files router. A Deployment registers a reader for each kind of
- * storage it holds — shared volumes here, and every lent machine's own
- * directories through the Runner that owns them.
+ * Product-facing Files access through the Runner that owns the directory.
  */
 export class WorkspaceFilesService {
   readonly #activeMemberships = new Map<string, Set<WorkspaceFilesLease>>();
@@ -57,7 +55,8 @@ export class WorkspaceFilesService {
       switch (workspace.backing.kind) {
         case "local-directory":
           return this.#requiredLocal().list(asLocalWorkspace(workspace), input, operationSignal);
-        default: throw unsupportedBacking(workspace.backing.kind);
+        default:
+          throw unsupportedBacking(workspace.backing.kind);
       }
     });
   }
@@ -77,7 +76,8 @@ export class WorkspaceFilesService {
             fileKey,
             operationSignal,
           );
-        default: throw unsupportedBacking(workspace.backing.kind);
+        default:
+          throw unsupportedBacking(workspace.backing.kind);
       }
     });
   }
@@ -181,8 +181,6 @@ export class WorkspaceFilesService {
     if (this.#local !== undefined) return this.#local;
     throw unsupportedBacking("local-directory");
   }
-
-
 }
 
 class WorkspaceFilesLease {
@@ -332,13 +330,13 @@ function asLocalWorkspace(workspace: Workspace): LocalWorkspace {
 function unsupportedBacking(kind: Workspace["backing"]["kind"]): OpensteerError {
   return new OpensteerError({
     code: "workspace_unavailable",
-    message: `This Host is not configured to read ${kind} Workspaces`,
+    message: `Workspace storage requires relocation to a local directory (${kind})`,
   });
 }
 
 export { RunnerLocalWorkspaceFilesDriver } from "./workspace-files-runner-local-driver.js";
 export type {
-WorkspaceFileListInput,
-WorkspaceFilePreview,
-WorkspaceFilesDriver
+  WorkspaceFileListInput,
+  WorkspaceFilePreview,
+  WorkspaceFilesDriver,
 } from "./workspace-files-types.js";

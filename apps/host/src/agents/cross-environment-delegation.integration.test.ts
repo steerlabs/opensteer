@@ -3,49 +3,49 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { assignmentPresentation } from "@opensteer/client/host";
 import {
-assignmentResultMaxBytes,
-createId,
-HarnessIdSchema,
-MessageContentSchema,
-ModelSelectionSchema,
-PendingRequestSchema,
-SequenceSchema,
-ThreadAccessModeSchema,
-WorkspaceIdSchema,
-type AssignmentId,
-type EnvironmentId,
-type RequestId,
-type RunId,
-type RunnerId,
-type ThreadId,
-type UserId,
-type WorkspaceId,
+  assignmentResultMaxBytes,
+  createId,
+  HarnessIdSchema,
+  MessageContentSchema,
+  ModelSelectionSchema,
+  PendingRequestSchema,
+  SequenceSchema,
+  ThreadAccessModeSchema,
+  WorkspaceIdSchema,
+  type AssignmentId,
+  type EnvironmentId,
+  type RequestId,
+  type RunId,
+  type RunnerId,
+  type ThreadId,
+  type UserId,
+  type WorkspaceId,
 } from "@opensteer/core";
 import {
-createDatabase,
-migrateToLatest,
-migrationProvider,
-OpensteerStore,
+  createDatabase,
+  migrateToLatest,
+  migrationProvider,
+  OpensteerStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
-import { CommandService,KeyedAdmissionQueue } from "@opensteer/orchestration";
+import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
 import {
-AgentControlResponseSchema,
-EnvironmentDiscoverySchema,
-HarnessInstanceCatalogSchema,
-type HarnessInstanceCatalog,
-type RunnerCommand,
-type RunnerDescriptor,
+  AgentControlResponseSchema,
+  EnvironmentDiscoverySchema,
+  HarnessInstanceCatalogSchema,
+  type HarnessInstanceCatalog,
+  type RunnerCommand,
+  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash,generateKeyPairSync,randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-AgentControlService,
-type AgentControlRunScope,
-type AgentControlTokenService,
+  AgentControlService,
+  type AgentControlRunScope,
+  type AgentControlTokenService,
 } from "./agent-control-service.js";
 import { AgentToolsMcpService } from "./agent-tools-mcp-service.js";
 import { ContinuationService } from "./continuation-service.js";
@@ -2516,12 +2516,14 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const workspace = await store.createWorkspace({
       kind: options.project ? "project" : "main",
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: userId,
       ...(options.workspaceId ? { id: options.workspaceId } : {}),
       idempotencyKey: `delegation-workspace-${randomUUID()}`,
@@ -3043,12 +3045,14 @@ integration("cross-environment delegation reaches the Runner", () => {
 
   function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
     return store.createWorkspace({
-      backing: { kind: "local-directory", generation: 1, bindingId: createId("workspaceBinding"), ownerEnvironmentId: createId("environment"), storageAuthorityId: createId("storageAuthority") },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        kind: "local-directory",
+        generation: 1,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: createId("environment"),
+        storageAuthorityId: createId("storageAuthority"),
       },
+      capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: userId,
       ...(id ? { id } : {}),
       idempotencyKey: `worker-workspace-${randomUUID()}`,

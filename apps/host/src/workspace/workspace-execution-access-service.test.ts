@@ -1,5 +1,5 @@
-import { createId,type EnvironmentId,type Workspace } from "@opensteer/core";
-import { describe,expect,it,vi } from "vitest";
+import { createId, type EnvironmentId, type Workspace } from "@opensteer/core";
+import { describe, expect, it, vi } from "vitest";
 import type { RunnerLocalWorkspaceDriver } from "./runner-local-workspace-driver.js";
 import { WorkspaceExecutionAccessService } from "./workspace-execution-access-service.js";
 
@@ -39,9 +39,7 @@ describe("WorkspaceExecutionAccessService", () => {
     const service = localService({ planExecutionAccess });
 
     await expect(
-      service.plan(
-        planInput({ environmentId, runnerWorkspaceBackings: [], workspace }),
-      ),
+      service.plan(planInput({ environmentId, runnerWorkspaceBackings: [], workspace })),
     ).rejects.toThrow(/Runner does not support local-directory Workspace access/u);
     expect(planExecutionAccess).not.toHaveBeenCalled();
   });
@@ -62,8 +60,6 @@ describe("WorkspaceExecutionAccessService", () => {
     ).rejects.toThrow(/only in its owning environment/u);
     expect(planExecutionAccess).not.toHaveBeenCalled();
   });
-
-
 });
 
 function localService(

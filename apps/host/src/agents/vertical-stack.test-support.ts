@@ -1,76 +1,76 @@
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
-import type { HostConfig,RunnerConfig } from "@opensteer/config";
+import type { HostConfig, RunnerConfig } from "@opensteer/config";
 import {
-HarnessIdSchema,
-createId,
-zeroSequence,
-type AgentEventView as AgentEvent,
-type ArtifactContentPart,
-type Attachment,
-type EnvironmentId,
-type HarnessInstanceId,
-type MessageId,
-type ModelSelection,
-type NotificationView,
-type ProviderSessionId,
-type RunId,
-type ThreadAccessMode,
-type ThreadId,
-type WorkspaceId,
+  HarnessIdSchema,
+  createId,
+  zeroSequence,
+  type AgentEventView as AgentEvent,
+  type ArtifactContentPart,
+  type Attachment,
+  type EnvironmentId,
+  type HarnessInstanceId,
+  type MessageId,
+  type ModelSelection,
+  type NotificationView,
+  type ProviderSessionId,
+  type RunId,
+  type ThreadAccessMode,
+  type ThreadId,
+  type WorkspaceId,
 } from "@opensteer/core";
 import {
-cloneTestDatabase,
-failDatabaseContainment,
-type TestDatabase,
+  cloneTestDatabase,
+  failDatabaseContainment,
+  type TestDatabase,
 } from "@opensteer/database/test-support/database";
-import { hostApiVersion,hostKeyFingerprint } from "@opensteer/deployment-authority";
-import type { HarnessRegistry,HarnessRuntimeBoundary } from "@opensteer/harness";
+import { hostApiVersion, hostKeyFingerprint } from "@opensteer/deployment-authority";
+import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import {
-HostToClientMessageSchema,
-RunnerBootIdSchema,
-hostApiVersionHeader,
-type HarnessInstanceCatalogView,
-type HarnessModelDescriptor,
-type HostApiClient,
-type HostToClientMessage,
+  HostToClientMessageSchema,
+  RunnerBootIdSchema,
+  hostApiVersionHeader,
+  type HarnessInstanceCatalogView,
+  type HarnessModelDescriptor,
+  type HostApiClient,
+  type HostToClientMessage,
 } from "@opensteer/protocol";
 import {
-AttachmentCache,
-ExecutionContainment,
-FileRunnerIdentityStore,
-ReconnectingHostConnection,
-RunnerRuntime,
-executionScopeVariable,
-providerContinuationIdentityProjector,
-type PreparedIntegrationsModule,
-type RunWorkspaceManager,
-type RunnerAgentsConnection,
-type RunnerLogger,
-type RunnerRuntimeOptions,
+  AttachmentCache,
+  ExecutionContainment,
+  FileRunnerIdentityStore,
+  ReconnectingHostConnection,
+  RunnerRuntime,
+  executionScopeVariable,
+  providerContinuationIdentityProjector,
+  type PreparedIntegrationsModule,
+  type RunWorkspaceManager,
+  type RunnerAgentsConnection,
+  type RunnerLogger,
+  type RunnerRuntimeOptions,
 } from "@opensteer/runner";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { LocalWorkspaceAuthority,NativeFsHelper } from "@opensteer/workspace-local";
-import { generateKeyPairSync,randomUUID } from "node:crypto";
+import { LocalWorkspaceAuthority, NativeFsHelper } from "@opensteer/workspace-local";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir,mkdtemp,realpath,rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { TestRunner } from "vitest";
-import WebSocket,{ type RawData } from "ws";
+import WebSocket, { type RawData } from "ws";
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { loadOrCreateHostKeys } from "../identity/host-keys.js";
 import { nativeFsHelperBinary } from "../runtime/machine-access.test-support.js";
-import { createHostRuntime,type HostRuntime } from "../runtime/runtime.js";
+import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { NetworkPartition } from "./network-partition.test-support.js";
 import { forkRunnerChild } from "./runner-child.test-support.js";
-import { runnerReady,type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
-import { RunnerWire,type RunnerWireOptions } from "./runner-wire.test-support.js";
+import { runnerReady, type RunnerReadinessSnapshot } from "./runner-readiness.test-support.js";
+import { RunnerWire, type RunnerWireOptions } from "./runner-wire.test-support.js";
 
 /*
  * A whole deployment in one process: a Host on a temporary database, one
@@ -665,11 +665,11 @@ async function startWithin(
     rootPolicy: "managed-local",
   });
   const localAuthority = new LocalWorkspaceAuthority({
-        filesystemAuthority: filesystem,
-        namespace: { kind: "single-owner", ownerEnvironmentId: environmentId },
-        registryFilePath: join(runnerDataDirectory, "local-workspaces.json"),
-        visibleRootPath: join(temporaryRoot, "local-workspaces"),
-      });
+    filesystemAuthority: filesystem,
+    namespace: { kind: "single-owner", ownerEnvironmentId: environmentId },
+    registryFilePath: join(runnerDataDirectory, "local-workspaces.json"),
+    visibleRootPath: join(temporaryRoot, "local-workspaces"),
+  });
   // A real Runner derives this from its persisted identity key, so it survives a restart.
   const continuationKey = generateKeyPairSync("ed25519").privateKey;
   const runnerStarts = new Set<Promise<unknown>>();
@@ -820,6 +820,16 @@ async function startWithin(
                       requestId: request.requestId,
                     };
                     const signal = AbortSignal.timeout(30_000);
+                    if (request.type === "host.workspace.local.relocate") {
+                      await localAuthority.relocate(
+                        request.binding,
+                        request.slug,
+                        request.adopt,
+                        request.createdBy,
+                        signal,
+                      );
+                      return { ...echo, type: "runner.workspace.local.relocated" };
+                    }
                     if (request.type === "host.workspace.local.provision") {
                       const path = await localAuthority.provision(
                         {

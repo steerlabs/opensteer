@@ -1,9 +1,9 @@
-import { AesGcmSecretVault,StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { ModelSelectionSchema,OpensteerError,createId,type Message } from "@opensteer/core";
-import type { CommandRow,OpensteerStore } from "@opensteer/database";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
+import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
+import type { CommandRow, OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
-import { HarnessModelDescriptorSchema,type RunnerCommand } from "@opensteer/protocol";
-import { describe,expect,it,vi } from "vitest";
+import { HarnessModelDescriptorSchema, type RunnerCommand } from "@opensteer/protocol";
+import { describe, expect, it, vi } from "vitest";
 import { sealRequestResponse } from "../identity/request-response-vault.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
 
@@ -240,7 +240,6 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
       await expect(
         dispatcher.dispatch(command, new AbortController().signal),
       ).rejects.toMatchObject({ disposition: "retry" });
-
     },
   );
 });
