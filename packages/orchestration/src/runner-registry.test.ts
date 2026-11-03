@@ -31,6 +31,66 @@ import {
 } from "./index.js";
 
 describe("Runner connection registry", () => {
+  it("settles specialist folder removal when its owning Runner replies", async () => {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+    });
+    const environmentId = createId("environment");
+    const identity = hello(createId("runner"), environmentId, "boot-1");
+    const authority = createId("storageAuthority");
+    const peer = new MemoryRunnerPeer("specialist-storage");
+    await registerAttached(
+      registry,
+      {
+        ...identity,
+        modules: {
+          ...identity.modules,
+          agents: {
+            ...identity.modules.agents!,
+            localStorage: {
+              storageAuthorityId: authority,
+              bindings: [],
+              truncated: false,
+            },
+          },
+        },
+      },
+      peer,
+    );
+    const request = {
+      type: "host.workspace.local.specialist.remove" as const,
+      requestId: crypto.randomUUID(),
+      operationId: "specialist-removal-test",
+      specialistId: crypto.randomUUID(),
+      binding: {
+        workspaceId: createId("workspace"),
+        bindingId: createId("workspaceBinding"),
+        generation: 1,
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: authority,
+      },
+    };
+    const pending = registry.requestWorkspaceLocal(
+      environmentId,
+      request,
+      AbortSignal.timeout(1000),
+    );
+    const settled = expect(pending).resolves.toMatchObject({
+      type: "runner.workspace.local.specialist.removed",
+    });
+    const sent = peer.messages.findLast((message) => message.type === request.type);
+    if (!sent || sent.type !== request.type)
+      throw new Error("Specialist removal never reached Runner");
+    await registry.handle(peer, {
+      type: "runner.workspace.local.specialist.removed",
+      requestId: request.requestId,
+      operationId: request.operationId,
+      binding: request.binding,
+      fence: sent.fence,
+    });
+    await settled;
+  });
+
   it("updates the macOS shell fact without changing the connection fence", async () => {
     const hook = vi.fn(async () => undefined);
     const registry = new RunnerRegistry({
