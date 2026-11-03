@@ -1,3 +1,5 @@
+import { SettingsSwitch } from "./settings/primitives.js";
+import { IntegrationIcon } from "./integrations/integration-icon.js";
 import { Link, useLocation } from "react-router";
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import type {
@@ -422,7 +424,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
 
         {connectionId ? <Link to="/settings/messaging">All connections</Link> : null}
         <PageHeader
-          description={subheading(view, step, provider?.label)}
+          description={view === "overview" ? undefined : subheading(view, step, provider?.label)}
           eyebrow="Messaging"
           title={heading(view, step, provider?.label)}
         />
@@ -696,9 +698,6 @@ export function ChannelOverview({
         <div className="section__head">
           <div>
             <h2 className="section__title">Messaging identities</h2>
-            <p className="section__hint">
-              Give a Workspace its own bot, or route one shared bot to several Workspaces.
-            </p>
           </div>
           <button
             className="btn btn--primary btn--small"
@@ -706,7 +705,7 @@ export function ChannelOverview({
             onClick={onAdd}
             type="button"
           >
-            <Icon name="plus" /> Add identity
+            <Icon name="plus" /> Add
           </button>
         </div>
         <div className="card">
@@ -726,9 +725,14 @@ export function ChannelOverview({
               return (
                 <Fragment key={connection.id}>
                   <div className="card__row">
-                    <span className="card__row-glyph" aria-hidden="true">
-                      {(provider?.label ?? connection.provider).slice(0, 1).toUpperCase()}
-                    </span>
+                    <IntegrationIcon
+                      id={
+                        connection.provider === "apple-messages"
+                          ? "apple-messages"
+                          : connection.provider
+                      }
+                      name={provider?.label ?? connection.provider}
+                    />
                     <div className="card__row-body">
                       <span className="card__row-title">
                         <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
@@ -761,25 +765,31 @@ export function ChannelOverview({
                       >
                         <Icon name="reload" />
                       </button>
-                      <button
-                        className="btn btn--small"
-                        disabled={pending}
-                        onClick={() => {
-                          if (repairable) onRepair(connection.id, connection.provider);
-                          else
-                            onStatus(
-                              connection.id,
-                              connection.status === "paused" ? "connected" : "paused",
-                            );
-                        }}
-                        type="button"
+                      {repairable ? (
+                        <button
+                          className="btn btn--small"
+                          disabled={pending}
+                          type="button"
+                          onClick={() => onRepair(connection.id, connection.provider)}
+                        >
+                          Fix setup
+                        </button>
+                      ) : (
+                        <SettingsSwitch
+                          label={`Enable ${connection.displayName}`}
+                          checked={connection.status !== "paused"}
+                          disabled={pending}
+                          onChange={(enabled) =>
+                            onStatus(connection.id, enabled ? "connected" : "paused")
+                          }
+                        />
+                      )}
+                      <Link
+                        aria-label={`Details for ${connection.displayName}`}
+                        to={`/settings/messaging/${encodeURIComponent(connection.id)}`}
                       >
-                        {repairable
-                          ? "Fix setup"
-                          : connection.status === "paused"
-                            ? "Resume"
-                            : "Pause"}
-                      </button>
+                        <Icon name="chevron-right" />
+                      </Link>
                       <button
                         aria-label={`Revoke ${connection.displayName}`}
                         className="icon-btn"
