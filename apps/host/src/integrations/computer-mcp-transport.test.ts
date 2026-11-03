@@ -99,3 +99,28 @@ it("never repeats a server's secrets in why the computer ended its session", asy
   expect(running.closeError?.message).not.toContain("hunter2");
   expect(reported).toHaveBeenCalledWith(running.closeError);
 });
+
+it("drops what is left of a secret the computer's cut of the output split", async () => {
+  const secret = `token-${"x".repeat(40)}-tail`;
+  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession"> = {
+    withRunnerAdmission: async (_runner, work) => work(),
+    openMcpSession: vi
+      .fn<ComputerAppHub["openMcpSession"]>()
+      .mockRejectedValue(
+        new ComputerMcpSessionError(
+          "failed",
+          `The MCP server stopped. Its last output: ${secret.slice(20)} was refused`,
+        ),
+      ),
+  };
+  const error = await new ComputerMcpTransport(hub, {
+    authorize: async () => undefined,
+    runnerId: createId("runner"),
+    serverId: createIntegrationId("server"),
+    launch: { type: "stdio", command: "program", args: [], cwd: "/tmp", env: {} },
+    secrets: { CAMERA_PASSWORD: secret },
+  })
+    .start()
+    .catch((reason: unknown) => reason);
+  expect((error as Error).message).toBe("The MCP server stopped. Its last output: … was refused");
+});

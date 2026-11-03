@@ -618,6 +618,11 @@ export const LocalMcpSecretNameSchema = z
   .refine(
     (name) => name !== "PLUGIN_ROOT" && name !== "PLUGIN_DATA",
     "PLUGIN_ROOT and PLUGIN_DATA are set by Opensteer",
+  )
+  // Values are kept by name in plain objects, from the form to the launch.
+  .refine(
+    (name) => !Object.hasOwn(Object.prototype, name),
+    "A secret can't be named like a built-in object property",
   );
 /**
  * A value the owner of the computer that runs a server enters when approving
@@ -630,6 +635,20 @@ export const LocalMcpSecretSchema = z.strictObject({
   title: z.string().trim().min(1).max(80),
 });
 export type LocalMcpSecret = z.infer<typeof LocalMcpSecretSchema>;
+export const LocalMcpSecretViewSchema = z.object(LocalMcpSecretSchema.shape);
+
+/** Absent when it asks for none, so a launch without secrets keeps its digest. */
+function localMcpSecretList<Secret extends z.ZodType<LocalMcpSecret>>(secret: Secret) {
+  return z
+    .array(secret)
+    .min(1)
+    .max(localMcpMaxSecrets)
+    .refine(
+      (secrets) => new Set(secrets.map(({ name }) => name)).size === secrets.length,
+      "Each secret needs its own name",
+    )
+    .optional();
+}
 /** A secret as entered. The Runner expands plugin path placeholders in every environment value. */
 export const LocalMcpSecretValueSchema = z
   .string()
@@ -660,16 +679,7 @@ const localMcpLaunchShapes = {
     command: z.string().min(1).max(4_096),
     cwd: z.string().min(1).max(4_096),
     env: z.record(z.string().max(256), z.string().max(32_768)),
-    /** Absent when it asks for none, so a launch without secrets keeps its digest. */
-    secrets: z
-      .array(LocalMcpSecretSchema)
-      .min(1)
-      .max(localMcpMaxSecrets)
-      .refine(
-        (secrets) => new Set(secrets.map(({ name }) => name)).size === secrets.length,
-        "Each secret needs its own name",
-      )
-      .optional(),
+    secrets: localMcpSecretList(LocalMcpSecretSchema),
     type: z.literal("stdio"),
   },
   http: {
@@ -704,7 +714,10 @@ export const LocalMcpLaunchSchema = z.discriminatedUnion("type", [
 ]);
 export type LocalMcpLaunch = z.infer<typeof LocalMcpLaunchSchema>;
 export const LocalMcpLaunchViewSchema = z.discriminatedUnion("type", [
-  z.object(localMcpLaunchShapes.stdio),
+  z.object({
+    ...localMcpLaunchShapes.stdio,
+    secrets: localMcpSecretList(LocalMcpSecretViewSchema),
+  }),
   z.object(localMcpLaunchShapes.http),
 ]);
 

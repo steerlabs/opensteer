@@ -121,7 +121,7 @@ import {
   IntegrationRepositoryAccessViewSchema,
   IntegrationServerIdSchema,
   LocalMcpSecretNameSchema,
-  LocalMcpSecretSchema,
+  LocalMcpSecretViewSchema,
   LocalMcpSecretValuesSchema,
   localMcpMaxSecrets,
   RequestComputerAppSetupSchema,
@@ -1728,7 +1728,7 @@ export const hostApi = defineRpc({
             id: IntegrationServerIdSchema,
             name: z.string(),
             plugin: z.string(),
-            secrets: z.array(z.object(LocalMcpSecretSchema.shape)).max(localMcpMaxSecrets),
+            secrets: z.array(LocalMcpSecretViewSchema).max(localMcpMaxSecrets),
           }),
         )
         .max(1_000),

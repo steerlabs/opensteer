@@ -294,6 +294,12 @@ export type HostIntegrationsCancel = z.infer<typeof HostIntegrationsCancelSchema
  * or the stream ends, and a program the Runner started ends with it.
  */
 export const computerMcpMaxSessions = 16;
+/**
+ * Begins the end of what a stopped server wrote, in why its session closed.
+ * It is cut just after this label, which is where the Host looks for a
+ * secret the cut split.
+ */
+export const computerMcpLastOutputLabel = "Its last output: ";
 const McpSessionIdSchema = z.uuid();
 
 export const HostIntegrationsMcpOpenSchema = z.strictObject({

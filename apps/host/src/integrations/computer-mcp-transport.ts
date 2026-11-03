@@ -6,7 +6,7 @@ import {
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { RunnerId } from "@opensteer/core";
 import type { IntegrationServerId, LocalMcpLaunch } from "@opensteer/integration-core";
-import type { HostIntegrationsMcpMessage } from "@opensteer/protocol";
+import { computerMcpLastOutputLabel, type HostIntegrationsMcpMessage } from "@opensteer/protocol";
 import {
   ComputerMcpSessionError,
   type ComputerAppHub,
@@ -109,7 +109,19 @@ export class ComputerMcpTransport implements Transport {
    * the Host stores as its status and tells agents: never with its secrets.
    */
   #withoutSecrets(error: ComputerMcpSessionError): ComputerMcpSessionError {
-    const message = this.#redactor.redactText(error.message);
+    let message = this.#redactor.redactText(error.message);
+    // The computer cut the output just after its label, perhaps within a
+    // secret: whatever that output starts with of one's end goes too.
+    const label = message.indexOf(computerMcpLastOutputLabel);
+    if (label >= 0) {
+      const start = label + computerMcpLastOutputLabel.length;
+      const output = message.slice(start);
+      const cut = Math.max(
+        0,
+        ...Object.values(this.#target.secrets).map((secret) => splitSecretEnd(secret, output)),
+      );
+      if (cut > 0) message = `${message.slice(0, start)}…${output.slice(cut)}`;
+    }
     return message === error.message ? error : new ComputerMcpSessionError(error.code, message);
   }
 
@@ -120,4 +132,12 @@ export class ComputerMcpTransport implements Transport {
     await this.#session?.close();
     this.onclose?.();
   }
+}
+
+/** How much of `text`'s start is the end of `secret`. */
+function splitSecretEnd(secret: string, text: string): number {
+  for (let length = Math.min(secret.length, text.length); length > 0; length -= 1) {
+    if (text.startsWith(secret.slice(-length))) return length;
+  }
+  return 0;
 }

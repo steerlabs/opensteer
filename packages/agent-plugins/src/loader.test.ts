@@ -145,8 +145,10 @@ describe("Agent Plugins 1.0 loader", () => {
       ]),
     );
 
-    await manifest({ camera: [{ name: "PLUGIN_ROOT", title: "Root" }] });
-    await expect(load()).rejects.toThrow('Invalid extensions["com.opensteer"]');
+    for (const name of ["PLUGIN_ROOT", "constructor", "__proto__"]) {
+      await manifest({ camera: [{ name, title: "Reserved" }] });
+      await expect(load()).rejects.toThrow('Invalid extensions["com.opensteer"]');
+    }
     await manifest({ camera: [secret, secret] });
     await expect(load()).rejects.toThrow("Each secret needs its own name");
   });
