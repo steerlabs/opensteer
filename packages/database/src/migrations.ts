@@ -4700,6 +4700,7 @@ export function migrationProvider() {
         "0146_consent_scope": consentScopeMigration,
         "0147_agent_connections": agentConnectionsMigration,
         "0148_agent_tool_operations": agentToolOperationsMigration,
+        "0149_specialist_auto_bind": specialistAutoBindMigration,
       };
     },
   };
@@ -7176,6 +7177,14 @@ export const agentConnectionsMigration: Migration = {
 const agentToolOperationsMigration: Migration = {
   async up(database) {
     await sql`CREATE TABLE agent_tool_operations (key text PRIMARY KEY, input_fingerprint text NOT NULL CHECK (input_fingerprint ~ '^[0-9a-f]{64}$'), result jsonb, created_at timestamptz NOT NULL DEFAULT now())`.execute(
+      database,
+    );
+  },
+};
+
+const specialistAutoBindMigration: Migration = {
+  async up(database) {
+    await sql`ALTER TABLE specialists ADD COLUMN auto_bind boolean NOT NULL DEFAULT true`.execute(
       database,
     );
   },

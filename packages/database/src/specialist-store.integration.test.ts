@@ -423,6 +423,65 @@ describeStore("specialist registration", (test) => {
     expect(await platform.specialists.list(b.id, owner.userId)).toEqual([]);
   });
 
+  test("an agent-registered specialist waits for its owner to choose even a sole candidate", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("specialist-agent-registered");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "agent-registered");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "agent-installed",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "e".repeat(64),
+      manifest: { name: "agent-installed" },
+      specialistManifest: SpecialistManifestSchema.parse({
+        version: 1,
+        models: [{ engine: "claude", model: "haiku" }],
+        access: [{ type: "browser-profile", level: "read", reason: "Browse" }],
+      }),
+    });
+    const profile = await fixture.store.createBrowserProfile({
+      ownerId: owner.userId,
+      name: "Only",
+      idempotencyKey: "only",
+    });
+    await fixture.store.createBrowserProfileGrant({
+      workspaceId: workspace.id,
+      createdBy: owner.userId,
+      profileId: profile.id,
+      access: "read",
+    });
+    const registered = await platform.specialists.add({
+      workspaceId: workspace.id,
+      pluginId,
+      actorUserId: owner.userId,
+      autoBind: false,
+    });
+    expect(registered).toMatchObject({
+      status: "pending",
+      access: [{ state: "choose", binding: null }],
+    });
+    // Later reads, including the check before running it, never bind for the owner.
+    expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
+      status: "pending",
+      access: [{ state: "choose", binding: null }],
+    });
+    await expect(
+      platform.specialists.assertRunnable(registered.id, workspace.id, owner.userId),
+    ).rejects.toThrow();
+    const ready = await platform.specialists.bind({
+      workspaceId: workspace.id,
+      specialistId: registered.id,
+      actorUserId: owner.userId,
+      requirement: 0,
+      resourceId: profile.id,
+    });
+    expect(ready).toMatchObject({ status: "ready", access: [{ state: "bound" }] });
+  });
+
   test("ambiguous consent requires an owner choice and list revalidates revocations", async ({
     storeFixture: fixture,
   }) => {

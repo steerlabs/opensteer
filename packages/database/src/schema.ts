@@ -2196,6 +2196,7 @@ export interface DatabaseSchema {
     createdBy: UserId;
     status: "pending" | "ready" | "removing" | "removal-failed";
     bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
+    autoBind: Generated<boolean>;
     createdAt: Timestamp;
     updatedAt: Timestamp;
   };

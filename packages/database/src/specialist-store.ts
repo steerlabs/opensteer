@@ -34,7 +34,18 @@ export class SpecialistStore {
       });
   }
 
-  async add(input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId }) {
+  /**
+   * Adding a specialist is the owner's consent for it to use their accounts.
+   * `autoBind: false` registers it for an agent, which may not give that
+   * consent: every requirement then waits for the owner's choice.
+   */
+  async add(input: {
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    actorUserId: UserId;
+    autoBind?: boolean;
+  }) {
+    const autoBind = input.autoBind ?? true;
     await this.authorize(input.workspaceId, input.actorUserId);
     return this.database.transaction().execute(async (tx) => {
       await new PluginStore(tx).activateIn(
@@ -80,6 +91,7 @@ export class SpecialistStore {
           createdBy: input.actorUserId,
           status: "pending",
           bindings: jsonValue([]),
+          autoBind,
           createdAt: now,
           updatedAt: now,
         })
@@ -88,6 +100,7 @@ export class SpecialistStore {
             pluginVersionId: plugin.id,
             status: "pending",
             bindings: jsonValue([]),
+            autoBind,
             updatedAt: now,
           }),
         )
@@ -184,7 +197,7 @@ export class SpecialistStore {
       const resourceId =
         previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
           ? previous.resourceId
-          : !previous && candidates.length === 1
+          : !previous && row.autoBind && candidates.length === 1
             ? candidates[0]!.resourceId
             : null;
       const binding = resourceId

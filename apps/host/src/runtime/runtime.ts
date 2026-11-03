@@ -2228,6 +2228,7 @@ export async function createHostRuntime(
                       workspaceId: scope.workspaceId,
                       pluginId,
                       actorUserId: scope.requestedBy,
+                      autoBind: false,
                     })
                   : null;
               if (registration)
