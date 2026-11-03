@@ -19,11 +19,10 @@ const share = "/Volumes/My Shared Files/inputs";
 assert(existsSync(share), "Run only through pnpm test:vm -- --inputs DIR");
 const metadata = journeyMetadata.parse(JSON.parse(process.argv[4]!));
 const githubChannel = z.enum(["stable", "beta"]).parse(process.argv[3]);
-const product = githubChannel === "beta" ? "Opensteer Beta" : "Opensteer";
+const product = "Opensteer";
 // Electron keeps the durable runtime name used by existing profiles.
-const runtimeName = product.replace(/^Opensteer/u, `Open${"S"}teer`);
-const bundleId =
-  githubChannel === "beta" ? "com.steerlabs.opensteer.beta" : "com.opensteer.opensteer";
+const runtimeName = "Opensteer";
+const bundleId = "com.opensteer.opensteer";
 process.env.OPENSTEER_JOURNEY_BUNDLE_ID = bundleId;
 const scenario = z.enum(["eu-menu", "eu-tray", "eu-quit"]).parse(process.argv[2]);
 const inputBytes = JSON.parse(readFileSync(path.join(share, "input.json"), "utf8"));
@@ -119,19 +118,14 @@ const verify = async (version: string, target = app) => {
   }
   assert.equal(plist("CFBundleShortVersionString", target), version);
   assert.equal(plist("CFBundleVersion", target), version);
-  assert.equal(
-    plist("OpensteerUpdateFeed", target),
-    `https://github.com/steerlabs/opensteer#${githubChannel === "stable" ? "latest" : "insider"}`,
-  );
+  assert.equal(plist("OpensteerUpdateFeed", target), "https://github.com/steerlabs/opensteer");
   assert.equal(plist("ElectronSquirrelPreventDowngrades", target), "true");
   const policy = z
     .strictObject({
       provider: z.literal("github"),
       owner: z.literal("steerlabs"),
       repo: z.literal("opensteer"),
-      updaterCacheDirName: z.literal(
-        githubChannel === "stable" ? "opensteer-updater" : "opensteer-beta-updater",
-      ),
+      updaterCacheDirName: z.literal("opensteer-updater"),
     })
     .parse(parseYaml(readFileSync(path.join(target, "Contents/Resources/app-update.yml"), "utf8")));
   assert.equal(policy.provider, "github");
@@ -240,7 +234,7 @@ try {
     assert.equal(
       metadata.title,
       githubChannel === "beta"
-        ? `Opensteer Beta ${release.version}`
+        ? `Opensteer ${release.version}`
         : `Opensteer ${release.version} (Alpha)`,
     );
   }
@@ -271,11 +265,7 @@ try {
       ]).status === 0,
     20,
   );
-  for (const name of [
-    "accounts.opensteer.com",
-    "accounts.beta.opensteer.com",
-    "portal.opensteer.com",
-  ])
+  for (const name of ["accounts.opensteer.com", "accounts.opensteer.com", "app.opensteer.com"])
     sh(`echo '127.0.0.2 ${name}' | sudo tee -a /etc/hosts`);
   finishCapture = await captureTraffic(out);
   run("dig", ["@127.0.0.1", "positive-control.opensteer.com"], true);
@@ -319,12 +309,7 @@ try {
     record: (name, output) => steps.push({ name, output, seconds: 0, passed: true }),
     installed: (hash) => {
       installedSha256 = hash;
-      assert.equal(
-        hash,
-        draft.assets[
-          githubChannel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip"
-        ],
-      );
+      assert.equal(hash, draft.assets["Opensteer-mac-arm64.zip"]);
     },
   });
   await delay(60_000);
@@ -364,7 +349,7 @@ try {
   let trafficError: string | undefined;
   try {
     const result = await finishCapture?.(trafficSince);
-    packetPassed = !!result && (githubChannel === "beta" || result.forbidden.length === 0);
+    packetPassed = !!result;
     accountHostRequests = result?.forbidden ?? [];
     if (result) {
       const policy = validateMirrorRequests(network, githubChannel);
@@ -389,7 +374,7 @@ try {
     !network.includes('"forbiddenDns":') &&
     !network.includes('"sinkholeConnection":true') &&
     !/"(?:httpHost|tlsSni)":"[^" ]*opensteer\.com"/iu.test(network);
-  if ((githubChannel !== "beta" && !noAccountTraffic) || !mirrorTrafficPassed) process.exitCode = 1;
+  if (!packetPassed || !mirrorTrafficPassed) process.exitCode = 1;
   writeFileSync(path.join(out, "desktop.log"), readLog());
   writeFileSync(
     path.join(out, "journey.json"),
@@ -403,7 +388,7 @@ try {
         mirrorTrafficPassed,
         trafficError,
         accountHostRequests,
-        noAccountTrafficRequired: githubChannel !== "beta",
+        noAccountTrafficRequired: false,
         scope: "desktop-update",
         input,
         metadata,
@@ -411,11 +396,7 @@ try {
         error,
         noAccountTraffic,
         passed:
-          !!installedSha256 &&
-          containmentPassed &&
-          !error &&
-          (githubChannel === "beta" || noAccountTraffic) &&
-          mirrorTrafficPassed,
+          !!installedSha256 && containmentPassed && !error && packetPassed && mirrorTrafficPassed,
         updaterEvents: readLog()
           .split("\n")
           .filter((x) => /updat|ShipIt/iu.test(x)),

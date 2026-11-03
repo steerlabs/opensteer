@@ -51,17 +51,24 @@ gh workflow run ci.yml --repo steerlabs/opensteer --ref main
 gh workflow run release.yml --repo steerlabs/opensteer --ref main -f channel=stable -f insider_tag=vX.Y.Z-insider
 ```
 
-Inspect the rebuilt stable draft and its launch-check evidence, then repeat the stable dispatch
+Verify the Stable ZIP hash equals the selected insider ZIP hash and inspect its
+preserved launch-check evidence. Promotion copies the ZIP and blockmap without
+rebuilding; it uses no signing credentials. The source must be newer than published
+Stable. Fresh installs default to Stable; Beta is selected in app Settings. Both
+channels use the Account at accounts.opensteer.com. Inspect the promoted draft, then repeat the stable dispatch
 with `-f publish=true` and leave publication to Tim's
 `publish` environment approval. Use `gh run view RUN_ID --log-failed` for failures; never
 bypass source, signature, notarization, receipt or asset verification.
 
-For an authorized manual packaging operation, use new absolute output directories:
+For an authorized manual packaging operation, prepare the insider with new absolute
+output directories. Stable uses `promote`, never a separate build:
 
 ```sh
-pnpm desktop:public-release prepare --channel stable --app-zip /absolute/app.zip --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-output
-pnpm desktop:public-release draft --dir /absolute/new-output --repo steerlabs/opensteer --channel stable
-pnpm desktop:public-release publish --repo steerlabs/opensteer --tag desktop-vX.Y.Z --channel stable
+pnpm desktop:public-release prepare --channel beta --app-zip /absolute/app.zip --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-insider --launch-check-passed
+pnpm desktop:public-release promote --repo steerlabs/opensteer --tag vX.Y.Z-insider --version X.Y.Z --source-sha FULL_40_CHARACTER_SHA --out /absolute/new-stable
 ```
 
-Use channel `beta` and tag `vX.Y.Z-insider` for Beta. Do not publish unless requested.
+Only set `--launch-check-passed` after the ordinary launch checker passed for those
+exact ZIP bytes. Use the workflow for publication: it carries the independently
+verified insider ZIP hash into `--certified-zip-sha256` after Tim's approval.
+Do not publish unless requested.

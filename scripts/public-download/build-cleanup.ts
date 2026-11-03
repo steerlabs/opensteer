@@ -40,8 +40,7 @@ export async function pruneCompletedBuild(directory: string) {
     .parse(JSON.parse(readFileSync(path.join(directory, "build.json"), "utf8")));
   assert.equal(path.basename(directory), build.channel);
   assert.equal(path.basename(path.dirname(directory)), build.revision);
-  const asset =
-    build.channel === "stable" ? "Opensteer-mac-arm64.zip" : "Opensteer-Beta-mac-arm64.zip";
+  const asset = "Opensteer-mac-arm64.zip";
   assert.equal(build.zip, path.join(directory, asset));
   assert(lstatSync(build.zip).isFile() && realpathSync(build.zip) === build.zip);
   if (existsSync(path.join(directory, "notary.json"))) {
@@ -69,8 +68,7 @@ export async function pruneCompletedBuild(directory: string) {
       name === "personal-runtime" ||
       name === "ci-build" ||
       name.startsWith("archive-verification-") ||
-      name === "Opensteer.app" ||
-      name === "Opensteer Beta.app",
+      name === "Opensteer.app",
   );
   for (const name of ["source", "agent-phone", ...trees]) {
     const entry = path.join(directory, name);

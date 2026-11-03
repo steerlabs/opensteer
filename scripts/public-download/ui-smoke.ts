@@ -45,8 +45,6 @@ await wait("startup choice or workspace", () => {
 });
 const state = dump();
 writeFileSync(path.join(out, "ui-before.json"), state);
-if (process.env.OPENSTEER_JOURNEY_BUNDLE_ID !== "com.steerlabs.opensteer.beta")
-  assert(!/"(?:title|description)":"Sign in(?:"| to)/iu.test(state), "No Account sign-in offered");
 if (state.includes("Start on ")) click("Start on ");
 await wait("local workspace", () => /Connected\. Places and menu/u.test(dump()));
 capture("personal-ready");

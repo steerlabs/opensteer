@@ -39,7 +39,7 @@ affected SHA cache after native runtime inputs change. See
 
 Retention cannot overlap payload builds or prune live/locked/referenced jobs.
 Unknown identity, ownership or age keeps a candidate. It preserves goldens, crash
-symbols and installed Beta artifacts; it never changes the installed application.
+symbols and installed Opensteer artifacts; it never changes the installed application.
 The low-space warning never broadens deletion authority. APFS sharing means
 allocated bytes removed need not equal observed space freed. Read retention
 receipts before manual cleanup; policy lives in

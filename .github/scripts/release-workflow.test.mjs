@@ -29,7 +29,10 @@ test("read-only preflight, secret-free discovery and only stable publication app
   assert.deepEqual(workflow.permissions, { contents: "read" });
   assert.doesNotMatch(text, /pull_request_target|OPENSTEER_DESKTOP_UPDATE_/);
   for (const [name, job] of Object.entries(workflow.jobs)) {
-    assert.equal(job["runs-on"], name === "build" ? "macos-26" : "ubuntu-latest");
+    assert.equal(
+      job["runs-on"],
+      ["build", "promote"].includes(name) ? "macos-26" : "ubuntu-latest",
+    );
     assert.deepEqual(job.permissions ?? workflow.permissions, {
       contents: ["discover", "draft", "publish-insider", "publish-stable"].includes(name)
         ? "write"
@@ -236,7 +239,7 @@ test("push and manual insider resolve main and derive its numeric version", () =
     f.close();
   }
 });
-test("stable rebuilds the exact published insider source and version, even after main advances", () => {
+test("stable promotes the exact published insider source and version, even after main advances", () => {
   const f = fixture();
   try {
     f.state.releases = [published(f.source)];
@@ -522,8 +525,9 @@ test("insiders auto-publish on push, dispatch stops at draft unless publish, sta
         needs: {
           preflight: { outputs: { channel } },
           discover: { result: "success", outputs: { reuse: String(reuse), skip: String(skip) } },
-          draft: { result: reuse ? "skipped" : "success" },
+          draft: { result: reuse && channel !== "stable" ? "skipped" : "success" },
           account: { result: account },
+          promote: { result: channel === "stable" ? "success" : "skipped" },
         },
         github: { event_name: event },
         inputs: { publish },
@@ -573,7 +577,10 @@ test("publication needs no certificate and verifies the resolved source", () => 
         context.github.sha,
       );
       const step = steps.find((s) => s.run?.includes("publish --repo"));
-      assert.equal(step.env.CERTIFIED_ZIP_SHA256, undefined);
+      assert.equal(
+        step.env.CERTIFIED_ZIP_SHA256,
+        job === "publish-stable" ? "${{ needs.promote.outputs.zipSha256 }}" : undefined,
+      );
       assert.equal(step.env.SOURCE_SHA, "${{ needs.preflight.outputs.sha }}");
       for (const hash of ["a".repeat(64), ""]) {
         execFileSync("bash", ["-c", step.run], {
@@ -586,7 +593,7 @@ test("publication needs no certificate and verifies the resolved source", () => 
         });
         assert.equal(
           readFileSync(calls, "utf8").trim(),
-          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source}`,
+          `desktop:public-release publish --repo steerlabs/opensteer --tag t --source-sha ${source}${job === "publish-stable" ? ` --certified-zip-sha256${hash ? ` ${hash}` : ""}` : ""}`,
         );
       }
     }
@@ -757,6 +764,7 @@ test("a cancelled source skips cleanly only after main advances and a newer push
       discover: { result: "skipped", outputs: {} },
       build: { result: "skipped", outputs: {} },
       draft: { result: "skipped", outputs: {} },
+      promote: { result: "skipped", outputs: {} },
     };
     for (const job of ["discover", "build", "draft", "publish-insider", "publish-stable"])
       assert.equal(Boolean(evaluate(job, needs)), false, job);
@@ -804,7 +812,7 @@ test("a cancelled source skips cleanly only after main advances and a newer push
   }
 });
 
-test("final release bytes launch before upload, for both channels, with failure evidence", () => {
+test("final release bytes launch before upload, before insider publication, with failure evidence", () => {
   const steps = workflow.jobs.build.steps;
   const prepare = steps.findIndex((s) => s.name === "Verify and prepare exact release bytes");
   const launch = steps.find((s) => s.name === "Launch check");
@@ -816,7 +824,7 @@ test("final release bytes launch before upload, for both channels, with failure 
   assert.equal(launch["timeout-minutes"], 4);
   assert.match(launch.run, /smoke-desktop-release.ts/);
   assert.match(launch.run, /--install-in-applications/);
-  assert.match(launch.run, /beta\/mac-arm64\/Opensteer Beta.app/);
+  assert.doesNotMatch(launch.run, /Beta|release\/beta/);
   assert.match(launch.run, /release\/mac-arm64\/Opensteer.app/);
   assert.equal(steps.find((s) => s.name === "Launch failure artifacts").if, "failure()");
 });
@@ -830,4 +838,58 @@ test("launch tooling comes from the workflow commit", () => {
     steps.find((step) => step.name === "Launch check").run,
     /cd "\$RUNNER_TEMP\/launch-tooling"/,
   );
+});
+
+test("stable promotion has no signing environment or rebuild and publication binds its verified hash", () => {
+  assert.match(workflow.jobs.build.if, /channel == 'beta'/);
+  const promotion = workflow.jobs.promote;
+  assert.equal(promotion.environment, undefined);
+  assert.doesNotMatch(JSON.stringify(promotion), /secrets\.|build-release|CSC_|APPLE_API/);
+  assert.match(JSON.stringify(promotion), /public-release promote/);
+  assert.match(workflow.jobs["publish-stable"].steps.at(-1).run, /--certified-zip-sha256/);
+  assert.equal(
+    workflow.jobs["publish-stable"].steps.at(-1).env.CERTIFIED_ZIP_SHA256,
+    "${{ needs.promote.outputs.zipSha256 }}",
+  );
+  assert.doesNotMatch(text, /OPENSTEER_DESKTOP_RELEASE_CHANNEL|Opensteer Beta.app|release\/beta/);
+});
+
+test("stable discovery refuses equal/older published Stable and tolerates first release or unrelated insiders", () => {
+  const f = fixture();
+  try {
+    const stable = { ...f.source, channel: "stable", tag: "desktop-v1.2.4" };
+    assert.deepEqual(discover(stable, f.run, f.root), { skip: false, reuse: false });
+    f.state.releases = [{ ...published(f.source), tag_name: "desktop-v1.2.4", prerelease: false }];
+    assert.throws(() => discover(stable, f.run, f.root), /newer/);
+    f.state.releases[0].tag_name = "desktop-v1.2.5";
+    assert.throws(() => discover(stable, f.run, f.root), /newer/);
+    f.state.releases[0] = { ...published(f.source), tag_name: "v99.0.0-insider" };
+    assert.deepEqual(discover(stable, f.run, f.root), { skip: false, reuse: false });
+  } finally {
+    f.close();
+  }
+});
+
+test("stable refuses an insider reachable only through a merged side branch", () => {
+  const f = fixture();
+  try {
+    f.git("checkout", "-b", "side");
+    writeFileSync(path.join(f.root, "side"), "side");
+    f.git("add", ".");
+    f.git("commit", "-m", "side");
+    const sha = f.git("rev-parse", "HEAD");
+    const tag = "v1.2.5-insider";
+    f.git("tag", "--no-sign", tag);
+    f.git("checkout", "main");
+    f.git("merge", "--no-ff", "side", "-m", "merge side");
+    f.git("update-ref", "refs/remotes/origin/main", "HEAD");
+    f.state.releases = [published({ sha, tag })];
+    f.state.manifest = { sourceSha: sha, version: "1.2.5", channel: "beta", tag };
+    assert.throws(
+      () => preflight({ root: f.root, channel: "stable", insiderTag: tag }, f.run),
+      /first-parent main/,
+    );
+  } finally {
+    f.close();
+  }
 });

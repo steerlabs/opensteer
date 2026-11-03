@@ -5,7 +5,7 @@ export interface SigningSource {
   source: string;
 }
 const fixtureHarnesses = new Set([
-  "scripts/verify-release-beta-mac.ts",
+  "scripts/verify-release-mac.ts",
   "apps/desktop/scripts/electron-passwords-smoke.ts",
 ]);
 export function isAuditedSigningSource(file: string): boolean {
@@ -195,7 +195,7 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
     return true;
   // Short reviewed routing list; each exception is invocation-specific, so a
   // second bare call in the same file is still rejected.
-  if (file === "scripts/release-beta-mac.ts") {
+  if (file === "scripts/release-mac.ts") {
     if (tool === "notarytool" && span.includes("...credentials(config)")) return true;
     if (tool === "find-identity" && span.includes("signingInput(config).keychain")) return true;
   }

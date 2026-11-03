@@ -1,23 +1,28 @@
 ---
 name: install-desktop
-description: Build and install a signed local Beta or keyless desktop proof when local package feedback is needed.
+description: Build and install a signed local Opensteer app or keyless desktop proof when local package feedback is needed.
 ---
 
 # Install desktop
+
+There is one `Opensteer.app` (`com.opensteer.opensteer`) and one Personal store.
+Stable and Beta are update channels selected in app Settings; fresh installs
+default to Stable. Both use `accounts.opensteer.com` for Account sign-in. Stable
+promotion copies the verified insider ZIP byte for byte, without another build.
 
 Read [signing constraints](../../../apps/desktop/SIGNING.md). Use the root
 Node/pnpm versions, Go, Xcode tools and the Android/JDK prerequisites in
 `apps/agent-phone/README.md`. Never read or operate on key material; the operator
 supplies a prepared signing configuration outside the checkout.
 
-For an authorized local installation, close other Beta copies and use a clean
+For an authorized local installation, close other Opensteer copies and use a clean
 checkout and explicit full source SHA:
 
 ```sh
-pnpm desktop:install-local --source-sha FULL_40_CHARACTER_COMMIT_SHA --config /absolute/install-beta-mac-local.json
+pnpm desktop:install-local --source-sha FULL_40_CHARACTER_COMMIT_SHA --config /absolute/install-mac-local.json
 ```
 
-Use `localInstallConfigSchema` in `scripts/install-beta-mac-local.ts` for inputs.
+Use `localInstallConfigSchema` in `scripts/install-mac-local.ts` for inputs.
 Resume with the same SHA/configuration; receipt or artifact drift fails closed.
 Inspect `<stateDirectory>/<SHA>` receipts, command log, app tree and journey result.
 Diagnose Launch Services errors. This defers Apple notarization and proves no

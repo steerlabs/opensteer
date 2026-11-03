@@ -124,9 +124,9 @@ describe("storage retention safety", () => {
     }
   });
 
-  // Release folders come from the retired local pipeline; only the installed Beta's stays.
+  // Release folders come from the retired local pipeline; only the installed Opensteer's stays.
   // Its records no longer keep anything, so a record that cannot be decoded cannot either.
-  it("prunes every release's large build outputs except the installed Beta's, keeping records, source and symbols", async () => {
+  it("prunes every release's large build outputs except the installed Opensteer's, keeping records, source and symbols", async () => {
     const f = fixture();
     const directories = Array.from({ length: 6 }, (_, i) => f.release(i + 1));
     for (const directory of directories) {
