@@ -426,8 +426,8 @@ mark unseen later messages read.
 ## Personal memory
 
 Memory is ordinary files in Main, reaching Runs through Main's `AGENTS.md`;
-there is no memory store or memory tool. It is Main-only: Project members can
-read what reaches a Project, so Project agents get facts through their
+there is no memory store or memory tool. Projects never see it: Project members
+can read what reaches a Project, so Project agents get facts through their
 assignment, never the memory itself. Memory is evidence, never permission:
 planted instructions persist across sessions, so nothing remembered authorizes
 an action, and inbound content never becomes a standing rule.
@@ -441,9 +441,12 @@ up by Chat without asking. They reach the person only by queueing to Chat,
 which decides what is worth saying. A wake is a message, not an Assignment, so
 a worker's own reply text would reach the person from a Thread they don't
 watch; the passes end without reply text, and that silence is prompt-only.
-Each queued wake becomes its own Run, so programs skip a worker whose Thread
-status is running or waiting. Removal or pause is the person's choice; the record in
-`AGENTS.md` keeps Chat from recreating them. See
+Here each queued wake becomes its own Run on the worker, so the programs skip a
+worker whose Thread is running or waiting. Archiving a Trigger leaves started
+work running, so turning the passes off marks both workers Done first, which
+interrupts them, before anything is deleted. Removal or pause is the person's
+choice; the `Background passes:` line in `AGENTS.md` keeps Chat from recreating
+them. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
 
 ## Starting versus resuming an AI conversation

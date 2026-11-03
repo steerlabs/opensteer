@@ -6,26 +6,34 @@ runs once a night on your own model, curates memory and prepares the next day. N
 person except by queueing a message to Chat.
 
 Chat sets both up once, on its own, without asking or announcing it. They are visible in the
-person's task list and Automations, where the person can pause or delete them. The `## Memory`
-section of Main's `AGENTS.md` is the record that setup happened: once it exists, never set the
-passes up again unless the person asks. A pause or deletion is the person's choice; keep it.
+person's task list and Automations, where the person can pause or delete them. The
+`Background passes:` line in the `## Memory` section of Main's `AGENTS.md` records setup:
+
+- `Background passes: setting up, see memory/passes/setup.md.` Finish setup from that file.
+- `Background passes: set up YYYY-MM-DD, see memory/passes/setup.md.` Done; never set up again.
+- `Background passes: off at the person's request.` Set up only when the person asks.
+
+Set up only when memory is on and no such line exists. A `## Memory` section without one, from
+the person or a remembered fact, still gets setup: add the line and keep everything in it.
+A pause or deletion the person made in Automations is their choice; keep it.
 
 ## Files
 
 These paths are fixed so every pass finds them. Everything else under `memory/` is notes.
 
-- `memory/passes/setup.md`: Main's `workspaceId`, both worker Thread IDs, both
-  Trigger IDs, the light pass's model, the time zone and the setup date. Chat writes it; the
-  nightly pass updates it when it changes a schedule.
-- `memory/passes/light.md`: the light pass's own state. Only the light pass writes it.
-- `memory/passes/nightly.md`: the nightly checkpoint and morning notes. Only the nightly pass writes it.
+- `memory/passes/setup.md`: Main's `workspaceId`, the time zone, the light pass's model, both
+  worker Thread IDs, both Trigger IDs and the setup date. Chat writes it; the nightly pass updates
+  it when it changes a schedule.
+- `memory/passes/light.md`: the light pass's state. Only the light pass writes it, except a forget.
+- `memory/passes/nightly.md`: the nightly checkpoint and morning notes. Only the nightly pass
+  writes it.
+- `memory/forgotten.md`: content-free lines for what the person asked to forget.
 - `skills/light-pass/SKILL.md`: what this person's light pass watches, from the template below.
   The nightly pass tunes it and logs each change in `skills/light-pass/changes.md`.
 
 ## Steps
 
-Creating a Trigger needs full access; without it, leave setup for a later Run that has it. If
-`memory/passes/setup.md` already exists, finish from it and reuse what it lists.
+Creating a Trigger needs full access; without it, leave setup for a later Run that has it.
 
 1. Call `thread_read` with `threadId: "home"` and `maxMessages: 1`: `thread.id` is Chat and
    `thread.workspaceId` is Main. Use the person's time zone from the Opensteer thread context;
@@ -34,20 +42,27 @@ Creating a Trigger needs full access; without it, leave setup for a later Run th
    unchanged as `thread_delegate`'s `model`. If choosing another engine, also pass its `id` as
    `harnessInstanceId`. If none is available, use your own model and a slower light schedule,
    such as `0 8-22/2 * * *`.
-3. Write `skills/light-pass/SKILL.md` from the template and create `memory/inbox/`.
-4. Create the workers with `thread_delegate`, `workspaceId` set to Main:
+3. Write `memory/passes/setup.md` with what you have so far, then add the `setting up` line to
+   the `## Memory` section, creating the section with a one-line placeholder summary if needed.
+4. Write `skills/light-pass/SKILL.md` from the template and create `memory/inbox/`.
+5. Create the workers with `thread_delegate`, `workspaceId` set to Main, recording each Thread
+   ID in `memory/passes/setup.md` as soon as it returns:
    - title `Light memory pass`, `model` set to the light model (omit it when using your own), task:
      "You are the person's light memory pass. A schedule wakes you with a queued message; each time,
      load opensteer:memory and follow its light-pass reference. Nothing to do now: end this turn
      with no reply text."
    - title `Nightly memory pass`, no `model`, the same task naming the nightly-pass reference.
-5. Create one schedule per worker with `trigger_write` action `create`: `name` matching its title,
-   `anchorThreadId` the worker's Thread ID, `source` `{ kind: "schedule", cron, timezone }` with
-   cron `*/30 8-22 * * *` for the light pass and `0 3 * * *` for the nightly pass, and `program`
-   `{ language: "javascript", toolContractVersion: 3, source }` from the program below. Confirm
-   each `nextFireAt` with `trigger_read` action `get`.
-6. Write `memory/passes/setup.md`, then add the `## Memory` section to `AGENTS.md` with a
-   one-line placeholder summary and `Background passes set up <date>; see memory/passes/setup.md.`
+6. Create one schedule per worker with `trigger_write` action `create`, recording each Trigger ID
+   as soon as it returns: `name` matching its title, `anchorThreadId` the worker's Thread ID,
+   `source` `{ kind: "schedule", cron, timezone }` with cron `*/30 8-22 * * *` for the light pass
+   and `0 3 * * *` for the nightly pass, and `program`
+   `{ language: "javascript", toolContractVersion: 3, source }` from the program below.
+7. Confirm each Trigger is active with a `nextFireAt` using `trigger_read` action `get`, then
+   change the line to `set up <date>`.
+
+When resuming, check every recorded ID with `thread_read` or `trigger_read` before creating
+anything; look for an unrecorded worker or Trigger with `thread_list` and `trigger_read` action
+`list`, and reuse it. Create only what is missing.
 
 Then carry on with whatever the person asked; setup needs no mention.
 
@@ -90,14 +105,23 @@ pass or a task flagged for today.
 Leave for the nightly pass: routine mail, newsletters, receipts, notifications the person ignores,
 and anything that can wait until tomorrow.
 
-Sources: Chat, active tasks, `memory/inbox/`, the nightly pass's morning notes, and the mail,
-Messages and calendar integrations connected to Main.
+Sources: Chat and the tasks in its lineage, `memory/inbox/`, the nightly pass's morning notes,
+and the mail, Messages and calendar integrations connected to Main.
 ```
 
 ## Off and on again
 
-To turn the passes off at the person's request, set both Triggers' status with `trigger_write`
-action `set_status`: `paused` for a pause, `archived` to delete. Record it in
-`memory/passes/setup.md` and in the `## Memory` section. To turn them back on, resume paused
-Triggers, or create new ones on the recorded workers (reopen a Done worker with `thread_write`
-action `reopen`), and update both records.
+A pause the person asks for is `trigger_write` action `set_status` `paused` on both Triggers;
+resume them with `active` when asked.
+
+To turn the passes off, first stop both workers with `thread_write` action `done` and each
+worker's `threadId`. That cancels queued wakes and interrupts a running pass, so neither can write
+afterwards. Then archive both Triggers with `trigger_write` action `set_status` `archived`, and
+change the line to `off at the person's request`. To stop remembering altogether, stop and
+archive the same way, then delete `memory/` and `skills/light-pass/`, and replace the whole
+section with `Memory: off at the person's request.`
+
+To turn them back on, reopen each worker listed in `memory/passes/setup.md` with `thread_write`
+action `reopen` before touching its schedule, then resume a paused Trigger or create a new one in
+place of an archived one. After memory was off, start a fresh section and follow the steps.
+Recreate any missing file, and change the line to `set up <date>`.
