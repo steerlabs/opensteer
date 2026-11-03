@@ -4700,6 +4700,7 @@ export function migrationProvider() {
         "0146_every_turn_shows": everyTurnShowsMigration,
         "0147_quiet_assignment_results": quietAssignmentResultsMigration,
         "0148_plugin_owner_settings": pluginOwnerSettingsMigration,
+        "0149_workspace_skill_inventory": workspaceSkillInventoryMigration,
       };
     },
   };
@@ -7101,5 +7102,21 @@ export const pluginOwnerSettingsMigration: Migration = {
     );
     CREATE TRIGGER plugin_settings_authority AFTER INSERT OR UPDATE OR DELETE ON plugin_owner_settings
     FOR EACH ROW EXECUTE FUNCTION opensteer_bump_integration_owner_authority()`.execute(database);
+  },
+};
+
+export const workspaceSkillInventoryMigration: Migration = {
+  async up(database) {
+    await sql`create table workspace_skill_inventory (
+      workspace_id text primary key references workspaces(id) on delete cascade,
+      binding_id text not null, binding_generation bigint not null,
+      storage_authority_id text not null, owner_runner_id text not null,
+      metadata_owner_runner_id text,
+      boot_id text not null, connection_generation bigint not null,
+      connection_id text not null, connection_lease_id text not null,
+      scan_sequence bigint not null, scanned_at timestamptz not null,
+      scan_status text not null check (scan_status in ('complete','failed')),
+      metadata jsonb not null check (jsonb_typeof(metadata) = 'array')
+    )`.execute(database);
   },
 };

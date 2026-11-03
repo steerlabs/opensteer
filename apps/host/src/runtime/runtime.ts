@@ -1539,6 +1539,18 @@ export async function createHostRuntime(
           // clears its streams when it is published.
           for (const terminal of events) publishWorkspaceEvent(terminal);
         },
+        onSkillReport: async (identity, report) => {
+          const storage = identity.modules.agents?.localStorage;
+          if (!storage || !identity.environmentIds.includes(report.environmentId)) return;
+          await store.reportWorkspaceSkills(
+            {
+              ...identity.fence,
+              environmentId: report.environmentId,
+              storageAuthorityId: storage.storageAuthorityId,
+            },
+            report,
+          );
+        },
         onThreadTitle: async (_identity, report) => {
           const result = await store.applyGeneratedThreadName(report);
           for (const event of result?.events ?? []) publishWorkspaceEvent(event);

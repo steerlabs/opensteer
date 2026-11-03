@@ -194,6 +194,10 @@ export interface RunnerRegistryHooks {
    * synchronous: progress is forwarded or dropped, never stored or awaited.
    */
   onLive?(identity: RunnerIdentity, live: RunnerLive): void;
+  onSkillReport?(
+    identity: RunnerIdentity,
+    report: import("@opensteer/protocol").RunnerSkillMetadataReport,
+  ): Promise<void>;
   onThreadTitle?(identity: RunnerIdentity, report: RunnerThreadTitle): Promise<void>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
@@ -1819,6 +1823,9 @@ export class RunnerRegistry {
     this.#assertFence(connection, connectionFenceOf(message));
     connection.lastSeenAt = this.#now();
     switch (message.type) {
+      case "runner.skills.report":
+        await this.#runHook(() => this.#hooks.onSkillReport?.(connection.identity, message));
+        break;
       case "runner.auxiliary.ticket-request":
         await this.#runHook(async () => {
           const ticket = await this.#hooks.issueAuxiliaryTicket?.(
