@@ -12,6 +12,7 @@ import {
 } from "@opensteer/protocol";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { z } from "zod";
+import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
 import { computerToolRefs } from "../integrations/computer-use-discovery.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
@@ -49,7 +50,8 @@ export class ContinuationService {
   readonly #intervalMs: number;
   readonly #onError: (error: unknown) => void;
   readonly #requests: RequestContinuationStore;
-  readonly #loginRef: (operationId: string) => string | undefined;
+  readonly #passwordSignIn: (operationId: string) => PasswordSignInContinuationState;
+  #drainAgain = false;
   #closed = false;
   #drain: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
@@ -60,14 +62,15 @@ export class ContinuationService {
     readonly intervalMs?: number;
     readonly onError: (error: unknown) => void;
     readonly requests: RequestContinuationStore;
-    readonly loginRef?: (operationId: string) => string | undefined;
+    readonly passwordSignIn?: (operationId: string) => PasswordSignInContinuationState;
   }) {
     this.#commands = options.commands;
     this.#integrations = options.integrations;
     this.#intervalMs = options.intervalMs ?? defaultIntervalMs;
     this.#onError = options.onError;
     this.#requests = options.requests;
-    this.#loginRef = options.loginRef ?? (() => undefined);
+    this.#passwordSignIn =
+      options.passwordSignIn ?? (() => ({ publishing: false, loginRef: undefined }));
   }
 
   start(): void {
@@ -78,11 +81,19 @@ export class ContinuationService {
   }
 
   notify(): void {
-    if (this.#closed || this.#drain) return;
+    if (this.#closed) return;
+    if (this.#drain) {
+      this.#drainAgain = true;
+      return;
+    }
     this.#drain = this.#drainOnce()
       .catch(this.#onError)
       .finally(() => {
         this.#drain = undefined;
+        if (this.#drainAgain) {
+          this.#drainAgain = false;
+          this.notify();
+        }
       });
   }
 
@@ -109,18 +120,17 @@ export class ContinuationService {
         await this.#settleUndeliverable(request, triggerOriginatedContinuationReason);
         continue;
       }
+      const signIn =
+        request.payload.kind === "browser.password-sign-in"
+          ? this.#passwordSignIn(request.payload.operationId)
+          : undefined;
+      if (signIn?.publishing) continue;
       let disposition: ThreadInputDisposition;
       try {
         const delivered = await this.#commands.enqueueThreadInput({
           content: [
             {
-              text: await continuationMessage(
-                request,
-                this.#integrations,
-                request.payload.kind === "browser.password-sign-in"
-                  ? this.#loginRef(request.payload.operationId)
-                  : undefined,
-              ),
+              text: await continuationMessage(request, this.#integrations, signIn?.loginRef),
               type: "text",
             },
           ],

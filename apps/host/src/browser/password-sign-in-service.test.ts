@@ -13,6 +13,7 @@ import {
   type LoginAuthorizationOutcome,
   type PasswordSignInAuthorityEvent,
 } from "@opensteer/protocol";
+import { ContinuationService } from "../agents/continuation-service.js";
 import type { BrowserSignInTarget } from "./browser-service.js";
 import {
   PasswordSignInService,
@@ -309,9 +310,18 @@ function harness() {
     ),
   } satisfies PasswordSignInServiceOptions["authority"];
   let request: Request | null = null;
+  let runActive = true;
+  let workspaceActive = true;
   const requests = {
     get: vi.fn(async () => request),
-    hasPasswordSignInAuthority: vi.fn(async () => true),
+    hasActiveRunPasswordSignInAuthority: vi.fn(async () => runActive),
+    hasDurablePasswordSignInRequestAuthority: vi.fn(
+      async ({ ownerId, requestId }) =>
+        workspaceActive &&
+        request !== null &&
+        request.id === requestId &&
+        request.requestedBy === ownerId,
+    ),
     listPendingPasswordSignIns: vi.fn(async () => []),
     openPasswordSignIn: vi.fn<PasswordSignInServiceOptions["requests"]["openPasswordSignIn"]>(
       async (input) => {
@@ -380,6 +390,12 @@ function harness() {
     requests,
     resolved,
     request: () => request!,
+    revokeWorkspace: () => {
+      workspaceActive = false;
+    },
+    completeRun: () => {
+      runActive = false;
+    },
     end: () => emit(target.computer.runnerId, { type: "login.ended", operationId }),
     operationId: () => operationId,
     loginRef: () => loginRef,
@@ -536,6 +552,116 @@ describe("human Passwords settlement", () => {
       return original(runner, command);
     });
   }
+  it("reads and approves the stored durable Request after its asking Run ends", async () => {
+    const h = await pending();
+    const liveChecks = h.requests.hasActiveRunPasswordSignInAuthority.mock.calls.length;
+    h.completeRun();
+    await expect(
+      h.service.get({ ownerId: h.call.ownerId, requestId: h.request().id }),
+    ).resolves.toEqual({ stage: "gone" });
+    await expect(answer(h)).resolves.toMatchObject({ status: "fulfilled" });
+    expect(h.requests.hasDurablePasswordSignInRequestAuthority).toHaveBeenCalledWith({
+      ownerId: h.call.ownerId,
+      requestId: h.request().id,
+    });
+    expect(h.service.leaseForOperation(h.operationId())?.loginRef).toBe(h.loginRef());
+    expect(h.requests.hasActiveRunPasswordSignInAuthority).toHaveBeenCalledTimes(liveChecks);
+  });
+  it("refuses chooser reads and approval after the completed Run loses Workspace authority", async () => {
+    const h = await pending();
+    h.completeRun();
+    await expect(
+      h.service.get({ ownerId: h.call.ownerId, requestId: h.request().id }),
+    ).resolves.toEqual({ stage: "gone" });
+    const commandsBeforeRevocation = h.hub.sendPasswordSignIn.mock.calls.length;
+    h.revokeWorkspace();
+    await expect(
+      h.service.get({ ownerId: h.call.ownerId, requestId: h.request().id }),
+    ).rejects.toThrow("This sign-in no longer has Workspace authority.");
+    await expect(answer(h)).rejects.toThrow("This sign-in no longer has Workspace authority.");
+    expect(
+      h.hub.sendPasswordSignIn.mock.calls
+        .slice(commandsBeforeRevocation)
+        .some(([, c]) => c.type === "login.get" || c.type === "login.approve"),
+    ).toBe(false);
+  });
+  it.each([true, false])(
+    "defers continuation delivery until publication finishes (committed=%s)",
+    async (committed) => {
+      const h = await pending();
+      const commit = Promise.withResolvers<void>();
+      const send = h.hub.sendPasswordSignIn.getMockImplementation()!;
+      h.hub.sendPasswordSignIn.mockImplementation(async (runner, command) => {
+        if (command.type === "login.commit") {
+          await commit.promise;
+          return { type: "login.committed", committed };
+        }
+        return send(runner, command);
+      });
+      const recordContinuationAttempt = vi.fn(async () => true);
+      const enqueueThreadInput = vi.fn(async () => ({ disposition: "run-queued" as const }));
+      const continuations = new ContinuationService({
+        commands: { enqueueThreadInput } as unknown as ConstructorParameters<
+          typeof ContinuationService
+        >[0]["commands"],
+        integrations: {
+          listDiscoveryInventory: async () => [],
+          listCallableTools: async () => [],
+          computerUseMachines: async () => [],
+          computerUsePhones: async () => [],
+        },
+        passwordSignIn: (operationId) => h.service.continuationState(operationId),
+        intervalMs: 5_000,
+        onError: (error) => {
+          throw error;
+        },
+        requests: {
+          listPendingContinuations: vi.fn(async () =>
+            h.request().status === "fulfilled"
+              ? [
+                  {
+                    request: h.request(),
+                    attemptedAt: null,
+                    reason: null,
+                    status: "waiting" as const,
+                  },
+                ]
+              : [],
+          ),
+          recordContinuationAttempt,
+        },
+      });
+      h.resolved.mockImplementation(() => continuations.notify());
+      continuations.start();
+      const response = answer(h);
+      try {
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(h.request().status).toBe("fulfilled");
+        expect(h.service.leaseForOperation(h.operationId())).toBeNull();
+        expect(enqueueThreadInput).not.toHaveBeenCalled();
+        expect(recordContinuationAttempt).not.toHaveBeenCalled();
+        commit.resolve();
+        await response;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(enqueueThreadInput).toHaveBeenCalledOnce();
+        if (committed)
+          expect(JSON.stringify(enqueueThreadInput.mock.calls)).toContain(h.loginRef());
+        else {
+          expect(JSON.stringify(enqueueThreadInput.mock.calls)).not.toContain(h.loginRef());
+          expect(h.request()).toMatchObject({ response: { value: { outcome: "interrupted" } } });
+        }
+        expect(recordContinuationAttempt).toHaveBeenCalledWith({
+          requestId: h.request().id,
+          reason: null,
+          status: "queued",
+        });
+      } finally {
+        commit.resolve();
+        await response;
+        await continuations.close();
+      }
+    },
+  );
   it("withholds release authority until durable settlement, then commits the broker", async () => {
     const h = await pending();
     replies(h);
@@ -641,6 +767,7 @@ describe("human Passwords settlement", () => {
         });
       await answer(h);
       expect(h.service.leaseForOperation(h.operationId())).toBeNull();
+      expect(h.service.continuationState(h.operationId())).toEqual({ publishing: true });
       expect(h.resolved).toHaveBeenCalledTimes(failure === "announcement" ? 1 : 0);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(h.request()).toMatchObject({
@@ -648,6 +775,10 @@ describe("human Passwords settlement", () => {
         settlementProvenance: { sessionId: "test-session", deviceLabel: "Test phone" },
       });
       expect(h.resolved).toHaveBeenCalledTimes(failure === "announcement" ? 2 : 1);
+      expect(h.service.continuationState(h.operationId())).toEqual({
+        publishing: false,
+        loginRef: undefined,
+      });
     },
   );
   it("refuses another user's chooser and answer", async () => {
@@ -668,6 +799,7 @@ describe("human Passwords settlement", () => {
   });
   it("revalidates a queued session and sends no approval after revocation", async () => {
     const h = await pending();
+    h.completeRun();
     const revalidate = vi.fn().mockRejectedValue(new Error("Session revoked"));
     await expect(answer(h, revalidate)).rejects.toThrow("Session revoked");
     expect(h.hub.sendPasswordSignIn.mock.calls.some(([, c]) => c.type === "login.approve")).toBe(

@@ -43,7 +43,8 @@ const sweepPageSize = 64;
 type PasswordSignInRequests = Pick<
   RequestStore,
   | "get"
-  | "hasPasswordSignInAuthority"
+  | "hasActiveRunPasswordSignInAuthority"
+  | "hasDurablePasswordSignInRequestAuthority"
   | "listPendingPasswordSignIns"
   | "openPasswordSignIn"
   | "settlePasswordSignInRequest"
@@ -85,6 +86,10 @@ interface Operation {
   deciding: boolean;
   settlementSessionId?: string | undefined;
 }
+
+export type PasswordSignInContinuationState =
+  | { readonly publishing: true }
+  | { readonly publishing: false; readonly loginRef: string | undefined };
 
 export interface PasswordLoginLease {
   readonly loginRef: string;
@@ -263,6 +268,13 @@ export class PasswordSignInService {
     return null;
   }
 
+  continuationState(operationId: string): PasswordSignInContinuationState {
+    const operation = this.#operations.get(operationId);
+    if (operation?.requestId && operation.settlement && !operation.settled)
+      return { publishing: true };
+    return { publishing: false, loginRef: this.leaseForOperation(operationId)?.loginRef };
+  }
+
   validateLease(input: { loginRef: string; workspaceId: WorkspaceId }): boolean {
     const lease = this.#liveLease(input.loginRef);
     return lease !== null && lease.workspaceId === input.workspaceId;
@@ -375,7 +387,7 @@ export class PasswordSignInService {
       if (this.#closed || !target || !this.#authority.passwordSignInSupported(target.runnerId))
         return unavailable(input.site, "unsupported");
       if (!input.admitStart()) return unavailable(input.site, "rate-limited");
-      if (!(await this.#requests.hasPasswordSignInAuthority(authority(input))))
+      if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
         return unavailable(input.site, "stopped");
       const description = await this.#describe({
         ownerId: input.ownerId,
@@ -448,16 +460,7 @@ export class PasswordSignInService {
   async get(input: { ownerId: UserId; requestId: RequestId }): Promise<PasswordSignInCard> {
     const request = await this.#requester(input);
     if (request.status !== "pending") return { stage: "gone" };
-    if (
-      request.originatingRunId === null ||
-      !(await this.#requests.hasPasswordSignInAuthority({
-        originatingRunId: request.originatingRunId,
-        originatingThreadId: request.originatingThreadId,
-        originatingWorkspaceId: request.originatingWorkspaceId,
-        requestedBy: request.requestedBy,
-        targetWorkspaceId: request.targetWorkspaceId,
-      }))
-    )
+    if (!(await this.#requests.hasDurablePasswordSignInRequestAuthority(input)))
       throw new OpensteerError({
         code: "forbidden",
         message: "This sign-in no longer has Workspace authority.",
@@ -528,7 +531,12 @@ export class PasswordSignInService {
           status: (await this.#requests.get(input.requestId))?.status ?? "cancelled",
           card: { stage: "gone" },
         };
-      if (!(await this.#requests.hasPasswordSignInAuthority(authority(operation.starter))))
+      if (
+        !(await this.#requests.hasDurablePasswordSignInRequestAuthority({
+          ownerId: request.requestedBy,
+          requestId: request.id,
+        }))
+      )
         throw new OpensteerError({
           code: "forbidden",
           message: "This sign-in no longer has Workspace authority.",
@@ -844,7 +852,7 @@ export class PasswordSignInService {
               request?.status === "withdrawn" ? "withdrawn" : "authority-lost",
             );
         } else {
-          const permitted = await this.#requests.hasPasswordSignInAuthority(
+          const permitted = await this.#requests.hasActiveRunPasswordSignInAuthority(
             authority(operation.starter),
           );
           if (!operation.settlement && !permitted) await this.#cancel(operation, "authority-lost");
@@ -910,6 +918,7 @@ export class PasswordSignInService {
         if (!result) {
           operation.settled = true;
           await this.#cancel(operation, "authority-lost");
+          this.#onRequestResolved();
           return "ended-elsewhere";
         }
         if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded) {
@@ -949,12 +958,14 @@ export class PasswordSignInService {
             settlement: operation.settlement,
           });
         }
-        if (result) this.#announce(result);
-        this.#notify(operation);
         operation.settled = true;
+        if (result) this.#announce(result);
+        else this.#onRequestResolved();
+        this.#notify(operation);
         return mine ? "settled" : "ended-elsewhere";
       } catch (error) {
         this.#onError(error);
+        operation.settled = false;
         operation.pendingLease = null;
         operation.settlementSessionId = undefined;
         operation.settlement = interrupted();

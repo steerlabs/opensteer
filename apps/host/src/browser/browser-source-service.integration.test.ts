@@ -450,7 +450,11 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     },
     onWorkspaceEvent: () => {},
     requests: {
-      hasPasswordSignInAuthority: store.requests.hasPasswordSignInAuthority.bind(store.requests),
+      hasActiveRunPasswordSignInAuthority: store.requests.hasActiveRunPasswordSignInAuthority.bind(
+        store.requests,
+      ),
+      hasDurablePasswordSignInRequestAuthority:
+        store.requests.hasDurablePasswordSignInRequestAuthority.bind(store.requests),
       get: (requestId) => store.requests.get(requestId),
       listPendingPasswordSignIns: store.requests.listPendingPasswordSignIns.bind(store.requests),
       openPasswordSignIn: async (input) => {
