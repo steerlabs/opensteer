@@ -436,23 +436,28 @@ The nightly pass is the only routine curator. Files have no merge contract, and
 a cheap writer that distorts a fact cannot be repaired by a later summary, so
 others write only what the person explicitly asks for or raw inbox scraps.
 There is no lock: inbox scraps get unique names and are created exclusively,
-forgets are recorded before anything is purged, and a pass commits each shared
-file in one command that first checks the off line and that the forget list and
-target are unchanged since it read them.
+forgets are recorded before anything is purged, and every nightly pass reapplies
+the forget list, so a write that crossed a forget heals by the next morning.
 
-Background passes are task Threads woken by worker-anchored Triggers and set
-up by Chat without asking. They reach the person only by queueing to Chat,
-which decides what is worth saying. Unassigned work Runs notify for replies and
-failures only when a person started or joined them; automatic Chat Runs still
-notify. Requests retain their own notification rules.
-Here each queued wake becomes its own Run on the worker, so the programs skip a
-worker whose Thread is running or waiting. Done only requests a stop, so
-turning memory off writes the off line first, which the passes check before
-every commit, then marks both workers Done and deletes files only once
-`thread_read` shows neither is still running or waiting. Removal or pause is the person's
-choice; the `Background passes:` line in `AGENTS.md` keeps Chat from recreating
-them. See
+Opensteer, not an agent, creates each Main's two background passes: a hidden
+work Thread under Chat and its Trigger, identified by the Trigger's
+`systemRole` (`memory-light`, `memory-nightly`). The Host owns their identity,
+lifetime and wake program; it refuses archive, reprogramming and manual runs,
+so the passes can only be paused, and it inserts them paused when Main's
+`AGENTS.md` already says memory is off. Agents own the judgment: what to
+remember, what reaches Chat, and tuning the light pass's skill and schedule.
+Passes reach the person only by queueing to Chat. Unassigned work Runs notify
+for replies and failures only when a person started or joined them; automatic
+Chat Runs still notify. Requests retain their own notification rules.
+
+Done only requests a stop, so stopping memory writes the off line first, which
+the passes check when they wake, then pauses and marks both workers Done, and
+erases files only once neither is running or waiting. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
+
+Main is not yet a private boundary: a shared channel routed into Main receives
+its `AGENTS.md`, summary included. Keeping such contexts out of Main is an
+unresolved release dependency of background memory.
 
 ## Starting versus resuming an AI conversation
 
