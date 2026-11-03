@@ -118,7 +118,7 @@ export class DesktopUpdater {
     };
   }
 
-  /** Background checks omit `checking`; a failed refresh retains an existing offer. */
+  /** Background checks omit `checking`, and a failed one keeps the last state. */
   start(signal: AbortSignal): void {
     if (!this.#enabled || signal.aborted) return;
     const tick = () => {
@@ -249,7 +249,8 @@ export class DesktopUpdater {
           latestVersion: null,
           failed: null,
         });
-      } else if (manual || this.#state.status !== "available") {
+      } else if (manual) {
+        // A background failure keeps what the person last saw.
         this.#set({
           status: "error",
           availableVersion: null,

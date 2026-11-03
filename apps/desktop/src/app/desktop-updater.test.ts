@@ -97,6 +97,10 @@ it("checks on its own, downloads when asked, and is ready only once Squirrel sta
   expect(mocks.updater.checkForUpdates).toHaveBeenCalledOnce();
   // A background check never shows `checking`.
   expect(statuses).toEqual(["up-to-date"]);
+  // A failed background check keeps the last state.
+  mocks.updater.checkForUpdates.mockRejectedValueOnce(new Error("offline"));
+  await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
+  expect(updater.state()).toMatchObject({ status: "up-to-date", failed: null });
 
   mocks.updater.checkForUpdates.mockResolvedValue(offer("0.1.397"));
   await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
@@ -119,7 +123,7 @@ it("checks on its own, downloads when asked, and is ready only once Squirrel sta
   expect(updater.state()).toMatchObject({ status: "downloading", downloadPercent: 41 });
   // Checks wait while the download runs and after it is ready.
   await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
-  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(5);
   finish();
   await downloading;
   // electron-updater's own event, and its resolved download, precede Squirrel's verification.
@@ -132,9 +136,9 @@ it("checks on its own, downloads when asked, and is ready only once Squirrel sta
     downloadPercent: null,
   });
   await vi.advanceTimersByTimeAsync(desktopUpdateCheckIntervalMs);
-  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(5);
   expect(await updater.check()).toMatchObject({ status: "downloaded" });
-  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(4);
+  expect(mocks.updater.checkForUpdates).toHaveBeenCalledTimes(5);
 
   controller.abort();
   expect(vi.getTimerCount()).toBe(0);
