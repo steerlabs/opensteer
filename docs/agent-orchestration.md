@@ -295,7 +295,9 @@ new task in the reused Thread. Completion is derived transactionally, not
 declared by an agent: pending Requests, inputs, children, undelivered child
 results or other active Runs keep it open. Interruption leaves it open.
 Completed/failed results queue to the recorded assigning Thread; cancellation
-is a passive report. Reconciliation retries the stored result and receipt,
+is a passive report. An empty completed result returns nothing and wakes nobody,
+unless it has a parent Assignment: that parent needs the completion to continue
+and settle its own work. Reconciliation retries the stored result and receipt,
 never guesses from later messages. Return requires the requester still to read
 the worker Workspace; otherwise it is undeliverable.
 

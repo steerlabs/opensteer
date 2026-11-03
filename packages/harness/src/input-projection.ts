@@ -304,7 +304,7 @@ function requesterTimeLine(timeZone: string | null, now: Date): string {
 
 function currentTaskLine(assignment: AssignmentRunContext | null): string {
   return assignment
-    ? `Task: ${assignment.id}, assigned by ${assigner(assignment.origin, assignment.parentThreadId)}. Its final reply returns there when the task closes.`
+    ? `Task: ${assignment.id}, assigned by ${assigner(assignment.origin, assignment.parentThreadId)}. Its final reply returns there when the task closes; an empty final reply returns nothing.`
     : "Task: none. This Run's final reply is shown in this Thread.";
 }
 
@@ -320,7 +320,7 @@ function previousRunLine(run: NonNullable<RunThreadState["previousRun"]>): strin
 }
 
 const taskReturns = {
-  delivered: "its outcome was sent to that Thread as a message",
+  delivered: "its return is settled; a result message was sent only if it had something to return",
   pending: "its outcome has not reached that Thread yet",
   undeliverable: "its outcome could not be sent to that Thread",
 } as const;

@@ -1214,18 +1214,67 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
   });
 
-  it("says plainly when a task ended without a reply or its reply is too long", async () => {
+  it("silently completes an empty top-level task and bounds long replies", async () => {
     const fixture = await createFixture();
     const silent = await delegate(fixture.token, {
       environmentId: fixture.lentEnvironmentId,
       task: "Tidy the notes quietly",
       workspaceId: fixture.workspaceId,
     });
+    const before = await Promise.all(
+      ["messages", "threadInputs", "runs"].map(async (table) => {
+        if (table === "messages")
+          return database
+            .selectFrom("messages")
+            .select("id")
+            .where("threadId", "=", fixture.parentThreadId)
+            .execute();
+        if (table === "threadInputs")
+          return database
+            .selectFrom("threadInputs")
+            .select("messageId")
+            .where("threadId", "=", fixture.parentThreadId)
+            .execute();
+        return database
+          .selectFrom("runs")
+          .select("id")
+          .where("threadId", "=", fixture.parentThreadId)
+          .execute();
+      }),
+    );
     const silentWorker = await activateRun(fixture, silent.run!.id);
     await end(silentWorker, "completed");
-    expect((await assignmentRow(silent.assignmentId)).resultText).toBe(
-      "The task ended without a written reply.",
-    );
+    expect(await assignmentRow(silent.assignmentId)).toMatchObject({
+      status: "completed",
+      resultText: "",
+      resultStatus: "delivered",
+    });
+    expect(
+      await database
+        .selectFrom("delegations")
+        .select("resultMessageId")
+        .where("id", "=", silent.assignmentId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ resultMessageId: null });
+    await drainReturns();
+    const after = await Promise.all([
+      database
+        .selectFrom("messages")
+        .select("id")
+        .where("threadId", "=", fixture.parentThreadId)
+        .execute(),
+      database
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("threadId", "=", fixture.parentThreadId)
+        .execute(),
+      database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", fixture.parentThreadId)
+        .execute(),
+    ]);
+    expect(after).toEqual(before);
 
     const verbose = await delegate(fixture.token, {
       environmentId: fixture.lentEnvironmentId,
@@ -1247,6 +1296,44 @@ integration("cross-environment delegation reaches the Runner", () => {
       truncatedAssignmentId: verbose.assignmentId,
       truncatedResultBytes: Buffer.byteLength(truncated, "utf8"),
     });
+  });
+
+  it("returns the existing nonempty fallback for a substantive reply without text", async () => {
+    const fixture = await createFixture();
+    const task = await delegate(fixture.token, {
+      environmentId: fixture.lentEnvironmentId,
+      task: "Return the report file",
+      workspaceId: fixture.workspaceId,
+    });
+    const worker = await activateRun(fixture, task.run!.id);
+    await commit(worker, (scope) => ({
+      ...scope,
+      data: {
+        content: [
+          { type: "artifact", artifactId: "report", mediaType: "text/markdown", name: "report.md" },
+        ],
+        messageId: createId("message"),
+      },
+      type: "assistant.message",
+    }));
+    await end(worker, "completed");
+    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+      status: "completed",
+      resultText: "The task ended without a written reply.",
+      resultStatus: "pending",
+    });
+    await drainReturns();
+    const returned = await returnMessages(fixture.parentThreadId);
+    expect(returned).toHaveLength(1);
+    expect(messageText(returned[0]!.content)).toContain("The task ended without a written reply.");
+    expect(await assignmentRow(task.assignmentId)).toMatchObject({ resultStatus: "delivered" });
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["policy", "state"])
+        .where("messageId", "=", returned[0]!.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ policy: "queue", state: "pending" });
   });
 
   it("stays open across durable Requests and completes with the continuation Run's reply", async () => {
@@ -1346,8 +1433,12 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect((await assignmentRow(parent.assignmentId)).status).toBe("open");
 
     const trialWorker = await activateRun(fixture, trial.run!.id);
-    await reply(trialWorker, "Trial terms: 100 nights.");
+
     await end(trialWorker, "completed");
+    expect(await assignmentRow(trial.assignmentId)).toMatchObject({
+      resultText: "",
+      resultStatus: "pending",
+    });
     expect(await drainReturns()).toContainEqual(
       expect.objectContaining({ threadId: parent.thread.id, type: "message.created" }),
     );

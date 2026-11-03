@@ -154,6 +154,7 @@ const releasedMigrationNames = [
   "0144_project_chats",
   "0145_specialist_lifecycle",
   "0146_every_turn_shows",
+  "0147_quiet_assignment_results",
 ];
 
 describe("migration names", () => {

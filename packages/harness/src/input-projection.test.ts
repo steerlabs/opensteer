@@ -82,9 +82,33 @@ describe("harnessThreadContextPrompt", () => {
     expect(lines[0]).toBe("[Opensteer thread context]");
     expect(lines[1]).toMatch(/^Person's time zone: America\/New_York\./u);
     expect(lines[2]).toBe(
-      `Task: ${assignmentId}, assigned by Thread ${parentThreadId}. Its final reply returns there when the task closes.`,
+      `Task: ${assignmentId}, assigned by Thread ${parentThreadId}. Its final reply returns there when the task closes; an empty final reply returns nothing.`,
     );
     expect(lines.at(-1)).toBe("[End Opensteer thread context]");
+  });
+
+  it("does not claim a settled return necessarily sent a result message", () => {
+    const prompt = harnessThreadContextPrompt(
+      {
+        ...context(null),
+        threadState: {
+          previousRun: null,
+          previousAssignment: {
+            id: createId("delegation"),
+            origin: "run",
+            parentThreadId: createId("thread"),
+            status: "completed",
+            finishedAt: started.toISOString(),
+            returnStatus: "delivered",
+          },
+        },
+      },
+      started,
+    );
+    expect(prompt).toContain(
+      "its return is settled; a result message was sent only if it had something to return",
+    );
+    expect(prompt).not.toContain("its outcome was sent to that Thread as a message");
   });
 
   it("starts every Run's turn with the thread context, and a steer with none", () => {

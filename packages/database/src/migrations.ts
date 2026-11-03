@@ -4698,6 +4698,7 @@ export function migrationProvider() {
         "0144_project_chats": projectChatsMigration,
         "0145_specialist_lifecycle": specialistLifecycleMigration,
         "0146_every_turn_shows": everyTurnShowsMigration,
+        "0147_quiet_assignment_results": quietAssignmentResultsMigration,
       };
     },
   };
@@ -7063,5 +7064,26 @@ export const specialistLifecycleMigration: Migration = {
 export const everyTurnShowsMigration: Migration = {
   async up(database) {
     await sql`alter table runs drop column quiet`.execute(database);
+  },
+};
+
+export const quietAssignmentResultsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.delegations
+        drop constraint assignments_result_check,
+        add constraint assignments_result_check check (
+          (status = 'open' and result_text is null and result_run_id is null)
+          or (status = 'cancelled' and result_run_id is null)
+          or (status = 'completed' and result_text is not null and result_run_id is not null)
+          or (status = 'failed' and octet_length(result_text) >= 1 and result_run_id is not null)),
+        drop constraint delegations_result_check,
+        add constraint delegations_result_check check (
+          (result_status = 'pending' and completed_at is null and result_message_id is null and result_reason is null)
+          or (result_status = 'delivered' and completed_at is not null
+            and (result_message_id is not null or result_text is not distinct from '') and result_reason is null)
+          or (result_status = 'undeliverable' and completed_at is not null
+            and result_message_id is null and result_reason is not null));
+    `.execute(database);
   },
 };

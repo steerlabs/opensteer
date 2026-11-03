@@ -438,7 +438,8 @@ async function finalReplyOfRun(
     .flatMap((part) => (part.type === "text" ? [part.text] : []))
     .join("\n")
     .trim();
-  return text.length > 0 ? text : null;
+  // Null means no substantive reply; an empty string preserves a non-text reply.
+  return text;
 }
 
 /**
@@ -459,7 +460,7 @@ export async function settleAssignmentAfterRun(
 ): Promise<readonly AgentEvent[]> {
   const row = await transaction
     .selectFrom("delegations")
-    .select("status")
+    .select(["status", "parentAssignmentId"])
     .where("id", "=", input.assignmentId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
@@ -474,7 +475,7 @@ export async function settleAssignmentAfterRun(
   const reply = await finalReplyOfRun(transaction, input.run);
   const resultText =
     outcome === "completed"
-      ? boundedResult(reply ?? "The task ended without a written reply.")
+      ? boundedResult(reply === null ? "" : reply || "The task ended without a written reply.")
       : boundedResult(
           `${input.failureSummary ? `The task stopped because of an error: ${input.failureSummary}` : "The task stopped because of an error."}${reply ? `\n\nLast reply before the error:\n${reply}` : ""}`,
         );
@@ -484,6 +485,13 @@ export async function settleAssignmentAfterRun(
       finishedAt: input.finishedAt,
       resultRunId: input.run.id,
       resultText,
+      ...(outcome === "completed" && resultText === "" && row.parentAssignmentId === null
+        ? {
+            resultStatus: "delivered" as const,
+            resultMessageId: null,
+            completedAt: input.finishedAt,
+          }
+        : {}),
       revision: expression("revision", "+", 1),
       status: outcome,
       updatedAt: input.finishedAt,

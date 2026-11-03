@@ -7,7 +7,9 @@ description: Find, read, message, delegate, continue or stop durable Opensteer T
 
 A Thread is an agent's durable address and history. Use native workers for Run-local work
 when useful, and durable Threads when independent lifetime or context helps. A task can span
-Runs; its final reply returns automatically to its assigner.
+Runs; its final reply returns automatically to its assigner. An empty final reply returns
+nothing. For recurring or conditional checks, tell the task to end with no reply when nothing
+is worth passing on.
 
 Give a task its outcome, constraints, evidence and completion criteria. When the work
 continues an earlier task, find that task and continue it; otherwise start a new one. `thread_delegate` takes either `workspaceId` for a new task or `threadId`

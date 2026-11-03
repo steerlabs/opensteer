@@ -343,7 +343,7 @@ const definitions = [
       title: "Delegate Work",
     },
     description:
-      "Call a ready specialist with specialist (registration id or plugin name), defaulting to this Workspace. Start ordinary independent work with workspaceId, or continue a finished task with threadId. New tasks inherit this Thread's computer, engine and model; consult environment_list for other selectors. Existing Threads keep their selection. Copy needed structured places, omitting auto and documentId; the Host checks provenance and access. Forwarding grants no access or session; release a held phone before handoff. Returns threadId and assignmentId; the final reply returns automatically. Do independent work or end your turn without polling. Change active work with thread_message; stop it with assignment_cancel.",
+      "Call a ready specialist with specialist (registration id or plugin name), defaulting to this Workspace. Start ordinary independent work with workspaceId, or continue a finished task with threadId. New tasks inherit this Thread's computer, engine and model; consult environment_list for other selectors. Existing Threads keep their selection. Copy needed structured places, omitting auto and documentId; the Host checks provenance and access. Forwarding grants no access or session; release a held phone before handoff. Returns threadId and assignmentId; the final reply returns automatically; a task that ends with no reply returns nothing. For recurring or conditional checks, tell the task to end with no reply when nothing is worth passing on. Do independent work or end your turn without polling. Change active work with thread_message; stop it with assignment_cancel.",
     id: "thread.delegate",
     inputSchema: z
       .strictObject({
@@ -917,6 +917,7 @@ export function platformGuideForCapabilityProfile(id: AgentCapabilityProfileId):
 }
 
 const conversationRoleGuide = `Keep Chat responsive. Answer quick questions directly. Hand sustained work to thread_delegate with its goal, context, constraints and completion criteria; let the task choose its approach. Prefer this Workspace unless an existing Project owns the work. Call a ready specialist with thread_delegate specialist when its purpose fits. When the person refers to earlier work, continue that task with its threadId. Project members can read forwarded material; Main is personal.
+A task that ends with no reply returns nothing. For recurring or conditional checks, tell the task to end with no reply when nothing is worth passing on.
 After delegation succeeds, briefly say what started and end your turn without waiting or polling. Check returned results against the request and deliver the outcome and outputs in your final reply. Identify the task when several are outstanding.
 For background inputs, deliver awaited results and useful new developments once. End stale, duplicate or uninformative wakes without any assistant text.
 Keep outstanding requests through follow-ups unless the person changes or withdraws them. Repair wanted ongoing work within authorization; reuse repair underway or continue a stopped task with thread_delegate and threadId. Change limits you or other agents set, such as retry budgets, when they block a useful repair. Keep the person's pauses and the site's constraints. Resume a Trigger paused by failure only after verifying the repair. Change approach when failures repeat without new evidence. Explain material failures and repairs; ask only for decisions or access you need.
@@ -925,7 +926,7 @@ When talking to the person, call Main's conversation "Chat" (threadId "home") an
 
 const workRoleGuide = `Complete the focused work using this Workspace's instructions, tools, files and skills. Choose your approach, including native workers; use thread_delegate for independent work.
 Verify the result and give a self-contained final reply with evidence, output locations and material limits. Try authorized repairs before reporting a blocker and the decision or access needed. Restore wanted ongoing work unless the person stopped it, within their and the site's constraints. Change limits agents set when they block a fix.
-On an Assignment, your final reply returns to the assigner automatically. Send a distinct earlier update there with thread_message: report leaves context for its next turn; queue asks it to act or pass something on. Assigned Runs cannot use person_message or person_show, even if listed.
+On an Assignment, your final reply returns to the assigner automatically; an empty final reply returns nothing. Send a distinct earlier update there with thread_message: report leaves context for its next turn; queue asks it to act or pass something on. Assigned Runs cannot use person_message or person_show, even if listed.
 When waiting on a Request or delegated task, end your turn for its continuation.`;
 
 /**

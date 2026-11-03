@@ -10197,7 +10197,7 @@ class MockHostState {
     const reply = mockRunReply(this.snapshot.transcripts[threadId] ?? [], runId);
     this.finishAssignment(assignment, {
       resultRunId: runId,
-      resultText: reply?.body ?? "The task ended without a written reply.",
+      resultText: reply ? reply.body.trim() || "The task ended without a written reply." : "",
       status: "completed",
     });
   }
@@ -10216,6 +10216,14 @@ class MockHostState {
       revision: assignment.revision + 1,
       updatedAt: now,
     });
+    if (
+      finished.status === "completed" &&
+      finished.resultText === "" &&
+      finished.parentAssignmentId === null
+    ) {
+      this.publishAssignment({ ...finished, returnStatus: "delivered", returnMessageId: null });
+      return;
+    }
     this.publishAssignment(finished);
     this.deliverReturn(finished);
   }
