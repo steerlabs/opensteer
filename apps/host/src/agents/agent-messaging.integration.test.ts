@@ -137,19 +137,15 @@ integration("agent-to-agent messaging round trip", () => {
       mount: async ({ workspace }) => ({ path: `/Main/Projects/${workspace.slug}` }),
     },
     workspaces: {
-      create: async (input) =>
-        createTestWorkspace(store, {
+      create: async (input) => {
+        const main = await store.findMainWorkspaceForOwner(input.createdBy);
+        if (!main) throw new Error("Owner Main is missing");
+        return createTestWorkspace(store, {
           ...input,
-          backing: {
-            kind: "local-directory",
-            generation: 1,
-            bindingId: createId("workspaceBinding"),
-            ownerEnvironmentId: createId("environment"),
-            storageAuthorityId: createId("storageAuthority"),
-          },
-
+          backing: { ...main.backing, bindingId: createId("workspaceBinding") },
           status: "ready",
-        }),
+        });
+      },
     },
   });
 
@@ -969,7 +965,7 @@ integration("agent-to-agent messaging round trip", () => {
           kind: "local-directory",
           generation: 1,
           bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: createId("environment"),
+          ownerEnvironmentId: fixture.environmentId,
           storageAuthorityId: createId("storageAuthority"),
         },
 
@@ -1310,7 +1306,7 @@ integration("agent-to-agent messaging round trip", () => {
         kind: "local-directory",
         generation: 1,
         bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
+        ownerEnvironmentId: environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
 
