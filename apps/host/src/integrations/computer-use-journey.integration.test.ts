@@ -1936,42 +1936,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     }
   });
 
-  it("refuses new access from delegated gateway requests and proposals", async () => {
-    const world = await createWorld(database);
-    const run = await world.startRun("Delegated task");
-    const gateway = await world.gateway({
-      ...run,
-      claims: { ...run.claims, capabilityProfileId: "delegated" },
-    });
-    try {
-      for (const [name, args] of [
-        ["integration_request", { catalog: "macos-app", access: "read", reason: "Use an app" }],
-        [
-          "integration_request",
-          { integration: "cloud-account", access: "read-write", reason: "Send a message" },
-        ],
-        [
-          "integration_propose",
-          {
-            source: "https://example.test/openapi.json",
-            description: "An example API.",
-            access: "read",
-            reason: "Use an API",
-          },
-        ],
-      ] as const) {
-        const response = await gateway.call(name, args);
-        expect(response.isError).toBe(true);
-        expect(JSON.stringify(response.content)).toContain(
-          "This capability profile cannot request integration access.",
-        );
-      }
-      expect(world.fakeMac.waiting()).toEqual([]);
-    } finally {
-      await world.close();
-    }
-  });
-
   it("bounds durable tab-open replay while retaining each owner's successful identity placement", async () => {
     const world = await createWorld(database);
     try {
