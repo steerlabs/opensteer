@@ -17,12 +17,13 @@ import {
   pluginAccountRows,
 } from "@opensteer/client/settings";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
+import { IntegrationIcon } from "../../integrations/integration-icon.js";
 import { Dialog } from "../../dialog.js";
 import { ThreadIntegrationAction } from "../../thread-integration-action.js";
 import { useShell } from "../../app-shell.js";
 import { Icon } from "../../icon.js";
 import { IntegrationsPage } from "../../integrations/integrations-page.js";
-import { SettingsError, SectionHeader, type SettingsView } from "../primitives.js";
+import { SettingsError, SettingsRow, SectionHeader, type SettingsView } from "../primitives.js";
 import { useSettingsRead } from "../use-settings-read.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { platformIntegrations } from "../../integrations/helpers.js";
@@ -107,10 +108,14 @@ function PluginOverview({ view }: { readonly view: SettingsView }) {
           focused.current = event.target.getAttribute("aria-label");
         }}
       >
-        <SectionHeader title="Plugins" lead={null} />
-        <Link className="btn btn--primary" to="/settings/plugins/add">
-          Add plugins
-        </Link>
+        <SectionHeader
+          title="Plugins"
+          action={
+            <Link className="btn btn--primary" to="/settings/plugins/add">
+              Add plugins
+            </Link>
+          }
+        />
         <input
           className="text-input"
           type="search"
@@ -155,7 +160,12 @@ function PluginOverview({ view }: { readonly view: SettingsView }) {
             rows.length ? (
               name === "Turned off" ? (
                 <details key={name}>
-                  <summary>Turned off · {rows.length}</summary>
+                  <summary>
+                    <span>Turned off · {rows.length}</span>
+                    <span className="settings-off-preview">
+                      {rows.map((row) => row.title).join(", ")}
+                    </span>
+                  </summary>
                   <div className="card" role="list">
                     {rows.map((row) => (
                       <OverviewRow
@@ -260,30 +270,29 @@ function OverviewRow({
   reload: () => void;
 }) {
   const state = pluginState(row);
+  const { snapshot } = useShell();
+  const waitingDevice =
+    row.target.kind === "device-app"
+      ? snapshot.machines.find((machine) =>
+          machine.apps?.some(
+            (app) =>
+              app.definitionId ===
+              (row.target.kind === "device-app" ? row.target.definitionId : ""),
+          ),
+        )?.name
+      : null;
   return (
     <div className="card__row" role="listitem">
-      <span className="card__row-glyph">
-        <Icon
-          name={
-            state.group === "Needs you"
-              ? "alert-circle"
-              : row.target.kind === "skill"
-                ? "code"
-                : row.target.kind === "specialist"
-                  ? "user"
-                  : row.target.kind === "device-app"
-                    ? "devices"
-                    : "puzzle"
-          }
-        />
-      </span>
+      <PluginIcon row={row} />
       <Link className="card__row-body" to={pluginPath(row.target)}>
         <span className="card__row-title">{row.title}</span>
         <span className="card__row-detail">
           {state.label !== "On"
-            ? state.label
+            ? state.label === "Waiting"
+              ? `${waitingDevice ?? row.title} · waiting`
+              : state.label
             : [
-                row.accountCount ? `${row.accountCount} accounts` : null,
+                row.accountCount > 1 ? `${row.accountCount} accounts` : null,
                 pluginPlacementLabel(row, view.kind === "personal"),
               ]
                 .filter(Boolean)
@@ -361,23 +370,40 @@ function PluginDetail({
               </ul>
             </>
           ) : null}
-          <h2>What agents may do</h2>
-          <ul>
-            {data.permissions.map((fact) => (
-              <li key={`${fact.layer}:${fact.label}`}>
-                {fact.label} · {fact.state === "ask" ? "Ask first" : fact.state} · {fact.layer}
-              </li>
-            ))}
-          </ul>
-          <h2>Comes with</h2>
-          <ul>
-            {data.contents.map((item) => (
-              <li key={`${item.kind}:${item.name}`}>
-                {item.name} · {item.kind}
-              </li>
-            ))}
-          </ul>
           <Placement detail={data} reload={detail.reload} personal={view.kind === "personal"} />
+          {data.permissions.length ? (
+            <section className="settings-group">
+              <h2 className="settings-group__title">What agents may do</h2>
+              <div className="card">
+                {data.permissions.map((fact) => (
+                  <SettingsRow
+                    key={`${fact.layer}:${fact.label}`}
+                    icon="shield"
+                    title={fact.label}
+                    action={
+                      <span className="chip">
+                        {fact.state === "ask"
+                          ? "Ask first"
+                          : fact.state === "allowed"
+                            ? "Allowed"
+                            : fact.state.replaceAll("-", " ")}
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {data.contents.length ? (
+            <section className="settings-group">
+              <h2 className="settings-group__title">Comes with</h2>
+              <div className="card">
+                {data.contents.map((item) => (
+                  <SettingsRow key={`${item.kind}:${item.name}`} icon="puzzle" title={item.name} />
+                ))}
+              </div>
+            </section>
+          ) : null}
           <PackageActions detail={data} reload={detail.reload} />
           {data.sourceFolder === null && data.row.target.kind === "plugin" ? (
             <p>Source folder unknown</p>
@@ -449,49 +475,60 @@ function Placement({
     .filter((place) => place.selected)
     .map((place) => place.workspaceId);
   return (
-    <section id="plugin-placement">
-      <h2>Where it’s on</h2>
-      {personal && detail.row.target.kind !== "skill" && detail.row.source.kind !== "workspace" ? (
-        <label className="card__row">
-          Everywhere
-          <input
-            type="checkbox"
-            role="switch"
-            checked={detail.row.placement.personalEverywhere}
-            disabled={pending || !detail.row.permissions.canPlace}
-            onChange={(event) =>
-              change(
-                true,
-                event.currentTarget.checked
-                  ? detail.places.map((place) => place.workspaceId)
-                  : selected,
-                event.currentTarget.checked,
-              )
-            }
-          />
-        </label>
-      ) : null}
-      {detail.places.map((place) => (
-        <label className="card__row" key={place.workspaceId}>
-          {place.name}
-          <input
-            type="checkbox"
-            checked={place.kind === "main" ? detail.row.placement.mainIncluded : place.selected}
-            disabled={pending || !place.canSelect || !detail.row.permissions.canPlace}
-            onChange={(event) =>
-              change(
-                place.kind === "main"
-                  ? event.currentTarget.checked
-                  : detail.row.placement.mainIncluded,
-                event.currentTarget.checked
-                  ? [...selected, place.workspaceId]
-                  : selected.filter((id) => id !== place.workspaceId),
-                false,
-              )
-            }
-          />
-        </label>
-      ))}
+    <section className="settings-group" id="plugin-placement">
+      <h2 className="settings-group__title">Where it’s on</h2>
+      <div className="card">
+        {personal &&
+        detail.row.target.kind !== "skill" &&
+        detail.row.source.kind !== "workspace" ? (
+          <label className="card__row">
+            <span className="card__row-body">Everywhere</span>
+            <input
+              className="switch"
+              type="checkbox"
+              role="switch"
+              checked={detail.row.placement.personalEverywhere}
+              disabled={pending || !detail.row.permissions.canPlace}
+              onChange={(event) =>
+                change(
+                  true,
+                  event.currentTarget.checked
+                    ? detail.places.map((place) => place.workspaceId)
+                    : selected,
+                  event.currentTarget.checked,
+                )
+              }
+            />
+          </label>
+        ) : null}
+        {!personal || !detail.row.placement.personalEverywhere
+          ? detail.places.map((place) => (
+              <label className="card__row" key={place.workspaceId}>
+                <span className="card__row-body">{place.name}</span>
+                <input
+                  className="switch"
+                  role="switch"
+                  type="checkbox"
+                  checked={
+                    place.kind === "main" ? detail.row.placement.mainIncluded : place.selected
+                  }
+                  disabled={pending || !place.canSelect || !detail.row.permissions.canPlace}
+                  onChange={(event) =>
+                    change(
+                      place.kind === "main"
+                        ? event.currentTarget.checked
+                        : detail.row.placement.mainIncluded,
+                      event.currentTarget.checked
+                        ? [...selected, place.workspaceId]
+                        : selected.filter((id) => id !== place.workspaceId),
+                      false,
+                    )
+                  }
+                />
+              </label>
+            ))
+          : null}
+      </div>
       {pending ? <p role="status">Saving…</p> : null}
       <SettingsError message={error} />
     </section>
@@ -510,7 +547,7 @@ function CatalogSuggestions() {
         .slice(0, 3)
         .map((item) => (
           <Link className="card card--padded" key={item.definitionId} to="/settings/plugins/add">
-            <Icon name="puzzle" />
+            <IntegrationIcon id={item.definitionId} name={item.title} />
             <strong>{item.title}</strong>
             <span>{item.description}</span>
           </Link>
@@ -526,7 +563,6 @@ export function PluginAddSheet({
   personal: boolean;
 }) {
   const { hostClient, snapshot } = useShell();
-  const [consent, setConsent] = useState(false);
   const [ready, setReady] = useState(false);
   const [everywhere, setEverywhere] = useState(personal);
   const [places, setPlaces] = useState<string[]>([]);
@@ -622,7 +658,10 @@ export function PluginAddSheet({
         </>
       ) : (
         <>
-          <h2>{definition?.name ?? "Add plugin"}</h2>
+          <div className="settings-add-hero">
+            <IntegrationIcon id={definitionId} name={definition?.name ?? "Plugin"} />
+            <h2>{definition?.name ?? "Add plugin"}</h2>
+          </div>
           <p>{definition?.description}</p>
           <h3>Comes with</h3>
           {integration?.entry?.tools.length ? (
@@ -655,34 +694,43 @@ export function PluginAddSheet({
                 <li key={scope}>{scope}</li>
               ))}
           </ul>
-          <label className="card__row">
-            Agent access
-            <select
-              aria-label="Agent access"
-              value={access}
-              onChange={(event) =>
-                setAccess(event.currentTarget.value === "read-write" ? "read-write" : "read")
-              }
-            >
-              <option value="read">Read only</option>
-              <option value="read-write">Read and write</option>
-            </select>
-          </label>
+          {definition?.computerApp ? (
+            <div className="settings-plugin-filters" role="group" aria-label="Agent access">
+              {(["read", "read-write"] as const).map((value) => (
+                <button
+                  className="btn"
+                  type="button"
+                  key={value}
+                  aria-pressed={access === value}
+                  onClick={() => setAccess(value)}
+                >
+                  {value === "read" ? "Read only" : "Read and write"}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <h3>Where it’s on</h3>
           {personal ? (
             <label className="card__row">
+              <span className="card__row-body">Everywhere</span>
               <input
+                className="switch"
+                role="switch"
+                aria-label="Everywhere"
                 type="checkbox"
                 checked={everywhere}
                 onChange={(event) => setEverywhere(event.currentTarget.checked)}
               />
-              Everywhere, including future Projects
             </label>
           ) : null}
           {!everywhere
             ? snapshot.workspaces.map((place) => (
                 <label className="card__row" key={place.id}>
+                  <span className="card__row-body">{place.name}</span>
                   <input
+                    className="switch"
+                    role="switch"
+                    aria-label={place.name}
                     type="checkbox"
                     checked={places.includes(place.id)}
                     onChange={(event) =>
@@ -693,27 +741,16 @@ export function PluginAddSheet({
                       )
                     }
                   />
-                  {place.name}
                 </label>
               ))
             : null}
-          <label className="card__row">
-            <input
-              type="checkbox"
-              checked={consent}
-              onChange={(event) => setConsent(event.currentTarget.checked)}
-            />
-            {definition?.computerApp
-              ? "I allow agents to use this app with this access in the selected places."
-              : "I allow this plugin to use the account I connect with this access in the selected places."}
-          </label>
           <button
             className="btn btn--primary"
             type="button"
-            disabled={!definition || !consent || (!everywhere && places.length === 0)}
+            disabled={!definition || (!everywhere && places.length === 0)}
             onClick={() => setReady(true)}
           >
-            {definition?.computerApp ? "Continue to setup" : "Continue to sign in"}
+            {definition?.computerApp ? "Add" : `Add and sign in to ${definition?.name ?? "plugin"}`}
           </button>
         </>
       )}
@@ -791,7 +828,10 @@ function PluginDirectory({ view }: { view: SettingsView }) {
           </button>
         ))}
       </div>
-      <div className="card">
+      {directory.data?.requests.length || directory.data?.hasMoreRequests ? (
+        <DirectoryRequests />
+      ) : null}
+      <div className="card settings-directory">
         {directory.data?.catalog
           .filter(
             (item) =>
@@ -811,6 +851,7 @@ function PluginDirectory({ view }: { view: SettingsView }) {
           )
           .map((item) => (
             <div className="card__row" key={item.definitionId}>
+              <IntegrationIcon id={item.definitionId} name={item.title} />
               <span className="card__row-body">
                 <strong>{item.title}</strong>
                 <span className="card__row-detail">{item.description}</span>
@@ -826,9 +867,6 @@ function PluginDirectory({ view }: { view: SettingsView }) {
             </div>
           ))}
       </div>
-      {directory.data?.requests.length || directory.data?.hasMoreRequests ? (
-        <DirectoryRequests />
-      ) : null}
       {adding ? (
         <Dialog
           labelledBy="add-plugin-title"
@@ -992,5 +1030,23 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
       ) : null}
       <SettingsError message={error} />
     </section>
+  );
+}
+
+function PluginIcon({ row }: { row: PluginRow }) {
+  if (row.target.kind === "service" || row.target.kind === "device-app")
+    return <IntegrationIcon id={row.target.definitionId} name={row.title} />;
+  return (
+    <span className="card__row-glyph">
+      <Icon
+        name={
+          row.target.kind === "specialist"
+            ? "user"
+            : row.target.kind === "skill"
+              ? "code"
+              : "puzzle"
+        }
+      />
+    </span>
   );
 }

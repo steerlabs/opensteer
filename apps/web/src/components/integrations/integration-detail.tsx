@@ -1,3 +1,4 @@
+import { SurfaceMenu } from "../surface-menu.js";
 import { useState, type ReactNode } from "react";
 import { requestAgentProposedDetail } from "@opensteer/core";
 import type {
@@ -53,6 +54,7 @@ import { IntegrationIcon } from "./integration-icon.js";
 export function IntegrationDetail({
   dashboard,
   headerAction,
+  showWorkspaceAccess = true,
   error,
   hostConnected,
   hostName,
@@ -76,6 +78,7 @@ export function IntegrationDetail({
   reconnectConnectionId,
 }: {
   readonly headerAction?: ReactNode;
+  readonly showWorkspaceAccess?: boolean;
   readonly dashboard: IntegrationDashboard;
   readonly error: string | null;
   readonly hostConnected: boolean;
@@ -147,17 +150,21 @@ export function IntegrationDetail({
   const accounts = accountsFor(dashboard, definition);
   const mcpAccounts = entry ? mcpAccountsFor(platform, entry) : [];
   const disconnectButton = (connectionId: string, disconnect: (connectionId: string) => void) => (
-    <button
-      className={`btn btn--small ${confirming === connectionId ? "btn--danger" : "btn--ghost"}`}
-      disabled={pending}
-      onClick={() => {
-        if (confirming === connectionId) disconnect(connectionId);
-        else setConfirming(connectionId);
-      }}
-      type="button"
-    >
-      {confirming === connectionId ? "Confirm disconnect" : "Disconnect"}
-    </button>
+    <SurfaceMenu
+      label="Account actions"
+      items={[
+        {
+          icon: "trash",
+          label: confirming === connectionId ? "Confirm disconnect" : "Disconnect",
+          danger: true,
+          disabled: pending,
+          onSelect: () => {
+            if (confirming === connectionId) disconnect(connectionId);
+            else setConfirming(connectionId);
+          },
+        },
+      ]}
+    />
   );
   const reconnecting =
     reconnectConnectionId === null
@@ -590,15 +597,17 @@ export function IntegrationDetail({
       {active ? (
         <section className="section">
           <div className="card">
-            <button className="card__row intg-link" onClick={onWorkspaceAccess} type="button">
-              <span className="card__row-body">
-                <span className="card__row-title">Workspace access</span>
-                <span className="card__row-detail">
-                  {`Choose which Workspaces’ agents can use ${definition.name}.`}
+            {showWorkspaceAccess ? (
+              <button className="card__row intg-link" onClick={onWorkspaceAccess} type="button">
+                <span className="card__row-body">
+                  <span className="card__row-title">Workspace access</span>
+                  <span className="card__row-detail">
+                    {`Choose which Workspaces’ agents can use ${definition.name}.`}
+                  </span>
                 </span>
-              </span>
-              <Icon name="chevron-right" />
-            </button>
+                <Icon name="chevron-right" />
+              </button>
+            ) : null}
             {signInChoices ? (
               <button
                 className="card__row intg-link"

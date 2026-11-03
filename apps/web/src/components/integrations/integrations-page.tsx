@@ -201,6 +201,7 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
         {view.kind === "overview" ? children : null}
         {view.kind === "detail" && detailIntegration && dashboard ? (
           <IntegrationDetail
+            showWorkspaceAccess={!placementAnchor}
             headerAction={headerAction}
             dashboard={dashboard}
             error={error}

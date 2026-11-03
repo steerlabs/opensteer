@@ -202,24 +202,21 @@ describe("Plugins settings", () => {
     expect(JSON.stringify(readPluginConsent(key))).not.toContain("launchTicket");
     expect(JSON.stringify(readPluginConsent(key))).not.toContain(detail.accounts[1]!.connectionId);
   });
-  it("requires explicit account access and server placement before opening sign-in", async () => {
+  it("requires server placement and explicit Add before opening sign-in", async () => {
     const node = await mount("/settings/plugins/add", { sheet: true });
     await act(async () => {
       await vi.waitFor(() => expect(node.textContent).toContain("gmail.readonly"));
     });
     const proceed = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Continue to sign in",
+      (button) => button.textContent === "Add and sign in to Gmail",
     )!;
     expect(proceed.disabled).toBe(true);
     expect(node.textContent).not.toContain("Everywhere");
     const choices = node.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    await act(async () => choices[choices.length - 1]!.click());
-    expect(proceed.disabled).toBe(true);
     await act(async () => choices[0]!.click());
     expect(proceed.disabled).toBe(false);
-    expect(node.querySelector<HTMLSelectElement>('[aria-label="Agent access"]')?.value).toBe(
-      "read",
-    );
+    expect(node.querySelector('select[aria-label="Agent access"]')).toBeNull();
+    expect(node.querySelectorAll('input:not([role="switch"])')).toHaveLength(0);
     const accounts = unwrapRpcResult(
       await client.rpc["plugins.detail.get"]({
         target: { kind: "service", definitionId: "google-gmail" },
