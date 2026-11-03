@@ -642,11 +642,12 @@ integration("cross-environment delegation reaches the Runner", () => {
           arguments: {
             workspaceId: fixture.workspaceId,
             task: "Have Sol review this",
+            environmentId: fixture.lentEnvironmentId,
             harnessInstanceId: engine.id,
             model: choice,
           },
         });
-        expect(delegated.isError).not.toBe(true);
+        expect(delegated.isError, JSON.stringify(delegated.structuredContent)).not.toBe(true);
         const result = AgentControlResponseSchema.parse({
           requestId: randomUUID(),
           type: "thread.delegate.result",
