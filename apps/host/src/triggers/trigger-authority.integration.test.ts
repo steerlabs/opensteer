@@ -92,7 +92,10 @@ const modelSelection = ModelSelectionSchema.parse({
   options: { effort: "low" },
   providerId: "openai",
 });
-const createdSchema = z.object({ trigger: TriggerSchema, revision: TriggerRevisionSchema });
+const createdSchema = z.object({
+  trigger: TriggerSchema.omit({ webhookRouteKey: true }),
+  revision: TriggerRevisionSchema,
+});
 type Created = z.infer<typeof createdSchema>;
 type Evidence = {
   scenario: string;
@@ -1729,7 +1732,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
             : ingress === "webhook"
               ? (
                   await triggerStore.enqueueWebhook({
-                    routeKey: saved.trigger.webhookRouteKey!,
+                    routeKey: (await personDetail(f, saved.trigger.id)).trigger.webhookRouteKey!,
                     method: "POST",
                     headers: {},
                     payload: { ingress },
@@ -2528,9 +2531,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     return response.result;
   }
   async function agentDetail(token: string, triggerId: TriggerId) {
-    return hostApi["triggers.get"].success.parse(
-      await agentTrigger(token, { operation: "get", triggerId, occurrenceLimit: 100 }),
-    );
+    return hostApi["triggers.get"].success
+      .extend({ trigger: TriggerSchema.omit({ webhookRouteKey: true }) })
+      .parse(await agentTrigger(token, { operation: "get", triggerId, occurrenceLimit: 100 }));
   }
   async function personDetail(f: Fixture, triggerId: TriggerId) {
     return hostApi["triggers.get"].success.parse(

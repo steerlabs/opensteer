@@ -18,6 +18,7 @@ import {
   RequestStatusSchema,
   RunSchema,
   ThreadIdSchema,
+  TriggerOccurrenceIdSchema,
   ThreadInputSchema,
   ThreadSchema,
   WorkspaceBackingKindSchema,
@@ -353,6 +354,20 @@ export const TriggerOutputSchema = z.object({
   occurrences: z.array(TriggerOccurrenceViewSchema).optional(),
   occurrence: TriggerOccurrenceViewSchema.optional(),
   watch: TriggerWatchActivationViewSchema.nullable().optional(),
-  cancelled: z.number().optional(),
+  canceledOccurrenceIds: z.array(TriggerOccurrenceIdSchema).optional(),
+  activation: TriggerWatchActivationViewSchema.nullable().optional(),
+  anchorThreadTitle: z.string().optional(),
+  createdByThreadTitle: z.string().nullable().optional(),
+  downstreamRuns: z
+    .array(
+      z.object({
+        occurrenceId: TriggerOccurrenceIdSchema,
+        run: z.object(RunSchema.shape),
+        threadTitle: z.string(),
+      }),
+    )
+    .max(100)
+    .optional(),
+  downstreamRunsTruncated: z.boolean().optional(),
   replayed: z.boolean().optional(),
 });

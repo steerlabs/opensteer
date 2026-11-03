@@ -267,9 +267,7 @@ export async function admitAgentControlRequestInTransaction(
 }
 
 /**
- * Admits one request on the Trigger control path. A Trigger program has no Run,
- * so its Occurrence is the ledger scope: the same limits that bound an agent
- * Run bound the single-shot Occurrence that holds the Trigger token.
+ * A Trigger program has no Run, so its Occurrence namespaces its domain receipts.
  */
 export async function admitTriggerControlRequest(
   database: Kysely<DatabaseSchema>,

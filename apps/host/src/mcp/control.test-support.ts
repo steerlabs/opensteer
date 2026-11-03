@@ -755,6 +755,16 @@ export class ProductToolsTestClient {
       const { operation, ...fields } = request.input;
       input = { ...fields, action: operation };
       delete input.idempotencyKey;
+      if ("source" in fields && fields.source?.kind === "schedule") {
+        const schedule = fields.source.schedule;
+        input.source = {
+          kind: "schedule",
+          ...(schedule.kind === "cron"
+            ? { cron: schedule.expression, timezone: schedule.timezone }
+            : { at: schedule.at }),
+          ...(schedule.payload === undefined ? {} : { payload: schedule.payload }),
+        };
+      }
     }
     const result = await this.service.callTool(token, name, input, { operationKey: requestId });
     let fields: Record<string, unknown> = result;
