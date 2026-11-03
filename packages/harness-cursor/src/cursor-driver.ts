@@ -557,7 +557,6 @@ class CursorHarnessSession implements HarnessSession {
         cursorModelDescriptors(listing, cursorSourceId),
         cursorLightModels,
       );
-      if (!light) return "";
       return runTitleProcess(
         this.#context,
         {
@@ -573,7 +572,7 @@ class CursorHarnessSession implements HarnessSession {
             "--plugin-dir",
             plugin.path,
             "--model",
-            cursorModelArgument(listing, light),
+            cursorModelArgument(listing, light ?? this.#context.modelSelection),
             prompt,
           ],
           cwd: workspace,

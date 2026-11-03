@@ -79,7 +79,11 @@ if (subcommand === "models") {
     process.stdout.write("Available models\n\n");
     process.exit(0);
   }
-  process.stdout.write(readFileSync(new URL("./cursor-models.txt", import.meta.url), "utf8"));
+  process.stdout.write(
+    scenario === "no-light-model"
+      ? "Available models\n\nclaude-opus-4-6 - Claude Opus 4.6\n"
+      : readFileSync(new URL("./cursor-models.txt", import.meta.url), "utf8"),
+  );
   process.exit(0);
 }
 if (subcommand === "create-chat") {

@@ -1451,7 +1451,7 @@ class ClaudeHarnessSession implements HarnessSession {
         /unavailable|not found|not available|not supported|unsupported|access|invalid|permission|denied/iu.test(
           text,
         );
-      const attempt = async (): Promise<{ text: string; refused: boolean }> => {
+      const attempt = async (useRunModel = false): Promise<{ text: string; refused: boolean }> => {
         signal.throwIfAborted();
         const abortController = new AbortController();
         const abort = () => abortController.abort();
@@ -1507,15 +1507,19 @@ class ClaudeHarnessSession implements HarnessSession {
             signal,
           );
           const light =
-            inspection &&
-            resolveLightModel(claudeCatalogModels(inspection.models), claudeLightModels);
-          if (!light) return { text: "", refused: false };
+            !useRunModel && inspection
+              ? resolveLightModel(claudeCatalogModels(inspection.models), claudeLightModels)
+              : undefined;
+          const selection = light ?? this.#context.modelSelection;
           query = this.#dependencies.sdk.query({
             prompt,
             options: {
               ...options,
-              model: light.modelId,
-              ...(light.options.effort === "low" ? { effort: "low" as const } : {}),
+              model:
+                light?.modelId ??
+                this.#context.modelSelection.nativeModelId ??
+                this.#context.modelSelection.modelId,
+              ...(selection.options.effort === "low" ? { effort: "low" as const } : {}),
             },
           });
           let text = "";
@@ -1548,7 +1552,8 @@ class ClaudeHarnessSession implements HarnessSession {
           }
         }
       };
-      const result = await attempt();
+      let result = await attempt();
+      if (result.refused) result = await attempt(true);
       if (result.refused) throw new Error("Claude refused the Thread title model");
       return result.text;
     });

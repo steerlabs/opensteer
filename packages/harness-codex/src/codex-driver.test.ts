@@ -3099,13 +3099,19 @@ function processExists(pid: number): boolean {
 type JsonRecord = Record<string, unknown>;
 
 describe("Codex Thread naming", () => {
-  it("does not name with the task model when no light model is listed", async () => {
+  it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("vertical");
     const session = await fixture.adapter.startSession(fixture.context);
     try {
       expect(
         await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).toBe("");
+      ).toBe("Support migration\nheadphones");
+      expect(
+        (await fixture.capture()).findLast((entry) => entry.method === "thread/start")?.params,
+      ).toMatchObject({
+        model:
+          fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
+      });
     } finally {
       await session.stop();
       await fixture.adapter.close();

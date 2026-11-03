@@ -10,7 +10,8 @@ checkpoint, earlier morning notes and your last weekly review. Only you write th
 
 ## Curate memory
 
-Read `memory/inbox/` and the Chat and task history since your checkpoint. Turn what will still
+Read `memory/inbox/` and the Chat and task history since your checkpoint. Read Chat with
+`thread_read` and `threadId: "home"`. Turn what will still
 matter into notes: merge what belongs together, replace stale facts, drop what has expired, and
 keep stated facts apart from inferences, with enough date and source to settle conflicts. Choose
 and reorganize the structure of `memory/` as it grows; keep every note reachable by links from the
@@ -52,6 +53,6 @@ person should decide through Chat.
 
 ## Ending
 
-Chat hears from you only through `thread_message` to Chat's Thread ID with `delivery: "queue"`;
+Chat hears from you only through `thread_message` with `threadId: "home"` and `delivery: "queue"`;
 send that only when Chat should tell the person something now. Always end your turn with no reply
 text: any text you end with is a reply to the person.

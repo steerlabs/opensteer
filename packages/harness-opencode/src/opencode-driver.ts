@@ -772,11 +772,14 @@ class OpencodeHarnessSession implements HarnessSession {
       );
       const provider = providers.all.find((candidate) => candidate.id === providerId);
       const light = provider && opencodeLightModel(provider, this.#sourceId);
-      if (!light || !provider) return "";
-      const descriptor = opencodeCatalogModels(provider, undefined, this.#sourceId).find(
-        (model) => model.modelId === light.modelId && model.providerId === light.providerId,
-      )!;
-      const model = `${providerId}/${descriptor.nativeModelId ?? descriptor.modelId}`;
+      const selection = light ?? context.modelSelection;
+      const descriptor =
+        provider &&
+        opencodeCatalogModels(provider, undefined, this.#sourceId).find(
+          (model) =>
+            model.modelId === selection.modelId && model.providerId === selection.providerId,
+        );
+      const model = `${providerId}/${descriptor?.nativeModelId ?? light?.modelId ?? harnessModelId(context.modelSelection)}`;
       const configuration = {
         provider: runConfig.provider,
         enabled_providers: [opencodeProviderId(this.#sourceId)],
@@ -841,8 +844,8 @@ class OpencodeHarnessSession implements HarnessSession {
             "json",
             "--model",
             model,
-            ...(typeof light.options.effort === "string"
-              ? ["--variant", light.options.effort]
+            ...(typeof selection.options.effort === "string"
+              ? ["--variant", selection.options.effort]
               : []),
             "--title",
             "Thread title",

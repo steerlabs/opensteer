@@ -303,7 +303,7 @@ const definitions = [
       title: "Read Thread",
     },
     description:
-      "Read reachable Thread history and assigned tasks. Use query to search or aroundMessageId for a known message. Pass window.nextBefore as before, keeping query, for earlier messages; use assignmentBefore for earlier tasks. An anchored read cannot also search or page.",
+      "Read reachable Thread history and assigned tasks; home means Chat. Use query to search or aroundMessageId for a known message. Pass window.nextBefore as before, keeping query, for earlier messages; use assignmentBefore for earlier tasks. An anchored read cannot also search or page.",
     id: "thread.read",
     inputSchema: z.strictObject({
       before: CursorSchema.optional(),
@@ -311,7 +311,7 @@ const definitions = [
       query: z.string().trim().min(1).max(256).optional(),
       aroundMessageId: MessageIdSchema.optional(),
       assignmentBefore: CursorSchema.optional(),
-      threadId: ThreadIdSchema,
+      threadId: z.union([ThreadIdSchema, z.literal("home")]),
     }),
     name: "thread_read",
   },

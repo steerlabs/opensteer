@@ -1915,13 +1915,23 @@ describe("opencode Thread naming", () => {
     });
   });
 
-  it("does not name with the task model when no light model is listed", async () => {
+  it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("happy");
-    const session = await fixture.adapter.startSession(fixture.context);
+    let titleArgs: readonly string[] | undefined;
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      wrapProcessLaunch: (launch) => {
+        if (launch.cwd.includes("title-")) titleArgs = launch.args;
+        return launch;
+      },
+    });
     try {
       expect(
         await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).toBe("");
+      ).toBe("Support migration\nheadphones");
+      expect(titleArgs).toContain(
+        `opencode/${fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId}`,
+      );
     } finally {
       await session.stop();
       await fixture.adapter.close();

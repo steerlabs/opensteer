@@ -1891,6 +1891,8 @@ function makeService(options: {
           throw new Error("Unexpected Request withdrawal");
         }),
     },
+    findMainWorkspaceForOwner: async () =>
+      workspaces.find((candidate) => candidate.homeThreadId != null) ?? null,
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;
@@ -2388,3 +2390,57 @@ it.each(["main", "workspace"] as const)(
     );
   },
 );
+
+it("resolves home reads to Chat and returns its IDs and history", async () => {
+  const current = thread(currentThreadId, nativeHarnessId, "Chat");
+  const entry = message(current.id, null, "Hello");
+  const { service } = makeService({
+    commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    threads: [current],
+    messages: [entry],
+    workspaces: [{ ...workspace(workspaceId, "Main"), homeThreadId: current.id }],
+  });
+  await expect(
+    service.handle("run-token", {
+      type: "thread.read",
+      requestId: crypto.randomUUID(),
+      threadId: "home",
+      maxMessages: 1,
+    }),
+  ).resolves.toMatchObject({ thread: { id: current.id, workspaceId }, messages: [entry] });
+});
+it("reports a missing Chat for home reads", async () => {
+  const { service } = makeService({
+    commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    threads: [thread(currentThreadId, nativeHarnessId, "Task")],
+    messages: [],
+  });
+  await expect(
+    service.handle("run-token", {
+      type: "thread.read",
+      requestId: crypto.randomUUID(),
+      threadId: "home",
+    }),
+  ).rejects.toThrow("Chat has not been started yet");
+});
+
+it("keeps home reads within the caller's delegation reach", async () => {
+  const current = thread(currentThreadId, nativeHarnessId, "Worker", null, {
+    capabilityProfileId: "delegated",
+  });
+  const chat = thread(targetThreadId, nativeHarnessId, "Chat");
+  const { service } = makeService({
+    capabilityProfileId: "delegated",
+    commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
+    threads: [current, chat],
+    messages: [],
+    workspaces: [{ ...workspace(workspaceId, "Main"), homeThreadId: chat.id }],
+  });
+  await expect(
+    service.handle("run-token", {
+      type: "thread.read",
+      requestId: crypto.randomUUID(),
+      threadId: "home",
+    }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+});

@@ -1124,8 +1124,8 @@ class CodexHarnessSession implements HarnessSession {
           codexCatalogModels(await listCodexModels(client), this.#source.sourceId),
           codexLightModels,
         );
-        if (!light) return "";
-        const modelId = light.modelId;
+        const selection = light ?? this.#context.modelSelection;
+        const modelId = light?.modelId ?? harnessModelId(this.#context.modelSelection);
         const started = requireObject(
           await client.request("thread/start", {
             model: modelId,
@@ -1150,7 +1150,7 @@ class CodexHarnessSession implements HarnessSession {
           requireObject(started.thread, "title thread").id,
           "title thread id",
         );
-        const effort = light.options.effort;
+        const effort = selection.options.effort;
         await client.request("turn/start", {
           threadId,
           input: [{ type: "text", text: prompt, text_elements: [] }],

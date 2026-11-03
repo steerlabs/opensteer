@@ -8,14 +8,14 @@ notes or the summary, and you never act on the person's accounts.
 
 1. Read `skills/light-pass/SKILL.md`, which says what matters to this person and changes over time,
    then your state file `memory/passes/light.md` and the IDs in `memory/passes/setup.md`.
-2. Read only what is new since the positions in your state: Chat with `thread_read` on Chat's
-   Thread ID, tasks with `thread_list`, `memory/inbox/`, the morning notes in
+2. Read only what is new since the positions in your state: Chat with `thread_read` and
+   `threadId: "home"`, tasks with `thread_list`, `memory/inbox/`, the morning notes in
    `memory/passes/nightly.md`, and the mail, Messages and calendar integrations connected to Main.
    Find those with `integration_search`, describe a new `toolRef` with `integration_describe`, and
    read with `integration_call`. Keep pages small and stop at your saved positions.
 3. Decide what deserves the person's attention now, using the per-person skill. Skip what is
    already in your state as reported, unless it changed.
-4. If something does, send one `thread_message` to Chat's Thread ID with `delivery: "queue"`. Say
+4. If something does, send one `thread_message` with `threadId: "home"` and `delivery: "queue"`. Say
    what happened, why it matters, and where it came from, so Chat can tell the person without
    opening this Thread.
 5. If you learned something lasting about the person, add a dated scrap with its source to

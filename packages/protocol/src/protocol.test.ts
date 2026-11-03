@@ -1308,3 +1308,14 @@ function harnessSources(sourceId: string, label: string) {
     },
   ];
 }
+
+it("accepts the home alias for thread reads", () => {
+  expect(
+    AgentControlRequestSchema.parse({
+      requestId: randomUUID(),
+      type: "thread.read",
+      threadId: "home",
+      maxMessages: 1,
+    }),
+  ).toMatchObject({ threadId: "home" });
+});

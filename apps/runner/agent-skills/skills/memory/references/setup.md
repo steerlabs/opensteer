@@ -14,7 +14,7 @@ passes up again unless the person asks. A pause or deletion is the person's choi
 
 These paths are fixed so every pass finds them. Everything else under `memory/` is notes.
 
-- `memory/passes/setup.md`: Chat's Thread ID, Main's `workspaceId`, both worker Thread IDs, both
+- `memory/passes/setup.md`: Main's `workspaceId`, both worker Thread IDs, both
   Trigger IDs, the light pass's model, the time zone and the setup date. Chat writes it; the
   nightly pass updates it when it changes a schedule.
 - `memory/passes/light.md`: the light pass's own state. Only the light pass writes it.
@@ -27,12 +27,13 @@ These paths are fixed so every pass finds them. Everything else under `memory/` 
 Creating a Trigger needs full access; without it, leave setup for a later Run that has it. If
 `memory/passes/setup.md` already exists, finish from it and reuse what it lists.
 
-1. Find Chat's Thread ID and Main's `workspaceId` with `thread_list` and `query` `Chat`: Chat is
-   the Thread titled `Chat`, with no `parentThreadId`, in the one Workspace `project_list` does not
-   return. Use the person's time zone from the Opensteer thread context; when it is unknown, use
-   the computer's IANA zone (`node -p "Intl.DateTimeFormat().resolvedOptions().timeZone"`).
-2. Find the engine's light model reported by `environment_list` for your engine. If it reports
-   none, use your own model and a slower light schedule, such as `0 8-22/2 * * *`.
+1. Call `thread_read` with `threadId: "home"` and `maxMessages: 1`: `thread.id` is Chat and
+   `thread.workspaceId` is Main. Use the person's time zone from the Opensteer thread context;
+   when it is unknown, use the computer's IANA zone (`node -p "Intl.DateTimeFormat().resolvedOptions().timeZone"`).
+2. Read `environment_list`'s `harnesses` entry for your own engine. Pass its `lightModel`
+   unchanged as `thread_delegate`'s `model`. If choosing another engine, also pass its `id` as
+   `harnessInstanceId`. If none is available, use your own model and a slower light schedule,
+   such as `0 8-22/2 * * *`.
 3. Write `skills/light-pass/SKILL.md` from the template and create `memory/inbox/`.
 4. Create the workers with `thread_delegate`, `workspaceId` set to Main:
    - title `Light memory pass`, `model` set to the light model (omit it when using your own), task:

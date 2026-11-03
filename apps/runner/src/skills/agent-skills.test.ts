@@ -351,3 +351,12 @@ describe("Runner Agent Skills", () => {
 function skillNames(...input: Parameters<typeof planAgentSkills>): readonly string[] | undefined {
   return planAgentSkills(...input).map(({ fullName }) => fullName);
 }
+
+it("sets up memory with Chat's alias and the engine's delegation model", async () => {
+  const setup = await readFile(join(bundleDirectory, "skills/memory/references/setup.md"), "utf8");
+  expect(setup).toContain('`threadId: "home"` and `maxMessages: 1`');
+  expect(setup).toContain("`thread.workspaceId`");
+  expect(setup).toContain("`lightModel`");
+  expect(setup).toContain("`harnessInstanceId`");
+  expect(setup).not.toContain("`project_list`");
+});
