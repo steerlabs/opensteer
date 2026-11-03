@@ -347,7 +347,9 @@ function App() {
   if (view === "resolved") return <ResolvedView />;
   if (view === "cards") return <CardsView />;
   return (
-    <MemoryRouter initialEntries={[view === "settings" ? "/settings/passwords" : "/visual"]}>
+    <MemoryRouter
+      initialEntries={[view === "settings" ? "/settings/sign-ins/passwords" : "/visual"]}
+    >
       <div className="app-shell">
         <main className="app-shell__main">
           <Routes>

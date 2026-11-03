@@ -96,7 +96,7 @@ export function SectionHeader({
   return (
     <header className="settings-section__header">
       <h1 className="settings-section__title">{title}</h1>
-      <p className="settings-section__lead">{lead}</p>
+      {lead ? <p className="settings-section__lead">{lead}</p> : null}
     </header>
   );
 }

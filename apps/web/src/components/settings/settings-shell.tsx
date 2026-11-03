@@ -23,11 +23,14 @@ import {
 import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
 import { computerIcon } from "../computers/device-art.js";
 import { SectionHeader, type SettingsView } from "./primitives.js";
+import { ChannelsPage } from "../channels-page.js";
+import { AgentDevicesSection } from "./sections/agent-devices.js";
+import { SignedInDevicesSection } from "./sections/devices.js";
+import { RemoteAccessSection } from "./sections/remote-access.js";
 import { AccountSection } from "./sections/account.js";
 import { AiEnginesSection } from "./sections/ai-engines.js";
 import { BrowserProfilesSection } from "./sections/browser-profiles.js";
 import { ChromeSection } from "./sections/chrome.js";
-import { DevicesSettings } from "./sections/devices.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsSection } from "./sections/plugins.js";
@@ -179,13 +182,16 @@ export function SettingsShell() {
         </div>
         <h2 className="settings-navigation__title">Settings</h2>
         <nav className="settings-navigation__links" aria-label="Settings sections">
+          {(["general", "account", "devices", "messaging"] as const).map((id) => (
+            <SettingsNavigationLink key={id} item={settingsItem(id, view.kind)} />
+          ))}
           <div
             aria-labelledby="settings-navigation-agents"
             className="settings-navigation__group"
             role="group"
           >
             <span className="settings-navigation__caption" id="settings-navigation-agents">
-              What agents can use
+              For your agents
             </span>
             {rail.agents.map((item) => (
               <SettingsNavigationLink item={item} key={item.id} />
@@ -215,8 +221,6 @@ export function SettingsShell() {
               {view.statusInfo.reason ?? deploymentStatusLabel(view.statusInfo.status)}
             </p>
           ) : null}
-          <SettingsNavigationLink item={rail.devices} />
-          <SettingsNavigationLink item={settingsItem("account", view.kind)} />
         </div>
       </aside>
       <div
@@ -252,11 +256,20 @@ export function SettingsSectionRoute({
   const { settingsView: view, openMobileNavigation } = useOutletContext<SettingsContext>();
   let content;
   switch (section) {
+    case "ai":
     case "ai-engines":
       content = <AiEnginesSection />;
       break;
     case "account":
-      content = <AccountSection />;
+      content = (
+        <>
+          <AccountSection />
+          {view.kind === "personal" && view.administrator ? (
+            <RemoteAccessSection view={view} />
+          ) : null}
+          <SignedInDevicesSection view={view} />
+        </>
+      );
       break;
     case "chrome":
       content = <ChromeSection />;
@@ -270,11 +283,23 @@ export function SettingsSectionRoute({
     case "plugins":
       content = <PluginsSection view={view} />;
       break;
+    case "messaging":
+      content = <ChannelsPage embedded />;
+      break;
+    case "sign-ins":
+      content = (
+        <>
+          <ChromeSection />
+          <BrowserProfilesSection />
+          <PasswordsSection view={view} />
+        </>
+      );
+      break;
     case "general":
       content = <GeneralSection view={view} />;
       break;
     case "devices":
-      content = <DevicesSettings view={view} />;
+      content = <AgentDevicesSection />;
       break;
   }
   return (
@@ -301,8 +326,8 @@ export function SettingsNotFound() {
             title="Setting not found"
             lead="Choose a section from Settings to continue."
           />
-          <Link className="btn" to="/settings/ai-engines">
-            AI services
+          <Link className="btn" to="/settings/ai">
+            AI
           </Link>
         </div>
       </div>

@@ -1,446 +1,575 @@
-import { useId, useState } from "react";
+import { useDeferredValue, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router";
+import type { PluginRow, PluginDetailView } from "@opensteer/protocol";
 import {
-  canRespondToRequests,
-  mutationIdempotencyKey,
-  pluginAvailableIn,
-  pluginContents,
-  pluginSummaries,
-  pluginVersionLabel,
-  unwrapRpcResult,
-  type PluginSummary,
-  type WorkspaceSummary,
-} from "@opensteer/client/host";
-import { WorkspaceIdSchema } from "@opensteer/core";
-import { actionErrorMessage } from "../../../ui-utils.js";
-import { useShell } from "../../app-shell.js";
+  pluginGroups,
+  pluginState,
+  pluginPath,
+  pluginTargetFromPath,
+  pluginPlacementLabel,
+  pluginAccountRows,
+} from "@opensteer/client/settings";
+import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import { Dialog } from "../../dialog.js";
+import { ThreadIntegrationAction } from "../../thread-integration-action.js";
+import { useShell } from "../../app-shell.js";
 import { Icon } from "../../icon.js";
-import { LoadingRows } from "../../loading-rows.js";
-import { useToast } from "../../toast.js";
-import { useHostRead } from "@opensteer/client/react";
-import { WorkspaceOrb } from "../../workspace-orb.js";
-import { SectionHeader, SettingsError, type SettingsView } from "../primitives.js";
+import { IntegrationsPage } from "../../integrations/integrations-page.js";
+import { SettingsError, SectionHeader, type SettingsView } from "../primitives.js";
+import { useSettingsRead } from "../use-settings-read.js";
+import { actionErrorMessage } from "../../../ui-utils.js";
+import { InstallPlugin } from "./install-plugin.js";
 
-/**
- * Settings → Plugins. A plugin is a folder of skills, tools and sometimes a
- * specialist. An administrator installs it once for this Opensteer; it does
- * nothing until it is turned on in Main or a project, which is a separate
- * choice from what that project may access.
- */
+function decodeTargetSegment(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return "";
+  }
+}
 export function PluginsSection({ view }: { readonly view: SettingsView }) {
-  const { hostClient, snapshot } = useShell();
-  const connected = canRespondToRequests(snapshot);
-  const plugins = useHostRead(
-    view.administrator
-      ? () =>
-          hostClient.rpc["plugin.list"]({})
-            .then(unwrapRpcResult)
-            .then(({ plugins }) => pluginSummaries(plugins))
-      : null,
-    "plugins",
+  const { pathname, search } = useLocation();
+  const suffix = pathname.slice("/settings/plugins".length).split("/").filter(Boolean);
+  if (suffix[0] === "add") return <PluginDirectory />;
+  if (suffix.length === 2) {
+    const target = pluginTargetFromPath(
+      suffix[0]!,
+      (suffix[1] && decodeTargetSegment(suffix[1])) || "",
+    );
+    if (target) return <PluginDetail key={pathname} target={target} view={view} />;
+  }
+  if (
+    new URLSearchParams(search).has("integrationAttempt") ||
+    new URLSearchParams(search).has("provider") ||
+    new URLSearchParams(search).has("workspace")
+  )
+    return <IntegrationsPage embedded />;
+  return <PluginOverview view={view} />;
+}
+function PluginOverview({ view }: { readonly view: SettingsView }) {
+  const { hostClient } = useShell();
+  const overview = useSettingsRead(
+    () => hostClient.rpc["plugins.overview.get"]({}).then(unwrapRpcResult),
+    "plugins-overview",
   );
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<PluginRow["tags"][number] | "all">("all");
+  const groups = pluginGroups(overview.data?.rows ?? [], useDeferredValue(query), filter);
   return (
     <>
-      <SectionHeader
-        lead={`Skills, tools and specialists for your agents, packaged as folders on ${view.name}. Install one here, then turn it on where it’s needed.`}
-        title="Plugins"
+      <SectionHeader title="Plugins" lead={null} />
+      <Link className="btn btn--primary" to="/settings/plugins/add">
+        Add plugins
+      </Link>
+      <input
+        className="text-input"
+        type="search"
+        aria-label="Search plugins"
+        value={query}
+        onChange={(event) => setQuery(event.currentTarget.value)}
       />
-      {view.administrator ? (
-        <>
-          <InstallPlugin connected={connected} onInstalled={plugins.reload} />
-          <section aria-labelledby="plugins-installed" className="settings-group">
-            <h2 className="settings-group__title" id="plugins-installed">
-              Installed
-            </h2>
-            <div className="card">
-              {plugins.data === null ? (
-                plugins.error ? (
-                  <div className="card__empty" role="alert">
-                    Couldn’t read plugins. {actionErrorMessage(plugins.error)}{" "}
-                    <button className="link-btn" onClick={plugins.reload} type="button">
-                      Try again
-                    </button>
-                  </div>
-                ) : (
-                  <LoadingRows label="Loading plugins" rows={2} />
-                )
-              ) : plugins.data.length === 0 ? (
-                <div className="card__empty">
-                  Nothing installed yet. Agents can also add plugins inside their own project.
-                </div>
-              ) : (
-                plugins.data.map((plugin) => (
-                  <PluginRow
-                    connected={connected}
-                    key={plugin.id}
-                    onChanged={plugins.reload}
-                    plugin={plugin}
-                    workspaces={snapshot.workspaces}
-                  />
-                ))
-              )}
-            </div>
-          </section>
-        </>
-      ) : (
-        <div className="card">
-          <div className="card__row">
-            <span className="card__row-glyph">
-              <Icon name="shield" />
-            </span>
-            <span className="card__row-body">
-              <span className="card__row-title">An administrator manages plugins</span>
-              <span className="card__row-detail card__row-detail--wrap">
-                Ask whoever runs {view.name} to install one. An owner can turn installed plugins on
-                in their project from its settings.
-              </span>
-            </span>
-          </div>
+      <div className="settings-plugin-filters" aria-label="Filter plugins">
+        {(["all", "accounts", "devices", "skills", "specialists"] as const).map((value) => (
+          <button
+            type="button"
+            className="btn"
+            aria-pressed={filter === value}
+            key={value}
+            onClick={() => setFilter(value)}
+          >
+            {
+              {
+                all: "All",
+                accounts: "Accounts",
+                devices: "On your devices",
+                skills: "Skills",
+                specialists: "Specialists",
+              }[value]
+            }
+          </button>
+        ))}
+      </div>
+      <SettingsError message={overview.error ? actionErrorMessage(overview.error) : null} />
+      {!overview.data ? (
+        <p role="status">Loading plugins…</p>
+      ) : overview.data.rows.length === 0 ? (
+        <div className="card card__empty">
+          Add something your agents can use.{" "}
+          <Link to="/settings/plugins/add">Browse all plugins</Link>
         </div>
+      ) : (
+        Object.entries(groups).map(([name, rows]) =>
+          rows.length ? (
+            name === "Turned off" ? (
+              <details key={name}>
+                <summary>Turned off · {rows.length}</summary>
+                <div className="card">
+                  {rows.map((row) => (
+                    <OverviewRow
+                      key={pluginPath(row.target)}
+                      row={row}
+                      view={view}
+                      reload={overview.reload}
+                    />
+                  ))}
+                </div>
+              </details>
+            ) : (
+              <section key={name} className="settings-group">
+                <h2 className="settings-group__title">{name}</h2>
+                <div className={`card${name === "Needs you" ? " settings-plugin-attention" : ""}`}>
+                  {rows.map((row) => (
+                    <OverviewRow
+                      key={pluginPath(row.target)}
+                      row={row}
+                      view={view}
+                      reload={overview.reload}
+                    />
+                  ))}
+                </div>
+              </section>
+            )
+          ) : null,
+        )
       )}
     </>
   );
 }
-
-function InstallPlugin({
-  connected,
-  onInstalled,
-}: {
-  readonly connected: boolean;
-  readonly onInstalled: () => void;
-}) {
-  const { hostClient, snapshot } = useShell();
-  const toast = useToast();
-  const [directory, setDirectory] = useState("");
-  const [runnerId, setRunnerId] = useState("");
+function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
+  const { hostClient } = useShell();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [skipped, setSkipped] = useState<readonly string[]>([]);
-  const computers = snapshot.machines.filter(({ computerUse }) => computerUse !== null);
-  const folderId = useId();
-  const install = () => {
+  const attempt = useRef<{ key: string; enabled: boolean; revision: number } | null>(null);
+  return (
+    <>
+      <input
+        className="switch"
+        type="checkbox"
+        role="switch"
+        aria-label={`Enable ${row.title}`}
+        aria-busy={pending}
+        checked={row.placement.enabled}
+        disabled={pending || !row.permissions.canEnable}
+        onChange={() => {
+          if (pending) return;
+          const operation = attempt.current ?? {
+            key: mutationIdempotencyKey("settings-enable"),
+            enabled: !row.placement.enabled,
+            revision: row.placement.revision,
+          };
+          attempt.current = operation;
+          setPending(true);
+          setError(null);
+          void hostClient
+            .dispatch({
+              type: "settings.plugin.enabled.set",
+              idempotencyKey: operation.key,
+              target: row.target,
+              expectedRevision: operation.revision,
+              enabled: operation.enabled,
+            })
+            .then(() => {
+              attempt.current = null;
+              reload();
+            })
+            .catch(async (reason: unknown) => {
+              // A lost response may have committed. Reconcile before offering the same operation again.
+              try {
+                unwrapRpcResult(await hostClient.rpc["plugins.detail.get"]({ target: row.target }));
+                reload();
+              } catch {
+                /* Keep the original operation for an idempotent retry. */
+              }
+              setError(actionErrorMessage(reason));
+            })
+            .finally(() => setPending(false));
+        }}
+      />
+      {pending ? <span role="status">Saving…</span> : null}
+      <SettingsError message={error} />
+    </>
+  );
+}
+function OverviewRow({
+  row,
+  view,
+  reload,
+}: {
+  row: PluginRow;
+  view: SettingsView;
+  reload: () => void;
+}) {
+  const state = pluginState(row);
+  return (
+    <div className="card__row">
+      <span className="card__row-glyph">
+        <Icon name={state.group === "Needs you" ? "alert-circle" : "puzzle"} />
+      </span>
+      <Link className="card__row-body" to={pluginPath(row.target)}>
+        <span className="card__row-title">{row.title}</span>
+        <span className="card__row-detail">
+          {state.label !== "On"
+            ? state.label
+            : [
+                row.accountCount ? `${row.accountCount} accounts` : null,
+                pluginPlacementLabel(row, view.kind === "personal"),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+        </span>
+      </Link>
+      {state.group === "Needs you" ? (
+        <>
+          <Link className="btn btn--small" to={pluginPath(row.target)}>
+            Fix
+          </Link>
+          <details>
+            <summary aria-label={`More actions for ${row.title}`}>•••</summary>
+            <EnableSwitch row={row} reload={reload} />
+          </details>
+        </>
+      ) : (
+        <EnableSwitch row={row} reload={reload} />
+      )}
+    </div>
+  );
+}
+function PluginDetail({ target, view }: { target: PluginRow["target"]; view: SettingsView }) {
+  const { hostClient } = useShell();
+  const detail = useSettingsRead(
+    () => hostClient.rpc["plugins.detail.get"]({ target }).then(unwrapRpcResult),
+    pluginPath(target),
+  );
+  const data = detail.data;
+  return (
+    <>
+      <Link to="/settings/plugins">All plugins</Link>
+      <SettingsError message={detail.error ? actionErrorMessage(detail.error) : null} />
+      {data ? (
+        <>
+          <SectionHeader
+            title={data.row.title}
+            lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
+          />
+          <EnableSwitch row={data.row} reload={detail.reload} />
+          <h2>Accounts</h2>
+          <ul>
+            {pluginAccountRows(data).map((account) => (
+              <li key={account.key}>
+                {account.label} · {account.status}
+              </li>
+            ))}
+          </ul>
+          <h2>What agents may do</h2>
+          <ul>
+            {data.permissions.map((fact) => (
+              <li key={`${fact.layer}:${fact.label}`}>
+                {fact.label} · {fact.state === "ask" ? "Ask first" : fact.state} · {fact.layer}
+              </li>
+            ))}
+          </ul>
+          <h2>Comes with</h2>
+          <ul>
+            {data.contents.map((item) => (
+              <li key={`${item.kind}:${item.name}`}>
+                {item.name} · {item.kind}
+              </li>
+            ))}
+          </ul>
+          <Placement detail={data} reload={detail.reload} personal={view.kind === "personal"} />
+          <PackageActions detail={data} reload={detail.reload} />
+          {target.kind === "service" || target.kind === "device-app" ? (
+            <IntegrationsPage embedded initialDefinitionId={target.definitionId} />
+          ) : null}
+          {data.sourceFolder === null && data.row.target.kind === "plugin" ? (
+            <p>Source folder unknown</p>
+          ) : null}
+        </>
+      ) : (
+        <p role="status">Loading plugin…</p>
+      )}
+    </>
+  );
+}
+function Placement({
+  detail,
+  reload,
+  personal,
+}: {
+  detail: PluginDetailView;
+  reload: () => void;
+  personal: boolean;
+}) {
+  const { hostClient } = useShell();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const attempt = useRef<Parameters<typeof hostClient.dispatch>[0] | null>(null);
+  function change(mainIncluded: boolean, selected: string[], everywhere: boolean) {
+    if (pending) return;
+    const command = attempt.current ?? {
+      type: "settings.plugin.placement.set" as const,
+      idempotencyKey: mutationIdempotencyKey("settings-placement"),
+      target: detail.row.target,
+      expectedRevision: detail.row.placement.revision,
+      mainIncluded,
+      projects: detail.places
+        .filter((place) => place.kind !== "main" && selected.includes(place.workspaceId))
+        .map((place) => ({ workspaceId: place.workspaceId, accounts: place.accounts })),
+      personalEverywhere: everywhere
+        ? {
+            accounts: detail.accounts.flatMap((account) =>
+              account.access
+                ? [{ connectionId: account.connectionId, access: account.access }]
+                : [],
+            ),
+          }
+        : null,
+    };
+    attempt.current = command;
     setPending(true);
     setError(null);
-    setSkipped([]);
     void hostClient
-      .dispatch({
-        idempotencyKey: mutationIdempotencyKey("plugin-install"),
-        input: { directory: directory.trim(), ...(runnerId ? { runnerId } : {}) },
-        type: "plugin.install",
+      .dispatch(command)
+      .then(() => {
+        attempt.current = null;
+        reload();
       })
-      .then((result) => {
-        if (result.type !== "plugin.install") throw new Error("Plugin command mismatch.");
-        setSkipped(
-          result.issues.map(({ component, entry, message }) => `${entry ?? component}: ${message}`),
-        );
-        setDirectory("");
-        toast.success("Plugin installed");
-        onInstalled();
+      .catch(async (reason: unknown) => {
+        try {
+          unwrapRpcResult(
+            await hostClient.rpc["plugins.detail.get"]({ target: detail.row.target }),
+          );
+          reload();
+        } catch {
+          /* Preserve the uncertain operation. */
+        }
+        setError(actionErrorMessage(reason));
       })
-      .catch((reason: unknown) => setError(actionErrorMessage(reason)))
       .finally(() => setPending(false));
-  };
+  }
+  const selected = detail.places
+    .filter((place) => place.selected)
+    .map((place) => place.workspaceId);
   return (
-    <section aria-labelledby="plugins-install" className="settings-group">
-      <h2 className="settings-group__title" id="plugins-install">
-        Install from a folder
-      </h2>
-      <form
-        className="card card__form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (directory.trim() && !pending && connected) install();
-        }}
-      >
-        <div className="plugin-install">
-          <label className="field plugin-install__folder">
-            <span className="field__label" id={folderId}>
-              Folder
-            </span>
-            <input
-              aria-describedby={`${folderId}-hint`}
-              className="text-input"
-              onChange={(event) => setDirectory(event.currentTarget.value)}
-              placeholder="/Users/you/plugins/tinycrm"
-              spellCheck={false}
-              value={directory}
-            />
-          </label>
-          {computers.length > 0 ? (
-            <label className="field plugin-install__runs-on">
-              <span className="field__label">Programs run on</span>
-              <select
-                className="select-input"
-                onChange={(event) => setRunnerId(event.currentTarget.value)}
-                value={runnerId}
-              >
-                <option value="">The Main computer</option>
-                {computers.map((computer) => (
-                  <option key={computer.id} value={computer.id}>
-                    {computer.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-        </div>
-        <p className="field__hint" id={`${folderId}-hint`}>
-          The full path to a plugin package on the computer Opensteer runs on. Programs it starts
-          run only after that computer’s owner approves them.
-        </p>
-        <div className="form-actions">
-          {error ? (
-            <span className="form-actions__error" role="alert">
-              {error}
-            </span>
-          ) : null}
-          <button
-            className="btn btn--primary"
-            disabled={pending || !directory.trim() || !connected}
-            type="submit"
-          >
-            {pending ? "Installing…" : "Install plugin"}
-          </button>
-        </div>
-      </form>
-      {skipped.length > 0 ? (
-        <div className="notice notice--warn" role="status">
-          <Icon name="alert-circle" />
-          <div>
-            <strong>
-              Installed without {skipped.length === 1 ? "one part" : `${skipped.length} parts`}
-            </strong>
-            <ul className="plugin-install__skipped">
-              {skipped.slice(0, 5).map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
+    <section>
+      <h2>Where it’s on</h2>
+      {personal && detail.row.target.kind !== "skill" && detail.row.source.kind !== "workspace" ? (
+        <label className="card__row">
+          Everywhere
+          <input
+            type="checkbox"
+            role="switch"
+            checked={detail.row.placement.personalEverywhere}
+            disabled={pending || !detail.row.permissions.canPlace}
+            onChange={(event) =>
+              change(
+                true,
+                event.currentTarget.checked
+                  ? detail.places.map((place) => place.workspaceId)
+                  : selected,
+                event.currentTarget.checked,
+              )
+            }
+          />
+        </label>
       ) : null}
+      {detail.places.map((place) => (
+        <label className="card__row" key={place.workspaceId}>
+          {place.name}
+          <input
+            type="checkbox"
+            checked={place.kind === "main" ? detail.row.placement.mainIncluded : place.selected}
+            disabled={pending || !place.canSelect || !detail.row.permissions.canPlace}
+            onChange={(event) =>
+              change(
+                place.kind === "main"
+                  ? event.currentTarget.checked
+                  : detail.row.placement.mainIncluded,
+                event.currentTarget.checked
+                  ? [...selected, place.workspaceId]
+                  : selected.filter((id) => id !== place.workspaceId),
+                false,
+              )
+            }
+          />
+        </label>
+      ))}
+      {pending ? <p role="status">Saving…</p> : null}
+      <SettingsError message={error} />
+    </section>
+  );
+}
+function PluginDirectory() {
+  const { hostClient, snapshot } = useShell();
+  const [adding, setAdding] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const directory = useSettingsRead(
+    () => hostClient.rpc["plugins.directory.get"]({}).then(unwrapRpcResult),
+    "plugins-directory",
+  );
+  return (
+    <>
+      <Link to="/settings/plugins">Your plugins</Link>
+      <SectionHeader title="Add plugins" lead={null} />
+      <SettingsError message={directory.error ? actionErrorMessage(directory.error) : null} />
+      <input
+        type="search"
+        className="text-input"
+        aria-label="Search directory"
+        value={query}
+        onChange={(event) => setQuery(event.currentTarget.value)}
+      />
+      <div className="card">
+        {directory.data?.catalog
+          .filter((item) =>
+            `${item.title} ${item.description}`
+              .toLocaleLowerCase()
+              .includes(query.toLocaleLowerCase()),
+          )
+          .map((item) => (
+            <div className="card__row" key={item.definitionId}>
+              <span className="card__row-body">
+                <strong>{item.title}</strong>
+                <span className="card__row-detail">{item.description}</span>
+              </span>
+              <button
+                className="btn"
+                type="button"
+                disabled={item.added}
+                onClick={() => setAdding(item.definitionId)}
+              >
+                {item.added ? "Added" : "Add"}
+              </button>
+            </div>
+          ))}
+      </div>
+      {directory.data?.requests.length ? <DirectoryRequests /> : null}
+      {adding ? (
+        <Dialog
+          labelledBy="add-plugin-title"
+          title="Add plugin"
+          onClose={() => {
+            setAdding(null);
+            directory.reload();
+          }}
+        >
+          <IntegrationsPage embedded initialDefinitionId={adding} />
+        </Dialog>
+      ) : null}
+      <InstallPlugin
+        connected={snapshot.connection === "connected"}
+        onInstalled={directory.reload}
+      />
+      <IntegrationsPage embedded installerOnly />
+    </>
+  );
+}
+
+function DirectoryRequests() {
+  const { hostClient } = useShell();
+  const requests = useSettingsRead(
+    () => hostClient.rpc["requests.list"]({}).then(unwrapRpcResult),
+    "directory-requests",
+  );
+  return (
+    <section>
+      <h2>Suggested by your agents</h2>
+      <SettingsError message={requests.error ? actionErrorMessage(requests.error) : null} />
+      {requests.data?.requests
+        .filter((entry) => entry.request.payload.kind === "integration.access")
+        .map((entry) => (
+          <ThreadIntegrationAction
+            key={entry.request.id}
+            request={entry.request}
+            threadId={entry.request.originatingThreadId}
+          />
+        ))}
     </section>
   );
 }
 
-function PluginRow({
-  connected,
-  onChanged,
-  plugin,
-  workspaces,
-}: {
-  readonly connected: boolean;
-  readonly onChanged: () => void;
-  readonly plugin: PluginSummary;
-  readonly workspaces: readonly WorkspaceSummary[];
-}) {
+function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: () => void }) {
   const { hostClient } = useShell();
-  const toast = useToast();
-  const [open, setOpen] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [pending, setPending] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const places = workspaces.filter(
-    (workspace) => workspace.status !== "deleted" && pluginAvailableIn(plugin, workspace.id),
-  );
-  const onIn = places.filter((workspace) => plugin.activeIn.includes(workspace.id));
-  const owner = plugin.workspaceId
-    ? workspaces.find((workspace) => workspace.id === plugin.workspaceId)
-    : null;
-  const listId = useId();
-  const run = (key: string, action: () => Promise<unknown>, done?: string) => {
-    setPending(key);
+  const [removing, setRemoving] = useState(false);
+  const target = detail.row.target;
+  if (target.kind !== "plugin") return null;
+  const pluginId = target.pluginId;
+  function run(remove: boolean) {
+    if (pending) return;
+    setPending(true);
     setError(null);
-    void action()
+    void hostClient
+      .dispatch(
+        remove
+          ? {
+              type: "plugin.remove",
+              pluginId: pluginId,
+              idempotencyKey: mutationIdempotencyKey("plugin-remove"),
+            }
+          : {
+              type: "plugin.update",
+              pluginId: pluginId,
+              input: { directory: detail.sourceFolder! },
+              idempotencyKey: mutationIdempotencyKey("plugin-update"),
+            },
+      )
       .then(() => {
-        if (done) toast.success(done);
-        onChanged();
+        if (remove) void navigate("/settings/plugins");
+        else reload();
       })
       .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-      .finally(() => setPending(null));
-  };
-  const contents = pluginContents(plugin);
+      .finally(() => setPending(false));
+  }
   return (
-    <div className="plugin-row">
-      <div className="card__row">
-        <span className="card__row-glyph">
-          <Icon name="puzzle" />
-        </span>
-        <span className="card__row-body">
-          <span className="card__row-title">
-            {plugin.name}
-            {plugin.specialist ? <span className="chip">Specialist</span> : null}
-          </span>
-          <span className="card__row-detail">
-            {[
-              pluginVersionLabel(plugin),
-              contents,
-              owner ? `Added by an agent in ${owner.name}` : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
-          {plugin.description ? (
-            <span className="card__row-detail card__row-detail--wrap">{plugin.description}</span>
-          ) : null}
-        </span>
-        <span className="card__row-actions">
-          <button
-            className="btn btn--small btn--ghost"
-            disabled={!connected || !plugin.directory || pending !== null}
-            onClick={() =>
-              run(
-                "update",
-                () =>
-                  hostClient.dispatch({
-                    idempotencyKey: mutationIdempotencyKey(`plugin-update:${plugin.id}`),
-                    input: { directory: plugin.directory! },
-                    pluginId: plugin.id,
-                    type: "plugin.update",
-                  }),
-                `${plugin.name} updated`,
-              )
-            }
-            title={
-              plugin.directory
-                ? `Read ${plugin.directory} again`
-                : "Its folder is unknown; install it again from its folder"
-            }
-            type="button"
-          >
-            {pending === "update" ? "Updating…" : "Update"}
-          </button>
-          <button
-            className="btn btn--small btn--ghost"
-            disabled={!connected || pending !== null}
-            onClick={() => setRemoving(true)}
-            type="button"
-          >
-            Remove
-          </button>
-        </span>
-      </div>
+    <section>
+      <h2>Installation</h2>
       <button
-        aria-controls={listId}
-        aria-expanded={open}
-        className="plugin-row__where"
-        onClick={() => setOpen(!open)}
+        className="btn"
+        disabled={pending || !detail.row.permissions.canUpdate || detail.sourceFolder === null}
+        onClick={() => run(false)}
         type="button"
       >
-        <Icon name={open ? "chevron-down" : "chevron-right"} />
-        {onIn.length === 0
-          ? "Off everywhere"
-          : `On in ${onIn
-              .slice(0, 3)
-              .map(workspaceName)
-              .join(", ")}${onIn.length > 3 ? ` and ${onIn.length - 3} more` : ""}`}
-        {/* Cut from its start, so the folder's own name stays in view. */}
-        {plugin.directory ? (
-          <span className="plugin-row__source">
-            <bdi>{plugin.directory}</bdi>
-          </span>
-        ) : null}
+        Update
       </button>
-      {open ? (
-        <ul aria-label={`Where ${plugin.name} is on`} className="plugin-row__places" id={listId}>
-          {places.map((workspace) => {
-            const on = plugin.activeIn.includes(workspace.id);
-            const key = `activation:${workspace.id}`;
-            return (
-              <li key={workspace.id}>
-                <label className="plugin-row__place">
-                  <WorkspaceOrb
-                    color={workspace.color}
-                    icon={workspace.icon}
-                    name={workspaceName(workspace)}
-                    size="tiny"
-                  />
-                  <span className="plugin-row__place-name">{workspaceName(workspace)}</span>
-                  <input
-                    aria-disabled={pending === key || undefined}
-                    aria-label={`${plugin.name} on in ${workspaceName(workspace)}`}
-                    checked={on}
-                    className="switch"
-                    disabled={!connected || workspace.status !== "ready"}
-                    onChange={(event) => {
-                      if (pending !== null) return;
-                      const active = event.currentTarget.checked;
-                      run(key, () =>
-                        hostClient.dispatch({
-                          active,
-                          idempotencyKey: mutationIdempotencyKey(
-                            `plugin-activation:${plugin.id}:${workspace.id}`,
-                          ),
-                          pluginId: plugin.id,
-                          type: "plugin.activation.set",
-                          workspaceId: WorkspaceIdSchema.parse(workspace.id),
-                        }),
-                      );
-                    }}
-                    role="switch"
-                    type="checkbox"
-                  />
-                </label>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-      {error ? (
-        <div className="plugin-row__error">
-          <SettingsError message={error} />
-        </div>
-      ) : null}
+      <button
+        className="btn btn--danger"
+        disabled={pending || !detail.row.permissions.canRemove}
+        onClick={() => setRemoving(true)}
+        type="button"
+      >
+        Remove
+      </button>
       {removing ? (
         <Dialog
           labelledBy="remove-plugin-title"
+          title={`Remove ${detail.row.title}?`}
           onClose={() => {
-            if (pending === null) setRemoving(false);
+            if (!pending) setRemoving(false);
           }}
-          title={`Remove ${plugin.name}?`}
         >
-          <p className="section__hint">
-            {onIn.length > 0 ? `It turns off in ${onIn.map(workspaceName).join(", ")}. ` : ""}
-            Its skills and tools leave every agent, and any specialist made from it is removed. The
-            folder on disk stays where it is.
-          </p>
-          <div className="form-actions">
-            <button
-              className="btn"
-              disabled={pending !== null}
-              onClick={() => setRemoving(false)}
-              type="button"
-            >
-              Cancel
-            </button>
-            <button
-              className="btn btn--danger"
-              disabled={pending !== null}
-              onClick={() =>
-                run(
-                  "remove",
-                  () =>
-                    hostClient
-                      .dispatch({
-                        idempotencyKey: mutationIdempotencyKey(`plugin-remove:${plugin.id}`),
-                        pluginId: plugin.id,
-                        type: "plugin.remove",
-                      })
-                      .then(() => setRemoving(false)),
-                  `${plugin.name} removed`,
-                )
-              }
-              type="button"
-            >
-              {pending === "remove" ? "Removing…" : "Remove plugin"}
-            </button>
-          </div>
-          {error ? <SettingsError message={error} /> : null}
+          <p>Its skills, tools and specialist leave your agents. The folder stays on disk.</p>
+          <button
+            className="btn"
+            type="button"
+            disabled={pending}
+            onClick={() => setRemoving(false)}
+          >
+            Cancel
+          </button>
+          <button
+            className="btn btn--danger"
+            type="button"
+            disabled={pending}
+            onClick={() => run(true)}
+          >
+            Remove plugin
+          </button>
         </Dialog>
       ) : null}
-    </div>
+      <SettingsError message={error} />
+    </section>
   );
-}
-
-function workspaceName(workspace: Pick<WorkspaceSummary, "kind" | "name">): string {
-  return workspace.kind === "main" ? "Main" : workspace.name;
 }

@@ -966,7 +966,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     } finally {
       setRemoving(false);
     }
-    void navigate("/settings/computers");
+    void navigate("/settings/devices/computers");
   }
 
   return (
@@ -1332,7 +1332,7 @@ function phoneStatus(machine: MachineSummary): ComputerStatus {
 }
 
 function computerRoute(machineId: string): string {
-  return `/settings/computers/${encodeURIComponent(machineId)}`;
+  return `/settings/devices/computers/${encodeURIComponent(machineId)}`;
 }
 
 /**
@@ -1359,7 +1359,7 @@ export function computerAppIdFromHash(hash: string): string | null {
 
 function ComputersBackLink() {
   return (
-    <Link className="page__back" to="/settings/computers">
+    <Link className="page__back" to="/settings/devices/computers">
       <Icon name="arrow-left" />
       Computers
     </Link>

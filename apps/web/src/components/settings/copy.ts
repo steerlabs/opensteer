@@ -66,6 +66,9 @@ export function settingsWhatThisIs(input: {
  * ------------------------------------------------------------------------- */
 
 export type SettingsSectionId =
+  | "ai"
+  | "messaging"
+  | "sign-ins"
   | "account"
   | "ai-engines"
   | "apps"
@@ -77,7 +80,7 @@ export type SettingsSectionId =
   | "passwords"
   | "plugins";
 
-export const defaultSettingsSection = "ai-engines" as const satisfies SettingsSectionId;
+export const defaultSettingsSection = "general" as const satisfies SettingsSectionId;
 
 export interface SettingsRailItem {
   readonly icon: IconName;
@@ -94,6 +97,19 @@ export interface SettingsRailModel {
 }
 
 export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>> = {
+  ai: { id: "ai", icon: "bolt", label: "AI", description: "Accounts and models" },
+  messaging: {
+    id: "messaging",
+    icon: "plug",
+    label: "Messaging",
+    description: "Message your agents",
+  },
+  "sign-ins": {
+    id: "sign-ins",
+    icon: "key",
+    label: "Sign-ins",
+    description: "Browsers and passwords",
+  },
   "ai-engines": {
     icon: "bolt",
     id: "ai-engines",
@@ -139,60 +155,33 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
   devices: {
     icon: "devices",
     id: "devices",
-    label: "Signed-in devices",
+    label: "Devices",
     description: "The browsers and apps you are signed in to this Opensteer from",
   },
   account: {
     icon: "user",
     id: "account",
-    label: "Your account",
+    label: "Account",
     description: "Your Opensteer sign-in",
   },
   general: {
     icon: "settings",
     id: "general",
-    label: "About this Opensteer",
+    label: "General",
     description: "Where it runs and whether your Account lists it",
   },
 };
 
-/**
- * Where you open Opensteer from, named for what a person does there. A server
- * is reachable wherever you are, so its page is the list of devices signed in.
- * A Personal Opensteer is reachable only from its own Mac until you turn remote
- * access on, and that switch is what people come to this page for. Neither is
- * called "devices" alone: next to Computers, that reads as the same thing.
- */
-export function settingsItem(id: SettingsSectionId, kind: DeploymentDisplayKind): SettingsRailItem {
-  if (id === "devices" && kind === "personal") {
-    return {
-      icon: "globe",
-      id,
-      label: "Remote access",
-      description: "Open this Opensteer from your phone, a browser or another computer",
-    };
-  }
+export function settingsItem(
+  id: SettingsSectionId,
+  _kind: DeploymentDisplayKind,
+): SettingsRailItem {
   return settingsItems[id];
 }
 
-/**
- * The rail reads as two answers: what your agents can use, and how you get to
- * Opensteer yourself. Computers sits in the first and devices in the second,
- * which is the whole difference between them.
- */
 export function settingsRail(kind: DeploymentDisplayKind): SettingsRailModel {
   return {
-    agents: (
-      [
-        "ai-engines",
-        "apps",
-        "plugins",
-        "computers",
-        "browser-profiles",
-        "chrome",
-        "passwords",
-      ] as const
-    ).map((id) => settingsItems[id]),
+    agents: (["ai", "plugins", "sign-ins"] as const).map((id) => settingsItems[id]),
     devices: settingsItem("devices", kind),
   };
 }
