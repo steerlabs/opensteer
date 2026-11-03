@@ -4376,7 +4376,23 @@ integration.sequential("PostgreSQL computer app connections", () => {
       let asking: ReturnType<IntegrationPlatformStore["requestComputerAppAccess"]> | undefined;
       try {
         await held.promise;
-        asking = new IntegrationPlatformStore(racing).requestComputerAppAccess({
+        const acquiring = Promise.withResolvers<void>();
+        const contender = racing.withPlugin({
+          transformQuery(args) {
+            const node = JSON.stringify(args.node);
+            if (
+              args.node.kind === "SelectQueryNode" &&
+              /"name":"integration_?(servers|installations)"/iu.test(node) &&
+              (node.includes("ForNoKeyUpdate") || node.includes("ForShare"))
+            )
+              acquiring.resolve();
+            return args.node;
+          },
+          async transformResult(args) {
+            return args.result;
+          },
+        });
+        asking = new IntegrationPlatformStore(contender).requestComputerAppAccess({
           access: "read",
           app: notes,
           auditRequestId: "covered-order-ask",
@@ -4392,6 +4408,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
           workspaceId: run.workspaceId,
         });
         void asking.catch(() => undefined);
+        // Discovery does not contend with the held server lock. Observe the
+        // wait only once the contender submits its resource-lock query.
+        await withTimeout(acquiring.promise, 5_000, {
+          timeoutError: () => new Error("Computer access never submitted its resource-lock query"),
+        });
         await expect
           .poll(async () =>
             (
