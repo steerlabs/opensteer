@@ -473,7 +473,8 @@ profile before signing in: Guest state is ephemeral and cannot be promoted.
 The profile list provides identities and grants, never proof of a website login.
 Inspect the website only when the task actually needs that sign-in.
 
-Only the person renames or deletes profiles. Deletion fences new work, closes
+The owner and agents acting for them with full access and user-wide reach can
+rename or delete profiles. Deletion fences new work, closes
 durable tabs, revokes grants and schedules erasure on the owning computer.
 Archival alone is not disk deletion. Offline owners leave visible
 `pending-computer` work. Electron retains a Session until process exit, so an

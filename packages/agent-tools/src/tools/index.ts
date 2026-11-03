@@ -1,3 +1,4 @@
+import { administrationTools } from "./administration.js";
 import { app_publish, app_list, app_fetch } from "./apps.js";
 import { request_list, request_withdraw } from "./requests.js";
 import { environment_list } from "./environment.js";
@@ -26,6 +27,7 @@ import { machine_full_disk_access_request } from "./computer.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 import { integrationTools } from "./integrations.js";
 export const agentTools = [
+  ...administrationTools,
   app_publish,
   app_list,
   app_fetch,
@@ -70,3 +72,5 @@ export * from "./requests.js";
 export * from "./threads.js";
 export * from "./triggers.js";
 export * from "./integrations.js";
+
+export * from "./administration.js";

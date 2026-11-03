@@ -1,3 +1,4 @@
+import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import * as specs from "@opensteer/agent-tools/tools";
 import type { AgentTool } from "@opensteer/agent-tools";
 import type { z } from "zod";
@@ -24,6 +25,7 @@ export type AgentToolHandlers = {
   };
 };
 export function agentToolHandlers(options: {
+  readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
   readonly integrations: IntegrationToolHandlers;
   readonly triggers: TriggerToolHandlers;
@@ -37,6 +39,7 @@ export function agentToolHandlers(options: {
     i = options.integrations,
     t = options.triggers;
   const handlers: AgentToolHandlers = {
+    ...administrationToolHandlers(options.administration),
     app_publish: async (c) =>
       specs.app_publish.output.parse(
         await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),

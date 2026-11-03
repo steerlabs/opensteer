@@ -1,3 +1,6 @@
+import { AdministrationService } from "../administration/administration-service.js";
+import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
+import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
 import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
@@ -431,6 +434,7 @@ export async function createHostRuntime(
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
   });
+  let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;
   let notificationDispatcher: NotificationDispatcher | undefined;
   let threadStateLoop: WorkspaceReconcileLoop | undefined;
@@ -1995,6 +1999,7 @@ export async function createHostRuntime(
       tokens,
     });
     const channels = new ChannelService({
+      onChanged: () => notifyMachinesChanged(realtime, "integration.connections"),
       canonicalOrigin: config.canonicalOrigin.origin,
       channels: new ChannelStore(database),
       credentials,
@@ -2075,66 +2080,6 @@ export async function createHostRuntime(
       onWorkspaceEvent: publishWorkspaceEvent,
       platform: integrationPlatform,
     });
-    const agentTools = new OpensteerMcpService({
-      publicUrl: config.runtimeOrigin,
-      callers: new AgentCallerResolver({
-        store,
-        runs: agentControlTokens,
-        triggers: triggerControlTokens,
-        watches: watchControlTokens,
-        connections: connections.authenticator,
-      }),
-      receipts: new AgentOperationReceipts(database),
-      store,
-      handlers: agentToolHandlers({
-        apps,
-        product: productHandlers,
-        integrations: integrationTools,
-        triggers: new TriggerToolHandlers(triggers),
-        pluginInstall: async (scope, directory) => {
-          const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
-          if (!admission) throw new Error("Workspace is unavailable");
-          if (admission.workspace.backing.kind !== "local-directory")
-            throw new Error("Plugins require a local Workspace");
-          return withWorkspacePluginPackage({
-            directory,
-            admission,
-            files,
-            install: async (directory) => {
-              const result = await integrationPlatform.installAgentPlugin({
-                directory,
-                actorUserId: scope.requestedBy,
-                workspaceId: scope.workspaceId,
-                runnerId: scope.runnerId,
-                requestId: randomUUID(),
-              });
-              const pluginId = result.installation.pluginId;
-              const registration =
-                result.specialist && pluginId
-                  ? await integrationPlatform.store.specialists.add({
-                      workspaceId: scope.workspaceId,
-                      pluginId,
-                      actorUserId: scope.requestedBy,
-                    })
-                  : null;
-              if (registration)
-                await requestSpecialistRequirements({
-                  registration,
-                  scope: { ...scope, aud: "opensteer-integration-tools" },
-                  browser,
-                  integrations: integrationTools,
-                });
-              return {
-                pluginId,
-                issues: result.issues,
-                specialist: result.specialist,
-                registration,
-              };
-            },
-          });
-        },
-      }),
-    });
     const plugins = new PluginPackageService({
       computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
       snapshotDirectory: resolve(dataDirectory, "plugins", "data", "packages"),
@@ -2213,6 +2158,95 @@ export async function createHostRuntime(
       retentionDays: config.workspace.deletionRetentionDays,
       store,
       terminateRuns: (workspaceId) => securityEffects.terminateWorkspace(workspaceId),
+    });
+    administrationCatalogs = new HarnessCatalogReconciliationOwner({
+      catalogs: store,
+      runners,
+      onError: (environmentId, error) =>
+        reportHarnessCatalogInvalidationError(environmentId, error),
+    });
+    const administration = new AdministrationToolHandlers(
+      new AdministrationService(
+        {
+          store,
+          commands,
+          workspaces,
+          workspaceDeletion,
+          apps,
+          browser,
+          browserSources,
+          shellControl: requiredService(shellHub, "Shell session hub"),
+          computerApps,
+          runners,
+          channels: { service: channels, relay: messagingRelay },
+          realtime,
+          publishWorkspaceEvent,
+          integrations: { platform: integrationPlatform, service: integrations, continuations },
+        },
+        (id) => administrationCatalogs?.schedule(id),
+      ),
+      (ownerId) => integrationStore.listConnections(ownerId),
+    );
+    const agentTools = new OpensteerMcpService({
+      publicUrl: config.runtimeOrigin,
+      callers: new AgentCallerResolver({
+        store,
+        runs: agentControlTokens,
+        triggers: triggerControlTokens,
+        watches: watchControlTokens,
+        connections: connections.authenticator,
+      }),
+      receipts: new AgentOperationReceipts(database),
+      store,
+      handlers: agentToolHandlers({
+        administration,
+        apps,
+        product: productHandlers,
+        integrations: integrationTools,
+        triggers: new TriggerToolHandlers(triggers),
+        pluginInstall: async (scope, directory) => {
+          const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
+          if (!admission) throw new Error("Workspace is unavailable");
+          if (admission.workspace.backing.kind !== "local-directory")
+            throw new Error("Plugins require a local Workspace");
+          return withWorkspacePluginPackage({
+            directory,
+            admission,
+            files,
+            install: async (directory) => {
+              const result = await integrationPlatform.installAgentPlugin({
+                directory,
+                actorUserId: scope.requestedBy,
+                workspaceId: scope.workspaceId,
+                runnerId: scope.runnerId,
+                requestId: randomUUID(),
+              });
+              const pluginId = result.installation.pluginId;
+              const registration =
+                result.specialist && pluginId
+                  ? await integrationPlatform.store.specialists.add({
+                      workspaceId: scope.workspaceId,
+                      pluginId,
+                      actorUserId: scope.requestedBy,
+                    })
+                  : null;
+              if (registration)
+                await requestSpecialistRequirements({
+                  registration,
+                  scope: { ...scope, aud: "opensteer-integration-tools" },
+                  browser,
+                  integrations: integrationTools,
+                });
+              return {
+                pluginId,
+                issues: result.issues,
+                specialist: result.specialist,
+                registration,
+              };
+            },
+          });
+        },
+      }),
     });
     const app = await createHostServer(
       {
@@ -2585,6 +2619,7 @@ export async function createHostRuntime(
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
         await step("agent tools", () => agentTools.close());
+        await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
         unsubscribePlaceMembership?.();
         await step("browser", () => browser.close());
@@ -2614,6 +2649,7 @@ export async function createHostRuntime(
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {
+    await administrationCatalogs?.close();
     await notificationDispatcher?.close();
     unsubscribePlaceMembership?.();
     threadStateStopped = true;

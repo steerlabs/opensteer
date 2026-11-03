@@ -98,6 +98,14 @@ async function serveMcp(store: OpensteerStore) {
       connections: new ConnectionAuthenticator(new AgentConnectionStore(store.database)),
     }),
     handlers: agentToolHandlers({
+      administration: new Proxy(
+        {},
+        {
+          get: () => {
+            throw new Error("Unexpected administration tool");
+          },
+        },
+      ) as never,
       product,
       integrations: unavailable as never,
       triggers: unavailable as never,

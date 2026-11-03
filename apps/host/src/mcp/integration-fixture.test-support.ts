@@ -29,6 +29,14 @@ export function createIntegrationMcpFixture(
     },
   );
   const handlers = agentToolHandlers({
+    administration: new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error("Unexpected administration tool");
+        },
+      },
+    ) as never,
     integrations: integration,
     product: unavailable as never,
     triggers: unavailable as never,

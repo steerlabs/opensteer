@@ -84,6 +84,15 @@ export async function startFakeHost(testCase: EvalCase) {
     updatedAt: new Date().toISOString(),
   });
   const handlers: AgentToolHandlers = {
+    project_write: async () => unavailable(),
+    settings_read: async () => unavailable(),
+    settings_write: async () => unavailable(),
+    computer_list: async () => unavailable(),
+    computer_write: async () => unavailable(),
+    integration_manage: async () => unavailable(),
+    channel_manage: async () => unavailable(),
+    plugin_manage: async () => unavailable(),
+    browser_profile_write: async () => unavailable(),
     app_publish: async () => unavailable(),
     app_list: async () => unavailable(),
     app_fetch: async () => unavailable(),
