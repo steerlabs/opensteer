@@ -198,7 +198,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     workspaceMounts: { mount: unexpected },
   });
   const programs = new TriggerToolsTestClient({ ...services, tokens: triggerTokens, triggers });
-  const watches = new WatchToolsTestClient({ ...services, tokens: watchTokens });
+  const watches = new WatchToolsTestClient({ ...services, tokens: watchTokens, triggers });
   const clients: Client[] = [];
   const mcpServices: OpensteerMcpService[] = [];
   const servers: Server[] = [];
@@ -607,17 +607,16 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
   });
 
-  it("A5/F8-F11/F16b: Trigger and Watch programs use the delegated anchor's reach", async () => {
-    const f = await fixture();
-    const own = await personCreate(f, f.isolatedChild);
-    const triggerToken = await startProgram(f, own);
-    const watch = await personCreate(f, f.isolatedChild, { kind: "watch" });
-    const watchToken = await startWatch(f, watch);
-    const outside = await personCreate(f, f.unrelated);
-    for (const [kind, control, token] of [
-      ["Trigger", programs, triggerToken],
-      ["Watch", watches, watchToken],
-    ] as const) {
+  it.each(["Trigger", "Watch"] as const)(
+    "A5: %s programs keep Thread operations within anchor reach",
+    async (kind) => {
+      const f = await fixture();
+      const own = await personCreate(f, f.isolatedChild);
+      const triggerToken = await startProgram(f, own);
+      const watch = await personCreate(f, f.isolatedChild, { kind: "watch" });
+      const watchToken = await startWatch(f, watch);
+      const control = kind === "Trigger" ? programs : watches;
+      const token = kind === "Trigger" ? triggerToken : watchToken;
       const projects = await control.handle(token, {
         type: "project.list",
         requestId: randomUUID(),
@@ -710,7 +709,24 @@ integration.sequential("Trigger authority through real Host services and Postgre
           return response.result;
         },
       );
-    }
+      expect((await store.listWorkspacesForOwner(f.ownerId)).length).toBe(2);
+      expect(
+        await database
+          .selectFrom("messages")
+          .select("id")
+          .where("threadId", "=", f.unrelated.id)
+          .execute(),
+      ).toEqual([]);
+    },
+  );
+
+  it("A5: program Trigger controls use current anchor authority", async () => {
+    const f = await fixture();
+    const own = await personCreate(f, f.isolatedChild);
+    const triggerToken = await startProgram(f, own);
+    const watch = await personCreate(f, f.isolatedChild, { kind: "watch" });
+    const watchToken = await startWatch(f, watch);
+    const outside = await personCreate(f, f.unrelated);
     await check(
       "A5 Trigger controls own clock",
       f.isolatedChild.id,
@@ -775,19 +791,15 @@ integration.sequential("Trigger authority through real Host services and Postgre
           triggerId: outside.trigger.id,
         }),
     );
-    await denied(
-      "F16b Watch cannot manage Triggers",
-      f.isolatedChild.id,
-      "trigger_read",
-      "forbidden",
-      () =>
-        watches.handle(watchToken, {
-          type: "trigger.control",
-          tool: "trigger.read",
-          input: { operation: "list", limit: 50 },
-          requestId: randomUUID(),
-        }),
-    );
+    const watchRead = await watches.handle(watchToken, {
+      type: "trigger.control",
+      tool: "trigger.read",
+      input: { operation: "list", limit: 50 },
+      requestId: randomUUID(),
+    });
+    if (watchRead.type !== "trigger.control.result") throw new Error("Expected Watch Trigger read");
+    const visible = TriggerOutputSchema.parse(watchRead.result).triggers ?? [];
+    expect(visible.map(({ id }) => id).sort()).toEqual([own.trigger.id, watch.trigger.id].sort());
     expect((await store.listWorkspacesForOwner(f.ownerId)).length).toBe(2);
     expect(
       await database
