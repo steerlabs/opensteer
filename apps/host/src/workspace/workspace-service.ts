@@ -178,6 +178,7 @@ export class WorkspaceService {
   }
 
   setIcon(input: {
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly icon: WorkspaceIconName | null;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;

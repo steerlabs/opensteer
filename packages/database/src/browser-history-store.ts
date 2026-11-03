@@ -322,6 +322,7 @@ export class BrowserHistoryStore {
     profileId: BrowserProfileId;
     ownerId: UserId;
     idempotencyKey: string;
+    authoritySource?: Readonly<Record<string, unknown>>;
     url: string;
   }): Promise<boolean> {
     return this.#forget(input);
@@ -331,6 +332,7 @@ export class BrowserHistoryStore {
     profileId: BrowserProfileId;
     ownerId: UserId;
     idempotencyKey: string;
+    authoritySource?: Readonly<Record<string, unknown>>;
   }): Promise<boolean> {
     return this.#forget(input);
   }
@@ -339,6 +341,7 @@ export class BrowserHistoryStore {
     profileId: BrowserProfileId;
     ownerId: UserId;
     idempotencyKey: string;
+    authoritySource?: Readonly<Record<string, unknown>>;
     url?: string;
   }) {
     const type = input.url === undefined ? "browser.history.clear" : "browser.history.remove";
@@ -376,7 +379,9 @@ export class BrowserHistoryStore {
         .insertInto("commands")
         .values({
           actorPrincipalId: await principalIdForUser(tx, input.ownerId),
-          authoritySource: jsonValue({ kind: "user-session", userId: input.ownerId }),
+          authoritySource: jsonValue(
+            input.authoritySource ?? { kind: "user-session", userId: input.ownerId },
+          ),
           dispatcherId: null,
           environmentId: null,
           id: createId("command"),

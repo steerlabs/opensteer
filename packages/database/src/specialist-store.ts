@@ -242,6 +242,24 @@ export class SpecialistStore {
     };
   }
 
+  async summaries(workspaceId: WorkspaceId, actorUserId: UserId) {
+    await this.authorize(workspaceId, actorUserId);
+    // Agent reads must not refresh: refresh can automatically bind a sole candidate.
+    return this.database
+      .selectFrom("specialists")
+      .innerJoin("plugins", "plugins.id", "specialists.pluginId")
+      .select([
+        "specialists.id",
+        "specialists.workspaceId",
+        "specialists.pluginId",
+        "specialists.status",
+        "plugins.name as plugin",
+      ])
+      .where("specialists.workspaceId", "=", workspaceId)
+      .orderBy("specialists.createdAt")
+      .execute();
+  }
+
   async list(workspaceId: WorkspaceId, actorUserId: UserId) {
     await this.authorize(workspaceId, actorUserId);
     const rows = await this.database

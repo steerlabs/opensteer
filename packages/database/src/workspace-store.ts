@@ -263,6 +263,7 @@ export async function setWorkspaceIcon(
   input: {
     readonly icon: WorkspaceIconName | null;
     readonly idempotencyKey: string;
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
   },
@@ -322,7 +323,9 @@ export async function setWorkspaceIcon(
       .insertInto("commands")
       .values({
         actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({ kind: "user-session", userId: input.requestedBy }),
+        authoritySource: jsonValue(
+          input.authoritySource ?? { kind: "user-session", userId: input.requestedBy },
+        ),
         dispatcherId: null,
         environmentId: null,
         id: createId("command"),
@@ -345,6 +348,7 @@ export async function setWorkspaceColor(
   input: {
     readonly color: MarkColor;
     readonly idempotencyKey: string;
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
   },
@@ -405,7 +409,9 @@ export async function setWorkspaceColor(
       .insertInto("commands")
       .values({
         actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({ kind: "user-session", userId: input.requestedBy }),
+        authoritySource: jsonValue(
+          input.authoritySource ?? { kind: "user-session", userId: input.requestedBy },
+        ),
         dispatcherId: null,
         environmentId: null,
         id: createId("command"),

@@ -1171,6 +1171,7 @@ export class OpensteerStore {
   }
 
   async setWorkspaceIcon(input: {
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly icon: WorkspaceIconName | null;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;

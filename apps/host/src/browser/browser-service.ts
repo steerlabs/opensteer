@@ -1463,7 +1463,12 @@ export class BrowserService {
 
   async forgetHistory(
     ownerId: UserId,
-    input: { profileId: BrowserProfileId; idempotencyKey: string; url?: string },
+    input: {
+      profileId: BrowserProfileId;
+      idempotencyKey: string;
+      url?: string;
+      authoritySource?: Readonly<Record<string, unknown>>;
+    },
   ) {
     if (!(await this.#repository.getBrowserProfile(input.profileId, ownerId)))
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });

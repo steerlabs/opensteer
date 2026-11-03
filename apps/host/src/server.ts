@@ -1,4 +1,15 @@
 import {
+  AdministrationService,
+  isAdministrationCommand,
+} from "./administration/administration-service.js";
+import {
+  boundRunnerEnvironmentIds,
+  harnessView,
+  harnessAuthenticationIsAllowed,
+  requireMachineAccessManagement,
+  workspaceView,
+} from "./administration/authority.js";
+import {
   connectionCredentialPrefix,
   connectionRequestOrigin,
   registerConnectionRoutes,
@@ -66,7 +77,6 @@ import {
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   OpensteerError,
-  RunnerIdSchema,
   TriggerRevisionIdSchema,
   WorkspaceIdSchema,
   deploymentSupportsSharing,
@@ -77,15 +87,12 @@ import {
   type AuthenticatedSession,
   type DeploymentDisplayKind,
   type EnvironmentId,
-  type ExecutionEnvironmentKind,
   type HarnessId,
   type HarnessInstanceId,
   type HarnessInstanceStateKind,
   type ModelSelection,
   type RunnerId,
   type ThreadAccessMode,
-  type UserId,
-  type Workspace,
   type WorkspaceId,
 } from "@opensteer/core";
 import {
@@ -93,7 +100,6 @@ import {
   personalRemoteAccessRefusedReason,
   personalRemoteAccessRequiredRefusal,
   runnerIdentityRevokedReason,
-  type HarnessInstanceRecord,
   type MachineOwnershipRecord,
   type OpensteerStore,
   type WorkspaceInvitationRecord,
@@ -126,7 +132,6 @@ import {
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
-  HarnessModelSettingsMapSchema,
   HostBootstrapSchema,
   HostToClientMessageSchema,
   HostToIntegrationsModuleMessageSchema,
@@ -154,7 +159,6 @@ import {
   unsupportedVersionCloseCode,
   workspaceDirectoryPageDefaultEntries,
   workspacePageMaxItems,
-  workspaceViewFromWorkspace,
   type AgentPhoneHostTarget,
   type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
@@ -163,7 +167,6 @@ import {
   type HarnessSourceDescriptor,
   type HostApiHandlers,
   type HostApiServerContext,
-  type HostBootstrapHarness,
   type HostToClientMessage,
   type HostToIntegrationsModuleMessage,
   type HostToRunnerMessage,
@@ -334,11 +337,6 @@ const webSocketShutdownGraceMs = 2_000;
 /** How long a stopping Host lets an HTTP request in flight finish before cutting it off. */
 const httpShutdownGraceMs = 5_000;
 const maxBrowserRelayQueuedBytes = 2 * maxBrowserRelayFrameBytes;
-// One person sees their own Runners plus the deployment's shared ones, so the
-// page budget is a guard against an unbounded loop rather than a real limit.
-const runnerOwnershipPageSize = 100;
-const maxRunnerOwnershipPages = 50;
-
 function harnessUpdateCommandId(...parts: string[]) {
   const digest = createHash("sha256").update(parts.join("\0")).digest("hex");
   const variant = ["8", "9", "a", "b"][Number.parseInt(digest[16] ?? "0", 16) % 4] ?? "8";
@@ -459,6 +457,11 @@ export async function createHostServer(
     runners: dependencies.runners,
   });
   app.addHook("onClose", async () => harnessCatalogReconciliations.close());
+  const administration = new AdministrationService(
+    dependencies,
+    (id) => harnessCatalogReconciliations.schedule(id),
+    (fields, message) => app.log.warn(fields, message),
+  );
   const harnessAuthenticationCoordinator = dependencies.harnessAuthenticationCoordinator;
   await app.register(websocket, {
     options: {
@@ -815,28 +818,10 @@ export async function createHostServer(
     session: Awaited<ReturnType<HostAuthenticator["authenticateSession"]>>,
     environmentIdInput: string,
   ) => {
-    const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
-    const environment = (await dependencies.store.listEnvironmentsForUser(session.user.id)).find(
-      (candidate) => candidate.id === environmentId,
+    return administration.admitHarnessManagement(
+      { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+      environmentIdInput,
     );
-    if (!environment) {
-      throw new OpensteerError({ code: "not_found", message: "Work location not found" });
-    }
-    const isInstanceAdministrator = session.user.instanceRole === "administrator";
-    const allowed = harnessAuthenticationIsAllowed({
-      boundEnvironmentIds: isInstanceAdministrator
-        ? new Set()
-        : await boundRunnerEnvironmentIds(dependencies.store, session.user.id),
-      environment,
-      isInstanceAdministrator,
-    });
-    if (!allowed) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "This work location's AI engines are administered by the Deployment",
-      });
-    }
-    return environment;
   };
 
   /** Resolves the work location and settles, in one place for all three
@@ -1293,7 +1278,11 @@ export async function createHostServer(
     },
     "machine.access.history": async (input, context) => {
       const session = requireRpcSession(context);
-      await requireMachineAccessManagement(dependencies.store, session, input.runnerId);
+      await requireMachineAccessManagement(
+        dependencies.store,
+        { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+        input.runnerId,
+      );
       // The store bounds this page to both the item limit and 16 MiB serialized,
       // trimming trailing sessions and re-pointing the cursor when a flooded
       // audit would overrun it.
@@ -1622,6 +1611,11 @@ export async function createHostServer(
     }
     const session = requireRpcSession(context);
     const userId = session.user.id;
+    if (isAdministrationCommand(command))
+      return administration.execute(
+        { kind: "person", userId, isAdministrator: session.user.instanceRole === "administrator" },
+        command,
+      );
     switch (command.type) {
       case "thread.read.mark": {
         const state = await dependencies.store.notificationState.markRead({
@@ -1657,15 +1651,6 @@ export async function createHostServer(
           wasDuplicate: result.wasDuplicate,
         };
       }
-      case "workspace.notifications.update": {
-        const preference = await dependencies.store.notificationState.setAgentNotificationMute({
-          workspaceId: command.workspaceId,
-          muted: command.muted,
-          userId,
-        });
-        dependencies.realtime.publishNotificationPreference(userId, preference);
-        return { type: command.type, ...preference };
-      }
       case "notification.preview.register": {
         const previews = dependencies.notificationPreviews;
         if (!previews)
@@ -1682,14 +1667,6 @@ export async function createHostServer(
           registered: true,
         };
       }
-      case "viewer.timeZone.update":
-        return {
-          timeZone: await dependencies.store.notificationState.setTimeZone({
-            timeZone: command.timeZone,
-            userId,
-          }),
-          type: command.type,
-        };
       case "attachment.upload.create":
         return {
           attachment: await dependencies.attachments.reserve({
@@ -1726,61 +1703,6 @@ export async function createHostServer(
       }
       case "workspace.adoptRelocated": {
         const workspace = await dependencies.workspaces.adoptRelocated(command.workspaceId, userId);
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.storage.retry": {
-        const workspace = await dependencies.workspaces.retry(command.workspaceId, userId);
-        if (workspace.storageIssue) {
-          app.log.warn(
-            { storageIssue: workspace.storageIssue.code, workspaceId: workspace.id },
-            "Workspace storage retry did not reach ready",
-          );
-        }
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.icon.set": {
-        const workspace = await dependencies.workspaces.setIcon({
-          icon: command.icon,
-          idempotencyKey: command.idempotencyKey,
-          requestedBy: userId,
-          workspaceId: command.workspaceId,
-        });
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.color.set": {
-        const workspace = await dependencies.commands.setWorkspaceColor({
-          color: command.color,
-          idempotencyKey: command.idempotencyKey,
-          requestedBy: userId,
-          workspaceId: command.workspaceId,
-        });
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.delete": {
-        const workspace = await dependencies.workspaceDeletion.requestDeletion(
-          command.workspaceId,
-          userId,
-        );
-        await dependencies.apps.stopWorkspace(command.workspaceId);
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.deletion.recover": {
-        const workspace = await dependencies.workspaceDeletion.recover(command.workspaceId, userId);
         return {
           type: command.type,
           workspace: await workspaceView(dependencies.workspaces, workspace),
@@ -2140,35 +2062,6 @@ export async function createHostServer(
           type: command.type,
         };
       }
-      case "execution.preferences.remember": {
-        // A preference is a hint the Host re-validates when a Thread actually
-        // starts, so the model is deliberately not checked against a catalog
-        // here — a person may remember a model whose Runner is asleep. What is
-        // checked is hygiene: the account exists, it lives on the work location
-        // named with it, and that work location is one this person can see.
-        const selection = command.selection;
-        if (selection) {
-          const harness = await dependencies.store.getHarnessInstance(selection.harnessInstanceId);
-          if (!harness || harness.environmentId !== selection.environmentId) {
-            throw new OpensteerError({
-              code: "conflict",
-              message: "The selected AI engine is not available",
-            });
-          }
-          const environments = await dependencies.store.listEnvironmentsForUser(userId);
-          if (!environments.some(({ id }) => id === selection.environmentId)) {
-            throw new OpensteerError({
-              code: "not_found",
-              message: "The selected place to run this work no longer exists",
-            });
-          }
-        }
-        const preferences = await dependencies.store.rememberExecutionChoice(userId, {
-          ...(command.accessMode === undefined ? {} : { accessMode: command.accessMode }),
-          ...(selection === undefined ? {} : { selection }),
-        });
-        return { preferences, type: command.type };
-      }
       case "run.interrupt": {
         const result = await dependencies.commands.sendControl({
           idempotencyKey: command.idempotencyKey,
@@ -2416,90 +2309,6 @@ export async function createHostServer(
           type: command.type,
         };
       }
-      case "harness.model.configure": {
-        const environment = await admitHarnessManagement(session, command.environmentId);
-        const current = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
-        if (!current || current.environmentId !== environment.id || current.removedAt) {
-          throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-        }
-        const driver = dependencies.runners
-          .identityForEnvironment(environment.id)
-          ?.modules.agents?.harnessDrivers.find(
-            (candidate) => candidate.driverKind === current.driverKind,
-          );
-        const source =
-          driver && driver.readiness !== "unavailable"
-            ? driver.sources.find((candidate) => candidate.sourceId === current.sourceId)
-            : undefined;
-        if (!source?.modelSettings) {
-          throw new OpensteerError({
-            code: "conflict",
-            message:
-              "This account does not currently offer model settings. Reconnect its computer and refresh.",
-          });
-        }
-        const config = z.record(z.string(), z.unknown()).parse(current.config);
-        const currentModels = HarnessModelSettingsMapSchema.parse(config.models ?? {});
-        const catalog = await dependencies.store.getHarnessCatalog(environment.id, current.id);
-        if (
-          !Object.hasOwn(currentModels, command.nativeModelId) &&
-          !(
-            catalog?.status === "ready" &&
-            catalog.models.some(
-              (model) => (model.nativeModelId ?? model.modelId) === command.nativeModelId,
-            )
-          )
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This server has not reported that model. Refresh its model list first.",
-          });
-        }
-        const models =
-          command.settings === null
-            ? Object.fromEntries(
-                Object.entries(currentModels).filter(([id]) => id !== command.nativeModelId),
-              )
-            : { ...currentModels, [command.nativeModelId]: command.settings };
-        const harness = await dependencies.store.updateHarnessInstance({
-          id: current.id,
-          expectedRuntimeRevision: current.runtimeRevision,
-          config: { ...config, models },
-        });
-        harnessCatalogReconciliations.schedule(environment.id);
-        return { harness: harnessView(harness), type: command.type };
-      }
-      case "harness.rename":
-      case "harness.enabled.set": {
-        const environment = await admitHarnessManagement(session, command.environmentId);
-        const current = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
-        if (!current || current.environmentId !== environment.id) {
-          throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-        }
-        const harness = await dependencies.store.updateHarnessInstance({
-          ...(command.type === "harness.enabled.set" ? { enabled: command.enabled } : {}),
-          id: command.harnessInstanceId,
-          ...(command.type === "harness.rename" ? { name: command.name } : {}),
-        });
-        if (command.type === "harness.enabled.set") {
-          harnessCatalogReconciliations.schedule(environment.id);
-        }
-        return { harness: harnessView(harness), type: command.type };
-      }
-      case "harness.default.set": {
-        // Which account of an engine a placement lands on is a stored choice,
-        // not a configuration change, so no catalog has gone stale here.
-        const environment = await admitHarnessManagement(session, command.environmentId);
-        const current = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
-        if (!current || current.environmentId !== environment.id) {
-          throw new OpensteerError({ code: "not_found", message: "AI engine not found" });
-        }
-        const harness = await dependencies.store.setDefaultHarnessInstance({
-          environmentId: environment.id,
-          harnessInstanceId: command.harnessInstanceId,
-        });
-        return { harness: harnessView(harness), type: command.type };
-      }
       case "harness.delete": {
         const environment = await admitHarnessManagement(session, command.environmentId);
         const current = await dependencies.store.getHarnessInstance(command.harnessInstanceId);
@@ -2588,58 +2397,15 @@ export async function createHostServer(
         harnessCatalogReconciliations.schedule(target.environment.id);
         return { ...envelope, type: command.type };
       }
-      case "machine.revoke": {
-        const allowDeployment = session.user.instanceRole === "administrator";
-        const runnerId = RunnerIdSchema.parse(command.machineId);
-        // Order matters and is the whole point of the operation. The durable
-        // write lands first — tombstone plus generation bump, plus every module
-        // effect that outlives a socket — so a Host that dies mid-revocation
-        // still refuses this machine on its next connection. Only then are the
-        // live streams torn down, which is what stops work already in flight.
-        const revoked = await dependencies.shellControl.withMachineAdmission(runnerId, () =>
-          dependencies.computerApps.withRunnerAdmission(runnerId, () =>
-            dependencies.store.revokeRunner(runnerId, userId, {
-              allowDeployment,
-              allowOtherOwners: allowDeployment,
-            }),
-          ),
-        );
-        // Between the durable write and the stream teardown: a session ended
-        // before the tombstone landed could be reopened by a caller that raced
-        // the revoke, and one ended after the stream went would have already
-        // been recorded as a disconnection rather than as this revocation.
-        await dependencies.shellControl.endMachineSessions(runnerId, "machine-revoked");
-        await dependencies.runners.revoke(runnerId);
-        dependencies.channels.relay.forget(runnerId);
-        // The apps this computer was lending are gone with its connections, and
-        // a call still waiting on its stream is answered by the loss rules.
-        dependencies.computerApps.detachRunner(runnerId, "revoked");
-        for (const sessionId of revoked.closedBrowserSessions) {
-          dependencies.browser.abandonSession(sessionId);
-        }
-        // The queued work this machine will now never claim has been failed
-        // durably; these are the terminal events its Threads are waiting on.
-        for (const event of revoked.events) publishWorkspaceEvent(event);
-        for (const event of revoked.requestEvents) publishWorkspaceEvent(event);
-        if (revoked.cancelledRequestIds.length > 0) {
-          dependencies.integrations.continuations.notify();
-        }
-        notifyMachinesChanged(dependencies.realtime, "machine.command");
-        return { type: command.type };
-      }
-      case "machine.rename": {
-        const allowDeployment = session.user.instanceRole === "administrator";
-        await dependencies.store.renameRunner(
-          RunnerIdSchema.parse(command.machineId),
-          userId,
-          command.name,
-          { allowDeployment },
-        );
-        notifyMachinesChanged(dependencies.realtime, "machine.command");
-        return { type: command.type };
-      }
       case "machine.access.update": {
-        await requireMachineAccessManagement(dependencies.store, session, command.runnerId);
+        await requireMachineAccessManagement(
+          dependencies.store,
+          {
+            userId: session.user.id,
+            isAdministrator: session.user.instanceRole === "administrator",
+          },
+          command.runnerId,
+        );
         // Inside this machine's admission turn: an activation that is part-way
         // through re-reading the policy it was admitted under must either see
         // the old revision and finish, or see the new one and end — never
@@ -2672,23 +2438,6 @@ export async function createHostServer(
         // live for everybody else.
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
-      }
-      case "machine.access.session.stop": {
-        // The full row resolves and authorizes the Stop even for an ended
-        // session; an unknown id discloses nothing beyond "nothing to end".
-        const shellSession = await dependencies.store.getShellSession(command.sessionId);
-        if (!shellSession) return { ended: false, type: command.type };
-        await requireMachineAccessManagement(dependencies.store, session, shellSession.runnerId);
-        // Through the hub, so a Stop takes the sockets away as well as writing
-        // the row; it is the same idempotent ending every other path uses. The
-        // key travels with it so a retried click reads back what the first one
-        // did rather than "nothing was open", and closes nothing a second time.
-        const { ended } = await dependencies.shellControl.end(
-          command.sessionId,
-          "stopped-by-owner",
-          { idempotency: { key: command.idempotencyKey, requestedBy: userId } },
-        );
-        return { ended, type: command.type };
       }
       case "personal.remoteAccess.request": {
         const administration = dependencies.personalRemoteAccess?.service.administration;
@@ -2850,31 +2599,6 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "browser.profile.rename":
-        return {
-          profile: await dependencies.browser.renameProfile({
-            name: command.name,
-            ownerId: userId,
-            profileId: command.profileId,
-          }),
-          type: command.type,
-        };
-      case "browser.profile.delete": {
-        const deletion = await dependencies.browser.deleteProfile({
-          ownerId: userId,
-          profileId: command.profileId,
-        });
-        return { type: command.type, ...(deletion ? { deletion } : {}) };
-      }
-      case "browser.profileGrant.revoke": {
-        const revoked = await dependencies.store.revokeBrowserProfileGrant(command.grantId, userId);
-        await dependencies.browser.detachAgentSessionsForRevokedProfileGrant({
-          ownerId: userId,
-          profileId: revoked.profileId,
-          workspaceId: revoked.workspaceId,
-        });
-        return { type: command.type };
-      }
       case "workspace.tabs.group": {
         const { type, ...input } = command;
         return {
@@ -2919,10 +2643,6 @@ export async function createHostServer(
         return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
       case "workspace.tab.close":
         return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
-      case "browser.history.remove":
-      case "browser.history.clear":
-        await dependencies.browser.forgetHistory(userId, command);
-        return { type: command.type };
       case "browser.tab.open":
         return dependencies.browser.openTab(userId, command);
       case "browser.tab.close":
@@ -4026,35 +3746,6 @@ function runnerAuxiliaryModuleDispatch(options: {
   };
 }
 
-/**
- * Who may read and change one computer's access settings.
- *
- * Reach never grants management: a person whose Threads may connect to a
- * machine still learns nothing about who else can, and cannot change it. The
- * effective owner decides, and administrators stand in only where the
- * Deployment itself owns the machine and nobody in particular does.
- */
-async function requireMachineAccessManagement(
-  store: OpensteerStore,
-  session: Awaited<ReturnType<HostAuthenticator["authenticateSession"]>>,
-  runnerId: RunnerId,
-): Promise<void> {
-  const ownership = await store.effectiveMachineOwner(runnerId);
-  if (!ownership)
-    throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
-  if (
-    machineIsManagedBy(ownership, session.user.id, {
-      allowDeployment: session.user.instanceRole === "administrator",
-    })
-  ) {
-    return;
-  }
-  throw new OpensteerError({
-    code: "forbidden",
-    message: "Only this computer's owner can change how other computers reach it",
-  });
-}
-
 /** Reads only the fence out of a binary relay frame, so a stale one is refused
  * before its payload reaches the relay. */
 function decodeBrowserRelayFrameForFence(frame: Buffer): RunnerAuxiliaryFrameFence {
@@ -4493,73 +4184,6 @@ function closeProtocolSocket(socket: WebSocket, error: unknown): void {
 }
 
 /**
- * The environments whose Runner is bound to this person.
- *
- * Ownership lives on the Runner row, and the inventory listing is the read that
- * exposes it — it already hides Runners bound to somebody else, so a
- * Runner it returns carrying this user's id is one they own. Paged rather than
- * asked one environment at a time because the caller needs the whole set for
- * bootstrap and a single environment for the sign-in routes, and one read
- * answers both without a second way to compute the same thing.
- */
-async function boundRunnerEnvironmentIds(
-  store: OpensteerStore,
-  userId: UserId,
-): Promise<ReadonlySet<EnvironmentId>> {
-  const bound = new Set<EnvironmentId>();
-  let after: RunnerId | undefined;
-  for (let page = 0; page < maxRunnerOwnershipPages; page += 1) {
-    const listed = await store.listRunners({
-      ...(after ? { after } : {}),
-      includeDeployment: false,
-      limit: runnerOwnershipPageSize,
-      ownerId: userId,
-    });
-    for (const runner of listed.runners) {
-      if (runner.ownerUserId !== userId) continue;
-      for (const environmentId of runner.environmentIds) bound.add(environmentId);
-    }
-    if (!listed.nextCursor) break;
-    after = listed.nextCursor;
-  }
-  return bound;
-}
-
-/**
- * Who may manage one work location's AI engine profiles: an instance
- * administrator, or the person who owns its Runner.
- *
- * Deployment-owned self-hosted Runners name no user owner, so their profiles
- * remain administrator-managed. User-owned local and managed Runners use the
- * same rule instead of branching on where the Host itself is deployed.
- */
-/**
- * The wire shape of one AI engine profile. `removedAt` is the Host's own record
- * of a retirement, and every listing a client receives already excludes removed
- * profiles, so it stops here rather than becoming part of the contract.
- */
-function harnessView(harness: HarnessInstanceRecord): HostBootstrapHarness {
-  const modelConfig = z
-    .object({ models: HarnessModelSettingsMapSchema.optional() })
-    .safeParse(harness.config);
-  return {
-    ...(modelConfig.success && modelConfig.data.models
-      ? { modelSettings: modelConfig.data.models }
-      : {}),
-    config: harness.config,
-    driverKind: harness.driverKind,
-    enabled: harness.enabled,
-    environmentId: harness.environmentId,
-    id: harness.id,
-    isDefault: harness.isDefault,
-    name: harness.name,
-    runtimeRevision: harness.runtimeRevision,
-    sourceId: harness.sourceId,
-    stateKind: harness.stateKind,
-  };
-}
-
-/**
  * The source field values a person filled in, checked against what the engine
  * declared and nothing else. The Host does not know what a `baseUrl` means — it
  * only proves the record is exactly the declared set of fields, that each one
@@ -4621,14 +4245,6 @@ function httpAddress(value: string): URL | null {
     return null;
   }
   return url.protocol === "http:" || url.protocol === "https:" ? url : null;
-}
-
-function harnessAuthenticationIsAllowed(input: {
-  readonly boundEnvironmentIds: ReadonlySet<EnvironmentId>;
-  readonly environment: { readonly id: EnvironmentId; readonly kind: ExecutionEnvironmentKind };
-  readonly isInstanceAdministrator: boolean;
-}): boolean {
-  return input.isInstanceAdministrator || input.boundEnvironmentIds.has(input.environment.id);
 }
 
 /**
@@ -4804,12 +4420,6 @@ function serializeInvitation(invitation: WorkspaceInvitationRecord) {
     type: invitation.type,
     workspaceId: invitation.workspaceId,
   };
-}
-
-function workspaceView(service: WorkspaceService, workspace: Workspace): Promise<WorkspaceView> {
-  return typeof service.workspaceView === "function"
-    ? service.workspaceView(workspace)
-    : Promise.resolve(workspaceViewFromWorkspace(workspace));
 }
 
 function decorateWorkspaceView(

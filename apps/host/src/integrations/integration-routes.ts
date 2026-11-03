@@ -1,3 +1,4 @@
+import { disconnectIntegration } from "./integration-administration.js";
 import {
   IntegrationOAuthAttemptIdSchema,
   IntegrationProviderSchema,
@@ -77,6 +78,13 @@ export async function handleIntegrationCommand(
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
   const session = requireSession(context);
+  if (command.type === "integration.disconnect")
+    return disconnectIntegration(
+      { platform: options.platform, integrations: options.integrations },
+      { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+      command.connectionId,
+      context.requestId,
+    );
   switch (command.type) {
     case "integration.providerApplication.save": {
       const application = await options.integrations.configureProviderApplication(command.input, {
@@ -136,18 +144,6 @@ export async function handleIntegrationCommand(
         { requestId: context.requestId, userId: session.user.id },
       );
       return { type: command.type };
-    case "integration.disconnect": {
-      const input = {
-        connectionId: command.connectionId,
-        ownerUserId: session.user.id,
-        requestId: context.requestId,
-      };
-      const disconnected =
-        (await options.platform.store.getConnectionKind(input)) === "computer"
-          ? await options.platform.computerAppApprovals.disconnectComputerConnection(input)
-          : await options.integrations.disconnect(input);
-      return { ...disconnected, type: command.type };
-    }
   }
 }
 export function registerIntegrationRoutes(
