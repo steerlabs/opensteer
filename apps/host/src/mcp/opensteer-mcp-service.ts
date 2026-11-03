@@ -1,3 +1,4 @@
+import { AgentMediaContentSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -270,12 +271,7 @@ export class OpensteerMcpService {
           });
           const media = Array.isArray(result.content)
             ? result.content.flatMap((item: unknown) => {
-                const parsed = z
-                  .union([
-                    z.object({ type: z.literal("image"), data: z.string(), mimeType: z.string() }),
-                    z.object({ type: z.literal("audio"), data: z.string(), mimeType: z.string() }),
-                  ])
-                  .safeParse(item);
+                const parsed = AgentMediaContentSchema.safeParse(item);
                 return parsed.success ? [parsed.data] : [];
               })
             : [];

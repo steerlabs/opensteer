@@ -162,6 +162,31 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
+  it("keeps safe image metadata in native and structured MCP results", async () => {
+    const f = await httpFixture();
+    const image = {
+      type: "image" as const,
+      data: "aW1hZ2U=",
+      mimeType: "image/png",
+      _meta: { "codex/imageDetail": "original" as const },
+    };
+    f.handlers.computer = async () => ({
+      content: [{ ...image, _meta: { ...image._meta, surpriseSecret: "hidden" } }],
+    });
+    const client = await connect(f.url, "run");
+    try {
+      const result = await client.callTool(
+        { name: "computer", arguments: { code: "observe" } },
+        undefined,
+        { timeout: 5000 },
+      );
+      expect(result.content).toContainEqual(image);
+      expect(result.structuredContent).toEqual({ content: [image] });
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
   it("lists only program tools and refuses a Run-only tool even if named directly", async () => {
     const f = await httpFixture();
     const client = await connect(f.url, "program");

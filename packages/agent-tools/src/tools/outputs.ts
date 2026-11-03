@@ -371,3 +371,5 @@ export const TriggerOutputSchema = z.object({
   downstreamRunsTruncated: z.boolean().optional(),
   replayed: z.boolean().optional(),
 });
+
+export { AgentMediaContentSchema } from "./integration-outputs.js";

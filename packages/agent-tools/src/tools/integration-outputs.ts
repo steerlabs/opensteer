@@ -132,13 +132,21 @@ export const IntegrationSearchOutputSchema = z.object({
 export const IntegrationDescribeOutputSchema = z.object({ description: z.string() });
 // Content is provider data, already checked against the operation's pinned output
 // schema by the integration platform. The Host envelope is projected independently.
+export const AgentImageContentSchema = z.object({
+  type: z.literal("image"),
+  data: z.string(),
+  mimeType: z.string(),
+  _meta: z
+    .object({ "codex/imageDetail": z.enum(["auto", "low", "high", "original"]).optional() })
+    .optional(),
+});
+export const AgentMediaContentSchema = z.union([
+  AgentImageContentSchema,
+  z.object({ type: z.literal("audio"), data: z.string(), mimeType: z.string() }),
+]);
 export const IntegrationCallOutputSchema = z.object({
   content: z.array(
-    z.union([
-      z.object({ type: z.literal("text"), text: z.string() }),
-      z.object({ type: z.literal("image"), data: z.string(), mimeType: z.string() }),
-      z.object({ type: z.literal("audio"), data: z.string(), mimeType: z.string() }),
-    ]),
+    z.union([z.object({ type: z.literal("text"), text: z.string() }), AgentMediaContentSchema]),
   ),
   structuredContent: z.record(z.string(), z.unknown()).optional(),
   isError: z.boolean().optional(),
