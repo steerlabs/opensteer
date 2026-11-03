@@ -84,6 +84,12 @@ describeStore("Workspace skill inventory", (it) => {
     expect((await settings.overview(viewer, new Set())).rows).toMatchObject([
       { target, issues: ["waiting-device"] },
     ]);
+    expect(await settings.detail(viewer, target, new Set())).toMatchObject({
+      row: { issues: ["waiting-device"], placement: { projectCount: 1 } },
+      places: [{ workspaceId: workspace.id, name: "Skills", selected: true, canSelect: false }],
+      devices: [{ runnerId, name: "Skills", status: "offline" }],
+      sourceFolder: null,
+    });
     await settings.setEnabled(viewer, {
       type: "settings.plugin.enabled.set",
       target,
@@ -137,6 +143,9 @@ describeStore("Workspace skill inventory", (it) => {
       stale: true,
       skills: [{ fullName: "release" }],
     });
+    expect((await settings.detail(viewer, target, new Set([runnerId]))).row.issues).toEqual([
+      "waiting-setup",
+    ]);
     expect(
       await store.reportWorkspaceSkills(fence, {
         ...report,
@@ -256,6 +265,7 @@ describeStore("Workspace skill inventory", (it) => {
       })
       .execute();
     expect(await store.listWorkspaceSkillInventory(stranger, [workspace.id])).toHaveLength(1);
+    expect((await settings.detail(stranger, target)).sourceFolder).toBeNull();
     await database
       .updateTable("workspaceMemberships")
       .set({ state: "revoked", revokedAt: new Date(), revokedBy: viewer })

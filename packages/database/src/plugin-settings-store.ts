@@ -19,7 +19,7 @@ import {
   SettingsPluginPlacementCommandSchema,
   PluginPlacementSummarySchema,
 } from "@opensteer/protocol";
-import { createId, OpensteerError, type UserId } from "@opensteer/core";
+import { createId, OpensteerError, type UserId, RunnerIdSchema } from "@opensteer/core";
 import {
   PluginTargetSchema,
   PluginsOverviewViewSchema,
@@ -397,6 +397,7 @@ export class PluginSettingsStore {
       ...projectLooseSkillRows(
         inventory.map((scan) => ({
           ...scan,
+          workspaceKind: places.find((p) => p.id === scan.workspaceId)?.kind,
           stale:
             scan.stale ||
             (availableRunnerIds !== undefined &&
@@ -742,8 +743,8 @@ export class PluginSettingsStore {
     });
   }
 
-  async detail(owner: UserId, target: PluginTarget) {
-    const snapshot = await this.snapshot(owner);
+  async detail(owner: UserId, target: PluginTarget, availableRunnerIds?: ReadonlySet<string>) {
+    const snapshot = await this.snapshot(owner, availableRunnerIds);
     const {
       rows,
       places,
@@ -868,35 +869,59 @@ export class PluginSettingsStore {
         access: c.computerAccess,
         runnerId: c.runnerId,
       })),
-      places: places.map((p) => ({
-        workspaceId: p.id,
-        name: p.name,
-        kind: p.kind,
-        selected:
-          target.kind === "skill"
-            ? p.id === target.workspaceId
-            : p.kind === "main"
-              ? row.placement.mainIncluded
-              : service
-                ? publicGrants.some((g) => g.workspaceId === p.id)
-                : target.kind === "specialist"
-                  ? registrations.some((r) => r.workspaceId === p.id)
-                  : activations.some((a) => a.pluginId === plugin?.id && a.workspaceId === p.id),
-        canSelect:
-          target.kind !== "skill" &&
-          (!plugin || plugin.scope !== "workspace" || plugin.workspaceId === p.id) &&
-          (target.kind !== "specialist" || target.ownerUserId === owner) &&
-          (service ||
-            p.createdBy === owner ||
-            (p.kind !== "main" && viewer.instanceRole === "administrator")),
-        accounts: publicGrants
-          .filter((g) => g.workspaceId === p.id && g.connectionId)
-          .map((g) => ({ connectionId: g.connectionId!, access: g.access })),
-      })),
+      places: places
+        .filter((p) => target.kind !== "skill" || p.id === target.workspaceId)
+        .map((p) => ({
+          workspaceId: p.id,
+          name: p.name,
+          kind: p.kind,
+          selected:
+            target.kind === "skill"
+              ? p.id === target.workspaceId
+              : p.kind === "main"
+                ? row.placement.mainIncluded
+                : service
+                  ? publicGrants.some((g) => g.workspaceId === p.id)
+                  : target.kind === "specialist"
+                    ? registrations.some((r) => r.workspaceId === p.id)
+                    : activations.some((a) => a.pluginId === plugin?.id && a.workspaceId === p.id),
+          canSelect:
+            target.kind !== "skill" &&
+            (!plugin || plugin.scope !== "workspace" || plugin.workspaceId === p.id) &&
+            (target.kind !== "specialist" || target.ownerUserId === owner) &&
+            (service ||
+              p.createdBy === owner ||
+              (p.kind !== "main" && viewer.instanceRole === "administrator")),
+          accounts: publicGrants
+            .filter((g) => g.workspaceId === p.id && g.connectionId)
+            .map((g) => ({ connectionId: g.connectionId!, access: g.access })),
+        })),
       personalEverywhere: setting?.personalEverywhereAccounts
         ? { accounts: setting.personalEverywhereAccounts }
         : null,
-      devices: [],
+      devices:
+        target.kind === "skill"
+          ? await this.database
+              .selectFrom("runners")
+              .select(["id as runnerId", "name"])
+              .where(
+                "id",
+                "in",
+                snapshot.inventory
+                  .filter((scan) => scan.workspaceId === target.workspaceId)
+                  .flatMap((scan) =>
+                    scan.ownerRunnerId ? [RunnerIdSchema.parse(scan.ownerRunnerId)] : [],
+                  ),
+              )
+              .execute()
+              .then((devices) =>
+                devices.map((device) => ({
+                  ...device,
+                  name: device.name.slice(0, 120),
+                  status: availableRunnerIds?.has(device.runnerId) ? "online" : "offline",
+                })),
+              )
+          : [],
       permissions: [
         ...accounts.flatMap((c) =>
           c.grantedScopes.map((scope) => ({
@@ -937,6 +962,7 @@ export function projectLooseSkillRows(
     workspaceId: import("@opensteer/core").WorkspaceId;
     stale: boolean;
     scanStatus?: "complete" | "failed";
+    workspaceKind?: "main" | "project" | undefined;
     skills: readonly { fullName: string; description: string; digest: string }[];
   }[],
   settings: readonly {
@@ -964,7 +990,7 @@ export function projectLooseSkillRows(
           enabled: setting?.enabled ?? true,
           mainIncluded: setting?.mainIncluded ?? true,
           revision: setting?.revision ?? 0,
-          projectCount: 1,
+          projectCount: scan.workspaceKind === "main" ? 0 : 1,
           personalEverywhere: false,
         },
         accountCount: 0,

@@ -138,16 +138,18 @@ export function createHostApiHandlers(
       );
     },
     "plugins.detail.get": async (input, context) => {
+      const machines = await coreHandlers["machines.list"]({}, context);
+      if (!machines.ok) return machines;
       const detail = await integrationPlatform.platform.store.settings.detail(
         requireSession(context).user.id,
         input.target,
+        new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
       );
-      const runnerIds = new Set<string>(
-        detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
-      );
+      const runnerIds = new Set<string>([
+        ...detail.devices.map((d) => d.runnerId),
+        ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
+      ]);
       if (runnerIds.size) {
-        const machines = await coreHandlers["machines.list"]({}, context);
-        if (!machines.ok) return machines;
         for (const machine of machines.data.machines.filter((entry) => runnerIds.has(entry.id))) {
           const definitionId =
             input.target.kind === "device-app" ? input.target.definitionId : null;
