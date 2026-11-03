@@ -1,7 +1,7 @@
 interface:
   display_name: "Opensteer Threads"
   short_description: "Delegate and coordinate agent work"
-  default_prompt: "Use $opensteer-threads to delegate this work to another Thread."
+  default_prompt: "Use $opensteer-threads to coordinate durable Threads and tasks."
 dependencies:
   tools:
     - type: "mcp"

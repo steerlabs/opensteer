@@ -1,6 +1,6 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   agentCapabilityProfiles,
@@ -189,7 +189,10 @@ describe("Runner Agent Skills", () => {
 
   it("teaches that a reply, never a report, is what reaches the person", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const threads = await readFile(join(bundle.paths["opensteer-threads"], "SKILL.md"), "utf8");
+    const threads = await readFile(
+      join(bundle.paths["opensteer-threads"], "references", "chat.md"),
+      "utf8",
+    );
     const triggers = await readFile(
       join(bundle.paths["opensteer-triggers"], "references", "reminders.md"),
       "utf8",
@@ -278,6 +281,51 @@ describe("Runner Agent Skills", () => {
     // scp -O runs a remote command, so it is bounded by commands, not shares.
     expect(skill).toContain("`scp -O` is the exception");
     expect(skill).toContain("`~user` paths are refused");
+  });
+
+  it("keeps bundled Markdown links and references inside each skill", async () => {
+    const bundle = await loadAgentSkillBundle(bundleDirectory);
+    for (const name of await readdir(join(bundle.rootPath, "skills"))) {
+      const skillPath = join(bundle.rootPath, "skills", name);
+      expect((await lstat(skillPath)).isDirectory(), skillPath).toBe(true);
+      const entries = await readdir(skillPath);
+      const referencePath = join(skillPath, "references");
+      if (entries.includes("references")) {
+        expect((await lstat(referencePath)).isDirectory(), referencePath).toBe(true);
+      }
+      const references = entries.includes("references")
+        ? (await readdir(referencePath)).filter((name) => name.endsWith(".md"))
+        : [];
+      const linkedFromSkill = new Set<string>();
+      for (const file of ["SKILL.md", ...references.map((name) => join("references", name))]) {
+        const source = join(skillPath, file);
+        const markdown = await readFile(source, "utf8");
+        // Inline links (including images) and reference-style link definitions.
+        const links = markdown.matchAll(
+          /!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+["'][^\n]*["'])?\s*\)|^\s*\[[^\]\n]+\]:\s*(?:<([^>\n]+)>|(\S+))/gmu,
+        );
+        for (const match of links) {
+          const href = match[1] ?? match[2] ?? match[3] ?? match[4]!;
+          if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(href) || isAbsolute(href)) continue;
+          const target = resolve(dirname(source), decodeURIComponent(href.split(/[?#]/u)[0]!));
+          const within = relative(skillPath, target);
+          expect(within, `${source}: ${href}`).not.toBe("");
+          expect(isAbsolute(within) || within.split(sep).includes(".."), `${source}: ${href}`).toBe(
+            false,
+          );
+          let current = skillPath;
+          for (const component of within.split(sep)) {
+            current = join(current, component);
+            expect((await lstat(current)).isSymbolicLink(), current).toBe(false);
+          }
+          expect((await lstat(target)).isFile(), target).toBe(true);
+          if (file === "SKILL.md") linkedFromSkill.add(target);
+        }
+      }
+      for (const name of references) {
+        expect(linkedFromSkill.has(join(referencePath, name)), name).toBe(true);
+      }
+    }
   });
 
   it("rejects malformed metadata in the trusted bundled skills", async () => {
