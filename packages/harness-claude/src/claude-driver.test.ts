@@ -1234,6 +1234,41 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
+  it("forces supervised Bash through permission callbacks before native auto-allow", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        yield successMessage(providerSessionId(parameters.options), "Done.");
+      }),
+    );
+    const { adapter, session } = await openSession(sdk, { accessMode: "approval-required" });
+    await send(session, "Run printf");
+    const hook = sdk.calls[0]?.options.hooks?.PreToolUse?.[0];
+    expect(hook?.matcher).toBe("Bash");
+    expect(
+      await hook?.hooks[0]?.(
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "test",
+          transcript_path: "/tmp/test",
+          cwd: "/tmp",
+          tool_name: "Bash",
+          tool_input: { command: "printf PROBE" },
+          tool_use_id: "bash-1",
+        },
+        "bash-1",
+        { signal: new AbortController().signal },
+      ),
+    ).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: "Opensteer requires approval for shell commands",
+      },
+    });
+    await adapter.close();
+  });
+
   it.each(
     (["approval-required", "auto-accept-edits", "auto", "full-access"] as const).flatMap(
       (accessMode) => ["Bash", "Agent"].map((toolName) => ({ accessMode, toolName })),

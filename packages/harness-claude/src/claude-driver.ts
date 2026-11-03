@@ -2002,6 +2002,28 @@ class ClaudeHarnessSession implements HarnessSession {
       // actual call against the live Run binding.
       allowedTools: [...new Set(["ToolSearch", ...opensteerTools, ...integrationTools])],
       canUseTool: this.#canUseTool(active),
+      // Native safe-command rules can allow Bash before canUseTool is consulted.
+      // SDK hooks remain active while managed settings disable ambient hooks.
+      ...(this.#context.accessMode === "approval-required"
+        ? {
+            hooks: {
+              PreToolUse: [
+                {
+                  matcher: "Bash",
+                  hooks: [
+                    async () => ({
+                      hookSpecificOutput: {
+                        hookEventName: "PreToolUse" as const,
+                        permissionDecision: "ask" as const,
+                        permissionDecisionReason: "Opensteer requires approval for shell commands",
+                      },
+                    }),
+                  ],
+                },
+              ],
+            },
+          }
+        : {}),
       cwd: this.#context.workspacePath,
       additionalDirectories: [
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
