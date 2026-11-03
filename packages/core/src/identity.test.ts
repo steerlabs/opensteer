@@ -25,7 +25,7 @@ describe("native OAuth redirect URIs", () => {
         expect(NativeOAuthRedirectUriSchema.safeParse(redirectUri).success).toBe(true);
       }
     expect(
-      NativeOAuthRedirectUriSchema.safeParse("com.steerlabs.opensteer.beta:/oauth/host-callback")
+      NativeOAuthRedirectUriSchema.safeParse("com.opensteer.opensteer:/oauth/host-callback")
         .success,
     ).toBe(true);
   });
@@ -93,20 +93,6 @@ describe("native OAuth client set", () => {
     ]);
     expect(result.success).toBe(false);
     expect(JSON.stringify(result.error?.issues)).toContain("must use one application scheme");
-  });
-
-  it("allows independently signed stable and Beta desktop builds", () => {
-    expect(
-      NativeOAuthClientSetSchema.safeParse([
-        desktop,
-        {
-          ...desktop,
-          clientId: "opensteer-desktop-beta",
-          redirectUris: ["com.steerlabs.opensteer.beta:/oauth/host-callback"],
-          softwareId: "opensteer-desktop-beta",
-        },
-      ]).success,
-    ).toBe(true);
   });
 
   it("refuses a repeated client ID or callback", () => {

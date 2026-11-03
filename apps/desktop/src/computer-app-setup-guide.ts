@@ -57,7 +57,7 @@ const targetApps: Readonly<
 export interface ComputerAppSetupGuideOptions {
   /** The helper's 64×64 icon for one app, base64 PNG, or null. */
   readonly appIcon: (bundleId: string) => Promise<string | null>;
-  /** This app's name as macOS lists it: "Opensteer" or "Opensteer Beta". */
+  /** This app's name as macOS lists it: "Opensteer" or "Opensteer". */
   readonly appName: string;
   /** The helper's grants, read without prompting. */
   readonly dataGrants: () => Promise<ComputerUseDataGrants>;

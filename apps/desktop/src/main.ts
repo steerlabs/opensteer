@@ -187,7 +187,13 @@ app.on("second-instance", (_event, argv) => {
 });
 
 if (acceptLaunch()) {
-  app.setName(desktopApplicationName(app.isPackaged, embeddedRelease.application.name));
+  app.setName(
+    desktopApplicationName(
+      app.isPackaged,
+      embeddedRelease.application.name,
+      process.env.OPENSTEER_DESKTOP_MODE?.trim() === "test" ? "test" : defaultMode(),
+    ),
+  );
   app.enableSandbox();
   void startDesktop().catch((error: unknown) => {
     if (shutdown.requested) return;
@@ -223,13 +229,6 @@ async function startDesktop(): Promise<void> {
     .removeFile(path.join(loaded.config.dataDirectory, "computer-use-approval-key.v1.json"))
     .catch(() => undefined);
   shutdown.signal.throwIfAborted();
-  if (app.isPackaged && embeddedRelease.application.stage === "alpha") {
-    app.setAboutPanelOptions({
-      applicationName: embeddedRelease.application.name,
-      applicationVersion: `${app.getVersion()} (Alpha)`,
-      version: "",
-    });
-  }
   // Only a build that updates itself needs to live in Applications.
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();

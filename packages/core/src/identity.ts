@@ -248,44 +248,27 @@ function nativeClient(input: {
  * Account and every Host registers the complete set, so installing a new Host
  * never retires credentials held by another supported release channel.
  */
-export const opensteerNativeClients = [
-  nativeClient({
-    accountDisplayName: "Opensteer",
-    accountSoftwareId: "opensteer-native",
-    application: "desktop",
-    applicationId: "com.opensteer.opensteer",
-    clientId: "opensteer-desktop",
-    hostDisplayName: "Opensteer Desktop",
-    hostSoftwareId: "opensteer-desktop",
-    name: "Opensteer",
-  }),
-  nativeClient({
-    // Beta Accounts historically used the same consent-screen presentation as
-    // stable while client ID and callback kept the credentials independent.
-    accountDisplayName: "Opensteer",
-    accountSoftwareId: "opensteer-native",
-    application: "desktop",
-    applicationId: "com.steerlabs.opensteer.beta",
-    clientId: "opensteer-desktop-beta",
-    hostDisplayName: "Opensteer Beta",
-    hostSoftwareId: "opensteer-desktop-beta",
-    name: "Opensteer Beta",
-  }),
-  nativeClient({
-    accountDisplayName: "Opensteer Mobile",
-    accountSoftwareId: "opensteer-native-mobile",
-    application: "mobile",
-    applicationId: "com.opensteer.mobile",
-    clientId: "opensteer-mobile",
-    hostDisplayName: "Opensteer Mobile",
-    hostSoftwareId: "opensteer-mobile",
-    name: "Opensteer Mobile",
-  }),
-] as const satisfies readonly [OpensteerNativeClient, ...OpensteerNativeClient[]];
-
-export const opensteerDesktopClient = opensteerNativeClients[0];
-export const opensteerBetaDesktopClient = opensteerNativeClients[1];
-export const opensteerMobileClient = opensteerNativeClients[2];
+export const opensteerDesktopClient = nativeClient({
+  accountDisplayName: "Opensteer",
+  accountSoftwareId: "opensteer-native",
+  application: "desktop",
+  applicationId: "com.opensteer.opensteer",
+  clientId: "opensteer-desktop",
+  hostDisplayName: "Opensteer Desktop",
+  hostSoftwareId: "opensteer-desktop",
+  name: "Opensteer",
+});
+export const opensteerMobileClient = nativeClient({
+  accountDisplayName: "Opensteer Mobile",
+  accountSoftwareId: "opensteer-native-mobile",
+  application: "mobile",
+  applicationId: "com.opensteer.mobile",
+  clientId: "opensteer-mobile",
+  hostDisplayName: "Opensteer Mobile",
+  hostSoftwareId: "opensteer-mobile",
+  name: "Opensteer Mobile",
+});
+export const opensteerNativeClients = [opensteerDesktopClient, opensteerMobileClient] as const;
 
 export const opensteerDesktopOAuthClientId = opensteerDesktopClient.clientId;
 export const opensteerDesktopApplicationId = opensteerDesktopClient.applicationId;
@@ -397,9 +380,7 @@ export const NativeOAuthClientSchema = z.strictObject({
 export type NativeOAuthClient = z.infer<typeof NativeOAuthClientSchema>;
 
 /**
- * The allowlist an authorization server registers. One signed build holds one
- * registration, so Beta and stable desktop credentials remain independently
- * revocable even though both are desktop applications.
+ * The allowlist an authorization server registers. Desktop and mobile builds hold separate registrations.
  *
  * The scheme, not the whole URI, is what an application owns: the operating
  * system routes `com.opensteer.mobile:` to one installed build and says

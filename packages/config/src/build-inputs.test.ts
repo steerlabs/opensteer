@@ -36,7 +36,7 @@ test("image inputs have no registry defaults and reject unknown keys and empty r
     expect(BuildImagesSchema.safeParse(value).success).toBe(false);
 });
 test("desktop inputs require explicit names and complete optional signing references", () => {
-  const desktop = { channel: "beta", bundleId: "com.example.workspace", productName: "Workspace" };
+  const desktop = { bundleId: "com.example.workspace", productName: "Workspace" };
   expect(DesktopBuildSchema.parse(desktop)).toEqual(desktop);
   expect(
     DesktopBuildSchema.parse({
@@ -78,7 +78,7 @@ test("mobile signing accepts file references, never embedded credentials", () =>
 
 test("desktop signing accepts an optional absolute keychain-db reference", () => {
   const signing = { teamId: "A1B2C3D4E5", identity: "Example", notarizationProfile: "profile" };
-  const desktop = { channel: "beta", bundleId: "com.example.app", productName: "Example" };
+  const desktop = { bundleId: "com.example.app", productName: "Example" };
   expect(
     DesktopBuildSchema.parse({
       ...desktop,

@@ -23,25 +23,23 @@ describe("FullAccessPanel", () => {
     const container = mount({ checkFullDiskAccess, closeFullDiskAccessPanel });
 
     expect(container.textContent).toContain(
-      "Turn on Opensteer Beta in the macOS Full Disk Access list.",
+      "Turn on Opensteer in the macOS Full Disk Access list.",
     );
     expect(container.textContent).toContain(
-      "macOS asks for your password or Touch ID, then offers to quit and reopen Opensteer Beta. Choose Quit & Reopen.",
+      "macOS asks for your password or Touch ID, then offers to quit and reopen Opensteer. Choose Quit & Reopen.",
     );
     // The transparent window shows only the card this attribute unpaints for.
     expect(document.documentElement.dataset["panel"]).toBe("full-access");
 
     await advance(1_000);
     expect(checkFullDiskAccess).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain(
-      "Turn on Opensteer Beta in the macOS Full Disk Access list",
-    );
+    expect(container.textContent).toContain("Turn on Opensteer in the macOS Full Disk Access list");
 
     granted = true;
     await advance(1_000);
     expect(container.textContent).toContain("macOS Full Disk Access is on.");
     expect(container.textContent).not.toContain(
-      "Turn on Opensteer Beta in the macOS Full Disk Access list",
+      "Turn on Opensteer in the macOS Full Disk Access list",
     );
     expect(closeFullDiskAccessPanel).not.toHaveBeenCalled();
 
@@ -62,7 +60,7 @@ function mount(overrides: Partial<FullAccessPanelBridge>): HTMLElement {
     closeFullDiskAccessPanel: async () => undefined,
     ...overrides,
   };
-  act(() => root.render(<FullAccessPanel appName="Opensteer Beta" bridge={bridge} />));
+  act(() => root.render(<FullAccessPanel appName="Opensteer" bridge={bridge} />));
   return container;
 }
 

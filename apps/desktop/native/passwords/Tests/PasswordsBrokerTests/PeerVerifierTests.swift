@@ -10,7 +10,7 @@ final class PeerVerifierTests: XCTestCase {
     #"anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ "#
     + #"and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ "#
     + #"and certificate leaf[subject.OU] = "ABCDE12345" "#
-    + #"and (identifier "com.opensteer.opensteer" or identifier "com.steerlabs.opensteer.beta")"#
+    + #"and (identifier "com.opensteer.opensteer")"#
 
   private func pair() -> (Int32, Int32) {
     var descriptors: [Int32] = [-1, -1]

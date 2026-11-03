@@ -185,7 +185,7 @@ describe.runIf(process.platform === "darwin")("ensureHelperInstalled", () => {
   it("never downgrades a newer canonical copy", async () => {
     const harness = await installHarness();
     await harness.writeBundled("12");
-    // Stable and Beta refresh one path, so a Beta that installed 20 must keep
+    // Releases refresh one path, so a release that installed 20 must keep
     // serving a Stable whose bundled helper is 12.
     await harness.writeInstalled("20");
 
@@ -225,7 +225,7 @@ describe.runIf(process.platform === "darwin")("ensureHelperInstalled", () => {
     await harness.writeBundled("12");
     await harness.writeInstalled("12");
 
-    // Stable and Beta each sign their own build of one release: a different
+    // Release builds can sign their own copy of one version: a different
     // hash at the same version is the same helper, not a conflict.
     await expect(
       ensureHelperInstalled({ ...harness.options, teamId: "ABCDE12345" }),

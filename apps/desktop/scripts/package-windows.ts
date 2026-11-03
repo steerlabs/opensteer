@@ -1,3 +1,4 @@
+import { requiredEnvironmentValue } from "@opensteer/shared/envParsing";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { arch as hostArchitecture } from "node:os";
@@ -12,10 +13,11 @@ const { desktopReleaseMetadata } = require("./desktop-release-metadata.cjs") as 
   ) => { readonly builderArguments: readonly string[] };
 };
 
-const packageManager = process.env.npm_execpath;
-if (!packageManager) {
-  throw new Error("pnpm did not provide npm_execpath to the Desktop release script.");
-}
+const packageManager = requiredEnvironmentValue(
+  process.env,
+  "npm_execpath",
+  "pnpm did not provide npm_execpath to the Desktop release script.",
+);
 
 const targetArchitecture = windowsArchitecture(
   process.env.OPENSTEER_DESKTOP_TARGET_ARCH ?? hostArchitecture(),
@@ -25,7 +27,7 @@ const releaseMetadata = desktopReleaseMetadata(
   path.resolve(desktopDirectory, "../.."),
   process.env,
 );
-const builderConfig = desktopBuilderConfig(process.env.OPENSTEER_DESKTOP_RELEASE_CHANNEL);
+const builderConfig = "electron-builder.yml";
 const releaseEnvironment = {
   ...process.env,
   OPENSTEER_DESKTOP_RELEASE: "1",
@@ -48,12 +50,6 @@ await run(
   ],
   releaseEnvironment,
 );
-
-function desktopBuilderConfig(channel: string | undefined): string {
-  if (channel === "beta") return "electron-builder.beta.yml";
-  if (channel === "stable") return "electron-builder.yml";
-  throw new Error("OPENSTEER_DESKTOP_RELEASE_CHANNEL must be beta or stable.");
-}
 
 function windowsArchitecture(value: string): {
   readonly builderFlag: "--arm64" | "--x64";
