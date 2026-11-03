@@ -74,7 +74,7 @@ function pageDialogLine(dialog) {
  */
 function manyTabsLine(count) {
   if (count <= MANY_TABS) return null;
-  return `[opensteer] This Browser Session has ${count} tabs open. Visit your next page in a tab you already opened with gotoUrl(url), and close the tabs you opened once you are done with them.`;
+  return `[opensteer] This Browser Session has ${count} tabs open. Keep the tabs useful for the task and preserve the person's tabs.`;
 }
 
 function navigableUrl(url) {
