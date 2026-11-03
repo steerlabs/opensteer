@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createId, ModelSelectionSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import type { TriggerSummary } from "@opensteer/triggers";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
@@ -289,6 +289,47 @@ describe("schedules", () => {
       });
     },
   );
+  it("refreshes known downstream replies but ignores unrelated queued runs", async () => {
+    const f = fixture();
+    const summaries = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers;
+    const summary = summaries.find((s) => s.name === "Morning email summary")!;
+    const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
+    const reply = wire.downstreamRuns[0]!;
+    expect(reply).toBeDefined();
+    const resource = schedulesClient(f.client).detail(summary.id);
+    const stop = resource.subscribe(() => {});
+    try {
+      await ready(resource.getSnapshot);
+      const queued = {
+        id: createId("run"),
+        threadId: createId("thread"),
+        status: "running" as const,
+        createdAt: "2026-11-03T10:00:00Z",
+        runOrdinal: 1,
+      };
+      const baseQueue = f.snapshot().runQueue;
+      f.emit({ runQueue: [...baseQueue, queued] });
+      expect(f.get).toHaveBeenCalledTimes(1);
+      f.emit({
+        runQueue: [
+          ...baseQueue.filter(({ id }) => id !== reply.run.id),
+          {
+            ...queued,
+            id: reply.run.id,
+            threadId: reply.run.threadId,
+            status:
+              baseQueue.find(({ id }) => id === reply.run.id)?.status === "running"
+                ? "waiting"
+                : "running",
+          },
+        ],
+      });
+      expect(f.get).toHaveBeenCalledTimes(2);
+      expect(resource.getSnapshot().status).toBe("ready");
+    } finally {
+      stop();
+    }
+  });
   it("refreshes visible detail on run lifecycle changes and fences reads on sign-out", async () => {
     const f = fixture();
     const summary = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers[0]!;
@@ -306,8 +347,8 @@ describe("schedules", () => {
     f.emit({
       threads: f
         .snapshot()
-        .threads.map((thread, i) =>
-          i === 0
+        .threads.map((thread) =>
+          thread.id === summary.anchorThreadId
             ? { ...thread, status: thread.status === "running" ? "idle" : "running" }
             : thread,
         ),
@@ -390,44 +431,18 @@ it("uses authorized detail for a hidden managed anchor and refreshes when anothe
       },
     });
     f.emit({ triggerRevision: f.snapshot().triggerRevision + 1 });
-    expect((await ready(resource.getSnapshot)).definition.anchorThread).toMatchObject({
-      doneAt: "2026-11-03T10:00:00Z",
-      inputQueuePaused: true,
-    });
+    expect(resource.getSnapshot().status).toBe("ready");
+    await vi.waitFor(
+      () =>
+        expect(resource.getSnapshot().data?.definition.anchorThread).toMatchObject({
+          doneAt: "2026-11-03T10:00:00Z",
+          inputQueuePaused: true,
+        }),
+      { timeout: 1000 },
+    );
     const previous = f.get.mock.calls.length;
-    f.emit({
-      threads: f
-        .snapshot()
-        .threads.map((thread, index) =>
-          index === 0 ? { ...thread, doneAt: "2026-11-03T10:00:00Z" } : thread,
-        ),
-    });
-    await ready(resource.getSnapshot);
-    expect(f.get).toHaveBeenCalledTimes(previous + 1);
-    f.emit({
-      threads: f
-        .snapshot()
-        .threads.map((thread, index) =>
-          index === 0 ? { ...thread, inputQueuePaused: !thread.inputQueuePaused } : thread,
-        ),
-    });
-    await ready(resource.getSnapshot);
-    expect(f.get).toHaveBeenCalledTimes(previous + 2);
-    f.emit({
-      threads: f.snapshot().threads.map((thread, index) =>
-        index === 0
-          ? {
-              ...thread,
-              modelSelection: ModelSelectionSchema.parse({
-                ...thread.modelSelection,
-                modelId: "another",
-              }),
-            }
-          : thread,
-      ),
-    });
-    await ready(resource.getSnapshot);
-    expect(f.get).toHaveBeenCalledTimes(previous + 3);
+    f.emit({ threads: f.snapshot().threads.map((thread) => ({ ...thread, status: "running" })) });
+    expect(f.get).toHaveBeenCalledTimes(previous);
   } finally {
     stop();
   }
