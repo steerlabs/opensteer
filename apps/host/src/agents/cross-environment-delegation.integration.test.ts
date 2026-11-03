@@ -550,7 +550,7 @@ integration("cross-environment delegation reaches the Runner", () => {
 
   it("Workspace and delegated agents discover Sol by name and delegate typed model options through MCP", async () => {
     const fixture = await createFixture({ project: true });
-    const base = readyCatalog(fixture.mainHarnessInstanceId, nativeDriver);
+    const base = readyCatalog(fixture.lentHarnessInstanceId, nativeDriver);
     if (base.status !== "ready") throw new Error("Expected ready catalog");
     const selected = {
       ...base.models[0]!,
@@ -582,8 +582,8 @@ integration("cross-environment delegation reaches the Runner", () => {
           ],
         }),
       ],
-      environmentId: fixture.mainEnvironmentId,
-      expectedRevisions: new Map([[fixture.mainHarnessInstanceId, 1]]),
+      environmentId: fixture.lentEnvironmentId,
+      expectedRevisions: new Map([[fixture.lentHarnessInstanceId, 1]]),
     });
     let caller = fixture.parent;
     for (const profile of ["workspace", "delegated"] as const) {
