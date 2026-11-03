@@ -32,11 +32,17 @@ it("keeps Main nonremovable and fences Terminal changes with the read policy rev
   const machine = {
     ...host.getSnapshot().machines[0]!,
     revocable: false,
+    allowedModules: ["shell" as const],
     access: {
       ownerReachAvailable: true,
       revision: 9,
       activeSessions: [],
-      policy: { commands: false, forwarding: false, reach: "nobody" as const, shares: [] },
+      policy: {
+        commands: false,
+        forwarding: false,
+        reach: "nobody" as const,
+        shares: [{ path: "/work", mode: "read" as const }],
+      },
     },
   };
   const dispatch = vi.spyOn(host, "dispatch").mockRejectedValue(new Error("Keep state"));
@@ -52,6 +58,7 @@ it("keeps Main nonremovable and fences Terminal changes with the read policy rev
     const terminal = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     expect(terminal).not.toBeNull();
     await act(async () => terminal.click());
+    expect(container.textContent).toContain("Allow changes to /work");
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "machine.access.update",
