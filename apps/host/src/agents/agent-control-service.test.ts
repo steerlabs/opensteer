@@ -1837,7 +1837,6 @@ function makeService(options: {
   const unexpectedBrowserRequest = async () => {
     throw new Error("Unexpected browser request");
   };
-  const wakeWorkspace = vi.fn(async () => undefined);
   const commands = {
     publishPersonNotification: options.commands.publishPersonNotification,
     withInputAdmission: async <T>(_owner: string, _key: string, operation: () => Promise<T>) =>
@@ -1869,7 +1868,6 @@ function makeService(options: {
     authenticate,
     claims,
     listEnvironmentsForUser,
-    wakeWorkspace,
     service: new AgentControlService({
       browserSources: options.browserSources ?? { agentSignIn: unexpectedBrowserRequest },
       machineFullDiskAccess: options.machineFullDiskAccess ?? { request: vi.fn() },
@@ -1901,7 +1899,6 @@ function makeService(options: {
             path: `/main/Projects/${workspace.slug}`,
           })),
       },
-      workspaceWake: { wake: wakeWorkspace },
       workspaces: {
         create:
           options.createWorkspace ??
@@ -2157,7 +2154,6 @@ it("uses authenticated admission for a person notification without waking work",
       requestId,
     }),
   });
-  expect(fixture.wakeWorkspace).not.toHaveBeenCalled();
 });
 
 it("omits client-only addressing from agent thread history", async () => {

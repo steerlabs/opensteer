@@ -83,12 +83,7 @@ export class WorkspaceReconcileLoop {
   }
 
   #nextDelayMs(): number {
-    // Healthy passes are jittered across a full interval so that several Host
-    // instances sharing one Manager and one database do not sweep in lockstep
-    // — the archive sweep on this pass mutates rows every Host is eligible to
-    // claim. The window is centred on the configured interval, so the mean
-    // cadence is unchanged: jitter de-correlates the fleet, it does not
-    // double the reconcile rate.
+    // Jitter keeps Hosts sharing one database from reconciling in lockstep.
     if (this.#consecutiveFailures === 0) {
       return Math.floor(this.#intervalMs * (0.5 + this.#random()));
     }

@@ -61,10 +61,6 @@ export interface AgentWorkspaceMountService {
   }): Promise<{ readonly path: string }>;
 }
 
-export interface AgentWorkspaceWaker {
-  wake(workspaceId: Workspace["id"], reason: string): Promise<void>;
-}
-
 export interface AgentWorkspaceCreator {
   create(input: {
     readonly createdBy: AgentControlRunScope["requestedBy"];
@@ -164,7 +160,6 @@ export class AgentControlService {
     readonly tokens: AgentControlTokenService;
     readonly triggers?: AgentTriggerManager;
     readonly workspaceMounts: AgentWorkspaceMountService;
-    readonly workspaceWake?: AgentWorkspaceWaker;
     readonly workspaces: AgentWorkspaceCreator;
   }) {
     this.#computerUse = options.computerUse;

@@ -11,7 +11,6 @@ export const hostInternalRoutePaths = {
   integrationMcp: "/internal/v1/integration-mcp",
   integrationSkills: "/internal/v1/integration-skills",
   mcp: "/internal/v1/mcp",
-  mountGrantExchange: "/internal/v1/mount-grants/exchange",
   phoneUpdate: "/internal/v1/runners/agent-phone-update",
   runners: "/internal/v1/runners",
   runnerAuxiliary: "/internal/v1/runners/auxiliary/:module",

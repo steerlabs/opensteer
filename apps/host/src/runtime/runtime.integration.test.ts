@@ -1191,24 +1191,6 @@ integration("Host vertical slice", () => {
       readonly data: { readonly membership: { readonly userId: string } };
     };
     const clientHeaders = { cookie: clientCookies.join("; "), origin };
-    const clientBootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: clientHeaders },
-    );
-    // Accepting an invitation does not stand in for having a home of your own:
-    // the invited account still gets its own Main alongside the shared
-    // Workspace, and Main is scoped to its creator rather than to membership.
-    const clientWorkspaces = clientBootstrap.workspaces as ReadonlyArray<{
-      readonly id: string;
-      readonly kind: string;
-    }>;
-    expect(clientWorkspaces.map((workspace) => workspace.id)).toContain(workspaceId);
-    const clientMain = clientWorkspaces.find((workspace) => workspace.kind === "main");
-    expect(clientMain).toBeDefined();
-    expect(clientMain).not.toHaveProperty("createdBy");
-    expect(clientWorkspaces).toHaveLength(2);
     const members = await testRpcData(
       origin,
       "workspace.members.list",
@@ -1241,45 +1223,61 @@ integration("Host vertical slice", () => {
       throw new Error("Runner enrollment command mismatch.");
     }
     const clientRunnerId = createId("runner");
+    let clientMain: { readonly id: string; readonly kind: string } | undefined;
     const clientRunner = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
-    try {
-      await enrollRunnerSocket(
-        clientRunner.socket,
-        agentsRunnerDescriptor({
-          bootId: `rbt_${randomUUID()}`,
-          device: { form: "laptop", platform: "linux" },
-          environmentIds: [createId("environment")],
-          harnessDrivers: [],
-          name: "Client laptop",
-          runnerId: clientRunnerId,
-          runnerKind: "local",
-          runtimeVersion: "integration",
-        }),
-        clientEnrollment.token,
-        clientRunner.challenge,
-      );
-      const administratorView = await testRpcData(
-        origin,
-        "machines.list",
-        {},
-        { headers: authorization(accessToken) },
-      );
-      expect(
-        administratorView.machines.find((machine) => machine.id === clientRunnerId),
-      ).toMatchObject({
-        access: null,
+    auxiliarySocket = clientRunner.socket;
+    await enrollRunnerSocket(
+      clientRunner.socket,
+      agentsRunnerDescriptor({
+        bootId: `rbt_${randomUUID()}`,
         device: { form: "laptop", platform: "linux" },
-        ownerName: "Client",
-        ownership: "other",
-      });
-      const ownerView = await testRpcData(origin, "machines.list", {}, { headers: clientHeaders });
-      expect(ownerView.machines.find((machine) => machine.id === clientRunnerId)).toMatchObject({
-        ownerName: null,
-        ownership: "mine",
-      });
-    } finally {
-      clientRunner.socket.close();
-    }
+        environmentIds: [createId("environment")],
+        harnessDrivers: [],
+        name: "Client laptop",
+        runnerId: clientRunnerId,
+        runnerKind: "local",
+        runtimeVersion: "integration",
+      }),
+      clientEnrollment.token,
+      clientRunner.challenge,
+    );
+    const clientBootstrap = await testRpcData(
+      origin,
+      "bootstrap.get",
+      {},
+      { headers: clientHeaders },
+    );
+    // Accepting an invitation does not stand in for having a home of your own:
+    // the invited account still gets its own Main alongside the shared
+    // Workspace, and Main is scoped to its creator rather than to membership.
+    const clientWorkspaces = clientBootstrap.workspaces as ReadonlyArray<{
+      readonly id: string;
+      readonly kind: string;
+    }>;
+    expect(clientWorkspaces.map((workspace) => workspace.id)).toContain(workspaceId);
+    clientMain = clientWorkspaces.find((workspace) => workspace.kind === "main");
+    expect(clientMain).toBeDefined();
+    expect(clientMain).not.toHaveProperty("createdBy");
+    expect(clientWorkspaces).toHaveLength(2);
+    const administratorView = await testRpcData(
+      origin,
+      "machines.list",
+      {},
+      { headers: authorization(accessToken) },
+    );
+    expect(
+      administratorView.machines.find((machine) => machine.id === clientRunnerId),
+    ).toMatchObject({
+      access: null,
+      device: { form: "laptop", platform: "linux" },
+      ownerName: "Client",
+      ownership: "other",
+    });
+    const ownerView = await testRpcData(origin, "machines.list", {}, { headers: clientHeaders });
+    expect(ownerView.machines.find((machine) => machine.id === clientRunnerId)).toMatchObject({
+      ownerName: null,
+      ownership: "mine",
+    });
 
     // A Workspace's icon is the Workspace's own: every member sees it, only an
     // owner changes it, Main keeps the product mark, and the catalog is the
@@ -3036,6 +3034,7 @@ integration("Host vertical slice", () => {
       capacityPolicy: { kind: "host-filesystem" as const },
       createdBy: ownerId,
       idempotencyKey: "steer-answer-workspace",
+      kind: "main",
       name: "Steer answer workspace",
       status: "ready",
     });
@@ -3148,6 +3147,7 @@ integration("Host vertical slice", () => {
     );
     await runtime.listen();
     const connect = async (descriptor: RunnerDescriptor) => {
+      if (descriptor.modules.agents) descriptor.modules.agents.localStorage = runtimeTestDisk;
       const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
       const challenge = RunnerChallengeSchema.parse(connection.challenge);
       const frames: HostToRunnerMessage[] = [];
