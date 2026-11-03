@@ -57,16 +57,20 @@ final class MessagesReaderTests: XCTestCase {
     XCTAssertTrue(page.messages.filter(\.isFromMe).allSatisfy { $0.senderName == nil })
   }
 
-  func testAmbiguousContactKeysNeverGuessAndEmailsIgnoreCase() {
+  func testAmbiguousContactKeysNeverGuessEmailsIgnoreCaseAndBusinessesUseTheirCompany() {
     let records = [
       ContactRecord(id: "one", name: "One", organization: nil,
         emails: [LabeledText(label: nil, value: "WORK@example.com")],
         phones: [LabeledText(label: nil, value: "5551234567")], birthday: nil),
       ContactRecord(id: "two", name: "Two", organization: nil,
         emails: [], phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+      ContactRecord(id: "shop", name: nil, organization: "Local Business",
+        emails: [], phones: [LabeledText(label: nil, value: "555 000 1111")], birthday: nil),
     ]
     let names = MessagesContacts(records)
     XCTAssertNil(names.name(for: "+15551234567"))
+    // Messages shows a business contact by its company name.
+    XCTAssertEqual(names.name(for: "+15550001111"), "Local Business")
     XCTAssertEqual(names.name(for: "work@EXAMPLE.com"), "One")
     XCTAssertNil(names.name(for: "not a handle"))
   }

@@ -106,7 +106,7 @@ describe("an app the helper serves", () => {
       const provider = createHelperAppProvider("apple-messages", helper);
       expect((await provider.inspect()).slice(0, 2)).toEqual(
         ["list_conversations", "read_messages"].map((operation) => ({
-          detail: "Reading Messages needs macOS access to Contacts for Opensteer Computer Use.",
+          detail: "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
           operation,
           remedy: "contacts",
           state: "permission-required",
@@ -120,7 +120,7 @@ describe("an app the helper serves", () => {
       ).rejects.toEqual(
         new ComputerAppError(
           "permission-required",
-          "Reading Messages needs macOS access to Contacts for Opensteer Computer Use.",
+          "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
         ),
       );
     }

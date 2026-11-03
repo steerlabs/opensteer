@@ -43,8 +43,7 @@ public enum ContactsStore {
     let name = CNContactFormatter.string(from: contact, style: .fullName)
     return ContactRecord(
       id: contact.identifier,
-      name: name?.isEmpty == false
-        ? name : (contact.organizationName.isEmpty ? nil : contact.organizationName),
+      name: name?.isEmpty == false ? name : nil,
       organization: contact.organizationName.isEmpty ? nil : contact.organizationName,
       emails: contact.emailAddresses.map {
         LabeledText(label: label($0.label), value: $0.value as String)

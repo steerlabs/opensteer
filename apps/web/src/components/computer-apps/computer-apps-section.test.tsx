@@ -429,7 +429,8 @@ describe("ComputerAppsSection", () => {
                 ? {
                     ...operation,
                     remedy: "contacts",
-                    detail: "Reading Messages needs macOS access to Contacts.",
+                    detail:
+                      "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
                   }
                 : operation,
             ),

@@ -53,10 +53,6 @@ export function createHelperAppProvider(
   if (!definition) throw new Error(`The catalog has no ${definitionId}`);
   const operations = parseComputerAppConfig(definition).operations;
   const grants = computerUseDataApps[definitionId];
-  const sentence = (grant: ComputerUseDataGrant): string =>
-    definitionId === "apple-messages" && grant === "contacts"
-      ? "Reading Messages needs macOS access to Contacts for Opensteer Computer Use."
-      : grantSentences[grant];
   const desktopMissing = `${definition.name} needs the Opensteer desktop app.`;
   const every = (
     inspection: Omit<ComputerAppOperationInspection, "operation">,
@@ -94,7 +90,7 @@ export function createHelperAppProvider(
               state: "ready" as const,
             }
           : {
-              detail: sentence(grant),
+              detail: grantSentences[grant],
               operation: name,
               remedy: grant,
               state: "permission-required" as const,
@@ -121,13 +117,14 @@ export function createHelperAppProvider(
       } catch (error) {
         if (!(error instanceof ComputerUseBridgeError)) throw error;
         if (error.code === "permission-required") {
+          // Asked again because the refusal does not say which grant it was.
           const states = await helper.dataGrants().catch(() => null);
           const missing = grants[invocation.effect].find(
             (grant) => states && states[grant] !== "granted" && states[grant] !== "unknown",
           );
           throw new ComputerAppError(
             "permission-required",
-            sentence(missing ?? grants[invocation.effect][0]),
+            grantSentences[missing ?? grants[invocation.effect][0]],
           );
         }
         throw new ComputerAppError(computerAppCode(error.code), error.message);

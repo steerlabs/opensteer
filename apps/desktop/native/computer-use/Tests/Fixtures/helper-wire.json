@@ -171,7 +171,7 @@
     },
     "apple-messages" : {
       "list_conversations" : {
-        "contract" : "qIhr3-7WcJioDBhUWXLErBpu9t4ONniJ371woOX3C-0",
+        "contract" : "DZQfXGN1OVVuwsQvUIs57ELYtEUocKMJ9YV8A5baU-Y",
         "effect" : "read",
         "output" : {
           "conversations" : [
@@ -210,7 +210,7 @@
         }
       },
       "read_messages" : {
-        "contract" : "DDtwQgo5r_jfiGq6N2mQoSTK6BgLb7lYXb3dyOoqKRo",
+        "contract" : "00ne9olh8CdjDZclOrQbBXcJQ36Y3oybGzWf1Mxi6H0",
         "effect" : "read",
         "output" : {
           "messages" : [
