@@ -118,7 +118,7 @@ describe("Workspace storage invariants", () => {
     updatedAt: "2026-08-12T12:00:00.000Z",
   } as const;
 
-  it("requires local directories to use host filesystem capacity", () => {
+  it("accepts local directories and preserves an explicit missing authority", () => {
     const backing = {
       bindingId: "wbd_00000000-0000-4000-8000-000000000003",
       generation: 1,
@@ -130,46 +130,11 @@ describe("Workspace storage invariants", () => {
       WorkspaceSchema.safeParse({
         ...baseWorkspace,
         backing,
-        capacityPolicy: { kind: "host-filesystem" },
       }).success,
     ).toBe(true);
     expect(
-      WorkspaceSchema.safeParse({
-        ...baseWorkspace,
-        backing,
-        capacityPolicy: {
-          blockHardLimitBytes: 1_000,
-          inodeHardLimit: 100,
-          kind: "hard-quota",
-        },
-      }).success,
-    ).toBe(false);
-  });
-
-  it("requires PortableFS to use an enforceable hard quota", () => {
-    const backing = {
-      generation: 1,
-      kind: "portablefs",
-      serviceId: "portablefs-test",
-      volumeId: "volume_test",
-    } as const;
-    expect(
-      WorkspaceSchema.safeParse({
-        ...baseWorkspace,
-        backing,
-        capacityPolicy: {
-          blockHardLimitBytes: 1_000,
-          inodeHardLimit: 100,
-          kind: "hard-quota",
-        },
-      }).success,
-    ).toBe(true);
-    expect(
-      WorkspaceSchema.safeParse({
-        ...baseWorkspace,
-        backing,
-        capacityPolicy: { kind: "host-filesystem" },
-      }).success,
-    ).toBe(false);
+      WorkspaceSchema.parse({ ...baseWorkspace, backing: { ...backing, storageAuthorityId: null } })
+        .backing.storageAuthorityId,
+    ).toBeNull();
   });
 });

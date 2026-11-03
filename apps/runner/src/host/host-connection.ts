@@ -221,7 +221,6 @@ export interface RunnerAgentsConnection {
   };
   readonly runtime: RunnerRuntime;
   readonly workspaceBackings: readonly import("@opensteer/workspace").WorkspaceExecutionAccessPlan["kind"][];
-  readonly workspaceMounts: () => readonly import("@opensteer/protocol").RunnerWorkspaceMount[];
 }
 
 export interface ReconnectingHostConnectionOptions {
@@ -720,7 +719,6 @@ export class ReconnectingHostConnection {
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
       providerStateModes: [...agents.runtime.providerStateModes()],
       workspaceBackings: [...agents.workspaceBackings],
-      workspaceMounts: [...agents.workspaceMounts()],
     };
   }
 

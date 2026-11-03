@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -190,12 +194,16 @@ integration.sequential("shared integration tool definitions E2E", () => {
     const beforeBytes = await schemaBytes(false);
     await migrateToLatest(database);
     const workspace = await store.createWorkspace({
-      backing: { generation: 1, kind: "portablefs", serviceId: "test", volumeId: "schema-proof" },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+      backing: {
+        generation: 1,
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
+
       createdBy: ownerUserId,
       idempotencyKey: "schema-proof",
       name: "Schema proof",

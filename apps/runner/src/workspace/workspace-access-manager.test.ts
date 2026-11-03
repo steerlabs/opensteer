@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId, type EnvironmentId } from "@opensteer/core";
-import type { PortableFsWorkspaceExecutionAccessPlan } from "@opensteer/workspace";
 import { localWorkspaceBindingId } from "@opensteer/workspace/local-binding";
 import { LocalWorkspaceAuthority } from "@opensteer/workspace-local";
 import { afterEach, describe, expect, it } from "vitest";
@@ -109,18 +108,6 @@ describe("RunWorkspaceManager", () => {
       }),
     ).rejects.toThrow("has been replaced");
   });
-
-  it("rejects retired storage without mounting or changing files", async () => {
-    const fixture = await localFixture();
-    const manager = localManager(fixture.driver, fixture.environmentId, fixture.root);
-    await expect(
-      manager.prepare({
-        instructionsPath: null,
-        plan: portableFsPlan(),
-        signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow("relocation-required");
-  });
 });
 
 function localManager(
@@ -185,19 +172,5 @@ function unusedInstructionReader() {
     read: async (): Promise<never> => {
       throw new Error("unexpected Workspace instruction read");
     },
-  };
-}
-
-function portableFsPlan(): PortableFsWorkspaceExecutionAccessPlan {
-  const workspaceId = createId("workspace");
-  return {
-    createdBy: createId("user"),
-    exchangeToken: "opaque-exchange-token",
-    exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
-    generation: 1,
-    kind: "portablefs",
-    volumeId: "workspace_volume",
-    workspaceId,
-    workspaceKind: "project",
   };
 }

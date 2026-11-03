@@ -292,7 +292,7 @@ const fixedCreatedBy = createId("user");
 function provisionInput() {
   return {
     backingKind: "local-directory" as const,
-    capacityPolicy: { kind: "host-filesystem" as const },
+
     createdBy: fixedCreatedBy,
     idempotencyKey: `workspace:${fixedWorkspaceId}:provision:v1`,
     kind: "project" as const,
@@ -318,7 +318,7 @@ function localWorkspace(
   const now = "2026-08-12T12:00:00.000Z";
   return {
     backing,
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: fixedCreatedBy,
     homeThreadId: null,
@@ -408,7 +408,6 @@ function runnerIdentity(storageAuthority: StorageAuthorityId | null): RunnerIden
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Lent machine",

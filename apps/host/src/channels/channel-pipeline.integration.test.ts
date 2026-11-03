@@ -713,7 +713,7 @@ integration("messaging pipeline", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerUserId,
       idempotencyKey: "workspace-pipeline-ROUTE-room",
       name: "Pipeline ROUTE room",
@@ -1187,7 +1187,7 @@ integration("messaging pipeline", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerUserId,
       idempotencyKey: "workspace-pipeline-home",
       kind: "main",
@@ -1244,7 +1244,7 @@ integration("messaging pipeline", () => {
             ownerEnvironmentId: createId("environment"),
             storageAuthorityId: createId("storageAuthority"),
           },
-          capacityPolicy: { kind: "host-filesystem" as const },
+
           createdBy: ownerUserId,
           idempotencyKey: `workspace-pipeline-${input.suffix}`,
           name: `Pipeline ${input.suffix}`,
@@ -1504,7 +1504,6 @@ integration("messaging pipeline", () => {
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
             workspaceBackings: ["local-directory"],
-            workspaceMounts: [],
           },
         },
         name: `Pipeline ${runnerKind} runner`,

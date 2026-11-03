@@ -119,7 +119,7 @@ describe("WorkspaceService with a machine that owns its own directories", () => 
     await expect(
       service.create({
         kind: "main",
-        capacityPolicy: { blockHardLimitBytes: 1_024, inodeHardLimit: 10, kind: "hard-quota" },
+
         createdBy: createId("user"),
         idempotencyKey: "quota-on-a-laptop",
         name: "Research",
@@ -143,11 +143,7 @@ describe("WorkspaceService creation capacity policy", () => {
     await expect(
       service.create({
         kind: "main",
-        capacityPolicy: {
-          blockHardLimitBytes: 1_024,
-          inodeHardLimit: 1,
-          kind: "hard-quota",
-        },
+
         createdBy: createId("user"),
         idempotencyKey: "local-hard-quota",
         name: "Local",
@@ -169,7 +165,7 @@ function localWorkspace(options: { readonly status?: Workspace["status"] } = {})
       ownerEnvironmentId: localEnvironmentId,
       storageAuthorityId: localStorageAuthorityId,
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
@@ -255,7 +251,6 @@ function createStore(
       },
       async createWorkspace(input: {
         readonly backing: Workspace["backing"];
-        readonly capacityPolicy: Workspace["capacityPolicy"];
         readonly createdBy: Workspace["createdBy"];
         readonly id: WorkspaceId;
         readonly kind?: Workspace["kind"];
@@ -265,7 +260,6 @@ function createStore(
         const now = new Date().toISOString();
         const created: Workspace = {
           backing: input.backing,
-          capacityPolicy: input.capacityPolicy,
           createdAt: now,
           createdBy: input.createdBy,
           homeThreadId: null,

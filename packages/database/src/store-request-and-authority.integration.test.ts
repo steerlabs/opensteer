@@ -1,4 +1,8 @@
 import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import {
   createId,
   emptyExecutionPreferences,
   HarnessIdSchema,
@@ -1227,15 +1231,14 @@ describeStore("PostgreSQL store", (it) => {
     const project = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration-access-target-authority-project",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "workspace-integration-access-target-authority-project",
       kind: "project",
@@ -2434,15 +2437,14 @@ describeStore("PostgreSQL store", (it) => {
     const bobWorkspace = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_channel_placement_bob",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.bobId,
       idempotencyKey: "workspace-channel-placement-bob",
       name: "Bob's Workspace",

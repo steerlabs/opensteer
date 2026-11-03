@@ -442,7 +442,7 @@ async function mounts(
 }
 
 /**
- * The default PortableFS topology: the Workspace backing root lives under the
+ * The default storage topology: the Workspace backing root lives under the
  * Runner data directory, so both are masked and only this Run's Workspace
  * comes back.
  */

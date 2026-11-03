@@ -43,7 +43,7 @@ import {
 } from "@opensteer/runner-client";
 
 const cloudDeploymentShape = {
-  defaultWorkspaceBacking: "portablefs",
+  defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
 const testAgentSkills = {
@@ -470,14 +470,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
       identity,
@@ -707,7 +706,7 @@ describe("runnerWebSocketUrl", () => {
       maxConcurrentTriggerPrograms: 4,
       mode: "development",
       modules: ["agents", "browser", "shell"],
-      mountBinary: "portablefs",
+
       localWorkspaceRegistryPath: undefined,
       localWorkspaceRoot: undefined,
       name: "Test runner",
@@ -716,7 +715,6 @@ describe("runnerWebSocketUrl", () => {
       runnerKind: "main",
       workspaceBackings: ["local-directory"],
       workspaceNamespace: "owner-scoped",
-      workspaceRoot: "/workspaces",
     };
     const pair = generateKeyPairSync("ed25519");
     const identity = {
@@ -734,7 +732,6 @@ describe("runnerWebSocketUrl", () => {
         localWorkspaces: localStorageFixture(),
         runtime,
         workspaceBackings: ["local-directory"],
-        workspaceMounts: () => [],
       },
       bootId,
       config,
@@ -763,7 +760,6 @@ describe("runnerWebSocketUrl", () => {
               harnessDrivers: [],
               localStorage: expect.objectContaining({ bindings: [], truncated: false }),
               workspaceBackings: ["local-directory"],
-              workspaceMounts: [],
             },
           },
           runnerId,
@@ -956,14 +952,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: {
@@ -1204,14 +1199,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["integrations"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: {
@@ -1415,14 +1409,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: {
@@ -1573,14 +1566,13 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["shell"],
-        mountBinary: undefined,
+
         name: "Reachable Mac",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
         workspaceBackings: [],
         workspaceNamespace: "single-owner",
-        workspaceRoot: undefined,
       },
       identity,
       identityStore: { acceptHostConnection: async () => identity },
@@ -1711,7 +1703,6 @@ describe("runnerWebSocketUrl", () => {
         localWorkspaces: localStorageFixture(),
         runtime,
         workspaceBackings: ["local-directory"],
-        workspaceMounts: () => [],
       },
       bootId,
       config: {
@@ -1726,7 +1717,7 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["agents", "browser", "shell"],
-        mountBinary: "portablefs",
+
         localWorkspaceRegistryPath: undefined,
         localWorkspaceRoot: undefined,
         name: "Test runner",
@@ -1735,7 +1726,6 @@ describe("runnerWebSocketUrl", () => {
         runnerKind: "main",
         workspaceBackings: ["local-directory"],
         workspaceNamespace: "owner-scoped",
-        workspaceRoot: "/workspaces",
       },
       identity,
       identityStore: {

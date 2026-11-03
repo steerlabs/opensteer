@@ -1,4 +1,8 @@
 import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import {
   HarnessIdSchema,
   ModelSelectionSchema,
   ThreadAccessModeSchema,
@@ -1837,8 +1841,7 @@ function hello(
         localStorage: null,
         maxConcurrentRuns: 2,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory"],
       },
     },
     name: "Runner",
@@ -1953,14 +1956,15 @@ function executeCommand(
       machineAccess: { callerMachineName: "Alex's Mac", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: "AGENTS.md",
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "token",
-        exchangeUrl: "https://host.example.test/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "volume-1",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "project",
       },
     },
     correlationId: CorrelationIdSchema.parse(commandId),
@@ -2041,14 +2045,15 @@ function triggerCommand(
       triggerId,
       workspaceId,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "token",
-        exchangeUrl: "https://host.example.test/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "volume-1",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "project",
       },
     },
     correlationId: CorrelationIdSchema.parse("trigger-dispatch-test"),

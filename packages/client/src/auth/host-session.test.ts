@@ -428,7 +428,7 @@ function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     }),

@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { prepareThreadInsertion } from "./thread-insertion.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { takeTransactionConflicts } from "./lock-order-checker.test-support.js";
@@ -33,15 +37,14 @@ describeStore("PostgreSQL store", (it) => {
     const otherWorkspace = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_active-other",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "active-other-workspace",
       name: "Other",

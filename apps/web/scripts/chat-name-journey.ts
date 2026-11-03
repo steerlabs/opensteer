@@ -318,7 +318,7 @@ try {
     );
     expectThat(
       observed,
-      where.includes("Review PortableFS integration"),
+      where.includes("Review storage integration"),
       "an automation in a task lost the task's name",
     );
     return observed;

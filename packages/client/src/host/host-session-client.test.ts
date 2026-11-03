@@ -1,3 +1,4 @@
+import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import {
   BrowserTabGroupIdSchema,
   ModelSelectionSchema,
@@ -13707,12 +13708,18 @@ function browserFrame(frameId: number, targeted = false): ArrayBuffer {
 function makeWorkspace(name = "Opensteer"): WorkspaceView {
   return {
     homeThreadId: null,
-    capacity: { kind: "managed-quota" },
+    capacity: { kind: "host-filesystem" },
     createdAt: now,
     icon: null,
     id: createId("workspace"),
     kind: "main",
-    location: { kind: "shared-storage" },
+    location: {
+      kind: "machine",
+      environmentId: StorageFixtureEnvironmentIdSchema.parse(
+        "env_00000000-0000-4000-8000-000000000001",
+      ),
+      name: null,
+    },
     name,
     status: "ready",
     storageIssue: null,

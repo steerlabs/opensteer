@@ -139,7 +139,6 @@ async function boot(input: Boot) {
       earlierBootsContained: earlierBoots === "proven",
       runtime,
       workspaceBackings: ["local-directory"],
-      workspaceMounts: () => [],
     },
   });
   const task = connection.run(stop.signal);

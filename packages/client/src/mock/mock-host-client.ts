@@ -326,7 +326,7 @@ const mockTmdbReason =
  * person at that Mac.
  */
 const mockComputerUseThreadId = "thr_00000000-0000-4000-8000-000000000001";
-const mockPortableFsThreadId = "thr_00000000-0000-4000-8000-000000000002";
+const mockstorageThreadId = "thr_00000000-0000-4000-8000-000000000002";
 const mockComputerUseRequestId = RequestIdSchema.parse("req_0192f4a1-6666-4000-8000-000000000006");
 const mockComputerUseSetupRequestId = "0192f4a1-4444-4000-8000-000000000004";
 const mockComputerUseReason = "Put the architecture decisions into the Q4 planning sheet.";
@@ -5332,7 +5332,7 @@ class MockHostState {
         this.#provisionalIcons.add(thread.id);
     }
     const homeThread = this.snapshot.threads.find(({ id }) => id === this.snapshot.homeThreadId);
-    const workThread = this.snapshot.threads.find(({ id }) => id === mockPortableFsThreadId);
+    const workThread = this.snapshot.threads.find(({ id }) => id === mockstorageThreadId);
     if (options.automations !== "absent" && homeThread && workThread) {
       for (const record of seedMockAutomations({
         homeThread,
@@ -11331,7 +11331,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000001",
           "thr_00000000-0000-4000-8000-000000000001",
         ),
-        body: "The foundation is taking shape around one clear rule: the Host owns durable truth, while Runners execute work in a Thread’s pinned environment.\n\nThe first slice includes:\n\n- versioned Host and Runner protocols\n- durable Workspace and Thread records\n- a storage-neutral filesystem boundary\n- protected local-directory and PortableFS adapters\n- harness-neutral run events\n- one web client that works hosted or on-prem",
+        body: "The foundation is taking shape around one clear rule: the Host owns durable truth, while Runners execute work in a Thread’s pinned environment.\n\nThe first slice includes:\n\n- versioned Host and Runner protocols\n- durable Workspace and Thread records\n- a storage-neutral filesystem boundary\n- protected local-directory and storage adapters\n- harness-neutral run events\n- one web client that works hosted or on-prem",
         createdAt: "2026-08-09T16:34:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000002",
         kind: "message",
@@ -11344,7 +11344,7 @@ function createInitialSnapshot(): HostSnapshot {
         kind: "reasoning",
         runId: "run_00000000-0000-4000-8000-000000000001",
         state: "done",
-        text: "Workspace storage is an explicit deployment capability, so local binding and PortableFS authority contracts both need review before protocol work continues.",
+        text: "Workspace storage is an explicit deployment capability, so local binding and storage authority contracts both need review before protocol work continues.",
       },
       {
         arguments: { path: "docs/architecture.md" },
@@ -11407,7 +11407,7 @@ function createInitialSnapshot(): HostSnapshot {
     "thr_00000000-0000-4000-8000-000000000002": [
       {
         author: mockHumanAuthor(),
-        body: "Review the PortableFS integration and identify the smallest contract Opensteer needs.",
+        body: "Review the storage integration and identify the smallest contract Opensteer needs.",
         createdAt: "2026-08-09T13:03:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000006",
         kind: "message",
@@ -11419,7 +11419,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000002",
           "thr_00000000-0000-4000-8000-000000000002",
         ),
-        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. PortableFS should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [PortableFS mount guide](https://portablefs.example/docs/mounts), the [old mirror](http://mirror.portablefs.example/docs) and my draft, [portablefs-contract.md](docs/portablefs-contract.md). Questions go to [storage@portablefs.example](mailto:storage@portablefs.example).\n\n![Mount sequence](/Users/person/Workspaces/main/mount-sequence.png)\n\n[![Grant flow](https://portablefs.example/images/grant-flow.png)](https://portablefs.example/docs/grants)",
+        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. storage should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [storage mount guide](https://storage.example/docs/mounts), the [old mirror](http://mirror.storage.example/docs) and my draft, [storage-contract.md](docs/storage-contract.md). Questions go to [storage@storage.example](mailto:storage@storage.example).\n\n![Mount sequence](/Users/person/Workspaces/main/mount-sequence.png)\n\n[![Grant flow](https://storage.example/images/grant-flow.png)](https://storage.example/docs/grants)",
         createdAt: "2026-08-09T13:08:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000007",
         kind: "message",
@@ -11672,15 +11672,15 @@ function createInitialSnapshot(): HostSnapshot {
           payload: { kind: "harness.input" },
           presentation: {
             detail:
-              "PortableFS now has three backends and the integration suite covers each of them separately. Before the next release I need to know which of them to run, how long to let them run for, and who to tell when one of them fails. Everything below is remembered for the rest of this thread.",
+              "storage now has three backends and the integration suite covers each of them separately. Before the next release I need to know which of them to run, how long to let them run for, and who to tell when one of them fails. Everything below is remembered for the rest of this thread.",
             fields: [
               {
                 choices: [
                   { label: "Local directory", value: "local-directory" },
-                  { label: "PortableFS over S3", value: "portablefs-s3" },
-                  { label: "PortableFS over GCS", value: "portablefs-gcs" },
-                  { label: "PortableFS over Azure Blob", value: "portablefs-azure" },
-                  { label: "PortableFS over the local verifier", value: "portablefs-verifier" },
+                  { label: "storage over S3", value: "storage-s3" },
+                  { label: "storage over GCS", value: "storage-gcs" },
+                  { label: "storage over Azure Blob", value: "storage-azure" },
+                  { label: "storage over the local verifier", value: "storage-verifier" },
                   { label: "Container overlay", value: "container-overlay" },
                 ],
                 id: "backends",
@@ -12165,7 +12165,7 @@ function createInitialSnapshot(): HostSnapshot {
         role: "work",
         runnerLabel: "Main runner",
         status: "waiting",
-        title: "Review PortableFS integration",
+        title: "Review storage integration",
         unread: false,
         updatedAt: "2026-08-09T13:08:00.000Z",
         workspaceId: "wsp_00000000-0000-4000-8000-000000000001",

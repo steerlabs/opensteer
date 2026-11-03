@@ -24,5 +24,5 @@ After an authorized template change, restart the control-plane through its actua
 deployment manager: the file is loaded once. Inspect reconciliation of both new
 and already-ready operations. Retry failed operations through the Account lifecycle
 so they use the current release. Do not delete namespaces or PVCs to clear a
-failure: teardown must stop workloads and destroy PortableFS before namespace
+failure: teardown must stop workloads and destroy storage before namespace
 removal. Keep failed teardown material for retry.

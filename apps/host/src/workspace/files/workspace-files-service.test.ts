@@ -201,10 +201,7 @@ function workspace<Backing extends Workspace["backing"]>(
   const now = new Date().toISOString();
   return {
     backing,
-    capacityPolicy:
-      backing.kind === "local-directory"
-        ? { kind: "host-filesystem" }
-        : { blockHardLimitBytes: 1_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,

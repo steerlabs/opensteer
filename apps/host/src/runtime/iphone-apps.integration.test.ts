@@ -340,7 +340,6 @@ integration.sequential("iPhone integrations Host contract", () => {
             maxConcurrentRuns: 1,
             harnessDrivers: [],
             localStorage: null,
-            workspaceMounts: [],
             providerStateModes: ["isolated"],
             workspaceBackings: ["local-directory"],
           },

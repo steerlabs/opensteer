@@ -5,7 +5,6 @@ import type {
   UserId,
   Workspace,
   WorkspaceBacking,
-  WorkspaceCapacityPolicy,
   WorkspaceId,
   WorkspaceKind,
 } from "@opensteer/core";
@@ -24,7 +23,6 @@ export type WorkspaceExecutionPlanFor<K extends WorkspaceBackingKind> = Extract<
 
 interface ProvisionWorkspaceInputBase<K extends WorkspaceBackingKind> {
   readonly backingKind: K;
-  readonly capacityPolicy: WorkspaceCapacityPolicy;
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
   readonly kind: WorkspaceKind;
@@ -33,10 +31,9 @@ interface ProvisionWorkspaceInputBase<K extends WorkspaceBackingKind> {
 }
 
 export type ProvisionWorkspaceInput<K extends WorkspaceBackingKind> = Extract<
-  | (ProvisionWorkspaceInputBase<"local-directory"> & {
-      readonly ownerEnvironmentId: EnvironmentId;
-    })
-  | ProvisionWorkspaceInputBase<"portablefs">,
+  ProvisionWorkspaceInputBase<"local-directory"> & {
+    readonly ownerEnvironmentId: EnvironmentId;
+  },
   { readonly backingKind: K }
 >;
 

@@ -762,13 +762,12 @@ async function startWithin(
             ...(options.browser ? ["browser" as const] : []),
           ]
         : ["agents", "browser", "shell"],
-      mountBinary: "unused-at-the-test-boundary",
+
       name: "Vertical local runner",
       runnerId: executionRunnerId,
       runnerKind: options.personal ? "main" : "local",
       workspaceBackings,
       workspaceNamespace: "owner-scoped",
-      workspaceRoot: mountedWorkspacePath,
       localWorkspaceRegistryPath: undefined,
       localWorkspaceRoot: undefined,
       nodeExecutable: process.execPath,
@@ -862,7 +861,6 @@ async function startWithin(
               },
             }
           : {}),
-        workspaceMounts: () => [],
       },
     });
     const expectedAccounts = companion

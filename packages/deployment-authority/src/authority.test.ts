@@ -170,7 +170,7 @@ describe("Personal Host access authority", () => {
     { canonicalOrigin: "http://192.168.1.2:4310" },
     {
       deploymentShape: {
-        defaultWorkspaceBacking: "portablefs",
+        defaultWorkspaceBacking: "local-directory",
         kind: "server" as const,
       },
     },
@@ -265,7 +265,7 @@ describe("Ed25519 envelope verification", () => {
         ...legacyEnvelope,
         document: {
           ...legacyDocument,
-          deploymentShape: { backing: "portablefs", kind: "personal" },
+          deploymentShape: { backing: "local-directory", kind: "personal" },
         },
       }),
     ).toThrow("signature is invalid");

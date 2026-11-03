@@ -1,3 +1,4 @@
+import { createId as createStorageFixtureId } from "@opensteer/core";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   ignoreForeignTestRequest,
@@ -94,8 +95,8 @@ const testPersonalDeploymentShape = {
   defaultWorkspaceBacking: "local-directory",
   kind: "personal" as const,
 } as const;
-const testPortableDeploymentShape = {
-  defaultWorkspaceBacking: "portablefs",
+const testServerDeploymentShape = {
+  defaultWorkspaceBacking: "local-directory",
   kind: "server" as const,
 } as const;
 const noIntegrationSkills = async () => ({
@@ -3312,12 +3313,7 @@ describe("RunnerRuntime", () => {
 
     expect(mounts).toBe(1);
     expect(driver.context?.instructions).toBe("Be precise.");
-    expect(command.context.workspaceAccess.kind).toBe("portablefs");
-    const exchangeToken =
-      command.context.workspaceAccess.kind === "portablefs"
-        ? command.context.workspaceAccess.exchangeToken
-        : "unexpected-local-plan";
-    expect(Object.values(driver.context?.environment ?? {})).not.toContain(exchangeToken);
+    expect(command.context.workspaceAccess.kind).toBe("local-directory");
     expect(driver.context?.environment.OPENSTEER_AGENT_WORKSPACE).toBe(
       "/runner/runs/test/workspace",
     );
@@ -3350,7 +3346,7 @@ describe("RunnerRuntime", () => {
   it.each([
     ["personal local-directory", testPersonalDeploymentShape],
     ["server local-directory", testDeploymentShape],
-    ["server portablefs", testPortableDeploymentShape],
+    ["server local-directory", testServerDeploymentShape],
   ] as const)("binds an exact resumed provider session on %s", async (_name, deploymentShape) => {
     const reference = "existing-provider-session";
     const session = new ReferenceHarnessSession(reference);
@@ -3386,7 +3382,7 @@ describe("RunnerRuntime", () => {
   it.each([
     ["personal local-directory", testPersonalDeploymentShape],
     ["server local-directory", testDeploymentShape],
-    ["server portablefs", testPortableDeploymentShape],
+    ["server local-directory", testServerDeploymentShape],
   ] as const)(
     "rejects a changed resumed provider session without executing on %s",
     async (_name, deploymentShape) => {
@@ -4580,7 +4576,7 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("accepts a local project Workspace plan without PortableFS mount segments", async () => {
+  it("accepts a local project Workspace plan without storage mount segments", async () => {
     const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
@@ -5500,14 +5496,13 @@ function executeCommand(
       machineAccess: { callerMachineName: "cloud-1", machines: [], omittedMachines: 0 },
       workspaceInstructionsPath: null,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "opaque-exchange-token",
-        exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "workspace_volume",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "project",
       },
     },
     correlationId: CorrelationIdSchema.parse("runtime-test"),
@@ -5566,14 +5561,13 @@ function triggerCommand(
       triggerId,
       workspaceId,
       workspaceAccess: {
-        createdBy: createId("user"),
-        exchangeToken: "trigger-mount-token",
-        exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
         generation: 1,
-        kind: "portablefs",
-        volumeId: "workspace_volume",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+
         workspaceId,
-        workspaceKind: "project",
       },
     },
     correlationId: CorrelationIdSchema.parse("trigger-runtime-test"),

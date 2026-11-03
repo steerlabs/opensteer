@@ -169,7 +169,7 @@ integration("messaging end to end", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerUserId,
       idempotencyKey: "workspace-messaging-e2e",
       name: "Messaging end to end",
@@ -1295,7 +1295,6 @@ integration("messaging end to end", () => {
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
             workspaceBackings: ["local-directory"],
-            workspaceMounts: [],
           },
         },
         name: "End to end main runner",

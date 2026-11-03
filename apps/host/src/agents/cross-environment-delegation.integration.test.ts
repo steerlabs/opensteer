@@ -2523,7 +2523,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: userId,
       ...(options.workspaceId ? { id: options.workspaceId } : {}),
       idempotencyKey: `delegation-workspace-${randomUUID()}`,
@@ -3052,7 +3052,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: userId,
       ...(id ? { id } : {}),
       idempotencyKey: `worker-workspace-${randomUUID()}`,
@@ -3193,7 +3193,6 @@ integration("cross-environment delegation reaches the Runner", () => {
           // A lent computer is single-user, so it may offer the person's own CLI.
           providerStateModes: input.runnerKind === "local" ? ["ambient", "isolated"] : ["isolated"],
           workspaceBackings: ["local-directory"],
-          workspaceMounts: [],
         },
       },
       name: input.name,

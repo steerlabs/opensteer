@@ -118,7 +118,7 @@ export function previewWorkspace(
 ) {
   const local = selected.kind === "personal" && selected.onThisComputer;
   return {
-    capacity: { kind: local ? ("host-filesystem" as const) : ("managed-quota" as const) },
+    capacity: { kind: "host-filesystem" as const },
     createdAt: previewDate,
     id: workspaceId,
     homeThreadId: createId("thread"),
@@ -126,7 +126,11 @@ export function previewWorkspace(
     kind: "main" as const,
     location: local
       ? { environmentId, kind: "machine" as const, name: "This Computer" }
-      : { kind: "shared-storage" as const },
+      : {
+          kind: "machine" as const,
+          environmentId,
+          name: null,
+        },
     name: "Main",
     status: "ready" as const,
     storageIssue: null,

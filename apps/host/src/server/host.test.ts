@@ -4286,7 +4286,7 @@ function projectWorkspace(ownerId: Workspace["createdBy"]): Workspace {
       ownerEnvironmentId: createId("environment"),
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" as const },
+
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,
@@ -4321,7 +4321,7 @@ function localWorkspaceFixture(
       ownerEnvironmentId: createId("environment"),
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" as const },
+
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,

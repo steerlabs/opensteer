@@ -5697,7 +5697,7 @@ async function createWorkspace(
       ownerEnvironmentId: createId("environment"),
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { blockHardLimitBytes: 10_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
+
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
     kind,
@@ -5774,7 +5774,6 @@ async function createOwner(
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: `Runner ${suffix}`,

@@ -20,7 +20,7 @@ export function mockGeneratedTaskIcon(text: string): WorkspaceIconName {
     [/sofa|loveseat|furniture/iu, "sofa"],
     [/gift|birthday/iu, "gift"],
     [/travel|trip|weekend/iu, "map"],
-    [/code|architecture|portablefs/iu, "code"],
+    [/code|architecture|storage/iu, "code"],
     [/launch/iu, "rocket"],
     [/statement|budget/iu, "wallet"],
     [/report/iu, "chart"],

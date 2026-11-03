@@ -165,7 +165,6 @@ integration.sequential("Thread title lifecycle", () => {
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
-          workspaceMounts: [],
         },
       },
       name: "Title computer",
@@ -201,7 +200,7 @@ integration.sequential("Thread title lifecycle", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: userId,
       idempotencyKey: randomUUID(),
       name: "Title workspace",
@@ -809,11 +808,7 @@ integration.sequential("Thread title lifecycle", () => {
                   ownerEnvironmentId: createId("environment"),
                   storageAuthorityId: createId("storageAuthority"),
                 },
-                capacityPolicy: {
-                  kind: "hard-quota",
-                  blockHardLimitBytes: 10_000_000,
-                  inodeHardLimit: 10_000,
-                },
+
                 status: "ready",
               }),
           },
@@ -1003,7 +998,6 @@ integration.sequential("Thread title lifecycle", () => {
           ownerEnvironmentId: createId("environment"),
           storageAuthorityId: createId("storageAuthority"),
         },
-        capacityPolicy: f.workspace.capacityPolicy,
       });
     }
     const other = await fixture();
@@ -1231,7 +1225,6 @@ integration.sequential("Thread title lifecycle", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: f.workspace.capacityPolicy,
       createdBy: f.userId,
       idempotencyKey: randomUUID(),
       kind: "project" as const,

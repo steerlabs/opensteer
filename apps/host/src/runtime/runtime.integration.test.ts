@@ -608,7 +608,6 @@ integration("Host vertical slice", () => {
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -1047,7 +1046,6 @@ integration("Host vertical slice", () => {
 
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       replacementEnrollment.token,
       replacementConnection.challenge,
@@ -1499,7 +1497,6 @@ integration("Host vertical slice", () => {
 
       workspaceBackings: ["local-directory"],
       localStorage: null,
-      workspaceMounts: [],
     });
     const runnerKeys = await enrollRunnerSocket(
       connection.socket,
@@ -1617,7 +1614,6 @@ integration("Host vertical slice", () => {
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       connection.challenge,
@@ -1728,7 +1724,6 @@ integration("Host vertical slice", () => {
 
       workspaceBackings: ["local-directory"],
       localStorage: null,
-      workspaceMounts: [],
     });
     const pair = generateKeyPairSync("ed25519");
     const rejected = waitForMessage(connection.socket, (message) => message.type === "host.error");
@@ -1833,7 +1828,6 @@ integration("Host vertical slice", () => {
 
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -1847,7 +1841,7 @@ integration("Host vertical slice", () => {
         ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
         storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerId,
       idempotencyKey: "placement-runtime-workspace",
       name: "Placement workspace",
@@ -2196,7 +2190,6 @@ integration("Host vertical slice", () => {
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -2301,7 +2294,6 @@ integration("Host vertical slice", () => {
 
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -2324,7 +2316,7 @@ integration("Host vertical slice", () => {
           ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
           storageAuthorityId: runtimeTestDisk.storageAuthorityId,
         },
-        capacityPolicy: { kind: "host-filesystem" as const },
+
         createdBy: ownerId,
         idempotencyKey: "rejection-runtime-workspace",
         name: "Rejected dispatch workspace",
@@ -2523,7 +2515,6 @@ integration("Host vertical slice", () => {
 
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       runnerToken,
       runnerConnection.challenge,
@@ -2539,7 +2530,7 @@ integration("Host vertical slice", () => {
         ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
         storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerId,
       idempotencyKey: "disconnect-runtime-workspace",
       name: "Disconnect workspace",
@@ -2759,7 +2750,6 @@ integration("Host vertical slice", () => {
 
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       }),
       enrollmentTokenHash: seedEnrollmentTokenHash,
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
@@ -2773,7 +2763,7 @@ integration("Host vertical slice", () => {
         ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
         storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerId,
       idempotencyKey: "restart-runtime-workspace",
       name: "Restart workspace",
@@ -3004,7 +2994,6 @@ integration("Host vertical slice", () => {
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
-        workspaceMounts: [],
       });
       return RunnerDescriptorSchema.parse({
         ...current,
@@ -3031,7 +3020,7 @@ integration("Host vertical slice", () => {
         ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
         storageAuthorityId: runtimeTestDisk.storageAuthorityId,
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerId,
       idempotencyKey: "steer-answer-workspace",
       kind: "main",

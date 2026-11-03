@@ -6,12 +6,10 @@ import {
   type MarkColor,
   MarkColorSchema,
   nextMarkColor,
-  nonTerminalRunStatuses,
   OpensteerError,
   type UserId,
   type Workspace,
   type WorkspaceBacking,
-  type WorkspaceCapacityPolicy,
   type WorkspaceIconName,
   type WorkspaceId,
   WorkspaceIdSchema,
@@ -23,7 +21,7 @@ import {
   workspacePageMaxItems,
   workspaceViewFromWorkspace,
 } from "@opensteer/protocol";
-import { type ExpressionBuilder, type Kysely, sql } from "kysely";
+import { type Kysely, sql } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -51,7 +49,6 @@ import {
 
 export interface CreateWorkspaceInput {
   readonly backing: WorkspaceBacking;
-  readonly capacityPolicy: WorkspaceCapacityPolicy;
   readonly color?: MarkColor;
   readonly createdBy: UserId;
   /** A name the Host already checked against the shared icon catalog. */
@@ -67,43 +64,6 @@ export interface WorkspaceFilesAdmission {
   readonly membershipGeneration: number;
   readonly userId: UserId;
   readonly workspace: Workspace;
-}
-
-/**
- * True when nothing can still be holding this Workspace's filesystem: no Run
- * is in a status that could dispatch against it, and no Runner holds a mount
- * enrollment that has not finished revoking.
- *
- * The archive candidate listing and the archive claim share this predicate
- * because they must agree exactly — the listing decides what to look at, and
- * the claim decides what the storage authority is allowed to detach.
- */
-function workspaceHasNoLiveExecution(expression: ExpressionBuilder<DatabaseSchema, "workspaces">) {
-  return expression.and([
-    workspaceHasNoActiveRuns(expression),
-    expression.not(
-      expression.exists(
-        expression
-          .selectFrom("workspaceMounts")
-          .select("workspaceMounts.id")
-          .whereRef("workspaceMounts.workspaceId", "=", "workspaces.id")
-          .where("workspaceMounts.status", "in", ["active", "revocation_pending"]),
-      ),
-    ),
-  ]);
-}
-
-function workspaceHasNoActiveRuns(expression: ExpressionBuilder<DatabaseSchema, "workspaces">) {
-  return expression.not(
-    expression.exists(
-      expression
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select("runs.id")
-        .whereRef("threads.workspaceId", "=", "workspaces.id")
-        .where("runs.status", "in", nonTerminalRunStatuses),
-    ),
-  );
 }
 
 function workspaceCreateCommandPayload(payload: unknown): {
@@ -142,7 +102,6 @@ function canonicalWorkspaceCreateRequest(
 ): Readonly<Record<string, unknown>> {
   return {
     backing: input.backing,
-    capacityPolicy: input.capacityPolicy,
     createdBy: input.createdBy,
     // Omitted when unset so a replay of a request stored before icons existed
     // still matches its original.
@@ -176,8 +135,7 @@ export async function createWorkspace(
         .executeTakeFirstOrThrow(databaseOperationOptions());
       const requestChanged = stored.request
         ? !isDeepStrictEqual(stored.request, canonicalWorkspaceCreateRequest(input))
-        : !isDeepStrictEqual(row.capacityPolicy, input.capacityPolicy) ||
-          row.name !== input.name ||
+        : row.name !== input.name ||
           // Stored before icons existed, so the original request had none;
           // the row's current icon may since have been changed by its owner.
           input.icon !== undefined ||
@@ -224,7 +182,6 @@ export async function createWorkspace(
       .insertInto("workspaces")
       .values({
         backing: jsonValue(input.backing),
-        capacityPolicy: jsonValue(input.capacityPolicy),
         color: input.color ?? nextMarkColor(recent.map((row) => row.color)),
         createdBy: input.createdBy,
         icon: input.icon ?? null,
@@ -912,34 +869,9 @@ export async function noteWorkspaceActivity(
 
 /**
  * Finds archive candidates. This is a snapshot, not an admission: every
- * Workspace it returns must still pass `claimPortableFsWorkspaceForArchive`
+ * Workspace it returns must still pass `the archive authority`
  * before anything acts on it.
  */
-export async function listArchiveEligibleWorkspaces(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly after?: WorkspaceId;
-    readonly idleBefore: Date;
-    readonly limit: number;
-  },
-): Promise<readonly Workspace[]> {
-  if (!Number.isFinite(input.idleBefore.getTime())) {
-    throw new OpensteerError({ code: "bad_request", message: "Invalid Workspace idle cutoff" });
-  }
-  let query = database
-    .selectFrom("workspaces")
-    .selectAll()
-    .where("workspaces.status", "=", "ready")
-    .where("workspaces.lastActivityAt", "<", input.idleBefore)
-    .where(sql<boolean>`workspaces.backing ->> 'kind' = 'portablefs'`)
-    .where(workspaceHasNoActiveRuns);
-  if (input.after) query = query.where("workspaces.id", ">", input.after);
-  const rows = await query
-    .orderBy("workspaces.id", "asc")
-    .limit(boundedLimit(input.limit, 500))
-    .execute(databaseOperationOptions());
-  return rows.map(workspaceFromRow);
-}
 
 export async function getWorkspaceForOwner(
   database: Kysely<DatabaseSchema>,
@@ -1033,10 +965,7 @@ export async function setWorkspaceProvisioningResult(
       (input.backing.kind === "local-directory" &&
         input.expectedBacking.kind === "local-directory" &&
         (input.backing.bindingId !== input.expectedBacking.bindingId ||
-          input.backing.ownerEnvironmentId !== input.expectedBacking.ownerEnvironmentId)) ||
-      (input.backing.kind === "portablefs" &&
-        input.expectedBacking.kind === "portablefs" &&
-        input.backing.serviceId !== input.expectedBacking.serviceId))
+          input.backing.ownerEnvironmentId !== input.expectedBacking.ownerEnvironmentId)))
   ) {
     throw new OpensteerError({
       code: "conflict",
@@ -1116,85 +1045,6 @@ export async function setWorkspaceProvisioningResult(
  * cannot be: it is resolved at the storage authority, whose wake cancels a
  * quiescing archive and returns the volume to service.
  */
-export async function claimPortableFsWorkspaceForArchive(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly backingGeneration: number;
-    readonly idleBefore: Date;
-    readonly workspaceId: WorkspaceId;
-  },
-): Promise<Workspace> {
-  if (!Number.isFinite(input.idleBefore.getTime())) {
-    throw new OpensteerError({ code: "bad_request", message: "Invalid Workspace idle cutoff" });
-  }
-  const row = await database
-    .updateTable("workspaces")
-    .set({
-      // to_jsonb of an integer keeps `generation` a JSON number; a text
-      // assignment would silently turn the whole backing invalid.
-      backing: sql<WorkspaceBacking>`jsonb_set(
-          backing,
-          '{generation}',
-          to_jsonb(((backing ->> 'generation')::bigint + 1))
-        )`,
-      updatedAt: new Date(),
-    })
-    .where("workspaces.id", "=", input.workspaceId)
-    .where("workspaces.status", "=", "ready")
-    .where("workspaces.lastActivityAt", "<", input.idleBefore)
-    .where(sql<boolean>`workspaces.backing ->> 'kind' = 'portablefs'`)
-    .where(
-      sql<boolean>`(workspaces.backing ->> 'generation')::numeric = ${input.backingGeneration}`,
-    )
-    .where(workspaceHasNoLiveExecution)
-    .returningAll()
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Workspace is no longer eligible for archiving",
-    });
-  }
-  return workspaceFromRow(row);
-}
-
-export async function assertCurrentPortableFsWorkspaceBacking(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly generation: number;
-    readonly volumeId: string;
-    readonly workspaceId: WorkspaceId;
-  },
-): Promise<void> {
-  const row = await database
-    .selectFrom("workspaces")
-    .select("id")
-    .where("id", "=", input.workspaceId)
-    .where("status", "=", "ready")
-    .where(sql<boolean>`backing ->> 'kind' = 'portablefs'`)
-    .where(sql<boolean>`backing ->> 'volumeId' = ${input.volumeId}`)
-    .where(sql<boolean>`(backing ->> 'generation')::numeric = ${input.generation}`)
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Workspace storage binding is no longer current",
-    });
-  }
-}
-
-export async function hasWorkspaceMountHistory(
-  database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-): Promise<boolean> {
-  const row = await database
-    .selectFrom("workspaceMounts")
-    .select("id")
-    .where("workspaceId", "=", workspaceId)
-    .limit(1)
-    .executeTakeFirst(databaseOperationOptions());
-  return row !== undefined;
-}
 
 /**
  * How many live Threads are placed on each of these Environments. Archived
@@ -1249,40 +1099,6 @@ export async function listWorkspacesByStatus(
 ): Promise<readonly Workspace[]> {
   const limit = boundedLimit(options.limit ?? 100, 500);
   let query = database.selectFrom("workspaces").selectAll().where("status", "=", status);
-  if (options.after) {
-    const createdAt = new Date(IsoDateTimeSchema.parse(options.after.createdAt));
-    query = query.where((expressions) =>
-      expressions.or([
-        expressions("createdAt", ">", createdAt),
-        expressions.and([
-          expressions("createdAt", "=", createdAt),
-          expressions("id", ">", options.after!.id),
-        ]),
-      ]),
-    );
-  }
-  const rows = await query
-    .orderBy("createdAt", "asc")
-    .orderBy("id", "asc")
-    .limit(limit)
-    .execute(databaseOperationOptions());
-  return rows.map(workspaceFromRow);
-}
-
-export async function listPortableFsWorkspacesByServiceMismatch(
-  database: Kysely<DatabaseSchema>,
-  serviceId: string,
-  options: {
-    readonly after?: { readonly createdAt: string; readonly id: WorkspaceId };
-    readonly limit?: number;
-  } = {},
-): Promise<readonly Workspace[]> {
-  const limit = boundedLimit(options.limit ?? 100, 500);
-  let query = database
-    .selectFrom("workspaces")
-    .selectAll()
-    .where(sql<boolean>`backing ->> 'kind' = 'portablefs'`)
-    .where(sql<boolean>`backing ->> 'serviceId' <> ${serviceId}`);
   if (options.after) {
     const createdAt = new Date(IsoDateTimeSchema.parse(options.after.createdAt));
     query = query.where((expressions) =>

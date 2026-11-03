@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { createHash, randomUUID } from "node:crypto";
 import {
   emptyExecutionPreferences,
@@ -28,7 +32,7 @@ import {
   testModelSelection,
   testContinuationIdentity,
   testWorkspaceProfile,
-  portableFsBacking,
+  localBacking,
   enrollTestRunner,
   pendingEvent,
 } from "./store.integration.test-support.js";
@@ -41,12 +45,16 @@ describeStore("PostgreSQL store", (it) => {
     const owner = await store.createUser("Project slug owner");
     const create = (name: string, key: string) =>
       store.createWorkspace({
-        backing: { kind: "portablefs", generation: 1, serviceId: "test-portablefs", volumeId: key },
-        capacityPolicy: {
-          kind: "hard-quota",
-          blockHardLimitBytes: 536870912,
-          inodeHardLimit: 50000,
+        backing: {
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
+          generation: 1,
         },
+
         createdBy: owner,
         idempotencyKey: key,
         kind: "project",
@@ -84,12 +92,15 @@ describeStore("PostgreSQL store", (it) => {
     const owner = await store.createUser("Main owner");
     const main = await store.createWorkspace({
       backing: {
-        kind: "portablefs",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
         generation: 1,
-        serviceId: "test-portablefs",
-        volumeId: "main-deletion-refusal",
       },
-      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 536870912, inodeHardLimit: 50000 },
+
       createdBy: owner,
       idempotencyKey: "main-deletion-refusal",
       kind: "main",
@@ -1235,7 +1246,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerEnvironmentId: environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" },
+
       createdBy: ownerId,
       idempotencyKey: "personal-main-workspace",
       name: "Main",
@@ -1249,7 +1260,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerEnvironmentId: environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" },
+
       createdBy: ownerId,
       idempotencyKey: "personal-project-workspace",
       kind: "project",
@@ -1353,7 +1364,7 @@ describeStore("PostgreSQL store", (it) => {
           ownerEnvironmentId: environmentId,
           storageAuthorityId: createId("storageAuthority"),
         },
-        capacityPolicy: { kind: "host-filesystem" },
+
         createdBy: ownerId,
         idempotencyKey: key,
         kind: "project" as const,
@@ -1365,15 +1376,14 @@ describeStore("PostgreSQL store", (it) => {
     const shared = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "local_listing_shared",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 512 * 1_024 * 1_024,
-        inodeHardLimit: 50_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "local-listing-shared",
       kind: "project",
@@ -1382,7 +1392,7 @@ describeStore("PostgreSQL store", (it) => {
     });
 
     // The owning environment is a generated column off the backing, so a
-    // PortableFS Workspace can never be attributed to a machine.
+    // storage Workspace can never be attributed to a machine.
     expect((await store.listLocalWorkspacesForEnvironments([mine])).map(({ id }) => id)).toEqual([
       here.id,
     ]);
@@ -1681,7 +1691,7 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toBeNull();
     }
 
-    const expectedBacking = portableFsBacking(fixture.workspace);
+    const expectedBacking = localBacking(fixture.workspace);
     await store.setWorkspaceProvisioningResult({
       backing: expectedBacking,
       expectedBacking,
@@ -1700,41 +1710,6 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
-  it("tracks Workspace activity without changing updated_at and excludes active Runs from archive", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database, enqueueHumanTrigger } = storeFixture;
-    const fixture = await createRunFixture("workspace-archive-eligibility");
-    const before = await store.getWorkspace(fixture.workspace.id);
-    // Activity only ever moves forward, and a new row already counts as active
-    // as of its creation, so the observed activity has to be later than that.
-    const activityAt = new Date(Date.now() + 60_000);
-    const idleBefore = new Date(activityAt.getTime() + 60_000);
-
-    await store.noteWorkspaceActivity(fixture.workspace.id, activityAt);
-
-    const after = await store.getWorkspace(fixture.workspace.id);
-    expect(after?.updatedAt).toBe(before?.updatedAt);
-    await expect(
-      database
-        .selectFrom("workspaces")
-        .select("lastActivityAt")
-        .where("id", "=", fixture.workspace.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ lastActivityAt: activityAt });
-    expect(
-      (await store.listArchiveEligibleWorkspaces({ idleBefore, limit: 100 })).map(({ id }) => id),
-    ).toContain(fixture.workspace.id);
-
-    await enqueueHumanTrigger({
-      content: [{ text: "Keep this Workspace awake", type: "text" }],
-      idempotencyKey: "workspace-archive-eligibility-turn",
-      requestedBy: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    expect(await store.listArchiveEligibleWorkspaces({ idleBefore, limit: 100 })).toEqual([]);
-  });
-
   it("never regresses a Workspace activity timestamp", async ({ storeFixture }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("workspace-activity-monotonicity");
@@ -1751,210 +1726,6 @@ describeStore("PostgreSQL store", (it) => {
         .where("id", "=", fixture.workspace.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ lastActivityAt: newer });
-  });
-
-  it("claims a ready idle PortableFS Workspace for archiving and advances its fence", async ({
-    storeFixture,
-  }) => {
-    const { store, database } = storeFixture;
-    const ownerId = await store.createUser("Archive claim owner");
-    const idleBefore = new Date(Date.now() + 60_000);
-    const workspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "workspace_archive_claim",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 512 * 1_024 * 1_024,
-        inodeHardLimit: 50_000,
-        kind: "hard-quota",
-      },
-      createdBy: ownerId,
-      idempotencyKey: "workspace-archive-claim",
-      name: "Archive claim",
-      status: "ready",
-    });
-
-    const first = await store.claimPortableFsWorkspaceForArchive({
-      backingGeneration: 1,
-      idleBefore,
-      workspaceId: workspace.id,
-    });
-    expect(portableFsBacking(first)).toEqual({
-      ...portableFsBacking(workspace),
-      generation: 2,
-    });
-    // The counter must stay a JSON number: a text assignment would leave the
-    // backing unparseable on the next read.
-    await expect(
-      sql<{
-        readonly generationType: string;
-      }>`select jsonb_typeof(backing -> 'generation') as "generationType" from workspaces where id = ${workspace.id}`
-        .execute(database)
-        .then((result) => result.rows[0]),
-    ).resolves.toEqual({ generationType: "number" });
-
-    // A stale snapshot cannot claim: the generation it observed is gone.
-    await expect(
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration: 1,
-        idleBefore,
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-
-    await store.setWorkspaceStorageState({
-      issue: null,
-      status: "archived",
-      workspaceId: workspace.id,
-    });
-    await expect(
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration: 2,
-        idleBefore,
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect(portableFsBacking((await store.getWorkspace(workspace.id))!).generation).toBe(2);
-
-    const localEnvironmentId = await store.createEnvironment({
-      kind: "local",
-      name: "Archive claim laptop",
-    });
-    const localWorkspace = await store.createWorkspace({
-      backing: {
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        kind: "local-directory",
-        ownerEnvironmentId: localEnvironmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      capacityPolicy: { kind: "host-filesystem" },
-      createdBy: ownerId,
-      idempotencyKey: "workspace-archive-claim-local",
-      kind: "project",
-      name: "Local archive claim",
-      status: "ready",
-    });
-    await expect(
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration: 1,
-        idleBefore,
-        workspaceId: localWorkspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration: 1,
-        idleBefore,
-        workspaceId: createId("workspace"),
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("refuses an archive claim for a still-ready Workspace that is back in use", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, enqueueHumanTrigger } = storeFixture;
-    const fixture = await createRunFixture("archive-claim-in-use");
-    const idleBefore = new Date(Date.now() + 60_000);
-    const enrollmentId = "44444444-4444-4444-8444-444444444444";
-    const backing = portableFsBacking(fixture.workspace);
-    const claimAt = (backingGeneration: number) =>
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration,
-        idleBefore,
-        workspaceId: fixture.workspace.id,
-      });
-
-    // A non-terminal Run: the listing snapshot can predate the turn by minutes,
-    // and archiving would detach a filesystem a Run still needs.
-    const turn = await enqueueHumanTrigger({
-      content: [{ text: "Started after the listing", type: "text" }],
-      idempotencyKey: "archive-claim-in-use-turn",
-      requestedBy: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    await expect(claimAt(backing.generation)).rejects.toMatchObject({ code: "conflict" });
-
-    // A live machine mount outlives its Run, and the archive must evict it
-    // before a later pass can claim the Workspace.
-    await store.claimCommand(turn.command.id, "archive-claim-in-use-dispatcher");
-    const mount = await store.recordWorkspaceMount({
-      authorizedBy: fixture.userId,
-      enrollmentId,
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      runnerId: fixture.runnerId,
-      volumeId: backing.volumeId,
-      workspaceId: fixture.workspace.id,
-      workspaceBackingGeneration: backing.generation,
-    });
-    await store.failCommand(turn.command.id, "dispatch failed");
-    await expect(claimAt(backing.generation)).rejects.toMatchObject({ code: "conflict" });
-
-    // With the Run terminal and the mount revoked, the same Workspace claims.
-    await store.requestWorkspaceMountRevocations({
-      reason: "archive-eviction",
-      workspaceMountIds: [mount.id],
-    });
-    await store.completeMountEnrollmentRevocation(enrollmentId, "REVOKED");
-    await expect(claimAt(backing.generation)).resolves.toMatchObject({
-      id: fixture.workspace.id,
-    });
-
-    // Fresh activity alone disqualifies a Workspace that is otherwise idle.
-    await store.noteWorkspaceActivity(fixture.workspace.id, new Date(idleBefore.getTime() + 1_000));
-    await expect(claimAt(backing.generation + 1)).rejects.toMatchObject({ code: "conflict" });
-    expect(portableFsBacking((await store.getWorkspace(fixture.workspace.id))!).generation).toBe(
-      backing.generation + 1,
-    );
-  });
-
-  it("admits exactly one of two concurrent archive claims for the same Workspace", async ({
-    storeFixture,
-  }) => {
-    const { store } = storeFixture;
-    const ownerId = await store.createUser("Concurrent archive claim owner");
-    const idleBefore = new Date(Date.now() + 60_000);
-    const workspace = await store.createWorkspace({
-      backing: {
-        generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "workspace_archive_claim_race",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 512 * 1_024 * 1_024,
-        inodeHardLimit: 50_000,
-        kind: "hard-quota",
-      },
-      createdBy: ownerId,
-      idempotencyKey: "workspace-archive-claim-race",
-      name: "Archive claim race",
-      status: "ready",
-    });
-
-    const claims = await Promise.allSettled([
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration: 1,
-        idleBefore,
-        workspaceId: workspace.id,
-      }),
-      store.claimPortableFsWorkspaceForArchive({
-        backingGeneration: 1,
-        idleBefore,
-        workspaceId: workspace.id,
-      }),
-    ]);
-
-    expect(claims.filter((claim) => claim.status === "fulfilled")).toHaveLength(1);
-    const rejected = claims.find((claim) => claim.status === "rejected");
-    expect(rejected?.reason).toMatchObject({ code: "conflict" });
-    // Exactly one fence advance: the loser never reached the storage authority.
-    expect(portableFsBacking((await store.getWorkspace(workspace.id))!).generation).toBe(2);
   });
 
   it("persists immutable Trigger revisions and executes each durable occurrence once", async ({

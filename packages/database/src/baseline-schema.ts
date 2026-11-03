@@ -1,3 +1,4 @@
+// Historical migration snapshot; forward storage changes belong in migrations.ts.
 /** Final PostgreSQL schema for a fresh Opensteer beta deployment. */
 export const BASELINE_SCHEMA_SQL = String.raw`
 --

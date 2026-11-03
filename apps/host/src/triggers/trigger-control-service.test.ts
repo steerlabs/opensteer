@@ -155,7 +155,6 @@ describe("TriggerControlService", () => {
         ownerEnvironmentId: targetEnvironmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
     };
     const delegateThread = vi.fn(async () => {
       throw new Error("Delegation reached the selected environment");
@@ -562,7 +561,7 @@ function workspace(id: Workspace["id"], name: string): Workspace {
       ownerEnvironmentId: environmentId,
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,

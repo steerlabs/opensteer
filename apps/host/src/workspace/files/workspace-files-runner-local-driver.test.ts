@@ -150,7 +150,6 @@ function runnerIdentity(storageAuthority: StorageAuthorityId | null): RunnerIden
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Lent machine",
@@ -170,7 +169,7 @@ function workspace(): Workspace & { readonly backing: LocalWorkspaceBacking } {
       ownerEnvironmentId: environmentId,
       storageAuthorityId,
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,

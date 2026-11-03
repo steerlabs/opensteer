@@ -930,7 +930,7 @@ integration("durable Thread changes native continuation", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: foreignUserId,
       idempotencyKey: `foreign-home-workspace-${randomUUID()}`,
       name: "Other Main",
@@ -1384,7 +1384,6 @@ async function createForeignPlacement(stack: VerticalStack, foreignUserId: UserI
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Other owner's runner",

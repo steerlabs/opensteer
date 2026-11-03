@@ -79,12 +79,6 @@ export const HostBootstrapSchema = z.object({
   deploymentId: DeploymentIdSchema,
   browser: HostedBrowserBootstrapSchema,
   latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096).optional(),
-  /**
-   * The Deployment's declared axes. `defaultWorkspaceBacking` is what a new
-   * Workspace gets when nobody chooses, and — because PortableFS is allowed
-   * only where the Host has a Manager — whether shared storage is an option
-   * at all.
-   */
   deploymentShape: DeploymentShapeViewSchema,
   environments: z.array(HostBootstrapEnvironmentSchema),
   /**

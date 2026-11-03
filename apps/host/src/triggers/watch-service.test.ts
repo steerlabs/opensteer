@@ -139,7 +139,7 @@ describe("WatchService", () => {
           ownerEnvironmentId: createId("environment"),
           storageAuthorityId: createId("storageAuthority"),
         },
-        capacityPolicy: { kind: "host-filesystem" as const },
+
         id: sharedWorkspaceId,
       }),
     };
@@ -370,7 +370,7 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
         ownerEnvironmentId: environmentId,
         storageAuthorityId,
       },
-      capacityPolicy: { kind: "host-filesystem" },
+
       createdAt: new Date().toISOString(),
       createdBy: userId,
       id: workspaceId,
@@ -394,7 +394,6 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Runner",

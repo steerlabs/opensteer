@@ -204,7 +204,6 @@ async function main(): Promise<void> {
               maxConcurrentRuns: 1,
               providerStateModes: ["isolated"],
               workspaceBackings: ["local-directory"],
-              workspaceMounts: [],
             },
           },
         },
@@ -221,9 +220,7 @@ async function main(): Promise<void> {
           ownerEnvironmentId: environmentId,
           storageAuthorityId: null,
         },
-        capacityPolicy: {
-          kind: "host-filesystem",
-        },
+
         createdBy: userId,
         idempotencyKey: "migration-workspace",
         name: "Migration workspace",

@@ -104,7 +104,7 @@ describe("Runner identity proofs", () => {
     expect(
       verifyRunnerAuthenticationSignature(pair.publicKey, {
         ...input,
-        descriptor: withAgents(input.descriptor, { workspaceBackings: ["portablefs"] }),
+        descriptor: withAgents(input.descriptor, { workspaceBackings: ["local-directory"] }),
         signature,
       }),
     ).toBe(false);
@@ -281,7 +281,7 @@ describe("Runner identity proofs", () => {
     expect(
       verifyRunnerEnrollmentSignature(pair.publicKey, {
         ...input,
-        descriptor: withAgents(input.descriptor, { workspaceBackings: ["portablefs"] }),
+        descriptor: withAgents(input.descriptor, { workspaceBackings: ["local-directory"] }),
         signature,
       }),
     ).toBe(false);
@@ -432,8 +432,7 @@ function descriptor(): RunnerDescriptor {
         localStorage: null,
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory", "portablefs"],
-        workspaceMounts: [],
+        workspaceBackings: ["local-directory", "local-directory"],
       },
     },
     name: "Main runner",

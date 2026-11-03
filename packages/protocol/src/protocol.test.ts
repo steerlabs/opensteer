@@ -288,7 +288,6 @@ describe("wire protocol", () => {
       maxConcurrentRuns: 2,
       providerStateModes: ["isolated"],
       workspaceBackings: ["local-directory"],
-      workspaceMounts: [],
     } as const;
     const descriptor = {
       bootId: `rbt_${randomUUID()}`,
@@ -544,14 +543,13 @@ describe("wire protocol", () => {
       RunnerCommandSchema.parse({
         ...base,
         plan: {
-          createdBy: createId("user"),
-          exchangeToken: "one-use-token",
-          exchangeUrl: "https://host.example/internal/v1/mount-grants/exchange",
           generation: 4,
-          kind: "portablefs",
-          volumeId: "volume-4",
+          kind: "local-directory",
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
+
           workspaceId,
-          workspaceKind: "project",
         },
         runId: createId("run"),
         threadId: createId("thread"),
@@ -732,14 +730,13 @@ describe("wire protocol", () => {
         workspaceKind: "main",
         workspaceInstructionsPath: "AGENTS.md",
         workspaceAccess: {
-          createdBy: createId("user"),
-          exchangeToken: "exchange-token",
-          exchangeUrl: "https://host.example.test/internal/v1/mount-grants/exchange",
           generation: 1,
-          kind: "portablefs",
-          volumeId: "volume-1",
+          kind: "local-directory",
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: createId("environment"),
+          storageAuthorityId: createId("storageAuthority"),
+
           workspaceId,
-          workspaceKind: "main",
         },
       },
       correlationId: createId("command"),
@@ -888,7 +885,7 @@ describe("wire protocol", () => {
       id: createId("environment"),
       kind: index === 0 ? ("main" as const) : ("local" as const),
       name: "e".repeat(120),
-      workspaceBackings: ["local-directory" as const, "portablefs" as const],
+      workspaceBackings: ["local-directory" as const, "local-directory" as const],
     }));
     const threads = Array.from({ length: 100 }, () => {
       const id = createId("thread");
@@ -1090,8 +1087,7 @@ describe("wire protocol", () => {
             localStorage: null,
             maxConcurrentRuns: 1,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
-            workspaceMounts: [],
+            workspaceBackings: ["local-directory"],
           },
         },
         name: "Main runner",

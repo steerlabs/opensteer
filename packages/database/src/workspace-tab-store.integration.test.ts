@@ -1,4 +1,8 @@
 import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
@@ -80,12 +84,20 @@ integration.sequential("durable workspace tabs", () => {
       const strangerId = await store.createUser("Stranger");
       await store.ensureDeployment({
         canonicalOrigin: "https://tabs.test",
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         hostInstanceId: createId("hostInstance"),
       });
       const workspace = await store.createWorkspace({
-        backing: { kind: "portablefs", generation: 1, serviceId: "test", volumeId: randomUUID() },
-        capacityPolicy: { blockHardLimitBytes: 1000000, inodeHardLimit: 1000, kind: "hard-quota" },
+        backing: {
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
+          generation: 1,
+        },
+
         createdBy: ownerId,
         idempotencyKey: randomUUID(),
         name: "Tabs",

@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import {
   cloneTestDatabase,
@@ -86,7 +90,7 @@ integration.sequential("conversation delivery", () => {
       if (!(await store.getDeployment()))
         await store.ensureDeployment({
           canonicalOrigin: "https://test-host.invalid",
-          deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
           hostInstanceId: createId("hostInstance"),
         });
       const ownerId = await store.createUser("Owner");
@@ -106,15 +110,14 @@ integration.sequential("conversation delivery", () => {
       const workspace = await store.createWorkspace({
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: `wsp_${suffix}`,
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: ownerId,
         idempotencyKey: `workspace-${suffix}`,
         name: `Workspace ${suffix}`,
@@ -630,8 +633,7 @@ integration.sequential("conversation delivery", () => {
             localStorage: null,
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
-            workspaceMounts: [],
+            workspaceBackings: ["local-directory"],
           },
         },
       };

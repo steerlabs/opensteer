@@ -74,14 +74,6 @@ function descriptor() {
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated", "future-state"],
         workspaceBackings: ["local-directory", "future-backing"],
-        workspaceMounts: [
-          {
-            enrollmentId: "enrollment",
-            volumeId: "volume",
-            workspaceId: createId("workspace"),
-            future: true,
-          },
-        ],
         future: true,
       },
       browser: {

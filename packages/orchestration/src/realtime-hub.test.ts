@@ -1,3 +1,4 @@
+import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import {
   SequenceSchema,
   createId,
@@ -762,13 +763,19 @@ function snapshot(workspaceId: WorkspaceId, value: string): WorkspaceSnapshot {
     threadWindow: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
     threads: [],
     workspace: {
-      capacity: { kind: "managed-quota" },
+      capacity: { kind: "host-filesystem" },
       createdAt: now,
       homeThreadId: null,
       icon: null,
       id: workspaceId,
       kind: "main",
-      location: { kind: "shared-storage" },
+      location: {
+        kind: "machine",
+        environmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        name: null,
+      },
       name: "Workspace",
       status: "ready",
       storageIssue: null,

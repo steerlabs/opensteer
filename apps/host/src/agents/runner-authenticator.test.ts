@@ -341,7 +341,6 @@ describe("RunnerAuthenticator identity refusals", () => {
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
-          workspaceMounts: [],
         },
         browser: { runtimeId: "older-browser" },
         integrations: { platform: "darwin" },

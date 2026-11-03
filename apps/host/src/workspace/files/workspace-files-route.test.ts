@@ -181,10 +181,7 @@ function readyWorkspace(backingKind: "local-directory" | "local-directory"): Wor
             ownerEnvironmentId: createId("environment"),
             storageAuthorityId: createId("storageAuthority"),
           },
-    capacityPolicy:
-      backingKind === "local-directory"
-        ? { kind: "host-filesystem" }
-        : { blockHardLimitBytes: 1_000_000, inodeHardLimit: 10_000, kind: "hard-quota" },
+
     createdAt: now,
     createdBy: owner,
     homeThreadId: null,

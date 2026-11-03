@@ -183,12 +183,6 @@ import {
   type WorkspaceMembershipChangeListener,
   type WorkspaceMembershipRecord,
 } from "./workspace-membership-store.js";
-import * as workspaceMountStore from "./workspace-mount-store.js";
-import {
-  type PendingWorkspaceMountRevocation,
-  type WorkspaceMountInventoryEntry,
-  type WorkspaceMountRecord,
-} from "./workspace-mount-store.js";
 import * as workspaceStore from "./workspace-store.js";
 import { type CreateWorkspaceInput, type WorkspaceFilesAdmission } from "./workspace-store.js";
 
@@ -1239,14 +1233,6 @@ export class OpensteerStore {
     return workspaceStore.noteWorkspaceActivity(this.#database, workspaceId, at);
   }
 
-  async listArchiveEligibleWorkspaces(input: {
-    readonly after?: WorkspaceId;
-    readonly idleBefore: Date;
-    readonly limit: number;
-  }): Promise<readonly Workspace[]> {
-    return workspaceStore.listArchiveEligibleWorkspaces(this.#database, input);
-  }
-
   async getWorkspaceForOwner(workspaceId: WorkspaceId, ownerId: UserId): Promise<Workspace | null> {
     return workspaceStore.getWorkspaceForOwner(this.#database, workspaceId, ownerId);
   }
@@ -1276,26 +1262,6 @@ export class OpensteerStore {
     return workspaceStore.setWorkspaceProvisioningResult(this.#database, input);
   }
 
-  async claimPortableFsWorkspaceForArchive(input: {
-    readonly backingGeneration: number;
-    readonly idleBefore: Date;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<Workspace> {
-    return workspaceStore.claimPortableFsWorkspaceForArchive(this.#database, input);
-  }
-
-  async assertCurrentPortableFsWorkspaceBacking(input: {
-    readonly generation: number;
-    readonly volumeId: string;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<void> {
-    return workspaceStore.assertCurrentPortableFsWorkspaceBacking(this.#database, input);
-  }
-
-  async hasWorkspaceMountHistory(workspaceId: WorkspaceId): Promise<boolean> {
-    return workspaceStore.hasWorkspaceMountHistory(this.#database, workspaceId);
-  }
-
   async countLiveThreadsByEnvironment(
     environmentIds: readonly EnvironmentId[],
   ): Promise<ReadonlyMap<EnvironmentId, number>> {
@@ -1317,20 +1283,6 @@ export class OpensteerStore {
     } = {},
   ): Promise<readonly Workspace[]> {
     return workspaceStore.listWorkspacesByStatus(this.#database, status, options);
-  }
-
-  async listPortableFsWorkspacesByServiceMismatch(
-    serviceId: string,
-    options: {
-      readonly after?: { readonly createdAt: string; readonly id: WorkspaceId };
-      readonly limit?: number;
-    } = {},
-  ): Promise<readonly Workspace[]> {
-    return workspaceStore.listPortableFsWorkspacesByServiceMismatch(
-      this.#database,
-      serviceId,
-      options,
-    );
   }
 
   async listThreadsForOwner(ownerId: UserId, limit = 10_000): Promise<readonly Thread[]> {
@@ -1927,119 +1879,6 @@ export class OpensteerStore {
     );
   }
 
-  async recordWorkspaceMount(input: {
-    readonly authorizedBy: UserId;
-    readonly enrollmentId: string;
-    readonly environmentId: EnvironmentId;
-    readonly membershipGeneration: number;
-    readonly runnerId: RunnerId;
-    readonly volumeId: string;
-    readonly workspaceBackingGeneration: number;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<WorkspaceMountRecord> {
-    return workspaceMountStore.recordWorkspaceMount(this.#database, input);
-  }
-
-  async assertWorkspaceMountAuthority(input: {
-    readonly environmentId: EnvironmentId;
-    readonly membershipGeneration: number;
-    readonly requestedBy: UserId;
-    readonly runnerId: RunnerId;
-    readonly volumeId: string;
-    readonly workspaceBackingGeneration: number;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<void> {
-    return workspaceMountStore.assertWorkspaceMountAuthority(this.#database, input);
-  }
-
-  async listWorkspaceMounts(workspaceId: WorkspaceId): Promise<readonly WorkspaceMountRecord[]> {
-    return workspaceMountStore.listWorkspaceMounts(this.#database, workspaceId);
-  }
-
-  async listWorkspaceMountsAuthorizedBy(input: {
-    readonly authorizedBy: UserId;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<readonly WorkspaceMountRecord[]> {
-    return workspaceMountStore.listWorkspaceMountsAuthorizedBy(this.#database, input);
-  }
-
-  async listEnvironmentWorkspaceMounts(
-    environmentId: EnvironmentId,
-  ): Promise<readonly WorkspaceMountRecord[]> {
-    return workspaceMountStore.listEnvironmentWorkspaceMounts(this.#database, environmentId);
-  }
-
-  async listReplacedWorkspaceMounts(input: {
-    readonly currentGeneration: number;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<readonly WorkspaceMountRecord[]> {
-    return workspaceMountStore.listReplacedWorkspaceMounts(this.#database, input);
-  }
-
-  async requestWorkspaceMountRevocations(input: {
-    readonly workspaceMountIds: readonly string[];
-    readonly now?: Date;
-    readonly reason: string;
-  }): Promise<number> {
-    return workspaceMountStore.requestWorkspaceMountRevocations(this.#database, input);
-  }
-
-  async requestWorkspaceMountRevocationByEnrollmentId(
-    enrollmentId: string,
-    reason: string,
-    now = new Date(),
-  ): Promise<boolean> {
-    return workspaceMountStore.requestWorkspaceMountRevocationByEnrollmentId(
-      this.#database,
-      enrollmentId,
-      reason,
-      now,
-    );
-  }
-
-  async closeEnvironment(
-    environmentId: EnvironmentId,
-    reason: string,
-    now = new Date(),
-  ): Promise<number> {
-    return workspaceMountStore.closeEnvironment(this.#database, environmentId, reason, now);
-  }
-
-  async reconcileRunnerInventory(input: {
-    readonly environmentId: EnvironmentId;
-    readonly mounts: readonly WorkspaceMountInventoryEntry[];
-    readonly now?: Date;
-  }): Promise<readonly WorkspaceMountInventoryEntry[]> {
-    return workspaceMountStore.reconcileRunnerInventory(this.#database, input);
-  }
-
-  async claimPendingMountEnrollmentRevocations(input: {
-    readonly leaseUntil: Date;
-    readonly limit: number;
-    readonly now: Date;
-  }): Promise<readonly PendingWorkspaceMountRevocation[]> {
-    return workspaceMountStore.claimPendingMountEnrollmentRevocations(this.#database, input);
-  }
-
-  async completeMountEnrollmentRevocation(
-    enrollmentId: string,
-    state: "ABSENT" | "CLOSED" | "EXPIRED" | "REVOKED",
-  ): Promise<void> {
-    return workspaceMountStore.completeMountEnrollmentRevocation(
-      this.#database,
-      enrollmentId,
-      state,
-    );
-  }
-
-  async failMountEnrollmentRevocation(input: {
-    readonly enrollmentId: string;
-    readonly errorCode: string;
-    readonly nextAttemptAt: Date;
-  }): Promise<void> {
-    return workspaceMountStore.failMountEnrollmentRevocation(this.#database, input);
-  }
-
   async bindProviderSession(input: {
     readonly bindingGeneration: number;
     readonly engineStart?: "cold" | "warm";
@@ -2221,12 +2060,6 @@ export type {
 } from "./browser-session-store.js";
 
 export type { BrowserSessionWithAttachmentCountRecord } from "./browser-session-store.js";
-
-export type { WorkspaceMountRecord } from "./workspace-mount-store.js";
-
-export type { PendingWorkspaceMountRevocation } from "./workspace-mount-store.js";
-
-export type { WorkspaceMountInventoryEntry } from "./workspace-mount-store.js";
 
 export { runnerAdvertisesItsEnvironmentBinding } from "./runner-store.js";
 

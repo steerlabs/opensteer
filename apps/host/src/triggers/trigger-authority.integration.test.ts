@@ -2186,11 +2186,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: {
-        kind: "hard-quota",
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-      },
+
       status: "ready",
     });
   }
@@ -2242,7 +2238,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
           maxConcurrentRuns: 16,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
-          workspaceMounts: [],
         },
       },
       name: "Trigger authority Runner",

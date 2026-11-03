@@ -72,7 +72,6 @@ import type {
   TriggerWatchActivationId,
   UserId,
   WorkspaceBacking,
-  WorkspaceCapacityPolicy,
   WorkspaceIconName,
   WorkspaceId,
   WorkspaceInvitationId,
@@ -673,7 +672,6 @@ export interface WorkspaceTable {
   color: MarkColor;
   homeThreadId: Generated<ThreadId | null>;
   backing: JsonColumn<WorkspaceBacking>;
-  capacityPolicy: JsonColumn<WorkspaceCapacityPolicy>;
   deletedAt: NullableTimestamp;
   deletionRequestedAt: NullableTimestamp;
   deletionRequestedBy: UserId | null;
@@ -1118,25 +1116,6 @@ interface RequestContinuationTable {
   status: "waiting" | "queued" | "undeliverable";
   attemptedAt: NullableTimestamp;
   reason: string | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface WorkspaceMountTable {
-  id: string;
-  environmentId: EnvironmentId;
-  runnerId: RunnerId;
-  workspaceId: WorkspaceId;
-  volumeId: string;
-  workspaceBackingGeneration: ColumnType<string, number | string, number | string>;
-  enrollmentId: string;
-  authorizedBy: UserId;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
-  status: "active" | "revocation_pending" | "closed" | "revoked" | "expired";
-  terminationReason: string | null;
-  revocationAttempts: Generated<number>;
-  nextAttemptAt: NullableTimestamp;
-  lastErrorCode: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -2085,7 +2064,6 @@ export interface DatabaseSchema {
   integrationRequestDetails: IntegrationRequestDetailTable;
   requestCallJoins: RequestCallJoinTable;
   requestContinuations: RequestContinuationTable;
-  workspaceMounts: WorkspaceMountTable;
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
   triggerWatchActivations: TriggerWatchActivationTable;

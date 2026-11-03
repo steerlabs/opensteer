@@ -1104,7 +1104,7 @@ describe("unconfirmed sends keep every place exactly", () => {
 });
 
 describe("a link arriving at the start page", () => {
-  const address = "https://portablefs.example/docs/mounts";
+  const address = "https://storage.example/docs/mounts";
   const state = { startId: "reply-link", startAddress: address, startOpen: true, startFrom: null };
 
   it("selects each rapid chat link in its click turn and only the latest completion can replace it", async () => {
@@ -1136,7 +1136,7 @@ describe("a link arriving at the start page", () => {
     await vi.waitFor(
       () => {
         const found = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
-          (anchor) => anchor.textContent === "PortableFS mount guide",
+          (anchor) => anchor.textContent === "storage mount guide",
         );
         expect(found, "The reply's website link never appeared").toBeDefined();
         link = found!;
@@ -1302,13 +1302,13 @@ describe("a link arriving at the start page", () => {
     });
     await settle(100);
     const link = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
-      (anchor) => anchor.textContent === "PortableFS mount guide",
+      (anchor) => anchor.textContent === "storage mount guide",
     )!;
     await click(link);
     await settle(100);
     expect(open).toHaveBeenCalledExactlyOnceWith(
       { identity: { kind: "profile", profileId } },
-      expect.objectContaining({ url: "https://portablefs.example/docs/mounts" }),
+      expect.objectContaining({ url: "https://storage.example/docs/mounts" }),
     );
   });
 

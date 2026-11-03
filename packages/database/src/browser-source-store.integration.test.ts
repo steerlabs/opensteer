@@ -1,4 +1,8 @@
 import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import {
   createId,
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -44,21 +48,20 @@ integration.sequential("browser sign-in authority", () => {
       const ownerId = await store.createUser("Source owner");
       await store.ensureDeployment({
         canonicalOrigin: "https://browser-source.test",
-        deploymentShape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
         hostInstanceId,
       });
       const workspace = await store.createWorkspace({
         backing: {
-          kind: "portablefs",
+          kind: "local-directory",
           generation: 1,
-          serviceId: "test-portablefs",
-          volumeId: `test-${randomUUID()}`,
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: ownerId,
         idempotencyKey: randomUUID(),
         name: "Source test",
@@ -132,8 +135,7 @@ integration.sequential("browser sign-in authority", () => {
             localStorage: null,
             maxConcurrentRuns: 1,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
-            workspaceMounts: [],
+            workspaceBackings: ["local-directory"],
           },
         },
         name: "Browser source test runner",

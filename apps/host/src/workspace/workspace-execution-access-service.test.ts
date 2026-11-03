@@ -107,7 +107,7 @@ function localWorkspace(ownerEnvironmentId: EnvironmentId): Workspace & {
       ownerEnvironmentId,
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,

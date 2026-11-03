@@ -148,7 +148,7 @@ describeStore("Project creation on Main storage", (it) => {
           createdBy: owner,
           idempotencyKey: "legacy",
           status: "ready",
-          capacityPolicy: { kind: "host-filesystem" },
+
           backing: {
             kind: "local-directory",
             generation: 1,

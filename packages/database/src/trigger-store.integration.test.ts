@@ -1,4 +1,8 @@
 import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
+import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
@@ -133,7 +137,7 @@ integration.sequential("Trigger failure auto-pause", () => {
           canonicalOrigin: "https://test-host.invalid",
           hostInstanceId: createId("hostInstance"),
           deploymentShape: {
-            defaultWorkspaceBacking: "portablefs",
+            defaultWorkspaceBacking: "local-directory",
             kind: "server" as const,
           },
         });
@@ -142,15 +146,14 @@ integration.sequential("Trigger failure auto-pause", () => {
       const workspace = await store.createWorkspace({
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: `wsp_trigger_failure_${suffix}`,
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: userId,
         idempotencyKey: `workspace-${suffix}`,
         name: `Workspace ${suffix}`,
@@ -221,8 +224,7 @@ integration.sequential("Trigger failure auto-pause", () => {
             localStorage: null,
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["portablefs"],
-            workspaceMounts: [],
+            workspaceBackings: ["local-directory"],
           },
         },
         name: "Trigger test Runner",
@@ -1715,7 +1717,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     await triggers.recordWatchUnavailable({
       activationId: activation.id,
       executionGeneration: activation.executionGeneration,
-      reason: "Runner does not support portablefs Workspace access",
+      reason: "Runner does not support storage Workspace access",
       runnerBootId: bootId,
       runnerConnectionGeneration: 1,
       runnerId: fixture.runnerId,
@@ -1723,7 +1725,7 @@ integration.sequential("Trigger failure auto-pause", () => {
 
     expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
       healthySince: null,
-      lastError: "Runner does not support portablefs Workspace access",
+      lastError: "Runner does not support storage Workspace access",
       leaseExpiresAt: null,
       observed: "backoff",
     });

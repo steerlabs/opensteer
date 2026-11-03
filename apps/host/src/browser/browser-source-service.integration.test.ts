@@ -630,7 +630,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
           maxConcurrentRuns: 1,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
-          workspaceMounts: [],
         },
       },
       name: "Browser sign-in test runner",
@@ -740,7 +739,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: ownerId,
       idempotencyKey: randomUUID(),
       name: "Sign-in test",

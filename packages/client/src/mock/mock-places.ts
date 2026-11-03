@@ -243,7 +243,7 @@ export function seedMockPlaces(
   threads.slice(0, 4).forEach((thread, index) =>
     add(index + 1, "agent", [
       {
-        title: ["Friday dinner", "PortableFS documentation", "Launch brief", "Coffee shortlist"][
+        title: ["Friday dinner", "storage documentation", "Launch brief", "Coffee shortlist"][
           index
         ]!,
         site: [

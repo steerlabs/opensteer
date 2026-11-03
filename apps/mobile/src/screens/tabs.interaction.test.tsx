@@ -1362,7 +1362,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       "Confirm your reservation",
       "Le Petit Jardin",
       "Friday dinner",
-      "PortableFS documentation",
+      "storage documentation",
       "Launch brief",
       "Coffee shortlist",
       "Weekend ideas",
@@ -1399,7 +1399,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     );
     expect(row(screen, "Flight award alerts").dataset["testid"]).toBe("place:acting");
     expect(row(screen, "Friday dinner").getAttribute("aria-label")).toBe(
-      "Friday dinner, resy.com, Work, Review PortableFS integration, idle",
+      "Friday dinner, resy.com, Work, Review storage integration, idle",
     );
     expect(row(screen, "Friday dinner").dataset["testid"]).toBe("place:idle");
     expect(row(screen, "Q4 roadmap – Linear").getAttribute("aria-label")).toBe(

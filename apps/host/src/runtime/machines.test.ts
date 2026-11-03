@@ -33,7 +33,6 @@ function runner(overrides: Partial<MachineRunnerInput> = {}): MachineRunnerInput
         maxConcurrentRuns: 2,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: "Laptop",
@@ -294,7 +293,7 @@ describe("Machines projection", () => {
         ownerEnvironmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" },
+
       createdAt: now,
       createdBy: createId("user"),
       homeThreadId: null,

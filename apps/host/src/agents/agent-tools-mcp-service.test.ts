@@ -1,3 +1,4 @@
+import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -284,11 +285,17 @@ describe("AgentToolsMcpService", () => {
           path: "/main/Projects/travel",
           slug: "travel",
           workspace: {
-            capacity: { kind: "managed-quota" as const },
+            capacity: { kind: "host-filesystem" as const },
             createdAt: "2026-09-24T00:00:00.000Z",
             id: workspaceId,
             kind: "project" as const,
-            location: { kind: "shared-storage" as const },
+            location: {
+              kind: "machine" as const,
+              environmentId: StorageFixtureEnvironmentIdSchema.parse(
+                "env_00000000-0000-4000-8000-000000000001",
+              ),
+              name: null,
+            },
             name: "Travel",
             status: "ready" as const,
             storageIssue: null,

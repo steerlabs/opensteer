@@ -33,7 +33,7 @@ import {
   readFileSync,
   readSync,
 } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { PasskeysEnvironmentSchema } from "./passkeys.js";
 
@@ -149,13 +149,6 @@ const configuredSecret = (maximumLength: number) =>
       message: "Run pnpm setup:local to generate development secrets",
     });
 
-const portableFsIdentity = z
-  .string()
-  .min(1)
-  .max(256)
-  .refine((value) => value.trim() === value)
-  .refine((value) => !/\p{Control}/u.test(value));
-
 const bindAddress = z.union([z.ipv4(), z.ipv6(), z.literal("localhost")]);
 const HostEnvironmentSchema = z.object({
   OPENSTEER_AUTH_SECRET: configuredSecret(8_192),
@@ -170,7 +163,6 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_DEPLOYMENT_ID: DeploymentIdSchema.optional(),
   OPENSTEER_DEPLOYMENT_NAME: optionalDeploymentName,
   OPENSTEER_CREDENTIAL_KEY_PATH: optionalPath,
-  OPENSTEER_FILES_SERVICE_URL: optionalUrl,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
   OPENSTEER_INITIAL_BROWSER_RUNNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
   OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
@@ -200,19 +192,6 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_MAX_CONCURRENT_DISPATCHES: positiveInteger(32),
   OPENSTEER_MAX_CONCURRENT_TRIGGER_DISPATCHES: positiveInteger(32),
   OPENSTEER_OIDC_CONFIG_PATH: optionalPath,
-  OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN: portableFsIdentity.default("opensteer"),
-  OPENSTEER_PORTABLEFS_SERVICE_ID: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/)
-    .optional(),
-  OPENSTEER_PORTABLEFS_MANAGER_CA_PATH: optionalPath,
-  OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH: optionalPath,
-  OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH: optionalPath,
-  OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME: z.string().trim().min(1).max(253).optional(),
-  OPENSTEER_PORTABLEFS_MANAGER_URL: optionalUrl,
-  OPENSTEER_PORTABLEFS_PRODUCT_ISSUER: portableFsIdentity.default("opensteer"),
-  OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH: optionalPath,
   OPENSTEER_PORT: positiveInteger(4310),
   OPENSTEER_PERSONAL_ACCOUNT_ISSUER: optionalUrl,
   OPENSTEER_PORTAL_ORIGIN: optionalUrl,
@@ -222,12 +201,7 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: optionalPath,
   OPENSTEER_WEB_DISTRIBUTION_MANIFEST: optionalPath,
   OPENSTEER_HOST_RELEASE_VERSION: optionalReleaseVersion,
-  OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES: positiveInteger(10 * 1_024 * 1_024 * 1_024),
-  OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT: positiveInteger(1_000_000),
-  OPENSTEER_WORKSPACE_ARCHIVE_AFTER_DAYS: nonnegativeInteger(7),
   OPENSTEER_WORKSPACE_DELETION_RETENTION_DAYS: nonnegativeInteger(14),
-  OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES: positiveInteger(100 * 1_024 * 1_024 * 1_024),
-  OPENSTEER_WORKSPACE_MAX_INODE_LIMIT: positiveInteger(10_000_000),
 });
 
 export interface HostConfig {
@@ -320,42 +294,10 @@ export interface HostConfig {
   readonly workspace: {
     readonly deletionRetentionDays: number;
     readonly shape: DeploymentShape;
-    readonly storage:
-      | {
-          readonly kind: "local-directory";
-          /**
-           * Where a Workspace goes when the caller names no machine — the
-           * cohosted Runner's environment. The Host holds nothing else about
-           * local storage: roots, registries and the native helper belong to
-           * the machine that owns the disk.
-           */
-          readonly ownerEnvironmentId: EnvironmentId;
-        }
-      | {
-          readonly authorizationDomain: string;
-          readonly archiveAfterDays: number;
-          /** Safety ceiling for a normal Workspace, not a storage entitlement.
-           * Legitimate users should never reach it. The deployment runbook
-           * migrates to PortableFS Manager v2 measured admission before fleet
-           * defaults are raised, because v1 entitlement-sum admission would
-           * reserve these ceilings and exhaust capacity. */
-          readonly defaultBlockLimitBytes: number;
-          /** Inode counterpart to `defaultBlockLimitBytes`; it is the same
-           * circuit breaker rather than an entitlement. */
-          readonly defaultInodeLimit: number;
-          readonly filesServiceUrl: URL;
-          readonly kind: "portablefs";
-          readonly maxBlockLimitBytes: number;
-          readonly maxInodeLimit: number;
-          readonly managerCaPath: string | undefined;
-          readonly managerCertPath: string | undefined;
-          readonly managerKeyPath: string | undefined;
-          readonly managerServerName: string | undefined;
-          readonly managerUrl: URL;
-          readonly productIssuer: string;
-          readonly productPrivateKeyPath: string | undefined;
-          readonly serviceId: string;
-        };
+    readonly storage: {
+      readonly kind: "local-directory";
+      readonly ownerEnvironmentId: EnvironmentId;
+    };
   };
   readonly webDistribution?: {
     readonly directory: string;
@@ -416,7 +358,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
       "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN is allowed only for a networked Deployment",
     );
   }
-  // Every Runner capability URL — the PortableFS mount-grant exchange, egress,
+  // Every Runner capability URL — egress,
   // dispatch, and the tool servers — is minted from the runtime origin. A
   // Deployment whose Runners all live inside its own private network may be
   // handed a private origin. One that accepts a machine somebody lends it from
@@ -432,14 +374,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (config.acceptsExternalRunners && config.workspace.shape.kind !== "server") {
     throw new Error("Only a Server Deployment can accept external Runners");
   }
-  // PortableFS exists so Runners outside the Host's network can hold its
-  // Workspaces; declaring otherwise would describe a stack nobody can attach to.
-  if (
-    config.workspace.shape.defaultWorkspaceBacking === "portablefs" &&
-    !config.acceptsExternalRunners
-  ) {
-    throw new Error("A PortableFS Deployment must accept external Runners");
-  }
+
   if (config.webDistribution) {
     if (
       config.mode !== "production" ||
@@ -560,7 +495,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   const nativeOAuthEnabled =
     parsed.OPENSTEER_NATIVE_OAUTH_ENABLED ?? deploymentShape.kind === "server";
   const browserRuntime = { attachKeyId: parsed.OPENSTEER_BROWSER_ATTACH_KEY_ID };
-  requireProductionKeyPair(parsed.OPENSTEER_MODE, parsed, deploymentShape.defaultWorkspaceBacking);
+  requireProductionKeyPair(parsed.OPENSTEER_MODE, parsed);
   requireSecureServiceUrl(
     parsed.OPENSTEER_MODE,
     parsed.OPENSTEER_CANONICAL_ORIGIN,
@@ -603,7 +538,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   ) {
     throw new Error("OPENSTEER_PORTAL_ORIGIN must use HTTPS except for loopback development");
   }
-  const workspaceStorage = workspaceStorageConfig(environment, parsed, deploymentShape);
+  const workspaceStorage = workspaceStorageConfig(parsed);
   const explicitPersonalIdentityValues = [
     parsed.OPENSTEER_DEPLOYMENT_ID,
     parsed.OPENSTEER_HOST_INSTANCE_ID,
@@ -637,12 +572,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   }
   const config: HostConfig = {
     account,
-    // PortableFS only ever made sense with Runners attaching from outside, so
-    // that stays the default for it. Every other Deployment declares it, and
-    // declares nothing by staying inside its own network.
-    acceptsExternalRunners:
-      parsed.OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS ??
-      deploymentShape.defaultWorkspaceBacking === "portablefs",
+    acceptsExternalRunners: parsed.OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS ?? false,
     authSecret: parsed.OPENSTEER_AUTH_SECRET,
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
     canonicalOrigin,
@@ -846,9 +776,7 @@ function requireProductionKeyPair(
     readonly OPENSTEER_CREDENTIAL_KEY_PATH?: string | undefined;
     readonly OPENSTEER_HOST_PRIVATE_KEY_PATH?: string | undefined;
     readonly OPENSTEER_HOST_PUBLIC_KEY_PATH?: string | undefined;
-    readonly OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH?: string | undefined;
   },
-  backing: DeploymentShape["defaultWorkspaceBacking"],
 ): void {
   if (
     mode === "production" &&
@@ -861,162 +789,22 @@ function requireProductionKeyPair(
   if (mode === "production" && !values.OPENSTEER_CREDENTIAL_KEY_PATH) {
     throw new Error("Production requires OPENSTEER_CREDENTIAL_KEY_PATH");
   }
-  if (
-    mode === "production" &&
-    backing === "portablefs" &&
-    !values.OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH
-  ) {
-    throw new Error("Production requires OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH");
-  }
-}
-
-function requirePortableFsManagerIdentity(values: {
-  readonly OPENSTEER_PORTABLEFS_MANAGER_CA_PATH?: string | undefined;
-  readonly OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH?: string | undefined;
-  readonly OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH?: string | undefined;
-  readonly OPENSTEER_PORTABLEFS_MANAGER_URL: string | URL;
-}): void {
-  const paths = [
-    values.OPENSTEER_PORTABLEFS_MANAGER_CA_PATH,
-    values.OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH,
-    values.OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH,
-  ];
-  const configured = paths.filter(Boolean).length;
-  if (configured !== 0 && configured !== paths.length) {
-    throw new Error(
-      "OPENSTEER_PORTABLEFS_MANAGER_CA_PATH, OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH, and OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH must be configured together",
-    );
-  }
-  const managerUrl = new URL(values.OPENSTEER_PORTABLEFS_MANAGER_URL);
-  const protocol = managerUrl.protocol;
-  if (protocol === "https:" && configured !== paths.length) {
-    throw new Error("PortableFS manager HTTPS requires the product mTLS identity paths");
-  }
-  if (protocol !== "https:" && protocol !== "http:") {
-    throw new Error("OPENSTEER_PORTABLEFS_MANAGER_URL must use HTTP or HTTPS");
-  }
-  if (
-    managerUrl.username ||
-    managerUrl.password ||
-    managerUrl.search ||
-    managerUrl.hash ||
-    (managerUrl.pathname !== "" && managerUrl.pathname !== "/")
-  ) {
-    throw new Error(
-      "OPENSTEER_PORTABLEFS_MANAGER_URL must be an origin-only URL for mount-owned renewal",
-    );
-  }
 }
 
 function workspaceStorageConfig(
-  environment: NodeJS.ProcessEnv,
   parsed: z.infer<typeof HostEnvironmentSchema>,
-  shape: DeploymentShape,
 ): HostConfig["workspace"]["storage"] {
-  if (shape.defaultWorkspaceBacking === "local-directory") {
-    const portableFsVariables = [
-      "OPENSTEER_FILES_SERVICE_URL",
-      "OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN",
-      "OPENSTEER_PORTABLEFS_MANAGER_CA_PATH",
-      "OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH",
-      "OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH",
-      "OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME",
-      "OPENSTEER_PORTABLEFS_MANAGER_URL",
-      "OPENSTEER_PORTABLEFS_PRODUCT_ISSUER",
-      "OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH",
-      "OPENSTEER_PORTABLEFS_SERVICE_ID",
-      "OPENSTEER_WORKSPACE_ARCHIVE_AFTER_DAYS",
-      "OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES",
-      "OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT",
-      "OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES",
-      "OPENSTEER_WORKSPACE_MAX_INODE_LIMIT",
-    ] as const;
-    const configuredPortableFsVariable = portableFsVariables.find((name) =>
-      isConfigured(environment[name]),
-    );
-    if (configuredPortableFsVariable) {
-      throw new Error(
-        `A local-directory backing must not configure PortableFS variable ${configuredPortableFsVariable}`,
-      );
-    }
-    const ownerEnvironmentId =
-      parsed.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID ??
-      (parsed.OPENSTEER_MODE === "production"
-        ? undefined
-        : EnvironmentIdSchema.parse("env_00000000-0000-4000-8000-000000000001"));
-    if (!ownerEnvironmentId) {
-      throw new Error(
-        "A local-directory default requires OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID to name the machine that holds new Workspaces",
-      );
-    }
-    return { kind: "local-directory", ownerEnvironmentId };
-  }
-
-  if (isConfigured(environment.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID)) {
+  const ownerEnvironmentId =
+    parsed.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID ??
+    (parsed.OPENSTEER_MODE === "production"
+      ? undefined
+      : EnvironmentIdSchema.parse("env_00000000-0000-4000-8000-000000000001"));
+  if (!ownerEnvironmentId) {
     throw new Error(
-      "A PortableFS default must not configure local Workspace variable OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID",
+      "A local-directory default requires OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID to name the machine that holds new Workspaces",
     );
   }
-  const serviceId = parsed.OPENSTEER_PORTABLEFS_SERVICE_ID;
-  const managerUrl = parsed.OPENSTEER_PORTABLEFS_MANAGER_URL;
-  if (!serviceId || !managerUrl) {
-    throw new Error(
-      "A PortableFS backing requires OPENSTEER_PORTABLEFS_SERVICE_ID and OPENSTEER_PORTABLEFS_MANAGER_URL",
-    );
-  }
-  if (parsed.OPENSTEER_MODE === "production" && !parsed.OPENSTEER_FILES_SERVICE_URL) {
-    throw new Error("A production PortableFS backing requires OPENSTEER_FILES_SERVICE_URL");
-  }
-  requireSecureServiceUrl(
-    parsed.OPENSTEER_MODE,
-    managerUrl.toString(),
-    "OPENSTEER_PORTABLEFS_MANAGER_URL",
-  );
-  requirePortableFsManagerIdentity({
-    OPENSTEER_PORTABLEFS_MANAGER_CA_PATH: parsed.OPENSTEER_PORTABLEFS_MANAGER_CA_PATH,
-    OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH: parsed.OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH,
-    OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH: parsed.OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH,
-    OPENSTEER_PORTABLEFS_MANAGER_URL: managerUrl,
-  });
-  if (parsed.OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES % 1_024 !== 0) {
-    throw new Error("OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES must be a multiple of 1024");
-  }
-  if (parsed.OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES % 1_024 !== 0) {
-    throw new Error("OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES must be a multiple of 1024");
-  }
-  if (
-    parsed.OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES >
-      parsed.OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES ||
-    parsed.OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT > parsed.OPENSTEER_WORKSPACE_MAX_INODE_LIMIT
-  ) {
-    throw new Error("Default Workspace quotas must not exceed the configured quota ceilings");
-  }
-  const filesServiceUrl = originUrl(
-    parsed.OPENSTEER_FILES_SERVICE_URL ?? "http://127.0.0.1:4315",
-    "OPENSTEER_FILES_SERVICE_URL",
-  );
-  return {
-    archiveAfterDays: parsed.OPENSTEER_WORKSPACE_ARCHIVE_AFTER_DAYS,
-    authorizationDomain: parsed.OPENSTEER_PORTABLEFS_AUTHORIZATION_DOMAIN,
-    defaultBlockLimitBytes: parsed.OPENSTEER_WORKSPACE_DEFAULT_BLOCK_LIMIT_BYTES,
-    defaultInodeLimit: parsed.OPENSTEER_WORKSPACE_DEFAULT_INODE_LIMIT,
-    filesServiceUrl,
-    kind: "portablefs",
-    maxBlockLimitBytes: parsed.OPENSTEER_WORKSPACE_MAX_BLOCK_LIMIT_BYTES,
-    maxInodeLimit: parsed.OPENSTEER_WORKSPACE_MAX_INODE_LIMIT,
-    managerCaPath: parsed.OPENSTEER_PORTABLEFS_MANAGER_CA_PATH,
-    managerCertPath: parsed.OPENSTEER_PORTABLEFS_MANAGER_CERT_PATH,
-    managerKeyPath: parsed.OPENSTEER_PORTABLEFS_MANAGER_KEY_PATH,
-    managerServerName: parsed.OPENSTEER_PORTABLEFS_MANAGER_SERVER_NAME,
-    managerUrl: new URL(managerUrl),
-    productIssuer: parsed.OPENSTEER_PORTABLEFS_PRODUCT_ISSUER,
-    productPrivateKeyPath: parsed.OPENSTEER_PORTABLEFS_PRODUCT_PRIVATE_KEY_PATH,
-    serviceId,
-  };
-}
-
-function isConfigured(value: string | undefined): boolean {
-  return value !== undefined && value.trim() !== "";
+  return { kind: "local-directory", ownerEnvironmentId };
 }
 
 export const defaultRunnerMaxConcurrentTriggerPrograms = 4;
@@ -1035,9 +823,7 @@ const RunnerEnvironmentSchema = z.object({
     (value) => value === undefined || isAbsolute(value),
     "OPENSTEER_NODE_EXECUTABLE must be an absolute path",
   ),
-  OPENSTEER_PORTABLEFS_MOUNT_BINARY: optionalPath,
   OPENSTEER_RUNNER_WORKSPACE_BACKINGS: z.string().trim().min(1).default("local-directory"),
-  OPENSTEER_RUNNER_WORKSPACE_ROOT: optionalPath,
   OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: optionalPath,
   OPENSTEER_LOCAL_WORKSPACE_ROOT: optionalPath,
   OPENSTEER_BROWSER_BRIDGE_TOKEN: z.string().min(32).max(4_096).optional(),
@@ -1115,17 +901,12 @@ export interface RunnerConfig {
    * and starts nothing that executes work (`docs/computers.md` §2).
    */
   readonly modules: readonly RunnerProcessModule[];
-  readonly mountBinary: string | undefined;
   readonly name: string;
   readonly nodeExecutable: string;
-  /** Set when PortableFS was requested but cannot run here, so the Runner can
-   * say why it connected with local-directory only. */
-  readonly portableFsUnavailableReason?: string;
   readonly runnerId: RunnerId | undefined;
   readonly runnerKind: "main" | "local" | "managed";
-  readonly workspaceBackings: readonly ("local-directory" | "portablefs")[];
+  readonly workspaceBackings: readonly "local-directory"[];
   readonly workspaceNamespace: "single-owner" | "owner-scoped";
-  readonly workspaceRoot: string | undefined;
   readonly localWorkspaceRegistryPath: string | undefined;
   readonly localWorkspaceRoot: string | undefined;
 }
@@ -1149,7 +930,7 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
   }
   // A Runner advertises what it can reach, and the Deployment's default says
   // only what a Workspace gets when nobody chooses. A machine that holds only
-  // its own directories is a useful machine on a PortableFS Deployment.
+  // its own directories is a useful machine on a Deployment.
   //
   // The Main Runner is the one that shares a computer with its Personal Host,
   // so only it must reach that Host over loopback. Every other computer on a
@@ -1239,7 +1020,6 @@ export function parseRunnerConfig(
       : {
           localWorkspaceRegistryPath: undefined,
           localWorkspaceRoot: undefined,
-          mountBinary: undefined,
           workspaceBackings: [],
           workspaceRoot: undefined,
         }),
@@ -1255,32 +1035,11 @@ export function parseRunnerConfig(
  */
 function runnerWorkspaceStorage(
   parsed: z.infer<typeof RunnerEnvironmentSchema>,
-): Pick<
-  RunnerConfig,
-  | "localWorkspaceRegistryPath"
-  | "localWorkspaceRoot"
-  | "mountBinary"
-  | "portableFsUnavailableReason"
-  | "workspaceBackings"
-  | "workspaceRoot"
-> {
-  const requestedBackings = parseRunnerWorkspaceBackings(
+): Pick<RunnerConfig, "localWorkspaceRegistryPath" | "localWorkspaceRoot" | "workspaceBackings"> {
+  const workspaceBackings = parseRunnerWorkspaceBackings(
     parsed.OPENSTEER_RUNNER_WORKSPACE_BACKINGS,
   );
-  const supportsLocal = requestedBackings.includes("local-directory");
-  // A machine that can hold its own directories stays useful without PortableFS.
-  // Dropping the unusable capability here is what lets somebody lend a computer
-  // with no FUSE or FSKit installed, instead of failing to start.
-  const portableFsUnavailableReason =
-    requestedBackings.includes("portablefs") &&
-    supportsLocal &&
-    !parsed.OPENSTEER_PORTABLEFS_MOUNT_BINARY
-      ? "No PortableFS mount binary is installed, so this machine offers only its own directories."
-      : undefined;
-  const workspaceBackings = portableFsUnavailableReason
-    ? requestedBackings.filter((backing) => backing !== "portablefs")
-    : requestedBackings;
-  const supportsPortableFs = workspaceBackings.includes("portablefs");
+  const supportsLocal = workspaceBackings.includes("local-directory");
   if (
     supportsLocal &&
     (!parsed.OPENSTEER_LOCAL_WORKSPACE_ROOT || !parsed.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH)
@@ -1297,43 +1056,10 @@ function runnerWorkspaceStorage(
       "A Runner without local-directory support must not configure local Workspace paths",
     );
   }
-  if (supportsPortableFs && !parsed.OPENSTEER_PORTABLEFS_MOUNT_BINARY) {
-    throw new Error("A PortableFS Runner requires OPENSTEER_PORTABLEFS_MOUNT_BINARY");
-  }
-  if (
-    !supportsPortableFs &&
-    !portableFsUnavailableReason &&
-    parsed.OPENSTEER_PORTABLEFS_MOUNT_BINARY
-  ) {
-    throw new Error(
-      "A Runner without PortableFS support must not configure a PortableFS mount binary",
-    );
-  }
-  if (
-    !supportsPortableFs &&
-    !portableFsUnavailableReason &&
-    parsed.OPENSTEER_RUNNER_WORKSPACE_ROOT
-  ) {
-    throw new Error(
-      "A Runner without PortableFS support must not configure OPENSTEER_RUNNER_WORKSPACE_ROOT",
-    );
-  }
-  const workspaceRoot = supportsPortableFs
-    ? (parsed.OPENSTEER_RUNNER_WORKSPACE_ROOT ??
-      (parsed.OPENSTEER_RUNNER_KIND === "managed"
-        ? "/workspaces"
-        : resolve(parsed.OPENSTEER_RUNNER_DATA_DIR, "workspaces")))
-    : undefined;
-  if (workspaceRoot !== undefined && !isAbsolute(workspaceRoot)) {
-    throw new Error("OPENSTEER_RUNNER_WORKSPACE_ROOT must be an absolute path");
-  }
   return {
     localWorkspaceRegistryPath: parsed.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH,
     localWorkspaceRoot: parsed.OPENSTEER_LOCAL_WORKSPACE_ROOT,
-    mountBinary: parsed.OPENSTEER_PORTABLEFS_MOUNT_BINARY,
-    ...(portableFsUnavailableReason ? { portableFsUnavailableReason } : {}),
     workspaceBackings,
-    workspaceRoot,
   };
 }
 
@@ -1458,20 +1184,18 @@ export function resolveRunnerNodeExecutable(
   );
 }
 
-function parseRunnerWorkspaceBackings(
-  value: string,
-): readonly ("local-directory" | "portablefs")[] {
+function parseRunnerWorkspaceBackings(value: string): readonly "local-directory"[] {
   const values = value.split(",").map((entry) => entry.trim());
   if (
     values.length === 0 ||
-    values.some((entry) => entry !== "local-directory" && entry !== "portablefs") ||
+    values.some((entry) => entry !== "local-directory") ||
     new Set(values).size !== values.length
   ) {
     throw new Error(
-      "OPENSTEER_RUNNER_WORKSPACE_BACKINGS must be a unique comma-separated list of local-directory and portablefs",
+      "OPENSTEER_RUNNER_WORKSPACE_BACKINGS must be a unique comma-separated list of local-directory",
     );
   }
-  return values as readonly ("local-directory" | "portablefs")[];
+  return values as readonly "local-directory"[];
 }
 
 /**

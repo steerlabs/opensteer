@@ -1,3 +1,4 @@
+import { EnvironmentIdSchema } from "@opensteer/core";
 /**
  * Chrome sign-ins v2, end to end, on real parts only: the built extension in a
  * disposable Chromium profile ("the user's everyday Chrome"), the in-process
@@ -71,7 +72,6 @@ import {
   type CallerMachine,
   type MachineAccessHost,
 } from "../../host/src/runtime/machine-access.test-support.js";
-import { startPortableFsManagerFake } from "../../host/src/runtime/portablefs-manager.test-support.js";
 import { createHostRuntime, type HostRuntime } from "../../host/src/runtime/runtime.js";
 import { testRpcData } from "../../host/src/server/test-host-api-request.js";
 
@@ -257,15 +257,12 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     cleanups.push(() => closeServer(site.server));
     const url = (host: string, path: string) => `https://${host}:${site.port}${path}`;
 
-    const portableFs = await startPortableFsManagerFake();
-    cleanups.push(() => portableFs.close());
     const hostPort = await freePort();
     const hostOrigin = `http://127.0.0.1:${hostPort}`;
     const runtime: HostRuntime = await createHostRuntime(
       hostConfig({
         dataDirectory: join(scratch, "host"),
         databaseUrl: hostDatabaseUrl,
-        managerUrl: portableFs.url,
         port: hostPort,
         webDirectory: join(scratch, "web"),
       }),
@@ -282,7 +279,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       config: hostConfig({
         dataDirectory: join(scratch, "host"),
         databaseUrl: hostDatabaseUrl,
-        managerUrl: portableFs.url,
         port: hostPort,
         webDirectory: join(scratch, "web"),
       }),
@@ -1000,7 +996,6 @@ async function extensionConnections(worker: Worker): Promise<ExtensionConnection
 function hostConfig(input: {
   readonly dataDirectory: string;
   readonly databaseUrl: string;
-  readonly managerUrl: URL;
   readonly port: number;
   readonly webDirectory: string;
 }): HostConfig {
@@ -1038,24 +1033,10 @@ function hostConfig(input: {
     },
     workspace: {
       deletionRetentionDays: 14,
-      shape: { defaultWorkspaceBacking: "portablefs", kind: "server" },
+      shape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
       storage: {
-        archiveAfterDays: 7,
-        authorizationDomain: "opensteer-test",
-        defaultBlockLimitBytes: 10 * 1_024 * 1_024 * 1_024,
-        defaultInodeLimit: 1_000_000,
-        filesServiceUrl: new URL("http://127.0.0.1:4315"),
-        kind: "portablefs",
-        managerCaPath: undefined,
-        managerCertPath: undefined,
-        managerKeyPath: undefined,
-        managerServerName: undefined,
-        managerUrl: input.managerUrl,
-        maxBlockLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-        maxInodeLimit: 10_000_000,
-        productIssuer: "opensteer-test",
-        productPrivateKeyPath: undefined,
-        serviceId: "test-portablefs",
+        kind: "local-directory",
+        ownerEnvironmentId: EnvironmentIdSchema.parse("env_00000000-0000-4000-8000-000000000001"),
       },
     },
   };

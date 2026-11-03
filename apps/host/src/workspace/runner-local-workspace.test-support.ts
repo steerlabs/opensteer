@@ -181,7 +181,6 @@ export async function connectLocalWorkspaceRunner(input: {
         maxConcurrentRuns: 2,
         providerStateModes: ["ambient", "isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: input.name,

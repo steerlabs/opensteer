@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import {
   defaultTestInclude,
   defaultTestExclude,
@@ -37,7 +37,8 @@ export function readGraph(root, ref) {
     (p) =>
       groups.some((g) => p.startsWith(g + "/")) &&
       p.split("/").length === 3 &&
-      p.endsWith("/package.json"),
+      p.endsWith("/package.json") &&
+      (ref || existsSync(resolve(root, p))),
   );
   const graph = manifests.map((file) => {
     const m = JSON.parse(

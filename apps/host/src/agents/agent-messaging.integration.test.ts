@@ -146,11 +146,7 @@ integration("agent-to-agent messaging round trip", () => {
             ownerEnvironmentId: createId("environment"),
             storageAuthorityId: createId("storageAuthority"),
           },
-          capacityPolicy: {
-            kind: "hard-quota",
-            blockHardLimitBytes: 10_000_000,
-            inodeHardLimit: 10_000,
-          },
+
           status: "ready",
         }),
     },
@@ -207,7 +203,6 @@ integration("agent-to-agent messaging round trip", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 1000000, inodeHardLimit: 1000 },
     });
     const otherThreadId = createId("thread");
     const original = await database
@@ -976,7 +971,7 @@ integration("agent-to-agent messaging round trip", () => {
           ownerEnvironmentId: createId("environment"),
           storageAuthorityId: createId("storageAuthority"),
         },
-        capacityPolicy: { kind: "host-filesystem" as const },
+
         createdBy: fixture.userId,
         idempotencyKey: randomUUID(),
         name: "Worker workspace",
@@ -1317,7 +1312,7 @@ integration("agent-to-agent messaging round trip", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: userId,
       idempotencyKey: `messaging-main-${randomUUID()}`,
       name: "Main workspace",
@@ -1518,7 +1513,6 @@ integration("agent-to-agent messaging round trip", () => {
           maxConcurrentRuns: 4,
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
-          workspaceMounts: [],
         },
       },
       name: "Main runner",

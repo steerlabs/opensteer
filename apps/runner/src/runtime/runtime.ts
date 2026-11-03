@@ -1948,11 +1948,7 @@ export class RunnerRuntime {
     if (
       command.context.workspaceAccess.workspaceId !== command.context.workspaceId ||
       (command.context.workspaceAccess.kind === "local-directory" &&
-        command.context.workspaceAccess.ownerEnvironmentId !== command.environmentId) ||
-      (command.context.workspaceAccess.kind === "portablefs" &&
-        (command.context.workspaceAccess.workspaceKind !== command.context.workspaceKind ||
-          (command.context.workspaceKind === "main" &&
-            command.context.workspaceAccess.createdBy !== command.context.requestedBy)))
+        command.context.workspaceAccess.ownerEnvironmentId !== command.environmentId)
     ) {
       return reject("forbidden", "Run Workspace access plan does not match its context", false);
     }
@@ -3259,8 +3255,7 @@ export class RunnerRuntime {
     if (
       command.plan.workspaceId !== command.workspaceId ||
       (command.plan.kind === "local-directory" &&
-        command.plan.ownerEnvironmentId !== command.environmentId) ||
-      (command.plan.kind === "portablefs" && command.plan.workspaceKind === "main")
+        command.plan.ownerEnvironmentId !== command.environmentId)
     ) {
       return reject("forbidden", "Workspace access plan is not assigned to this Main run", false);
     }

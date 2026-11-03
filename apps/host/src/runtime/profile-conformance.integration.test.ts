@@ -1182,7 +1182,6 @@ async function enrollRunnerSocket(
         maxConcurrentRuns: 2,
         providerStateModes: ["ambient", "isolated"],
         workspaceBackings: [runner.backing],
-        workspaceMounts: [],
       },
     },
     name: "Conformance Main",

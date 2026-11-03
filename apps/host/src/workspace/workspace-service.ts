@@ -6,7 +6,6 @@ import {
   type MarkColor,
   type UserId,
   type Workspace,
-  type WorkspaceCapacityPolicy,
   type WorkspaceIconName,
   type WorkspaceId,
   type WorkspaceKind,
@@ -19,7 +18,6 @@ import {
 } from "@opensteer/protocol";
 import {
   WorkspaceAuthorityUnreachableError,
-  assertBackingAllowedByDeployment,
   workspaceUsesBacking,
   type WorkspaceBackingHealth,
   type WorkspaceBackingLifecycleDriver,
@@ -61,13 +59,10 @@ interface WorkspaceReconciliationResult {
 export class WorkspaceService {
   readonly #active = new Map<WorkspaceId, Promise<Workspace>>();
   readonly #drivers: WorkspaceLifecycleDrivers;
-  readonly #shape: DeploymentShape;
   readonly #resolveOwnerEnvironmentId: ((ownerId: UserId) => Promise<EnvironmentId>) | undefined;
   readonly #store: WorkspaceStore;
 
   constructor(options: {
-    readonly capacityPolicy?: WorkspaceCapacityPolicy;
-    readonly capacityPolicyCeiling?: WorkspaceCapacityPolicy;
     readonly drivers: WorkspaceLifecycleDrivers;
     readonly shape: DeploymentShape;
     readonly resolveOwnerEnvironmentId?: (ownerId: UserId) => Promise<EnvironmentId>;
@@ -81,14 +76,12 @@ export class WorkspaceService {
       throw new TypeError("A local-directory default requires an owning environment resolver");
     }
     this.#drivers = options.drivers;
-    this.#shape = options.shape;
     this.#resolveOwnerEnvironmentId = options.resolveOwnerEnvironmentId;
     this.#store = options.store;
   }
 
   async create(input: {
     readonly createdBy: UserId;
-    readonly capacityPolicy?: WorkspaceCapacityPolicy;
     readonly icon?: WorkspaceIconName;
     readonly color?: MarkColor;
     readonly idempotencyKey: string;
@@ -121,10 +114,8 @@ export class WorkspaceService {
       });
     }
     const backingKind = "local-directory";
-    const capacityPolicy = this.#effectiveCapacityPolicy(backingKind, input.capacityPolicy);
     const base = {
       backingKind,
-      capacityPolicy,
       createdBy: input.createdBy,
       idempotencyKey: provisioningKey,
       kind: input.kind ?? "project",
@@ -151,10 +142,8 @@ export class WorkspaceService {
         retryable: true,
       });
     }
-    assertBackingAllowedByDeployment(this.#shape, backing);
     const workspace = await this.#store.createWorkspace({
       backing,
-      capacityPolicy,
       createdBy: input.createdBy,
       ...(input.icon ? { icon: input.icon } : {}),
       ...(input.color ? { color: input.color } : {}),
@@ -266,7 +255,7 @@ export class WorkspaceService {
     const backing = {
       ...this.#requiredLocal().initialBacking({
         backingKind: "local-directory",
-        capacityPolicy: { kind: "host-filesystem" },
+
         createdBy: workspace.createdBy,
         idempotencyKey: `workspace:${workspace.id}:adopt:v1`,
         kind: workspace.kind,
@@ -557,20 +546,7 @@ export class WorkspaceService {
   }
 
   #assertWorkspace(workspace: Workspace): void {
-    assertBackingAllowedByDeployment(this.#shape, workspace.backing);
     if (workspace.backing.kind === "local-directory") this.#requiredLocal();
-  }
-
-  #effectiveCapacityPolicy(
-    _backingKind: "local-directory",
-    override: WorkspaceCapacityPolicy | undefined,
-  ): WorkspaceCapacityPolicy {
-    if (override && override.kind !== "host-filesystem")
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "A Workspace on a machine's own disk cannot carry a storage quota",
-      });
-    return { kind: "host-filesystem" };
   }
 
   async #ownerEnvironmentId(ownerId: UserId): Promise<EnvironmentId> {

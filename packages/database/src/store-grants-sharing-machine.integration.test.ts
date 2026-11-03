@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { NotificationStore } from "./notification-store.js";
 import { runReply } from "./run-reply.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
@@ -939,15 +943,14 @@ describeStore("PostgreSQL store", (it) => {
     const workspace = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_workspace_sharing",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: ownerId,
       idempotencyKey: "workspace-sharing-workspace",
       name: "Client delivery",
@@ -1192,15 +1195,14 @@ describeStore("PostgreSQL store", (it) => {
     const project = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration_skill_lifecycle_project",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "workspace-integration-skill-lifecycle-project",
       kind: "project",
@@ -1350,15 +1352,14 @@ describeStore("PostgreSQL store", (it) => {
       const project = await store.createWorkspace({
         backing: {
           generation: 1,
-          kind: "portablefs",
-          serviceId: "test-portablefs",
-          volumeId: "wsp_integration_access_widening",
+          kind: "local-directory",
+          bindingId: createStorageFixtureId("workspaceBinding"),
+          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+            "env_00000000-0000-4000-8000-000000000001",
+          ),
+          storageAuthorityId: createStorageFixtureId("storageAuthority"),
         },
-        capacityPolicy: {
-          blockHardLimitBytes: 10_000_000,
-          inodeHardLimit: 10_000,
-          kind: "hard-quota",
-        },
+
         createdBy: fixture.userId,
         idempotencyKey: "workspace-integration-access-widening-project",
         kind: "project",
@@ -1529,15 +1530,14 @@ describeStore("PostgreSQL store", (it) => {
     const project = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration_access_widening",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "workspace-integration-access-widening-project",
       kind: "project",
@@ -1775,15 +1775,14 @@ describeStore("PostgreSQL store", (it) => {
     const project = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration_access_widening",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "workspace-integration-access-widening-project",
       kind: "project",
@@ -1921,15 +1920,14 @@ describeStore("PostgreSQL store", (it) => {
     const project = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_integration-main-inheritance-project",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: fixture.userId,
       idempotencyKey: "integration-main-inheritance-project",
       kind: "project",

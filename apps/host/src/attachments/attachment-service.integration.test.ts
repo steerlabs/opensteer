@@ -64,7 +64,7 @@ integration.sequential("Host attachment originals", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: userId,
       idempotencyKey: `attachment-workspace-${suffix}`,
       name: `Attachments ${suffix}`,
@@ -122,7 +122,7 @@ integration.sequential("Host attachment originals", () => {
         ownerEnvironmentId: createId("environment"),
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
+
       createdBy: first.userId,
       idempotencyKey: "attachment-workspace-cross-workspace-key-second",
       name: "Other attachments",

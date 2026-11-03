@@ -59,14 +59,7 @@ integration("Workspace Files membership generation", () => {
                 ownerEnvironmentId: createId("environment"),
                 storageAuthorityId: createId("storageAuthority"),
               },
-        capacityPolicy:
-          backingKind === "local-directory"
-            ? { kind: "host-filesystem" }
-            : {
-                blockHardLimitBytes: 10_000_000,
-                inodeHardLimit: 10_000,
-                kind: "hard-quota",
-              },
+
         createdBy: ownerId,
         idempotencyKey: `files-membership-${backingKind}`,
         kind: "project",

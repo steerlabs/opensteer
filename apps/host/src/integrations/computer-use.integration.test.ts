@@ -613,7 +613,7 @@ async function createWorkspace(
       ownerEnvironmentId: createId("environment"),
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" as const },
+
     createdBy,
     idempotencyKey: `workspace-${suffix}`,
     ...(kind === undefined ? {} : { kind }),
@@ -685,7 +685,6 @@ async function createComputerUseTask(
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
         workspaceBackings: ["local-directory"],
-        workspaceMounts: [],
       },
     },
     name: `Runner ${suffix}`,

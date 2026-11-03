@@ -36,7 +36,7 @@ const developmentTransport = {
 } as const;
 const productionCloudTransport = {
   deploymentShape: {
-    defaultWorkspaceBacking: "portablefs",
+    defaultWorkspaceBacking: "local-directory",
     kind: "server" as const,
   },
   mode: "production",

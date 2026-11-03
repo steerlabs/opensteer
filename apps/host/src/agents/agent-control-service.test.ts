@@ -645,7 +645,6 @@ describe("AgentControlService", () => {
         ownerEnvironmentId: environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
     };
     const { service } = makeService({
       capabilityProfileId: "main",
@@ -764,7 +763,6 @@ describe("AgentControlService", () => {
         ownerEnvironmentId: targetEnvironmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-      capacityPolicy: { kind: "host-filesystem" as const },
     };
     const { service } = makeService({
       capabilityProfileId: "main",
@@ -2049,7 +2047,7 @@ function workspace(
       ownerEnvironmentId,
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" as const },
+
     createdAt: now,
     createdBy,
     homeThreadId: null,

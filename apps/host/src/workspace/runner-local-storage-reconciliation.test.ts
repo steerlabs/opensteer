@@ -31,7 +31,7 @@ function localWorkspace(options: {
       ownerEnvironmentId: options.ownerEnvironmentId ?? environmentId,
       storageAuthorityId: options.storageAuthorityId ?? storageAuthorityId,
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
@@ -186,6 +186,5 @@ function agentsModule(localStorage: RunnerLocalStorageInventory | null) {
     maxConcurrentRuns: 2,
     providerStateModes: ["isolated" as const],
     workspaceBackings: [localStorage ? ("local-directory" as const) : ("local-directory" as const)],
-    workspaceMounts: [],
   };
 }

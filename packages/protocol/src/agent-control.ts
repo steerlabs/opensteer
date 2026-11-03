@@ -71,14 +71,8 @@ const AgentThreadMessageWindowSchema = z.strictObject({
 const agentOmittedWorkspaceFields = { color: true, icon: true } as const;
 const AgentWorkspaceViewSchema = z.strictObject({
   ...WorkspaceViewSchema.omit(agentOmittedWorkspaceFields).shape,
-  capacity: z.discriminatedUnion("kind", [
-    z.strictObject(WorkspaceViewSchema.shape.capacity.options[0].shape),
-    z.strictObject(WorkspaceViewSchema.shape.capacity.options[1].shape),
-  ]),
-  location: z.discriminatedUnion("kind", [
-    z.strictObject(WorkspaceViewSchema.shape.location.options[0].shape),
-    z.strictObject(WorkspaceViewSchema.shape.location.options[1].shape),
-  ]),
+  capacity: z.strictObject(WorkspaceViewSchema.shape.capacity.shape),
+  location: z.strictObject(WorkspaceViewSchema.shape.location.shape),
   storageIssue: z.strictObject(WorkspaceViewSchema.shape.storageIssue.unwrap().shape).nullable(),
 });
 

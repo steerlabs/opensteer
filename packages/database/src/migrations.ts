@@ -4681,6 +4681,7 @@ export function migrationProvider() {
         "0129_project_slugs": projectSlugsMigration,
         "0130_project_relocation": projectRelocationMigration,
         "0131_project_control_actions": projectControlActionsMigration,
+        "0132_local_directory_only": localDirectoryOnlyMigration,
       };
     },
   };
@@ -6758,5 +6759,53 @@ const projectControlActionsMigration: Migration = {
           .raw(`alter table ${table} validate constraint ${table}_${column}_check`)
           .execute(database);
     }
+  },
+};
+
+/** Retire shared-volume metadata without deleting application records or disk data. */
+export const localDirectoryOnlyMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.workspaces drop constraint workspaces_backing_capacity_policy_match_check;
+      alter table public.workspaces drop constraint workspaces_backing_shape_check;
+      create temporary table retired_workspace_destinations on commit drop as
+        select w.created_by,
+          coalesce(
+            (select m.backing->>'ownerEnvironmentId' from public.workspaces m
+             where m.created_by = w.created_by and m.kind = 'main' and m.backing->>'kind' = 'local-directory' limit 1),
+            (select e.id from public.execution_environments e join public.runners r on r.id = e.runner_id
+             where r.owner_user_id = w.created_by order by (e.kind = 'main') desc, e.created_at, e.id limit 1),
+            (select e.id from public.execution_environments e join public.runners r on r.id = e.runner_id
+             where r.owner_kind = 'deployment' order by (e.kind = 'main') desc, e.created_at, e.id limit 1),
+            'env_' || gen_random_uuid()::text
+          ) as environment_id
+        from public.workspaces w where w.backing->>'kind' = 'portablefs' group by w.created_by;
+      insert into public.execution_environments(id, name, kind, runner_id, capabilities)
+        select environment_id, 'Main (computer required)', 'main', null, '[]'::jsonb
+        from retired_workspace_destinations on conflict (id) do nothing;
+      update public.workspaces w set
+        backing = jsonb_build_object('kind', 'local-directory', 'bindingId', 'wbd_' || gen_random_uuid()::text,
+          'generation', w.backing->'generation', 'ownerEnvironmentId', d.environment_id, 'storageAuthorityId', null),
+        status = case when w.status in ('deleting', 'deleted') then w.status else 'unavailable' end,
+        storage_error_code = 'relocation-required', storage_error_retryable = false, storage_error_at = now(),
+        storage_error_message = case when w.kind = 'main'
+          then 'Restore your files to your Main directory on the owning computer, then confirm its location.'
+          else 'Restore your files to your Main directory/Projects/' || w.slug || ' on the owning computer, then confirm its location.' end
+        from retired_workspace_destinations d where w.created_by = d.created_by and w.backing->>'kind' = 'portablefs';
+      drop table public.workspace_mounts;
+      drop index public.workspaces_portablefs_backing_unique;
+      alter table public.workspaces drop column capacity_policy;
+      alter table public.workspaces add constraint workspaces_backing_shape_check check (
+        backing->>'kind' = 'local-directory'
+        and backing ?& array['kind','bindingId','generation','ownerEnvironmentId','storageAuthorityId']
+        and backing - array['kind','bindingId','generation','ownerEnvironmentId','storageAuthorityId'] = '{}'::jsonb
+        and jsonb_typeof(backing->'generation') = 'number'
+        and (backing->>'generation') ~ '^[0-9]+$'
+        and (backing->>'generation')::numeric between 1 and 9007199254740991
+        and (backing->>'bindingId') ~ '^wbd_[0-9a-fA-F-]{36}$'
+        and (backing->>'ownerEnvironmentId') ~ '^env_[0-9a-fA-F-]{36}$'
+        and (backing->'storageAuthorityId' = 'null'::jsonb or (backing->>'storageAuthorityId') ~ '^sta_[0-9a-fA-F-]{36}$')
+      );
+    `.execute(database);
   },
 };

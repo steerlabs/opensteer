@@ -12,7 +12,7 @@ function workspace(status: Workspace["status"] = "deleting"): Workspace {
       ownerEnvironmentId: createId("environment"),
       storageAuthorityId: createId("storageAuthority"),
     },
-    capacityPolicy: { kind: "host-filesystem" },
+
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,

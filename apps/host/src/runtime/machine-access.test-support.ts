@@ -794,7 +794,6 @@ export async function connectTargetMachine(
                 maxConcurrentRuns: 2,
                 providerStateModes: ["isolated"],
                 workspaceBackings: ["local-directory"],
-                workspaceMounts: [],
               },
             }
           : {}),
@@ -1101,7 +1100,6 @@ export async function connectCallerMachine(
         maxConcurrentRuns: input.maxConcurrentRuns ?? 4,
         providerStateModes: ["ambient", "isolated"],
         workspaceBackings: disk ? ["local-directory"] : [],
-        workspaceMounts: [],
       },
     },
     name: input.name,

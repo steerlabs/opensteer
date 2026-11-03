@@ -1174,13 +1174,6 @@ const runnerMessageBase = {} as const;
  */
 const fencedMessageBase = { ...RunnerConnectionFenceSchema.shape } as const;
 
-export const RunnerWorkspaceMountSchema = z.object({
-  enrollmentId: z.string().min(1).max(256),
-  volumeId: z.string().min(1).max(255),
-  workspaceId: WorkspaceIdSchema,
-});
-export type RunnerWorkspaceMount = z.infer<typeof RunnerWorkspaceMountSchema>;
-
 /**
  * Everything an agent-executing machine offers. Only this module carries an
  * environment, harnesses and storage: a Runner that exists to relay a browser
@@ -1223,7 +1216,6 @@ export const RunnerAgentsModuleSchema = z
         values.filter((value) => WorkspaceBackingKindSchema.safeParse(value).success),
       )
       .pipe(z.array(WorkspaceBackingKindSchema).min(1).max(2)),
-    workspaceMounts: z.array(RunnerWorkspaceMountSchema).max(10_000),
   })
   .superRefine((module, context) => {
     if (new Set(module.providerStateModes).size !== module.providerStateModes.length) {
@@ -1248,15 +1240,6 @@ export const RunnerAgentsModuleSchema = z
         code: "custom",
         message: "Runner local Workspace binding identifiers must be unique",
         path: ["localStorage", "bindings"],
-      });
-    }
-    if (
-      new Set(module.workspaceMounts.map((mount) => mount.workspaceId)).size !==
-      module.workspaceMounts.length
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Runner Workspace mount identifiers must be unique",
       });
     }
   });

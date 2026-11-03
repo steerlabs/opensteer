@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { describeStore } from "./store.integration.test-support.js";
 import { strongRowLockViolations } from "./strong-row-locks.test-support.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -3877,17 +3881,18 @@ integration("notification outbox migration", () => {
     await migrateToLatest(scratch);
 
     const store = new OpensteerStore(scratch);
+    await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
+      values ('env_00000000-0000-4000-8000-000000000001', 'Fixture computer', 'main', null, '[]'::jsonb)
+      on conflict (id) do nothing`.execute(scratch);
     const created = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "created-after-notifications",
-      },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
       createdBy: UserIdSchema.parse("usr_22222222-2222-4222-8222-222222222222"),
       idempotencyKey: "notification-migration-new-workspace",
@@ -7512,12 +7517,15 @@ describeStore("Project kind conversion", (it) => {
     const owner = await store.createUser("Project owner");
     const workspace = await store.createWorkspace({
       backing: {
-        kind: "portablefs",
+        kind: "local-directory",
         generation: 1,
-        serviceId: "test-portablefs",
-        volumeId: "project-kind-conversion",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: { kind: "hard-quota", blockHardLimitBytes: 536870912, inodeHardLimit: 50000 },
+
       createdBy: owner,
       idempotencyKey: "project-kind-conversion",
       kind: "project",
@@ -7565,5 +7573,71 @@ describeStore("Project kind conversion", (it) => {
     ).rejects.toThrow("workspace kind is immutable");
     await projectsMigration.up(database);
     expect((await constraints()).rows).toEqual(baselineConstraints);
+  });
+});
+
+integration("local directory conversion", () => {
+  const name = `opensteer_local_conversion_${randomUUID().replaceAll("-", "")}`;
+  let database: Kysely<DatabaseSchema>;
+  let maintenance: Pool;
+  beforeAll(async () => {
+    const url = new URL(databaseUrl!);
+    url.pathname = "/postgres";
+    maintenance = new Pool({ connectionString: url.toString() });
+    await maintenance.query(`create database ${name}`);
+    url.pathname = `/${name}`;
+    database = createDatabase({ connectionString: url.toString() });
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${name}`);
+    await maintenance?.end();
+  });
+  it("preserves a retired Main and Project with explicit relocation destinations", async () => {
+    const result = await new Migrator({ db: database, provider: migrationProvider() }).migrateTo(
+      "0131_project_control_actions",
+    );
+    if (result.error) throw result.error;
+    const owner = createStorageFixtureId("user");
+    const main = createStorageFixtureId("workspace");
+    const project = createStorageFixtureId("workspace");
+    await sql`insert into users(id, display_name, email) values (${owner}, 'Storage owner', 'storage@example.test')`.execute(
+      database,
+    );
+    for (const [id, kind, title] of [
+      [main, "main", "Main"],
+      [project, "project", "My project"],
+    ] as const) {
+      await sql`insert into workspaces(id, name, status, created_by, kind, backing, capacity_policy, color)
+        values (${id}, ${title}, 'ready', ${owner}, ${kind},
+          ${JSON.stringify({ kind: "portablefs", generation: 2, serviceId: "retired", volumeId: id })}::jsonb,
+          '{"kind":"hard-quota","blockHardLimitBytes":1024,"inodeHardLimit":100}'::jsonb, 'blue')`.execute(
+        database,
+      );
+      await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state)
+        values (${createStorageFixtureId("workspaceMembership")}, ${id}, ${owner}, 'owner', 'active')`.execute(
+        database,
+      );
+    }
+    await migrateToLatest(database);
+    const rows = await database.selectFrom("workspaces").selectAll().orderBy("kind").execute();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.backing).toMatchObject({
+        kind: "local-directory",
+        generation: 2,
+        storageAuthorityId: null,
+      });
+      expect(row.storageErrorCode).toBe("relocation-required");
+      expect(row.status).toBe("unavailable");
+      expect(row.storageErrorMessage).toContain(
+        row.kind === "main" ? "Main directory" : "Projects/my-project",
+      );
+    }
+    expect(rows[0]?.backing.ownerEnvironmentId).toBe(rows[1]?.backing.ownerEnvironmentId);
+    expect(await database.selectFrom("workspaceMemberships").selectAll().execute()).toHaveLength(2);
+    expect(
+      (await sql`select to_regclass('public.workspace_mounts') as table`.execute(database)).rows,
+    ).toEqual([{ table: null }]);
   });
 });

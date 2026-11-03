@@ -1,3 +1,7 @@
+import {
+  createId as createStorageFixtureId,
+  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
+} from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import {
@@ -985,15 +989,14 @@ describeStore("PostgreSQL store", (it) => {
     const workspace = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_channel_ingress_delivery",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       idempotencyKey: "workspace-channel-ingress-delivery",
       name: "Channel Workspace",
@@ -1315,15 +1318,14 @@ describeStore("PostgreSQL store", (it) => {
     const secondWorkspace = await store.createWorkspace({
       backing: {
         generation: 1,
-        kind: "portablefs",
-        serviceId: "test-portablefs",
-        volumeId: "wsp_second_dedicated_bot",
+        kind: "local-directory",
+        bindingId: createStorageFixtureId("workspaceBinding"),
+        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
+          "env_00000000-0000-4000-8000-000000000001",
+        ),
+        storageAuthorityId: createStorageFixtureId("storageAuthority"),
       },
-      capacityPolicy: {
-        blockHardLimitBytes: 10_000_000,
-        inodeHardLimit: 10_000,
-        kind: "hard-quota",
-      },
+
       createdBy: userId,
       idempotencyKey: "workspace-second-dedicated-bot",
       name: "Research Workspace",
@@ -1744,13 +1746,13 @@ describeStore("PostgreSQL store", (it) => {
       suffix: "server-local",
     },
     {
-      label: "Server with PortableFS storage",
+      label: "Server with storage storage",
       runFixture: {
         deploymentShape: {
-          defaultWorkspaceBacking: "portablefs" as const,
+          defaultWorkspaceBacking: "local-directory" as const,
           kind: "server" as const,
         },
-        workspaceBacking: "portablefs" as const,
+        workspaceBacking: "local-directory" as const,
       },
       suffix: "server-portable",
     },

@@ -1,10 +1,8 @@
 import {
   EnvironmentIdSchema,
   StorageAuthorityIdSchema,
-  UserIdSchema,
   WorkspaceBindingIdSchema,
   WorkspaceIdSchema,
-  WorkspaceKindSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 
@@ -22,22 +20,5 @@ export type LocalWorkspaceExecutionAccessPlan = z.infer<
   typeof LocalWorkspaceExecutionAccessPlanSchema
 >;
 
-export const PortableFsWorkspaceExecutionAccessPlanSchema = z.strictObject({
-  createdBy: UserIdSchema,
-  exchangeToken: z.string().min(1).max(32_768),
-  exchangeUrl: z.url(),
-  generation: positiveGeneration,
-  kind: z.literal("portablefs"),
-  volumeId: z.string().min(1).max(255),
-  workspaceId: WorkspaceIdSchema,
-  workspaceKind: WorkspaceKindSchema,
-});
-export type PortableFsWorkspaceExecutionAccessPlan = z.infer<
-  typeof PortableFsWorkspaceExecutionAccessPlanSchema
->;
-
-export const WorkspaceExecutionAccessPlanSchema = z.discriminatedUnion("kind", [
-  LocalWorkspaceExecutionAccessPlanSchema,
-  PortableFsWorkspaceExecutionAccessPlanSchema,
-]);
+export const WorkspaceExecutionAccessPlanSchema = LocalWorkspaceExecutionAccessPlanSchema;
 export type WorkspaceExecutionAccessPlan = z.infer<typeof WorkspaceExecutionAccessPlanSchema>;

@@ -263,7 +263,7 @@ async function startAgentsRunner(input: {
     privateRoot,
     await realpath(tmpdir()),
     ...(await Promise.all(
-      [config.workspaceRoot, config.localWorkspaceRoot]
+      [config.localWorkspaceRoot]
         .filter((root): root is string => root !== undefined)
         .map((root) => realpath(root)),
     )),
@@ -300,7 +300,6 @@ async function startAgentsRunner(input: {
         ),
         stateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
         workspaceRoots: [
-          config.workspaceRoot,
           config.workspaceNamespace === "owner-scoped" ? config.localWorkspaceRoot : undefined,
         ].filter((root): root is string => root !== undefined),
       })
@@ -363,7 +362,6 @@ async function startAgentsRunner(input: {
         : {}),
       runtime,
       workspaceBackings: advertisedBackings,
-      workspaceMounts: () => [],
     },
     close: async () => {
       await messagingModule?.module.close();
