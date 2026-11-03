@@ -1,3 +1,4 @@
+// Service SVG marks: Simple Icons (CC0), https://github.com/simple-icons/simple-icons.
 import slack from "./icons/slack.svg?url";
 import notion from "./icons/notion.svg?url";
 import linear from "./icons/linear.svg?url";

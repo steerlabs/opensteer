@@ -594,7 +594,7 @@ export function IntegrationDetail({
         </section>
       ) : null}
 
-      {active ? (
+      {active && (showWorkspaceAccess || signInChoices) ? (
         <section className="section">
           <div className="card">
             {showWorkspaceAccess ? (

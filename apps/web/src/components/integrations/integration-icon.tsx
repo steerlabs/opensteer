@@ -31,7 +31,16 @@ export function IntegrationIcon({
     "apple-location": "globe",
     "android-phone": "phone",
     "computer-use": "desktop",
+    "macos-app": "desktop",
+    "iphone-location": "globe",
+    "iphone-photos": "file",
   };
+  if (id === "apple-calendar")
+    return (
+      <span aria-hidden className={`${className} intg-icon--calendar`}>
+        <span>31</span>
+      </span>
+    );
   if (deviceGlyphs[id])
     return (
       <span className={`${className} intg-icon--device intg-icon--${id}`}>

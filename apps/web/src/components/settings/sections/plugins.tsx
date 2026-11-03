@@ -287,6 +287,7 @@ function OverviewRow({
       <Link className="card__row-body" to={pluginPath(row.target)}>
         <span className="card__row-title">{row.title}</span>
         <span className="card__row-detail">
+          {state.label === "Waiting" ? <Icon name="clock" /> : null}
           {state.label !== "On"
             ? state.label === "Waiting"
               ? `${waitingDevice ?? row.title} · waiting`
@@ -377,9 +378,15 @@ function PluginDetail({
               <div className="card">
                 {data.permissions.map((fact) => (
                   <SettingsRow
-                    key={`${fact.layer}:${fact.label}`}
+                    key={`${fact.layer}:${fact.layer === "account-scope" && fact.label === "Account access" ? (data.accounts.some((account) => account.access === "read-write") ? "Read and update connected accounts" : "Read connected accounts") : fact.label}`}
                     icon="shield"
-                    title={fact.label}
+                    title={
+                      fact.layer === "account-scope" && fact.label === "Account access"
+                        ? data.accounts.some((account) => account.access === "read-write")
+                          ? "Read and update connected accounts"
+                          : "Read connected accounts"
+                        : fact.label
+                    }
                     action={
                       <span className="chip">
                         {fact.state === "ask"
@@ -691,7 +698,15 @@ export function PluginAddSheet({
             {definition?.authMethods
               .flatMap((method) => (method.kind === "oauth" ? method.oauth.scopes : []))
               .map((scope) => (
-                <li key={scope}>{scope}</li>
+                <li key={scope}>
+                  {scope.endsWith("/gmail.readonly")
+                    ? "Read and search mail"
+                    : scope.endsWith("/gmail.send")
+                      ? "Send mail"
+                      : scope
+                          .replace(/^https:\/\/www\.googleapis\.com\/auth\//, "")
+                          .replaceAll("_", " ")}
+                </li>
               ))}
           </ul>
           {definition?.computerApp ? (

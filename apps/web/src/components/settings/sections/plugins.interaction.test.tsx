@@ -205,7 +205,7 @@ describe("Plugins settings", () => {
   it("requires server placement and explicit Add before opening sign-in", async () => {
     const node = await mount("/settings/plugins/add", { sheet: true });
     await act(async () => {
-      await vi.waitFor(() => expect(node.textContent).toContain("gmail.readonly"));
+      await vi.waitFor(() => expect(node.textContent).toContain("Read and search mail"));
     });
     const proceed = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Add and sign in to Gmail",
