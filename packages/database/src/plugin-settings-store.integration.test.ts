@@ -621,7 +621,7 @@ describeStore("plugin Settings authority", (test) => {
       barrier.release();
       await edit;
     }
-    if (!creating) throw new Error("Concurrent Project creation never started");
+    if (creating === undefined) throw new Error("Concurrent Project creation never started");
     const concurrent = await withTimeout(creating, 5000, {
       timeoutError: () => new Error("Project creation never observed committed consent"),
     });

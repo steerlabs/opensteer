@@ -93,6 +93,10 @@ export class PluginSettingsStore {
           (q.required_actor = 'requester' and (q.requested_by = m.user_id or (u.instance_role = 'administrator' and q.kind = 'integration.access' and q.payload->>'installationId' is null)))
           or (q.required_actor = 'workspace-owner' and m.role = 'owner')
           or (q.required_actor = 'administrator' and u.instance_role = 'administrator'))
+      union select s.owner_user_id from plugin_owner_settings s
+        join integration_installations i on i.id = ${input.installationId ?? null}
+        where s.target->>'kind' in ('service', 'device-app')
+          and s.target->>'definitionId' = coalesce(i.manifest->'definition'->>'id', i.name)
       union select g.owner_user_id from integration_grants g where g.installation_id = ${input.installationId ?? null}
     `.execute(this.database);
     return result.rows.map((r) => r.userId);
