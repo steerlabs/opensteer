@@ -454,7 +454,7 @@ describe("AgentControlService", () => {
       source: { kind: "agent", runId: claims.runId },
       threadId: target.id,
     });
-    expect(authenticate).toHaveBeenCalledTimes(10);
+    expect(authenticate).toHaveBeenCalledTimes(4);
     expect(authenticate).toHaveBeenCalledWith("run-token");
     expect(listEnvironmentsForUser).toHaveBeenCalledWith(ownerId, 65, {});
     expect(workspaceSnapshot).not.toHaveBeenCalled();

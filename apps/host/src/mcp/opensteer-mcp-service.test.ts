@@ -187,12 +187,14 @@ describe("Opensteer MCP spine", () => {
       operationKey: "rpc-1",
     });
     expect(result).not.toHaveProperty("unnamedSecret");
+    expect(f.options.callers.authenticate).toHaveBeenCalledTimes(1);
     for (const receipt of f.options.receipts.results.values()) {
       receipt.result.unnamedSecret = "stored before this projection";
     }
     expect(
       await f.service.callTool("run", "person_message", input, { operationKey: "rpc-2" }),
     ).toEqual({ messageId: result.messageId });
+    expect(f.options.callers.authenticate).toHaveBeenCalledTimes(2);
     expect(f.personMessage).toHaveBeenCalledTimes(1);
     await expect(
       f.service.callTool(

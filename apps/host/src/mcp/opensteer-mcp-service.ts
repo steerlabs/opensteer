@@ -315,12 +315,12 @@ export class OpensteerMcpService {
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
     const input = tool.input.parse(value);
+    const caller = await this.options.callers.authenticate(bearer);
     let key =
       "operationKey" in input && typeof input.operationKey === "string"
         ? input.operationKey
         : identity.operationKey;
     const check = async () => {
-      const caller = await this.options.callers.authenticate(bearer);
       if (!tool.callers.some((kind) => kind === caller.kind))
         throw new OpensteerError({
           code: "forbidden",
@@ -335,9 +335,7 @@ export class OpensteerMcpService {
         operationKey: key,
         ...(identity.signal ? { signal: identity.signal } : {}),
       });
-      return caller;
     };
-    const caller = await check();
     if (
       caller.kind === "program" &&
       caller.program.kind === "watch" &&
@@ -348,11 +346,8 @@ export class OpensteerMcpService {
     )
       key = `observation:${input.observationId}`;
     const invoke = async (recover = false) => {
-      const live = await check();
-      if (live.key !== caller.key)
-        throw new OpensteerError({ code: "forbidden", message: "MCP caller changed" });
       const call: ToolCall<typeof tool.name> = {
-        caller: live,
+        caller,
         input,
         operationKey: key,
         ...(identity.signal ? { signal: identity.signal } : {}),
@@ -364,7 +359,10 @@ export class OpensteerMcpService {
       ) as (call: ToolCall<typeof tool.name>) => Promise<unknown>;
       return tool.output.parse(await handler(call)) as Record<string, unknown>;
     };
-    if (tool.access === "read") return invoke();
+    if (tool.access === "read") {
+      await check();
+      return invoke();
+    }
     const result = await this.options.receipts.execute({
       callerKey: caller.key,
       operationKey: key,
