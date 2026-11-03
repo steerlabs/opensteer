@@ -1,4 +1,8 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  createCredentialResponseRedactor,
+  type CredentialResponseRedactor,
+} from "@opensteer/access/host";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { RunnerId } from "@opensteer/core";
 import type { IntegrationServerId, LocalMcpLaunch } from "@opensteer/integration-core";
@@ -31,6 +35,7 @@ export class ComputerMcpTransport implements Transport {
     readonly secrets: Readonly<Record<string, string>>;
     readonly serverId: IntegrationServerId;
   };
+  readonly #redactor: CredentialResponseRedactor;
   /** Aborted by `close`, ending a session the computer is still starting. */
   readonly #abandoned = new AbortController();
   #closed = false;
@@ -48,6 +53,7 @@ export class ComputerMcpTransport implements Transport {
   ) {
     this.#hub = hub;
     this.#target = target;
+    this.#redactor = createCredentialResponseRedactor(Object.values(target.secrets));
   }
 
   async start(): Promise<void> {
@@ -64,8 +70,8 @@ export class ComputerMcpTransport implements Transport {
           onclose: (error) => {
             if (this.#closed) return;
             this.#closed = true;
-            this.closeError = error;
-            if (error) this.onerror?.(error);
+            this.closeError = error && this.#withoutSecrets(error);
+            if (this.closeError) this.onerror?.(this.closeError);
             this.onclose?.();
           },
           // The computer relays what the server wrote, which the SDK parses as
@@ -75,7 +81,9 @@ export class ComputerMcpTransport implements Transport {
         }),
       };
     });
-    const session = await admitted.opening;
+    const session = await admitted.opening.catch((error: unknown) => {
+      throw error instanceof ComputerMcpSessionError ? this.#withoutSecrets(error) : error;
+    });
     // Closed just as the computer answered that it opened: the session ends
     // now rather than outliving the client that gave it up.
     if (this.#closed) {
@@ -94,6 +102,15 @@ export class ComputerMcpTransport implements Transport {
     await this.#session.send(
       JSON.parse(JSON.stringify(message)) as HostIntegrationsMcpMessage["message"],
     );
+  }
+
+  /**
+   * Why the computer ended a session can quote what the server wrote, which
+   * the Host stores as its status and tells agents: never with its secrets.
+   */
+  #withoutSecrets(error: ComputerMcpSessionError): ComputerMcpSessionError {
+    const message = this.#redactor.redactText(error.message);
+    return message === error.message ? error : new ComputerMcpSessionError(error.code, message);
   }
 
   async close(): Promise<void> {

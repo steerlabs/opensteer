@@ -121,6 +121,7 @@ import {
   IntegrationRepositoryAccessViewSchema,
   IntegrationServerIdSchema,
   LocalMcpSecretNameSchema,
+  LocalMcpSecretSchema,
   LocalMcpSecretValuesSchema,
   localMcpMaxSecrets,
   RequestComputerAppSetupSchema,
@@ -1714,6 +1715,24 @@ export const hostApi = defineRpc({
     "GET",
     emptyInputSchema,
     z.object({ requests: z.array(ComputerAppSetupRequestViewSchema).max(1_000) }),
+  ),
+  /** Plugin servers on the caller's computers whose secrets the caller may change; never values. */
+  "integration.server.secrets.list": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({
+      servers: z
+        .array(
+          z.object({
+            computer: z.string().nullable(),
+            id: IntegrationServerIdSchema,
+            name: z.string(),
+            plugin: z.string(),
+            secrets: z.array(z.object(LocalMcpSecretSchema.shape)).max(localMcpMaxSecrets),
+          }),
+        )
+        .max(1_000),
+    }),
   ),
   /**
    * The picker's list, asked of the Mac itself.

@@ -84,6 +84,12 @@ export function localMcpSecretsToSend(
   return { ok: true, secrets };
 }
 
+/** The plugin servers on this person's computers whose secrets they can change. */
+export async function localMcpSecretServers(host: Pick<HostClient, "rpc">) {
+  return unwrapRpcResult(await host.rpc["integration.server.secrets.list"]({})).servers;
+}
+export type LocalMcpSecretServer = Awaited<ReturnType<typeof localMcpSecretServers>>[number];
+
 /** Gives some of an approved server's secrets new values; the others keep theirs. */
 export async function setLocalMcpServerSecrets(
   host: Pick<HostClient, "dispatch">,

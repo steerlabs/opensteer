@@ -512,6 +512,15 @@ integration("MCP servers on a computer", () => {
         { headers: host.ownerHeaders },
       );
     expect((await review(asked.id)).savedSecrets).toEqual([]);
+    const yours = () =>
+      testRpcData(
+        host.origin,
+        "integration.server.secrets.list",
+        {},
+        { headers: host.ownerHeaders },
+      ).then(({ servers }) => servers);
+    // Listed for its computer's owner to change only once allowed there.
+    expect(await yours()).toEqual([]);
 
     // Allowing needs every secret, and only the ones its launch declares.
     const answer = (id: string, secrets?: Record<string, string>) =>
@@ -542,6 +551,15 @@ integration("MCP servers on a computer", () => {
     );
     expect(listed).not.toContain("hunter2");
     expect(listed).not.toContain("encryptedPayload");
+    expect(await yours()).toEqual([
+      expect.objectContaining({
+        id: server.id,
+        name: "camera",
+        plugin: "camera-fixture",
+        secrets: [expect.objectContaining({ name: "CAMERA_PASSWORD" })],
+      }),
+    ]);
+    expect(JSON.stringify(await yours())).not.toContain("hunter2");
 
     // Changed: its running process ends, and the next starts with the new value.
     await dispatch("change", {
@@ -558,6 +576,30 @@ integration("MCP servers on a computer", () => {
         .where("kind", "=", "server")
         .execute(),
     ).toEqual([]);
+
+    // A server that prints its secret as it fails: the reason the Host keeps,
+    // lists and tells agents quotes its output, never the secret.
+    await dispatch("leak", {
+      secrets: { CAMERA_PASSWORD: "leaky-hunter3" },
+      serverId: server.id,
+      type: "integration.server.secrets.set",
+    });
+    await waitForCondition(
+      async () => (await serverRow(host)).statusDetail?.includes("could not sign in") ?? false,
+      30_000,
+    );
+    expect((await serverRow(host)).statusDetail).not.toContain("leaky-hunter3");
+    expect(
+      JSON.stringify(
+        await testRpcData(host.origin, "plugin.list", {}, { headers: host.ownerHeaders }),
+      ),
+    ).not.toContain("leaky-hunter3");
+    await dispatch("unleak", {
+      secrets: { CAMERA_PASSWORD: "swordfish" },
+      serverId: server.id,
+      type: "integration.server.secrets.set",
+    });
+    await started("swordfish");
 
     // A new launch is asked about again; leaving the field blank keeps the value.
     await fixture.changeLaunch();
@@ -649,6 +691,10 @@ const { Server } = require(${sdk("server/index.js")});
 const { StdioServerTransport } = require(${sdk("server/stdio.js")});
 const { ListToolsRequestSchema } = require(${sdk("types.js")});
 writeFileSync(process.env.SEEN_FILE, process.env.CAMERA_PASSWORD ?? "");
+if (process.env.CAMERA_PASSWORD?.startsWith("leaky")) {
+  console.error("could not sign in with " + process.env.CAMERA_PASSWORD);
+  process.exit(1);
+}
 const server = new Server({ name: "camera-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [{ annotations: { readOnlyHint: true }, description: "Snapshot", inputSchema: { type: "object" }, name: "snapshot" }],

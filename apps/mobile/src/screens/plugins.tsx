@@ -25,7 +25,12 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { localMcpSecretsToSend, setLocalMcpServerSecrets } from "@opensteer/client/integrations";
+import {
+  localMcpSecretServers,
+  localMcpSecretsToSend,
+  setLocalMcpServerSecrets,
+  type LocalMcpSecretServer,
+} from "@opensteer/client/integrations";
 import { operationDetail } from "../client/mobile-client.js";
 import { LocalMcpSecretFields } from "../computers/local-mcp-secret-fields.js";
 import { color, radius, space, touchTarget } from "../theme.js";
@@ -147,8 +152,75 @@ function Plugins(props: { readonly hostClient: HostClient }): ReactNode {
             </View>
           </>
         )}
+        {snapshot.user === null ? null : (
+          <YourSecrets connected={connected} hostClient={hostClient} userId={snapshot.user.id} />
+        )}
       </ScrollView>
     </Screen>
+  );
+}
+
+/**
+ * Whoever owns the computer a plugin's server runs on entered its secrets
+ * there, and changes them here, whether or not they manage plugins.
+ */
+function YourSecrets(props: {
+  readonly connected: boolean;
+  readonly hostClient: HostClient;
+  readonly userId: string;
+}): ReactNode {
+  const servers = useHostRead(
+    () => localMcpSecretServers(props.hostClient),
+    `plugin-secrets:${props.userId}`,
+  );
+  const [changing, setChanging] = useState<LocalMcpSecretServer | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  if (!servers.data?.length) return null;
+  return (
+    <View style={styles.section}>
+      <SectionLabel>Secrets on your computers</SectionLabel>
+      {servers.data.map((server) => (
+        <View key={server.id} style={styles.card}>
+          <View style={styles.cardBody}>
+            <AppText numberOfLines={1} role="bodyMedium">
+              {server.plugin}
+            </AppText>
+            <AppText role="caption" tone="muted">
+              {[server.name, server.computer, server.secrets.map(({ title }) => title).join(", ")]
+                .filter(Boolean)
+                .join(" · ")}
+            </AppText>
+            <View style={styles.actions}>
+              <SecondaryButton
+                accessibilityLabel={`Change ${server.plugin}’s secrets`}
+                compact
+                disabled={!props.connected}
+                label="Change"
+                onPress={() => setChanging(server)}
+              />
+            </View>
+          </View>
+        </View>
+      ))}
+      {done === null ? null : (
+        <AppText role="caption" tone="soft">
+          {done}
+        </AppText>
+      )}
+      {changing ? (
+        <ChangeSecretsSheet
+          hostClient={props.hostClient}
+          onClose={() => setChanging(null)}
+          onSaved={() => {
+            const said = `${changing.plugin}’s secrets changed`;
+            setChanging(null);
+            setDone(said);
+            AccessibilityInfo.announceForAccessibility(said);
+          }}
+          server={changing}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -262,7 +334,6 @@ function PluginCard(props: {
 }): ReactNode {
   const { connected, hostClient, plugin } = props;
   const [open, setOpen] = useState(false);
-  const [changingSecrets, setChangingSecrets] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -385,15 +456,6 @@ function PluginCard(props: {
               )
             }
           />
-          {plugin.secretServers.length > 0 ? (
-            <SecondaryButton
-              accessibilityLabel={`Change ${plugin.name}’s secrets`}
-              compact
-              disabled={!connected || pending !== null}
-              label="Secrets"
-              onPress={() => setChangingSecrets(true)}
-            />
-          ) : null}
           <SecondaryButton
             busy={pending === "remove"}
             compact
@@ -403,20 +465,6 @@ function PluginCard(props: {
             tone="danger"
           />
         </View>
-        {changingSecrets ? (
-          <ChangeSecretsSheet
-            hostClient={hostClient}
-            onClose={() => setChangingSecrets(false)}
-            onSaved={() => {
-              setChangingSecrets(false);
-              const said = `${plugin.name}’s secrets changed`;
-              setDone(said);
-              AccessibilityInfo.announceForAccessibility(said);
-              props.onChanged();
-            }}
-            plugin={plugin}
-          />
-        ) : null}
         {done === null ? null : (
           <AppText role="caption" tone="soft">
             {done}
@@ -478,40 +526,26 @@ function PluginCard(props: {
   );
 }
 
-/** New values for the secrets its computer's owner entered when approving its servers. */
+/** New values for the secrets a server's computer's owner entered when approving it. */
 function ChangeSecretsSheet(props: {
   readonly hostClient: HostClient;
   readonly onClose: () => void;
   readonly onSaved: () => void;
-  readonly plugin: PluginSummary;
+  readonly server: LocalMcpSecretServer;
 }): ReactNode {
-  const [values, setValues] = useState<Readonly<Record<string, Readonly<Record<string, string>>>>>(
-    {},
-  );
+  const fields = props.server.secrets.map((secret) => ({ ...secret, saved: true }));
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const save = () => {
-    const changes = [];
-    for (const server of props.plugin.secretServers) {
-      const entered = localMcpSecretsToSend(
-        server.secrets.map((secret) => ({ ...secret, saved: true })),
-        values[server.id] ?? {},
-      );
-      if (!entered.ok) {
-        setFailure(entered.message);
-        return;
-      }
-      if (Object.keys(entered.secrets).length > 0) changes.push({ id: server.id, ...entered });
-    }
-    if (changes.length === 0) {
-      setFailure("Enter a new value to change.");
+    const entered = localMcpSecretsToSend(fields, values);
+    if (!entered.ok || Object.keys(entered.secrets).length === 0) {
+      setFailure(entered.ok ? "Enter a new value to change." : entered.message);
       return;
     }
     setPending(true);
     setFailure(null);
-    void Promise.all(
-      changes.map(({ id, secrets }) => setLocalMcpServerSecrets(props.hostClient, id, secrets)),
-    )
+    void setLocalMcpServerSecrets(props.hostClient, props.server.id, entered.secrets)
       .then(props.onSaved)
       .catch((error: unknown) => setFailure(operationDetail(error, "That didn’t save. Try again.")))
       .finally(() => setPending(false));
@@ -526,29 +560,16 @@ function ChangeSecretsSheet(props: {
     >
       <View style={styles.sheet}>
         <ScrollView keyboardShouldPersistTaps="handled">
-          <AppText role="title">{`${props.plugin.name}’s secrets`}</AppText>
+          <AppText role="title">{`${props.server.plugin}’s secrets`}</AppText>
           <AppText role="secondary" tone="soft">
-            Enter only what changed. Its programs restart with the new values. Only the owner of the
-            computer that runs them can change these.
+            {`Enter only what changed. ${props.server.name} restarts with the new values.`}
           </AppText>
-          {props.plugin.secretServers.map((server) => (
-            <View key={server.id}>
-              {props.plugin.secretServers.length > 1 ? (
-                <SectionLabel>{server.name}</SectionLabel>
-              ) : null}
-              <LocalMcpSecretFields
-                disabled={pending}
-                fields={server.secrets.map((secret) => ({ ...secret, saved: true }))}
-                onChange={(name, value) =>
-                  setValues((current) => ({
-                    ...current,
-                    [server.id]: { ...current[server.id], [name]: value },
-                  }))
-                }
-                values={values[server.id] ?? {}}
-              />
-            </View>
-          ))}
+          <LocalMcpSecretFields
+            disabled={pending}
+            fields={fields}
+            onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))}
+            values={values}
+          />
           <ErrorLine detail={failure} />
         </ScrollView>
         <SecondaryButton disabled={pending} label="Cancel" onPress={props.onClose} />

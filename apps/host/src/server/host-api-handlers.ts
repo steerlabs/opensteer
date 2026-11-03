@@ -59,6 +59,7 @@ export function createHostApiHandlers(
     | "integration.computer.setup.review"
     | "integration.computer.setup.list"
     | "integration.computer.policy.get"
+    | "integration.server.secrets.list"
   >,
   integrationPlatform: IntegrationPlatformRpcOptions,
   channelHandlers: Pick<HostApiHandlers, "channel.connection.check" | "channels.get">,

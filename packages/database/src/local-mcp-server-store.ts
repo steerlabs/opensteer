@@ -3,6 +3,7 @@ import { withDatabaseTransaction } from "./connection.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
   IntegrationServerTransportSchema,
+  localMcpLaunchSecrets,
   type IntegrationInstallationId,
   type IntegrationServerId,
   type IntegrationToolMaterial,
@@ -268,6 +269,23 @@ export class LocalMcpServerStore {
       await replaceSecrets(transaction, server.id, runnerId, input.secrets, now);
       return { runnerId };
     });
+  }
+
+  /** The approved servers that take secrets on computers this person owns, whose secrets they set. */
+  async withSecretsOwnedBy(ownerUserId: UserId): Promise<readonly LocalMcpServerRecord[]> {
+    const owned: LocalMcpServerRecord[] = [];
+    for (const server of await this.list()) {
+      if (
+        server.runnerId === null ||
+        server.status === "disabled" ||
+        server.approvedLaunchDigest !== server.launchDigest ||
+        localMcpLaunchSecrets(server.launch).length === 0
+      )
+        continue;
+      const ownership = await machineOwnershipIn(this.#database, server.runnerId);
+      if (ownership?.effectiveOwner === ownerUserId) owned.push(server);
+    }
+    return owned;
   }
 
   /** One server's sealed secrets for the computer that runs it, or null when it has none there. */

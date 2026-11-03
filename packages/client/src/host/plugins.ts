@@ -4,12 +4,6 @@ import {
   type SpecialistAccessRequirement,
   type SpecialistRegistration,
 } from "@opensteer/core";
-import {
-  IntegrationServerIdSchema,
-  LocalMcpSecretSchema,
-  type IntegrationServerId,
-  type LocalMcpSecret,
-} from "@opensteer/integration-core";
 
 /**
  * `plugin.list` returns stored rows for administrators and a safe projection for
@@ -49,25 +43,6 @@ const PluginRowSchema = z.object({
   servers: z.array(z.unknown()).optional().catch(undefined),
 });
 
-/** An administrator's row for a server its computer runs, as far as its secrets go. */
-const SecretServerRowSchema = z.object({
-  approvedLaunchDigest: z.string().nullable(),
-  id: IntegrationServerIdSchema,
-  name: z.string(),
-  status: z.string(),
-  transport: z.object({
-    launch: z.object({ secrets: z.array(LocalMcpSecretSchema).min(1) }),
-    type: z.literal("runner"),
-  }),
-});
-
-/** A plugin server whose computer's owner entered secrets for it, which they can change. */
-export interface PluginSecretServer {
-  readonly id: IntegrationServerId;
-  readonly name: string;
-  readonly secrets: readonly LocalMcpSecret[];
-}
-
 /** One installed plugin, as Settings and a Project's settings show it. */
 export interface PluginSummary {
   readonly id: string;
@@ -87,8 +62,6 @@ export interface PluginSummary {
   readonly specialist: boolean;
   readonly skills: number;
   readonly servers: number;
-  /** Its approved servers that take secrets; only an administrator's listing has them. */
-  readonly secretServers: readonly PluginSecretServer[];
   /** The Workspaces it is turned on in. */
   readonly activeIn: readonly string[];
   readonly updatedAt: string | null;
@@ -114,20 +87,6 @@ export function pluginSummaries(rows: readonly unknown[]): PluginSummary[] {
         specialist: current?.specialistManifest != null,
         skills: current?.manifest?.skills?.length ?? 0,
         servers: plugin.servers?.length ?? 0,
-        secretServers: (plugin.servers ?? []).flatMap((row) => {
-          const server = SecretServerRowSchema.safeParse(row);
-          return server.success &&
-            server.data.status !== "disabled" &&
-            server.data.approvedLaunchDigest !== null
-            ? [
-                {
-                  id: server.data.id,
-                  name: server.data.name,
-                  secrets: server.data.transport.launch.secrets,
-                },
-              ]
-            : [];
-        }),
         activeIn: plugin.activations.map(({ workspaceId }) => workspaceId),
         updatedAt: plugin.updatedAt ?? null,
       },

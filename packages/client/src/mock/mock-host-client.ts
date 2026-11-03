@@ -2090,6 +2090,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ appApproval: client.computerUseAppApproval(input.runnerId) }),
     "integration.computer.setup.review": async ({ setupRequestId }) =>
       rpcSuccess(client.reviewComputerAppSetup(setupRequestId)),
+    // This mock runs no MCP server on a computer, so none takes secrets.
+    "integration.server.secrets.list": async () => rpcSuccess({ servers: [] }),
     "integration.computer.setup.list": async () =>
       rpcSuccess(
         hostApi["integration.computer.setup.list"].success.parse({

@@ -146,7 +146,10 @@ can change them later without new consent; a new launch keeps values for names i
 declares. Consent and values belong to one computer: a server moved to another is asked
 there again, with nothing kept. Values are sealed per server in a table of their own, so no server listing,
 Request event or snapshot carries them, and are opened only to start that server: the Host
-adds them to the launch it sends, which leaves the Runner's wire unchanged. They keep secrets
+adds them to the launch it sends, which leaves the Runner's wire unchanged. Why a session
+ended quotes the server's output and becomes its status and agents' readiness, so the Host
+removes the values from it in [the transport](../apps/host/src/integrations/computer-mcp-transport.ts).
+Settings, Plugins lists them for the computer's owner, whatever their role. This keeps secrets
 out of chat, manifests and agent context, not from the program or a same-user shell.
 
 Run servers with the MCP SDK's minimal inherited environment plus the launch's in their own process group. End

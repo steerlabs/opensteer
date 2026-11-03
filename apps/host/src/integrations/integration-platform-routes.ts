@@ -1,6 +1,7 @@
 import {
   ComputerAppSetupRequestViewSchema,
   McpOAuthAttemptIdSchema,
+  localMcpLaunchSecrets,
 } from "@opensteer/integration-core";
 import { OpensteerError, WorkspaceIdSchema, type DeploymentId } from "@opensteer/core";
 import {
@@ -40,6 +41,7 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.computer.setup.review"
   | "integration.computer.setup.list"
   | "integration.computer.policy.get"
+  | "integration.server.secrets.list"
 > {
   return {
     "specialist.list": async (input, context) =>
@@ -87,6 +89,18 @@ export function createIntegrationPlatformRpcHandlers(
           ownerUserId: requireSession(context).user.id,
         }),
       ),
+    "integration.server.secrets.list": async (_input, context) =>
+      rpcSuccess({
+        servers: (
+          await options.platform.store.localMcp.withSecretsOwnedBy(requireSession(context).user.id)
+        ).map((server) => ({
+          computer: server.runnerName,
+          id: server.id,
+          name: server.name,
+          plugin: server.installationTitle,
+          secrets: [...localMcpLaunchSecrets(server.launch)],
+        })),
+      }),
     "integration.computer.setup.list": async (_input, context) =>
       rpcSuccess({
         requests: (
