@@ -1014,3 +1014,7 @@ html.electron-shell .settings-navigation__header :is(a, button) {
 .settings-messaging-row .card__row-actions {
   gap: var(--space-4);
 }
+.settings-add-hero > header {
+  flex: 1;
+  min-width: 0;
+}

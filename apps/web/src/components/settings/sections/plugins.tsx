@@ -341,10 +341,14 @@ function PluginDetail({
         <>
           {target.kind !== "service" && target.kind !== "device-app" ? (
             <>
-              <SectionHeader
-                title={data.row.title}
-                lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
-              />
+              <div className="settings-add-hero">
+                <PluginIcon row={data.row} />
+                <SectionHeader
+                  action={<EnableSwitch row={data.row} reload={detail.reload} />}
+                  title={data.row.title}
+                  lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
+                />
+              </div>
             </>
           ) : null}
           {target.kind === "service" || target.kind === "device-app" ? (
@@ -356,10 +360,7 @@ function PluginDetail({
               headerAction={<EnableSwitch row={data.row} reload={detail.reload} />}
             />
           ) : null}
-          {target.kind !== "service" && target.kind !== "device-app" ? (
-            <EnableSwitch row={data.row} reload={detail.reload} />
-          ) : null}
-          {target.kind !== "service" && target.kind !== "device-app" ? (
+          {target.kind !== "service" && target.kind !== "device-app" && data.accounts.length > 0 ? (
             <>
               <h2>Accounts</h2>
               <ul>

@@ -107,7 +107,11 @@ export function AgentDevicesSection() {
                   ? snapshot.machines
                       .find((machine) => machine.id === device.id)
                       ?.apps?.map((app) =>
-                        app.definitionId.replace(/^apple-/, "").replaceAll("-", " "),
+                        app.definitionId === "apple-messages"
+                          ? "iMessage"
+                          : app.definitionId === "macos-app"
+                            ? "Computer use"
+                            : app.definitionId.replace(/^apple-/, "").replaceAll("-", " "),
                       )
                       .join(", ") ||
                     (device.device?.platform === "android" ? "Agent Phone" : "Apps and files")

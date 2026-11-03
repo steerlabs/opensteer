@@ -1,3 +1,4 @@
+import { useDesktopUpdate } from "../../../desktop/update-store.js";
 import { Dialog } from "../../dialog.js";
 import { useDesktopPlaces } from "../../../desktop/places-context.js";
 import { PlaceMenuPlaces } from "../../places/place-menu.js";
@@ -22,6 +23,7 @@ import {
 
 export function GeneralSection({ view }: { readonly view: SettingsView }) {
   const places = useDesktopPlaces();
+  const update = useDesktopUpdate();
   const [switching, setSwitching] = useState(false);
   const { snapshot } = useShell();
   const home = useHomeComputer();
@@ -61,7 +63,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
       <div className="card">
         <SettingsRow
           icon="puzzle"
-          title="Opensteer"
+          title={update ? `Opensteer ${update.currentVersion}` : "Opensteer"}
           action={
             <a
               className="btn"
