@@ -339,6 +339,51 @@ describe("Settings manages a proposed MCP server's accounts", () => {
 });
 
 describe("Settings puts what the user has, and what needs them, first", () => {
+  it("shows plugin MCP servers in Connections and routes removal to Plugins", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    const rpc = client.rpc;
+    const platform = rpc["integration.platform.get"];
+    Object.defineProperty(client, "rpc", {
+      value: new Proxy(rpc, {
+        get: (target, key) =>
+          key === "integration.platform.get"
+            ? async (input: Parameters<typeof platform>[0]) => {
+                const result = await platform(input);
+                if (!result.ok) return result;
+                const template = result.data.installations.find(
+                  (entry) => entry.servers.length > 0,
+                );
+                if (!template) throw new Error("An MCP installation fixture is required");
+                return {
+                  ...result,
+                  data: {
+                    ...result.data,
+                    installations: [
+                      ...result.data.installations,
+                      {
+                        ...template,
+                        installation: {
+                          ...template.installation,
+                          id: "plugin-mcp-fixture",
+                          sourceKind: "plugin" as const,
+                          title: "Local probe plugin",
+                          manifest: {},
+                        },
+                      },
+                    ],
+                  },
+                };
+              }
+            : Reflect.get(target, key),
+      }),
+    });
+    const container = await mountSettings(client);
+    const row = container.querySelector<HTMLElement>(`#${installationRowId("plugin-mcp-fixture")}`);
+    expect(row?.textContent).toContain("Local probe plugin");
+    expect(row?.querySelector('a[href="/settings/plugins"]')?.textContent).toBe("Manage plugin");
+    expect(buttonWithText(row!, "Uninstall")).toBeNull();
+  });
+
   // The ways it could fail: the catalog of presets ahead of the services this
   // deployment has; an installed service listed among presets, or a preset
   // among installed services; a service that needs someone buried behind

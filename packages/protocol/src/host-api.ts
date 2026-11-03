@@ -1503,11 +1503,7 @@ export const hostApi = defineRpc({
     z.strictObject({ appId: AppIdSchema, theme: z.enum(["light", "dark"]) }),
     z.object({
       app: AppSchema,
-      path: z
-        .string()
-        .regex(
-          /^\/v1\/apps\/app_[0-9a-f-]{36}\/content\?token=[A-Za-z0-9_-]{43}&theme=(light|dark)$/u,
-        ),
+      path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
     }),
   ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),

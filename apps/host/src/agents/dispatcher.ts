@@ -580,7 +580,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentControlUrl,
         },
         agentTools: {
-          ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
           capabilityProfileId: context.thread.capabilityProfileId,
           token: agentControlToken,
           url: this.#agentToolsUrl,
