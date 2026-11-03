@@ -147,48 +147,6 @@ integration("Opensteer Account host", () => {
     expect(invalidPost.body).toContain("Start authorization again");
   });
 
-  it("authorizes only the Account and portal hostnames for edge TLS", async () => {
-    const own = await server.inject({
-      method: "GET",
-      url: "/v1/edge/tls-allow?domain=BETA.FRONT-DOOR.TEST.INVALID.",
-    });
-    expect(own.statusCode).toBe(200);
-    expect(own.body).toBe("ok");
-
-    const edgeRoot = await server.inject({
-      method: "GET",
-      url: `/v1/edge/tls-allow?domain=${testDomain.toUpperCase()}.`,
-    });
-    expect(edgeRoot.statusCode).toBe(200);
-    expect(edgeRoot.body).toBe("ok");
-
-    const active = await server.inject({
-      method: "GET",
-      url: "/v1/edge/tls-allow?domain=tls-cloud.managed.front-door.test.invalid",
-    });
-    expect(active.statusCode).toBe(404);
-
-    expect(
-      (
-        await server.inject({
-          method: "GET",
-          url: "/v1/edge/tls-allow?domain=tls-cloud.managed.front-door.test.invalid",
-        })
-      ).statusCode,
-    ).toBe(404);
-    expect((await server.inject({ method: "GET", url: "/v1/edge/tls-allow" })).statusCode).toBe(
-      400,
-    );
-    expect(
-      (
-        await server.inject({
-          method: "GET",
-          url: "/v1/edge/tls-allow?domain=https%3A%2F%2Fexample.test",
-        })
-      ).statusCode,
-    ).toBe(400);
-  });
-
   it("forwards sign-out cookies and redirects to the front door", async () => {
     const response = await server.inject({
       headers: {

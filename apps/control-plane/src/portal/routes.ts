@@ -53,30 +53,16 @@ const PersonalLinkParamsSchema = z.strictObject({
 const PersonalLinkOperationParamsSchema = z.strictObject({
   operationId: PersonalHostAccountLinkOperationIdSchema,
 });
-const EdgeTlsAllowQuerySchema = z.strictObject({ domain: z.string().min(1).max(254) });
 
 export function registerControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: {
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
-    readonly portalOrigin: URL;
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
-    readonly publicOrigin: URL;
     readonly store: ControlPlaneStore;
   },
 ): void {
-  app.get("/v1/edge/tls-allow", async (request, reply) => {
-    void reply.header("cache-control", "no-store");
-    const { domain: input } = EdgeTlsAllowQuerySchema.parse(request.query);
-    const domain = normalizedBareDnsHostname(input);
-    const allowed =
-      domain === dependencies.publicOrigin.hostname.toLowerCase() ||
-      domain === dependencies.portalOrigin.hostname.toLowerCase();
-    if (!allowed) return reply.code(404).type("text/plain; charset=utf-8").send("not found");
-    return reply.type("text/plain; charset=utf-8").send("ok");
-  });
-
   app.get("/v1/account/deployments", async (request, reply) => {
     const principal = await dependencies.authenticator.authenticate(toWebHeaders(request.headers), {
       scope: "deployments:read",
@@ -413,19 +399,4 @@ export function toWebHeaders(input: Readonly<Record<string, unknown>>): Headers 
 
 function firstHeader(value: string | readonly string[] | undefined): string | undefined {
   return typeof value === "string" ? value : value?.[0];
-}
-
-function normalizedBareDnsHostname(value: string): string {
-  const lowered = value.toLowerCase();
-  const domain = lowered.endsWith(".") ? lowered.slice(0, -1) : lowered;
-  if (
-    !domain ||
-    domain.length > 253 ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u.test(
-      domain,
-    )
-  ) {
-    throw new ControlPlaneError("bad_request", "Domain must be a bare DNS hostname");
-  }
-  return domain;
 }

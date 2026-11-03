@@ -219,8 +219,6 @@ integration("Personal remote Account PostgreSQL boundary", () => {
         store: directory,
         authenticator: {} as never,
         connectLifecycle: {} as never,
-        publicOrigin: issuer,
-        portalOrigin: new URL("https://connect.personal.test.invalid"),
       });
       try {
         const courier = [challenge, request.proof, first, replay];
